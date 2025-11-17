@@ -60,7 +60,6 @@ export const middleware = paymentMiddleware(
 // Configure which paths the middleware should run on
 export const config = {
   matcher: ["/protected/:path*"],
-  runtime: "nodejs",
 };
 ```
 
@@ -121,47 +120,43 @@ export const middleware = paymentMiddleware(
 
 export const config = {
   matcher: ["/protected/:path*", "/api/premium/:path*"],
-  runtime: "nodejs",
 };
 ```
 
 ## Accessing Mainnet
 
-To access the mainnet facilitator in NextJs, a temporary workaround is currently needed. The `@coinbase/x402` package currently only supports Node.js runtimes and is incompatible with the Edge runtime. Coinbase is actively working on Edge runtime compatibility.
+To access the mainnet facilitator in Next.js, simply install and use the `@coinbase/x402` package:
 
-As a **temporary solution** until official support is available, you can enable the Node.js runtime for middleware:
-
-1. Enable Node middleware as an experimental feature:
-
-```ts
-// next.config.ts
-const nextConfig: NextConfig = {
-  // rest of your next config setup
-  experimental: {
-    nodeMiddleware: true,
-  }
-};
+```bash
+npm install @coinbase/x402
 ```
 
-2. Specify the Node.js runtime in your middleware:
+Then import and use the facilitator in your middleware:
 
 ```ts
 // middleware.ts
-export const config = {
-  // rest of your config setup
-  runtime: 'nodejs',
-};
+import { facilitator } from "@coinbase/x402";
+import { paymentMiddleware } from "x402-next";
+
+export const middleware = paymentMiddleware(
+  payTo,
+  {
+    "/protected": {
+      price: "$0.001",
+      network: "base",
+      config: {
+        description: "Access to protected content",
+      },
+    },
+  },
+  facilitator
+);
 ```
 
-3. Use the `canary` version of Next.js to access experimental features:
+Make sure to set up your CDP API keys as environment variables:
 
-```json
-// package.json
-{
-  "dependencies": {
-    "next": "canary",
-  }
-}
+```bash
+# .env
+CDP_API_KEY_ID=your-cdp-api-key-id
+CDP_API_KEY_SECRET=your-cdp-api-key-secret
 ```
-
-**Note:** This approach is only needed temporarily while awaiting official Edge runtime support in the x402 package.

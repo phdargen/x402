@@ -19,11 +19,11 @@
     "react-dom": "^19.0.0",
     "viem": "^2.21.26",
     "x402-next": "workspace:*",
-    "@coinbase/x402": "workspace:*"
+    "@coinbase/x402": "latest"
   },
   "devDependencies": {
     "@svgr/webpack": "^8.1.0",
-    "@types/node": "^20",
+    "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@eslint/js": "^9.24.0",

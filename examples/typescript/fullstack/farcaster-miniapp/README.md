@@ -14,7 +14,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-oncha
 
 ## Tech Stack
 
-- **Frontend**: Next.js Canary (15), React 18, TypeScript
+- **Frontend**: Next.js 15, React 19, TypeScript
 - **Styling**: Tailwind CSS
 - **Wallet**: OnchainKit, Coinbase Wallet, Wagmi
 - **Payments**: x402 protocol with Base network
@@ -23,7 +23,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-oncha
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js v24+
 - pnpm v10 (install via [pnpm.io/installation](https://pnpm.io/installation))
 - Coinbase Wallet
 - API keys (see Environment Setup)
@@ -42,7 +42,7 @@ pnpm install
 bun install
 ```
 
-2. Install and build all packages from the typescript examples root:
+2. Build all packages from the typescript examples root:
 
 ```bash
 cd ../../
@@ -274,7 +274,6 @@ export const middleware = paymentMiddleware(
 
 export const config = {
   matcher: ["/api/protected", "/api/premium"],
-  runtime: "nodejs",
 };
 ```
 

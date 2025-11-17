@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "NODE_NO_WARNINGS=1 next dev -p ${PORT:-4021}",
     "build": "next build",
@@ -15,7 +18,7 @@
   "dependencies": {
     "@coinbase/x402": "workspace:*",
     "@heroicons/react": "^2.2.0",
-    "next": "canary",
+    "next": "^15.3.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "viem": "^2.21.26",
