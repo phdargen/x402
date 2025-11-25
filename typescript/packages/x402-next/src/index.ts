@@ -309,17 +309,51 @@ export function paymentMiddleware(
       );
     }
 
+    const beforeNextTime = Date.now();
+    const beforeNextISO = new Date().toISOString();
+    console.log(`[X402-MIDDLEWARE ${beforeNextISO}] ============================================`);
+    console.log(`[X402-MIDDLEWARE ${beforeNextISO}] Payment verification passed ✅`);
+    console.log(`[X402-MIDDLEWARE ${beforeNextISO}] CALLING NextResponse.next() at: ${beforeNextTime}`);
+    console.log(`[X402-MIDDLEWARE ${beforeNextISO}] ============================================`);
+
     // Proceed with request
     const response = await NextResponse.next();
+    console.log("RESPONSE FROM NEXT RESPONSE.NEXT()", response);
+
+    const afterNextTime = Date.now();
+    const afterNextISO = new Date().toISOString();
+    const nextDuration = afterNextTime - beforeNextTime;
+    console.log(`[X402-MIDDLEWARE ${afterNextISO}] ============================================`);
+    console.log(`[X402-MIDDLEWARE ${afterNextISO}] NextResponse.next() RETURNED at: ${afterNextTime}`);
+    console.log(`[X402-MIDDLEWARE ${afterNextISO}] Duration: ${nextDuration}ms`);
+    console.log(`[X402-MIDDLEWARE ${afterNextISO}] Response status: ${response.status}`);
+    console.log(`[X402-MIDDLEWARE ${afterNextISO}] ============================================`);
 
     // if the response from the protected route is >= 400, do not settle the payment
     if (response.status >= 400) {
+      console.log(
+        `[X402-MIDDLEWARE ${new Date().toISOString()}] Error response (${response.status}), skipping settlement`,
+      );
       return response;
     }
 
     // Settle payment after response
+    const beforeSettleTime = Date.now();
+    const beforeSettleISO = new Date().toISOString();
+    console.log(`[X402-MIDDLEWARE ${beforeSettleISO}] ============================================`);
+    console.log(`[X402-MIDDLEWARE ${beforeSettleISO}] STARTING SETTLEMENT at: ${beforeSettleTime}`);
+    console.log(`[X402-MIDDLEWARE ${beforeSettleISO}] ============================================`);
+
     try {
       const settlement = await settle(decodedPayment, selectedPaymentRequirements);
+      const afterSettleTime = Date.now();
+      const afterSettleISO = new Date().toISOString();
+      const settleDuration = afterSettleTime - beforeSettleTime;
+      console.log(`[X402-MIDDLEWARE ${afterSettleISO}] ============================================`);
+      console.log(`[X402-MIDDLEWARE ${afterSettleISO}] SETTLEMENT COMPLETED at: ${afterSettleTime}`);
+      console.log(`[X402-MIDDLEWARE ${afterSettleISO}] Duration: ${settleDuration}ms`);
+      console.log(`[X402-MIDDLEWARE ${afterSettleISO}] Result: ${settlement.success ? "SUCCESS ✅" : "FAILED ❌"}`);
+      console.log(`[X402-MIDDLEWARE ${afterSettleISO}] ============================================`);
 
       if (settlement.success) {
         response.headers.set(
@@ -333,8 +367,23 @@ export function paymentMiddleware(
             }),
           ),
         );
+      } else {
+        console.log(
+          `[X402 ${new Date().toISOString()}] Settlement failed, replacing response with 402`,
+        );
+        return new NextResponse(
+          JSON.stringify({
+            x402Version,
+            error: errorMessages?.settlementFailed || settlement.errorReason,
+            accepts: paymentRequirements,
+          }),
+          { status: 402, headers: { "Content-Type": "application/json" } },
+        );
       }
     } catch (error) {
+      console.log(
+        `[X402 ${new Date().toISOString()}] Settlement error, replacing response with 402`,
+      );
       return new NextResponse(
         JSON.stringify({
           x402Version,
@@ -347,6 +396,12 @@ export function paymentMiddleware(
       );
     }
 
+    const returnTime = Date.now();
+    const returnISO = new Date().toISOString();
+    console.log(`[X402-MIDDLEWARE ${returnISO}] ============================================`);
+    console.log(`[X402-MIDDLEWARE ${returnISO}] RETURNING RESPONSE TO CLIENT at: ${returnTime}`);
+    console.log(`[X402-MIDDLEWARE ${returnISO}] Total middleware duration: ${returnTime - beforeNextTime}ms`);
+    console.log(`[X402-MIDDLEWARE ${returnISO}] ============================================`);
     return response;
   };
 }

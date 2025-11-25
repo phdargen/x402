@@ -24,14 +24,32 @@ if (!baseURL || !privateKey || !endpointPath) {
 async function main(): Promise<void> {
   // const signer = await createSigner("solana-devnet", privateKey); // uncomment for solana
   const signer = await createSigner("base-sepolia", privateKey);
-  const fetchWithPayment = wrapFetchWithPayment(fetch, signer);
+  const fetchWithPayment = wrapFetchWithPayment(fetch, signer, BigInt(0.2 * 10 ** 6));
 
+  console.log(`[CLIENT ${new Date().toISOString()}] 📤 Sending request to ${url}`);
   const response = await fetchWithPayment(url, { method: "GET" });
-  const body = await response.json();
-  console.log(body);
+  console.log(`[CLIENT ${new Date().toISOString()}] 📥 Response received! Status: ${response.status}`);
 
-  const paymentResponse = decodeXPaymentResponse(response.headers.get("x-payment-response")!);
-  console.log(paymentResponse);
+  // Check for payment errors
+  const paymentError = response.headers.get("x-payment-error");
+  if (paymentError) {
+    console.error(`[CLIENT ${new Date().toISOString()}] ❌ Payment Error: ${paymentError}`);
+  }
+
+  if (response.status === 200 && response.headers.get("x-payment-response")) {
+    const paymentResponse = decodeXPaymentResponse(response.headers.get("x-payment-response")!);
+    console.log(`[CLIENT ${new Date().toISOString()}] ✅ Payment settlement:`, paymentResponse);
+  }
+
+  // Read as text first, then try to parse as JSON
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text);
+    console.log(`[CLIENT ${new Date().toISOString()}] body:`, body);
+  } catch (error) {
+    // Not valid JSON, display as text
+    console.log(`[CLIENT ${new Date().toISOString()}] body (text):`, text);
+  }
 }
 
 main().catch(error => {

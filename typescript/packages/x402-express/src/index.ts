@@ -275,6 +275,7 @@ export function paymentMiddleware(
         });
         return;
       }
+      console.log(`[X402 ${new Date().toISOString()}] Payment verification passed ✅, proceeding to route handler`);
     } catch (error) {
       console.error(error);
       res.status(402).json({
@@ -332,10 +333,14 @@ export function paymentMiddleware(
     };
 
     // Proceed to the next middleware or route handler
-    await next();
+    next();
+
+    console.log(`[X402 ${new Date().toISOString()}] Route handler completed, ${bufferedCalls.length} calls buffered`);
+    console.log(`[X402 ${new Date().toISOString()}] res: ${res}`);
 
     // If the response from the protected route is >= 400, do not settle payment
     if (res.statusCode >= 400) {
+      console.log(`[X402 ${new Date().toISOString()}] Error response (${res.statusCode}), skipping settlement`);
       settled = true; // stop intercepting calls
       res.writeHead = originalWriteHead;
       res.write = originalWrite;
@@ -353,13 +358,16 @@ export function paymentMiddleware(
       return;
     }
 
+    console.log(`[X402 ${new Date().toISOString()}] Starting settlement...`);
     try {
       const settleResponse = await settle(decodedPayment, selectedPaymentRequirements);
+      console.log(`[X402 ${new Date().toISOString()}] Settlement completed: ${settleResponse.success ? "SUCCESS ✅" : "FAILED ❌"}`);
       const responseHeader = settleResponseHeader(settleResponse);
       res.setHeader("X-PAYMENT-RESPONSE", responseHeader);
 
       // if the settle fails, return an error
       if (!settleResponse.success) {
+        console.log(`[X402 ${new Date().toISOString()}] Settlement failed, clearing ${bufferedCalls.length} buffered calls`);
         bufferedCalls = [];
         res.status(402).json({
           x402Version,
@@ -372,6 +380,7 @@ export function paymentMiddleware(
       console.error(error);
       // If settlement fails and the response hasn't been sent yet, return an error
       if (!res.headersSent) {
+        console.log(`[X402 ${new Date().toISOString()}] Settlement error, clearing ${bufferedCalls.length} buffered calls`);
         bufferedCalls = [];
         res.status(402).json({
           x402Version,
@@ -387,6 +396,7 @@ export function paymentMiddleware(
       res.end = originalEnd;
       res.flushHeaders = originalFlushHeaders;
 
+      console.log(`[X402 ${new Date().toISOString()}] Replaying ${bufferedCalls.length} buffered calls to send final response`);
       // Replay all buffered calls in order
       for (const [method, args] of bufferedCalls) {
         if (method === "writeHead")

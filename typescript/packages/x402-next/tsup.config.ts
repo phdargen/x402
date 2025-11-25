@@ -3,6 +3,7 @@ import { defineConfig } from "tsup";
 const baseConfig = {
   entry: {
     index: "src/index.ts",
+    "api/x402-handler": "src/api/x402-handler.ts",
   },
   dts: {
     resolve: true,

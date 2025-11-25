@@ -21,6 +21,20 @@ export const middleware = paymentMiddleware(
         description: "Protected API endpoint",
       },
     },
+    "/api/weather": {
+      price: "$0.001",
+      network,
+      config: {
+        description: "Weather API endpoint - normal response",
+      },
+    },
+    "/api/streaming-weather": {
+      price: "$0.001",
+      network,
+      config: {
+        description: "Weather API endpoint - streaming test",
+      },
+    },
   },
   facilitatorConfig,
   {
@@ -31,7 +45,7 @@ export const middleware = paymentMiddleware(
 
 // Configure which paths the middleware should run on
 export const config = {
-  matcher: ["/api/protected"],
+  matcher: ["/api/protected", "/api/weather", "/api/streaming-weather"],
   runtime: 'nodejs', // TEMPORARY: Only needed until Edge runtime support is added
 };
 

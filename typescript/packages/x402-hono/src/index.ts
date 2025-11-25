@@ -297,21 +297,30 @@ export function paymentMiddleware(
       );
     }
 
+    console.log(`[X402 ${new Date().toISOString()}] Payment verification passed ✅, proceeding to route handler`);
+
     // Proceed with request
     await next();
 
+    console.log(`[X402 ${new Date().toISOString()}] Route handler completed, response prepared`);
+
+
     let res = c.res;
+    console.log(`[X402 ${new Date().toISOString()}] res: ${res}`);
 
     // If the response from the protected route is >= 400, do not settle payment
     if (res.status >= 400) {
+      console.log(`[X402 ${new Date().toISOString()}] Error response (${res.status}), skipping settlement`);
       return;
     }
 
     c.res = undefined;
 
     // Settle payment before processing the request, as Hono middleware does not allow us to set headers after the response has been sent
+    console.log(`[X402 ${new Date().toISOString()}] Starting settlement...`);
     try {
       const settlement = await settle(decodedPayment, selectedPaymentRequirements);
+      console.log(`[X402 ${new Date().toISOString()}] Settlement completed: ${settlement.success ? "SUCCESS ✅" : "FAILED ❌"}`);
       if (settlement.success) {
         const responseHeader = settleResponseHeader(settlement);
         res.headers.set("X-PAYMENT-RESPONSE", responseHeader);
@@ -319,6 +328,7 @@ export function paymentMiddleware(
         throw new Error(settlement.errorReason);
       }
     } catch (error) {
+      console.log(`[X402 ${new Date().toISOString()}] Settlement error, replacing response with 402`);
       res = c.json(
         {
           error:
@@ -331,6 +341,7 @@ export function paymentMiddleware(
       );
     }
 
+    console.log(`[X402 ${new Date().toISOString()}] Setting final response (status: ${res.status})`);
     c.res = res;
   };
 }

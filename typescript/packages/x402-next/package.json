@@ -58,6 +58,16 @@
         "types": "./dist/cjs/index.d.cts",
         "default": "./dist/cjs/index.cjs"
       }
+    },
+    "./api/x402-handler": {
+      "import": {
+        "types": "./dist/esm/api/x402-handler.d.ts",
+        "default": "./dist/esm/api/x402-handler.js"
+      },
+      "require": {
+        "types": "./dist/cjs/api/x402-handler.d.cts",
+        "default": "./dist/cjs/api/x402-handler.cjs"
+      }
     }
   },
   "files": [
