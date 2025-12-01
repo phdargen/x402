@@ -1,4 +1,4 @@
-import { paymentMiddleware } from "@x402/next";
+import { paymentProxy } from "@x402/next";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
 import { registerExactSvmScheme } from "@x402/svm/exact/server";
@@ -44,8 +44,8 @@ const paywall = createPaywall()
   })
   .build();
 
-// Export middleware with v2 API
-export const middleware = paymentMiddleware(
+// Export proxy with v2 API (Next.js 16)
+export default paymentProxy(
   {
     "/protected": {
       accepts: [
@@ -69,8 +69,8 @@ export const middleware = paymentMiddleware(
   paywall, // custom paywall provider
 );
 
-// Configure which paths the middleware should run on
+// Configure which paths the proxy should run on
 export const config = {
   matcher: ["/protected/:path*"],
-  runtime: "nodejs", 
 };
+

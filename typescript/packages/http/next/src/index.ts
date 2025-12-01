@@ -143,32 +143,32 @@ export interface SchemeRegistration {
 }
 
 /**
- * Next.js payment middleware for x402 protocol (direct server instance).
+ * Next.js payment proxy for x402 protocol (direct server instance).
  *
  * Use this when you want to pass a pre-configured x402ResourceServer instance.
  * This provides more flexibility for testing, custom configuration, and reusing
- * server instances across multiple middlewares.
+ * server instances across multiple proxies.
  *
  * @param routes - Route configurations for protected endpoints
  * @param server - Pre-configured x402ResourceServer instance
  * @param paywallConfig - Optional configuration for the built-in paywall UI
  * @param paywall - Optional custom paywall provider (overrides default)
  * @param initializeOnStart - Whether to initialize the server on startup (defaults to true)
- * @returns Next.js middleware handler
+ * @returns Next.js proxy handler for use in proxy.ts
  *
  * @example
  * ```typescript
- * import { paymentMiddleware } from "@x402/next";
+ * import { paymentProxy } from "@x402/next";
  * import { x402ResourceServer } from "@x402/core/server";
  * import { registerExactEvmScheme } from "@x402/evm/exact/server";
  *
  * const server = new x402ResourceServer(myFacilitatorClient);
  * registerExactEvmScheme(server, {});
  *
- * export const middleware = paymentMiddleware(routes, server, paywallConfig);
+ * export default paymentProxy(routes, server, paywallConfig);
  * ```
  */
-export function paymentMiddleware(
+export function paymentProxy(
   routes: RoutesConfig,
   server: x402ResourceServer,
   paywallConfig?: PaywallConfig,
@@ -275,9 +275,9 @@ export function paymentMiddleware(
 }
 
 /**
- * Next.js payment middleware for x402 protocol (configuration-based).
+ * Next.js payment proxy for x402 protocol (configuration-based).
  *
- * Use this when you want to quickly set up middleware with simple configuration.
+ * Use this when you want to quickly set up a proxy with simple configuration.
  * This function creates and configures the x402ResourceServer internally.
  *
  * @param routes - Route configurations for protected endpoints
@@ -286,13 +286,13 @@ export function paymentMiddleware(
  * @param paywallConfig - Optional configuration for the built-in paywall UI
  * @param paywall - Optional custom paywall provider (overrides default)
  * @param initializeOnStart - Whether to initialize the server on startup (defaults to true)
- * @returns Next.js middleware handler
+ * @returns Next.js proxy handler for use in proxy.ts
  *
  * @example
  * ```typescript
- * import { paymentMiddlewareFromConfig } from "@x402/next";
+ * import { paymentProxyFromConfig } from "@x402/next";
  *
- * export const middleware = paymentMiddlewareFromConfig(
+ * export default paymentProxyFromConfig(
  *   routes,
  *   myFacilitatorClient,
  *   [{ network: "eip155:8453", server: evmSchemeServer }],
@@ -300,7 +300,7 @@ export function paymentMiddleware(
  * );
  * ```
  */
-export function paymentMiddlewareFromConfig(
+export function paymentProxyFromConfig(
   routes: RoutesConfig,
   facilitatorClients?: FacilitatorClient | FacilitatorClient[],
   schemes?: SchemeRegistration[],
@@ -318,9 +318,19 @@ export function paymentMiddlewareFromConfig(
     });
   }
 
-  // Use the direct paymentMiddleware with the configured server
-  return paymentMiddleware(routes, ResourceServer, paywallConfig, paywall, initializeOnStart);
+  // Use the direct paymentProxy with the configured server
+  return paymentProxy(routes, ResourceServer, paywallConfig, paywall, initializeOnStart);
 }
+
+/**
+ * @deprecated Use `paymentProxy` instead. This alias is provided for backwards compatibility with Next.js 15.
+ */
+export const paymentMiddleware = paymentProxy;
+
+/**
+ * @deprecated Use `paymentProxyFromConfig` instead. This alias is provided for backwards compatibility with Next.js 15.
+ */
+export const paymentMiddlewareFromConfig = paymentProxyFromConfig;
 
 export type {
   PaymentRequired,
