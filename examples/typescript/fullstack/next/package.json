@@ -20,7 +20,8 @@
     "@x402/next": "workspace:*",
     "@x402/paywall": "workspace:*",
     "@x402/core": "workspace:*",
-    "@x402/evm": "workspace:*"
+    "@x402/evm": "workspace:*",
+    "@x402/svm": "workspace:*"
   },
   "devDependencies": {
     "@svgr/webpack": "^8.1.0",

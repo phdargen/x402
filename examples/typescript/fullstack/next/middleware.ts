@@ -1,22 +1,24 @@
 import { paymentMiddleware } from "@x402/next";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { registerExactEvmScheme } from "@x402/evm/exact/server";
+import { registerExactSvmScheme } from "@x402/svm/exact/server";
 import { createPaywall } from "@x402/paywall";
 import { evmPaywall } from "@x402/paywall/evm";
+import { svmPaywall } from "@x402/paywall/svm";
 
 const facilitatorUrl = process.env.FACILITATOR_URL;
-const evmPayeeAddress = process.env.EVM_PAYEE_ADDRESS as `0x${string}`;
-const network = process.env.NETWORK || "eip155:84532";
+const evmAddress = process.env.EVM_ADDRESS as `0x${string}`;
+const svmAddress = process.env.SVM_ADDRESS;
 
-// if (!facilitatorUrl) {
-//   console.error("❌ FACILITATOR_URL environment variable is required");
-//   process.exit(1);
-// }
+if (!facilitatorUrl) {
+  console.error("❌ FACILITATOR_URL environment variable is required");
+  process.exit(1);
+}
 
-// if (!evmPayeeAddress) {
-//   console.error("❌ EVM_PAYEE_ADDRESS environment variable is required");
-//   process.exit(1);
-// }
+if (!evmAddress || !svmAddress) {
+  console.error("❌ EVM_ADDRESS and SVM_ADDRESS environment variables are required");
+  process.exit(1);
+}
 
 // Create HTTP facilitator client
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
@@ -27,9 +29,13 @@ const server = new x402ResourceServer(facilitatorClient);
 // Register EVM scheme
 registerExactEvmScheme(server);
 
+// Register SVM scheme
+registerExactSvmScheme(server);
+
 // Build paywall using v2 builder pattern
 const paywall = createPaywall()
   .withNetwork(evmPaywall)
+  .withNetwork(svmPaywall) 
   .withConfig({
     appName: process.env.APP_NAME || "Next x402 Demo",
     appLogo: process.env.APP_LOGO || "/x402-icon-blue.png",
@@ -38,19 +44,24 @@ const paywall = createPaywall()
   })
   .build();
 
-console.log(`Using remote facilitator at: ${facilitatorUrl}`);
-
 // Export middleware with v2 API
 export const middleware = paymentMiddleware(
   {
     "/protected": {
-      accepts: {
-        payTo: evmPayeeAddress,
-        scheme: "exact",
-        price: "$0.01",
-        network: network as `${string}:${string}`,
-      },
-      description: "Access to protected content",
+      accepts: [
+        {
+          scheme: "exact",
+          price: "$0.001",
+          network: "eip155:84532", // base-sepolia
+          payTo: evmAddress,
+        },
+        {
+          scheme: "exact",
+          price: "$0.001",
+          network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", // solana devnet
+          payTo: svmAddress,
+        },
+      ],
     },
   },
   server,
@@ -63,4 +74,3 @@ export const config = {
   matcher: ["/protected/:path*"],
   runtime: "nodejs", 
 };
-
