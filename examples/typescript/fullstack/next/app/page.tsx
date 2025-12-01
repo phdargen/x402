@@ -1,5 +1,5 @@
 import Link from "next/link";
-import WordmarkCondensed from "./assets/x402_wordmark_light.svg";
+import Image from "next/image";
 
 export default function Home() {
   return (
@@ -8,11 +8,17 @@ export default function Home() {
         {/* Hero Section */}
         <section className="max-w-6xl mx-auto px-4 py-20 lg:py-28">
           <div className="text-center">
-            <div className="w-64 mb-6 mx-auto">
-              <WordmarkCondensed className="mx-auto" />
+            <div className="mb-6">
+              <Image
+                src="/x402-logo-dark.png"
+                alt="x402 logo"
+                width={320}
+                height={160}
+                className="mx-auto"
+              />
             </div>
             <p className="text-xl text-gray-600 mb-8 font-mono">
-              Fullstack demo powered by Next.js (v2)
+              Fullstack demo powered by Next.js
             </p>
             <div className="flex flex-wrap gap-4 justify-center">
               <Link
