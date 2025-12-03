@@ -11,11 +11,22 @@ import { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { NextAdapter } from "./adapter";
 
 /**
+ * Controls when the middleware syncs with the facilitator to discover supported payment kinds.
+ *
+ * - `'onStart'` - Sync immediately at module load. Use when facilitator is external and always available.
+ * - `'lazy'` - Sync on first request. Use when facilitator might not be ready at startup.
+ * - `'manual'` - Don't sync automatically. Caller must call `syncFacilitator()` themselves.
+ *               Use for AWS Lambda warmup, custom caching, or testing scenarios.
+ */
+export type FacilitatorSyncMode = "onStart" | "lazy" | "manual";
+
+/**
  * Result of createHttpServer
  */
 export interface HttpServerInstance {
   httpServer: x402HTTPResourceServer;
   init: () => Promise<void>;
+  syncFacilitator: () => Promise<void>;
 }
 
 /**
@@ -24,14 +35,14 @@ export interface HttpServerInstance {
  * @param routes - The route configuration for the server
  * @param server - The x402 resource server instance
  * @param paywall - Optional paywall provider for custom payment UI
- * @param initializeOnStart - Whether to initialize the server on start (defaults to true)
- * @returns The HTTP server instance with initialization function
+ * @param facilitatorSync - When to sync with the facilitator (defaults to 'onStart')
+ * @returns The HTTP server instance with initialization and sync functions
  */
 export function createHttpServer(
   routes: RoutesConfig,
   server: x402ResourceServer,
   paywall?: PaywallProvider,
-  initializeOnStart: boolean = true,
+  facilitatorSync: FacilitatorSyncMode = "onStart",
 ): HttpServerInstance {
   // Create the x402 HTTP server instance with the resource server
   const httpServer = new x402HTTPResourceServer(server, routes);
@@ -41,16 +52,88 @@ export function createHttpServer(
     httpServer.registerPaywallProvider(paywall);
   }
 
-  // Store initialization promise (not the result)
-  let initPromise: Promise<void> | null = initializeOnStart ? server.initialize() : null;
+  // Track sync state
+  let syncPromise: Promise<void> | null = null;
+  let synced = false;
+
+  console.log(`[x402] createHttpServer: facilitatorSync=${facilitatorSync}`);
+
+  // Start sync immediately if mode is 'onStart'
+  if (facilitatorSync === "onStart") {
+    console.log("[x402] Starting immediate sync (onStart mode)");
+    syncPromise = server
+      .initialize()
+      .then(() => {
+        synced = true;
+        console.log("[x402] Sync completed successfully (onStart)");
+      })
+      .catch(err => {
+        console.error("[x402] Sync failed (onStart):", err);
+      });
+  }
+
+  // Function to manually trigger sync
+  const syncFacilitator = async (): Promise<void> => {
+    console.log(`[x402] syncFacilitator called: synced=${synced}, hasPromise=${!!syncPromise}`);
+    if (synced) return;
+
+    if (!syncPromise) {
+      console.log("[x402] Starting manual sync");
+      syncPromise = server
+        .initialize()
+        .then(() => {
+          synced = true;
+          console.log("[x402] Manual sync completed");
+        })
+        .catch(err => {
+          console.error("[x402] Manual sync failed:", err);
+        });
+    }
+
+    await syncPromise;
+  };
 
   return {
     httpServer,
+    syncFacilitator,
     async init() {
-      // Ensure initialization completes before processing
-      if (initPromise) {
-        await initPromise;
-        initPromise = null; // Clear after first await
+      console.log(
+        `[x402] init() called: mode=${facilitatorSync}, synced=${synced}, hasPromise=${!!syncPromise}`,
+      );
+
+      // For 'manual' mode, don't auto-sync - caller must call syncFacilitator()
+      if (facilitatorSync === "manual") {
+        console.log("[x402] Manual mode - skipping sync");
+        return;
+      }
+
+      // For 'onStart' mode, wait for sync to complete
+      if (facilitatorSync === "onStart" && syncPromise) {
+        console.log("[x402] Waiting for onStart sync to complete...");
+        await syncPromise;
+        console.log("[x402] onStart sync awaited, synced=", synced);
+        return;
+      }
+
+      // For 'lazy' mode, start sync and wait for it
+      if (facilitatorSync === "lazy") {
+        if (!synced && !syncPromise) {
+          console.log("[x402] Starting lazy sync...");
+          syncPromise = server
+            .initialize()
+            .then(() => {
+              synced = true;
+              console.log("[x402] Lazy sync completed");
+            })
+            .catch(err => {
+              console.error("[x402] Lazy sync failed:", err);
+            });
+        }
+        if (syncPromise) {
+          console.log("[x402] Waiting for lazy sync to complete...");
+          await syncPromise;
+          console.log("[x402] Lazy sync awaited, synced=", synced);
+        }
       }
     },
   };

@@ -60,7 +60,7 @@ function createMockResourceServer(): x402ResourceServer {
 }
 
 describe("createHttpServer", () => {
-  it("creates server and initializes on start by default", async () => {
+  it("creates server and initializes on start by default (facilitatorSync='onStart')", async () => {
     const routes = {
       "/api/*": {
         accepts: { scheme: "exact", payTo: "0x123", price: "$0.01", network: "eip155:84532" },
@@ -75,7 +75,7 @@ describe("createHttpServer", () => {
     expect(server.initialize).toHaveBeenCalled();
   });
 
-  it("does not initialize when initializeOnStart is false", async () => {
+  it("does not initialize when facilitatorSync is 'manual'", async () => {
     const routes = {
       "/api/*": {
         accepts: { scheme: "exact", payTo: "0x123", price: "$0.01", network: "eip155:84532" },
@@ -83,10 +83,53 @@ describe("createHttpServer", () => {
     } as const;
     const server = createMockResourceServer();
 
-    const { init } = createHttpServer(routes, server, undefined, false);
+    const { init } = createHttpServer(routes, server, undefined, "manual");
 
     await init();
     expect(server.initialize).not.toHaveBeenCalled();
+  });
+
+  it("initializes on first request when facilitatorSync is 'lazy'", async () => {
+    const routes = {
+      "/api/*": {
+        accepts: { scheme: "exact", payTo: "0x123", price: "$0.01", network: "eip155:84532" },
+      },
+    } as const;
+    const server = createMockResourceServer();
+
+    const { init } = createHttpServer(routes, server, undefined, "lazy");
+
+    // First call should trigger initialization
+    expect(server.initialize).not.toHaveBeenCalled();
+    await init();
+    expect(server.initialize).toHaveBeenCalledTimes(1);
+
+    // Subsequent calls should not re-initialize
+    await init();
+    expect(server.initialize).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows manual sync via syncFacilitator when facilitatorSync is 'manual'", async () => {
+    const routes = {
+      "/api/*": {
+        accepts: { scheme: "exact", payTo: "0x123", price: "$0.01", network: "eip155:84532" },
+      },
+    } as const;
+    const server = createMockResourceServer();
+
+    const { init, syncFacilitator } = createHttpServer(routes, server, undefined, "manual");
+
+    // init() should not trigger sync in manual mode
+    await init();
+    expect(server.initialize).not.toHaveBeenCalled();
+
+    // Manual sync should work
+    await syncFacilitator();
+    expect(server.initialize).toHaveBeenCalledTimes(1);
+
+    // Subsequent syncs should be idempotent
+    await syncFacilitator();
+    expect(server.initialize).toHaveBeenCalledTimes(1);
   });
 
   it("registers custom paywall provider when provided", () => {

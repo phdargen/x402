@@ -254,21 +254,27 @@ export class x402ResourceServer {
    * Earlier facilitators in the array get precedence
    */
   async initialize(): Promise<void> {
+    console.log(`[x402] initialize() called, facilitatorClients=${this.facilitatorClients.length}`);
+
     // Clear existing mappings
     this.supportedResponsesMap.clear();
     this.facilitatorClientsMap.clear();
 
     // Fetch supported kinds from all facilitator clients
     // Process in order to give precedence to earlier facilitators
-    for (const facilitatorClient of this.facilitatorClients) {
+    for (let i = 0; i < this.facilitatorClients.length; i++) {
+      const facilitatorClient = this.facilitatorClients[i];
+      console.log(`[x402] Fetching from facilitator ${i}...`);
       try {
         const supported = await facilitatorClient.getSupported();
+        console.log(`[x402] Got supported from facilitator ${i}:`, JSON.stringify(supported.kinds));
 
         // Process each supported kind (now grouped by version)
         for (const [versionStr, kinds] of Object.entries(supported.kinds)) {
           const x402Version = parseInt(versionStr, 10);
 
           for (const kind of kinds) {
+            console.log(`[x402] Processing kind: v${x402Version} ${kind.scheme}@${kind.network}`);
             // Get or create version map for supported responses
             if (!this.supportedResponsesMap.has(x402Version)) {
               this.supportedResponsesMap.set(x402Version, new Map());
@@ -302,9 +308,10 @@ export class x402ResourceServer {
         }
       } catch (error) {
         // Log error but continue with other facilitators
-        console.warn(`Failed to fetch supported kinds from facilitator: ${error}`);
+        console.warn(`[x402] Failed to fetch supported kinds from facilitator ${i}:`, error);
       }
     }
+    console.log(`[x402] initialize() completed, supportedResponsesMap size=${this.supportedResponsesMap.size}`);
   }
 
   /**

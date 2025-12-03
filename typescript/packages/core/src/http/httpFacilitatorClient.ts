@@ -149,6 +149,9 @@ export class HTTPFacilitatorClient implements FacilitatorClient {
    * @returns Supported payment kinds and extensions
    */
   async getSupported(): Promise<SupportedResponse> {
+    const url = `${this.url}/supported`;
+    console.log(`[x402] HTTPFacilitatorClient.getSupported() fetching: ${url}`);
+
     let headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -158,17 +161,26 @@ export class HTTPFacilitatorClient implements FacilitatorClient {
       headers = { ...headers, ...authHeaders.supported };
     }
 
-    const response = await fetch(`${this.url}/supported`, {
-      method: "GET",
-      headers,
-    });
+    try {
+      console.log(`[x402] Starting fetch to ${url}...`);
+      const response = await fetch(url, {
+        method: "GET",
+        headers,
+      });
+      console.log(`[x402] Fetch completed, status=${response.status}`);
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => response.statusText);
-      throw new Error(`Facilitator getSupported failed (${response.status}): ${errorText}`);
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => response.statusText);
+        throw new Error(`Facilitator getSupported failed (${response.status}): ${errorText}`);
+      }
+
+      const result = (await response.json()) as SupportedResponse;
+      console.log(`[x402] getSupported result:`, JSON.stringify(result).substring(0, 200));
+      return result;
+    } catch (error) {
+      console.error(`[x402] Fetch to ${url} failed:`, error);
+      throw error;
     }
-
-    return (await response.json()) as SupportedResponse;
   }
 
   /**

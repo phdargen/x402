@@ -33,7 +33,7 @@ if (!facilitatorUrl) {
 // Create HTTP facilitator client
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 
-const x402PaymentMiddleware = paymentProxyFromConfig(
+const { middleware: x402PaymentMiddleware } = paymentProxyFromConfig(
   {
     "/protected": {
       accepts: [
@@ -64,6 +64,8 @@ const x402PaymentMiddleware = paymentProxyFromConfig(
     appName: "x402 Demo",
     sessionTokenEndpoint: "/api/x402/session-token",
   },
+  undefined, // paywall
+  "onStart", // facilitatorSync - use 'lazy' for self-hosted facilitator in same app
 );
 
 const geolocationMiddleware = async (req: NextRequest) => {
@@ -106,8 +108,10 @@ export const config = {
      * - _next/static (static files)
      * - _next/image (image optimization files)
      * - favicon.ico (metadata files)
+     * - facilitator (self-hosted facilitator routes - must be excluded to avoid deadlock)
      */
-    "/((?!_next/static|_next/image|favicon.ico).*)",
+    "/((?!_next/static|_next/image|favicon.ico|facilitator).*)",
     "/", // Include the root path explicitly
   ],
+  runtime: "nodejs",
 };
