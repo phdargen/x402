@@ -15,7 +15,7 @@
   "dependencies": {
     "@coinbase/x402": "workspace:*",
     "@heroicons/react": "^2.2.0",
-    "next": "canary",
+    "next": "15.5.7",
     "react": "19.2.1",
     "react-dom": "19.2.1",
     "viem": "^2.21.26",
