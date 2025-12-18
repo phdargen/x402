@@ -28,6 +28,10 @@ async function main(): Promise<void> {
   const evmSigner = privateKeyToAccount(evmPrivateKey);
   const svmSigner = await createKeyPairSignerFromBytes(base58.decode(svmPrivateKey));
 
+  console.log("EVM address:", evmSigner.address);
+  console.log("SVM address:", svmSigner.address);
+  console.log();
+
   const client = new x402Client();
   registerExactEvmScheme(client, { signer: evmSigner });
   registerExactSvmScheme(client, { signer: svmSigner });
@@ -39,13 +43,22 @@ async function main(): Promise<void> {
   const body = await response.json();
   console.log("Response body:", body);
 
+  const httpClient = new x402HTTPClient(client);
+
   if (response.ok) {
-    const paymentResponse = new x402HTTPClient(client).getPaymentSettleResponse(name =>
-      response.headers.get(name),
-    );
+    const paymentResponse = httpClient.getPaymentSettleResponse(name => response.headers.get(name));
     console.log("\nPayment response:", paymentResponse);
   } else {
     console.log(`\nNo payment settled (response status: ${response.status})`);
+
+    // Read error details from the PAYMENT-REQUIRED header
+    const paymentRequired = httpClient.getPaymentRequiredResponse(
+      name => response.headers.get(name),
+      body,
+    );
+    if (paymentRequired) {
+      console.log("Payment required details:", paymentRequired);
+    }
   }
 }
 
