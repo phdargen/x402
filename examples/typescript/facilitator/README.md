@@ -22,6 +22,7 @@ and fill required environment variables:
 - `EVM_PRIVATE_KEY` - Ethereum private key
 - `SVM_PRIVATE_KEY` - Solana private key
 - `PORT` - Server port (optional, defaults to 4022)
+- `MAINNET` - Set to `true` for mainnet networks, omit or set to `false` for testnets (optional, defaults to testnet)
 
 2. Install and build all packages from the typescript examples root:
 
@@ -219,3 +220,12 @@ Networks use [CAIP-2](https://github.com/ChainAgnostic/CAIPs/blob/main/CAIPs/cai
 - `eip155:8453` — Base Mainnet
 - `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` — Solana Devnet
 - `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` — Solana Mainnet
+
+### Network Selection
+
+The `MAINNET` environment variable controls which networks are used:
+
+| MAINNET | EVM Network | SVM Network |
+| ------- | ----------- | ----------- |
+| `false` (default) | `eip155:84532` (Base Sepolia) | `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` (Devnet) |
+| `true` | `eip155:8453` (Base Mainnet) | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` (Mainnet) |

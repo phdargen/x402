@@ -14,11 +14,29 @@ if (!evmAddress || !svmAddress) {
   process.exit(1);
 }
 
-const facilitatorClient = new HTTPFacilitatorClient(facilitator);
+const facilitatorUrl = process.env.FACILITATOR_URL;
+if (!facilitatorUrl) {
+  console.error("❌ FACILITATOR_URL environment variable is required");
+  process.exit(1);
+}
+
+const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
+// const facilitatorClient = new HTTPFacilitatorClient(facilitator);
+
+// async function main() {
+//   // Call the /supported endpoint
+//   const supported = await facilitatorClient.getSupported().catch(error => {
+//     console.error("Error getting supported:", error);
+//     process.exit(1);
+//   });
+//   console.dir(supported, { depth: null });
+// }
+
+// main();
 
 const resourceServer = new x402ResourceServer(facilitatorClient)
   .register("eip155:8453", new ExactEvmScheme())
-  .register("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp", new ExactSvmScheme())
+  .register("solana:*", new ExactSvmScheme())
   .onBeforeVerify(async context => {
     console.log("Before verify hook", context);
     // Abort verification by returning { abort: true, reason: string }
@@ -62,6 +80,7 @@ app.use(
             price: "$0.001",
             network: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
             payTo: svmAddress,
+            maxTimeoutSeconds: 300,
           },
         ],
         description: "Weather data",

@@ -15,12 +15,22 @@ import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 
 dotenv.config();
 
 // Configuration
 const PORT = process.env.PORT || "4022";
+const MAINNET = process.env.MAINNET === "true";
+
+// Network configuration based on MAINNET flag
+const evmChain = MAINNET ? base : baseSepolia;
+const evmNetwork = MAINNET ? "eip155:8453" : "eip155:84532";
+const svmNetwork = MAINNET
+  ? "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+  : "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
+
+console.info(`Network mode: ${MAINNET ? "MAINNET" : "TESTNET"}`);
 
 // Validate required environment variables
 if (!process.env.EVM_PRIVATE_KEY) {
@@ -48,7 +58,7 @@ console.info(`SVM Facilitator account: ${svmAccount.address}`);
 // Create a Viem client with both wallet and public capabilities
 const viemClient = createWalletClient({
   account: evmAccount,
-  chain: baseSepolia,
+  chain: evmChain,
   transport: http(),
 }).extend(publicActions);
 
@@ -118,12 +128,12 @@ const facilitator = new x402Facilitator()
 // Register EVM and SVM schemes using the new register helpers
 registerExactEvmScheme(facilitator, {
   signer: evmSigner,
-  networks: "eip155:84532", // Base Sepolia
+  networks: evmNetwork,
   deployERC4337WithEIP6492: true,
 });
 registerExactSvmScheme(facilitator, {
   signer: svmSigner,
-  networks: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", // Devnet
+  networks: svmNetwork,
 });
 
 // Initialize Express app
@@ -232,5 +242,5 @@ app.get("/supported", async (req, res) => {
 
 // Start the server
 app.listen(parseInt(PORT), () => {
-  console.log("Facilitator listening");
+  console.log(`Facilitator listening at http://localhost:${PORT}`);
 });
