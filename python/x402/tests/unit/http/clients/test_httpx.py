@@ -753,3 +753,232 @@ class TestFactoryFunctionsWithPatch:
 
         assert isinstance(client, httpx.AsyncClient)
         assert isinstance(client._transport, x402AsyncTransport)
+
+
+# =============================================================================
+# Concurrent Payment Tests
+# =============================================================================
+
+
+class TestConcurrentPayments:
+    """Test concurrent payment requests are handled without shared state conflicts."""
+
+    @pytest.mark.asyncio
+    async def test_concurrent_payment_requests(self):
+        """Test that concurrent payment requests are handled properly without shared state conflicts."""
+        import asyncio
+
+        mock_client = MockX402ClientWithCounter()
+
+        payment_required = PaymentRequired(
+            x402_version=2,
+            accepts=[make_payment_requirements()],
+        )
+        encoded = encode_payment_required_header(payment_required)
+
+        # Track requests per URL to verify each request gets its own retry
+        request_tracking: dict[str, list[bool]] = {}
+
+        async def mock_handle_request(request):
+            url = str(request.url)
+            is_retry = request.extensions.get(x402AsyncTransport.RETRY_KEY, False)
+
+            if url not in request_tracking:
+                request_tracking[url] = []
+            request_tracking[url].append(is_retry)
+
+            if is_retry:
+                response = _create_mock_response(200, b'{"success": true}')
+                response.headers = {"X-Payment-Response": "success"}
+                return response
+
+            mock_402 = _create_mock_response(402, b"{}")
+            mock_402.headers = {"PAYMENT-REQUIRED": encoded}
+            return mock_402
+
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = mock_handle_request
+
+        transport = x402AsyncTransport(mock_client, mock_transport)
+
+        # Create 5 concurrent requests to different URLs
+        urls = [f"https://example.com/request-{i}" for i in range(5)]
+        requests_list = [_create_httpx_request(url) for url in urls]
+
+        # Process all requests concurrently
+        tasks = [transport.handle_async_request(req) for req in requests_list]
+        results = await asyncio.gather(*tasks)
+
+        # Verify all requests succeeded
+        for i, result in enumerate(results):
+            assert result.status_code == 200, f"Request {i} failed with status {result.status_code}"
+
+        # Verify each URL had exactly one initial request (not retry) and one retry
+        for url in urls:
+            assert len(request_tracking[url]) == 2, f"URL {url} should have exactly 2 calls"
+            assert request_tracking[url][0] is False, f"First request to {url} should not be retry"
+            assert request_tracking[url][1] is True, f"Second request to {url} should be retry"
+
+        # Verify all payment payloads were created
+        assert mock_client.create_payment_payload_call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_independent_retry_state(self):
+        """Test that each concurrent request has independent retry state."""
+        import asyncio
+
+        mock_client = MockX402ClientWithCounter()
+
+        payment_required = PaymentRequired(
+            x402_version=2,
+            accepts=[make_payment_requirements()],
+        )
+        encoded = encode_payment_required_header(payment_required)
+
+        # Track all requests with their retry state
+        captured_requests: list[tuple[str, bool]] = []
+        lock = asyncio.Lock()
+
+        async def mock_handle_request(request):
+            url = str(request.url)
+            is_retry = request.extensions.get(x402AsyncTransport.RETRY_KEY, False)
+
+            async with lock:
+                captured_requests.append((url, is_retry))
+
+            if is_retry:
+                return _create_mock_response(200, b'{"success": true}')
+
+            mock_402 = _create_mock_response(402, b"{}")
+            mock_402.headers = {"PAYMENT-REQUIRED": encoded}
+            return mock_402
+
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = mock_handle_request
+
+        transport = x402AsyncTransport(mock_client, mock_transport)
+
+        # Create 3 concurrent requests
+        requests_list = [
+            _create_httpx_request(f"https://example.com/concurrent-{i}") for i in range(3)
+        ]
+
+        tasks = [transport.handle_async_request(req) for req in requests_list]
+        results = await asyncio.gather(*tasks)
+
+        # All should succeed
+        assert all(r.status_code == 200 for r in results)
+
+        # Each URL should appear exactly twice (initial + retry)
+        url_counts = {}
+        for url, is_retry in captured_requests:
+            url_counts[url] = url_counts.get(url, 0) + 1
+
+        for url, count in url_counts.items():
+            assert count == 2, f"URL {url} should have exactly 2 requests, got {count}"
+
+        # Verify retry flags are independent per request
+        initial_requests = [(url, is_retry) for url, is_retry in captured_requests if not is_retry]
+        retry_requests = [(url, is_retry) for url, is_retry in captured_requests if is_retry]
+
+        assert len(initial_requests) == 3, "Should have 3 initial requests"
+        assert len(retry_requests) == 3, "Should have 3 retry requests"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_mixed_free_and_paid_requests(self):
+        """Test concurrent requests with mixed free (200) and paid (402) responses."""
+        import asyncio
+
+        mock_client = MockX402ClientWithCounter()
+
+        payment_required = PaymentRequired(
+            x402_version=2,
+            accepts=[make_payment_requirements()],
+        )
+        encoded = encode_payment_required_header(payment_required)
+
+        async def mock_handle_request(request):
+            url = str(request.url)
+            is_retry = request.extensions.get(x402AsyncTransport.RETRY_KEY, False)
+
+            # Free endpoints return 200 immediately
+            if "/free" in url:
+                return _create_mock_response(200, b'{"free": true}')
+
+            # Paid endpoints return 402 initially, 200 on retry
+            if is_retry:
+                return _create_mock_response(200, b'{"paid": true}')
+
+            mock_402 = _create_mock_response(402, b"{}")
+            mock_402.headers = {"PAYMENT-REQUIRED": encoded}
+            return mock_402
+
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = mock_handle_request
+
+        transport = x402AsyncTransport(mock_client, mock_transport)
+
+        # Mix of free and paid URLs
+        urls = [
+            "https://example.com/free/1",
+            "https://example.com/paid/1",
+            "https://example.com/free/2",
+            "https://example.com/paid/2",
+            "https://example.com/paid/3",
+        ]
+        requests_list = [_create_httpx_request(url) for url in urls]
+
+        tasks = [transport.handle_async_request(req) for req in requests_list]
+        results = await asyncio.gather(*tasks)
+
+        # All should succeed
+        assert all(r.status_code == 200 for r in results)
+
+        # Only paid requests should trigger payment creation (3 paid URLs)
+        assert mock_client.create_payment_payload_call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_concurrent_requests_no_original_request_modification(self):
+        """Test that original requests are not modified during concurrent processing."""
+        import asyncio
+
+        mock_client = MockX402ClientWithCounter()
+
+        payment_required = PaymentRequired(
+            x402_version=2,
+            accepts=[make_payment_requirements()],
+        )
+        encoded = encode_payment_required_header(payment_required)
+
+        async def mock_handle_request(request):
+            is_retry = request.extensions.get(x402AsyncTransport.RETRY_KEY, False)
+            if is_retry:
+                return _create_mock_response(200, b'{"success": true}')
+            mock_402 = _create_mock_response(402, b"{}")
+            mock_402.headers = {"PAYMENT-REQUIRED": encoded}
+            return mock_402
+
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = mock_handle_request
+
+        transport = x402AsyncTransport(mock_client, mock_transport)
+
+        # Create original requests and keep references
+        original_requests = [
+            _create_httpx_request(f"https://example.com/original-{i}") for i in range(3)
+        ]
+
+        # Store original extension state
+        original_extensions = [dict(req.extensions) for req in original_requests]
+
+        tasks = [transport.handle_async_request(req) for req in original_requests]
+        await asyncio.gather(*tasks)
+
+        # Verify original requests were not modified
+        for i, req in enumerate(original_requests):
+            assert x402AsyncTransport.RETRY_KEY not in req.extensions, (
+                f"Request {i} should not have retry key"
+            )
+            assert req.extensions == original_extensions[i], (
+                f"Request {i} extensions were modified"
+            )

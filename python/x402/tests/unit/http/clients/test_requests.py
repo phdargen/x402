@@ -595,3 +595,188 @@ class TestFactoryFunctionsWithPatch:
             assert wrapped is session
             assert "http://" in wrapped.adapters
             assert "https://" in wrapped.adapters
+
+
+# =============================================================================
+# Concurrent Payment Tests
+# =============================================================================
+
+
+class TestConcurrentPayments:
+    """Test concurrent payment requests are handled without shared state conflicts."""
+
+    def test_concurrent_payment_requests(self, adapter):
+        """Test that concurrent payment requests are handled properly without shared state conflicts."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        # Track requests per URL to verify each request gets its own retry
+        request_tracking: dict[str, list[bool]] = {}
+        lock = threading.Lock()
+
+        def mock_send(request, **_kwargs):
+            url = request.url
+            is_retry = request.headers.get(x402HTTPAdapter.RETRY_HEADER) == "1"
+
+            with lock:
+                if url not in request_tracking:
+                    request_tracking[url] = []
+                request_tracking[url].append(is_retry)
+
+            if is_retry:
+                response = _create_response(200, b'{"success": true}')
+                response.headers = {"X-Payment-Response": "success"}
+                return response
+
+            return _create_response(402, b"{}")
+
+        with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send):
+            # Create 5 concurrent requests to different URLs
+            urls = [f"https://example.com/request-{i}" for i in range(5)]
+
+            def make_request(url: str) -> tuple[str, int]:
+                response = adapter.send(_create_request(url))
+                return url, response.status_code
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(make_request, url) for url in urls]
+                results = [f.result() for f in as_completed(futures)]
+
+            # Verify all requests succeeded
+            for url, status_code in results:
+                assert status_code == 200, f"Request to {url} failed with status {status_code}"
+
+            # Verify each URL had exactly one initial request (not retry) and one retry
+            for url in urls:
+                assert len(request_tracking[url]) == 2, f"URL {url} should have exactly 2 calls"
+                assert request_tracking[url][0] is False, f"First request to {url} should not be retry"
+                assert request_tracking[url][1] is True, f"Second request to {url} should be retry"
+
+    def test_concurrent_requests_independent_retry_state(self, adapter):
+        """Test that each concurrent request has independent retry state."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        # Track all requests with their retry state
+        captured_requests: list[tuple[str, bool]] = []
+        lock = threading.Lock()
+
+        def mock_send(request, **_kwargs):
+            url = request.url
+            is_retry = request.headers.get(x402HTTPAdapter.RETRY_HEADER) == "1"
+
+            with lock:
+                captured_requests.append((url, is_retry))
+
+            if is_retry:
+                return _create_response(200, b'{"success": true}')
+
+            return _create_response(402, b"{}")
+
+        with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send):
+            urls = [f"https://example.com/concurrent-{i}" for i in range(3)]
+
+            def make_request(url: str) -> int:
+                response = adapter.send(_create_request(url))
+                return response.status_code
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(make_request, url) for url in urls]
+                results = [f.result() for f in as_completed(futures)]
+
+            # All should succeed
+            assert all(status == 200 for status in results)
+
+            # Each URL should appear exactly twice (initial + retry)
+            url_counts = {}
+            for url, is_retry in captured_requests:
+                url_counts[url] = url_counts.get(url, 0) + 1
+
+            for url, count in url_counts.items():
+                assert count == 2, f"URL {url} should have exactly 2 requests, got {count}"
+
+            # Verify retry flags are independent per request
+            initial_requests = [(url, is_retry) for url, is_retry in captured_requests if not is_retry]
+            retry_requests = [(url, is_retry) for url, is_retry in captured_requests if is_retry]
+
+            assert len(initial_requests) == 3, "Should have 3 initial requests"
+            assert len(retry_requests) == 3, "Should have 3 retry requests"
+
+    def test_concurrent_mixed_free_and_paid_requests(self, adapter):
+        """Test concurrent requests with mixed free (200) and paid (402) responses."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def mock_send(request, **_kwargs):
+            url = request.url
+            is_retry = request.headers.get(x402HTTPAdapter.RETRY_HEADER) == "1"
+
+            # Free endpoints return 200 immediately
+            if "/free" in url:
+                return _create_response(200, b'{"free": true}')
+
+            # Paid endpoints return 402 initially, 200 on retry
+            if is_retry:
+                return _create_response(200, b'{"paid": true}')
+
+            return _create_response(402, b"{}")
+
+        with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send):
+            # Mix of free and paid URLs
+            urls = [
+                "https://example.com/free/1",
+                "https://example.com/paid/1",
+                "https://example.com/free/2",
+                "https://example.com/paid/2",
+                "https://example.com/paid/3",
+            ]
+
+            def make_request(url: str) -> int:
+                response = adapter.send(_create_request(url))
+                return response.status_code
+
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(make_request, url) for url in urls]
+                results = [f.result() for f in as_completed(futures)]
+
+            # All should succeed
+            assert all(status == 200 for status in results)
+
+            # Only paid requests should trigger payment creation (3 paid URLs)
+            assert adapter._client.create_payment_payload_call_count == 3
+
+    def test_concurrent_requests_no_original_request_modification(self, adapter):
+        """Test that original requests are not modified during concurrent processing."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def mock_send(request, **_kwargs):
+            is_retry = request.headers.get(x402HTTPAdapter.RETRY_HEADER) == "1"
+            if is_retry:
+                return _create_response(200, b'{"success": true}')
+            return _create_response(402, b"{}")
+
+        with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send):
+            # Create original requests and keep references
+            original_requests = [
+                _create_request(f"https://example.com/original-{i}") for i in range(3)
+            ]
+
+            # Store original headers state
+            original_headers = [dict(req.headers) for req in original_requests]
+
+            def make_request(req: requests.PreparedRequest) -> int:
+                response = adapter.send(req)
+                return response.status_code
+
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(make_request, req) for req in original_requests]
+                [f.result() for f in as_completed(futures)]
+
+            # Verify original requests were not modified
+            for i, req in enumerate(original_requests):
+                assert x402HTTPAdapter.RETRY_HEADER not in req.headers, (
+                    f"Request {i} should not have retry header"
+                )
+                # The headers should match original (no payment headers added to original)
+                assert "PAYMENT-SIGNATURE" not in req.headers, (
+                    f"Request {i} should not have payment signature header"
+                )

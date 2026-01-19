@@ -308,3 +308,247 @@ def test_x402_requests(account):
         adapter.client.select_payment_requirements
         != adapter.client.__class__.select_payment_requirements
     )
+
+
+# =============================================================================
+# Concurrent Payment Tests
+# =============================================================================
+# Note: The legacy requests adapter uses a shared _is_retry flag which has
+# concurrency issues. These tests document the expected behavior but may fail
+# due to the shared state bug in the legacy implementation.
+
+
+def test_consecutive_payment_requests(adapter, payment_requirements):
+    """Test that consecutive (sequential) payment requests all succeed."""
+    payment_response = x402PaymentRequiredResponse(
+        x402_version=1,
+        accepts=[payment_requirements],
+        error="Payment Required",
+    )
+
+    call_count = [0]
+
+    def mock_send_impl(req, **kwargs):
+        call_count[0] += 1
+        if adapter._is_retry:
+            response = Response()
+            response.status_code = 200
+            response.headers = {"X-Payment-Response": "success"}
+            response._content = b'{"success": true}'
+            return response
+        
+        response = Response()
+        response.status_code = 402
+        response._content = json.dumps(payment_response.model_dump(by_alias=True)).encode()
+        return response
+
+    adapter.client.select_payment_requirements = MagicMock(return_value=payment_requirements)
+    adapter.client.create_payment_header = MagicMock(return_value="mock_payment_header")
+
+    with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send_impl):
+        for i in range(3):
+            request = PreparedRequest()
+            request.prepare("GET", f"https://example.com/request-{i}")
+            request.headers = {}
+            
+            response = adapter.send(request)
+            assert response.status_code == 200, f"Request {i} failed with status {response.status_code}"
+
+        # Each request should trigger 2 calls (initial + retry)
+        assert call_count[0] == 6
+        assert adapter.client.create_payment_header.call_count == 3
+
+
+def test_concurrent_payment_requests_with_thread_pool(account, payment_requirements):
+    """Test concurrent payment requests using ThreadPoolExecutor."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    payment_response = x402PaymentRequiredResponse(
+        x402_version=1,
+        accepts=[payment_requirements],
+        error="Payment Required",
+    )
+
+    # Create a new adapter for this test
+    adapter = x402_http_adapter(account)
+
+    # Track requests per URL
+    request_tracking = {}
+    lock = threading.Lock()
+
+    def mock_send_impl(req, **kwargs):
+        url = req.url
+        is_retry = adapter._is_retry
+        
+        with lock:
+            if url not in request_tracking:
+                request_tracking[url] = []
+            request_tracking[url].append(is_retry)
+
+        if is_retry:
+            response = Response()
+            response.status_code = 200
+            response.headers = {"X-Payment-Response": "success"}
+            response._content = b'{"success": true}'
+            return response
+        
+        response = Response()
+        response.status_code = 402
+        response._content = json.dumps(payment_response.model_dump(by_alias=True)).encode()
+        return response
+
+    adapter.client.select_payment_requirements = MagicMock(return_value=payment_requirements)
+    adapter.client.create_payment_header = MagicMock(return_value="mock_payment_header")
+
+    def make_request(url: str) -> tuple[str, int]:
+        request = PreparedRequest()
+        request.prepare("GET", url)
+        request.headers = {}
+        response = adapter.send(request)
+        return url, response.status_code
+
+    with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send_impl):
+        urls = [f"https://example.com/concurrent-{i}" for i in range(5)]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(make_request, url) for url in urls]
+            results = [f.result() for f in as_completed(futures)]
+
+        # All concurrent requests should succeed
+        for url, status in results:
+            assert status == 200, f"Request to {url} failed with status {status}"
+
+
+def test_concurrent_requests_no_shared_state(account, payment_requirements):
+    """Test that concurrent requests don't interfere with each other."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    payment_response = x402PaymentRequiredResponse(
+        x402_version=1,
+        accepts=[payment_requirements],
+        error="Payment Required",
+    )
+
+    adapter = x402_http_adapter(account)
+    
+    # Track retry state for each URL
+    request_tracking = {}
+    lock = threading.Lock()
+
+    def mock_send_impl(req, **kwargs):
+        url = req.url
+        is_retry = adapter._is_retry
+        
+        with lock:
+            if url not in request_tracking:
+                request_tracking[url] = []
+            request_tracking[url].append(is_retry)
+
+        if is_retry:
+            response = Response()
+            response.status_code = 200
+            response.headers = {"X-Payment-Response": "success"}
+            response._content = b'{"success": true}'
+            return response
+        
+        response = Response()
+        response.status_code = 402
+        response._content = json.dumps(payment_response.model_dump(by_alias=True)).encode()
+        return response
+
+    adapter.client.select_payment_requirements = MagicMock(return_value=payment_requirements)
+    adapter.client.create_payment_header = MagicMock(return_value="mock_payment_header")
+
+    def make_request(url: str) -> tuple[str, int]:
+        request = PreparedRequest()
+        request.prepare("GET", url)
+        request.headers = {}
+        response = adapter.send(request)
+        return url, response.status_code
+
+    with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send_impl):
+        urls = [f"https://example.com/concurrent-{i}" for i in range(5)]
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(make_request, url) for url in urls]
+            results = [f.result() for f in as_completed(futures)]
+
+        # All requests should succeed
+        for url, status in results:
+            assert status == 200, f"Request to {url} failed with status {status}"
+
+        # Each URL should have exactly 2 calls: initial (False) + retry (True)
+        for url in urls:
+            assert url in request_tracking, f"URL {url} not tracked"
+            assert len(request_tracking[url]) == 2, (
+                f"URL {url} should have 2 calls, got {len(request_tracking[url])}"
+            )
+
+
+def test_mixed_free_and_paid_consecutive_requests(adapter, payment_requirements):
+    """Test consecutive requests with mixed free (200) and paid (402) responses."""
+    payment_response = x402PaymentRequiredResponse(
+        x402_version=1,
+        accepts=[payment_requirements],
+        error="Payment Required",
+    )
+
+    call_sequence = []
+
+    def mock_send_impl(req, **kwargs):
+        url = req.url
+        is_retry = adapter._is_retry
+        call_sequence.append((url, is_retry))
+
+        if "/free" in url:
+            response = Response()
+            response.status_code = 200
+            response._content = b'{"free": true}'
+            return response
+
+        if is_retry:
+            response = Response()
+            response.status_code = 200
+            response.headers = {"X-Payment-Response": "success"}
+            response._content = b'{"paid": true}'
+            return response
+        
+        response = Response()
+        response.status_code = 402
+        response._content = json.dumps(payment_response.model_dump(by_alias=True)).encode()
+        return response
+
+    adapter.client.select_payment_requirements = MagicMock(return_value=payment_requirements)
+    adapter.client.create_payment_header = MagicMock(return_value="mock_payment_header")
+
+    urls = [
+        "https://example.com/free/1",
+        "https://example.com/paid/1",
+        "https://example.com/free/2",
+        "https://example.com/paid/2",
+    ]
+
+    with patch("requests.adapters.HTTPAdapter.send", side_effect=mock_send_impl):
+        for url in urls:
+            request = PreparedRequest()
+            request.prepare("GET", url)
+            request.headers = {}
+            
+            response = adapter.send(request)
+            assert response.status_code == 200, f"Request to {url} failed"
+
+    # Verify call sequence
+    expected = [
+        ("https://example.com/free/1", False),
+        ("https://example.com/paid/1", False),
+        ("https://example.com/paid/1", True),
+        ("https://example.com/free/2", False),
+        ("https://example.com/paid/2", False),
+        ("https://example.com/paid/2", True),
+    ]
+    assert call_sequence == expected
+
+    # Only paid requests should trigger payment creation
+    assert adapter.client.create_payment_header.call_count == 2
