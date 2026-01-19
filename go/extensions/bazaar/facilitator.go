@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	x402 "github.com/coinbase/x402/go"
 	"github.com/coinbase/x402/go/extensions/types"
@@ -224,7 +225,8 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 	}, nil
 }
 
-// stripQueryParams removes query parameters and fragments from a URL for cataloging
+// stripQueryParams removes query parameters and fragments from a URL for cataloging.
+// It also decodes URI template curly braces ({}) that may have been encoded by url.Parse.
 func stripQueryParams(rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -232,7 +234,16 @@ func stripQueryParams(rawURL string) string {
 	}
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	return parsed.String()
+	result := parsed.String()
+
+	// Decode only URI template curly braces (url.Parse encodes { } to %7B %7D)
+	// but preserve other encoded characters (spaces, non-ASCII, etc.)
+	result = strings.ReplaceAll(result, "%7B", "{")
+	result = strings.ReplaceAll(result, "%7b", "{")
+	result = strings.ReplaceAll(result, "%7D", "}")
+	result = strings.ReplaceAll(result, "%7d", "}")
+
+	return result
 }
 
 // ExtractDiscoveredResourceFromPaymentRequired extracts a discovered resource from a 402 PaymentRequired response.

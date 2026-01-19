@@ -31,6 +31,7 @@ app.use(
           network: "eip155:84532",
           payTo: evmAddress,
         },
+        resource: "https://api.example.com/weather/{city}",  // Explicit resource URL
         description: "Weather data",
         mimeType: "application/json",
         extensions: {

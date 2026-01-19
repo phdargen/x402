@@ -114,6 +114,103 @@ describe("Bazaar Discovery Extension", () => {
     });
   });
 
+  describe("declareDiscoveryExtension - Path Parameters", () => {
+    it("should create a GET extension with path params", () => {
+      const result = declareDiscoveryExtension({
+        pathParams: { coin_id: "bitcoin" },
+        pathParamsSchema: {
+          properties: {
+            coin_id: { type: "string", description: "Coin identifier" },
+          },
+          required: ["coin_id"],
+        },
+        output: {
+          example: { price: 50000, currency: "USD" },
+        },
+      });
+
+      expect(result).toHaveProperty("bazaar");
+      const extension = result.bazaar;
+      expect(extension).toHaveProperty("info");
+      expect(extension).toHaveProperty("schema");
+      expect(extension.info.input.type).toBe("http");
+      expect(extension.info.input.pathParams).toEqual({ coin_id: "bitcoin" });
+    });
+
+    it("should create a GET extension with both path and query params", () => {
+      const result = declareDiscoveryExtension({
+        pathParams: { network: "ethereum", token: "usdc" },
+        pathParamsSchema: {
+          properties: {
+            network: { type: "string" },
+            token: { type: "string" },
+          },
+          required: ["network", "token"],
+        },
+        input: { format: "detailed" },
+        inputSchema: {
+          properties: {
+            format: { type: "string", enum: ["simple", "detailed"] },
+          },
+        },
+        output: {
+          example: { price: 1.0, decimals: 6 },
+        },
+      });
+
+      const extension = result.bazaar;
+      expect(extension.info.input.pathParams).toEqual({ network: "ethereum", token: "usdc" });
+      expect(extension.info.input.queryParams).toEqual({ format: "detailed" });
+    });
+
+    it("should create a POST extension with path params", () => {
+      const result = declareDiscoveryExtension({
+        pathParams: { user_id: "123" },
+        pathParamsSchema: {
+          properties: {
+            user_id: { type: "string" },
+          },
+          required: ["user_id"],
+        },
+        input: { action: "update" },
+        inputSchema: {
+          properties: {
+            action: { type: "string" },
+          },
+        },
+        bodyType: "json",
+      });
+
+      const extension = result.bazaar;
+      expect(extension.info.input.type).toBe("http");
+      expect((extension.info as BodyDiscoveryInfo).input.pathParams).toEqual({ user_id: "123" });
+      expect((extension.info as BodyDiscoveryInfo).input.body).toEqual({ action: "update" });
+    });
+
+    it("should include pathParams schema in extension schema", () => {
+      const result = declareDiscoveryExtension({
+        pathParams: { id: "abc123" },
+        pathParamsSchema: {
+          properties: {
+            id: { type: "string", pattern: "^[a-z0-9]+$" },
+          },
+          required: ["id"],
+        },
+      });
+
+      const extension = result.bazaar;
+      const schema = extension.schema as Record<string, unknown>;
+      const properties = schema.properties as Record<string, unknown>;
+      const input = properties.input as Record<string, unknown>;
+      const inputProps = input.properties as Record<string, unknown>;
+      
+      expect(inputProps).toHaveProperty("pathParams");
+      const pathParamsSchema = inputProps.pathParams as Record<string, unknown>;
+      expect(pathParamsSchema.type).toBe("object");
+      expect(pathParamsSchema).toHaveProperty("properties");
+    });
+  });
+
   describe("declareDiscoveryExtension - Other methods", () => {
     it("should create a valid PUT extension", () => {
       const result = declareDiscoveryExtension({
@@ -429,6 +526,76 @@ describe("Bazaar Discovery Extension", () => {
 
       expect(discovered).not.toBeNull();
       expect(discovered!.resourceUrl).toBe("https://api.example.com/page");
+    });
+
+    it("should preserve URI template syntax (curly braces) in resourceUrl", () => {
+      const declared = declareDiscoveryExtension({
+        pathParams: { coin_id: "bitcoin" },
+        pathParamsSchema: {
+          properties: {
+            coin_id: { type: "string" },
+          },
+          required: ["coin_id"],
+        },
+      });
+
+      const extension = declared.bazaar;
+
+      const paymentPayload = {
+        x402Version: 2,
+        scheme: "exact",
+        network: "eip155:8453" as unknown,
+        payload: {},
+        accepted: {} as unknown,
+        resource: {
+          url: "https://api.example.com/price/{coin_id}",
+          description: "Price API",
+          mimeType: "application/json",
+        },
+        extensions: {
+          [BAZAAR]: extension,
+        },
+      };
+
+      const discovered = extractDiscoveryInfo(paymentPayload, {} as unknown);
+
+      expect(discovered).not.toBeNull();
+      // Curly braces should NOT be URL-encoded
+      expect(discovered!.resourceUrl).toBe("https://api.example.com/price/{coin_id}");
+    });
+
+    it("should preserve encoded non-ASCII and special characters in resourceUrl", () => {
+      const declared = declareDiscoveryExtension({
+        input: {},
+        inputSchema: { properties: {} },
+      });
+
+      const extension = declared.bazaar;
+
+      // URL with encoded space (%20) and encoded non-ASCII character
+      const paymentPayload = {
+        x402Version: 2,
+        scheme: "exact",
+        network: "eip155:8453" as unknown,
+        payload: {},
+        accepted: {} as unknown,
+        resource: {
+          url: "https://api.example.com/path%20with%20spaces/%E6%97%A5%E6%9C%AC",
+          description: "Path with encoded chars",
+          mimeType: "application/json",
+        },
+        extensions: {
+          [BAZAAR]: extension,
+        },
+      };
+
+      const discovered = extractDiscoveryInfo(paymentPayload, {} as unknown);
+
+      expect(discovered).not.toBeNull();
+      // Encoded spaces and non-ASCII should stay encoded
+      expect(discovered!.resourceUrl).toBe(
+        "https://api.example.com/path%20with%20spaces/%E6%97%A5%E6%9C%AC",
+      );
     });
 
     it("should extract info from v1 PaymentRequirements", () => {

@@ -165,8 +165,11 @@ export function extractDiscoveryInfo(
   }
 
   // Strip query params (?) and hash sections (#) for discovery cataloging
+  // Decode only URI template curly braces (new URL() encodes { } to %7B %7D)
+  // but preserve other encoded characters (spaces, non-ASCII, etc.)
   const url = new URL(resourceUrl);
-  const normalizedResourceUrl = `${url.origin}${url.pathname}`;
+  const decodedPathname = url.pathname.replace(/%7B/gi, "{").replace(/%7D/gi, "}");
+  const normalizedResourceUrl = `${url.origin}${decodedPathname}`;
 
   // Extract description and mimeType from resource info (v2) or requirements (v1)
   let description: string | undefined;

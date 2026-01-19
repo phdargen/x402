@@ -19,6 +19,8 @@ import {
  *
  * @param root0 - Configuration object for query discovery extension
  * @param root0.method - HTTP method (GET, HEAD, DELETE)
+ * @param root0.pathParams - Path parameter examples (for URL templates like /api/price/\{coin_id\})
+ * @param root0.pathParamsSchema - JSON schema for path parameters
  * @param root0.input - Query parameters
  * @param root0.inputSchema - JSON schema for query parameters
  * @param root0.output - Output specification with example
@@ -26,6 +28,8 @@ import {
  */
 function createQueryDiscoveryExtension({
   method,
+  pathParams,
+  pathParamsSchema,
   input = {},
   inputSchema = { properties: {} },
   output,
@@ -35,6 +39,7 @@ function createQueryDiscoveryExtension({
       input: {
         type: "http",
         ...(method ? { method } : {}),
+        ...(pathParams ? { pathParams } : {}),
         ...(input ? { queryParams: input } : {}),
       } as QueryDiscoveryExtension["info"]["input"],
       ...(output?.example
@@ -61,6 +66,14 @@ function createQueryDiscoveryExtension({
               type: "string",
               enum: ["GET", "HEAD", "DELETE"],
             },
+            ...(pathParamsSchema
+              ? {
+                  pathParams: {
+                    type: "object" as const,
+                    ...(typeof pathParamsSchema === "object" ? pathParamsSchema : {}),
+                  },
+                }
+              : {}),
             ...(inputSchema
               ? {
                   queryParams: {
@@ -101,6 +114,8 @@ function createQueryDiscoveryExtension({
  *
  * @param root0 - Configuration object for body discovery extension
  * @param root0.method - HTTP method (POST, PUT, PATCH)
+ * @param root0.pathParams - Path parameter examples (for URL templates like /api/price/\{coin_id\})
+ * @param root0.pathParamsSchema - JSON schema for path parameters
  * @param root0.input - Request body specification
  * @param root0.inputSchema - JSON schema for request body
  * @param root0.bodyType - Content type of body (json, form-data, text) - required for body methods
@@ -109,6 +124,8 @@ function createQueryDiscoveryExtension({
  */
 function createBodyDiscoveryExtension({
   method,
+  pathParams,
+  pathParamsSchema,
   input = {},
   inputSchema = { properties: {} },
   bodyType,
@@ -121,6 +138,7 @@ function createBodyDiscoveryExtension({
         ...(method ? { method } : {}),
         bodyType,
         body: input,
+        ...(pathParams ? { pathParams } : {}),
       } as BodyDiscoveryExtension["info"]["input"],
       ...(output?.example
         ? {
@@ -151,6 +169,14 @@ function createBodyDiscoveryExtension({
               enum: ["json", "form-data", "text"],
             },
             body: inputSchema,
+            ...(pathParamsSchema
+              ? {
+                  pathParams: {
+                    type: "object" as const,
+                    ...(typeof pathParamsSchema === "object" ? pathParamsSchema : {}),
+                  },
+                }
+              : {}),
           },
           required: ["type", "bodyType", "body"] as ("type" | "method" | "bodyType" | "body")[],
           additionalProperties: false,
@@ -191,7 +217,6 @@ function createBodyDiscoveryExtension({
  * ```typescript
  * // For a GET endpoint with no input
  * const getExtension = declareDiscoveryExtension({
- *   method: "GET",
  *   output: {
  *     example: { message: "Success", timestamp: "2024-01-01T00:00:00Z" }
  *   }
@@ -199,7 +224,6 @@ function createBodyDiscoveryExtension({
  *
  * // For a GET endpoint with query params
  * const getWithParams = declareDiscoveryExtension({
- *   method: "GET",
  *   input: { query: "example" },
  *   inputSchema: {
  *     properties: {
@@ -209,9 +233,22 @@ function createBodyDiscoveryExtension({
  *   }
  * });
  *
+ * // For a GET endpoint with path params (e.g., /api/price/{coin_id})
+ * const getWithPathParams = declareDiscoveryExtension({
+ *   pathParams: { coin_id: "bitcoin" },
+ *   pathParamsSchema: {
+ *     properties: {
+ *       coin_id: { type: "string", description: "Coin identifier" }
+ *     },
+ *     required: ["coin_id"]
+ *   },
+ *   output: {
+ *     example: { price: 50000, currency: "USD" }
+ *   }
+ * });
+ *
  * // For a POST endpoint with JSON body
  * const postExtension = declareDiscoveryExtension({
- *   method: "POST",
  *   input: { name: "John", age: 30 },
  *   inputSchema: {
  *     properties: {

@@ -4,6 +4,7 @@
  * This package demonstrates advanced patterns for production-ready x402 servers:
  *
  * - bazaar: Bazaar discovery extension for API discoverability
+ * - path-params: Path parameters with URI templates for discovery
  * - hooks: Payment lifecycle hooks for verification and settlement
  * - dynamic-price: Dynamic pricing based on request context
  * - dynamic-pay-to: Route payments to different addresses
@@ -11,6 +12,7 @@
  *
  * Usage:
  *   npm start bazaar
+ *   npm start path-params
  *   npm start hooks
  *   npm start dynamic-price
  *   npm start dynamic-pay-to
@@ -24,6 +26,9 @@ console.log(`\n🚀 Running advanced server example: ${example}\n`);
 switch (example) {
   case "bazaar":
     await import("./bazaar.js");
+    break;
+  case "path-params":
+    await import("./pathParams.js");
     break;
   case "hooks":
     await import("./hooks.js");
@@ -40,7 +45,7 @@ switch (example) {
   default:
     console.error(`❌ Unknown example: ${example}`);
     console.error(
-      "Available examples: bazaar, hooks, dynamic-price, dynamic-pay-to, custom-money-definition",
+      "Available examples: bazaar, path-params, hooks, dynamic-price, dynamic-pay-to, custom-money-definition",
     );
     process.exit(1);
 }

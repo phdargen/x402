@@ -525,6 +525,82 @@ func TestExtractDiscoveredResourceFromPaymentPayload_FullFlow(t *testing.T) {
 		assert.Equal(t, "https://api.example.com/page", info.ResourceURL)
 	})
 
+	t.Run("should preserve URI template syntax (curly braces) in v2 resourceUrl", func(t *testing.T) {
+		extension, _ := bazaar.DeclareDiscoveryExtension(
+			bazaar.MethodGET,
+			map[string]interface{}{"coin_id": "bitcoin"},
+			bazaar.JSONSchema{
+				"properties": map[string]interface{}{
+					"coin_id": map[string]interface{}{"type": "string"},
+				},
+			},
+			"",
+			nil,
+		)
+
+		requirements := x402.PaymentRequirements{
+			Scheme:  "exact",
+			Network: "eip155:8453",
+		}
+
+		paymentPayload := x402.PaymentPayload{
+			X402Version: 2,
+			Accepted:    requirements,
+			Payload:     map[string]interface{}{},
+			Resource: &x402.ResourceInfo{
+				URL: "https://api.example.com/price/{coin_id}",
+			},
+			Extensions: map[string]interface{}{
+				bazaar.BAZAAR: extension,
+			},
+		}
+
+		payloadBytes, _ := json.Marshal(paymentPayload)
+		requirementsBytes, _ := json.Marshal(requirements)
+
+		info, err := bazaar.ExtractDiscoveredResourceFromPaymentPayload(payloadBytes, requirementsBytes, true)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		// Curly braces should NOT be URL-encoded
+		assert.Equal(t, "https://api.example.com/price/{coin_id}", info.ResourceURL)
+	})
+
+	t.Run("should preserve encoded non-ASCII and special characters in v2 resourceUrl", func(t *testing.T) {
+		extension, _ := bazaar.DeclareDiscoveryExtension(
+			bazaar.MethodGET,
+			map[string]interface{}{},
+			bazaar.JSONSchema{"properties": map[string]interface{}{}},
+			"",
+			nil,
+		)
+
+		requirements := x402.PaymentRequirements{
+			Scheme:  "exact",
+			Network: "eip155:8453",
+		}
+
+		paymentPayload := x402.PaymentPayload{
+			X402Version: 2,
+			Accepted:    requirements,
+			Payload:     map[string]interface{}{},
+			Resource: &x402.ResourceInfo{
+				URL: "https://api.example.com/path%20with%20spaces/%E6%97%A5%E6%9C%AC",
+			},
+			Extensions: map[string]interface{}{
+				bazaar.BAZAAR: extension,
+			},
+		}
+
+		payloadBytes, _ := json.Marshal(paymentPayload)
+		requirementsBytes, _ := json.Marshal(requirements)
+
+		info, err := bazaar.ExtractDiscoveredResourceFromPaymentPayload(payloadBytes, requirementsBytes, true)
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		// Encoded spaces and non-ASCII should stay encoded
+		assert.Equal(t, "https://api.example.com/path%20with%20spaces/%E6%97%A5%E6%9C%AC", info.ResourceURL)
+	})
+
 	t.Run("should strip query params from v1 resourceUrl", func(t *testing.T) {
 		v1Requirements := map[string]interface{}{
 			"scheme":            "exact",

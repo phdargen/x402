@@ -16,6 +16,7 @@ export interface QueryDiscoveryInfo {
   input: {
     type: "http";
     method: QueryParamMethods;
+    pathParams?: Record<string, unknown>;
     queryParams?: Record<string, unknown>;
     headers?: Record<string, string>;
   };
@@ -35,6 +36,7 @@ export interface BodyDiscoveryInfo {
     method: BodyMethods;
     bodyType: "json" | "form-data" | "text";
     body: Record<string, unknown>;
+    pathParams?: Record<string, unknown>;
     queryParams?: Record<string, unknown>;
     headers?: Record<string, string>;
   };
@@ -70,6 +72,12 @@ export interface QueryDiscoveryExtension {
           method: {
             type: "string";
             enum: QueryParamMethods[];
+          };
+          pathParams?: {
+            type: "object";
+            properties?: Record<string, unknown>;
+            required?: string[];
+            additionalProperties?: boolean;
           };
           queryParams?: {
             type: "object";
@@ -124,6 +132,12 @@ export interface BodyDiscoveryExtension {
             enum: ["json", "form-data", "text"];
           };
           body: Record<string, unknown>;
+          pathParams?: {
+            type: "object";
+            properties?: Record<string, unknown>;
+            required?: string[];
+            additionalProperties?: boolean;
+          };
           queryParams?: {
             type: "object";
             properties?: Record<string, unknown>;
@@ -158,6 +172,8 @@ export type DiscoveryExtension = QueryDiscoveryExtension | BodyDiscoveryExtensio
 
 export interface DeclareQueryDiscoveryExtensionConfig {
   method?: QueryParamMethods;
+  pathParams?: Record<string, unknown>;
+  pathParamsSchema?: Record<string, unknown>;
   input?: Record<string, unknown>;
   inputSchema?: Record<string, unknown>;
   output?: {
@@ -168,6 +184,8 @@ export interface DeclareQueryDiscoveryExtensionConfig {
 
 export interface DeclareBodyDiscoveryExtensionConfig {
   method?: BodyMethods;
+  pathParams?: Record<string, unknown>;
+  pathParamsSchema?: Record<string, unknown>;
   input?: Record<string, unknown>;
   inputSchema?: Record<string, unknown>;
   bodyType: "json" | "form-data" | "text";
