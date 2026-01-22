@@ -156,6 +156,20 @@ export interface RouteConfig {
 export type RoutesConfig = Record<string, RouteConfig> | RouteConfig;
 
 /**
+ * Hook that runs on every request to a protected route, before payment processing.
+ * Can grant access without payment, deny the request, or continue to payment flow.
+ *
+ * @returns
+ * - `void` - Continue to payment processing (default behavior)
+ * - `{ grantAccess: true }` - Grant access without requiring payment
+ * - `{ abort: true; reason: string }` - Deny the request (returns 403)
+ */
+export type RequestHook = (
+  context: HTTPRequestContext,
+  routeConfig: RouteConfig,
+) => Promise<void | { grantAccess: true } | { abort: true; reason: string }>;
+
+/**
  * Compiled route for efficient matching
  */
 export interface CompiledRoute {
@@ -190,10 +204,10 @@ export interface HTTPResponseInstructions {
 export type HTTPProcessResult =
   | { type: "no-payment-required" }
   | {
-      type: "payment-verified";
-      paymentPayload: PaymentPayload;
-      paymentRequirements: PaymentRequirements;
-    }
+    type: "payment-verified";
+    paymentPayload: PaymentPayload;
+    paymentRequirements: PaymentRequirements;
+  }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
 /**
@@ -259,6 +273,7 @@ export class x402HTTPResourceServer {
   private compiledRoutes: CompiledRoute[] = [];
   private routesConfig: RoutesConfig;
   private paywallProvider?: PaywallProvider;
+  private requestHooks: RequestHook[] = [];
 
   /**
    * Creates a new x402HTTPResourceServer instance.
@@ -325,6 +340,18 @@ export class x402HTTPResourceServer {
   }
 
   /**
+   * Register a hook that runs on every request to a protected route, before payment processing.
+   * Hooks are executed in order of registration. The first hook to return a non-void result wins.
+   *
+   * @param hook - The request hook function
+   * @returns The x402HTTPResourceServer instance for chaining
+   */
+  onRequest(hook: RequestHook): this {
+    this.requestHooks.push(hook);
+    return this;
+  }
+
+  /**
    * Process HTTP request and return response instructions
    * This is the main entry point for framework middleware
    *
@@ -342,6 +369,24 @@ export class x402HTTPResourceServer {
     const routeConfig = this.getRouteConfig(path, method);
     if (!routeConfig) {
       return { type: "no-payment-required" }; // No payment required for this route
+    }
+
+    // Execute request hooks before any payment processing
+    for (const hook of this.requestHooks) {
+      const result = await hook(context, routeConfig);
+      if (result && "grantAccess" in result) {
+        return { type: "no-payment-required" };
+      }
+      if (result && "abort" in result) {
+        return {
+          type: "payment-error",
+          response: {
+            status: 403,
+            headers: { "Content-Type": "application/json" },
+            body: { error: result.reason },
+          },
+        };
+      }
     }
 
     // Normalize accepts field to array of payment options
@@ -708,12 +753,11 @@ export class x402HTTPResourceServer {
     const [verb, path] = pattern.includes(" ") ? pattern.split(/\s+/) : ["*", pattern];
 
     const regex = new RegExp(
-      `^${
-        path
-          .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
-          .replace(/\*/g, ".*?") // Wildcards
-          .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters
-          .replace(/\//g, "\\/") // Escape slashes
+      `^${path
+        .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
+        .replace(/\*/g, ".*?") // Wildcards
+        .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters
+        .replace(/\//g, "\\/") // Escape slashes
       }$`,
       "i",
     );

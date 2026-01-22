@@ -121,3 +121,13 @@ export {
   encodeBase58,
   extractSolanaChainReference,
 } from "./solana";
+
+// Server hooks for x402 integration
+export {
+  createSIWxRequestHook,
+  createSIWxSettleHook,
+  InMemorySIWxStorage,
+  type SIWxStorage,
+  type CreateSIWxRequestHookOptions,
+  type CreateSIWxSettleHookOptions,
+} from "./hooks";

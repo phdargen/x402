@@ -11,5 +11,5 @@
     "baseUrl": ".",
     "types": ["node"]
   },
-  "include": ["index.ts", "siwx-middleware.ts"]
+  "include": ["index.ts"]
 }
