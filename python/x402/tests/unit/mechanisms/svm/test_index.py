@@ -1,5 +1,7 @@
 """Tests for SVM mechanism exports and utility functions."""
 
+import base64
+
 import pytest
 
 from x402.mechanisms.svm import (
@@ -14,8 +16,11 @@ from x402.mechanisms.svm import (
     ExactSvmPayload,
     FacilitatorSvmSigner,
     KeypairSigner,
+    SolanaTransaction,
     convert_to_token_amount,
+    decode_transaction_from_payload,
     get_usdc_address,
+    is_versioned_transaction,
     normalize_network,
     validate_svm_address,
 )
@@ -173,3 +178,93 @@ class TestConstants:
     def test_should_export_scheme_exact(self):
         """Should export scheme identifier."""
         assert SCHEME_EXACT == "exact"
+
+
+class TestIsVersionedTransaction:
+    """Test is_versioned_transaction function for detecting transaction types."""
+
+    def test_should_detect_legacy_transaction(self):
+        """Should detect legacy transactions (message first byte < 0x80)."""
+        # Legacy transaction format:
+        # - CompactU16(1) = 0x01 (1 signature)
+        # - 64 bytes empty signature
+        # - Legacy message header: numReqSigs=1, numReadonlySigned=0, numReadonlyUnsigned=0
+        # - 1 account key (32 bytes)
+        # - Recent blockhash (32 bytes)
+        # - 0 instructions
+        legacy_tx_bytes = bytes([0x01])  # 1 signature
+        legacy_tx_bytes += bytes(64)  # Empty signature slot
+        legacy_tx_bytes += bytes([0x01, 0x00, 0x00])  # Legacy header (first byte < 0x80)
+        legacy_tx_bytes += bytes([0x01])  # 1 account key
+        legacy_tx_bytes += bytes(32)  # Account key
+        legacy_tx_bytes += bytes(32)  # Recent blockhash
+        legacy_tx_bytes += bytes([0x00])  # 0 instructions
+
+        assert is_versioned_transaction(legacy_tx_bytes) is False
+
+    def test_should_detect_versioned_transaction(self):
+        """Should detect versioned (v0) transactions (message first byte >= 0x80)."""
+        # Versioned transaction format:
+        # - CompactU16(1) = 0x01 (1 signature)
+        # - 64 bytes empty signature
+        # - Version byte 0x80 (v0)
+        # - Message header
+        # - 1 account key (32 bytes)
+        # - Recent blockhash (32 bytes)
+        # - 0 instructions
+        # - 0 address table lookups
+        versioned_tx_bytes = bytes([0x01])  # 1 signature
+        versioned_tx_bytes += bytes(64)  # Empty signature slot
+        versioned_tx_bytes += bytes([0x80])  # Version byte for v0 (128 >= 0x80)
+        versioned_tx_bytes += bytes([0x01, 0x00, 0x00])  # Header
+        versioned_tx_bytes += bytes([0x01])  # 1 account key
+        versioned_tx_bytes += bytes(32)  # Account key
+        versioned_tx_bytes += bytes(32)  # Recent blockhash
+        versioned_tx_bytes += bytes([0x00])  # 0 instructions
+        versioned_tx_bytes += bytes([0x00])  # 0 address table lookups
+
+        assert is_versioned_transaction(versioned_tx_bytes) is True
+
+    def test_should_detect_transaction_with_multiple_signatures(self):
+        """Should correctly skip multiple signatures when detecting version."""
+        # Transaction with 2 signatures
+        tx_bytes = bytes([0x02])  # 2 signatures
+        tx_bytes += bytes(64)  # First signature
+        tx_bytes += bytes(64)  # Second signature
+        tx_bytes += bytes([0x80])  # Version byte for v0
+
+        assert is_versioned_transaction(tx_bytes) is True
+
+    def test_legacy_with_high_num_required_signatures(self):
+        """Legacy tx with high numRequiredSignatures should still be < 0x80."""
+        # A legacy transaction where numRequiredSignatures is 127 (max before 0x80)
+        # This is still a valid legacy transaction
+        legacy_tx_bytes = bytes([0x01])  # 1 signature
+        legacy_tx_bytes += bytes(64)  # Empty signature slot
+        legacy_tx_bytes += bytes([0x7F, 0x00, 0x00])  # numReqSigs=127 (0x7F < 0x80)
+
+        assert is_versioned_transaction(legacy_tx_bytes) is False
+
+
+class TestDecodeTransactionFromPayload:
+    """Test decode_transaction_from_payload function for handling both tx types."""
+
+    def test_should_raise_on_invalid_base64(self):
+        """Should raise ValueError for invalid base64."""
+        payload = ExactSvmPayload(transaction="not-valid-base64!!!")
+
+        with pytest.raises(ValueError, match="invalid_exact_svm_payload_transaction"):
+            decode_transaction_from_payload(payload)
+
+    def test_should_raise_on_malformed_transaction(self):
+        """Should raise ValueError for malformed transaction bytes."""
+        # Valid base64 but not a valid transaction
+        payload = ExactSvmPayload(transaction=base64.b64encode(b"not a transaction").decode())
+
+        with pytest.raises(ValueError, match="invalid_exact_svm_payload_transaction"):
+            decode_transaction_from_payload(payload)
+
+    def test_should_export_solana_transaction_type(self):
+        """Should export SolanaTransaction type alias."""
+        # Just verify the type alias is exported and usable
+        assert SolanaTransaction is not None

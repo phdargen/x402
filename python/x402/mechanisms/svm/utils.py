@@ -6,11 +6,14 @@ from decimal import Decimal
 
 try:
     from solders.pubkey import Pubkey
-    from solders.transaction import VersionedTransaction
+    from solders.transaction import Transaction, VersionedTransaction
 except ImportError as e:
     raise ImportError(
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
+
+# Type alias for both legacy and versioned transactions
+SolanaTransaction = VersionedTransaction | Transaction
 
 from .constants import (
     NETWORK_CONFIGS,
@@ -213,30 +216,85 @@ def parse_money_to_decimal(money: str | float | int) -> float:
     return float(clean)
 
 
-def decode_transaction_from_payload(payload: ExactSvmPayload) -> VersionedTransaction:
+def is_versioned_transaction(tx_bytes: bytes) -> bool:
+    """Determine if transaction bytes represent a versioned or legacy transaction.
+
+    Versioned transactions (v0) have a version byte prefix where the first byte
+    of the message portion is >= 128 (0x80). Legacy transactions have their
+    first message byte (numRequiredSignatures header) < 128.
+
+    Args:
+        tx_bytes: Raw transaction bytes.
+
+    Returns:
+        True if versioned (v0), False if legacy.
+    """
+    # Transaction structure:
+    # - CompactU16 length prefix for signatures count
+    # - Signatures (64 bytes each)
+    # - Message bytes
+    #
+    # To find where the message starts, we need to skip the signatures.
+    # CompactU16: if first byte < 128, it's the value; otherwise it's multi-byte
+
+    offset = 0
+
+    # Read compact u16 for signature count
+    first_byte = tx_bytes[offset]
+    if first_byte < 0x80:
+        # Single byte encoding
+        num_signatures = first_byte
+        offset += 1
+    else:
+        # Multi-byte encoding (shouldn't happen for reasonable signature counts)
+        num_signatures = (first_byte & 0x7F) | ((tx_bytes[offset + 1] & 0x7F) << 7)
+        offset += 2
+
+    # Skip signatures (64 bytes each)
+    offset += num_signatures * 64
+
+    # First byte of message determines version
+    # >= 128 (0x80) means versioned (v0), < 128 means legacy
+    if offset < len(tx_bytes):
+        message_first_byte = tx_bytes[offset]
+        return message_first_byte >= 0x80
+
+    return False
+
+
+def decode_transaction_from_payload(payload: ExactSvmPayload) -> SolanaTransaction:
     """Decode a base64 encoded transaction from an SVM payload.
+
+    Supports both legacy and versioned (v0) transactions. Automatically
+    detects the transaction type based on the version marker byte.
 
     Args:
         payload: The SVM payload containing a base64 encoded transaction.
 
     Returns:
-        Decoded VersionedTransaction object.
+        Decoded transaction object (VersionedTransaction or Transaction).
 
     Raises:
         ValueError: If transaction cannot be decoded.
     """
     try:
         tx_bytes = base64.b64decode(payload.transaction)
-        return VersionedTransaction.from_bytes(tx_bytes)
+
+        if is_versioned_transaction(tx_bytes):
+            return VersionedTransaction.from_bytes(tx_bytes)
+        else:
+            return Transaction.from_bytes(tx_bytes)
     except Exception as e:
         raise ValueError("invalid_exact_svm_payload_transaction") from e
 
 
-def get_token_payer_from_transaction(tx: VersionedTransaction) -> str:
+def get_token_payer_from_transaction(tx: SolanaTransaction) -> str:
     """Extract the token sender (owner of source token account) from a TransferChecked instruction.
 
+    Supports both legacy and versioned (v0) transactions.
+
     Args:
-        tx: The decoded versioned transaction.
+        tx: The decoded transaction (VersionedTransaction or Transaction).
 
     Returns:
         The token payer address as a base58 string, or empty string if not found.
@@ -264,13 +322,14 @@ def get_token_payer_from_transaction(tx: VersionedTransaction) -> str:
     return ""
 
 
-def extract_transaction_info(tx: VersionedTransaction) -> TransactionInfo | None:
+def extract_transaction_info(tx: SolanaTransaction) -> TransactionInfo | None:
     """Extract transfer information from a parsed Solana transaction.
 
     Expects a transaction with compute budget + TransferChecked instructions.
+    Supports both legacy and versioned (v0) transactions.
 
     Args:
-        tx: The decoded versioned transaction.
+        tx: The decoded transaction (VersionedTransaction or Transaction).
 
     Returns:
         TransactionInfo if transfer found, None otherwise.

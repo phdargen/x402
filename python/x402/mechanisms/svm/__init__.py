@@ -68,6 +68,7 @@ from .types import (
 
 # Utilities
 from .utils import (
+    SolanaTransaction,
     convert_to_token_amount,
     decode_transaction_from_payload,
     derive_ata,
@@ -77,6 +78,7 @@ from .utils import (
     get_network_config,
     get_token_payer_from_transaction,
     get_usdc_address,
+    is_versioned_transaction,
     normalize_network,
     parse_amount,
     parse_money_to_decimal,
@@ -159,4 +161,6 @@ __all__ = [
     "get_token_payer_from_transaction",
     "extract_transaction_info",
     "derive_ata",
+    "is_versioned_transaction",
+    "SolanaTransaction",
 ]
