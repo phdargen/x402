@@ -163,13 +163,35 @@ type ProcessSettleResult struct {
 }
 
 // ============================================================================
+// Protected Request Hook Types
+// ============================================================================
+
+// ProtectedRequestResult is the result of a protected request hook.
+// nil means continue to payment processing (default behavior).
+type ProtectedRequestResult struct {
+	// GrantAccess bypasses payment if true
+	GrantAccess bool
+	// Abort denies the request with a 403 if true
+	Abort bool
+	// Reason is the error message when Abort is true
+	Reason string
+}
+
+// ProtectedRequestHook runs on every request to a protected route, before payment processing.
+// Return nil to continue to payment processing (default behavior).
+// Return &ProtectedRequestResult{GrantAccess: true} to grant access without requiring payment.
+// Return &ProtectedRequestResult{Abort: true, Reason: "..."} to deny the request (returns 403).
+type ProtectedRequestHook func(ctx context.Context, reqCtx HTTPRequestContext, routeConfig RouteConfig) (*ProtectedRequestResult, error)
+
+// ============================================================================
 // x402HTTPResourceServer
 // ============================================================================
 
 // x402HTTPResourceServer provides HTTP-specific payment handling
 type x402HTTPResourceServer struct {
 	*x402.X402ResourceServer
-	compiledRoutes []CompiledRoute
+	compiledRoutes         []CompiledRoute
+	protectedRequestHooks  []ProtectedRequestHook
 }
 
 // Newx402HTTPResourceServer creates a new HTTP resource server
@@ -180,8 +202,9 @@ func Newx402HTTPResourceServer(routes RoutesConfig, opts ...x402.ResourceServerO
 // Wrappedx402HTTPResourceServer wraps an existing resource server with HTTP functionality.
 func Wrappedx402HTTPResourceServer(routes RoutesConfig, resourceServer *x402.X402ResourceServer) *x402HTTPResourceServer {
 	server := &x402HTTPResourceServer{
-		X402ResourceServer: resourceServer,
-		compiledRoutes:     []CompiledRoute{},
+		X402ResourceServer:    resourceServer,
+		compiledRoutes:        []CompiledRoute{},
+		protectedRequestHooks: []ProtectedRequestHook{},
 	}
 
 	// Handle both single route and multiple routes
@@ -201,6 +224,15 @@ func Wrappedx402HTTPResourceServer(routes RoutesConfig, resourceServer *x402.X40
 	}
 
 	return server
+}
+
+// OnProtectedRequest registers a hook that runs on every request to a protected route,
+// before payment processing. Hooks are executed in order of registration.
+// The first hook to return a non-nil result wins.
+// Returns the server for chaining.
+func (s *x402HTTPResourceServer) OnProtectedRequest(hook ProtectedRequestHook) *x402HTTPResourceServer {
+	s.protectedRequestHooks = append(s.protectedRequestHooks, hook)
+	return s
 }
 
 // BuildPaymentRequirementsFromOptions builds payment requirements from multiple payment options
@@ -276,6 +308,36 @@ func (s *x402HTTPResourceServer) ProcessHTTPRequest(ctx context.Context, reqCtx 
 	routeConfig := s.getRouteConfig(reqCtx.Path, reqCtx.Method)
 	if routeConfig == nil {
 		return HTTPProcessResult{Type: ResultNoPaymentRequired}
+	}
+
+	// Execute protected request hooks before any payment processing
+	for _, hook := range s.protectedRequestHooks {
+		result, err := hook(ctx, reqCtx, *routeConfig)
+		if err != nil {
+			return HTTPProcessResult{
+				Type: ResultPaymentError,
+				Response: &HTTPResponseInstructions{
+					Status:  500,
+					Headers: map[string]string{"Content-Type": "application/json"},
+					Body:    map[string]string{"error": err.Error()},
+				},
+			}
+		}
+		if result != nil {
+			if result.GrantAccess {
+				return HTTPProcessResult{Type: ResultNoPaymentRequired}
+			}
+			if result.Abort {
+				return HTTPProcessResult{
+					Type: ResultPaymentError,
+					Response: &HTTPResponseInstructions{
+						Status:  403,
+						Headers: map[string]string{"Content-Type": "application/json"},
+						Body:    map[string]string{"error": result.Reason},
+					},
+				}
+			}
+		}
 	}
 
 	// Get payment options from route config

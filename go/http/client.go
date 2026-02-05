@@ -18,16 +18,51 @@ import (
 // x402HTTPClient - HTTP-aware payment client
 // ============================================================================
 
+// PaymentRequiredContext is passed to onPaymentRequired hooks
+type PaymentRequiredContext struct {
+	PaymentRequired x402.PaymentRequired
+}
+
+// PaymentRequiredHook is called when a 402 response is received, before payment processing.
+// Return headers to try before payment, or nil to proceed directly to payment.
+type PaymentRequiredHook func(ctx PaymentRequiredContext) (map[string]string, error)
+
 // x402HTTPClient wraps x402Client with HTTP-specific payment handling
 type x402HTTPClient struct {
-	client *x402.X402Client
+	client               *x402.X402Client
+	paymentRequiredHooks []PaymentRequiredHook
 }
 
 // Newx402HTTPClient creates a new HTTP-aware x402 client
 func Newx402HTTPClient(client *x402.X402Client) *x402HTTPClient {
 	return &x402HTTPClient{
-		client: client,
+		client:               client,
+		paymentRequiredHooks: []PaymentRequiredHook{},
 	}
+}
+
+// OnPaymentRequired registers a hook to handle 402 responses before payment.
+// Hooks run in order; first to return headers wins.
+// Returns the client for chaining.
+func (c *x402HTTPClient) OnPaymentRequired(hook PaymentRequiredHook) *x402HTTPClient {
+	c.paymentRequiredHooks = append(c.paymentRequiredHooks, hook)
+	return c
+}
+
+// handlePaymentRequired runs hooks and returns headers if any hook provides them.
+// Returns nil to proceed to payment.
+func (c *x402HTTPClient) handlePaymentRequired(paymentRequired x402.PaymentRequired) (map[string]string, error) {
+	ctx := PaymentRequiredContext{PaymentRequired: paymentRequired}
+	for _, hook := range c.paymentRequiredHooks {
+		headers, err := hook(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if headers != nil && len(headers) > 0 {
+			return headers, nil
+		}
+	}
+	return nil, nil
 }
 
 // ============================================================================
@@ -149,8 +184,8 @@ func (t *PaymentRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	count, _ := t.retryCount.LoadOrStore(requestID, 0)
 	retries := count.(int)
 
-	// Prevent infinite retry loops
-	if retries > 1 {
+	// Prevent infinite retry loops (allow up to 2 retries: 1 for hook headers, 1 for payment)
+	if retries > 2 {
 		t.retryCount.Delete(requestID)
 		return nil, fmt.Errorf("payment retry limit exceeded")
 	}
@@ -198,6 +233,41 @@ func (t *PaymentRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	ctx := req.Context()
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	// Parse PaymentRequired for hooks (works for both V1 and V2)
+	paymentRequired, err := t.x402Client.GetPaymentRequiredResponse(headers, body)
+	if err != nil {
+		t.retryCount.Delete(requestID)
+		return nil, fmt.Errorf("failed to parse payment required: %w", err)
+	}
+
+	// Call onPaymentRequired hooks - allow hooks to provide alternate headers to try first
+	hookHeaders, err := t.x402Client.handlePaymentRequired(paymentRequired)
+	if err != nil {
+		t.retryCount.Delete(requestID)
+		return nil, fmt.Errorf("payment required hook error: %w", err)
+	}
+
+	// If hooks provided headers, retry with those first (before payment)
+	if hookHeaders != nil && len(hookHeaders) > 0 {
+		hookReq := req.Clone(ctx)
+		for k, v := range hookHeaders {
+			hookReq.Header.Set(k, v)
+		}
+
+		// Replenish body for retry if possible
+		if req.GetBody != nil {
+			reqBody, bodyErr := req.GetBody()
+			if bodyErr != nil {
+				t.retryCount.Delete(requestID)
+				return nil, fmt.Errorf("failed to get body for hook retry: %w", bodyErr)
+			}
+			hookReq.Body = reqBody
+		}
+
+		// Retry with hook-provided headers
+		return t.RoundTrip(hookReq)
 	}
 
 	// Fork based on version

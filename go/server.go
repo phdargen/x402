@@ -356,7 +356,8 @@ func (s *x402ResourceServer) VerifyPayment(ctx context.Context, payload types.Pa
 }
 
 // SettlePayment settles a V2 payment
-func (s *x402ResourceServer) SettlePayment(ctx context.Context, payload types.PaymentPayload, requirements types.PaymentRequirements) (*SettleResponse, error) {
+// declaredExtensions is optional - pass nil if no extensions are declared
+func (s *x402ResourceServer) SettlePayment(ctx context.Context, payload types.PaymentPayload, requirements types.PaymentRequirements, declaredExtensions ...map[string]interface{}) (*SettleResponse, error) {
 	// Marshal to bytes early for hooks (escape hatch for extensions)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -419,23 +420,107 @@ func (s *x402ResourceServer) SettlePayment(ctx context.Context, payload types.Pa
 		_ = hook(resultCtx) // Log errors but don't fail
 	}
 
+	// Call EnrichSettlementResponse for each declared extension
+	var extensions map[string]interface{}
+	if len(declaredExtensions) > 0 && declaredExtensions[0] != nil {
+		extensions = declaredExtensions[0]
+	}
+
+	if extensions != nil {
+		s.mu.RLock()
+		registeredExts := s.registeredExtensions
+		s.mu.RUnlock()
+
+		for key, declaration := range extensions {
+			ext, ok := registeredExts[key]
+			if !ok {
+				continue
+			}
+
+			// Convert to types.SettleResponse for extension context
+			extSettleResult := &types.SettleResponse{
+				Success:      settleResult.Success,
+				ErrorReason:  settleResult.ErrorReason,
+				ErrorMessage: settleResult.ErrorMessage,
+				Payer:        settleResult.Payer,
+				Transaction:  settleResult.Transaction,
+				Network:      string(settleResult.Network),
+			}
+
+			settleCtx := types.ExtensionSettleResultContext{
+				Ctx:          ctx,
+				Payload:      payload,
+				Requirements: requirements,
+				Result:       extSettleResult,
+			}
+
+			enrichedData, err := ext.EnrichSettlementResponse(ctx, declaration, settleCtx)
+			if err != nil {
+				// Log error but continue
+				continue
+			}
+			if enrichedData != nil {
+				if settleResult.Extensions == nil {
+					settleResult.Extensions = make(map[string]interface{})
+				}
+				settleResult.Extensions[key] = enrichedData
+			}
+		}
+	}
+
 	return settleResult, nil
 }
 
 // CreatePaymentRequiredResponse creates a V2 PaymentRequired response
+// It also calls EnrichPaymentRequiredResponse for each registered extension
 func (s *x402ResourceServer) CreatePaymentRequiredResponse(
 	requirements []types.PaymentRequirements,
 	resourceInfo *types.ResourceInfo,
 	errorMsg string,
 	extensions map[string]interface{},
 ) types.PaymentRequired {
-	return types.PaymentRequired{
+	response := types.PaymentRequired{
 		X402Version: 2,
 		Error:       errorMsg,
 		Resource:    resourceInfo,
 		Accepts:     requirements,
 		Extensions:  extensions,
 	}
+
+	// Call EnrichPaymentRequiredResponse for each declared extension
+	if extensions != nil {
+		s.mu.RLock()
+		registeredExts := s.registeredExtensions
+		s.mu.RUnlock()
+
+		for key, declaration := range extensions {
+			ext, ok := registeredExts[key]
+			if !ok {
+				continue
+			}
+
+			prCtx := types.PaymentRequiredContext{
+				Requirements:            requirements,
+				ResourceInfo:            resourceInfo,
+				Error:                   errorMsg,
+				PaymentRequiredResponse: response,
+			}
+
+			enrichedData, err := ext.EnrichPaymentRequiredResponse(context.Background(), declaration, prCtx)
+			if err != nil {
+				// Log error but continue
+				continue
+			}
+			if enrichedData != nil {
+				if response.Extensions == nil {
+					response.Extensions = make(map[string]interface{})
+				}
+				response.Extensions[key] = enrichedData
+			}
+		}
+	}
+
+	return response
 }
 
 // ProcessPaymentRequest processes a payment request end-to-end
