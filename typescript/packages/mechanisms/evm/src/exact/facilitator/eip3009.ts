@@ -156,9 +156,10 @@ export async function verifyEIP3009(
     };
   }
 
-  // Verify validBefore is in the future (with 6 second buffer for block time)
+  // Verify validBefore has at least maxTimeoutSeconds of runway remaining so the server
+  // has enough time to execute its handler and settle before the authorization expires.
   const now = Math.floor(Date.now() / 1000);
-  if (BigInt(eip3009Payload.authorization.validBefore) < BigInt(now + 6)) {
+  if (BigInt(eip3009Payload.authorization.validBefore) < BigInt(now + requirements.maxTimeoutSeconds)) {
     return {
       isValid: false,
       invalidReason: "invalid_exact_evm_payload_authorization_valid_before",
@@ -234,13 +235,29 @@ export async function settleEIP3009(
   // Re-verify before settling
   const valid = await verifyEIP3009(signer, payload, requirements, eip3009Payload);
   if (!valid.isValid) {
-    return {
-      success: false,
-      network: payload.accepted.network,
-      transaction: "",
-      errorReason: valid.invalidReason ?? "invalid_scheme",
-      payer,
-    };
+    // The runway check may fail at settle time because the API handler consumed time.
+    // If the authorization hasn't actually expired, proceed with settlement.
+    if (valid.invalidReason === "invalid_exact_evm_payload_authorization_valid_before") {
+      const now = Math.floor(Date.now() / 1000);
+      if (BigInt(eip3009Payload.authorization.validBefore) < BigInt(now + 6)) {
+        return {
+          success: false,
+          network: payload.accepted.network,
+          transaction: "",
+          errorReason: valid.invalidReason,
+          payer,
+        };
+      }
+      // Not expired, just lost runway -- OK to proceed with settlement
+    } else {
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: valid.invalidReason ?? "invalid_scheme",
+        payer,
+      };
+    }
   }
 
   try {

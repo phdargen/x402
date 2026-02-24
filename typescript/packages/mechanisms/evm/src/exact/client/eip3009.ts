@@ -1,6 +1,6 @@
 import { PaymentRequirements, PaymentPayloadResult } from "@x402/core/types";
 import { getAddress } from "viem";
-import { authorizationTypes } from "../../constants";
+import { authorizationTypes, TRANSIT_BUFFER_SECONDS } from "../../constants";
 import { ClientEvmSigner } from "../../signer";
 import { ExactEIP3009Payload } from "../../types";
 import { createNonce } from "../../utils";
@@ -26,7 +26,7 @@ export async function createEIP3009Payload(
     to: getAddress(paymentRequirements.payTo),
     value: paymentRequirements.amount,
     validAfter: (now - 600).toString(),
-    validBefore: (now + paymentRequirements.maxTimeoutSeconds).toString(),
+    validBefore: (now + paymentRequirements.maxTimeoutSeconds + TRANSIT_BUFFER_SECONDS).toString(),
     nonce,
   };
 

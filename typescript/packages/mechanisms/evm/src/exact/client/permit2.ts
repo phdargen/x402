@@ -4,6 +4,7 @@ import {
   permit2WitnessTypes,
   PERMIT2_ADDRESS,
   x402ExactPermit2ProxyAddress,
+  TRANSIT_BUFFER_SECONDS,
 } from "../../constants";
 import { ClientEvmSigner } from "../../signer";
 import { ExactPermit2Payload } from "../../types";
@@ -33,7 +34,7 @@ export async function createPermit2Payload(
   // Lower time bound - allow some clock skew
   const validAfter = (now - 600).toString();
   // Upper time bound is enforced by Permit2's deadline field
-  const deadline = (now + paymentRequirements.maxTimeoutSeconds).toString();
+  const deadline = (now + paymentRequirements.maxTimeoutSeconds + TRANSIT_BUFFER_SECONDS).toString();
 
   const permit2Authorization: ExactPermit2Payload["permit2Authorization"] = {
     from: signer.address,

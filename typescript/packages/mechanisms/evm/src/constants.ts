@@ -1,3 +1,10 @@
+/**
+ * Extra seconds added to the client-side validBefore / deadline beyond maxTimeoutSeconds.
+ * Covers network transit time between signing and facilitator verification so that by the
+ * time the authorization arrives, at least maxTimeoutSeconds of runway still remain.
+ */
+export const TRANSIT_BUFFER_SECONDS = 60;
+
 // EIP-3009 TransferWithAuthorization types for EIP-712 signing
 export const authorizationTypes = {
   TransferWithAuthorization: [

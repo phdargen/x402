@@ -95,9 +95,10 @@ export async function verifyPermit2(
     };
   }
 
-  // Verify deadline not expired (with 6 second buffer for block time)
+  // Verify deadline has at least maxTimeoutSeconds of runway remaining so the server
+  // has enough time to execute its handler and settle before the deadline expires.
   const now = Math.floor(Date.now() / 1000);
-  if (BigInt(permit2Payload.permit2Authorization.deadline) < BigInt(now + 6)) {
+  if (BigInt(permit2Payload.permit2Authorization.deadline) < BigInt(now + requirements.maxTimeoutSeconds)) {
     return {
       isValid: false,
       invalidReason: "permit2_deadline_expired",
@@ -275,13 +276,29 @@ export async function settlePermit2(
   // Re-verify before settling
   const valid = await verifyPermit2(signer, payload, requirements, permit2Payload);
   if (!valid.isValid) {
-    return {
-      success: false,
-      network: payload.accepted.network,
-      transaction: "",
-      errorReason: valid.invalidReason ?? "invalid_scheme",
-      payer,
-    };
+    // The runway check may fail at settle time because the API handler consumed time.
+    // If the deadline hasn't actually expired, proceed with settlement.
+    if (valid.invalidReason === "permit2_deadline_expired") {
+      const now = Math.floor(Date.now() / 1000);
+      if (BigInt(permit2Payload.permit2Authorization.deadline) < BigInt(now + 6)) {
+        return {
+          success: false,
+          network: payload.accepted.network,
+          transaction: "",
+          errorReason: valid.invalidReason,
+          payer,
+        };
+      }
+      // Not expired, just lost runway -- OK to proceed with settlement
+    } else {
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: valid.invalidReason ?? "invalid_scheme",
+        payer,
+      };
+    }
   }
 
   try {

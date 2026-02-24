@@ -7,7 +7,7 @@ import {
 import { EIP2612_GAS_SPONSORING } from "@x402/extensions";
 import { ClientEvmSigner } from "../../signer";
 import { AssetTransferMethod } from "../../types";
-import { PERMIT2_ADDRESS } from "../../constants";
+import { PERMIT2_ADDRESS, TRANSIT_BUFFER_SECONDS } from "../../constants";
 import { getAddress } from "viem";
 import { createEIP3009Payload } from "./eip3009";
 import { createPermit2Payload } from "./permit2";
@@ -150,7 +150,7 @@ export class ExactEvmScheme implements SchemeNetworkClient {
     const permit2Auth = result.payload?.permit2Authorization as Record<string, unknown> | undefined;
     const deadline =
       (permit2Auth?.deadline as string) ??
-      Math.floor(Date.now() / 1000 + requirements.maxTimeoutSeconds).toString();
+      Math.floor(Date.now() / 1000 + requirements.maxTimeoutSeconds + TRANSIT_BUFFER_SECONDS).toString();
 
     // Sign the EIP-2612 permit
     const info = await signEip2612Permit(

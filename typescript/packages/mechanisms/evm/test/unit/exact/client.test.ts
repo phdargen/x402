@@ -106,14 +106,57 @@ describe("ExactEvmScheme (Client)", () => {
         extra: { name: "USD Coin", version: "2" },
       };
 
-      const beforeTime = Math.floor(Date.now() / 1000) + 600;
+      // validBefore = now + maxTimeoutSeconds + TRANSIT_BUFFER_SECONDS (60)
+      const TRANSIT_BUFFER_SECONDS = 60;
+      const beforeTime = Math.floor(Date.now() / 1000) + 600 + TRANSIT_BUFFER_SECONDS;
       const result = await client.createPaymentPayload(2, requirements);
-      const afterTime = Math.floor(Date.now() / 1000) + 600;
+      const afterTime = Math.floor(Date.now() / 1000) + 600 + TRANSIT_BUFFER_SECONDS;
 
       const validBefore = parseInt(result.payload.authorization.validBefore);
 
       expect(validBefore).toBeGreaterThanOrEqual(beforeTime);
       expect(validBefore).toBeLessThanOrEqual(afterTime + 1);
+    });
+
+    it("should include TRANSIT_BUFFER_SECONDS in validBefore beyond maxTimeoutSeconds", async () => {
+      // This test ensures that validBefore extends maxTimeoutSeconds worth of time PAST
+      // the transit buffer, giving the facilitator enough runway after network transit.
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:8453",
+        amount: "1000000",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USD Coin", version: "2" },
+      };
+
+      const TRANSIT_BUFFER_SECONDS = 60;
+      const now = Math.floor(Date.now() / 1000);
+      const result = await client.createPaymentPayload(2, requirements);
+
+      const validBefore = parseInt(result.payload.authorization.validBefore);
+      // Must have at least maxTimeoutSeconds + TRANSIT_BUFFER_SECONDS remaining
+      expect(validBefore).toBeGreaterThanOrEqual(now + 300 + TRANSIT_BUFFER_SECONDS);
+    });
+
+    it("should include TRANSIT_BUFFER_SECONDS in Permit2 deadline beyond maxTimeoutSeconds", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:8453",
+        amount: "1000000",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { assetTransferMethod: "permit2" },
+      };
+
+      const TRANSIT_BUFFER_SECONDS = 60;
+      const now = Math.floor(Date.now() / 1000);
+      const result = await client.createPaymentPayload(2, requirements);
+
+      const deadline = parseInt(result.payload.permit2Authorization.deadline);
+      expect(deadline).toBeGreaterThanOrEqual(now + 300 + TRANSIT_BUFFER_SECONDS);
     });
 
     it("should use signer's address as from", async () => {

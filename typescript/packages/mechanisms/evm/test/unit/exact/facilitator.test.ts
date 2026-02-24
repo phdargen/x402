@@ -769,6 +769,164 @@ describe("ExactEvmScheme (Facilitator)", () => {
     });
   });
 
+  describe("maxTimeoutSeconds runway check", () => {
+    it("should reject EIP-3009 authorization that lacks sufficient remaining runway", async () => {
+      // Authorization with only 30s remaining, but maxTimeoutSeconds = 300.
+      // It is NOT expired (> 6s), but does not have enough runway for the full
+      // request-execute-settle cycle. Verify must reject it.
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2" },
+      };
+
+      const now = Math.floor(Date.now() / 1000);
+      const payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          authorization: {
+            from: mockClientSigner.address,
+            to: requirements.payTo,
+            value: requirements.amount,
+            validAfter: "0",
+            validBefore: (now + 30).toString(), // 30s runway -- not expired, but < 300s
+            nonce: "0x00",
+          },
+          signature: "0x",
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(payload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_exact_evm_payload_authorization_valid_before");
+    });
+
+    it("should reject Permit2 deadline that lacks sufficient remaining runway", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" },
+      };
+
+      const now = Math.floor(Date.now() / 1000);
+      const permit2Payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          signature: "0xmocksignature",
+          permit2Authorization: {
+            from: mockClientSigner.address,
+            permitted: {
+              token: requirements.asset,
+              amount: requirements.amount,
+            },
+            spender: x402ExactPermit2ProxyAddress,
+            nonce: "12345",
+            deadline: (now + 30).toString(), // 30s deadline -- not expired, but < 300s
+            witness: {
+              to: requirements.payTo,
+              validAfter: "0",
+              extra: "0x",
+            },
+          },
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.verify(permit2Payload, requirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("permit2_deadline_expired");
+    });
+
+    it("should settle EIP-3009 successfully when authorization has lost runway but is not expired", async () => {
+      // At verify time: 30s > maxTimeoutSeconds (300s) fails runway check.
+      // At settle time: 30s > 6s passes relaxed expiry check, so settlement proceeds.
+      // This test verifies the settle relaxed fallback behavior.
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2" },
+      };
+
+      // Mock readContract to return sufficient balance
+      mockFacilitatorSigner.readContract = vi.fn().mockResolvedValue(BigInt("10000000000"));
+
+      const now = Math.floor(Date.now() / 1000);
+      const payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          authorization: {
+            from: mockClientSigner.address,
+            to: requirements.payTo,
+            value: requirements.amount,
+            validAfter: "0",
+            validBefore: (now + 30).toString(), // 30s runway: verify rejects but settle should proceed
+            nonce: "0x00",
+          },
+          signature: "0x",
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.settle(payload, requirements);
+
+      expect(result.success).toBe(true);
+      expect(result.payer).toBe(mockClientSigner.address);
+    });
+
+    it("should NOT settle EIP-3009 when authorization is truly expired (< 6s)", async () => {
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: "eip155:84532",
+        amount: "1000000",
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        payTo: "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0",
+        maxTimeoutSeconds: 300,
+        extra: { name: "USDC", version: "2" },
+      };
+
+      const now = Math.floor(Date.now() / 1000);
+      const payload: PaymentPayload = {
+        x402Version: 2,
+        payload: {
+          authorization: {
+            from: mockClientSigner.address,
+            to: requirements.payTo,
+            value: requirements.amount,
+            validAfter: "0",
+            validBefore: (now + 3).toString(), // 3s -- truly expired, settle should fail
+            nonce: "0x00",
+          },
+          signature: "0x",
+        },
+        accepted: requirements,
+        resource: { url: "", description: "", mimeType: "" },
+      };
+
+      const result = await facilitator.settle(payload, requirements);
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_exact_evm_payload_authorization_valid_before");
+    });
+  });
+
   describe("EIP-2612 Gas Sponsoring - Settlement", () => {
     const permit2Requirements: PaymentRequirements = {
       scheme: "exact",
