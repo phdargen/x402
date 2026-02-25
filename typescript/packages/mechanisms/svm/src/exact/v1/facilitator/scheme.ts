@@ -401,6 +401,7 @@ export class ExactSvmSchemeV1 implements SchemeNetworkFacilitator {
         payer: valid.payer,
       };
     } catch (error) {
+      this.settlementCache.remove(txKey);
       console.error("Failed to settle transaction:", error);
       return {
         success: false,

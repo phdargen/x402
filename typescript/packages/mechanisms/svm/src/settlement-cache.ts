@@ -31,6 +31,16 @@ export class SettlementCache {
   }
 
   /**
+   * Remove a key from the cache, allowing the same transaction to be retried
+   * after a transient failure (e.g. RPC timeout).
+   *
+   * @param key - The key to remove.
+   */
+  remove(key: string): void {
+    this.entries.delete(key);
+  }
+
+  /**
    * Remove entries older than the settlement TTL.
    */
   private prune(): void {
@@ -38,6 +48,8 @@ export class SettlementCache {
     for (const [key, timestamp] of this.entries) {
       if (timestamp < cutoff) {
         this.entries.delete(key);
+      } else {
+        break; // all subsequent entries are newer
       }
     }
   }
