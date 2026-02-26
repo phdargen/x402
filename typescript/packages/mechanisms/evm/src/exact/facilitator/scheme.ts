@@ -1,4 +1,5 @@
 import {
+  FacilitatorContext,
   PaymentPayload,
   PaymentRequirements,
   SchemeNetworkFacilitator,
@@ -96,21 +97,23 @@ export class ExactEvmScheme implements SchemeNetworkFacilitator {
    *
    * @param payload - The payment payload to settle
    * @param requirements - The payment requirements
+   * @param context - Optional facilitator context for builder codes
    * @returns Promise resolving to settlement response
    */
   async settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const rawPayload = payload.payload as ExactEvmPayloadV2;
 
     // Route based on payload type
     if (isPermit2Payload(rawPayload)) {
-      return settlePermit2(this.signer, payload, requirements, rawPayload);
+      return settlePermit2(this.signer, payload, requirements, rawPayload, context);
     }
 
     // Type-narrowed to EIP-3009 payload
     const eip3009Payload: ExactEIP3009Payload = rawPayload;
-    return settleEIP3009(this.signer, payload, requirements, eip3009Payload, this.config);
+    return settleEIP3009(this.signer, payload, requirements, eip3009Payload, this.config, context);
   }
 }

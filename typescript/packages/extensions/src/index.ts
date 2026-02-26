@@ -14,3 +14,6 @@ export { paymentIdentifierResourceServerExtension } from "./payment-identifier/r
 
 // EIP-2612 Gas Sponsoring extension
 export * from "./eip2612-gas-sponsoring";
+
+// Builder Code (ERC-8021) extension
+export * from "./builder-code";

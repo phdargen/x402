@@ -1,4 +1,5 @@
 import {
+  FacilitatorContext,
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
@@ -7,9 +8,11 @@ import {
 import {
   extractEip2612GasSponsoringInfo,
   validateEip2612GasSponsoringInfo,
+  extractBuilderCodes,
+  encodeErc8021Suffix,
 } from "@x402/extensions";
 import type { Eip2612GasSponsoringInfo } from "@x402/extensions";
-import { getAddress } from "viem";
+import { encodeFunctionData, getAddress, type Hex } from "viem";
 import {
   eip3009ABI,
   PERMIT2_ADDRESS,
@@ -270,6 +273,7 @@ export async function verifyPermit2(
  * @param payload - The payment payload to settle
  * @param requirements - The payment requirements
  * @param permit2Payload - The Permit2 specific payload
+ * @param context - Optional facilitator context for builder codes
  * @returns Promise resolving to settlement response
  */
 export async function settlePermit2(
@@ -277,6 +281,7 @@ export async function settlePermit2(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   permit2Payload: ExactPermit2Payload,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const payer = permit2Payload.permit2Authorization.from;
 
@@ -296,63 +301,73 @@ export async function settlePermit2(
     // Check if EIP-2612 gas sponsoring extension is present
     const eip2612Info = extractEip2612GasSponsoringInfo(payload);
 
+    const builderCodes = extractBuilderCodes(payload, payload.accepted.network, context);
+
     let tx: `0x${string}`;
 
     if (eip2612Info) {
       // Use settleWithPermit - includes the EIP-2612 permit
       const { v, r, s } = splitEip2612Signature(eip2612Info.signature);
 
-      tx = await signer.writeContract({
-        address: x402ExactPermit2ProxyAddress,
-        abi: x402ExactPermit2ProxyABI,
-        functionName: "settleWithPermit",
-        args: [
-          {
-            value: BigInt(eip2612Info.amount),
-            deadline: BigInt(eip2612Info.deadline),
-            r,
-            s,
-            v,
-          },
-          {
-            permitted: {
-              token: getAddress(permit2Payload.permit2Authorization.permitted.token),
-              amount: BigInt(permit2Payload.permit2Authorization.permitted.amount),
+      tx = await writeContractWithBuilderCodes(
+        signer,
+        {
+          address: x402ExactPermit2ProxyAddress,
+          abi: x402ExactPermit2ProxyABI,
+          functionName: "settleWithPermit",
+          args: [
+            {
+              value: BigInt(eip2612Info.amount),
+              deadline: BigInt(eip2612Info.deadline),
+              r,
+              s,
+              v,
             },
-            nonce: BigInt(permit2Payload.permit2Authorization.nonce),
-            deadline: BigInt(permit2Payload.permit2Authorization.deadline),
-          },
-          getAddress(payer),
-          {
-            to: getAddress(permit2Payload.permit2Authorization.witness.to),
-            validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
-          },
-          permit2Payload.signature,
-        ],
-      });
+            {
+              permitted: {
+                token: getAddress(permit2Payload.permit2Authorization.permitted.token),
+                amount: BigInt(permit2Payload.permit2Authorization.permitted.amount),
+              },
+              nonce: BigInt(permit2Payload.permit2Authorization.nonce),
+              deadline: BigInt(permit2Payload.permit2Authorization.deadline),
+            },
+            getAddress(payer),
+            {
+              to: getAddress(permit2Payload.permit2Authorization.witness.to),
+              validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
+            },
+            permit2Payload.signature,
+          ],
+        },
+        builderCodes,
+      );
     } else {
       // Standard settle - no EIP-2612 extension
-      tx = await signer.writeContract({
-        address: x402ExactPermit2ProxyAddress,
-        abi: x402ExactPermit2ProxyABI,
-        functionName: "settle",
-        args: [
-          {
-            permitted: {
-              token: getAddress(permit2Payload.permit2Authorization.permitted.token),
-              amount: BigInt(permit2Payload.permit2Authorization.permitted.amount),
+      tx = await writeContractWithBuilderCodes(
+        signer,
+        {
+          address: x402ExactPermit2ProxyAddress,
+          abi: x402ExactPermit2ProxyABI,
+          functionName: "settle",
+          args: [
+            {
+              permitted: {
+                token: getAddress(permit2Payload.permit2Authorization.permitted.token),
+                amount: BigInt(permit2Payload.permit2Authorization.permitted.amount),
+              },
+              nonce: BigInt(permit2Payload.permit2Authorization.nonce),
+              deadline: BigInt(permit2Payload.permit2Authorization.deadline),
             },
-            nonce: BigInt(permit2Payload.permit2Authorization.nonce),
-            deadline: BigInt(permit2Payload.permit2Authorization.deadline),
-          },
-          getAddress(payer),
-          {
-            to: getAddress(permit2Payload.permit2Authorization.witness.to),
-            validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
-          },
-          permit2Payload.signature,
-        ],
-      });
+            getAddress(payer),
+            {
+              to: getAddress(permit2Payload.permit2Authorization.witness.to),
+              validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
+            },
+            permit2Payload.signature,
+          ],
+        },
+        builderCodes,
+      );
     }
 
     // Wait for transaction confirmation
@@ -475,4 +490,38 @@ function splitEip2612Signature(signature: string): {
   const v = parseInt(sig.slice(128, 130), 16);
 
   return { v, r, s };
+}
+
+/**
+ * Writes a contract call, appending ERC-8021 builder code suffix to calldata when present.
+ *
+ * @param signer - The facilitator signer for contract writes
+ * @param call - The contract call parameters
+ * @param call.address - Contract address
+ * @param call.abi - Contract ABI
+ * @param call.functionName - Function to call
+ * @param call.args - Arguments for the function
+ * @param builderCodes - Builder codes to encode in the calldata suffix (e.g. for ERC-8021)
+ * @returns Promise resolving to the transaction hash
+ */
+async function writeContractWithBuilderCodes(
+  signer: FacilitatorEvmSigner,
+  call: {
+    address: `0x${string}`;
+    abi: readonly unknown[];
+    functionName: string;
+    args: readonly unknown[];
+  },
+  builderCodes: string[],
+): Promise<`0x${string}`> {
+  if (builderCodes.length === 0) {
+    return signer.writeContract(call);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const calldata = encodeFunctionData(call as any);
+  const suffix = encodeErc8021Suffix(builderCodes);
+  return signer.sendTransaction({
+    to: call.address,
+    data: `${calldata}${suffix.slice(2)}` as Hex,
+  });
 }

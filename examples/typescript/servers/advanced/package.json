@@ -7,6 +7,7 @@
     "dev": "tsx index.ts bazaar",
     "dev:all-networks": "tsx all_networks.ts",
     "dev:bazaar": "tsx index.ts bazaar",
+    "dev:builder-code": "tsx builder-code",
     "dev:custom-money-definition": "tsx index.ts custom-money-definition",
     "dev:dynamic-pay-to": "tsx index.ts dynamic-pay-to",
     "dev:dynamic-price": "tsx index.ts dynamic-price",

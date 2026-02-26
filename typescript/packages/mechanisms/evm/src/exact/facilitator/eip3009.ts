@@ -1,10 +1,19 @@
 import {
+  FacilitatorContext,
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { getAddress, Hex, isAddressEqual, parseErc6492Signature, parseSignature } from "viem";
+import { extractBuilderCodes, encodeErc8021Suffix } from "@x402/extensions";
+import {
+  encodeFunctionData,
+  getAddress,
+  Hex,
+  isAddressEqual,
+  parseErc6492Signature,
+  parseSignature,
+} from "viem";
 import { authorizationTypes, eip3009ABI } from "../../constants";
 import { FacilitatorEvmSigner } from "../../signer";
 import { ExactEIP3009Payload } from "../../types";
@@ -220,6 +229,7 @@ export async function verifyEIP3009(
  * @param requirements - The payment requirements
  * @param eip3009Payload - The EIP-3009 specific payload
  * @param config - Facilitator configuration
+ * @param context - Optional facilitator context for builder codes
  * @returns Promise resolving to settlement response
  */
 export async function settleEIP3009(
@@ -228,6 +238,7 @@ export async function settleEIP3009(
   requirements: PaymentRequirements,
   eip3009Payload: ExactEIP3009Payload,
   config: EIP3009FacilitatorConfig,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const payer = eip3009Payload.authorization.from;
 
@@ -274,43 +285,53 @@ export async function settleEIP3009(
     const signatureLength = signature.startsWith("0x") ? signature.length - 2 : signature.length;
     const isECDSA = signatureLength === 130;
 
+    const builderCodes = extractBuilderCodes(payload, payload.accepted.network, context);
+
     let tx: Hex;
     if (isECDSA) {
       // For EOA wallets, parse signature into v, r, s and use that overload
       const parsedSig = parseSignature(signature);
 
-      tx = await signer.writeContract({
-        address: getAddress(requirements.asset),
-        abi: eip3009ABI,
-        functionName: "transferWithAuthorization",
-        args: [
-          getAddress(eip3009Payload.authorization.from),
-          getAddress(eip3009Payload.authorization.to),
-          BigInt(eip3009Payload.authorization.value),
-          BigInt(eip3009Payload.authorization.validAfter),
-          BigInt(eip3009Payload.authorization.validBefore),
-          eip3009Payload.authorization.nonce,
-          (parsedSig.v as number | undefined) || parsedSig.yParity,
-          parsedSig.r,
-          parsedSig.s,
-        ],
-      });
+      tx = await writeContractWithBuilderCodes(
+        signer,
+        {
+          address: getAddress(requirements.asset),
+          abi: eip3009ABI,
+          functionName: "transferWithAuthorization",
+          args: [
+            getAddress(eip3009Payload.authorization.from),
+            getAddress(eip3009Payload.authorization.to),
+            BigInt(eip3009Payload.authorization.value),
+            BigInt(eip3009Payload.authorization.validAfter),
+            BigInt(eip3009Payload.authorization.validBefore),
+            eip3009Payload.authorization.nonce,
+            (parsedSig.v as number | undefined) || parsedSig.yParity,
+            parsedSig.r,
+            parsedSig.s,
+          ],
+        },
+        builderCodes,
+      );
     } else {
       // For smart wallets, use the bytes signature overload
-      tx = await signer.writeContract({
-        address: getAddress(requirements.asset),
-        abi: eip3009ABI,
-        functionName: "transferWithAuthorization",
-        args: [
-          getAddress(eip3009Payload.authorization.from),
-          getAddress(eip3009Payload.authorization.to),
-          BigInt(eip3009Payload.authorization.value),
-          BigInt(eip3009Payload.authorization.validAfter),
-          BigInt(eip3009Payload.authorization.validBefore),
-          eip3009Payload.authorization.nonce,
-          signature,
-        ],
-      });
+      tx = await writeContractWithBuilderCodes(
+        signer,
+        {
+          address: getAddress(requirements.asset),
+          abi: eip3009ABI,
+          functionName: "transferWithAuthorization",
+          args: [
+            getAddress(eip3009Payload.authorization.from),
+            getAddress(eip3009Payload.authorization.to),
+            BigInt(eip3009Payload.authorization.value),
+            BigInt(eip3009Payload.authorization.validAfter),
+            BigInt(eip3009Payload.authorization.validBefore),
+            eip3009Payload.authorization.nonce,
+            signature,
+          ],
+        },
+        builderCodes,
+      );
     }
 
     // Wait for transaction confirmation
@@ -341,4 +362,38 @@ export async function settleEIP3009(
       payer,
     };
   }
+}
+
+/**
+ * Writes a contract call, appending ERC-8021 builder code suffix to calldata when present.
+ *
+ * @param signer - The facilitator signer for contract writes
+ * @param call - The contract call parameters
+ * @param call.address - Contract address
+ * @param call.abi - Contract ABI
+ * @param call.functionName - Function to call
+ * @param call.args - Arguments for the function
+ * @param builderCodes - Builder codes to encode in the calldata suffix (e.g. for ERC-8021)
+ * @returns Promise resolving to the transaction hash
+ */
+async function writeContractWithBuilderCodes(
+  signer: FacilitatorEvmSigner,
+  call: {
+    address: `0x${string}`;
+    abi: readonly unknown[];
+    functionName: string;
+    args: readonly unknown[];
+  },
+  builderCodes: string[],
+): Promise<Hex> {
+  if (builderCodes.length === 0) {
+    return signer.writeContract(call);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const calldata = encodeFunctionData(call as any);
+  const suffix = encodeErc8021Suffix(builderCodes);
+  return signer.sendTransaction({
+    to: call.address,
+    data: `${calldata}${suffix.slice(2)}` as Hex,
+  });
 }
