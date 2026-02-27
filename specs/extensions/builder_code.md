@@ -2,26 +2,22 @@
 
 ## Summary
 
-The `builder-code` extension enables onchain transaction attribution via
-[ERC-8021](https://eip.tools/eip/8021). Resource servers declare a builder code
-per network, choosing either the chain's canonical Code Registry (schema 0) or
-an explicit registry contract (schema 1). Facilitators
-MAY append their own code when they share the same registry context, and MAY
-independently append their own code even when the server does not declare the
-extension. During settlement, codes are comma-joined and appended as an ERC-8021
-data suffix to the calldata. Smart contracts ignore the extra bytes; offchain
-indexers parse them for attribution.
+The `builder-code` extension enables onchain transaction attribution. Resource servers declare a builder code per network, choosing either the chain's canonical Code Registry (schema 0) or an explicit registry contract (schema 1). 
+Facilitators MAY append their own builder code when they share the same registry context, and MAY independently append their own code even when the server does not declare the extension. Facilitators append builder code data to the transaction during settlement so that offchain indexers can attribute transactions to the originating application.
+
+**On EVM chains**, encoding follows [ERC-8021](https://eip.tools/eip/8021) (calldata suffix).  Builder codes are appended as an ERC-8021 data suffix to the calldata. Smart contracts ignore the extra bytes; offchain indexers parse them for attribution.
 
 ---
 
 ## `PaymentRequired`
 
 Server declares per-network builder codes in `extensions["builder-code"].info`.
-When `registry` is omitted the chain's canonical Code Registry is assumed
-(schema 0). When `registry` is present, the suffix is encoded with an explicit
-registry reference (schema 1). The registry MAY live on a different chain than
-the settlement transaction, enabling multi-chain apps to maintain a single
-registry deployment:
+The `chains` map is keyed by CAIP-2 network identifier. Each entry contains a
+`code` and an optional `registry` pointing to the contract where that code is
+registered. When `registry` is omitted the network's canonical registry is
+assumed. When `registry` is present, the registry MAY live on a different
+network than the settlement transaction, enabling multi-chain apps to maintain
+a single registry deployment:
 
 ```json
 {
@@ -81,10 +77,40 @@ registry deployment:
             "code": "my_eth_app",
             "registry": {
               "address": "0xcccccccccccccccccccccccccccccccccccccccc",
-              "chainId": "8453"
+              "network": "eip155:8453"
             }
           }
         }
+      },
+      "schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "chains": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9_]{1,32}$"
+                },
+                "registry": {
+                  "type": "object",
+                  "properties": {
+                    "address": { "type": "string" },
+                    "network": { "type": "string" }
+                  },
+                  "required": ["address", "network"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["code"]
+            }
+          }
+        },
+        "required": ["version", "chains"]
       }
     }
   }
@@ -96,18 +122,15 @@ registry deployment:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `code` | Yes | ASCII attribution code (`[a-z0-9_]{1,32}`). |
-| `registry` | No | Explicit Code Registry for ERC-8021 schema 1. When absent, schema 0 is used (chain's canonical Code Registry). |
-| `registry.address` | If `registry` | Address of a contract implementing `ICodeRegistry` (ERC-8021). |
-| `registry.chainId` | If `registry` | Numeric chain ID hosting the registry contract. MAY differ from the settlement chain. ERC-8021 schema 1 supports cross-chain registry references so that multi-chain apps can maintain a single registry on one chain and reference it from transactions on any other chain. |
+| `registry` | No | Explicit registry contract where the code is registered. When absent, the network's canonical registry is assumed. |
+| `registry.address` | If `registry` | Address of the registry contract. Format is network-dependent (e.g. `0x`-prefixed hex on EVM, base58 on Solana). |
+| `registry.network` | If `registry` | CAIP-2 network identifier of the chain hosting the registry. MAY differ from the settlement network, enabling multi-chain apps to maintain a single registry deployment. |
 
-### Schema Selection
+---
 
-The presence of `registry` determines how the suffix is encoded:
+## Schema Validation
 
-| Server declaration | Schema | Registry resolution |
-|--------------------|--------|---------------------|
-| No `registry` | **0** | Chain's canonical Code Registry (implicit) |
-| `registry` present | **1** | Explicit registry contract. The registry MAY be on the settlement chain itself (e.g. a non-canonical registry) or on a different chain entirely, enabling multi-chain apps to maintain a single registry deployment and reference it from transactions on any chain. |
+The `schema` field contains a JSON Schema (Draft 2020-12) that validates the structure of `info`. It requires `version` and `chains`; each chain entry requires `code` (ASCII `[a-z0-9_]{1,32}`) and optionally includes `registry` with `address` and `network`. Facilitators **may** validate `info` against `schema` before processing.
 
 ---
 
@@ -145,11 +168,10 @@ The facilitator signals `"builder-code"` support in `/supported.extensions`.
 
 Facilitator-owned builder codes are internal configuration, not exposed via
 `/supported`. At settlement the facilitator MAY append its own code when it
-shares the same registry context as the server's declaration for that network
-(canonical registry for schema 0, or the same explicit registry for schema 1).
+shares the same registry context as the server's declaration for that network.
 
 When the server does **not** declare `builder-code`, the facilitator MAY still
-append its own code using whichever schema and registry it chooses. Because the
+append its own code using whichever encoding it chooses. Because the
 facilitator pays gas for settlement, this adds no cost to the server and does
 not affect onchain execution. Servers should expect that a facilitator
 advertising `"builder-code"` in `/supported.extensions` will append attribution
@@ -158,7 +180,18 @@ extension.
 
 ---
 
-## Settlement Behavior
+## Settlement Behavior (EVM)
+
+On EVM chains (`eip155:*`), builder codes are encoded as an [ERC-8021](https://eip.tools/eip/8021) calldata suffix. The presence of `registry` in the chain entry determines which ERC-8021 schema is used. On EVM, `registry.address` MUST be a 20-byte `0x`-prefixed hex address implementing `ICodeRegistry`, and `registry.network` MUST be an `eip155:` CAIP-2 identifier.
+
+### Schema Selection
+
+| Server declaration | Schema | Registry resolution |
+|--------------------|--------|---------------------|
+| No `registry` | **0** | Chain's canonical Code Registry (implicit) |
+| `registry` present | **1** | Explicit registry contract. The registry MAY be on the settlement chain itself (e.g. a non-canonical registry) or on a different chain entirely. |
+
+### Settlement Steps
 
 During `settle()`, the mechanism:
 
@@ -184,7 +217,7 @@ During `settle()`, the mechanism:
 appended to `userOp.callData` rather than top-level transaction data, per
 ERC-8021.
 
-### ERC-8021 Suffix Encoding
+### ERC-8021 Suffix Encoding (EVM)
 
 **Schema 0** — canonical registry:
 
@@ -196,7 +229,7 @@ TX_CALLDATA + [codes_ascii] + [codes_length: 1B] + [0x00] + [marker: 16B]
 
 ```
 TX_CALLDATA + [codes_ascii] + [codes_length: 1B]
-            + [registry_chain_id: variable] + [registry_chain_id_length: 1B]
+            + [registry_evm_chain_id: variable] + [registry_evm_chain_id_length: 1B]
             + [registry_address: 20B] + [0x01] + [marker: 16B]
 ```
 
@@ -204,8 +237,8 @@ TX_CALLDATA + [codes_ascii] + [codes_length: 1B]
 |-------|------|-------------|
 | `codes_ascii` | variable | Comma-joined codes as 7-bit ASCII (e.g. `"my_app,facilitator"`) |
 | `codes_length` | 1 byte | Length of `codes_ascii` (max 255) |
-| `registry_chain_id` | variable | Chain ID hosting the registry (schema 1 only) |
-| `registry_chain_id_length` | 1 byte | Length of `registry_chain_id` (schema 1 only) |
+| `registry_evm_chain_id` | variable | Numeric EVM chain ID extracted from `registry.network` (schema 1 only) |
+| `registry_evm_chain_id_length` | 1 byte | Length of `registry_evm_chain_id` (schema 1 only) |
 | `registry_address` | 20 bytes | Registry contract address (schema 1 only) |
 | `schema_id` | 1 byte | `0x00` or `0x01` |
 | `marker` | 16 bytes | `0x80218021802180218021802180218021` |
@@ -220,6 +253,21 @@ TX_CALLDATA + [codes_ascii] + [codes_length: 1B]
   to settlement transactions even when the server does not declare the extension.
 - **Client**: Echoes the extension through in `PaymentPayload`
 - **Facilitator**: Announces extension support, appends its own code at
-  settlement when sharing the same registry context, encodes the correct
-  ERC-8021 schema. MAY independently append its own code when the server does
-  not declare the extension.
+  settlement when sharing the same registry context, encodes attribution per
+  the network's settlement behavior. MAY independently append its own code when
+  the server does not declare the extension.
+
+---
+
+## References
+
+- [ERC-8021: Transaction Attribution](https://eip.tools/eip/8021)
+- [Base Builder Codes](https://github.com/base/builder-codes)
+
+---
+
+## Version History
+
+| Version | Date        | Changes                                                           | Author                    |
+| ------- | ----------- | ----------------------------------------------------------------- | ------------------------- |
+| v1.0    | 2026-02-27  | Initial draft                                                     | @phdargen                 |
