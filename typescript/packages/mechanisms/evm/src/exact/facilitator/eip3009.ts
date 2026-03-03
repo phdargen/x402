@@ -9,6 +9,21 @@ import { authorizationTypes, eip3009ABI } from "../../constants";
 import { FacilitatorEvmSigner } from "../../signer";
 import { getEvmChainId } from "../../utils";
 import { ExactEIP3009Payload } from "../../types";
+import {
+  ErrUnsupportedScheme,
+  ErrMissingEip712Domain,
+  ErrNetworkMismatch,
+  ErrInvalidPayloadSignature,
+  ErrUndeployedSmartWallet,
+  ErrPayloadRecipientMismatch,
+  ErrValidBeforeExpired,
+  ErrValidAfterInFuture,
+  ErrInsufficientFunds,
+  ErrPayloadAuthorizationValueMismatch,
+  ErrInvalidSchemeFallback,
+  ErrInvalidTransactionState,
+  ErrTransactionFailed,
+} from "./errors";
 
 export interface EIP3009FacilitatorConfig {
   /**
@@ -41,7 +56,7 @@ export async function verifyEIP3009(
   if (payload.accepted.scheme !== "exact" || requirements.scheme !== "exact") {
     return {
       isValid: false,
-      invalidReason: "unsupported_scheme",
+      invalidReason: ErrUnsupportedScheme,
       payer,
     };
   }
@@ -50,7 +65,7 @@ export async function verifyEIP3009(
   if (!requirements.extra?.name || !requirements.extra?.version) {
     return {
       isValid: false,
-      invalidReason: "missing_eip712_domain",
+      invalidReason: ErrMissingEip712Domain,
       payer,
     };
   }
@@ -62,7 +77,7 @@ export async function verifyEIP3009(
   if (payload.accepted.network !== requirements.network) {
     return {
       isValid: false,
-      invalidReason: "network_mismatch",
+      invalidReason: ErrNetworkMismatch,
       payer,
     };
   }
@@ -98,7 +113,7 @@ export async function verifyEIP3009(
     if (!recoveredAddress) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_signature",
+        invalidReason: ErrInvalidPayloadSignature,
         payer,
       };
     }
@@ -125,7 +140,7 @@ export async function verifyEIP3009(
           // Non-EIP-6492 undeployed smart wallet - will always fail at settlement
           return {
             isValid: false,
-            invalidReason: "invalid_exact_evm_payload_undeployed_smart_wallet",
+            invalidReason: ErrUndeployedSmartWallet,
             payer: payerAddress,
           };
         }
@@ -134,7 +149,7 @@ export async function verifyEIP3009(
         // Wallet is deployed but signature still failed - invalid signature
         return {
           isValid: false,
-          invalidReason: "invalid_exact_evm_payload_signature",
+          invalidReason: ErrInvalidPayloadSignature,
           payer,
         };
       }
@@ -142,7 +157,7 @@ export async function verifyEIP3009(
       // EOA signature failed
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_signature",
+        invalidReason: ErrInvalidPayloadSignature,
         payer,
       };
     }
@@ -152,7 +167,7 @@ export async function verifyEIP3009(
   if (getAddress(eip3009Payload.authorization.to) !== getAddress(requirements.payTo)) {
     return {
       isValid: false,
-      invalidReason: "invalid_exact_evm_payload_recipient_mismatch",
+      invalidReason: ErrPayloadRecipientMismatch,
       payer,
     };
   }
@@ -162,7 +177,7 @@ export async function verifyEIP3009(
   if (BigInt(eip3009Payload.authorization.validBefore) < BigInt(now + 6)) {
     return {
       isValid: false,
-      invalidReason: "invalid_exact_evm_payload_authorization_valid_before",
+      invalidReason: ErrValidBeforeExpired,
       payer,
     };
   }
@@ -171,7 +186,7 @@ export async function verifyEIP3009(
   if (BigInt(eip3009Payload.authorization.validAfter) > BigInt(now)) {
     return {
       isValid: false,
-      invalidReason: "invalid_exact_evm_payload_authorization_valid_after",
+      invalidReason: ErrValidAfterInFuture,
       payer,
     };
   }
@@ -188,7 +203,7 @@ export async function verifyEIP3009(
     if (BigInt(balance) < BigInt(requirements.amount)) {
       return {
         isValid: false,
-        invalidReason: "insufficient_funds",
+        invalidReason: ErrInsufficientFunds,
         invalidMessage: `Insufficient funds to complete the payment. Required: ${requirements.amount} ${requirements.asset}, Available: ${balance.toString()} ${requirements.asset}. Please add funds to your wallet and try again.`,
         payer,
       };
@@ -201,7 +216,7 @@ export async function verifyEIP3009(
   if (BigInt(eip3009Payload.authorization.value) !== BigInt(requirements.amount)) {
     return {
       isValid: false,
-      invalidReason: "invalid_exact_evm_payload_authorization_value_mismatch",
+      invalidReason: ErrPayloadAuthorizationValueMismatch,
       payer,
     };
   }
@@ -239,7 +254,7 @@ export async function settleEIP3009(
       success: false,
       network: payload.accepted.network,
       transaction: "",
-      errorReason: valid.invalidReason ?? "invalid_scheme",
+      errorReason: valid.invalidReason ?? ErrInvalidSchemeFallback,
       payer,
     };
   }
@@ -320,7 +335,7 @@ export async function settleEIP3009(
     if (receipt.status !== "success") {
       return {
         success: false,
-        errorReason: "invalid_transaction_state",
+        errorReason: ErrInvalidTransactionState,
         transaction: tx,
         network: payload.accepted.network,
         payer,
@@ -336,7 +351,7 @@ export async function settleEIP3009(
   } catch {
     return {
       success: false,
-      errorReason: "transaction_failed",
+      errorReason: ErrTransactionFailed,
       transaction: "",
       network: payload.accepted.network,
       payer,

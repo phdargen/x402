@@ -141,7 +141,7 @@ describe("ExactEvmScheme (Facilitator)", () => {
       const result = await facilitator.verify(fullPayload, requirements);
 
       expect(result.isValid).toBe(false);
-      expect(result.invalidReason).toBe("missing_eip712_domain");
+      expect(result.invalidReason).toBe("invalid_exact_evm_missing_eip712_domain");
     });
 
     it("should reject if network doesn't match", async () => {

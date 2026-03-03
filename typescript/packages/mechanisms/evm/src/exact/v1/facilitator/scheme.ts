@@ -12,6 +12,22 @@ import { authorizationTypes, eip3009ABI } from "../../../constants";
 import { FacilitatorEvmSigner } from "../../../signer";
 import { ExactEvmPayloadV1 } from "../../../types";
 import { EvmNetworkV1, getEvmChainIdV1 } from "../../../v1";
+import {
+  ErrUnsupportedScheme,
+  ErrInvalidNetwork,
+  ErrMissingEip712Domain,
+  ErrNetworkMismatch,
+  ErrInvalidPayloadSignature,
+  ErrUndeployedSmartWallet,
+  ErrPayloadRecipientMismatch,
+  ErrValidBeforeExpired,
+  ErrValidAfterInFuture,
+  ErrInsufficientFunds,
+  ErrPayloadAuthorizationValueMismatch,
+  ErrInvalidSchemeFallback,
+  ErrInvalidTransactionState,
+  ErrTransactionFailed,
+} from "../../facilitator/errors";
 
 export interface ExactEvmSchemeV1Config {
   /**
@@ -87,7 +103,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (payloadV1.scheme !== "exact" || requirements.scheme !== "exact") {
       return {
         isValid: false,
-        invalidReason: "unsupported_scheme",
+        invalidReason: ErrUnsupportedScheme,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -99,7 +115,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     } catch {
       return {
         isValid: false,
-        invalidReason: `invalid_network`,
+        invalidReason: ErrInvalidNetwork,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -107,7 +123,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (!requirements.extra?.name || !requirements.extra?.version) {
       return {
         isValid: false,
-        invalidReason: "missing_eip712_domain",
+        invalidReason: ErrMissingEip712Domain,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -119,7 +135,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (payloadV1.network !== requirements.network) {
       return {
         isValid: false,
-        invalidReason: "network_mismatch",
+        invalidReason: ErrNetworkMismatch,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -155,7 +171,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
       if (!recoveredAddress) {
         return {
           isValid: false,
-          invalidReason: "invalid_exact_evm_payload_signature",
+          invalidReason: ErrInvalidPayloadSignature,
           payer: exactEvmPayload.authorization.from,
         };
       }
@@ -185,7 +201,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
             // since EIP-3009 requires on-chain EIP-1271 validation
             return {
               isValid: false,
-              invalidReason: "invalid_exact_evm_payload_undeployed_smart_wallet",
+              invalidReason: ErrUndeployedSmartWallet,
               payer: payerAddress,
             };
           }
@@ -195,7 +211,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
           // Wallet is deployed but signature still failed - invalid signature
           return {
             isValid: false,
-            invalidReason: "invalid_exact_evm_payload_signature",
+            invalidReason: ErrInvalidPayloadSignature,
             payer: exactEvmPayload.authorization.from,
           };
         }
@@ -203,7 +219,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
         // EOA signature failed
         return {
           isValid: false,
-          invalidReason: "invalid_exact_evm_payload_signature",
+          invalidReason: ErrInvalidPayloadSignature,
           payer: exactEvmPayload.authorization.from,
         };
       }
@@ -213,7 +229,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (getAddress(exactEvmPayload.authorization.to) !== getAddress(requirements.payTo)) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_recipient_mismatch",
+        invalidReason: ErrPayloadRecipientMismatch,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -223,7 +239,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (BigInt(exactEvmPayload.authorization.validBefore) < BigInt(now + 6)) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_authorization_valid_before",
+        invalidReason: ErrValidBeforeExpired,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -232,7 +248,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (BigInt(exactEvmPayload.authorization.validAfter) > BigInt(now)) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_authorization_valid_after",
+        invalidReason: ErrValidAfterInFuture,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -249,7 +265,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
       if (BigInt(balance) < BigInt(requirementsV1.maxAmountRequired)) {
         return {
           isValid: false,
-          invalidReason: "insufficient_funds",
+          invalidReason: ErrInsufficientFunds,
           invalidMessage: `Insufficient funds to complete the payment. Required: ${requirementsV1.maxAmountRequired} ${requirements.asset}, Available: ${balance.toString()} ${requirements.asset}. Please add funds to your wallet and try again.`,
           payer: exactEvmPayload.authorization.from,
         };
@@ -262,7 +278,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
     if (BigInt(exactEvmPayload.authorization.value) !== BigInt(requirementsV1.maxAmountRequired)) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_evm_payload_authorization_value_mismatch",
+        invalidReason: ErrPayloadAuthorizationValueMismatch,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -295,7 +311,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
         success: false,
         network: payloadV1.network,
         transaction: "",
-        errorReason: valid.invalidReason ?? "invalid_scheme",
+        errorReason: valid.invalidReason ?? ErrInvalidSchemeFallback,
         payer: exactEvmPayload.authorization.from,
       };
     }
@@ -392,7 +408,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
       if (receipt.status !== "success") {
         return {
           success: false,
-          errorReason: "invalid_transaction_state",
+          errorReason: ErrInvalidTransactionState,
           transaction: tx,
           network: payloadV1.network,
           payer: exactEvmPayload.authorization.from,
@@ -409,7 +425,7 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
       console.error("Failed to settle transaction:", error);
       return {
         success: false,
-        errorReason: "transaction_failed",
+        errorReason: ErrTransactionFailed,
         transaction: "",
         network: payloadV1.network,
         payer: exactEvmPayload.authorization.from,

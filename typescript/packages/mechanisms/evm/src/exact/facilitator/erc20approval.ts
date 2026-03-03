@@ -18,8 +18,7 @@ import {
   ErrErc20ApprovalSpenderNotPermit2,
   ErrErc20ApprovalTxWrongTarget,
   ErrErc20ApprovalTxWrongSelector,
-  ErrErc20ApprovalTxWrongSpender,
-  ErrErc20ApprovalTxInvalidCalldata,
+  ErrErc20ApprovalWrongCalldata,
   ErrErc20ApprovalTxSignerMismatch,
   ErrErc20ApprovalTxInvalidSignature,
   ErrErc20ApprovalTxParseFailed,
@@ -112,14 +111,14 @@ export async function validateErc20ApprovalForPayment(
       if (calldataSpender !== getAddress(PERMIT2_ADDRESS)) {
         return {
           isValid: false,
-          invalidReason: ErrErc20ApprovalTxWrongSpender,
+          invalidReason: ErrErc20ApprovalWrongCalldata,
           invalidMessage: `approve() spender is ${calldataSpender}, expected Permit2 ${PERMIT2_ADDRESS}`,
         };
       }
     } catch {
       return {
         isValid: false,
-        invalidReason: ErrErc20ApprovalTxInvalidCalldata,
+        invalidReason: ErrErc20ApprovalWrongCalldata,
         invalidMessage: "Failed to decode approve() calldata from the signed transaction",
       };
     }

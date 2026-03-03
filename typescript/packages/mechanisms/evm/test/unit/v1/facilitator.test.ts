@@ -133,7 +133,7 @@ describe("ExactEvmSchemeV1", () => {
       const result = await facilitator.verify(payload as never, requirements as never);
 
       expect(result.isValid).toBe(false);
-      expect(result.invalidReason).toBe("network_mismatch");
+      expect(result.invalidReason).toBe("invalid_exact_evm_network_mismatch");
     });
 
     it("should reject if amount is insufficient (maxAmountRequired)", async () => {

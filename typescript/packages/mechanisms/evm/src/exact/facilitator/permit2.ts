@@ -30,6 +30,25 @@ import {
   ErrPermit2InvalidOwner,
   ErrPermit2InvalidSignature,
   ErrPermit2PaymentTooEarly,
+  ErrUnsupportedScheme,
+  ErrNetworkMismatch,
+  ErrPermit2InvalidSpender,
+  ErrPermit2RecipientMismatch,
+  ErrPermit2DeadlineExpired,
+  ErrPermit2NotYetValid,
+  ErrPermit2InsufficientAmount,
+  ErrPermit2TokenMismatch,
+  ErrPermit2AllowanceRequired,
+  ErrInvalidSchemeFallback,
+  ErrInvalidTransactionState,
+  ErrTransactionFailed,
+  ErrErc20ApprovalBroadcastFailed,
+  ErrInsufficientFunds,
+  ErrInvalidEip2612ExtensionFormat,
+  ErrEip2612FromMismatch,
+  ErrEip2612AssetMismatch,
+  ErrEip2612SpenderNotPermit2,
+  ErrEip2612DeadlineExpired,
 } from "./errors";
 import { FacilitatorEvmSigner } from "../../signer";
 import { ExactPermit2Payload } from "../../types";
@@ -63,7 +82,7 @@ export async function verifyPermit2(
   if (payload.accepted.scheme !== "exact" || requirements.scheme !== "exact") {
     return {
       isValid: false,
-      invalidReason: "unsupported_scheme",
+      invalidReason: ErrUnsupportedScheme,
       payer,
     };
   }
@@ -71,7 +90,7 @@ export async function verifyPermit2(
   if (payload.accepted.network !== requirements.network) {
     return {
       isValid: false,
-      invalidReason: "network_mismatch",
+      invalidReason: ErrNetworkMismatch,
       payer,
     };
   }
@@ -85,7 +104,7 @@ export async function verifyPermit2(
   ) {
     return {
       isValid: false,
-      invalidReason: "invalid_permit2_spender",
+      invalidReason: ErrPermit2InvalidSpender,
       payer,
     };
   }
@@ -95,7 +114,7 @@ export async function verifyPermit2(
   ) {
     return {
       isValid: false,
-      invalidReason: "invalid_permit2_recipient_mismatch",
+      invalidReason: ErrPermit2RecipientMismatch,
       payer,
     };
   }
@@ -104,7 +123,7 @@ export async function verifyPermit2(
   if (BigInt(permit2Payload.permit2Authorization.deadline) < BigInt(now + 6)) {
     return {
       isValid: false,
-      invalidReason: "permit2_deadline_expired",
+      invalidReason: ErrPermit2DeadlineExpired,
       payer,
     };
   }
@@ -112,7 +131,7 @@ export async function verifyPermit2(
   if (BigInt(permit2Payload.permit2Authorization.witness.validAfter) > BigInt(now)) {
     return {
       isValid: false,
-      invalidReason: "permit2_not_yet_valid",
+      invalidReason: ErrPermit2NotYetValid,
       payer,
     };
   }
@@ -123,7 +142,7 @@ export async function verifyPermit2(
   ) {
     return {
       isValid: false,
-      invalidReason: "permit2_amount_mismatch",
+      invalidReason: ErrPermit2InsufficientAmount,
       payer,
     };
   }
@@ -131,7 +150,7 @@ export async function verifyPermit2(
   if (getAddress(permit2Payload.permit2Authorization.permitted.token) !== tokenAddress) {
     return {
       isValid: false,
-      invalidReason: "permit2_token_mismatch",
+      invalidReason: ErrPermit2TokenMismatch,
       payer,
     };
   }
@@ -169,14 +188,14 @@ export async function verifyPermit2(
     if (!isValid) {
       return {
         isValid: false,
-        invalidReason: "invalid_permit2_signature",
+        invalidReason: ErrPermit2InvalidSignature,
         payer,
       };
     }
   } catch {
     return {
       isValid: false,
-      invalidReason: "invalid_permit2_signature",
+      invalidReason: ErrPermit2InvalidSignature,
       payer,
     };
   }
@@ -205,7 +224,7 @@ export async function verifyPermit2(
     if (balance < BigInt(requirements.amount)) {
       return {
         isValid: false,
-        invalidReason: "insufficient_funds",
+        invalidReason: ErrInsufficientFunds,
         invalidMessage: `Insufficient funds to complete the payment. Required: ${requirements.amount} ${requirements.asset}, Available: ${balance.toString()} ${requirements.asset}. Please add funds to your wallet and try again.`,
         payer,
       };
@@ -278,7 +297,7 @@ async function _verifyPermit2Allowance(
       }
     }
 
-    return { isValid: false, invalidReason: "permit2_allowance_required", payer };
+    return { isValid: false, invalidReason: ErrPermit2AllowanceRequired, payer };
   } catch {
     // If allowance check fails, validate extensions if present; otherwise proceed optimistically
     const eip2612Info = extractEip2612GasSponsoringInfo(payload);
@@ -321,7 +340,7 @@ export async function settlePermit2(
       success: false,
       network: payload.accepted.network,
       transaction: "",
-      errorReason: valid.invalidReason ?? "invalid_scheme",
+      errorReason: valid.invalidReason ?? ErrInvalidSchemeFallback,
       payer,
     };
   }
@@ -438,7 +457,7 @@ async function _settlePermit2WithERC20Approval(
     if (approvalReceipt.status !== "success") {
       return {
         success: false,
-        errorReason: "erc20_approval_tx_failed",
+        errorReason: ErrErc20ApprovalBroadcastFailed,
         transaction: approvalTxHash,
         network: payload.accepted.network,
         payer,
@@ -536,7 +555,7 @@ async function _waitAndReturn(
   if (receipt.status !== "success") {
     return {
       success: false,
-      errorReason: "invalid_transaction_state",
+      errorReason: ErrInvalidTransactionState,
       transaction: tx,
       network: payload.accepted.network,
       payer,
@@ -564,7 +583,7 @@ function _mapSettleError(
   payload: PaymentPayload,
   payer: `0x${string}`,
 ): SettleResponse {
-  let errorReason = "transaction_failed";
+  let errorReason = ErrTransactionFailed;
   if (error instanceof Error) {
     const message = error.message;
     if (message.includes("Permit2612AmountMismatch")) {
@@ -582,7 +601,7 @@ function _mapSettleError(
     } else if (message.includes("InvalidNonce")) {
       errorReason = ErrPermit2InvalidNonce;
     } else {
-      errorReason = `transaction_failed: ${message.slice(0, 500)}`;
+      errorReason = `${ErrTransactionFailed}: ${message.slice(0, 500)}`;
     }
   }
   return {
@@ -608,24 +627,24 @@ function validateEip2612PermitForPayment(
   tokenAddress: `0x${string}`,
 ): { isValid: boolean; invalidReason?: string } {
   if (!validateEip2612GasSponsoringInfo(info)) {
-    return { isValid: false, invalidReason: "invalid_eip2612_extension_format" };
+    return { isValid: false, invalidReason: ErrInvalidEip2612ExtensionFormat };
   }
 
   if (getAddress(info.from as `0x${string}`) !== getAddress(payer)) {
-    return { isValid: false, invalidReason: "eip2612_from_mismatch" };
+    return { isValid: false, invalidReason: ErrEip2612FromMismatch };
   }
 
   if (getAddress(info.asset as `0x${string}`) !== tokenAddress) {
-    return { isValid: false, invalidReason: "eip2612_asset_mismatch" };
+    return { isValid: false, invalidReason: ErrEip2612AssetMismatch };
   }
 
   if (getAddress(info.spender as `0x${string}`) !== getAddress(PERMIT2_ADDRESS)) {
-    return { isValid: false, invalidReason: "eip2612_spender_not_permit2" };
+    return { isValid: false, invalidReason: ErrEip2612SpenderNotPermit2 };
   }
 
   const now = Math.floor(Date.now() / 1000);
   if (BigInt(info.deadline) < BigInt(now + 6)) {
-    return { isValid: false, invalidReason: "eip2612_deadline_expired" };
+    return { isValid: false, invalidReason: ErrEip2612DeadlineExpired };
   }
 
   return { isValid: true };
