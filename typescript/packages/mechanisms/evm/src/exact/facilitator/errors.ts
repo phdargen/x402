@@ -26,6 +26,14 @@ export const ErrPermit2TokenMismatch = "permit2_token_mismatch";
 export const ErrPermit2InvalidSignature = "invalid_permit2_signature";
 export const ErrPermit2AllowanceRequired = "permit2_allowance_required";
 
+// Permit2 simulation / verify errors
+export const ErrPermit2SimulationFailed = "invalid_permit2_transaction_simulation_failed";
+export const ErrPermit2InsufficientBalance = "invalid_permit2_insufficient_balance";
+export const ErrPermit2AllowanceInsufficient = "invalid_permit2_allowance_insufficient";
+export const ErrPermit2UndeployedSmartWallet = "invalid_permit2_undeployed_smart_wallet";
+export const ErrPermit2ProxyNotDeployed = "invalid_permit2_proxy_not_deployed";
+export const ErrPermit2InsufficientGas = "invalid_permit2_insufficient_gas_for_approval";
+
 // Permit2 settle errors (from contract reverts)
 export const ErrPermit2InvalidAmount = "permit2_invalid_amount";
 export const ErrPermit2InvalidDestination = "permit2_invalid_destination";

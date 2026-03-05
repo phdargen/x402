@@ -113,7 +113,7 @@ export class ExactEvmScheme implements SchemeNetworkFacilitator {
     const rawPayload = payload.payload as ExactEvmPayloadV2;
 
     if (isPermit2Payload(rawPayload)) {
-      return settlePermit2(this.signer, payload, requirements, rawPayload, context);
+      return settlePermit2(this.signer, payload, requirements, rawPayload, context, this.config);
     }
 
     const eip3009Payload: ExactEIP3009Payload = rawPayload;

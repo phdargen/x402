@@ -16,6 +16,7 @@ import express from "express";
 import { createWalletClient, http, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
+import { verifyTypedData } from 'viem'
 
 dotenv.config();
 
@@ -75,7 +76,7 @@ const evmSigner = toFacilitatorEvmSigner({
     message: Record<string, unknown>;
     signature: `0x${string}`;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) => viemClient.verifyTypedData(args as any),
+  }) => verifyTypedData(args), //viemClient.verifyTypedData(args as any),
   writeContract: (args: {
     address: `0x${string}`;
     abi: readonly unknown[];

@@ -13,7 +13,14 @@ import {
   type Erc20ApprovalGasSponsoringFacilitatorExtension,
 } from "@x402/extensions";
 import type { Eip2612GasSponsoringInfo } from "@x402/extensions";
-import { getAddress } from "viem";
+import {
+  encodeFunctionData,
+  getAddress,
+  type Hex,
+  isAddressEqual,
+  parseErc6492Signature,
+  parseTransaction,
+} from "viem";
 import {
   eip3009ABI,
   PERMIT2_ADDRESS,
@@ -22,19 +29,37 @@ import {
   x402ExactPermit2ProxyAddress,
   erc20AllowanceAbi,
 } from "../../constants";
+import * as Errors from "./errors";
+import { multicall, ContractCall, RawContractCall } from "../../multicall";
 import {
-  ErrPermit2612AmountMismatch,
-  ErrPermit2InvalidAmount,
-  ErrPermit2InvalidDestination,
-  ErrPermit2InvalidNonce,
-  ErrPermit2InvalidOwner,
-  ErrPermit2InvalidSignature,
-  ErrPermit2PaymentTooEarly,
-} from "./errors";
+  MULTICALL3_ADDRESS,
+  multicall3GetEthBalanceAbi,
+} from "../../multicall";
 import { FacilitatorEvmSigner } from "../../signer";
 import { ExactPermit2Payload } from "../../types";
 import { getEvmChainId } from "../../utils";
 import { validateErc20ApprovalForPayment } from "./erc20approval";
+
+export interface VerifyPermit2Options {
+  /** Run on-chain simulation. Defaults to true. */
+  simulate?: boolean;
+}
+
+export interface Permit2FacilitatorConfig {
+  /**
+   * If enabled, the facilitator will deploy ERC-4337 smart wallets
+   * via EIP-6492 when encountering undeployed contract signatures.
+   *
+   * @default false
+   */
+  deployERC4337WithEIP6492?: boolean;
+  /**
+   * If enabled, run on-chain simulation during settle's re-verify.
+   *
+   * @default false
+   */
+  simulateInSettle?: boolean;
+}
 
 /**
  * Verifies a Permit2 payment payload.
@@ -49,6 +74,7 @@ import { validateErc20ApprovalForPayment } from "./erc20approval";
  * @param requirements - The payment requirements
  * @param permit2Payload - The Permit2 specific payload
  * @param context - Optional facilitator context for extension-provided capabilities
+ * @param options - Optional verification options (simulate defaults to true)
  * @returns Promise resolving to verification response
  */
 export async function verifyPermit2(
@@ -57,6 +83,7 @@ export async function verifyPermit2(
   requirements: PaymentRequirements,
   permit2Payload: ExactPermit2Payload,
   context?: FacilitatorContext,
+  options?: VerifyPermit2Options,
 ): Promise<VerifyResponse> {
   const payer = permit2Payload.permit2Authorization.from;
 
@@ -159,29 +186,57 @@ export async function verifyPermit2(
     },
   };
 
+  let isValid = false;
   try {
-    const isValid = await signer.verifyTypedData({
+    isValid = await signer.verifyTypedData({
       address: payer,
       ...permit2TypedData,
       signature: permit2Payload.signature,
     });
+  } catch {
+    isValid = false;
+  }
 
-    if (!isValid) {
+  const sigLen = permit2Payload.signature.startsWith("0x")
+    ? permit2Payload.signature.length - 2
+    : permit2Payload.signature.length;
+  const erc6492Data = parseErc6492Signature(permit2Payload.signature);
+  const hasDeploymentInfo =
+    erc6492Data.address &&
+    erc6492Data.data &&
+    !isAddressEqual(erc6492Data.address, "0x0000000000000000000000000000000000000000");
+
+  if (!isValid) {
+    const isSmartWallet = sigLen > 130;
+
+    if (!isSmartWallet) {
       return {
         isValid: false,
         invalidReason: "invalid_permit2_signature",
         payer,
       };
     }
-  } catch {
-    return {
-      isValid: false,
-      invalidReason: "invalid_permit2_signature",
-      payer,
-    };
+
+    const bytecode = await signer.getCode({ address: payer });
+    const isDeployed = bytecode && bytecode !== "0x";
+
+    if (isDeployed) {
+      return {
+        isValid: false,
+        invalidReason: "invalid_permit2_signature",
+        payer,
+      };
+    }
+
+    if (!hasDeploymentInfo) {
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrPermit2UndeployedSmartWallet,
+        payer,
+      };
+    }
   }
 
-  // Check Permit2 allowance — if insufficient, try gas sponsoring extensions
   const allowanceResult = await _verifyPermit2Allowance(
     signer,
     payload,
@@ -190,28 +245,25 @@ export async function verifyPermit2(
     tokenAddress,
     context,
   );
-  if (allowanceResult) {
-    return allowanceResult;
+  if (!allowanceResult.continue) {
+    return allowanceResult.response;
   }
 
-  try {
-    const balance = (await signer.readContract({
-      address: tokenAddress,
-      abi: eip3009ABI,
-      functionName: "balanceOf",
-      args: [payer],
-    })) as bigint;
+  const allowancePath = allowanceResult.path;
 
-    if (balance < BigInt(requirements.amount)) {
-      return {
-        isValid: false,
-        invalidReason: "insufficient_funds",
-        invalidMessage: `Insufficient funds to complete the payment. Required: ${requirements.amount} ${requirements.asset}, Available: ${balance.toString()} ${requirements.asset}. Please add funds to your wallet and try again.`,
-        payer,
-      };
+  if (options?.simulate !== false) {
+    const simulationResult = await _simulatePermit2Settlement(
+      signer,
+      payload,
+      requirements,
+      permit2Payload,
+      context,
+      allowancePath,
+      erc6492Data,
+    );
+    if (simulationResult) {
+      return simulationResult;
     }
-  } catch {
-    // If we can't check balance, continue
   }
 
   return {
@@ -220,6 +272,12 @@ export async function verifyPermit2(
     payer,
   };
 }
+
+type AllowancePath = "standard" | "eip2612" | "erc20approval";
+
+type AllowanceVerifyResult =
+  | { continue: false; response: VerifyResponse }
+  | { continue: true; path: AllowancePath };
 
 /**
  * Checks Permit2 allowance and validates gas sponsoring extensions if allowance is insufficient.
@@ -230,7 +288,7 @@ export async function verifyPermit2(
  * @param payer - The payer address
  * @param tokenAddress - The token contract address
  * @param context - Optional facilitator context for extension lookup
- * @returns A VerifyResponse if verification should stop (failure), or null to continue
+ * @returns Result indicating whether to continue and which settlement path applies
  */
 async function _verifyPermit2Allowance(
   signer: FacilitatorEvmSigner,
@@ -239,7 +297,7 @@ async function _verifyPermit2Allowance(
   payer: `0x${string}`,
   tokenAddress: `0x${string}`,
   context?: FacilitatorContext,
-): Promise<VerifyResponse | null> {
+): Promise<AllowanceVerifyResult> {
   try {
     const allowance = (await signer.readContract({
       address: tokenAddress,
@@ -249,7 +307,7 @@ async function _verifyPermit2Allowance(
     })) as bigint;
 
     if (allowance >= BigInt(requirements.amount)) {
-      return null; // Sufficient allowance, continue verification
+      return { continue: true, path: "standard" };
     }
 
     // Allowance insufficient — try EIP-2612 gas sponsoring first
@@ -257,9 +315,9 @@ async function _verifyPermit2Allowance(
     if (eip2612Info) {
       const result = validateEip2612PermitForPayment(eip2612Info, payer, tokenAddress);
       if (!result.isValid) {
-        return { isValid: false, invalidReason: result.invalidReason!, payer };
+        return { continue: false, response: { isValid: false, invalidReason: result.invalidReason!, payer } };
       }
-      return null; // EIP-2612 is valid, allowance will be set atomically during settlement
+      return { continue: true, path: "eip2612" };
     }
 
     // Try ERC-20 approval gas sponsoring as fallback
@@ -272,24 +330,291 @@ async function _verifyPermit2Allowance(
       if (erc20Info) {
         const result = await validateErc20ApprovalForPayment(erc20Info, payer, tokenAddress);
         if (!result.isValid) {
-          return { isValid: false, invalidReason: result.invalidReason!, payer };
+          return { continue: false, response: { isValid: false, invalidReason: result.invalidReason!, payer } };
         }
-        return null; // ERC-20 approval is valid, will be broadcast before settlement
+        return { continue: true, path: "erc20approval" };
       }
     }
 
-    return { isValid: false, invalidReason: "permit2_allowance_required", payer };
+    return { continue: false, response: { isValid: false, invalidReason: "permit2_allowance_required", payer } };
   } catch {
     // If allowance check fails, validate extensions if present; otherwise proceed optimistically
     const eip2612Info = extractEip2612GasSponsoringInfo(payload);
     if (eip2612Info) {
       const result = validateEip2612PermitForPayment(eip2612Info, payer, tokenAddress);
       if (!result.isValid) {
-        return { isValid: false, invalidReason: result.invalidReason!, payer };
+        return { continue: false, response: { isValid: false, invalidReason: result.invalidReason!, payer } };
+      }
+      return { continue: true, path: "eip2612" };
+    }
+    return { continue: true, path: "standard" };
+  }
+}
+
+function _buildSettleArgs(
+  permit2Payload: ExactPermit2Payload,
+  signature: `0x${string}`,
+): [
+  { permitted: { token: `0x${string}`; amount: bigint }; nonce: bigint; deadline: bigint },
+  `0x${string}`,
+  { to: `0x${string}`; validAfter: bigint },
+  `0x${string}`,
+] {
+  const auth = permit2Payload.permit2Authorization;
+  return [
+    {
+      permitted: {
+        token: getAddress(auth.permitted.token),
+        amount: BigInt(auth.permitted.amount),
+      },
+      nonce: BigInt(auth.nonce),
+      deadline: BigInt(auth.deadline),
+    },
+    getAddress(auth.from),
+    {
+      to: getAddress(auth.witness.to),
+      validAfter: BigInt(auth.witness.validAfter),
+    },
+    signature,
+  ];
+}
+
+async function _simulatePermit2Settlement(
+  signer: FacilitatorEvmSigner,
+  payload: PaymentPayload,
+  requirements: PaymentRequirements,
+  permit2Payload: ExactPermit2Payload,
+  context: FacilitatorContext | undefined,
+  allowancePath: AllowancePath,
+  erc6492Data: ReturnType<typeof parseErc6492Signature>,
+): Promise<VerifyResponse | null> {
+  const payer = permit2Payload.permit2Authorization.from;
+  const tokenAddress = getAddress(requirements.asset);
+  const hasDeploymentInfo =
+    erc6492Data.address &&
+    erc6492Data.data &&
+    !isAddressEqual(erc6492Data.address, "0x0000000000000000000000000000000000000000");
+  const signatureToUse = hasDeploymentInfo ? (erc6492Data.signature as `0x${string}`) : permit2Payload.signature;
+
+  let simulationFailed = false;
+
+  if (hasDeploymentInfo) {
+    const factoryAddress = getAddress(erc6492Data.address!);
+    const factoryCalldata = erc6492Data.data as Hex;
+
+    if (allowancePath === "eip2612") {
+      const eip2612Info = extractEip2612GasSponsoringInfo(payload);
+      if (!eip2612Info) {
+        simulationFailed = true;
+      } else {
+        const { v, r, s } = splitEip2612Signature(eip2612Info.signature);
+        const settleCalldata = encodeFunctionData({
+          abi: x402ExactPermit2ProxyABI,
+          functionName: "settleWithPermit",
+          args: [
+            { value: BigInt(eip2612Info.amount), deadline: BigInt(eip2612Info.deadline), r, s, v },
+            ..._buildSettleArgs(permit2Payload, signatureToUse),
+          ],
+        });
+        const results = await multicall(signer.readContract.bind(signer), [
+          { address: factoryAddress, callData: factoryCalldata } satisfies RawContractCall,
+          { address: x402ExactPermit2ProxyAddress, callData: settleCalldata } satisfies RawContractCall,
+        ]);
+        if (results[1]?.status !== "success") {
+          simulationFailed = true;
+        }
+      }
+    } else {
+      const settleCalldata = encodeFunctionData({
+        abi: x402ExactPermit2ProxyABI,
+        functionName: "settle",
+        args: _buildSettleArgs(permit2Payload, signatureToUse),
+      });
+      const results = await multicall(signer.readContract.bind(signer), [
+        { address: factoryAddress, callData: factoryCalldata } satisfies RawContractCall,
+        { address: x402ExactPermit2ProxyAddress, callData: settleCalldata } satisfies RawContractCall,
+      ]);
+      if (results[1]?.status !== "success") {
+        simulationFailed = true;
       }
     }
-    return null;
+  } else {
+    if (allowancePath === "eip2612") {
+      const eip2612Info = extractEip2612GasSponsoringInfo(payload);
+      if (!eip2612Info) {
+        simulationFailed = true;
+      } else {
+        try {
+          const { v, r, s } = splitEip2612Signature(eip2612Info.signature);
+          await signer.readContract({
+            address: x402ExactPermit2ProxyAddress,
+            abi: x402ExactPermit2ProxyABI,
+            functionName: "settleWithPermit",
+            args: [
+              { value: BigInt(eip2612Info.amount), deadline: BigInt(eip2612Info.deadline), r, s, v },
+              ..._buildSettleArgs(permit2Payload, signatureToUse),
+            ],
+          });
+        } catch {
+          simulationFailed = true;
+        }
+      }
+    } else {
+      try {
+        await signer.readContract({
+          address: x402ExactPermit2ProxyAddress,
+          abi: x402ExactPermit2ProxyABI,
+          functionName: "settle",
+          args: _buildSettleArgs(permit2Payload, signatureToUse),
+        });
+      } catch {
+        simulationFailed = true;
+      }
+    }
   }
+
+  if (simulationFailed) {
+    return diagnosePermit2SimulationFailure(
+      signer,
+      payload,
+      requirements,
+      permit2Payload,
+      context,
+      allowancePath,
+    );
+  }
+
+  return null;
+}
+
+async function diagnosePermit2SimulationFailure(
+  signer: FacilitatorEvmSigner,
+  payload: PaymentPayload,
+  requirements: PaymentRequirements,
+  permit2Payload: ExactPermit2Payload,
+  context: FacilitatorContext | undefined,
+  allowancePath: AllowancePath,
+): Promise<VerifyResponse> {
+  const payer = permit2Payload.permit2Authorization.from;
+  const tokenAddress = getAddress(requirements.asset);
+
+  const proxyBytecode = await signer.getCode({ address: x402ExactPermit2ProxyAddress });
+  if (!proxyBytecode || proxyBytecode === "0x") {
+    return { isValid: false, invalidReason: Errors.ErrPermit2ProxyNotDeployed, payer };
+  }
+
+  const diagnosticCalls: (ContractCall | RawContractCall)[] = [
+    {
+      address: tokenAddress,
+      abi: eip3009ABI,
+      functionName: "balanceOf",
+      args: [payer],
+    },
+    {
+      address: tokenAddress,
+      abi: erc20AllowanceAbi,
+      functionName: "allowance",
+      args: [payer, PERMIT2_ADDRESS],
+    },
+  ];
+
+  if (allowancePath === "erc20approval") {
+    diagnosticCalls.push({
+      address: MULTICALL3_ADDRESS,
+      abi: multicall3GetEthBalanceAbi,
+      functionName: "getEthBalance",
+      args: [payer],
+    });
+  }
+
+  try {
+    const results = await multicall(signer.readContract.bind(signer), diagnosticCalls);
+
+    const [balanceResult, allowanceResult, ethBalanceResult] = results;
+
+    if (balanceResult?.status === "success") {
+      const balance = balanceResult.result as bigint;
+      if (balance < BigInt(requirements.amount)) {
+        return { isValid: false, invalidReason: Errors.ErrPermit2InsufficientBalance, payer };
+      }
+    }
+
+    if (allowancePath === "erc20approval") {
+      const erc20Info = extractErc20ApprovalGasSponsoringInfo(payload);
+      const erc20Extension = context?.getExtension<Erc20ApprovalGasSponsoringFacilitatorExtension>(
+        ERC20_APPROVAL_GAS_SPONSORING.key,
+      );
+      const hasValidErc20Approval = erc20Info && erc20Extension?.signer;
+
+      if (hasValidErc20Approval && allowanceResult?.status === "success") {
+        const allowance = allowanceResult.result as bigint;
+        if (allowance < BigInt(requirements.amount)) {
+          return { isValid: true, invalidReason: undefined, payer };
+        }
+      }
+
+      if (ethBalanceResult?.status === "success") {
+        const ethBalance = ethBalanceResult.result as bigint;
+        const maxGasCost = _computeErc20ApprovalMaxGasCost(erc20Info?.signedTransaction);
+        if (maxGasCost > 0n && ethBalance < maxGasCost) {
+          return { isValid: false, invalidReason: Errors.ErrPermit2InsufficientGas, payer };
+        }
+      }
+    } else if (allowanceResult?.status === "success") {
+      const allowance = allowanceResult.result as bigint;
+      if (allowance < BigInt(requirements.amount)) {
+        return { isValid: false, invalidReason: Errors.ErrPermit2AllowanceInsufficient, payer };
+      }
+    }
+  } catch {
+    // Fall through to generic error
+  }
+
+  return { isValid: false, invalidReason: Errors.ErrPermit2SimulationFailed, payer };
+}
+
+function _computeErc20ApprovalMaxGasCost(signedTransaction?: string): bigint {
+  if (!signedTransaction) {
+    return 0n;
+  }
+  try {
+    const tx = parseTransaction(signedTransaction as `0x${string}`);
+    const gas = tx.gas ?? 0n;
+    const maxFee = tx.maxFeePerGas ?? tx.gasPrice ?? 0n;
+    return gas * maxFee;
+  } catch {
+    return 0n;
+  }
+}
+
+async function _ensureEip6492DeployedAndGetSignature(
+  signer: FacilitatorEvmSigner,
+  payer: `0x${string}`,
+  permit2Payload: ExactPermit2Payload,
+  config?: Permit2FacilitatorConfig,
+): Promise<`0x${string}`> {
+  const { signature, address: factoryAddress, data: factoryCalldata } = parseErc6492Signature(
+    permit2Payload.signature,
+  );
+
+  const shouldDeploy =
+    config?.deployERC4337WithEIP6492 &&
+    factoryAddress &&
+    factoryCalldata &&
+    !isAddressEqual(factoryAddress, "0x0000000000000000000000000000000000000000");
+
+  if (shouldDeploy) {
+    const bytecode = await signer.getCode({ address: payer });
+    if (!bytecode || bytecode === "0x") {
+      const deployTx = await signer.sendTransaction({
+        to: factoryAddress as Hex,
+        data: factoryCalldata as Hex,
+      });
+      await signer.waitForTransactionReceipt({ hash: deployTx });
+    }
+  }
+
+  return signature as `0x${string}`;
 }
 
 /**
@@ -304,6 +629,7 @@ async function _verifyPermit2Allowance(
  * @param requirements - The payment requirements
  * @param permit2Payload - The Permit2 specific payload
  * @param context - Optional facilitator context for extension-provided capabilities
+ * @param config - Optional facilitator configuration
  * @returns Promise resolving to settlement response
  */
 export async function settlePermit2(
@@ -312,10 +638,13 @@ export async function settlePermit2(
   requirements: PaymentRequirements,
   permit2Payload: ExactPermit2Payload,
   context?: FacilitatorContext,
+  config?: Permit2FacilitatorConfig,
 ): Promise<SettleResponse> {
   const payer = permit2Payload.permit2Authorization.from;
 
-  const valid = await verifyPermit2(signer, payload, requirements, permit2Payload, context);
+  const valid = await verifyPermit2(signer, payload, requirements, permit2Payload, context, {
+    simulate: config?.simulateInSettle ?? false,
+  });
   if (!valid.isValid) {
     return {
       success: false,
@@ -329,7 +658,7 @@ export async function settlePermit2(
   // Branch: EIP-2612 gas sponsoring (atomic settleWithPermit via contract)
   const eip2612Info = extractEip2612GasSponsoringInfo(payload);
   if (eip2612Info) {
-    return _settlePermit2WithEIP2612(signer, payload, permit2Payload, eip2612Info);
+    return _settlePermit2WithEIP2612(signer, payload, permit2Payload, eip2612Info, config);
   }
 
   // Branch: ERC-20 approval gas sponsoring (broadcast approval + settle via extension signer)
@@ -345,12 +674,13 @@ export async function settlePermit2(
         payload,
         permit2Payload,
         erc20Info,
+        config,
       );
     }
   }
 
   // Branch: standard settle (allowance already on-chain)
-  return _settlePermit2Direct(signer, payload, permit2Payload);
+  return _settlePermit2Direct(signer, payload, permit2Payload, config);
 }
 
 /**
@@ -360,6 +690,7 @@ export async function settlePermit2(
  * @param payload - The payment payload
  * @param permit2Payload - The Permit2 specific payload
  * @param eip2612Info - The EIP-2612 gas sponsoring info from the payload extension
+ * @param config - Optional facilitator configuration for EIP-6492 deployment
  * @returns Promise resolving to settlement response
  */
 async function _settlePermit2WithEIP2612(
@@ -367,9 +698,16 @@ async function _settlePermit2WithEIP2612(
   payload: PaymentPayload,
   permit2Payload: ExactPermit2Payload,
   eip2612Info: Eip2612GasSponsoringInfo,
+  config?: Permit2FacilitatorConfig,
 ): Promise<SettleResponse> {
   const payer = permit2Payload.permit2Authorization.from;
   try {
+    const signature = await _ensureEip6492DeployedAndGetSignature(
+      signer,
+      payer,
+      permit2Payload,
+      config,
+    );
     const { v, r, s } = splitEip2612Signature(eip2612Info.signature);
 
     const tx = await signer.writeContract({
@@ -397,7 +735,7 @@ async function _settlePermit2WithEIP2612(
           to: getAddress(permit2Payload.permit2Authorization.witness.to),
           validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
         },
-        permit2Payload.signature,
+        signature,
       ],
     });
 
@@ -423,6 +761,7 @@ async function _settlePermit2WithERC20Approval(
   payload: PaymentPayload,
   permit2Payload: ExactPermit2Payload,
   erc20Info: { signedTransaction: string },
+  config?: Permit2FacilitatorConfig,
 ): Promise<SettleResponse> {
   const payer = permit2Payload.permit2Authorization.from;
 
@@ -445,6 +784,13 @@ async function _settlePermit2WithERC20Approval(
       };
     }
 
+    const signature = await _ensureEip6492DeployedAndGetSignature(
+      extensionSigner as FacilitatorEvmSigner,
+      payer,
+      permit2Payload,
+      config,
+    );
+
     const tx = await extensionSigner.writeContract({
       address: x402ExactPermit2ProxyAddress,
       abi: x402ExactPermit2ProxyABI,
@@ -463,7 +809,7 @@ async function _settlePermit2WithERC20Approval(
           to: getAddress(permit2Payload.permit2Authorization.witness.to),
           validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
         },
-        permit2Payload.signature,
+        signature,
       ],
     });
 
@@ -479,15 +825,24 @@ async function _settlePermit2WithERC20Approval(
  * @param signer - The base facilitator signer
  * @param payload - The payment payload
  * @param permit2Payload - The Permit2 specific payload
+ * @param config - Optional facilitator configuration for EIP-6492 deployment
  * @returns Promise resolving to settlement response
  */
 async function _settlePermit2Direct(
   signer: FacilitatorEvmSigner,
   payload: PaymentPayload,
   permit2Payload: ExactPermit2Payload,
+  config?: Permit2FacilitatorConfig,
 ): Promise<SettleResponse> {
   const payer = permit2Payload.permit2Authorization.from;
   try {
+    const signature = await _ensureEip6492DeployedAndGetSignature(
+      signer,
+      payer,
+      permit2Payload,
+      config,
+    );
+
     const tx = await signer.writeContract({
       address: x402ExactPermit2ProxyAddress,
       abi: x402ExactPermit2ProxyABI,
@@ -506,7 +861,7 @@ async function _settlePermit2Direct(
           to: getAddress(permit2Payload.permit2Authorization.witness.to),
           validAfter: BigInt(permit2Payload.permit2Authorization.witness.validAfter),
         },
-        permit2Payload.signature,
+        signature,
       ],
     });
 
@@ -568,19 +923,19 @@ function _mapSettleError(
   if (error instanceof Error) {
     const message = error.message;
     if (message.includes("Permit2612AmountMismatch")) {
-      errorReason = ErrPermit2612AmountMismatch;
+      errorReason = Errors.ErrPermit2612AmountMismatch;
     } else if (message.includes("InvalidAmount")) {
-      errorReason = ErrPermit2InvalidAmount;
+      errorReason = Errors.ErrPermit2InvalidAmount;
     } else if (message.includes("InvalidDestination")) {
-      errorReason = ErrPermit2InvalidDestination;
+      errorReason = Errors.ErrPermit2InvalidDestination;
     } else if (message.includes("InvalidOwner")) {
-      errorReason = ErrPermit2InvalidOwner;
+      errorReason = Errors.ErrPermit2InvalidOwner;
     } else if (message.includes("PaymentTooEarly")) {
-      errorReason = ErrPermit2PaymentTooEarly;
+      errorReason = Errors.ErrPermit2PaymentTooEarly;
     } else if (message.includes("InvalidSignature") || message.includes("SignatureExpired")) {
-      errorReason = ErrPermit2InvalidSignature;
+      errorReason = Errors.ErrPermit2InvalidSignature;
     } else if (message.includes("InvalidNonce")) {
-      errorReason = ErrPermit2InvalidNonce;
+      errorReason = Errors.ErrPermit2InvalidNonce;
     } else {
       errorReason = `transaction_failed: ${message.slice(0, 500)}`;
     }
