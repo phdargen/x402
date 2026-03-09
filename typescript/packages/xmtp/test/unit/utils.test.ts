@@ -7,6 +7,8 @@ import {
   isPaymentRequiredContent,
   isPaymentPayloadContent,
   isSettlementResponseContent,
+  getPaymentRequiredContent,
+  getSettlementResponseContent,
   createResourceUrl,
 } from "../../src/utils/encoding";
 import type { XMTPMessage } from "../../src/types";
@@ -62,6 +64,16 @@ describe("isPaymentRequiredMessage", () => {
     const msg = makeMessage("other", "payment-required", {});
     expect(isPaymentRequiredMessage(msg)).toBe(false);
   });
+
+  it("should return true for reply-wrapped payment-required (xmtp.org/reply)", () => {
+    const paymentRequired = { x402Version: 2, accepts: [], resource: { url: "xmtp://0x/service" } };
+    const msg = makeMessage("xmtp.org", "reply", {
+      contentType: { authorityId: "x402", typeId: "payment-required", versionMajor: 1, versionMinor: 0 },
+      content: paymentRequired,
+    });
+    expect(isPaymentRequiredMessage(msg)).toBe(true);
+    expect(getPaymentRequiredContent(msg)).toEqual(paymentRequired);
+  });
 });
 
 describe("isPaymentPayloadMessage", () => {
@@ -85,6 +97,16 @@ describe("isSettlementResponseMessage", () => {
   it("should return false for other content types", () => {
     const msg = makeMessage("x402", "payment-required", {});
     expect(isSettlementResponseMessage(msg)).toBe(false);
+  });
+
+  it("should return true for reply-wrapped settlement-response", () => {
+    const settlement = { success: true, transaction: "0xtx", network: "eip155:84532", payer: "0x" };
+    const msg = makeMessage("xmtp.org", "reply", {
+      contentType: { authorityId: "x402", typeId: "settlement-response", versionMajor: 1, versionMinor: 0 },
+      content: settlement,
+    });
+    expect(isSettlementResponseMessage(msg)).toBe(true);
+    expect(getSettlementResponseContent(msg)).toEqual(settlement);
   });
 });
 

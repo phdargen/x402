@@ -17,7 +17,7 @@ XMTP is a decentralized, end-to-end encrypted messaging protocol widely used for
 ```
 Client                          Resource Agent                    Facilitator
   |                                   |                               |
-  |  1. XMTP message (request)       |                               |
+  |  1. XMTP message (request)        |                               |
   |---------------------------------->|                               |
   |                                   |                               |
   |  2. x402/payment-required msg     |                               |
@@ -41,9 +41,9 @@ Client                          Resource Agent                    Facilitator
   |<----------------------------------|                               |
 ```
 
-1. The Client sends a normal XMTP message requesting a service (e.g., a text message asking an AI agent a question).
+1. The Client sends a normal XMTP message requesting a service (e.g. a text message asking an AI agent a question).
 2. The Resource Agent determines payment is required and responds with an `x402/payment-required` message containing the `PaymentRequired` schema.
-3. The Client constructs and sends an `x402/payment-payload` message containing the signed `PaymentPayload` schema.
+3. The Client constructs and sends an `x402/payment-payload` message containing the signed `PaymentPayload` schema. For structured requests, the payment-payload MAY include an optional `request` field carrying the request body (see Structured Requests).
 4-7. The Resource Agent verifies and settles the payment through the Facilitator's HTTP API (core spec Section 7).
 8. The Resource Agent sends an `x402/settlement-response` message with the `SettlementResponse` schema.
 9. The Resource Agent delivers the actual service response as a standard XMTP message (text, markdown, attachment, etc.).
@@ -110,14 +110,14 @@ versionMinor: 0
 }
 ```
 
-**Resource URL format**: For XMTP-native resources, the `resource.url` field uses the scheme `xmtp://{address}/{capability}`. This is informational and is not dereferenced over HTTP. 
+**Resource URL format**: For XMTP-native resources, the `resource.url` field uses the scheme `xmtp://{address}/{capability}`. This is informational and is not dereferenced over HTTP. Routing to the correct handler is the Resource Agent's responsibility, not a function of this URL.
 
 ## Payment Payload Transmission
 
 Clients send payment data by sending an `x402/payment-payload` content type message.
 
 **Mechanism**: XMTP message with custom content type `x402/payment-payload`
-**Data Format**: JSON-encoded `PaymentPayload` schema (core spec Section 5.2), transmitted as UTF-8 bytes
+**Data Format**: JSON-encoded `PaymentPayload` schema (core spec Section 5.2) with an optional `request` field, transmitted as UTF-8 bytes
 
 **Content Type Identifier:**
 
@@ -132,7 +132,15 @@ versionMinor: 0
 
 **shouldPush**: `false`
 
-**Example:**
+**Fields (XMTP-specific additions to core PaymentPayload):**
+
+| Field Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `request` | `object` | Optional | Structured request data accompanying the payment (see Structured Requests) |
+| `request.body` | `any` | Required (if `request` present) | The request payload: JSON object, string, or base64-encoded binary |
+| `request.contentType` | `string` | Optional | MIME type of the body. Defaults to `"application/json"` |
+
+**Example (conversational / GET-like):**
 
 ```json
 {
@@ -166,6 +174,51 @@ versionMinor: 0
     }
   },
   "extensions": {}
+}
+```
+
+**Example (structured / POST-like):**
+
+```json
+{
+  "x402Version": 2,
+  "resource": {
+    "url": "xmtp://0xAgentAddress/generate-image",
+    "description": "AI image generation",
+    "mimeType": "image/png"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:84532",
+    "amount": "50000",
+    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+    "maxTimeoutSeconds": 120,
+    "extra": {
+      "name": "USDC",
+      "version": "2"
+    }
+  },
+  "payload": {
+    "signature": "0x...",
+    "authorization": {
+      "from": "0x857b06519E91e3A54538791bDbb0E22373e36b66",
+      "to": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+      "value": "50000",
+      "validAfter": "1740672089",
+      "validBefore": "1740672254",
+      "nonce": "0x..."
+    }
+  },
+  "extensions": {},
+  "request": {
+    "body": {
+      "prompt": "a sunset over the ocean",
+      "style": "watercolor",
+      "resolution": "1024x1024"
+    },
+    "contentType": "application/json"
+  }
 }
 ```
 
@@ -224,7 +277,7 @@ The Resource Agent MUST send the `x402/settlement-response` before delivering th
 | `x402/payment-payload` | Client -> Resource Agent | `PaymentPayload` object as JSON-encoded UTF-8 bytes |
 | `x402/settlement-response` | Resource Agent -> Client | `SettlementResponse` object as JSON-encoded UTF-8 bytes |
 
-Each content type requires a codec registered with the XMTP client per the [XIP-5](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-5-message-content-types.md) framework. See [IMPLEMENTATION_XMTP.md](./IMPLEMENTATION_XMTP.md) for reference codec implementations.
+Each content type requires a codec registered with the XMTP client per the [XIP-5](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-5-message-content-types.md) framework. 
 
 ## Correlation and Ordering
 
@@ -236,6 +289,27 @@ Because XMTP messaging is asynchronous, messages may arrive out of order or a cl
 - The service response SHOULD be sent as a separate standalone message (not a reply in the payment thread).
 
 If an agent receives a `payment-payload` that is not a reply to any outstanding `payment-required`, it SHOULD still attempt to verify and settle it if the payment parameters are acceptable. This allows clients that already know the agent's pricing (via discovery or prior interaction) to skip the `payment-required` round-trip.
+
+## Structured Requests
+
+The XMTP transport supports two request patterns, analogous to GET and POST in HTTP:
+
+**Conversational (GET-like)**: The client sends a natural-language text message (step 1). The agent prices the request and replies with `payment-required`. After payment, the agent uses the original text message as the handler input. This is the default pattern for simple queries like "analyze AAPL" or "what's the weather?".
+
+**Structured (POST-like)**: The client includes a `request` field in the `x402/payment-payload` message (step 3) carrying structured parameters such as JSON objects, form data, or base64-encoded binary. 
+
+This mirrors HTTP where the POST body and `PAYMENT-SIGNATURE` header travel on the same request. In XMTP, the `request` field bundles structured data with the payment in a single message, ensuring atomic delivery.
+
+## Routing and Pricing
+
+In HTTP, the URL path implicitly routes requests to resources with pre-configured pricing. In XMTP, there are no URL paths: the Resource Agent receives freeform messages and decides at the application level which capability to invoke and whether payment is required.
+
+Agents MAY use any strategy for this routing decision, including but not limited to:
+- Fixed command matching (e.g. `/weather`, `analyze AAPL`)
+- LLM-based intent classification
+- Conversation-history-aware logic (e.g. freemium models with N free messages)
+
+Because the payment-required response is issued per-message by agent logic, the `PaymentRequired` response MAY vary per request -- different amounts, assets, or schemes depending on the inferred complexity or capability. This enables dynamic pricing that adapts to message content, unlike the typically static per-route pricing in HTTP.
 
 ## Group Chat Considerations
 
@@ -287,7 +361,6 @@ Resource Agents MAY advertise their x402 capabilities through a greeting message
 - [XMTP Documentation](https://docs.xmtp.org)
 - [XMTP Content Types (XIP-5)](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-5-message-content-types.md)
 - [XMTP Agent SDK](https://www.npmjs.com/package/@xmtp/agent-sdk)
-- [Reference Implementation](./IMPLEMENTATION_XMTP.md)
 
 ---
 

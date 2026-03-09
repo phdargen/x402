@@ -12,8 +12,7 @@ export {
 } from "./codecs";
 
 // Client exports
-export { createPaymentForXMTP } from "./client";
-export { x402XMTPClient, wrapAgentWithPayment, createx402XMTPClient } from "./client";
+export { createPaymentForXMTP, createPaymentClientMiddleware } from "./client";
 
 // Server exports
 export { createPaymentWrapper } from "./server";
@@ -39,12 +38,9 @@ export type {
   XMTPSettlementContext,
   XMTPAfterSettlementHook,
   // Client types
-  x402XMTPClientOptions,
-  XMTPPaymentRequestedContext,
-  x402XMTPMessageResult,
-  XMTPBeforePaymentHook,
-  XMTPAfterPaymentHook,
-  x402XMTPClientConfig,
+  XMTPPaymentClientConfig,
+  XMTPPaymentClientResult,
+  XMTPRequestBody,
   // XMTP SDK abstraction types
   XMTPMessage,
   XMTPConversation,

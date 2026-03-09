@@ -27,6 +27,14 @@ type ContentTypeDescriptorMajor = {
   versionMajor: number;
 };
 
+/** Reply-wrapped content (xmtp.org/reply wraps the actual payload). */
+type ReplyContent = {
+  content: unknown;
+  contentType: ContentTypeDescriptorMajor;
+  reference?: string;
+  referenceInboxId?: string;
+};
+
 /**
  * Checks if two content type IDs match (same authority, type, and major version).
  *
@@ -41,7 +49,31 @@ function contentTypeMatches(a: ContentTypeDescriptorMajor, b: ContentTypeDescrip
 }
 
 /**
+ * Returns true if the message is an xmtp.org/reply (reply wrapper).
+ */
+function isReplyMessage(message: XMTPMessage): boolean {
+  return (
+    message.contentType?.authorityId === "xmtp.org" &&
+    message.contentType?.typeId === "reply"
+  );
+}
+
+/**
+ * Extracts inner content from a reply-wrapped message, or the message itself if not a reply.
+ */
+function getInnerContent(message: XMTPMessage): { content: unknown; contentType: ContentTypeDescriptorMajor } | null {
+  if (isReplyMessage(message) && isObject(message.content)) {
+    const reply = message.content as ReplyContent;
+    if (reply.contentType) {
+      return { content: reply.content, contentType: reply.contentType };
+    }
+  }
+  return { content: message.content, contentType: message.contentType };
+}
+
+/**
  * Type guard for x402/payment-required XMTP messages.
+ * Handles both direct x402/payment-required and reply-wrapped (xmtp.org/reply) messages.
  *
  * @param message - The XMTP message to check
  * @returns True if the message is a payment-required message
@@ -49,11 +81,41 @@ function contentTypeMatches(a: ContentTypeDescriptorMajor, b: ContentTypeDescrip
 export function isPaymentRequiredMessage(
   message: XMTPMessage,
 ): message is XMTPMessage & { content: PaymentRequired } {
-  return contentTypeMatches(message.contentType, PaymentRequiredContentType);
+  const inner = getInnerContent(message);
+  if (!inner) return false;
+  return contentTypeMatches(inner.contentType, PaymentRequiredContentType);
+}
+
+/**
+ * Extracts PaymentRequired content from a message (direct or reply-wrapped).
+ */
+export function getPaymentRequiredContent(message: XMTPMessage): PaymentRequired | null {
+  if (!isPaymentRequiredMessage(message)) return null;
+  const inner = getInnerContent(message);
+  return inner && isPaymentRequiredContent(inner.content) ? (inner.content as PaymentRequired) : null;
+}
+
+/**
+ * Extracts SettleResponse content from a message (direct or reply-wrapped).
+ */
+export function getSettlementResponseContent(message: XMTPMessage): SettleResponse | null {
+  if (!isSettlementResponseMessage(message)) return null;
+  const inner = getInnerContent(message);
+  return inner && isSettlementResponseContent(inner.content) ? (inner.content as SettleResponse) : null;
+}
+
+/**
+ * Extracts PaymentPayload content from a message (direct or reply-wrapped).
+ */
+export function getPaymentPayloadContent(message: XMTPMessage): PaymentPayload | null {
+  if (!isPaymentPayloadMessage(message)) return null;
+  const inner = getInnerContent(message);
+  return inner && isPaymentPayloadContent(inner.content) ? (inner.content as PaymentPayload) : null;
 }
 
 /**
  * Type guard for x402/payment-payload XMTP messages.
+ * Handles both direct and reply-wrapped messages.
  *
  * @param message - The XMTP message to check
  * @returns True if the message is a payment-payload message
@@ -61,11 +123,14 @@ export function isPaymentRequiredMessage(
 export function isPaymentPayloadMessage(
   message: XMTPMessage,
 ): message is XMTPMessage & { content: PaymentPayload } {
-  return contentTypeMatches(message.contentType, PaymentPayloadContentType);
+  const inner = getInnerContent(message);
+  if (!inner) return false;
+  return contentTypeMatches(inner.contentType, PaymentPayloadContentType);
 }
 
 /**
  * Type guard for x402/settlement-response XMTP messages.
+ * Handles both direct and reply-wrapped messages.
  *
  * @param message - The XMTP message to check
  * @returns True if the message is a settlement-response message
@@ -73,7 +138,9 @@ export function isPaymentPayloadMessage(
 export function isSettlementResponseMessage(
   message: XMTPMessage,
 ): message is XMTPMessage & { content: SettleResponse } {
-  return contentTypeMatches(message.contentType, SettlementResponseContentType);
+  const inner = getInnerContent(message);
+  if (!inner) return false;
+  return contentTypeMatches(inner.contentType, SettlementResponseContentType);
 }
 
 // ============================================================================

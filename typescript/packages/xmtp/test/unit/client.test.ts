@@ -1,12 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import {
-  x402XMTPClient,
-  createx402XMTPClient,
-  wrapAgentWithPayment,
-} from "../../src/client/x402XMTPClient";
+import { createPaymentClientMiddleware } from "../../src/client/paymentClientMiddleware";
 import { createPaymentForXMTP } from "../../src/client/helpers";
 import { PaymentRequiredContentType, SettlementResponseContentType } from "../../src/types";
-import type { XMTPAgent, XMTPConversation, XMTPMessage } from "../../src/types";
+import type { XMTPMessageContext, XMTPMessage } from "../../src/types";
 import type { PaymentRequired, SettleResponse } from "@x402/core/types";
 
 const mockPaymentRequired: PaymentRequired = {
@@ -32,7 +28,6 @@ const mockSettleResponse: SettleResponse = {
   payer: "0xPayer",
 };
 
-/** Content type for mock messages. */
 type MockContentType = {
   authorityId: string;
   typeId: string;
@@ -40,15 +35,6 @@ type MockContentType = {
   versionMinor: number;
 };
 
-/**
- * Builds a mock XMTP message for tests.
- *
- * @param id - Message ID
- * @param contentType - Content type descriptor
- * @param content - Decoded message content
- * @param senderInboxId - Sender inbox ID (default: 'agent-inbox')
- * @returns A minimal XMTPMessage-shaped object
- */
 function makeMessage(
   id: string,
   contentType: MockContentType,
@@ -58,28 +44,6 @@ function makeMessage(
   return { id, contentType, content, senderInboxId, sentAt: new Date() };
 }
 
-/**
- * Creates a mock XMTP agent for tests.
- *
- * @returns A minimal XMTPAgent with vi.fn() for use/on and fixed address
- */
-function createMockAgent(): XMTPAgent {
-  return {
-    use: vi.fn(),
-    on: vi.fn(),
-    address: "0xAgentAddress",
-    client: {
-      accountAddress: "client-inbox",
-      conversations: { getMessageById: vi.fn() },
-    },
-  };
-}
-
-/**
- * Creates a mock x402 client for tests (createPaymentPayload, register, registerV1).
- *
- * @returns A minimal x402Client-shaped object with mocked methods
- */
 function createMockPaymentClient() {
   return {
     createPaymentPayload: vi.fn().mockResolvedValue({
@@ -90,6 +54,22 @@ function createMockPaymentClient() {
     register: vi.fn().mockReturnThis(),
     registerV1: vi.fn().mockReturnThis(),
   } as unknown as import("@x402/core/client").x402Client;
+}
+
+function createMockContext(message: XMTPMessage): XMTPMessageContext {
+  return {
+    message,
+    conversation: {
+      sendText: vi.fn().mockResolvedValue(undefined),
+      sendReply: vi.fn().mockResolvedValue("reply-id"),
+      send: vi.fn().mockResolvedValue("sent-id"),
+      messages: vi.fn().mockResolvedValue([]),
+    } as unknown as XMTPMessageContext["conversation"],
+    client: { accountAddress: "client-inbox" },
+    sendText: vi.fn().mockResolvedValue(undefined),
+    sendTextReply: vi.fn().mockResolvedValue(undefined),
+    getSenderAddress: vi.fn().mockResolvedValue("0xSender"),
+  };
 }
 
 describe("createPaymentForXMTP", () => {
@@ -103,244 +83,151 @@ describe("createPaymentForXMTP", () => {
     expect(result).toBeDefined();
     expect(result.x402Version).toBe(2);
   });
-});
 
-describe("x402XMTPClient", () => {
-  describe("sendWithPayment", () => {
-    it("should return free response when no payment required", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const client = new x402XMTPClient(agent, paymentClient);
-
-      let messageCount = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          messageCount++;
-          if (messageCount <= 1) return [];
-          return [
-            makeMessage(
-              "resp-1",
-              { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 },
-              "Free response",
-              "agent-inbox",
-            ),
-          ];
-        }),
-      };
-
-      const result = await client.sendWithPayment(conversation, "hello");
-      expect(result.paymentMade).toBe(false);
-      expect(result.content).toBe("Free response");
-    });
-
-    it("should throw when payment required but autoPayment is disabled", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const client = new x402XMTPClient(agent, paymentClient, { autoPayment: false });
-
-      let messageCount = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          messageCount++;
-          if (messageCount <= 1) return [];
-          return [
-            makeMessage("resp-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-          ];
-        }),
-      };
-
-      await expect(client.sendWithPayment(conversation, "hello")).rejects.toThrow(
-        "autoPayment is disabled",
-      );
-    });
-
-    it("should throw when payment request is denied", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const client = new x402XMTPClient(agent, paymentClient, {
-        autoPayment: true,
-        onPaymentRequested: () => false,
-      });
-
-      let messageCount = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          messageCount++;
-          if (messageCount <= 1) return [];
-          return [
-            makeMessage("resp-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-          ];
-        }),
-      };
-
-      await expect(client.sendWithPayment(conversation, "hello")).rejects.toThrow(
-        "Payment request denied",
-      );
-    });
-
-    it("should handle full payment flow", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const client = new x402XMTPClient(agent, paymentClient, { timeoutMs: 5000 });
-
-      let phase = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          phase++;
-          if (phase <= 1) return [];
-          if (phase <= 2) {
-            return [
-              makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            ];
-          }
-          if (phase <= 4) return [];
-          return [
-            makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            makeMessage(
-              "settle-1",
-              SettlementResponseContentType,
-              mockSettleResponse,
-              "agent-inbox",
-            ),
-            makeMessage(
-              "service-1",
-              { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 },
-              "Analysis result",
-              "agent-inbox",
-            ),
-          ];
-        }),
-      };
-
-      const result = await client.sendWithPayment(conversation, "analyze AAPL");
-      expect(result.paymentMade).toBe(true);
-      expect(result.content).toBe("Analysis result");
-      expect(result.paymentResponse).toEqual(mockSettleResponse);
-    });
-  });
-
-  describe("hooks", () => {
-    it("should call onBeforePayment hook", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const beforeHook = vi.fn();
-      const client = new x402XMTPClient(agent, paymentClient, { timeoutMs: 5000 });
-      client.onBeforePayment(beforeHook);
-
-      let phase = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          phase++;
-          if (phase <= 1) return [];
-          if (phase <= 2) {
-            return [
-              makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            ];
-          }
-          if (phase <= 4) return [];
-          return [
-            makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            makeMessage(
-              "settle-1",
-              SettlementResponseContentType,
-              mockSettleResponse,
-              "agent-inbox",
-            ),
-            makeMessage(
-              "service-1",
-              { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 },
-              "result",
-              "agent-inbox",
-            ),
-          ];
-        }),
-      };
-
-      await client.sendWithPayment(conversation, "test");
-      expect(beforeHook).toHaveBeenCalled();
-    });
-
-    it("should call onAfterPayment hook", async () => {
-      const agent = createMockAgent();
-      const paymentClient = createMockPaymentClient();
-      const afterHook = vi.fn();
-      const client = new x402XMTPClient(agent, paymentClient, { timeoutMs: 5000 });
-      client.onAfterPayment(afterHook);
-
-      let phase = 0;
-      const conversation: XMTPConversation = {
-        sendText: vi.fn().mockResolvedValue("sent-id"),
-        send: vi.fn().mockResolvedValue("sent-id"),
-        sendReply: vi.fn().mockResolvedValue("sent-id"),
-        messages: vi.fn().mockImplementation(async () => {
-          phase++;
-          if (phase <= 1) return [];
-          if (phase <= 2) {
-            return [
-              makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            ];
-          }
-          if (phase <= 4) return [];
-          return [
-            makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
-            makeMessage(
-              "settle-1",
-              SettlementResponseContentType,
-              mockSettleResponse,
-              "agent-inbox",
-            ),
-            makeMessage(
-              "service-1",
-              { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 },
-              "result",
-              "agent-inbox",
-            ),
-          ];
-        }),
-      };
-
-      await client.sendWithPayment(conversation, "test");
-      expect(afterHook).toHaveBeenCalled();
-      expect(afterHook.mock.calls[0][0].settlement).toEqual(mockSettleResponse);
-    });
-  });
-});
-
-describe("wrapAgentWithPayment", () => {
-  it("should create an x402XMTPClient", () => {
-    const agent = createMockAgent();
+  it("should merge request into payload when provided", async () => {
     const paymentClient = createMockPaymentClient();
-    const client = wrapAgentWithPayment(agent, paymentClient);
-    expect(client).toBeInstanceOf(x402XMTPClient);
+    const request = { body: { city: "SF" }, contentType: "application/json" as const };
+    const result = await createPaymentForXMTP(
+      paymentClient as unknown as import("@x402/core/client").x402Client,
+      mockPaymentRequired,
+      request,
+    );
+    expect(result).toHaveProperty("request", request);
+    expect(result.x402Version).toBe(2);
   });
 });
 
-describe("createx402XMTPClient", () => {
-  it("should create an x402XMTPClient from config", () => {
-    const agent = createMockAgent();
-    const mockSchemeClient = {
-      createPaymentPayload: vi.fn(),
-    } as unknown as import("@x402/core/types").SchemeNetworkClient;
-    const client = createx402XMTPClient({
-      agent,
-      schemes: [{ network: "eip155:84532", client: mockSchemeClient }],
-      autoPayment: true,
+describe("createPaymentClientMiddleware", () => {
+  it("should return { middleware } matching XMTPAgentMiddleware signature", () => {
+    const paymentClient = createMockPaymentClient();
+    const result = createPaymentClientMiddleware(paymentClient);
+    expect(result).toHaveProperty("middleware");
+    expect(typeof result.middleware).toBe("function");
+  });
+
+  it("should pass through non-x402 messages (call next)", async () => {
+    const paymentClient = createMockPaymentClient();
+    const { middleware } = createPaymentClientMiddleware(paymentClient);
+    const ctx = createMockContext(
+      makeMessage("m1", { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 }, "hello"),
+    );
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx, next);
+
+    expect(next).toHaveBeenCalled();
+  });
+
+  it("should intercept payment-required, create payment, send reply, not call next", async () => {
+    const paymentClient = createMockPaymentClient();
+    const { middleware } = createPaymentClientMiddleware(paymentClient);
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(paymentClient.createPaymentPayload).toHaveBeenCalledWith(mockPaymentRequired);
+    expect(ctx.conversation.sendReply).toHaveBeenCalled();
+  });
+
+  it("should intercept settlement-response, run onAfterPayment, then call next", async () => {
+    const paymentClient = createMockPaymentClient();
+    const onAfterPayment = vi.fn().mockResolvedValue(undefined);
+    const { middleware } = createPaymentClientMiddleware(paymentClient, { onAfterPayment });
+    const ctx = createMockContext(
+      makeMessage("settle-1", SettlementResponseContentType, mockSettleResponse, "agent-inbox"),
+    );
+    const next = vi.fn().mockResolvedValue(undefined);
+
+    await middleware(ctx, next);
+
+    expect(onAfterPayment).toHaveBeenCalledWith({ settlement: mockSettleResponse });
+    expect(next).toHaveBeenCalled();
+  });
+
+  it("should skip payment when onPaymentRequested returns false", async () => {
+    const paymentClient = createMockPaymentClient();
+    const { middleware } = createPaymentClientMiddleware(paymentClient, {
+      onPaymentRequested: () => false,
     });
-    expect(client).toBeInstanceOf(x402XMTPClient);
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(paymentClient.createPaymentPayload).not.toHaveBeenCalled();
+    expect(ctx.conversation.sendReply).not.toHaveBeenCalled();
+  });
+
+  it("should skip payment when autoPayment is false", async () => {
+    const paymentClient = createMockPaymentClient();
+    const { middleware } = createPaymentClientMiddleware(paymentClient, { autoPayment: false });
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(paymentClient.createPaymentPayload).not.toHaveBeenCalled();
+  });
+
+  it("should include request in payment-payload when getRequestBody returns data", async () => {
+    const paymentClient = createMockPaymentClient();
+    const requestBody = { body: { city: "Tokyo" }, contentType: "application/json" as const };
+    const { middleware } = createPaymentClientMiddleware(paymentClient, {
+      getRequestBody: () => requestBody,
+    });
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    expect(paymentClient.createPaymentPayload).toHaveBeenCalledWith(mockPaymentRequired);
+    const sendReplyCall = (ctx.conversation.sendReply as ReturnType<typeof vi.fn>).mock.calls[0];
+    const encodedContent = sendReplyCall[0].content as { content: Uint8Array };
+    expect(encodedContent).toBeDefined();
+    const decoded = JSON.parse(new TextDecoder().decode(encodedContent.content));
+    expect(decoded.request).toEqual(requestBody);
+  });
+
+  it("should not include request when getRequestBody is absent", async () => {
+    const paymentClient = createMockPaymentClient();
+    const { middleware } = createPaymentClientMiddleware(paymentClient);
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    const sendReplyCall = (ctx.conversation.sendReply as ReturnType<typeof vi.fn>).mock.calls[0];
+    const encodedContent = sendReplyCall[0].content as { content: Uint8Array };
+    const decoded = JSON.parse(new TextDecoder().decode(encodedContent.content));
+    expect(decoded.request).toBeUndefined();
+  });
+
+  it("should call onBeforePayment before creating payment", async () => {
+    const paymentClient = createMockPaymentClient();
+    const onBeforePayment = vi.fn().mockResolvedValue(undefined);
+    const { middleware } = createPaymentClientMiddleware(paymentClient, { onBeforePayment });
+    const ctx = createMockContext(
+      makeMessage("pr-1", PaymentRequiredContentType, mockPaymentRequired, "agent-inbox"),
+    );
+    const next = vi.fn();
+
+    await middleware(ctx, next);
+
+    expect(onBeforePayment).toHaveBeenCalledWith({ paymentRequired: mockPaymentRequired });
+    expect(paymentClient.createPaymentPayload).toHaveBeenCalled();
   });
 });

@@ -17,13 +17,19 @@ import type {
   XMTPMessageContext,
   XMTPMessage,
   XMTPOriginalMessage,
+  XMTPRequestBody,
   XMTPServerHookContext,
   XMTPAfterExecutionContext,
   XMTPSettlementContext,
 } from "../types";
 import { PaymentRequiredCodec } from "../codecs/paymentRequired";
 import { SettlementResponseCodec } from "../codecs/settlementResponse";
-import { isPaymentPayloadMessage, isPaymentPayloadContent, createResourceUrl } from "../utils";
+import {
+  isPaymentPayloadMessage,
+  isPaymentPayloadContent,
+  getPaymentPayloadContent,
+  createResourceUrl,
+} from "../utils";
 
 const paymentRequiredCodec = new PaymentRequiredCodec();
 const settlementResponseCodec = new SettlementResponseCodec();
@@ -127,9 +133,9 @@ async function handlePaymentPayload(
   config: XMTPPaymentWrapperConfig,
   ctx: XMTPMessageContext,
 ): Promise<void> {
-  const paymentPayload = ctx.message.content as PaymentPayload;
+  const paymentPayload = getPaymentPayloadContent(ctx.message);
 
-  if (!isPaymentPayloadContent(paymentPayload)) {
+  if (!paymentPayload || !isPaymentPayloadContent(paymentPayload)) {
     await ctx.sendText("Error: Invalid payment payload format");
     return;
   }
@@ -155,6 +161,11 @@ async function handlePaymentPayload(
   }
 
   const originalMessage = await traceOriginalMessage(ctx);
+
+  const paymentContent = paymentPayload as PaymentPayload & { request?: XMTPRequestBody };
+  if (paymentContent.request) {
+    originalMessage.request = paymentContent.request;
+  }
 
   const hookContext: XMTPServerHookContext = {
     paymentPayload,
@@ -212,18 +223,60 @@ async function handlePaymentPayload(
 }
 
 /**
+ * Gets the reference ID from a message (envelope or content).
+ */
+function getMessageReference(msg: XMTPMessage): string | undefined {
+  if (msg.reference) {
+    return msg.reference;
+  }
+  const content = msg.content as Record<string, unknown> | undefined;
+  if (!content || typeof content !== "object") {
+    return undefined;
+  }
+  const refId =
+    (content as { referenceId?: string }).referenceId ||
+    (content as { reference?: string }).reference;
+  return typeof refId === "string" ? refId : undefined;
+}
+
+/**
  * Traces the reply chain to recover the original text message that triggered the payment flow.
  *
  * payment-payload (current) -> replies to -> payment-required -> replies to -> original message
  *
- * If the chain cannot be traced (e.g., unsolicited payment), returns the payment-payload
- * message itself as context.
+ * Uses getMessageById when available for direct lookups; otherwise falls back to loading all messages.
  *
  * @param ctx - The XMTP message context (for the payment-payload message)
  * @returns The original message or a fallback
  */
 async function traceOriginalMessage(ctx: XMTPMessageContext): Promise<XMTPOriginalMessage> {
   try {
+    const getMessageById = ctx.client.conversations?.getMessageById;
+
+    if (getMessageById) {
+      const paymentRequiredRef = getMessageReference(ctx.message);
+      if (!paymentRequiredRef) {
+        return fallbackOriginalMessage(ctx);
+      }
+      const paymentRequiredMsg = await getMessageById(paymentRequiredRef);
+      if (!paymentRequiredMsg) {
+        return fallbackOriginalMessage(ctx);
+      }
+      const originalRef = getMessageReference(paymentRequiredMsg);
+      if (!originalRef) {
+        return fallbackOriginalMessage(ctx);
+      }
+      const originalMsg = await getMessageById(originalRef);
+      if (!originalMsg) {
+        return fallbackOriginalMessage(ctx);
+      }
+      return {
+        id: originalMsg.id,
+        content: typeof originalMsg.content === "string" ? originalMsg.content : "",
+        senderInboxId: originalMsg.senderInboxId,
+      };
+    }
+
     const messages = await ctx.conversation.messages();
     const messageMap = new Map<string, XMTPMessage>();
     for (const msg of messages) {
@@ -231,7 +284,6 @@ async function traceOriginalMessage(ctx: XMTPMessageContext): Promise<XMTPOrigin
     }
 
     const paymentPayloadMsg = ctx.message;
-
     const paymentRequiredMsg = findReplyTarget(paymentPayloadMsg, messageMap);
     if (!paymentRequiredMsg) {
       return fallbackOriginalMessage(ctx);
@@ -255,8 +307,7 @@ async function traceOriginalMessage(ctx: XMTPMessageContext): Promise<XMTPOrigin
 /**
  * Finds the message that a reply message is replying to.
  *
- * XMTP reply messages have content with a `referenceId` or `reference` field
- * pointing to the parent message ID.
+ * XMTP reply messages have a reference (envelope or content) pointing to the parent message ID.
  *
  * @param replyMsg - The reply message
  * @param messageMap - Map of message ID to message
@@ -266,20 +317,8 @@ function findReplyTarget(
   replyMsg: XMTPMessage,
   messageMap: Map<string, XMTPMessage>,
 ): XMTPMessage | undefined {
-  const content = replyMsg.content as Record<string, unknown> | undefined;
-  if (!content || typeof content !== "object") {
-    return undefined;
-  }
-
-  const refId =
-    (content as { referenceId?: string }).referenceId ||
-    (content as { reference?: string }).reference;
-
-  if (typeof refId !== "string") {
-    return undefined;
-  }
-
-  return messageMap.get(refId);
+  const refId = getMessageReference(replyMsg);
+  return refId ? messageMap.get(refId) : undefined;
 }
 
 /**

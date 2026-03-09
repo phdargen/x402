@@ -6,5 +6,8 @@ export {
   isPaymentRequiredContent,
   isPaymentPayloadContent,
   isSettlementResponseContent,
+  getPaymentRequiredContent,
+  getSettlementResponseContent,
+  getPaymentPayloadContent,
   createResourceUrl,
 } from "./encoding";

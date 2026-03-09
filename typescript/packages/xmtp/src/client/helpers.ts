@@ -7,6 +7,7 @@
 
 import type { PaymentPayload, PaymentRequired } from "@x402/core/types";
 import { x402Client } from "@x402/core/client";
+import type { XMTPRequestBody } from "../types";
 
 /**
  * Creates a PaymentPayload from a PaymentRequired response using the x402 client.
@@ -16,6 +17,7 @@ import { x402Client } from "@x402/core/client";
  *
  * @param paymentClient - The x402 client with registered payment schemes
  * @param paymentRequired - The PaymentRequired message from the resource agent
+ * @param request - Optional structured request body to embed in the payload (POST-like)
  * @returns The payment payload ready to be sent via PaymentPayloadCodec.encode()
  *
  * @example
@@ -33,6 +35,11 @@ import { x402Client } from "@x402/core/client";
 export async function createPaymentForXMTP(
   paymentClient: x402Client,
   paymentRequired: PaymentRequired,
+  request?: XMTPRequestBody,
 ): Promise<PaymentPayload> {
-  return paymentClient.createPaymentPayload(paymentRequired);
+  const payload = await paymentClient.createPaymentPayload(paymentRequired);
+  if (request) {
+    return { ...payload, request } as PaymentPayload;
+  }
+  return payload;
 }

@@ -177,6 +177,65 @@ describe("createPaymentWrapper", () => {
       expect(conversation.sendText).toHaveBeenCalledWith("Premium analysis result");
     });
 
+    it("should extract request from payment-payload and attach to originalMessage", async () => {
+      const resourceServer = createMockResourceServer();
+      const requestBody = { body: { city: "Tokyo" }, contentType: "application/json" as const };
+      const payloadWithRequest = { ...mockPaymentPayload, request: requestBody };
+      const handler = vi.fn().mockResolvedValue({ text: "result" });
+      const { middleware } = createPaymentWrapper(resourceServer, {
+        accepts: [mockRequirements],
+        handler,
+      });
+
+      const originalMsg = {
+        id: "original-id",
+        contentType: { authorityId: "text", typeId: "text", versionMajor: 1, versionMinor: 0 },
+        content: "/weather",
+        senderInboxId: "sender-inbox",
+        sentAt: new Date(),
+      };
+      const paymentRequiredMsg = {
+        id: "pr-id",
+        contentType: PaymentPayloadContentType,
+        content: { x402Version: 2, resource: {}, accepts: [mockRequirements] },
+        senderInboxId: "agent-inbox",
+        sentAt: new Date(),
+        reference: "original-id",
+      };
+      const paymentPayloadMsg = {
+        id: "payload-id",
+        contentType: PaymentPayloadContentType,
+        content: payloadWithRequest,
+        senderInboxId: "client-inbox",
+        sentAt: new Date(),
+        reference: "pr-id",
+      };
+
+      const conversation = createMockConversation();
+      (conversation.messages as ReturnType<typeof vi.fn>).mockResolvedValue([
+        originalMsg,
+        paymentRequiredMsg,
+        paymentPayloadMsg,
+      ]);
+
+      const ctx = createMockContext(
+        {
+          id: "payload-id",
+          contentType: PaymentPayloadContentType,
+          content: payloadWithRequest,
+          senderInboxId: "client-inbox",
+          reference: "pr-id",
+        },
+        conversation,
+      );
+
+      await middleware(ctx, vi.fn());
+
+      expect(handler).toHaveBeenCalled();
+      const handlerArg = handler.mock.calls[0][0] as { request?: typeof requestBody };
+      expect(handlerArg.request).toEqual(requestBody);
+    });
+
     it("should send settlement failure for invalid payment", async () => {
       const resourceServer = createMockResourceServer({
         verifyPayment: vi.fn().mockResolvedValue({

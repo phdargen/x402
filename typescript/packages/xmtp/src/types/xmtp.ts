@@ -82,6 +82,14 @@ export type PaidMessageHandler = (
 ) => Promise<XMTPServiceResponse> | XMTPServiceResponse;
 
 /**
+ * Structured request body embedded in x402/payment-payload (POST-like requests)
+ */
+export interface XMTPRequestBody {
+  body: unknown;
+  contentType?: string; // defaults to "application/json"
+}
+
+/**
  * The original message recovered from the XMTP reply chain
  */
 export interface XMTPOriginalMessage {
@@ -91,6 +99,8 @@ export interface XMTPOriginalMessage {
   id: string;
   /** The sender's inbox ID */
   senderInboxId: string;
+  /** Structured request body from the payment-payload `request` field, if present */
+  request?: XMTPRequestBody;
 }
 
 /**
@@ -208,98 +218,32 @@ export type XMTPAfterSettlementHook = (context: XMTPSettlementContext) => Promis
 // ============================================================================
 
 /**
- * Options for x402XMTPClient
+ * Configuration for createPaymentClientMiddleware
  */
-export interface x402XMTPClientOptions {
-  /**
-   * Whether to automatically create and send payment when a payment-required message is received.
-   *
-   * @default true
-   */
+export interface XMTPPaymentClientConfig {
+  /** Whether to automatically create and send payment when payment-required is received. @default true */
   autoPayment?: boolean;
 
-  /**
-   * Timeout in milliseconds for waiting for settlement and service responses.
-   *
-   * @default 60000
-   */
-  timeoutMs?: number;
+  /** Hook called when payment is requested. Return true to proceed, false to abort. */
+  onPaymentRequested?: (ctx: { paymentRequired: PaymentRequired }) => Promise<boolean> | boolean;
 
-  /**
-   * Hook called when a payment is requested by the agent.
-   * Return true to proceed with payment, false to abort.
-   */
-  onPaymentRequested?: (context: XMTPPaymentRequestedContext) => Promise<boolean> | boolean;
+  /** Hook called before payment is created */
+  onBeforePayment?: (ctx: { paymentRequired: PaymentRequired }) => Promise<void> | void;
+
+  /** Hook called after settlement-response is received */
+  onAfterPayment?: (ctx: { settlement: SettleResponse }) => Promise<void> | void;
+
+  /** Return structured request data to embed in the payment-payload (POST-like). */
+  getRequestBody?: (
+    ctx: { paymentRequired: PaymentRequired },
+  ) => Promise<XMTPRequestBody | undefined> | XMTPRequestBody | undefined;
 }
 
 /**
- * Context provided to onPaymentRequested hook
+ * Result of createPaymentClientMiddleware
  */
-export interface XMTPPaymentRequestedContext {
-  /** The payment requirements from the agent */
-  paymentRequired: PaymentRequired;
-  /** The conversation where the request occurred */
-  conversationId: string;
-}
-
-/**
- * Result of sendWithPayment
- */
-export interface x402XMTPMessageResult {
-  /** The service response content */
-  content: string;
-  /** Whether payment was made */
-  paymentMade: boolean;
-  /** The settlement response if payment was made */
-  paymentResponse?: SettleResponse;
-}
-
-/**
- * Hook called before payment is created
- */
-export type XMTPBeforePaymentHook = (context: XMTPPaymentRequestedContext) => Promise<void> | void;
-
-/**
- * Hook called after payment is submitted
- */
-export type XMTPAfterPaymentHook = (context: {
-  paymentPayload: PaymentPayload;
-  settlement: SettleResponse | null;
-}) => Promise<void> | void;
-
-/**
- * Configuration for createx402XMTPClient factory
- */
-export interface x402XMTPClientConfig {
-  /** Agent instance (compatible with @xmtp/agent-sdk) */
-  agent: XMTPAgent;
-
-  /** Payment scheme registrations */
-  schemes: Array<{
-    network: string;
-    client: import("@x402/core/types").SchemeNetworkClient;
-    x402Version?: number;
-  }>;
-
-  /**
-   * Whether to automatically pay when payment-required is received.
-   *
-   * @default true
-   */
-  autoPayment?: boolean;
-
-  /**
-   * Hook called when payment is requested.
-   * Return true to proceed, false to abort.
-   */
-  onPaymentRequested?: (context: XMTPPaymentRequestedContext) => Promise<boolean> | boolean;
-
-  /**
-   * Timeout in milliseconds for waiting for responses.
-   *
-   * @default 60000
-   */
-  timeoutMs?: number;
+export interface XMTPPaymentClientResult {
+  middleware: XMTPAgentMiddleware;
 }
 
 // ============================================================================
@@ -322,6 +266,8 @@ export interface XMTPMessage {
   senderInboxId: string;
   /** When the message was sent */
   sentAt: Date;
+  /** Reference to parent message (for replies), when available */
+  reference?: string;
 }
 
 /**
@@ -351,7 +297,11 @@ export interface XMTPMessageContext {
   /** The conversation the message belongs to */
   conversation: XMTPConversation;
   /** The XMTP client */
-  client: { accountAddress: string };
+  client: {
+    accountAddress: string;
+    /** Optional: direct message lookup (agent-sdk provides this) */
+    conversations?: { getMessageById: (id: string) => Promise<XMTPMessage | undefined> };
+  };
   /** Send a text message to the conversation */
   sendText: (text: string) => Promise<void>;
   /** Send a text reply to the current message */

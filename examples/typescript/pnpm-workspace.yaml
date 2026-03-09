@@ -14,6 +14,8 @@ packages:
   - "../../typescript/packages/core"
   - "../../typescript/packages/extensions"
   - "../../typescript/packages/mcp"
+  - "../../typescript/packages/xmtp"
   - "../../typescript/packages/http/*"
   - "../../typescript/packages/mechanisms/*"
   - "../../typescript/packages/legacy/*"
+
