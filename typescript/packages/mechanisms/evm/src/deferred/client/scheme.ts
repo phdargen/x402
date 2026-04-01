@@ -11,6 +11,24 @@ import { DeferredVoucherPayload } from "../types";
 import { createDeferredEIP3009DepositPayload } from "./eip3009";
 import { signVoucher } from "./voucher";
 
+/**
+ * Optional rules for sizing the onchain deposit when the client sends a `deposit` payload.
+ *
+ * Default deposit is `10 * paymentRequirements.amount` (see {@link DeferredDepositPolicy.depositMultiplier}).
+ */
+export interface DeferredDepositPolicy {
+  /**
+   * Integer multiplier on `paymentRequirements.amount` (default 10). Must be >= 1.
+   */
+  depositMultiplier?: number;
+  /**
+   * Optional maximum deposit in token smallest units.
+   * The signed deposit becomes `min(depositMultiplier * amount, maxDeposit)` when set.
+   * If that is less than the voucher `cumulativeAmount` for the request, facilitation will reject the payload.
+   */
+  maxDeposit?: string;
+}
+
 export interface DeferredClientContext {
   /** Current cumulative amount charged by the server for this subchannel */
   chargedCumulativeAmount?: string;
@@ -41,8 +59,28 @@ export class DeferredEvmScheme implements SchemeNetworkClient {
    * Creates the deferred client scheme with the given signer.
    *
    * @param signer - The client EVM signer.
+   * @param depositPolicy - Optional deposit sizing; ignored when {@link DeferredClientContext.depositAmount} is set for the session.
    */
-  constructor(private readonly signer: ClientEvmSigner) {}
+  constructor(
+    private readonly signer: ClientEvmSigner,
+    private readonly depositPolicy?: DeferredDepositPolicy,
+  ) {
+    if (depositPolicy) {
+      const m = depositPolicy.depositMultiplier;
+      if (m !== undefined && (!Number.isInteger(m) || m < 1)) {
+        throw new Error("depositMultiplier must be an integer >= 1");
+      }
+      if (depositPolicy.maxDeposit !== undefined) {
+        try {
+          if (BigInt(depositPolicy.maxDeposit) < 0n) {
+            throw new Error("maxDeposit must be a non-negative integer string");
+          }
+        } catch {
+          throw new Error("maxDeposit must be a non-negative integer string");
+        }
+      }
+    }
+  }
 
   /**
    * Parses `PAYMENT-RESPONSE` from a settled HTTP response and
@@ -123,7 +161,18 @@ export class DeferredEvmScheme implements SchemeNetworkClient {
     const voucherNonce = (deferredCtx.lastNonce ?? 0) + 1;
 
     if (needsDeposit) {
-      const depositAmount = deferredCtx.depositAmount ?? paymentRequirements.amount;
+      const depositAmount =
+        deferredCtx.depositAmount ??
+        (() => {
+          const mult = BigInt(this.depositPolicy?.depositMultiplier ?? 10);
+          let depositBig = mult * requestAmount;
+          const cap = this.depositPolicy?.maxDeposit;
+          if (cap !== undefined) {
+            const capBig = BigInt(cap);
+            if (depositBig > capBig) depositBig = capBig;
+          }
+          return depositBig.toString();
+        })();
       return createDeferredEIP3009DepositPayload(
         this.signer,
         x402Version,

@@ -1,4 +1,4 @@
-import { SettleResponse, Network } from "@x402/core/types";
+import { SettleResponse, PaymentRequirements } from "@x402/core/types";
 import { getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import { DeferredClaimPayload } from "../types";
@@ -13,14 +13,15 @@ import * as Errors from "./errors";
  *
  * @param signer - The facilitator EVM signer.
  * @param payload - The claim payload with service id and voucher claims.
- * @param network - The network identifier for the response.
+ * @param requirements - Payment requirements (network and billed `amount` for this settlement).
  * @returns Settlement outcome with transaction hash or error reason.
  */
 export async function executeClaim(
   signer: FacilitatorEvmSigner,
   payload: DeferredClaimPayload,
-  network: Network,
+  requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
+  const network = requirements.network;
   const claimArgs = payload.claims.map(c => ({
     payer: getAddress(c.payer),
     cumulativeAmount: BigInt(c.cumulativeAmount),
@@ -52,6 +53,7 @@ export async function executeClaim(
       success: true,
       transaction: tx,
       network,
+      amount: requirements.amount,
     };
   } catch {
     return {

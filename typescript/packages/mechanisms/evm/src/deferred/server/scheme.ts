@@ -306,6 +306,7 @@ export class DeferredEvmScheme implements SchemeNetworkServer {
         transaction: "",
         network: requirements.network,
         payer: raw.payer,
+        amount: requirements.amount,
         extra: {
           chargedCumulativeAmount: newCharged.toString(),
           nonce: raw.nonce,
@@ -413,12 +414,13 @@ export class DeferredEvmScheme implements SchemeNetworkServer {
           : typeof ex.withdrawRequestedAt === "string"
             ? parseInt(ex.withdrawRequestedAt, 10) || 0
             : 0;
-      const cum = raw.voucher.cumulativeAmount;
+      const chargedActual = requirements.amount;
+      const signedCumulative = raw.voucher.cumulativeAmount;
       const session: SubchannelSession = {
         serviceId: lowerServiceId(raw.deposit.serviceId),
         payer: raw.deposit.payer.toLowerCase(),
-        chargedCumulativeAmount: cum,
-        signedCumulativeAmount: cum,
+        chargedCumulativeAmount: chargedActual,
+        signedCumulativeAmount: signedCumulative,
         lastNonce: raw.voucher.nonce,
         signature: raw.voucher.signature,
         deposit: depositSnap,
@@ -427,6 +429,12 @@ export class DeferredEvmScheme implements SchemeNetworkServer {
         lastRequestTimestamp: Date.now(),
       };
       await this.storage.set(lowerServiceId(raw.deposit.serviceId), raw.deposit.payer, session);
+      result.extra = {
+        ...ex,
+        serviceId: raw.deposit.serviceId,
+        chargedCumulativeAmount: chargedActual,
+        nonce: raw.voucher.nonce,
+      };
     }
   }
 

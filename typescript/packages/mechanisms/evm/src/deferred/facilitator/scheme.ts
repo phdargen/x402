@@ -115,20 +115,6 @@ export class DeferredEvmScheme implements SchemeNetworkFacilitator {
     const rawPayload = payload.payload as Record<string, unknown>;
 
     if (isDeferredDepositPayload(rawPayload)) {
-      const verifyResult = await verifyDeposit(
-        this.signer,
-        rawPayload as DeferredDepositPayload,
-        requirements,
-      );
-      if (!verifyResult.isValid) {
-        return {
-          success: false,
-          errorReason: verifyResult.invalidReason ?? Errors.ErrInvalidPayloadType,
-          transaction: "",
-          network: requirements.network,
-          payer: verifyResult.payer,
-        };
-      }
       return settleDeposit(this.signer, rawPayload as DeferredDepositPayload, requirements);
     }
 
@@ -143,18 +129,14 @@ export class DeferredEvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (isDeferredClaimPayload(rawPayload)) {
-      return executeClaim(
-        this.signer,
-        rawPayload as unknown as DeferredClaimPayload,
-        requirements.network,
-      );
+      return executeClaim(this.signer, rawPayload as unknown as DeferredClaimPayload, requirements);
     }
 
     if (isDeferredSettleActionPayload(rawPayload)) {
       return executeSettle(
         this.signer,
         rawPayload as unknown as DeferredSettleActionPayload,
-        requirements.network,
+        requirements,
       );
     }
 

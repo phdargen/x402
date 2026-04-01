@@ -1,4 +1,4 @@
-import { SettleResponse, Network } from "@x402/core/types";
+import { SettleResponse, PaymentRequirements } from "@x402/core/types";
 import { getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import { DeferredSettleActionPayload } from "../types";
@@ -12,14 +12,15 @@ import * as Errors from "./errors";
  *
  * @param signer - The facilitator EVM signer.
  * @param payload - The settle action payload with service id.
- * @param network - The network identifier for the response.
+ * @param requirements - Payment requirements (network and optional billed `amount` for this call).
  * @returns Settlement outcome with transaction hash or error reason.
  */
 export async function executeSettle(
   signer: FacilitatorEvmSigner,
   payload: DeferredSettleActionPayload,
-  network: Network,
+  requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
+  const network = requirements.network;
   try {
     const tx = await signer.writeContract({
       address: getAddress(DEFERRED_ESCROW_ADDRESS),
@@ -43,6 +44,7 @@ export async function executeSettle(
       success: true,
       transaction: tx,
       network,
+      amount: requirements.amount,
     };
   } catch {
     return {

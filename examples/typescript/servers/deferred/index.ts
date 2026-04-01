@@ -65,19 +65,19 @@ if (registration.alreadyRegistered) {
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 
-const deferredScheme = new DeferredEvmScheme(serviceId);
+const deferredScheme = new DeferredEvmScheme(serviceId); // Uses in-memory session storage by default
 //const deferredScheme = new DeferredEvmScheme(serviceId, { storage: new RedisSessionStorage(...) }); // Custom (Redis, database, etc. for production)
 
 const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, deferredScheme)
   .onAfterVerify(deferredScheme.lifecycleHooks.onAfterVerify)
   .onBeforeSettle(deferredScheme.lifecycleHooks.onBeforeSettle)
-  .onAfterSettle(deferredScheme.lifecycleHooks.onAfterSettle);
+  .onAfterSettle(deferredScheme.lifecycleHooks.onAfterSettle)
 
 const app = express();
 
 // Authorize up to this amount per request; optional usage-based override below bills actual usage.
-const maxPrice = "$0.10";
+const maxPrice = "$0.01";
 
 app.use(
   paymentMiddleware(
@@ -98,16 +98,19 @@ app.use(
 );
 
 app.get("/api/generate", (req, res) => {
-  const maxAmountAtomic = 100000;
-  const actualUsage = Math.floor(Math.random() * (maxAmountAtomic + 1));
 
-  setSettlementOverrides(res, { amount: String(actualUsage) });
+  const chargedPercent = 1 + Math.floor(Math.random() * 100);
+  setSettlementOverrides(res, { amount: `${chargedPercent}%` });
+
+  const maxDollars = parseFloat(maxPrice.slice(1));
+  const chargedDollars = (maxDollars * chargedPercent) / 100;
+  const chargedPrice = `$${String(Math.round(chargedDollars * 1e6) / 1e6)}`;
 
   res.json({
     result: "Here is your generated text...",
     usage: {
-      authorizedMaxAtomic: String(maxAmountAtomic),
-      actualChargedAtomic: String(actualUsage),
+      maxPrice,
+      chargedPrice,
     },
   });
 });

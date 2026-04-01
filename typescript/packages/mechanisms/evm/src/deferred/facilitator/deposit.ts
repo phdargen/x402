@@ -61,11 +61,11 @@ export async function verifyDeposit(
 
   const extra = requirements.extra as
     | {
-        serviceId?: string;
-        name?: string;
-        version?: string;
-        assetTransferMethod?: string;
-      }
+      serviceId?: string;
+      name?: string;
+      version?: string;
+      assetTransferMethod?: string;
+    }
     | undefined;
 
   if (!extra?.serviceId || !serviceIdsEqual(serviceId, extra.serviceId)) {
@@ -238,6 +238,17 @@ export async function settleDeposit(
     };
   }
 
+  const verified = await verifyDeposit(signer, payload, requirements);
+  if (!verified.isValid) {
+    return {
+      success: false,
+      errorReason: verified.invalidReason ?? Errors.ErrInvalidPayloadType,
+      transaction: "",
+      network: requirements.network,
+      payer: verified.payer,
+    };
+  }
+
   try {
     const tx = await signer.writeContract({
       address: getAddress(DEFERRED_ESCROW_ADDRESS),
@@ -266,22 +277,18 @@ export async function settleDeposit(
       };
     }
 
-    const subchannel = (await signer.readContract({
-      address: getAddress(DEFERRED_ESCROW_ADDRESS),
-      abi: deferredEscrowABI,
-      functionName: "getSubchannel",
-      args: [deposit.serviceId, getAddress(payer)],
-    })) as SubchannelState;
-
     return {
       success: true,
       transaction: tx,
       network: requirements.network,
       payer,
+      amount: requirements.amount,
       extra: {
-        deposit: subchannel.deposit.toString(),
-        totalClaimed: subchannel.totalClaimed.toString(),
-        withdrawRequestedAt: Number(subchannel.withdrawRequestedAt),
+        deposit: (
+          BigInt(String(verified.extra?.deposit ?? "0")) + BigInt(deposit.amount)
+        ).toString(),
+        totalClaimed: verified.extra?.totalClaimed ?? "0",
+        withdrawRequestedAt: Number(verified.extra?.withdrawRequestedAt ?? 0),
       },
     };
   } catch {

@@ -21,7 +21,7 @@ const url = `${baseURL}${endpointPath}`;
 async function main(): Promise<void> {
   const evmSigner = privateKeyToAccount(evmPrivateKey);
 
-  const deferredScheme = new DeferredEvmScheme(evmSigner);
+  const deferredScheme = new DeferredEvmScheme(evmSigner, { maxDeposit: "1000000", depositMultiplier: 5 });
 
   const client = new x402Client();
   client.register("eip155:*", deferredScheme);
@@ -45,6 +45,8 @@ async function main(): Promise<void> {
     console.log(`Request ${i + 1} payment response:\n${JSON.stringify(paymentResponse, null, 2)}\n`);
 
     deferredScheme.processPaymentResponse(name => response.headers.get(name));
+
+    await new Promise(resolve => setTimeout(resolve, 10_000)); // Wait 10s before the next request
   }
 }
 
