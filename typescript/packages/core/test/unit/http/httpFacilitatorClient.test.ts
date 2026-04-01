@@ -163,4 +163,63 @@ describe("HTTPFacilitatorClient", () => {
     expect(result.errorMessage).toBeUndefined();
     expect(result.payer).toBeUndefined();
   });
+
+  it("preserves settle extra and amount on 200 (deferred PAYMENT-RESPONSE chain)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            success: true,
+            transaction: "0xabc",
+            network: "eip155:84532",
+            payer: "0xE33A295AF5C90A0649DFBECfDf9D604789B892e2",
+            amount: "41788",
+            extra: {
+              deposit: "100000",
+              totalClaimed: "0",
+              withdrawRequestedAt: 0,
+            },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const client = new HTTPFacilitatorClient({ url: "https://facilitator.test" });
+    const result = await client.settle(paymentPayload, paymentRequirements);
+
+    expect(result.success).toBe(true);
+    expect(result.amount).toBe("41788");
+    expect(result.extra).toEqual({
+      deposit: "100000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+    });
+  });
+
+  it("preserves verify extra on 200", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            isValid: true,
+            payer: "0xE33A295AF5C90A0649DFBECfDf9D604789B892e2",
+            extra: { deposit: "50000", serviceId: "0x01" },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const client = new HTTPFacilitatorClient({ url: "https://facilitator.test" });
+    const result = await client.verify(paymentPayload, paymentRequirements);
+
+    expect(result.isValid).toBe(true);
+    expect(result.extra).toEqual({
+      deposit: "50000",
+      serviceId: "0x01",
+    });
+  });
 });

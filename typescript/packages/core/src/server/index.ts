@@ -1,8 +1,13 @@
 export { x402ResourceServer } from "./x402ResourceServer";
 export type {
+  AfterSettleHook,
+  AfterVerifyHook,
+  BeforeSettleHook,
   ResourceConfig,
+  SettleContext,
   SettleResultContext,
   SettlementOverrides,
+  VerifyResultContext,
 } from "./x402ResourceServer";
 
 export { HTTPFacilitatorClient } from "../http/httpFacilitatorClient";
