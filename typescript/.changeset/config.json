@@ -2,8 +2,8 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": "@changesets/cli/changelog",
   "commit": false,
-  "fixed": [],
-  "linked": [
+  "linked": [],
+  "fixed": [
     [
       "@x402/core",
       "@x402/extensions",
