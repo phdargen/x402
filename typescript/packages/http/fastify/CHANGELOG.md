@@ -1,5 +1,5 @@
 # @x402/fastify
 
-## 2.9.0
+## 2.10.0
 
-Implements Fastify middleware
+- Implements Fastify middleware
