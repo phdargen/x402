@@ -263,9 +263,11 @@ export async function settleDeposit(
 
   const verified = await verifyDeposit(signer, payload, requirements);
   if (!verified.isValid) {
+    const reason = verified.invalidReason ?? Errors.ErrInvalidPayloadType;
     return {
       success: false,
-      errorReason: verified.invalidReason ?? Errors.ErrInvalidPayloadType,
+      errorReason: reason,
+      errorMessage: verified.invalidMessage ?? reason,
       transaction: "",
       network: requirements.network,
       payer: verified.payer,
@@ -307,6 +309,7 @@ export async function settleDeposit(
       return {
         success: false,
         errorReason: Errors.ErrDepositTransactionFailed,
+        errorMessage: `transaction reverted (receipt status ${receipt.status})`,
         transaction: tx,
         network: requirements.network,
         payer,
@@ -331,10 +334,11 @@ export async function settleDeposit(
         refundNonce: String(verified.extra?.refundNonce ?? "0"),
       },
     };
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrDepositTransactionFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network: requirements.network,
       payer,

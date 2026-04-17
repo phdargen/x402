@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { x402Facilitator } from "@x402/core/facilitator";
@@ -22,8 +23,10 @@ import { BatchSettlementEvmScheme as BatchSettlementEvmServer } from "../../src/
 import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "../../src/batch-settlement/facilitator/scheme";
 import type { AuthorizerSigner } from "../../src/batch-settlement/types";
 import { privateKeyToAccount } from "viem/accounts";
-import { createWalletClient, createPublicClient, http } from "viem";
+import { createWalletClient, createPublicClient, http, getAddress } from "viem";
 import { baseSepolia } from "viem/chains";
+import { batchSettlementABI } from "../../src/batch-settlement/abi";
+import { BATCH_SETTLEMENT_ADDRESS } from "../../src/batch-settlement/constants";
 
 const CLIENT_PRIVATE_KEY = process.env.CLIENT_PRIVATE_KEY as `0x${string}` | undefined;
 const FACILITATOR_PRIVATE_KEY = process.env.FACILITATOR_PRIVATE_KEY as `0x${string}` | undefined;
@@ -42,6 +45,32 @@ if (!HAS_KEYS) {
 
 const NETWORK: Network = "eip155:84532";
 const ASSET_USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+/**
+ * Waits until an RPC read sees non-zero channel balance (some providers lag after receipt).
+ *
+ * @param publicClient - Viem public client for the chain.
+ * @param channelId - Channel id to poll.
+ */
+async function waitForChannelBalanceOnChain(
+  publicClient: ReturnType<typeof createPublicClient>,
+  channelId: `0x${string}`,
+): Promise<void> {
+  const timeoutMs = 20000;
+  const intervalMs = 250;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const [balance] = (await publicClient.readContract({
+      address: getAddress(BATCH_SETTLEMENT_ADDRESS),
+      abi: batchSettlementABI,
+      functionName: "channels",
+      args: [channelId],
+    })) as [bigint, bigint];
+    if (balance > 0n) return;
+    await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
+  }
+  throw new Error(`Timed out waiting for channel ${channelId} balance > 0`);
+}
 
 /**
  * Wraps an x402Facilitator instance for use as a FacilitatorClient.
@@ -89,11 +118,13 @@ class EvmFacilitatorClient implements FacilitatorClient {
  *
  * @param payTo - Receiver address.
  * @param amount - Amount in smallest token units (USDC has 6 decimals).
+ * @param receiverAuthorizer - Receiver-authorizer address (must be non-zero on-chain).
  * @returns Configured {@link PaymentRequirements}.
  */
 function buildBatchSettlementRequirements(
   payTo: `0x${string}`,
   amount: string,
+  receiverAuthorizer: `0x${string}`,
 ): PaymentRequirements {
   return {
     scheme: "batch-settlement",
@@ -106,6 +137,7 @@ function buildBatchSettlementRequirements(
       name: "USDC",
       version: "2",
       assetTransferMethod: "eip3009",
+      receiverAuthorizer,
     },
   };
 }
@@ -123,6 +155,7 @@ function buildPipeline(): {
   clientAddress: `0x${string}`;
   authorizerSigner: AuthorizerSigner;
   publicClient: ReturnType<typeof createPublicClient>;
+  batchSettlementClient: BatchSettlementEvmClient;
 } {
   const clientAccount = privateKeyToAccount(CLIENT_PRIVATE_KEY!);
   const facilitatorAccount = privateKeyToAccount(FACILITATOR_PRIVATE_KEY!);
@@ -166,10 +199,12 @@ function buildPipeline(): {
   const facilitatorClient = new EvmFacilitatorClient(facilitator);
 
   const clientSigner = toClientEvmSigner(clientAccount, publicClient);
-  const evmClient = new BatchSettlementEvmClient(clientSigner, {
+  const channelSalt = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+  const batchSettlementClient = new BatchSettlementEvmClient(clientSigner, {
     depositPolicy: { maxDeposit: "100000", depositMultiplier: 2 },
+    salt: channelSalt,
   });
-  const client = new x402Client().register(NETWORK, evmClient);
+  const client = new x402Client().register(NETWORK, batchSettlementClient);
 
   const server = new x402ResourceServer(facilitatorClient);
   server.register(
@@ -186,6 +221,7 @@ function buildPipeline(): {
     clientAddress: clientAccount.address,
     authorizerSigner,
     publicClient,
+    batchSettlementClient,
   };
 }
 
@@ -195,6 +231,9 @@ describe("Batch-Settlement EVM Integration Tests", () => {
     let server: x402ResourceServer;
     let receiverAddress: `0x${string}`;
     let clientAddress: `0x${string}`;
+    let receiverAuthorizer: `0x${string}`;
+    let batchSettlementClient: BatchSettlementEvmClient;
+    let publicClient: ReturnType<typeof createPublicClient>;
 
     beforeEach(async () => {
       const pipeline = buildPipeline();
@@ -202,6 +241,9 @@ describe("Batch-Settlement EVM Integration Tests", () => {
       server = pipeline.server;
       receiverAddress = pipeline.receiverAddress;
       clientAddress = pipeline.clientAddress;
+      receiverAuthorizer = pipeline.authorizerSigner.address;
+      batchSettlementClient = pipeline.batchSettlementClient;
+      publicClient = pipeline.publicClient;
       await server.initialize();
     });
 
@@ -209,7 +251,7 @@ describe("Batch-Settlement EVM Integration Tests", () => {
       "verifies and settles a deposit-with-voucher payment, then a follow-up voucher payment",
       { timeout: 60000 },
       async () => {
-        const accepts = [buildBatchSettlementRequirements(receiverAddress, "1000")];
+        const accepts = [buildBatchSettlementRequirements(receiverAddress, "1000", receiverAuthorizer)];
         const resource = {
           url: "https://example.com/api",
           description: "Batched test resource",
@@ -232,10 +274,16 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         expect(verifyResponse.payer?.toLowerCase()).toBe(clientAddress.toLowerCase());
 
         const settleResponse = await server.settlePayment(firstPayload, accepted!);
-        expect(settleResponse.success).toBe(true);
+        expect(settleResponse.success, JSON.stringify(settleResponse)).toBe(true);
         expect(settleResponse.network).toBe(NETWORK);
         expect(settleResponse.transaction).toBeDefined();
         expect(settleResponse.payer?.toLowerCase()).toBe(clientAddress.toLowerCase());
+
+        const depositChannelId = (firstPayload.payload as { voucher: { channelId: `0x${string}` } })
+          .voucher.channelId;
+        await waitForChannelBalanceOnChain(publicClient, depositChannelId);
+
+        await batchSettlementClient.processSettleResponse(settleResponse);
 
         const followupRequired = await server.createPaymentRequiredResponse(accepts, resource);
         const secondPayload = await client.createPaymentPayload(followupRequired);
@@ -249,7 +297,7 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         expect(verify2.isValid).toBe(true);
 
         const settle2 = await server.settlePayment(secondPayload, accepted2!);
-        expect(settle2.success).toBe(true);
+        expect(settle2.success, JSON.stringify(settle2)).toBe(true);
         expect(settle2.payer?.toLowerCase()).toBe(clientAddress.toLowerCase());
       },
     );
