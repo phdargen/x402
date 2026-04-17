@@ -5,9 +5,14 @@ import {
   computeChannelId,
 } from "@x402/evm/batch-settlement/client";
 import { x402Client, x402HTTPClient } from "@x402/fetch";
-import { decodePaymentResponseHeader, encodePaymentSignatureHeader } from "@x402/core/http";
-import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
+import {
+  decodePaymentRequiredHeader,
+  decodePaymentResponseHeader,
+  encodePaymentSignatureHeader,
+} from "@x402/core/http";
+import type { PaymentPayload, PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { ChannelConfig } from "@x402/evm";
+import type { IncomingMessage } from "node:http";
 import { config } from "dotenv";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
@@ -40,8 +45,8 @@ const cliOptions = parseClientCliOptions(process.argv.slice(2));
 const prompt = cliOptions.prompt ?? process.env.PROMPT ?? "Tell me a fun fact about payments.";
 const verbose = cliOptions.verbose || isTruthyEnvFlag(process.env.VERBOSE);
 const depositPolicy = {
-  maxDeposit: "1000000",
-  depositMultiplier: 5,
+  maxDeposit: "10000000",
+  depositMultiplier: 20,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +88,36 @@ function logVerbose(message: string): void {
   console.log(message);
 }
 
+/**
+ * Attempts to resync local channel state from a corrective 402 response.
+ *
+ * Reads the PAYMENT-REQUIRED header (or JSON body fallback) and lets the
+ * batch-settlement scheme reconcile session state via its corrective hook.
+ *
+ * @param response - The Node response that returned a 402 status.
+ * @returns `true` if local state was successfully resynced and a retry is warranted.
+ */
+async function tryRecoverFromCorrective402(response: IncomingMessage): Promise<boolean> {
+  const headerValue = getHeaderValue(response.headers, "payment-required");
+  const bodyText = await readNodeResponseText(response);
+
+  let paymentRequired: PaymentRequired | undefined;
+  if (typeof headerValue === "string" && headerValue.length > 0) {
+    paymentRequired = decodePaymentRequiredHeader(headerValue);
+  } else if (bodyText) {
+    try {
+      const parsed = JSON.parse(bodyText) as PaymentRequired;
+      if (parsed?.x402Version) paymentRequired = parsed;
+    } catch {
+      // Fall through — body wasn't JSON
+    }
+  }
+
+  if (!paymentRequired) return false;
+
+  return batchedScheme.processCorrectivePaymentRequired(paymentRequired);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -117,8 +152,7 @@ async function main(): Promise<void> {
   console.log("Received 402 — payment required");
 
   // Create payment payload (handles deposit + first voucher automatically)
-  const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
-  const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+  let paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
 
   // Derive channel info for later voucher renewal
   const requirements: PaymentRequirements = paymentPayload.accepted;
@@ -126,9 +160,20 @@ async function main(): Promise<void> {
   const channelId = computeChannelId(channelConfig);
   console.log(`Channel: ${channelId}\n`);
 
-  // Retry with payment — this time we get an SSE stream
+  // Retry with payment — this time we get an SSE stream.  If the server returns a
+  // corrective 402 (e.g. stale cumulative amount), let the scheme resync local
+  // state from PAYMENT-REQUIRED `extra` and retry once with a fresh payload.
   console.log("--- Paid request (SSE stream) ---");
-  const paid = await streamRequest(streamURL, paymentHeaders);
+  let paid = await streamRequest(streamURL, httpClient.encodePaymentSignatureHeader(paymentPayload));
+
+  if (paid.statusCode === 402) {
+    const recovered = await tryRecoverFromCorrective402(paid);
+    if (recovered) {
+      paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+      paid = await streamRequest(streamURL, httpClient.encodePaymentSignatureHeader(paymentPayload));
+    }
+  }
+
   if (paid.statusCode !== 200) {
     console.log(`Unexpected status ${paid.statusCode ?? "unknown"}`);
     console.log(await readNodeResponseText(paid));

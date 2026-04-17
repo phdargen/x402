@@ -1,6 +1,6 @@
-import { open, readdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
 import type { FileSessionStorageOptions } from "../types";
@@ -105,6 +105,7 @@ export class FileSessionStorage implements SessionStorage {
     session: ChannelSession,
   ): Promise<boolean> {
     const lockPath = this.filePath(channelId) + ".lock";
+    await mkdir(dirname(lockPath), { recursive: true });
     let lockHandle;
     try {
       lockHandle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);

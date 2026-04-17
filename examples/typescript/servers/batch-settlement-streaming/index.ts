@@ -195,10 +195,20 @@ app.get("/llm/stream", async (req, res) => {
   const requestStartCharged =
     (await batchedScheme.getStorage().get(requestChannelId ?? ""))?.chargedCumulativeAmount ?? "0";
 
-  // Verify payment
+  // Verify payment.  On failure, return a proper PAYMENT-REQUIRED response so that
+  // corrective schemes (e.g. batch-settlement stale cumulative amount) can resync
+  // the client session via `extra` and retry.
   const verifyResult = await resourceServer.verifyPayment(paymentPayload, matched);
   if (!verifyResult.isValid) {
-    res.status(402).json({ error: verifyResult.invalidReason ?? "Verification failed" });
+    const correctivePaymentRequired = await resourceServer.createPaymentRequiredResponse(
+      [matched],
+      { url: "/llm/stream", description: "SSE LLM stream", mimeType: "text/event-stream" },
+      verifyResult.invalidReason ?? "Verification failed",
+    );
+    res
+      .status(402)
+      .set("PAYMENT-REQUIRED", encodePaymentRequiredHeader(correctivePaymentRequired))
+      .json(correctivePaymentRequired);
     return;
   }
 
