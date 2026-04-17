@@ -114,6 +114,24 @@
       "transferMethod": "eip3009"
     },
     {
+      "path": "/api/batch-settlement/evm/eip3009/proxy",
+      "method": "GET",
+      "description": "Batch-settlement EVM endpoint (proxy middleware): deposit + repeated vouchers + cooperative refund",
+      "requiresPayment": true,
+      "protocolFamily": "evm",
+      "transferMethod": "batch-settlement",
+      "batchSettlement": { "count": 3, "refundOnLast": true }
+    },
+    {
+      "path": "/api/batch-settlement/evm/eip3009/withx402",
+      "method": "GET",
+      "description": "Batch-settlement EVM endpoint (withX402 wrapper): deposit + repeated vouchers + cooperative refund",
+      "requiresPayment": true,
+      "protocolFamily": "evm",
+      "transferMethod": "batch-settlement",
+      "batchSettlement": { "count": 3, "refundOnLast": true }
+    },
+    {
       "path": "/api/exact/svm/withx402",
       "method": "GET",
       "description": "SVM endpoint using withX402 wrapper",
@@ -149,6 +167,12 @@
   ],
   "environment": {
     "required": ["PORT", "EVM_PAYEE_ADDRESS", "SVM_PAYEE_ADDRESS", "FACILITATOR_URL"],
-    "optional": ["AVM_PAYEE_ADDRESS", "APTOS_PAYEE_ADDRESS", "HEDERA_PAYEE_ADDRESS", "STELLAR_PAYEE_ADDRESS"]
+    "optional": [
+      "AVM_PAYEE_ADDRESS",
+      "APTOS_PAYEE_ADDRESS",
+      "HEDERA_PAYEE_ADDRESS",
+      "STELLAR_PAYEE_ADDRESS",
+      "EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"
+    ]
   }
 }

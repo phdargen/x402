@@ -22,6 +22,15 @@
       "transferMethod": "eip3009"
     },
     {
+      "path": "/batch-settlement/evm/eip3009",
+      "method": "GET",
+      "description": "Protected endpoint exercised by deposit + repeated vouchers + cooperative refund",
+      "requiresPayment": true,
+      "protocolFamily": "evm",
+      "transferMethod": "batch-settlement",
+      "batchSettlement": { "count": 3, "refundOnLast": true }
+    },
+    {
       "path": "/exact/evm/permit2",
       "method": "GET",
       "description": "Protected endpoint requiring Permit2 payment (standard settle, no gas sponsoring)",
@@ -120,6 +129,12 @@
   ],
   "environment": {
     "required": ["PORT", "EVM_PAYEE_ADDRESS", "SVM_PAYEE_ADDRESS", "FACILITATOR_URL"],
-    "optional": ["AVM_PAYEE_ADDRESS", "APTOS_PAYEE_ADDRESS", "HEDERA_PAYEE_ADDRESS", "STELLAR_PAYEE_ADDRESS"]
+    "optional": [
+      "AVM_PAYEE_ADDRESS",
+      "APTOS_PAYEE_ADDRESS",
+      "HEDERA_PAYEE_ADDRESS",
+      "STELLAR_PAYEE_ADDRESS",
+      "EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"
+    ]
   }
 }

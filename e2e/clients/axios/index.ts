@@ -9,6 +9,7 @@ import {
   UptoEvmScheme as UptoEvmClientScheme,
   type UptoEvmSchemeOptions,
 } from "@x402/evm/upto/client";
+import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
 import { ExactEvmSchemeV1 } from "@x402/evm/v1";
 import { toClientEvmSigner } from "@x402/evm";
 import { ExactSvmScheme } from "@x402/svm/exact/client";
@@ -54,6 +55,23 @@ const uptoSchemeOptions: UptoEvmSchemeOptions | undefined = process.env.EVM_RPC_
   ? { rpcUrl: process.env.EVM_RPC_URL }
   : undefined;
 
+// Batch-settlement scheme uses a per-scenario salt (CHANNEL_SALT) so concurrent
+// e2e runs don't collide on the same on-chain channel id. An optional voucher
+// signer (EVM_VOUCHER_SIGNER_PRIVATE_KEY) exercises the alt-EOA voucher branch
+// while deposits keep using the main client signer.
+const channelSalt = process.env.CHANNEL_SALT as `0x${string}` | undefined;
+const voucherSignerKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
+  | `0x${string}`
+  | undefined;
+const voucherSigner = voucherSignerKey
+  ? toClientEvmSigner(privateKeyToAccount(voucherSignerKey), publicClient)
+  : undefined;
+const batchSettlementOptions =
+  channelSalt || voucherSigner
+    ? { ...(channelSalt ? { salt: channelSalt } : {}), ...(voucherSigner ? { voucherSigner } : {}) }
+    : undefined;
+const batchSettlementScheme = new BatchSettlementEvmScheme(evmSigner, batchSettlementOptions);
+
 // Initialize Aptos signer if key is provided
 let aptosAccount: Account | undefined;
 if (process.env.APTOS_PRIVATE_KEY) {
@@ -93,6 +111,7 @@ if (process.env.AVM_PRIVATE_KEY) {
 const client = new x402Client()
   .register("eip155:*", new ExactEvmScheme(evmSigner, evmSchemeOptions))
   .register("eip155:*", new UptoEvmClientScheme(evmSigner, uptoSchemeOptions))
+  .register("eip155:*", batchSettlementScheme)
   .registerV1("base-sepolia", new ExactEvmSchemeV1(evmSigner))
   .registerV1("base", new ExactEvmSchemeV1(evmSigner))
   .register("solana:*", new ExactSvmScheme(svmSigner))
@@ -113,46 +132,84 @@ if (avmSigner) {
 
 const axiosWithPayment = wrapAxiosWithPayment(axios.create(), client);
 
-axiosWithPayment
-  .get(url)
-  .then(async response => {
-    const data = response.data;
-    // Check both v2 (PAYMENT-RESPONSE) and v1 (X-PAYMENT-RESPONSE) headers
-    const paymentResponse =
-      response.headers["payment-response"] || response.headers["x-payment-response"];
+// Multi-request scenarios (used by batch-settlement) issue several paid requests
+// against the same endpoint so the server can amortise on-chain claims, then
+// optionally signal a cooperative refund on the last request.
+const numberOfRequests = Number.parseInt(process.env.MULTI_REQUEST_COUNT ?? "1", 10);
+const refundOnLastRequest = process.env.REFUND_ON_LAST === "true";
 
-    if (!paymentResponse) {
-      // No payment was required
-      const result = {
-        success: true,
-        data: data,
-        status_code: response.status,
-      };
-      console.log(JSON.stringify(result));
-      process.exit(0);
-      return;
+function getBatchSettlementChannelId(paymentResponse: unknown): string | undefined {
+  const extra =
+    typeof paymentResponse === "object" && paymentResponse && "extra" in paymentResponse
+      ? (paymentResponse.extra as Record<string, unknown> | undefined)
+      : undefined;
+  const channelId = extra?.channelId;
+  return typeof channelId === "string" && channelId.length > 0 ? channelId : undefined;
+}
+
+/**
+ * Issues a single paid request and returns the parsed result.
+ *
+ * @returns Structured result with response data and decoded payment-response.
+ */
+async function issueRequest(): Promise<{
+  success: boolean;
+  data: unknown;
+  status_code: number;
+  payment_response?: ReturnType<typeof decodePaymentResponseHeader>;
+}> {
+  const response = await axiosWithPayment.get(url);
+  const paymentResponseHeader =
+    response.headers["payment-response"] || response.headers["x-payment-response"];
+
+  if (!paymentResponseHeader) {
+    return { success: true, data: response.data, status_code: response.status };
+  }
+
+  const decodedPaymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
+  return {
+    success: decodedPaymentResponse.success,
+    data: response.data,
+    status_code: response.status,
+    payment_response: decodedPaymentResponse,
+  };
+}
+
+try {
+  const results: Awaited<ReturnType<typeof issueRequest>>[] = [];
+  let lastChannelId: string | undefined;
+  for (let i = 0; i < numberOfRequests; i++) {
+    const isLast = i === numberOfRequests - 1;
+
+    if (isLast && refundOnLastRequest && lastChannelId) {
+      batchSettlementScheme.requestRefund(lastChannelId);
     }
 
-    const decodedPaymentResponse = decodePaymentResponseHeader(paymentResponse);
+    const result = await issueRequest();
+    results.push(result);
 
-    const result = {
-      success: decodedPaymentResponse.success,
-      data: data,
-      status_code: response.status,
-      payment_response: decodedPaymentResponse,
-    };
+    const channelId = getBatchSettlementChannelId(result.payment_response);
+    if (channelId) {
+      lastChannelId = channelId;
+    }
+  }
 
-    // Output structured result as JSON for proxy to parse
-    console.log(JSON.stringify(result));
-    process.exit(0);
-  })
-  .catch(error => {
-    console.error(
-      JSON.stringify({
-        success: false,
-        error: error.message || "Request failed",
-        status_code: error.response?.status || 500,
-      }),
-    );
-    process.exit(1);
-  });
+  const last = results[results.length - 1]!;
+  const aggregate =
+    numberOfRequests > 1
+      ? { ...last, requests: results, request_count: numberOfRequests }
+      : last;
+
+  console.log(JSON.stringify(aggregate));
+  process.exit(0);
+} catch (error: unknown) {
+  const err = error as { message?: string; response?: { status?: number } };
+  console.error(
+    JSON.stringify({
+      success: false,
+      error: err.message || "Request failed",
+      status_code: err.response?.status || 500,
+    }),
+  );
+  process.exit(1);
+}

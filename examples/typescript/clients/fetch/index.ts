@@ -39,18 +39,19 @@ async function main(): Promise<void> {
   client.register("solana:*", new ExactSvmScheme(svmSigner));
 
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
-  const httpClient = new x402HTTPClient(client);
 
   console.log(`Making request to: ${url}\n`);
   const response = await fetchWithPayment(url, { method: "GET" });
-  const result = await httpClient.processResponse(response);
+  const contentType = response.headers.get("content-type") ?? "";
+  const body = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+  console.log("Response body:", body);
 
-  if (result.kind === "success") {
-    console.log("Response body:", result.body);
-    console.log("\nPayment response:", JSON.stringify(result.settleResponse, null, 2));
-  } else {
-    console.log(`Unexpected result: ${result.kind}`, result);
-  }
+  const paymentResponse = new x402HTTPClient(client).getPaymentSettleResponse(name =>
+    response.headers.get(name),
+  );
+  console.log("\nPayment response:", JSON.stringify(paymentResponse, null, 2));
 }
 
 main().catch(error => {

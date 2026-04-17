@@ -127,6 +127,13 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
         // Facilitator
         FACILITATOR_URL: config.facilitatorUrl || '',
         MOCK_FACILITATOR_URL: config.mockFacilitatorUrl || '',
+
+        ...(config.batchSettlement
+          ? {
+              EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY:
+                config.batchSettlement.receiverAuthorizerPrivateKey,
+            }
+          : {}),
       }
     };
 

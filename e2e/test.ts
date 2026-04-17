@@ -2,7 +2,7 @@ import { config } from 'dotenv';
 import { spawn, execSync, ChildProcess } from 'child_process';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
-import { createWalletClient, createPublicClient, http, parseEther, formatEther } from 'viem';
+import { createWalletClient, createPublicClient, http, parseEther, formatEther, toHex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
 import { TestDiscovery } from './src/discovery';
@@ -22,6 +22,18 @@ import { waitForHealth } from './src/health';
 // Base Sepolia token addresses used by permit2 E2E tests
 const USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 const MOCK_ERC20_BASE_SEPOLIA = '0xeED520980fC7C7B4eB379B96d61CEdea2423005a';
+
+/**
+ * Generates a fresh 32-byte hex salt for a batch-settlement test scenario so
+ * concurrent runs don't collide on the same on-chain channel id.
+ *
+ * @returns Hex-encoded 32-byte salt prefixed with `0x`.
+ */
+function generateChannelSalt(): `0x${string}` {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return toHex(bytes);
+}
 
 /**
  * Approve Permit2 so that the standard/direct settle path can be exercised.
@@ -295,6 +307,22 @@ async function startServer(
   );
 }
 
+/**
+ * Returns true when the settle response omits the on-chain transaction hash
+ * because the request was settled off-chain (e.g. a batch-settlement voucher
+ * recorded by the receiver but not yet claimed).
+ *
+ * @param paymentResponse - Decoded payment-response payload from the server.
+ * @returns Whether to skip the transaction-hash presence assertion.
+ */
+function isOffchainSettleResponse(paymentResponse: any): boolean {
+  if (!paymentResponse) return false;
+  const extra = paymentResponse.extra ?? {};
+  const isBatchSettlement =
+    typeof extra.channelId === 'string' && extra.channelId.length > 0;
+  return isBatchSettlement;
+}
+
 async function runClientTest(
   client: any,
   callConfig: ClientConfig
@@ -347,8 +375,10 @@ async function runClientTest(
         };
       }
 
-      // Payment should have a transaction hash
-      if (!paymentResponse.transaction) {
+      // Payment should have a transaction hash, except for off-chain settle
+      // responses (e.g. batch-settlement vouchers that the server records but
+      // does not yet claim on-chain).
+      if (!paymentResponse.transaction && !isOffchainSettleResponse(paymentResponse)) {
         return {
           success: false,
           error: 'Payment succeeded but no transaction hash returned',
@@ -551,16 +581,29 @@ async function runTest() {
     const hasUptoEip2612 = evmScenarios.some(s => s.endpoint.transferMethod === 'upto' && !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') && !s.endpoint.permit2Direct);
     const hasUptoErc20 = evmScenarios.some(s => s.endpoint.transferMethod === 'upto' && s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'));
 
+    const hasBatchSettlement = evmScenarios.some(s => s.endpoint.transferMethod === 'batch-settlement');
+    const hasBatchSettlementMulti = evmScenarios.some(
+      s => s.endpoint.transferMethod === 'batch-settlement' && (s.endpoint.batchSettlement?.count ?? 1) > 1,
+    );
+    const hasBatchSettlementRefund = evmScenarios.some(
+      s =>
+        s.endpoint.transferMethod === 'batch-settlement' &&
+        s.endpoint.batchSettlement?.refundOnLast === true,
+    );
+
     log('🔍 EVM Branch Coverage Check:');
-    log(`   EIP-3009 route:          ${hasEip3009 ? '✅' : '❌ MISSING'}`);
-    log(`   Permit2 route:           ${hasPermit2 ? '✅' : '❌ MISSING'}`);
-    log(`   Permit2+direct settle:   ${hasPermit2Direct ? '✅' : '⚠️  not found'}`);
-    log(`   Permit2+EIP2612 route:   ${hasPermit2Eip2612 ? '✅' : '⚠️  not found (may be covered by permit2 route if eip2612 extension enabled)'}`);
-    log(`   Permit2+ERC20 route:     ${hasPermit2Erc20 ? '✅' : '⚠️  not found'}`);
-    log(`   Upto route:              ${hasUpto ? '✅' : '⚠️  not found'}`);
-    log(`   Upto+direct settle:      ${hasUptoDirect ? '✅' : '⚠️  not found'}`);
-    log(`   Upto+EIP2612 route:      ${hasUptoEip2612 ? '✅' : '⚠️  not found'}`);
-    log(`   Upto+ERC20 route:        ${hasUptoErc20 ? '✅' : '⚠️  not found'}`);
+    log(`   EIP-3009 route:                ${hasEip3009 ? '✅' : '❌ MISSING'}`);
+    log(`   Permit2 route:                 ${hasPermit2 ? '✅' : '❌ MISSING'}`);
+    log(`   Permit2+direct settle:         ${hasPermit2Direct ? '✅' : '⚠️  not found'}`);
+    log(`   Permit2+EIP2612 route:         ${hasPermit2Eip2612 ? '✅' : '⚠️  not found (may be covered by permit2 route if eip2612 extension enabled)'}`);
+    log(`   Permit2+ERC20 route:           ${hasPermit2Erc20 ? '✅' : '⚠️  not found'}`);
+    log(`   Upto route:                    ${hasUpto ? '✅' : '⚠️  not found'}`);
+    log(`   Upto+direct settle:            ${hasUptoDirect ? '✅' : '⚠️  not found'}`);
+    log(`   Upto+EIP2612 route:            ${hasUptoEip2612 ? '✅' : '⚠️  not found'}`);
+    log(`   Upto+ERC20 route:              ${hasUptoErc20 ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement route:        ${hasBatchSettlement ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement multi-req:    ${hasBatchSettlementMulti ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement refund:       ${hasBatchSettlementRefund ? '✅' : '⚠️  not found'}`);
     log('');
   }
 
@@ -803,6 +846,13 @@ async function runTest() {
     const facilitatorLabel = scenario.facilitator ? ` via ${scenario.facilitator.name}` : '';
     const testName = `${scenario.client.name} → ${scenario.server.name} → ${scenario.endpoint.path}${facilitatorLabel}`;
 
+    // Batch-settlement scenarios need a unique 32-byte salt per scenario so
+    // concurrent runs don't collide on the same on-chain channel id (the salt
+    // is one of the inputs that derives the channel from sender/receiver/etc.).
+    const batchCfg = scenario.endpoint.transferMethod === 'batch-settlement'
+      ? scenario.endpoint.batchSettlement
+      : undefined;
+
     const clientConfig: ClientConfig = {
       evmPrivateKey: clientEvmPrivateKey!,
       svmPrivateKey: clientSvmPrivateKey!,
@@ -817,6 +867,18 @@ async function runTest() {
       evmRpcUrl: networks.evm.rpcUrl,
       hederaNetwork: networks.hedera.caip2,
       hederaNodeUrl: networks.hedera.rpcUrl,
+      ...(batchCfg
+        ? {
+            batchSettlement: {
+              channelSalt: generateChannelSalt(),
+              count: batchCfg.count,
+              refundOnLast: batchCfg.refundOnLast === true,
+              ...(process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY
+                ? { voucherSignerPrivateKey: process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY }
+                : {}),
+            },
+          }
+        : {}),
     };
 
     try {
@@ -916,6 +978,16 @@ async function runTest() {
       networks,
       facilitatorUrl,
       mockFacilitatorUrl,
+      // Forward the optional receiver-authorizer EOA key so the server can
+      // self-manage batch-settlement claim/refund signatures when set.
+      ...(process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY
+        ? {
+            batchSettlement: {
+              receiverAuthorizerPrivateKey:
+                process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
+            },
+          }
+        : {}),
     };
 
     const started = await startServer(serverProxy, serverConfig);

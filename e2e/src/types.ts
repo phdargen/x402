@@ -2,7 +2,7 @@ import type { NetworkSet } from './networks/networks';
 
 export type ProtocolFamily = 'evm' | 'svm' | 'avm' | 'aptos' | 'hedera' | 'stellar';
 export type Transport = 'http' | 'mcp';
-export type TransferMethod = 'eip3009' | 'permit2' | 'upto';
+export type TransferMethod = 'eip3009' | 'permit2' | 'upto' | 'batch-settlement';
 
 export interface ClientResult {
   success: boolean;
@@ -10,6 +10,24 @@ export interface ClientResult {
   status_code?: number;
   payment_response?: any;
   error?: string;
+}
+
+/** Scheme-specific configs for a batch-settlement scenario. */
+export interface BatchSettlementClientConfig {
+  /** Per-scenario unique salt that derives the onchain channel id (avoids collisions across runs). */
+  channelSalt: string;
+  /** Number of paid requests to issue against the same endpoint within the channel. */
+  count: number;
+  /** When true, the last request signals a cooperative refund of any unused balance. */
+  refundOnLast: boolean;
+  /** Optional alternate EOA used to sign vouchers (deposits still use the main client signer). */
+  voucherSignerPrivateKey?: string;
+}
+
+/** Scheme-specific knobs the harness forwards to a server for a batch-settlement scenario. */
+export interface BatchSettlementServerConfig {
+  /** Optional EOA private key the server uses as a self-managed receiver authorizer. */
+  receiverAuthorizerPrivateKey: string;
 }
 
 export interface ClientConfig {
@@ -26,6 +44,7 @@ export interface ClientConfig {
   evmRpcUrl: string;
   hederaNetwork: string;
   hederaNodeUrl: string;
+  batchSettlement?: BatchSettlementClientConfig;
 }
 
 export interface ServerConfig {
@@ -41,6 +60,7 @@ export interface ServerConfig {
   networks: NetworkSet;
   facilitatorUrl?: string;
   mockFacilitatorUrl?: string;
+  batchSettlement?: BatchSettlementServerConfig;
 }
 
 export interface ServerProxy {
@@ -71,6 +91,11 @@ export interface TestEndpoint {
   permit2Direct?: boolean;
   /** True for endpoints that require Permit2 revocation + fund/drain state setup before the first test (coldstart). */
   coldstart?: boolean;
+  /** Batch-settlement scenario configuration: how many vouchers to issue and whether to signal a cooperative refund. */
+  batchSettlement?: {
+    count: number;
+    refundOnLast?: boolean;
+  };
   health?: boolean;
   close?: boolean;
 }

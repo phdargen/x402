@@ -18,7 +18,8 @@
     "transferMethods": [
       "eip3009",
       "permit2",
-      "upto"
+      "upto",
+      "batch-settlement"
     ]
   },
   "extensions": [
@@ -39,7 +40,11 @@
       "HEDERA_PRIVATE_KEY",
       "HEDERA_NETWORK",
       "HEDERA_NODE_URL",
-      "STELLAR_PRIVATE_KEY"
+      "STELLAR_PRIVATE_KEY",
+      "CHANNEL_SALT",
+      "MULTI_REQUEST_COUNT",
+      "REFUND_ON_LAST",
+      "EVM_VOUCHER_SIGNER_PRIVATE_KEY"
     ]
   }
 }

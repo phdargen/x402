@@ -1,5 +1,30 @@
 import { TestScenario } from '../types';
 
+/** x402 payment scheme for filtering (EVM transfer semantics; non-EVM counts as exact). */
+export type PaymentSchemeKind = 'exact' | 'upto' | 'batch-settlement';
+
+/**
+ * Classify a scenario's payment scheme for filtering.
+ * - EVM + batch-settlement transfer → batch-settlement
+ * - EVM + upto transfer → upto
+ * - All other cases (incl. eip3009/permit2 and non-EVM) → exact
+ */
+export function getScenarioPaymentScheme(scenario: TestScenario): PaymentSchemeKind {
+  if (scenario.protocolFamily !== 'evm') {
+    return 'exact';
+  }
+  const tm = scenario.endpoint.transferMethod || 'eip3009';
+  if (tm === 'batch-settlement') return 'batch-settlement';
+  if (tm === 'upto') return 'upto';
+  return 'exact';
+}
+
+export function getUniquePaymentSchemes(scenarios: TestScenario[]): PaymentSchemeKind[] {
+  const set = new Set<PaymentSchemeKind>();
+  scenarios.forEach(s => set.add(getScenarioPaymentScheme(s)));
+  return Array.from(set).sort();
+}
+
 export interface TestFilters {
   transports?: string[];
   facilitators?: string[];
@@ -8,6 +33,7 @@ export interface TestFilters {
   extensions?: string[];       // For test output control (doesn't filter scenarios)
   versions?: number[];
   protocolFamilies?: string[];
+  schemes?: string[];
   endpoints?: string[];        // Regex patterns to filter by endpoint path
 }
 
@@ -61,6 +87,15 @@ export function filterScenarios(
     // Protocol family filter
     if (filters.protocolFamilies && filters.protocolFamilies.length > 0) {
       if (!filters.protocolFamilies.includes(scenario.protocolFamily)) {
+        return false;
+      }
+    }
+
+    // Payment scheme filter
+    if (filters.schemes && filters.schemes.length > 0) {
+      const normalized = filters.schemes.map(s => s.trim().toLowerCase());
+      const kind = getScenarioPaymentScheme(scenario);
+      if (!normalized.includes(kind)) {
         return false;
       }
     }
