@@ -26,7 +26,7 @@ export interface ClientSessionStorage {
  * Default in-memory {@link ClientSessionStorage} (sessions do not survive process restart).
  */
 export class InMemoryClientSessionStorage implements ClientSessionStorage {
-  private sessions = new Map<string, BatchSettlementClientContext>();
+  private readonly sessions = new Map<string, BatchSettlementClientContext>();
 
   /**
    * Returns the session for `key` if present.

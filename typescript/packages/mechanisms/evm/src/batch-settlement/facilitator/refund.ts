@@ -3,6 +3,7 @@ import { encodeFunctionData, getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import type {
   AuthorizerSigner,
+  BatchSettlementPaymentResponseExtra,
   BatchSettlementRefundWithSignaturePayload,
   ChannelState,
 } from "../types";
@@ -12,7 +13,7 @@ import { computeChannelId } from "../utils";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import * as Errors from "./errors";
 import { buildVoucherClaimArgs } from "./claim";
-import { readChannelState } from "./utils";
+import { readChannelState, toContractChannelConfig } from "./utils";
 
 /**
  * Builds `responseExtra` fields for a refund settlement after applying the refund amount to channel state.
@@ -26,7 +27,7 @@ function buildRefundExtra(
   payload: BatchSettlementRefundWithSignaturePayload,
   channelId: `0x${string}`,
   preState: ChannelState | null,
-): Record<string, unknown> {
+): BatchSettlementPaymentResponseExtra {
   const preTotalClaimed = preState?.totalClaimed ?? 0n;
   const preBalance = preState?.balance ?? 0n;
 
@@ -47,24 +48,6 @@ function buildRefundExtra(
     totalClaimed: postClaimTotalClaimed.toString(),
     withdrawRequestedAt: 0,
     refundNonce: String((preState?.refundNonce ?? 0n) + 1n),
-  };
-}
-
-/**
- * Normalizes channel config fields to checksummed addresses for the batch settlement contract.
- *
- * @param config - Channel configuration from the refund payload.
- * @returns Arguments object suitable for `refundWithSignature` on the settlement contract.
- */
-function buildConfigTuple(config: BatchSettlementRefundWithSignaturePayload["config"]) {
-  return {
-    payer: getAddress(config.payer),
-    payerAuthorizer: getAddress(config.payerAuthorizer),
-    receiver: getAddress(config.receiver),
-    receiverAuthorizer: getAddress(config.receiverAuthorizer),
-    token: getAddress(config.token),
-    withdrawDelay: config.withdrawDelay,
-    salt: config.salt,
   };
 }
 
@@ -98,30 +81,28 @@ export async function executeRefundWithSignature(
     const preState = await readChannelState(signer, channelId);
     const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
 
-    let refundSig = payload.refundAuthorizerSignature;
-    if (!refundSig) {
-      if (getAddress(payload.config.receiverAuthorizer) !== getAddress(authorizerSigner.address)) {
-        return {
-          success: false,
-          errorReason: Errors.ErrAuthorizerAddressMismatch,
-          transaction: "",
-          network,
-        };
-      }
-      refundSig = await signRefund(
-        authorizerSigner,
-        channelId,
-        payload.amount,
-        payload.nonce,
+    const hasClientSig = payload.refundAuthorizerSignature !== undefined;
+    const authorizerMismatch =
+      getAddress(payload.config.receiverAuthorizer) !== getAddress(authorizerSigner.address);
+
+    if (!hasClientSig && authorizerMismatch) {
+      return {
+        success: false,
+        errorReason: Errors.ErrAuthorizerAddressMismatch,
+        transaction: "",
         network,
-      );
+      };
     }
+
+    const refundSig =
+      payload.refundAuthorizerSignature ??
+      (await signRefund(authorizerSigner, channelId, payload.amount, payload.nonce, network));
 
     const refundCalldata = encodeFunctionData({
       abi: batchSettlementABI,
       functionName: "refundWithSignature",
       args: [
-        buildConfigTuple(payload.config),
+        toContractChannelConfig(payload.config),
         BigInt(payload.amount),
         BigInt(payload.nonce),
         refundSig,
@@ -149,10 +130,11 @@ export async function executeRefundWithSignature(
           functionName: "multicall",
           args: [[claimCalldata, refundCalldata]],
         });
-      } catch {
+      } catch (e) {
         return {
           success: false,
           errorReason: Errors.ErrRefundSimulationFailed,
+          errorMessage: e instanceof Error ? e.message : String(e),
           transaction: "",
           network,
         };
@@ -171,16 +153,17 @@ export async function executeRefundWithSignature(
           abi: batchSettlementABI,
           functionName: "refundWithSignature",
           args: [
-            buildConfigTuple(payload.config),
+            toContractChannelConfig(payload.config),
             BigInt(payload.amount),
             BigInt(payload.nonce),
             refundSig,
           ],
         });
-      } catch {
+      } catch (e) {
         return {
           success: false,
           errorReason: Errors.ErrRefundSimulationFailed,
+          errorMessage: e instanceof Error ? e.message : String(e),
           transaction: "",
           network,
         };
@@ -191,7 +174,7 @@ export async function executeRefundWithSignature(
         abi: batchSettlementABI,
         functionName: "refundWithSignature",
         args: [
-          buildConfigTuple(payload.config),
+          toContractChannelConfig(payload.config),
           BigInt(payload.amount),
           BigInt(payload.nonce),
           refundSig,
@@ -204,6 +187,7 @@ export async function executeRefundWithSignature(
       return {
         success: false,
         errorReason: Errors.ErrRefundTransactionFailed,
+        errorMessage: `transaction reverted (receipt status ${receipt.status})`,
         transaction: tx,
         network,
       };
@@ -217,10 +201,11 @@ export async function executeRefundWithSignature(
       amount: requirements.amount,
       extra: buildRefundExtra(payload, channelId, preState),
     };
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrRefundTransactionFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network,
     };

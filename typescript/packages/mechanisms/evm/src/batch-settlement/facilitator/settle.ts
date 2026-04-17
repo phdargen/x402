@@ -31,10 +31,11 @@ export async function executeSettle(
       functionName: "settle",
       args: [getAddress(payload.receiver), getAddress(payload.token)],
     });
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrSettleSimulationFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network,
     };
@@ -54,6 +55,7 @@ export async function executeSettle(
       return {
         success: false,
         errorReason: Errors.ErrSettleTransactionFailed,
+        errorMessage: `transaction reverted (receipt status ${receipt.status})`,
         transaction: tx,
         network,
       };
@@ -65,10 +67,11 @@ export async function executeSettle(
       network,
       amount: requirements.amount,
     };
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrSettleTransactionFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network,
     };

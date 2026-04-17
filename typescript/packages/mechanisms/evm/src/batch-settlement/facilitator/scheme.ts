@@ -9,11 +9,6 @@ import {
 import { FacilitatorEvmSigner } from "../../signer";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import {
-  BatchSettlementDepositPayload,
-  BatchSettlementVoucherPayload,
-  BatchSettlementClaimWithSignaturePayload,
-  BatchSettlementSettleActionPayload,
-  BatchSettlementRefundWithSignaturePayload,
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
   isBatchSettlementClaimWithSignaturePayload,
@@ -29,7 +24,7 @@ import { executeRefundWithSignature } from "./refund";
 import * as Errors from "./errors";
 
 /**
- * Facilitator-side implementation of the `batched` scheme for EVM networks.
+ * Facilitator-side implementation of the `batch-settlement` scheme for EVM networks.
  *
  * Routes incoming verify/settle requests to the appropriate handler based on payload
  * type (deposit, voucher, claimWithSignature, settle, refundWithSignature).
@@ -39,7 +34,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   readonly caipFamily = "eip155:*";
 
   /**
-   * Creates a facilitator scheme for verifying and settling batched payments.
+   * Creates a facilitator scheme for verifying and settling batch-settlement payments.
    *
    * @param signer - Facilitator EVM signer(s) used for tx submission and on-chain reads.
    * @param authorizerSigner - Dedicated key that provides EIP-712 signatures for
@@ -60,7 +55,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    * @param _ - Network identifier (unused).
    * @returns Extra fields containing `receiverAuthorizer`.
    */
-  getExtra(_: string): Record<string, unknown> | undefined {
+  getExtra(_: string): { receiverAuthorizer: `0x${string}` } | undefined {
     return { receiverAuthorizer: this.authorizerSigner.address };
   }
 
@@ -70,7 +65,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    * @param _ - Network identifier (unused).
    * @returns Array of hex addresses.
    */
-  getSigners(_: string): string[] {
+  getSigners(_: string): `0x${string}`[] {
     return [...this.signer.getAddresses()];
   }
 
@@ -87,7 +82,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
     _?: FacilitatorContext,
   ): Promise<VerifyResponse> {
-    const rawPayload = payload.payload as Record<string, unknown>;
+    const rawPayload = payload.payload;
 
     if (
       payload.accepted.scheme !== BATCH_SETTLEMENT_SCHEME ||
@@ -101,12 +96,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
-      return verifyDeposit(this.signer, rawPayload as BatchSettlementDepositPayload, requirements);
+      return verifyDeposit(this.signer, rawPayload, requirements);
     }
 
     if (isBatchSettlementVoucherPayload(rawPayload)) {
-      const voucherPayload = rawPayload as unknown as BatchSettlementVoucherPayload;
-      return verifyVoucher(this.signer, voucherPayload, requirements, voucherPayload.channelConfig);
+      return verifyVoucher(this.signer, rawPayload, requirements, rawPayload.channelConfig);
     }
 
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
@@ -131,16 +125,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
     _?: FacilitatorContext,
   ): Promise<SettleResponse> {
-    const rawPayload = payload.payload as Record<string, unknown>;
+    const rawPayload = payload.payload;
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
-      return settleDeposit(this.signer, rawPayload as BatchSettlementDepositPayload, requirements);
+      return settleDeposit(this.signer, rawPayload, requirements);
     }
 
     if (isBatchSettlementClaimWithSignaturePayload(rawPayload)) {
       return executeClaimWithSignature(
         this.signer,
-        rawPayload as unknown as BatchSettlementClaimWithSignaturePayload,
+        rawPayload,
         requirements,
         this.authorizerSigner,
       );
@@ -149,18 +143,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     if (isBatchSettlementRefundWithSignaturePayload(rawPayload)) {
       return executeRefundWithSignature(
         this.signer,
-        rawPayload as unknown as BatchSettlementRefundWithSignaturePayload,
+        rawPayload,
         requirements,
         this.authorizerSigner,
       );
     }
 
     if (isBatchSettlementSettleActionPayload(rawPayload)) {
-      return executeSettle(
-        this.signer,
-        rawPayload as unknown as BatchSettlementSettleActionPayload,
-        requirements,
-      );
+      return executeSettle(this.signer, rawPayload, requirements);
     }
 
     return {

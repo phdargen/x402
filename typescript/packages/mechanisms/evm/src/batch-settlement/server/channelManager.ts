@@ -51,7 +51,18 @@ export interface RefundResult {
 }
 
 /**
- * Manages the server-side channel lifecycle for the `batched` scheme:
+ * Formats a `Facilitator.settle()` failure into a human-readable error message.
+ *
+ * @param operation - Operation label (e.g. `"Claim"`, `"Settle"`, `"Refund"`).
+ * @param response - The failed settle response.
+ * @returns Error message including reason and (when available) facilitator-provided detail.
+ */
+function formatFacilitatorFailure(operation: string, response: SettleResponse): string {
+  return `${operation} failed: ${response.errorReason ?? "unknown"} — ${response.errorMessage ?? ""}`;
+}
+
+/**
+ * Manages the server-side channel lifecycle for the `batch-settlement` scheme:
  * batch claiming of vouchers, settlement of claimed funds, and cooperative refund.
  *
  * Provides both manual (`claim()`, `settle()`, `refund()`) and automatic
@@ -131,9 +142,7 @@ export class BatchSettlementChannelManager {
 
     const response = await this.facilitator.settle(paymentPayload, requirements);
     if (!response.success) {
-      throw new Error(
-        `Settle failed: ${response.errorReason ?? "unknown"} — ${response.errorMessage ?? ""}`,
-      );
+      throw new Error(formatFacilitatorFailure("Settle", response));
     }
 
     this.pendingSettle = false;
@@ -232,9 +241,7 @@ export class BatchSettlementChannelManager {
 
     const response = await this.facilitator.settle(paymentPayload, this.buildPaymentRequirements());
     if (!response.success) {
-      throw new Error(
-        `Refund failed: ${response.errorReason ?? "unknown"} — ${response.errorMessage ?? ""}`,
-      );
+      throw new Error(formatFacilitatorFailure("Refund", response));
     }
 
     for (const s of targets) {
@@ -355,45 +362,104 @@ export class BatchSettlementChannelManager {
 
     this.tickInProgress = true;
     try {
-      try {
-        const shouldClaim = await this.evaluateClaimTriggers(cfg);
-        if (shouldClaim) {
-          const results = await this.claim({ maxClaimsPerBatch: cfg.maxClaimsPerBatch });
-          this.lastClaimTime = Date.now();
-          for (const r of results) {
-            cfg.onClaim?.(r);
-          }
-        }
-      } catch (err) {
-        cfg.onError?.(err);
-      }
-
-      try {
-        const shouldSettle = await this.evaluateSettleTriggers(cfg);
-        if (shouldSettle) {
-          const result = await this.settle();
-          this.lastSettleTime = Date.now();
-          cfg.onSettle?.(result);
-        }
-      } catch (err) {
-        cfg.onError?.(err);
-      }
-
-      if (cfg.refundOnIdleSecs !== undefined) {
-        try {
-          const idleChannels = await this.getIdleChannelsForRefund(cfg.refundOnIdleSecs);
-          if (idleChannels.length > 0) {
-            const result = await this.refund(idleChannels);
-            if (result.channels.length > 0) {
-              cfg.onRefund?.(result);
-            }
-          }
-        } catch (err) {
-          cfg.onError?.(err);
-        }
-      }
+      await this.runClaimPhase(cfg);
+      await this.runSettlePhase(cfg);
+      await this.runRefundPhase(cfg);
     } finally {
       this.tickInProgress = false;
+    }
+  }
+
+  /**
+   * Runs the claim portion of {@link tick}: evaluates triggers and claims if needed.
+   * Errors are reported via `cfg.onError` and do not propagate.
+   *
+   * @param cfg - Tick configuration with claim triggers and callbacks.
+   * @param cfg.claimIntervalMs - Time since last claim after which a claim should run.
+   * @param cfg.claimOnIdleSecs - If set, claim when any idle-eligible vouchers exist.
+   * @param cfg.claimThreshold - If set, claim when total claimable exceeds this amount.
+   * @param cfg.claimOnWithdrawal - If true, claim when any channel has a pending withdrawal.
+   * @param cfg.maxClaimsPerBatch - Voucher batch size passed to {@link BatchSettlementChannelManager.claim}.
+   * @param cfg.onClaim - Callback invoked after each successful claim batch.
+   * @param cfg.onError - Callback invoked when an error is caught during the phase.
+   */
+  private async runClaimPhase(cfg: {
+    claimIntervalMs: number;
+    claimOnIdleSecs?: number;
+    claimThreshold?: string;
+    claimOnWithdrawal: boolean;
+    maxClaimsPerBatch: number;
+    onClaim?: (result: ClaimResult) => void;
+    onError?: (error: unknown) => void;
+  }): Promise<void> {
+    try {
+      const shouldClaim = await this.evaluateClaimTriggers(cfg);
+      if (!shouldClaim) return;
+
+      const results = await this.claim({ maxClaimsPerBatch: cfg.maxClaimsPerBatch });
+      this.lastClaimTime = Date.now();
+      for (const r of results) {
+        cfg.onClaim?.(r);
+      }
+    } catch (err) {
+      cfg.onError?.(err);
+    }
+  }
+
+  /**
+   * Runs the settle portion of {@link tick}: evaluates triggers and settles if needed.
+   * Errors are reported via `cfg.onError` and do not propagate.
+   *
+   * @param cfg - Tick configuration with settle triggers and callbacks.
+   * @param cfg.settleIntervalMs - Time since last settle after which a settle should run.
+   * @param cfg.settleThreshold - If set, settle when claimed-not-settled exceeds this amount.
+   * @param cfg.onSettle - Callback invoked after a successful settle.
+   * @param cfg.onError - Callback invoked when an error is caught during the phase.
+   */
+  private async runSettlePhase(cfg: {
+    settleIntervalMs: number;
+    settleThreshold?: string;
+    onSettle?: (result: SettleResult) => void;
+    onError?: (error: unknown) => void;
+  }): Promise<void> {
+    try {
+      const shouldSettle = await this.evaluateSettleTriggers(cfg);
+      if (!shouldSettle) return;
+
+      const result = await this.settle();
+      this.lastSettleTime = Date.now();
+      cfg.onSettle?.(result);
+    } catch (err) {
+      cfg.onError?.(err);
+    }
+  }
+
+  /**
+   * Runs the refund portion of {@link tick}: cooperatively refunds idle channels.
+   * No-op when `refundOnIdleSecs` is undefined. Errors are reported via `cfg.onError`.
+   *
+   * @param cfg - Tick configuration with refund settings and callbacks.
+   * @param cfg.refundOnIdleSecs - Idle threshold (seconds) before triggering cooperative refund.
+   * @param cfg.onRefund - Callback invoked after a refund that touched at least one channel.
+   * @param cfg.onError - Callback invoked when an error is caught during the phase.
+   */
+  private async runRefundPhase(cfg: {
+    refundOnIdleSecs?: number;
+    onRefund?: (result: RefundResult) => void;
+    onError?: (error: unknown) => void;
+  }): Promise<void> {
+    if (cfg.refundOnIdleSecs === undefined) return;
+
+    try {
+      const idleChannels = await this.getIdleChannelsForRefund(cfg.refundOnIdleSecs);
+      if (idleChannels.length === 0) return;
+
+      const result = await this.refund(idleChannels);
+      if (result.channels.length > 0) {
+        cfg.onRefund?.(result);
+      }
+    } catch (err) {
+      cfg.onError?.(err);
     }
   }
 
@@ -442,11 +508,10 @@ export class BatchSettlementChannelManager {
       if (withdrawals.length > 0) {
         const claimableWithdrawals = await this.scheme.getClaimableVouchers();
         const withdrawalChannels = new Set(withdrawals.map(w => w.channelId.toLowerCase()));
-        if (
-          claimableWithdrawals.some(c =>
-            withdrawalChannels.has(c.voucher.channel?.payer?.toLowerCase?.() ?? ""),
-          )
-        ) {
+        const hasClaimableForWithdrawal = claimableWithdrawals.some(c =>
+          withdrawalChannels.has(computeChannelId(c.voucher.channel).toLowerCase()),
+        );
+        if (hasClaimableForWithdrawal) {
           return true;
         }
       }
@@ -543,9 +608,7 @@ export class BatchSettlementChannelManager {
     );
 
     if (!response.success) {
-      throw new Error(
-        `Claim failed: ${response.errorReason ?? "unknown"} — ${response.errorMessage ?? ""}`,
-      );
+      throw new Error(formatFacilitatorFailure("Claim", response));
     }
 
     return { vouchers: claims.length, transaction: response.transaction };

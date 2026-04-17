@@ -5,7 +5,7 @@ import {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { toFacilitatorEvmSigner } from "@x402/evm";
+import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
 import dotenv from "dotenv";
 import express from "express";
@@ -27,7 +27,8 @@ if (!process.env.EVM_PRIVATE_KEY) {
 const evmRpcUrl = process.env.EVM_RPC_URL;
 
 const receiverAuthorizerPrivateKey =
-  process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY ?? process.env.EVM_PRIVATE_KEY;
+  process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY ??
+  process.env.EVM_PRIVATE_KEY;
 
 // Initialize the EVM account from private key (submits transactions)
 const evmAccount = privateKeyToAccount(
@@ -39,16 +40,12 @@ const evmAccount = privateKeyToAccount(
 const authorizerAccount = privateKeyToAccount(
   receiverAuthorizerPrivateKey as `0x${string}`,
 );
-const authorizerSigner = {
+const authorizerSigner: AuthorizerSigner = {
   address: authorizerAccount.address,
-  signTypedData: (params: {
-    domain: Record<string, unknown>;
-    types: Record<string, Array<{ name: string; type: string }>>;
-    primaryType: string;
-    message: Record<string, unknown>;
-  }) =>
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    authorizerAccount.signTypedData(params as any),
+  signTypedData: (params) =>
+    authorizerAccount.signTypedData(
+      params as Parameters<typeof authorizerAccount.signTypedData>[0],
+    ),
 };
 
 console.info(`EVM Facilitator account: ${evmAccount.address}`);
@@ -63,40 +60,25 @@ const viemClient = createWalletClient({
 
 // Initialize the x402 Facilitator with EVM support
 const evmSigner = toFacilitatorEvmSigner({
-  getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
   address: evmAccount.address,
-  readContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args?: readonly unknown[];
-  }) =>
-    viemClient.readContract({
-      ...args,
-      args: args.args || [],
-    }),
-  verifyTypedData: (args: {
-    address: `0x${string}`;
-    domain: Record<string, unknown>;
-    types: Record<string, unknown>;
-    primaryType: string;
-    message: Record<string, unknown>;
-    signature: `0x${string}`;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  }) => viemClient.verifyTypedData(args as any),
-  writeContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args: readonly unknown[];
-  }) =>
-    viemClient.writeContract({
-      ...args,
-      args: args.args || [],
-    }),
-  sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
-    viemClient.sendTransaction(args),
-  waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
+  getCode: (args) => viemClient.getCode(args),
+  readContract: (args) =>
+    viemClient.readContract({ ...args, args: args.args ?? [] } as Parameters<
+      typeof viemClient.readContract
+    >[0]),
+  verifyTypedData: (args) =>
+    viemClient.verifyTypedData(
+      args as Parameters<typeof viemClient.verifyTypedData>[0],
+    ),
+  writeContract: (args) =>
+    viemClient.writeContract(
+      args as Parameters<typeof viemClient.writeContract>[0],
+    ),
+  sendTransaction: (args) =>
+    viemClient.sendTransaction(
+      args as Parameters<typeof viemClient.sendTransaction>[0],
+    ),
+  waitForTransactionReceipt: (args) =>
     viemClient.waitForTransactionReceipt(args),
 });
 
@@ -121,7 +103,10 @@ const facilitator = new x402Facilitator()
   });
 
 // Register EVM schemes (batched: deposit / voucher / claim / settle)
-facilitator.register("eip155:84532", new BatchSettlementEvmScheme(evmSigner, authorizerSigner)); // Base Sepolia
+facilitator.register(
+  "eip155:84532",
+  new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
+); // Base Sepolia
 
 // Initialize Express app
 const app = express();

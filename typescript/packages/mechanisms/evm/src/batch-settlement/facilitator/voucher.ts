@@ -59,9 +59,6 @@ export async function verifyVoucher(
   }
 
   const state = await readChannelState(signer, channelId);
-  if (!state) {
-    return { isValid: false, invalidReason: Errors.ErrChannelNotFound, payer: channelConfig.payer };
-  }
 
   if (state.balance === 0n) {
     return { isValid: false, invalidReason: Errors.ErrChannelNotFound, payer: channelConfig.payer };

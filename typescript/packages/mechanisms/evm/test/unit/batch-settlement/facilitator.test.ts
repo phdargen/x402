@@ -302,7 +302,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     expect(signer.verifyTypedData).not.toHaveBeenCalled();
   });
 
-  it("returns ChannelNotFound when channel state is missing", async () => {
+  it("propagates ErrRpcReadFailed when multicall reads fail", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
       { status: "failure", error: new Error("revert") },
@@ -312,9 +312,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const { payload } = makeVoucherPayload();
 
-    const result = await scheme.verify(payload, makeRequirements());
-    expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe(Errors.ErrChannelNotFound);
+    await expect(scheme.verify(payload, makeRequirements())).rejects.toThrow(
+      Errors.ErrRpcReadFailed,
+    );
   });
 
   it("returns ChannelNotFound when balance is zero", async () => {

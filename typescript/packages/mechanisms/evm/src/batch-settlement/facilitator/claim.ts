@@ -6,6 +6,7 @@ import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { signClaimBatch } from "../authorizerSigner";
 import * as Errors from "./errors";
+import { toContractChannelConfig } from "./utils";
 
 /**
  * Converts an array of {@link BatchSettlementVoucherClaim} into the on-chain tuple format
@@ -17,15 +18,7 @@ import * as Errors from "./errors";
 export function buildVoucherClaimArgs(claims: BatchSettlementClaimWithSignaturePayload["claims"]) {
   return claims.map(c => ({
     voucher: {
-      channel: {
-        payer: getAddress(c.voucher.channel.payer),
-        payerAuthorizer: getAddress(c.voucher.channel.payerAuthorizer),
-        receiver: getAddress(c.voucher.channel.receiver),
-        receiverAuthorizer: getAddress(c.voucher.channel.receiverAuthorizer),
-        token: getAddress(c.voucher.channel.token),
-        withdrawDelay: c.voucher.channel.withdrawDelay,
-        salt: c.voucher.channel.salt,
-      },
+      channel: toContractChannelConfig(c.voucher.channel),
       maxClaimableAmount: BigInt(c.voucher.maxClaimableAmount),
     },
     signature: c.signature,
@@ -82,10 +75,11 @@ export async function executeClaimWithSignature(
       functionName: "claimWithSignature",
       args: [claimArgs, sig],
     });
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrClaimSimulationFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network,
     };
@@ -105,6 +99,7 @@ export async function executeClaimWithSignature(
       return {
         success: false,
         errorReason: Errors.ErrClaimTransactionFailed,
+        errorMessage: `transaction reverted (receipt status ${receipt.status})`,
         transaction: tx,
         network,
       };
@@ -116,10 +111,11 @@ export async function executeClaimWithSignature(
       network,
       amount: requirements.amount,
     };
-  } catch {
+  } catch (e) {
     return {
       success: false,
       errorReason: Errors.ErrClaimTransactionFailed,
+      errorMessage: e instanceof Error ? e.message : String(e),
       transaction: "",
       network,
     };

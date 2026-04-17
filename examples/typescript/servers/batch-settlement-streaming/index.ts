@@ -6,7 +6,11 @@ import {
 } from "@x402/core/http";
 import type { PaymentPayload, SettleResponse } from "@x402/core/types";
 import { BatchSettlementEvmScheme, FileSessionStorage } from "@x402/evm/batch-settlement/server";
-import { isBatchSettlementDepositPayload } from "@x402/evm";
+import {
+  isBatchSettlementDepositPayload,
+  isBatchSettlementVoucherPayload,
+  type BatchSettlementPaymentResponseExtra,
+} from "@x402/evm";
 import { config } from "dotenv";
 import express from "express";
 import { privateKeyToAccount } from "viem/accounts";
@@ -86,7 +90,7 @@ const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);
 
-// Payment requirements template 
+// Payment requirements template
 const paymentOptions = {
   scheme: "batch-settlement" as const,
   price: PRICE_PER_CHUNK,
@@ -100,6 +104,12 @@ const paymentOptions = {
 
 const openai = process.env.OPENAI_API_KEY ? new OpenAI() : null;
 
+/**
+ * Yields LLM tokens from OpenAI when configured, otherwise a simulated word stream.
+ *
+ * @param prompt - User prompt for the chat completion.
+ * @returns Async generator of token strings.
+ */
 async function* tokenStream(prompt: string): AsyncGenerator<string> {
   if (openai) {
     const stream = await openai.chat.completions.create({
@@ -115,8 +125,7 @@ async function* tokenStream(prompt: string): AsyncGenerator<string> {
   }
 
   // Simulated fallback: yield one word at a time with a small delay
-  const words =
-    "The quick brown fox jumps over the lazy dog. ".repeat(30).trim().split(" ");
+  const words = "The quick brown fox jumps over the lazy dog. ".repeat(30).trim().split(" ");
   for (const word of words) {
     await new Promise(r => setTimeout(r, 20));
     yield word + " ";
@@ -136,6 +145,11 @@ const pendingVouchers = new Map<string, VoucherResolver>();
 const app = express();
 app.use(express.json());
 
+/**
+ * Logs a message when verbose mode is enabled.
+ *
+ * @param message - Text to print to stdout.
+ */
 function logVerbose(message: string): void {
   if (!verbose) return;
   console.log(message);
@@ -148,19 +162,16 @@ app.get("/llm/stream", async (req, res) => {
   const requirements = await resourceServer.buildPaymentRequirements(paymentOptions);
 
   // If no payment header → 402
-  const paymentHeader =
-    req.headers["payment-signature"];
+  const paymentHeader = req.headers["payment-signature"];
   if (!paymentHeader || typeof paymentHeader !== "string") {
     logVerbose(`\n${colorizeRed("[payment-required]")} ${req.originalUrl}`);
-    const paymentRequired = await resourceServer.createPaymentRequiredResponse(
-      requirements,
-      {
-        url: "/llm/stream",
-        description: "SSE LLM stream",
-        mimeType: "text/event-stream",
-      },
-    );
-    res.status(402)
+    const paymentRequired = await resourceServer.createPaymentRequiredResponse(requirements, {
+      url: "/llm/stream",
+      description: "SSE LLM stream",
+      mimeType: "text/event-stream",
+    });
+    res
+      .status(402)
       .set("PAYMENT-REQUIRED", encodePaymentRequiredHeader(paymentRequired))
       .json(paymentRequired);
     return;
@@ -193,8 +204,7 @@ app.get("/llm/stream", async (req, res) => {
 
   // For deposits, settle on-chain immediately (also charges one chunk to session)
   // For vouchers, defer settlement until streaming
-  const raw = paymentPayload.payload as Record<string, unknown>;
-  const isDeposit = isBatchSettlementDepositPayload(raw);
+  const isDeposit = isBatchSettlementDepositPayload(paymentPayload.payload);
   let firstChunkSettled = false;
   let trailingSettleResponse: SettleResponse | null = null;
 
@@ -261,9 +271,11 @@ app.get("/llm/stream", async (req, res) => {
           { amount: chunkAmountAtomic },
         );
         trailingSettleResponse = settleResult;
-        chargedCumulativeAmount =
-          (settleResult.extra as Record<string, string> | undefined)?.chargedCumulativeAmount ?? "0";
-        balance = (settleResult.extra as Record<string, string> | undefined)?.balance ?? "0";
+        const extra = settleResult.extra as
+          | Partial<BatchSettlementPaymentResponseExtra>
+          | undefined;
+        chargedCumulativeAmount = extra?.chargedCumulativeAmount ?? "0";
+        balance = extra?.balance ?? "0";
       }
 
       // Ask client for a new voucher.
@@ -287,12 +299,12 @@ app.get("/llm/stream", async (req, res) => {
       const newPayload = await waitForVoucher(pendingVouchers, channelId, 30_000);
 
       // Re-match requirements (same template, amount = chunk price)
-      const newRequirements = resourceServer.findMatchingRequirements(
-        requirements,
-        newPayload,
-      );
+      const newRequirements = resourceServer.findMatchingRequirements(requirements, newPayload);
       if (!newRequirements) {
-        sseWrite(res, "x402-error", { code: "requirements_mismatch", message: "No match" });
+        sseWrite(res, "x402-error", {
+          code: "requirements_mismatch",
+          message: "No match",
+        });
         break;
       }
 
@@ -308,10 +320,10 @@ app.get("/llm/stream", async (req, res) => {
 
       let acceptedChargedCumulativeAmount = chargedCumulativeAmount;
       let acceptedBalance =
-        (newVerify.extra as Record<string, string> | undefined)?.balance ?? "0";
-      const renewalRaw = newPayload.payload as Record<string, unknown>;
+        (newVerify.extra as Partial<BatchSettlementPaymentResponseExtra> | undefined)?.balance ??
+        "0";
 
-      if (isBatchSettlementDepositPayload(renewalRaw)) {
+      if (isBatchSettlementDepositPayload(newPayload.payload)) {
         const renewalSettle = await resourceServer.settlePayment(newPayload, newRequirements);
         if (!renewalSettle.success) {
           sseWrite(res, "x402-error", {
@@ -327,11 +339,12 @@ app.get("/llm/stream", async (req, res) => {
         currentPayload = renewedVoucherState.payload;
         currentRequirements = newRequirements;
         firstChunkSettled = true;
+        const renewalExtra = renewalSettle.extra as
+          | Partial<BatchSettlementPaymentResponseExtra>
+          | undefined;
         acceptedChargedCumulativeAmount =
-          (renewalSettle.extra as Record<string, string> | undefined)?.chargedCumulativeAmount ??
-          chargedCumulativeAmount;
-        acceptedBalance =
-          (renewalSettle.extra as Record<string, string> | undefined)?.balance ?? acceptedBalance;
+          renewalExtra?.chargedCumulativeAmount ?? chargedCumulativeAmount;
+        acceptedBalance = renewalExtra?.balance ?? acceptedBalance;
       } else {
         currentPayload = newPayload;
         currentRequirements = newRequirements;
@@ -372,12 +385,16 @@ app.get("/llm/stream", async (req, res) => {
         undefined,
         { amount: partialChunkAmount },
       );
-      const chargedCumulativeAmount =
-        (finalSettle.extra as Record<string, string> | undefined)?.chargedCumulativeAmount ?? "0";
-      const signedMaxClaimable =
-        (finalSettle.extra as Record<string, string> | undefined)?.signedMaxClaimable ??
-        (currentPayload.payload as Record<string, unknown>).maxClaimableAmount ??
-        "0";
+      const finalExtra = finalSettle.extra as
+        | (Partial<BatchSettlementPaymentResponseExtra> & {
+            signedMaxClaimable?: string;
+          })
+        | undefined;
+      const chargedCumulativeAmount = finalExtra?.chargedCumulativeAmount ?? "0";
+      const fallbackMaxClaimable = isBatchSettlementVoucherPayload(currentPayload.payload)
+        ? currentPayload.payload.maxClaimableAmount
+        : "0";
+      const signedMaxClaimable = finalExtra?.signedMaxClaimable ?? fallbackMaxClaimable;
       trailingSettleResponse = finalSettle;
 
       sseWrite(res, "x402-settlement", {
@@ -436,8 +453,7 @@ app.post("/x402/voucher/:channelId", (req, res) => {
     return;
   }
 
-  const paymentHeader =
-    req.headers["payment-signature"];
+  const paymentHeader = req.headers["payment-signature"];
   if (!paymentHeader || typeof paymentHeader !== "string") {
     res.status(400).json({ error: "Missing PAYMENT-SIGNATURE header" });
     return;
@@ -456,6 +472,11 @@ app.post("/x402/voucher/:channelId", (req, res) => {
 // Start
 // ---------------------------------------------------------------------------
 
+/**
+ * Parses chunk pricing, initializes the resource server, and listens on `PORT`.
+ *
+ * @returns Resolves when the HTTP server has started listening.
+ */
 async function start(): Promise<void> {
   const [assetAmount] = await Promise.all([
     batchedScheme.parsePrice(PRICE_PER_CHUNK, NETWORK),
@@ -465,9 +486,7 @@ async function start(): Promise<void> {
 
   app.listen(PORT, () => {
     console.log(`Batched-streaming server listening at http://localhost:${PORT}`);
-    console.log(
-      `  GET  /llm/stream          — SSE endpoint`,
-    );
+    console.log(`  GET  /llm/stream          — SSE endpoint`);
     console.log(`  POST /x402/voucher/:id    — voucher renewal side-channel`);
     console.log(`  Chunk size: ${CHUNK_SIZE} tokens`);
     console.log(`  Chunk price: ${PRICE_PER_CHUNK}`);

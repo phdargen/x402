@@ -1,11 +1,12 @@
 import { PaymentRequirements, PaymentPayloadResult } from "@x402/core/types";
-import { getAddress, encodeAbiParameters, keccak256 } from "viem";
+import { getAddress } from "viem";
 import { ClientEvmSigner } from "../../signer";
 import { ChannelConfig, BatchSettlementDepositPayload } from "../types";
 import { ERC3009_DEPOSIT_COLLECTOR_ADDRESS, receiveAuthorizationTypes } from "../constants";
 import { createNonce, getEvmChainId } from "../../utils";
 import { signVoucher } from "./voucher";
 import { computeChannelId } from "../utils";
+import { buildErc3009DepositNonce } from "../encoding";
 
 /**
  * Creates a deposit payload that bundles an ERC-3009 `receiveWithAuthorization` approval
@@ -46,9 +47,7 @@ export async function createBatchSettlementEIP3009DepositPayload(
 
   const channelId = computeChannelId(channelConfig);
 
-  const erc3009Nonce = keccak256(
-    encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [channelId, BigInt(salt)]),
-  );
+  const erc3009Nonce = buildErc3009DepositNonce(channelId, salt);
 
   const signature = await signer.signTypedData({
     domain: {

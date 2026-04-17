@@ -1,5 +1,6 @@
-import { encodeAbiParameters, keccak256 } from "viem";
+import { encodeAbiParameters, getAddress, keccak256 } from "viem";
 import { channelConfigComponents } from "./abi";
+import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN } from "./constants";
 import type { ChannelConfig } from "./types";
 
 const channelConfigAbiType = [{ type: "tuple", components: channelConfigComponents }] as const;
@@ -24,4 +25,18 @@ export function computeChannelId(config: ChannelConfig): `0x${string}` {
     },
   ]);
   return keccak256(encoded);
+}
+
+/**
+ * Returns the full EIP-712 domain for the batch-settlement contract on the given chain.
+ *
+ * @param chainId - Numeric EVM chain id.
+ * @returns EIP-712 domain with `name`, `version`, `chainId`, and checksummed `verifyingContract`.
+ */
+export function getBatchSettlementEip712Domain(chainId: number) {
+  return {
+    ...BATCH_SETTLEMENT_DOMAIN,
+    chainId,
+    verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
+  } as const;
 }

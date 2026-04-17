@@ -1,13 +1,9 @@
-import { readFile, unlink } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
-import { writeJsonAtomic } from "../storage-utils";
+import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
+import type { FileSessionStorageOptions } from "../types";
 import type { ClientSessionStorage, BatchSettlementClientContext } from "./storage";
-
-export interface FileClientSessionStorageOptions {
-  /** Root directory; sessions are stored under `{directory}/client/{channelId}.json`. */
-  directory: string;
-}
 
 /**
  * Node.js file-backed {@link ClientSessionStorage} for the batched client scheme.
@@ -22,7 +18,7 @@ export class FileClientSessionStorage implements ClientSessionStorage {
    *
    * @param options - Configuration including the storage root directory.
    */
-  constructor(options: FileClientSessionStorageOptions) {
+  constructor(options: FileSessionStorageOptions) {
     this.root = options.directory;
   }
 
@@ -33,18 +29,7 @@ export class FileClientSessionStorage implements ClientSessionStorage {
    * @returns Parsed context or `undefined` when the file is missing.
    */
   async get(key: string): Promise<BatchSettlementClientContext | undefined> {
-    const path = this.filePath(key);
-    try {
-      const raw = await readFile(path, "utf8");
-      return JSON.parse(raw) as BatchSettlementClientContext;
-    } catch (err: unknown) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-      if (code === "ENOENT") return undefined;
-      throw err;
-    }
+    return readJsonFile<BatchSettlementClientContext>(this.filePath(key));
   }
 
   /**
@@ -66,11 +51,7 @@ export class FileClientSessionStorage implements ClientSessionStorage {
     try {
       await unlink(this.filePath(key));
     } catch (err: unknown) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-      if (code === "ENOENT") return;
+      if (isNodeEnoent(err)) return;
       throw err;
     }
   }

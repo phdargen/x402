@@ -12,20 +12,47 @@ export type VoucherResolver = {
   reject: (err: Error) => void;
 };
 
+/**
+ * Returns whether an environment variable is set to a truthy string.
+ *
+ * @param value - Raw env value or undefined.
+ * @returns True when value is 1, true, yes, or on (case-insensitive).
+ */
 export function isTruthyEnvFlag(value: string | undefined): boolean {
   if (!value) return false;
   return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
+/**
+ * Parses CLI argv for `--verbose` / `-v`.
+ *
+ * @param argv - Arguments after the script name (e.g. `process.argv.slice(2)`).
+ * @returns Parsed verbose flag.
+ */
 export function parseServerCliOptions(argv: string[]): ServerCliOptions {
   const verbose = argv.includes("-v") || argv.includes("--verbose");
   return { verbose };
 }
 
+/**
+ * Writes one Server-Sent Event block to the Express response.
+ *
+ * @param res - Express response with an open writable stream.
+ * @param event - SSE event name.
+ * @param data - Payload serialized as JSON in the `data` field.
+ */
 export function sseWrite(res: express.Response, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+/**
+ * Computes the amount to charge for the current token count within a chunk window.
+ *
+ * @param tokenCount - Tokens emitted so far in the current chunk.
+ * @param chunkSize - Tokens per priced chunk.
+ * @param chunkAmountAtomic - Atomic units charged for a full chunk.
+ * @returns Pro-rated or full chunk amount as a decimal string.
+ */
 export function getChunkChargeAmount(
   tokenCount: number,
   chunkSize: number,
@@ -37,6 +64,13 @@ export function getChunkChargeAmount(
   return ((BigInt(chunkAmountAtomic) * BigInt(tokenCount)) / BigInt(chunkSize)).toString();
 }
 
+/**
+ * Returns the next cumulative charge cap after adding one chunk amount.
+ *
+ * @param chargedCumulativeAmount - Current charged total (atomic units).
+ * @param chunkAmountAtomic - One chunk price in atomic units.
+ * @returns Sum as a decimal string.
+ */
 export function getNextMaxClaimableAmount(
   chargedCumulativeAmount: string,
   chunkAmountAtomic: string,
@@ -44,6 +78,12 @@ export function getNextMaxClaimableAmount(
   return (BigInt(chargedCumulativeAmount) + BigInt(chunkAmountAtomic)).toString();
 }
 
+/**
+ * Extracts batch-settlement channel id from a deposit or voucher payload.
+ *
+ * @param paymentPayload - Decoded x402 payment payload.
+ * @returns Channel id when present, otherwise undefined.
+ */
 export function getChannelIdFromPayload(paymentPayload: PaymentPayload): string | undefined {
   const raw = paymentPayload.payload as Record<string, unknown>;
 
@@ -59,6 +99,12 @@ export function getChannelIdFromPayload(paymentPayload: PaymentPayload): string 
   return typeof voucher.channelId === "string" ? voucher.channelId : undefined;
 }
 
+/**
+ * Shortens a long channel id for log output.
+ *
+ * @param channelId - Full channel id or undefined.
+ * @returns Original, shortened, or "unknown" display string.
+ */
 export function formatChannelId(channelId: string | undefined): string {
   if (!channelId) return "unknown";
   if (channelId.length <= 14) return channelId;
@@ -66,14 +112,35 @@ export function formatChannelId(channelId: string | undefined): string {
   return `${channelId.slice(0, 6)} ... ${channelId.slice(-5)}`;
 }
 
+/**
+ * Wraps text in ANSI green for terminal output.
+ *
+ * @param text - Raw message.
+ * @returns Text with green foreground reset codes.
+ */
 export function colorizeGreen(text: string): string {
   return `\u001b[32m${text}\u001b[0m`;
 }
 
+/**
+ * Wraps text in ANSI red for terminal output.
+ *
+ * @param text - Raw message.
+ * @returns Text with red foreground reset codes.
+ */
 export function colorizeRed(text: string): string {
   return `\u001b[31m${text}\u001b[0m`;
 }
 
+/**
+ * Builds the settle response for the trailer, with session totals for this request.
+ *
+ * @param batchedScheme - Server batch-settlement scheme (storage access).
+ * @param paymentResponse - Baseline settle response from verification.
+ * @param channelId - Channel id for this stream, if known.
+ * @param requestStartCharged - Charged amount at request start (atomic string).
+ * @returns Augmented settle response including amount and session extras.
+ */
 export async function buildFinalPaymentResponse(
   batchedScheme: BatchSettlementEvmScheme,
   paymentResponse: SettleResponse,
@@ -107,6 +174,14 @@ export async function buildFinalPaymentResponse(
   };
 }
 
+/**
+ * Derives display state for an accepted voucher renewal (deposit vs voucher).
+ *
+ * @param paymentPayload - Latest payment payload after renewal.
+ * @param chargedCumulativeAmount - Updated charged total.
+ * @param balance - Remaining balance on the channel.
+ * @returns Fields for the `x402-voucher-accepted` SSE event.
+ */
 export function getAcceptedRenewalState(
   paymentPayload: PaymentPayload,
   chargedCumulativeAmount: string,
@@ -138,6 +213,13 @@ export function getAcceptedRenewalState(
   };
 }
 
+/**
+ * Normalizes a payment payload to voucher form for side-channel POST bodies.
+ *
+ * @param paymentPayload - Current payment payload.
+ * @param requirements - Accepted requirements to attach to the payload.
+ * @returns Channel id and payload suitable for voucher renewal POST.
+ */
 export function toVoucherPayload(
   paymentPayload: PaymentPayload,
   requirements: PaymentPayload["accepted"],
@@ -170,6 +252,14 @@ export function toVoucherPayload(
   };
 }
 
+/**
+ * Registers a pending resolver until a voucher POST arrives or timeout.
+ *
+ * @param pendingVouchers - Map of channel id to promise resolver.
+ * @param channelId - Channel waiting for renewal.
+ * @param timeoutMs - Max wait before rejecting.
+ * @returns Promise that resolves with the posted payment payload.
+ */
 export function waitForVoucher(
   pendingVouchers: Map<string, VoucherResolver>,
   channelId: string,

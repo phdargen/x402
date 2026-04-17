@@ -1,8 +1,10 @@
+import type { TypedData } from "viem";
+
 export interface AuthorizerSigner {
   address: `0x${string}`;
   signTypedData(params: {
     domain: Record<string, unknown>;
-    types: Record<string, Array<{ name: string; type: string }>>;
+    types: TypedData;
     primaryType: string;
     message: Record<string, unknown>;
   }): Promise<`0x${string}`>;
@@ -66,6 +68,19 @@ export type BatchSettlementVoucherClaim = {
   totalClaimed: string;
 };
 
+export type BatchSettlementPaymentRequirementsExtra = {
+  receiverAuthorizer: `0x${string}`;
+  withdrawDelay: number;
+  name: string;
+  version: string;
+  assetTransferMethod?: "eip3009";
+};
+
+export type FileSessionStorageOptions = {
+  /** Root directory; sessions are stored under `{directory}/{client|server}/{channelId}.json`. */
+  directory: string;
+};
+
 export type BatchSettlementPaymentResponseExtra = {
   channelId: `0x${string}`;
   chargedCumulativeAmount: string;
@@ -107,27 +122,40 @@ export type BatchSettlementSettlePayload =
   | BatchSettlementRefundWithSignaturePayload;
 
 /**
- * Type guard for a batched deposit payload (deposit + voucher).
+ * Returns true when the value is a non-null object (a usable record).
  *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementDepositPayload}.
+ * @param payload - Value of unknown shape.
+ * @returns True if `payload` is an object that can be indexed by string keys.
  */
-export function isBatchSettlementDepositPayload(
-  payload: Record<string, unknown>,
-): payload is BatchSettlementDepositPayload {
-  return payload.type === "deposit" && "deposit" in payload && "voucher" in payload;
+function isObject(payload: unknown): payload is Record<string, unknown> {
+  return typeof payload === "object" && payload !== null;
 }
 
 /**
- * Type guard for a batched voucher-only payload.
+ * Type guard for {@link BatchSettlementDepositPayload}.
  *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementVoucherPayload}.
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a deposit payload (carries `deposit` and `voucher`).
+ */
+export function isBatchSettlementDepositPayload(
+  payload: unknown,
+): payload is BatchSettlementDepositPayload {
+  return (
+    isObject(payload) && payload.type === "deposit" && "deposit" in payload && "voucher" in payload
+  );
+}
+
+/**
+ * Type guard for {@link BatchSettlementVoucherPayload}.
+ *
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a voucher payload with channel and signature fields.
  */
 export function isBatchSettlementVoucherPayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): payload is BatchSettlementVoucherPayload {
   return (
+    isObject(payload) &&
     payload.type === "voucher" &&
     "channelConfig" in payload &&
     "channelId" in payload &&
@@ -137,37 +165,42 @@ export function isBatchSettlementVoucherPayload(
 }
 
 /**
- * Type guard for a claim-with-signature settle payload (facilitator calls `claimWithSignature()`).
+ * Type guard for {@link BatchSettlementClaimWithSignaturePayload}.
  *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementClaimWithSignaturePayload}.
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a settle-action `claimWithSignature` payload.
  */
 export function isBatchSettlementClaimWithSignaturePayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): payload is BatchSettlementClaimWithSignaturePayload {
-  return payload.settleAction === "claimWithSignature" && "claims" in payload;
+  return isObject(payload) && payload.settleAction === "claimWithSignature" && "claims" in payload;
 }
 
 /**
- * Type guard for a settle action payload (transfers claimed funds to receiver).
+ * Type guard for {@link BatchSettlementSettleActionPayload}.
  *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementSettleActionPayload}.
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a settle-action `settle` payload.
  */
 export function isBatchSettlementSettleActionPayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): payload is BatchSettlementSettleActionPayload {
-  return payload.settleAction === "settle" && "receiver" in payload && "token" in payload;
+  return (
+    isObject(payload) &&
+    payload.settleAction === "settle" &&
+    "receiver" in payload &&
+    "token" in payload
+  );
 }
 
 /**
- * Type guard for a signature-based refund settle payload.
+ * Type guard for {@link BatchSettlementRefundWithSignaturePayload}.
  *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementRefundWithSignaturePayload}.
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a settle-action `refundWithSignature` payload.
  */
 export function isBatchSettlementRefundWithSignaturePayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): payload is BatchSettlementRefundWithSignaturePayload {
-  return payload.settleAction === "refundWithSignature" && "config" in payload;
+  return isObject(payload) && payload.settleAction === "refundWithSignature" && "config" in payload;
 }

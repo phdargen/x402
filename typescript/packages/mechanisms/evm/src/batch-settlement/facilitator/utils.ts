@@ -4,15 +4,37 @@ import { FacilitatorEvmSigner } from "../../signer";
 import { multicall } from "../../multicall";
 import {
   BATCH_SETTLEMENT_ADDRESS,
-  BATCH_SETTLEMENT_DOMAIN,
   MIN_WITHDRAW_DELAY,
   MAX_WITHDRAW_DELAY,
   voucherTypes,
 } from "../constants";
 import { batchSettlementABI } from "../abi";
-import type { ChannelConfig, ChannelState } from "../types";
-import { computeChannelId } from "../utils";
+import type {
+  BatchSettlementPaymentRequirementsExtra,
+  ChannelConfig,
+  ChannelState,
+} from "../types";
+import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
 import * as Errors from "./errors";
+
+/**
+ * Normalises a {@link ChannelConfig} into the checksummed-address tuple expected by the
+ * batch-settlement contract's `deposit` / `refundWithSignature` / `claimWithSignature` calls.
+ *
+ * @param config - In-memory channel configuration.
+ * @returns Channel config tuple with all address fields checksummed via `getAddress`.
+ */
+export function toContractChannelConfig(config: ChannelConfig) {
+  return {
+    payer: getAddress(config.payer),
+    payerAuthorizer: getAddress(config.payerAuthorizer),
+    receiver: getAddress(config.receiver),
+    receiverAuthorizer: getAddress(config.receiverAuthorizer),
+    token: getAddress(config.token),
+    withdrawDelay: config.withdrawDelay,
+    salt: config.salt,
+  };
+}
 
 /**
  * Case-insensitive comparison of two channel id hex strings.
@@ -77,11 +99,7 @@ export async function verifyBatchSettlementVoucherTypedData(
   },
   chainId: number,
 ): Promise<boolean> {
-  const domain = {
-    ...BATCH_SETTLEMENT_DOMAIN,
-    chainId,
-    verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
-  };
+  const domain = getBatchSettlementEip712Domain(chainId);
   const message = {
     channelId: params.channelId,
     maxClaimableAmount: BigInt(params.maxClaimableAmount),
@@ -89,30 +107,25 @@ export async function verifyBatchSettlementVoucherTypedData(
 
   const zeroAddress = "0x0000000000000000000000000000000000000000";
 
-  try {
-    if (params.payerAuthorizer !== zeroAddress) {
-      const recovered = await viemVerifyTypedData({
-        address: getAddress(params.payerAuthorizer),
-        domain,
-        types: voucherTypes,
-        primaryType: "Voucher",
-        message,
-        signature: params.signature,
-      });
-      return recovered;
-    }
-
-    return await signer.verifyTypedData({
-      address: getAddress(params.payer),
+  if (params.payerAuthorizer !== zeroAddress) {
+    return viemVerifyTypedData({
+      address: getAddress(params.payerAuthorizer),
       domain,
       types: voucherTypes,
       primaryType: "Voucher",
       message,
       signature: params.signature,
     });
-  } catch {
-    return false;
   }
+
+  return signer.verifyTypedData({
+    address: getAddress(params.payer),
+    domain,
+    types: voucherTypes,
+    primaryType: "Voucher",
+    message,
+    signature: params.signature,
+  });
 }
 
 /**
@@ -138,10 +151,10 @@ export function validateChannelConfig(
     return Errors.ErrReceiverMismatch;
   }
 
-  const extra = requirements.extra as Record<string, unknown> | undefined;
+  const extra = requirements.extra as Partial<BatchSettlementPaymentRequirementsExtra> | undefined;
 
   if (extra?.receiverAuthorizer) {
-    if (getAddress(config.receiverAuthorizer) !== getAddress(extra.receiverAuthorizer as string)) {
+    if (getAddress(config.receiverAuthorizer) !== getAddress(extra.receiverAuthorizer)) {
       return Errors.ErrReceiverAuthorizerMismatch;
     }
   }
@@ -165,14 +178,17 @@ export function validateChannelConfig(
  * Reads on-chain channel state via a 3-call multicall:
  * `channels(channelId)`, `pendingWithdrawals(channelId)`, `refundNonce(channelId)`.
  *
+ * Throws when any sub-call fails so callers can distinguish RPC failures
+ * from missing channels (which return zero balance/totalClaimed/refundNonce).
+ *
  * @param signer - Facilitator signer for on-chain reads.
  * @param channelId - The `bytes32` channel id.
- * @returns Fresh {@link ChannelState}, or `null` if any call fails.
+ * @returns Fresh {@link ChannelState}.
  */
 export async function readChannelState(
   signer: FacilitatorEvmSigner,
   channelId: `0x${string}`,
-): Promise<ChannelState | null> {
+): Promise<ChannelState> {
   const target = getAddress(BATCH_SETTLEMENT_ADDRESS);
   const mcResults = await multicall(signer.readContract.bind(signer), [
     { address: target, abi: batchSettlementABI, functionName: "channels", args: [channelId] },
@@ -187,7 +203,7 @@ export async function readChannelState(
 
   const [chRes, wdRes, rnRes] = mcResults;
   if (chRes.status === "failure" || wdRes.status === "failure" || rnRes.status === "failure") {
-    return null;
+    throw new Error(`${Errors.ErrRpcReadFailed}: multicall returned failure for ${channelId}`);
   }
 
   const [balance, totalClaimed] = chRes.result as [bigint, bigint];

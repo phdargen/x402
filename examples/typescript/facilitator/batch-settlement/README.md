@@ -1,221 +1,68 @@
-# x402 Facilitator Example
+# Batch-Settlement Facilitator Example
 
-Express.js facilitator service that verifies and settles payments on-chain for the x402 protocol.
+Express.js facilitator for the **batch-settlement** EVM scheme on Base Sepolia. Handles `deposit`, `claimWithSignature`, `settle`, and `refundWithSignature` operations against the on-chain channel contract.
+
+See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme_batch_settlement_evm.md) and the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md) for protocol details.
+
+## Two Signer Roles
+
+This example uses two distinct keys with very different responsibilities:
+
+| Env var | Role | On-chain effect |
+|---------|------|-----------------|
+| `EVM_PRIVATE_KEY` | **Relayer** — submits transactions | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature` |
+| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** — signs `ClaimBatch` and `Refund` EIP-712 messages | Address is committed into the channel identity for any server that delegates to this facilitator |
+
+If `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is omitted, the relayer key is reused for both roles. In production, keep them separate so the receiver-authorizer key (which controls how much gets claimed) can be rotated independently of the gas-paying hot wallet.
+
+> The receiver-authorizer address is advertised under `kinds[].extra.receiverAuthorizer` in `GET /supported`. **Servers that delegate authorization to this facilitator bind that address into their channel config** — rotating the authorizer key requires opening new channels, so treat this address as long-lived.
 
 ## Prerequisites
 
-- Node.js v20+ (install via [nvm](https://github.com/nvm-sh/nvm))
-- pnpm v10 (install via [pnpm.io/installation](https://pnpm.io/installation))
-- EVM private key with Base Sepolia ETH for transaction fees
-- SVM private key with Solana Devnet SOL for transaction fees
+- Node.js v20+, pnpm v10
+- Base Sepolia ETH on the **relayer** address (gas)
+- Optional: a separate funded address for the **authorizer** (no gas required if relayer is separate)
 
 ## Setup
 
-1. Copy `.env-local` to `.env`:
-
 ```bash
 cp .env-local .env
-```
+# fill EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY, EVM_RPC_URL)
 
-and fill required environment variables:
-
-- `EVM_PRIVATE_KEY` - Ethereum private key
-- `SVM_PRIVATE_KEY` - Solana private key
-- `PORT` - Server port (optional, defaults to 4022)
-
-2. Install and build all packages from the typescript examples root:
-
-```bash
 cd ../../
 pnpm install && pnpm build
-cd facilitator/basic
-```
+cd facilitator/batch-settlement
 
-3. Run the server:
-
-```bash
 pnpm dev
 ```
 
-## API Endpoints
+The facilitator listens on `http://localhost:4022` by default (`PORT` env var to override).
 
-### GET /supported
+## API Surface
 
-Returns payment schemes and networks this facilitator supports.
+Standard x402 facilitator endpoints — `POST /verify`, `POST /settle`, `GET /supported`. The `/settle` endpoint dispatches on `payload.type` / `settleAction`:
+
+| Action | Triggered by | Effect |
+|--------|--------------|--------|
+| `deposit` | First request or top-up | Funds the channel via EIP-3009 or Permit2 |
+| `claimWithSignature` | Server batches voucher claims | Updates on-chain `totalClaimed` (no transfer) |
+| `settle` | Server sweeps unsettled funds | Transfers claimed funds to the receiver |
+| `refundWithSignature` | Cooperative refund | Returns `balance - totalClaimed` to the payer |
+
+`/verify` and `/settle` always return the on-chain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
+
+`GET /supported` advertises the receiver authorizer address:
 
 ```json
 {
   "kinds": [
     {
       "x402Version": 2,
-      "scheme": "exact",
-      "network": "eip155:84532"
-    },
-    {
-      "x402Version": 2,
-      "scheme": "exact",
-      "network": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-      "extra": {
-        "feePayer": "..."
-      }
+      "scheme": "batch-settlement",
+      "network": "eip155:84532",
+      "extra": { "receiverAuthorizer": "0x..." }
     }
   ],
-  "extensions": [],
-  "signers": {
-    "eip155": ["0x..."],
-    "solana": ["..."]
-  }
+  "signers": { "eip155:*": ["0x..."] }
 }
 ```
-
-### POST /verify
-
-Verifies a payment payload against requirements before settlement.
-
-Request:
-
-```json
-{
-  "paymentPayload": {
-    "x402Version": 2,
-    "resource": {
-      "url": "http://localhost:4021/weather",
-      "description": "Weather data",
-      "mimeType": "application/json"
-    },
-    "accepted": {
-      "scheme": "exact",
-      "network": "eip155:84532",
-      "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-      "amount": "1000",
-      "payTo": "0x...",
-      "maxTimeoutSeconds": 300,
-      "extra": {
-        "name": "USDC",
-        "version": "2"
-      }
-    },
-    "payload": {
-      "signature": "0x...",
-      "authorization": {}
-    }
-  },
-  "paymentRequirements": {
-    "scheme": "exact",
-    "network": "eip155:84532",
-    "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    "amount": "1000",
-    "payTo": "0x...",
-    "maxTimeoutSeconds": 300,
-    "extra": {
-      "name": "USDC",
-      "version": "2"
-    }
-  }
-}
-```
-
-Response (success):
-
-```json
-{
-  "isValid": true,
-  "payer": "0x..."
-}
-```
-
-Response (failure):
-
-```json
-{
-  "isValid": false,
-  "invalidReason": "invalid_signature"
-}
-```
-
-### POST /settle
-
-Settles a verified payment by broadcasting the transaction on-chain.
-
-Request body is identical to `/verify`.
-
-Response (success):
-
-```json
-{
-  "success": true,
-  "transaction": "0x...",
-  "network": "eip155:84532",
-  "payer": "0x..."
-}
-```
-
-Response (failure):
-
-```json
-{
-  "success": false,
-  "errorReason": "insufficient_balance",
-  "transaction": "",
-  "network": "eip155:84532"
-}
-```
-
-## Extending the Example
-
-### Adding Networks
-
-Register additional schemes for other networks:
-
-```typescript
-import { registerExactEvmScheme } from "@x402/evm/exact/facilitator";
-import { registerExactSvmScheme } from "@x402/svm/exact/facilitator";
-
-const facilitator = new x402Facilitator();
-
-registerExactEvmScheme(facilitator, {
-  signer: evmSigner,
-  networks: "eip155:84532",
-});
-
-registerExactSvmScheme(facilitator, {
-  signer: svmSigner,
-  networks: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-});
-```
-
-### Lifecycle Hooks
-
-Add custom logic before/after verify and settle operations:
-
-```typescript
-const facilitator = new x402Facilitator()
-  .onBeforeVerify(async (context) => {
-    // Log or validate before verification
-  })
-  .onAfterVerify(async (context) => {
-    // Track verified payments
-  })
-  .onVerifyFailure(async (context) => {
-    // Handle verification failures
-  })
-  .onBeforeSettle(async (context) => {
-    // Validate before settlement
-    // Return { abort: true, reason: "..." } to cancel
-  })
-  .onAfterSettle(async (context) => {
-    // Track successful settlements
-  })
-  .onSettleFailure(async (context) => {
-    // Handle settlement failures
-  });
-```
-
-## Network Identifiers
-
-Networks use [CAIP-2](https://github.com/ChainAgnostic/CAIPs/blob/main/CAIPs/caip-2.md) format:
-
-- `eip155:84532` — Base Sepolia
-- `eip155:8453` — Base Mainnet
-- `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1` — Solana Devnet
-- `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` — Solana Mainnet

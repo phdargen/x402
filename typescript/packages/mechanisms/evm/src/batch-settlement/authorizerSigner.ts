@@ -1,12 +1,6 @@
-import { getAddress } from "viem";
 import type { AuthorizerSigner, BatchSettlementVoucherClaim } from "./types";
-import {
-  BATCH_SETTLEMENT_ADDRESS,
-  BATCH_SETTLEMENT_DOMAIN,
-  claimBatchTypes,
-  refundTypes,
-} from "./constants";
-import { computeChannelId } from "./utils";
+import { claimBatchTypes, refundTypes } from "./constants";
+import { computeChannelId, getBatchSettlementEip712Domain } from "./utils";
 import { getEvmChainId } from "../utils";
 
 /**
@@ -31,12 +25,8 @@ export async function signClaimBatch(
   }));
 
   return signer.signTypedData({
-    domain: {
-      ...BATCH_SETTLEMENT_DOMAIN,
-      chainId,
-      verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
-    },
-    types: claimBatchTypes as unknown as Record<string, Array<{ name: string; type: string }>>,
+    domain: getBatchSettlementEip712Domain(chainId),
+    types: claimBatchTypes,
     primaryType: "ClaimBatch",
     message: {
       claims: claimEntries,
@@ -64,12 +54,8 @@ export async function signRefund(
   const chainId = getEvmChainId(network);
 
   return signer.signTypedData({
-    domain: {
-      ...BATCH_SETTLEMENT_DOMAIN,
-      chainId,
-      verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
-    },
-    types: refundTypes as unknown as Record<string, Array<{ name: string; type: string }>>,
+    domain: getBatchSettlementEip712Domain(chainId),
+    types: refundTypes,
     primaryType: "Refund",
     message: {
       channelId,

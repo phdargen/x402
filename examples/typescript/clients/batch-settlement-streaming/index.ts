@@ -1,14 +1,11 @@
-import { toClientEvmSigner } from "@x402/evm";
+import { isBatchSettlementDepositPayload, toClientEvmSigner } from "@x402/evm";
 import {
   BatchSettlementEvmScheme,
   FileClientSessionStorage,
   computeChannelId,
 } from "@x402/evm/batch-settlement/client";
 import { x402Client, x402HTTPClient } from "@x402/fetch";
-import {
-  decodePaymentResponseHeader,
-  encodePaymentSignatureHeader,
-} from "@x402/core/http";
+import { decodePaymentResponseHeader, encodePaymentSignatureHeader } from "@x402/core/http";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import type { ChannelConfig } from "@x402/evm";
 import { config } from "dotenv";
@@ -32,17 +29,15 @@ config();
 // ---------------------------------------------------------------------------
 
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
-const evmVoucherSignerPrivateKey = process.env
-  .EVM_VOUCHER_SIGNER_PRIVATE_KEY as `0x${string}` | undefined;
+const evmVoucherSignerPrivateKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
+  | `0x${string}`
+  | undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const channelSalt = (process.env.CHANNEL_SALT ??
   "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
 const storageDir = process.env.STORAGE_DIR;
 const cliOptions = parseClientCliOptions(process.argv.slice(2));
-const prompt =
-  cliOptions.prompt ??
-  process.env.PROMPT ??
-  "Tell me a fun fact about payments.";
+const prompt = cliOptions.prompt ?? process.env.PROMPT ?? "Tell me a fun fact about payments.";
 const verbose = cliOptions.verbose || isTruthyEnvFlag(process.env.VERBOSE);
 const depositPolicy = {
   maxDeposit: "1000000",
@@ -70,9 +65,7 @@ const batchedScheme = new BatchSettlementEvmScheme(signer, {
   depositPolicy,
   salt: channelSalt,
   ...(voucherSigner ? { voucherSigner } : {}),
-  ...(storageDir
-    ? { storage: new FileClientSessionStorage({ directory: storageDir }) }
-    : {}),
+  ...(storageDir ? { storage: new FileClientSessionStorage({ directory: storageDir }) } : {}),
 });
 
 const client = new x402Client();
@@ -80,6 +73,11 @@ client.register("eip155:*", batchedScheme);
 
 const httpClient = new x402HTTPClient(client);
 
+/**
+ * Logs a message when verbose mode is enabled.
+ *
+ * @param message - Text to print to stdout.
+ */
 function logVerbose(message: string): void {
   if (!verbose) return;
   console.log(message);
@@ -89,6 +87,11 @@ function logVerbose(message: string): void {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Runs the streaming client: handles 402, pays, consumes SSE, and renews vouchers as needed.
+ *
+ * @returns Resolves when the stream completes and optional settlement is processed.
+ */
 async function main(): Promise<void> {
   const streamURL = `${baseURL}/llm/stream?prompt=${encodeURIComponent(prompt)}`;
 
@@ -115,17 +118,15 @@ async function main(): Promise<void> {
 
   // Create payment payload (handles deposit + first voucher automatically)
   const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
-  const paymentHeaders =
-    httpClient.encodePaymentSignatureHeader(paymentPayload);
+  const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
 
   // Derive channel info for later voucher renewal
   const requirements: PaymentRequirements = paymentPayload.accepted;
-  const channelConfig: ChannelConfig =
-    batchedScheme.buildChannelConfig(requirements);
+  const channelConfig: ChannelConfig = batchedScheme.buildChannelConfig(requirements);
   const channelId = computeChannelId(channelConfig);
   console.log(`Channel: ${channelId}\n`);
 
-  // 4. Retry with payment — this time we get an SSE stream
+  // Retry with payment — this time we get an SSE stream
   console.log("--- Paid request (SSE stream) ---");
   const paid = await streamRequest(streamURL, paymentHeaders);
   if (paid.statusCode !== 200) {
@@ -134,7 +135,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 5. Consume the SSE stream
+  // Consume the SSE stream
   let tokenCount = 0;
   let vouchersSent = 1;
   const streamedTokens: string[] = [];
@@ -190,9 +191,7 @@ async function main(): Promise<void> {
           accepted: requirements,
           payload: nextPayment.payload,
         };
-        const toppedUp =
-          (renewalPayload.payload as Record<string, unknown>).type ===
-          "deposit";
+        const toppedUp = isBatchSettlementDepositPayload(renewalPayload.payload);
 
         // POST to the side-channel endpoint
         const encoded = encodePaymentSignatureHeader(renewalPayload);
@@ -293,9 +292,7 @@ async function main(): Promise<void> {
     getHeaderValue(paid.headers, "payment-response");
   if (paymentResponseHeader) {
     const paymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
-    console.log(
-      `\n\n[PAYMENT-RESPONSE]\n${formatIndentedJson(paymentResponse)}`,
-    );
+    console.log(`\n\n[PAYMENT-RESPONSE]\n${formatIndentedJson(paymentResponse)}`);
     await batchedScheme.processSettleResponse(paymentResponse);
   }
 
@@ -304,7 +301,7 @@ async function main(): Promise<void> {
   console.log(`Vouchers sent: ${vouchersSent}`);
 }
 
-main().catch((error) => {
+main().catch(error => {
   console.error(error?.response?.data?.error ?? error);
   process.exit(1);
 });

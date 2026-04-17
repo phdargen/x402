@@ -13,17 +13,21 @@ import { ClientEvmSigner } from "../../signer";
 import { batchSettlementABI } from "../abi";
 import {
   BATCH_SETTLEMENT_ADDRESS,
-  BATCH_SETTLEMENT_DOMAIN,
   BATCH_SETTLEMENT_SCHEME,
+  MIN_WITHDRAW_DELAY,
   voucherTypes,
 } from "../constants";
-import { ChannelConfig, BatchSettlementVoucherPayload } from "../types";
+import {
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementVoucherPayload,
+  ChannelConfig,
+} from "../types";
 import { getEvmChainId } from "../../utils";
 import { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
 import { ClientSessionStorage, InMemoryClientSessionStorage } from "./storage";
 import type { BatchSettlementClientContext } from "./storage";
 import { signVoucher } from "./voucher";
-import { computeChannelId } from "../utils";
+import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
 
 export interface BatchSettlementDepositPolicy {
   depositMultiplier?: number;
@@ -99,7 +103,25 @@ function resolveClientOptions(
 }
 
 /**
- * Client-side implementation of the `batched` scheme for EVM networks.
+ * Validates a {@link BatchSettlementDepositPolicy}, throwing on invalid fields.
+ *
+ * @param policy - The policy to validate (no-op when undefined).
+ */
+function validateDepositPolicy(policy: BatchSettlementDepositPolicy | undefined): void {
+  if (!policy) return;
+
+  const m = policy.depositMultiplier;
+  if (m !== undefined && (!Number.isInteger(m) || m < 1)) {
+    throw new Error("depositMultiplier must be an integer >= 1");
+  }
+
+  if (policy.maxDeposit !== undefined && !/^\d+$/.test(policy.maxDeposit)) {
+    throw new Error("maxDeposit must be a non-negative integer string");
+  }
+}
+
+/**
+ * Client-side implementation of the `batch-settlement` scheme for EVM networks.
  *
  * Builds payment payloads (deposit + voucher or voucher-only), processes server responses
  * to update local session state, handles corrective 402 resynchronisation, and supports
@@ -155,21 +177,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       throw new Error("payerAuthorizer address must match voucherSigner.address");
     }
 
-    if (depositPolicy) {
-      const m = depositPolicy.depositMultiplier;
-      if (m !== undefined && (!Number.isInteger(m) || m < 1)) {
-        throw new Error("depositMultiplier must be an integer >= 1");
-      }
-      if (depositPolicy.maxDeposit !== undefined) {
-        try {
-          if (BigInt(depositPolicy.maxDeposit) < 0n) {
-            throw new Error("maxDeposit must be a non-negative integer string");
-          }
-        } catch {
-          throw new Error("maxDeposit must be a non-negative integer string");
-        }
-      }
-    }
+    validateDepositPolicy(depositPolicy);
   }
 
   /**
@@ -180,7 +188,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    * @returns The ChannelConfig that uniquely identifies this payment channel.
    */
   buildChannelConfig(paymentRequirements: PaymentRequirements): ChannelConfig {
-    const extra = paymentRequirements.extra as Record<string, unknown> | undefined;
+    const extra = paymentRequirements.extra as
+      | Partial<BatchSettlementPaymentRequirementsExtra>
+      | undefined;
     return {
       payer: this.signer.address,
       payerAuthorizer: getAddress(
@@ -188,10 +198,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       ),
       receiver: paymentRequirements.payTo as `0x${string}`,
       receiverAuthorizer:
-        (extra?.receiverAuthorizer as `0x${string}`) ??
+        extra?.receiverAuthorizer ??
         ("0x0000000000000000000000000000000000000000" as `0x${string}`),
       token: paymentRequirements.asset as `0x${string}`,
-      withdrawDelay: typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : 900,
+      withdrawDelay:
+        typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : MIN_WITHDRAW_DELAY,
       salt: this.salt,
     };
   }
@@ -210,13 +221,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const raw = getHeader("PAYMENT-RESPONSE");
     if (!raw) return;
 
-    let settle: SettleResponse;
-    try {
-      settle = decodePaymentResponseHeader(raw);
-    } catch {
-      return;
-    }
-
+    const settle = decodePaymentResponseHeader(raw);
     await this.processSettleResponse(settle);
   }
 
@@ -282,19 +287,12 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const config = this.buildChannelConfig(paymentRequirements);
     const channelId = computeChannelId(config);
 
-    const [chBalance, chTotalClaimed] = (await this.signer.readContract({
-      address: BATCH_SETTLEMENT_ADDRESS,
-      abi: batchSettlementABI,
-      functionName: "channels",
-      args: [channelId],
-    })) as [bigint, bigint];
+    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
 
-    const balanceStr = chBalance.toString();
-    const totalClaimedStr = chTotalClaimed.toString();
     const ctx: BatchSettlementClientContext = {
-      chargedCumulativeAmount: totalClaimedStr,
-      balance: balanceStr,
-      totalClaimed: totalClaimedStr,
+      chargedCumulativeAmount: chTotalClaimed.toString(),
+      balance: chBalance.toString(),
+      totalClaimed: chTotalClaimed.toString(),
     };
 
     await this.storage.set(channelId.toLowerCase(), ctx);
@@ -308,7 +306,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    * @returns `true` when a session is stored for the channel.
    */
   async hasSession(channelId: string): Promise<boolean> {
-    return (await this.storage.get(channelId.toLowerCase())) !== undefined;
+    const session = await this.storage.get(channelId.toLowerCase());
+    return session !== undefined;
   }
 
   /**
@@ -400,9 +399,10 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       autoTopUp && !needsInitialDeposit && BigInt(maxClaimableAmount) > currentBalance;
 
     if (needsInitialDeposit || needsTopUp) {
+      const computedDeposit = this.depositAmountForRequest(requestAmount);
       const depositAmount = needsInitialDeposit
-        ? (batchedCtx.depositAmount ?? this.depositAmountForRequest(requestAmount))
-        : this.depositAmountForRequest(requestAmount);
+        ? (batchedCtx.depositAmount ?? computedDeposit)
+        : computedDeposit;
       return createBatchSettlementEIP3009DepositPayload(
         this.signer,
         x402Version,
@@ -441,6 +441,26 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   }
 
   /**
+   * Reads `channels(channelId)` returning `[balance, totalClaimed]`.
+   *
+   * @param channelId - The `bytes32` channel id to query.
+   * @returns Tuple of `[balance, totalClaimed]` as bigints.
+   */
+  private async readChannelBalanceAndTotalClaimed(
+    channelId: `0x${string}`,
+  ): Promise<[bigint, bigint]> {
+    if (!this.signer.readContract) {
+      throw new Error("readChannelBalanceAndTotalClaimed requires ClientEvmSigner.readContract");
+    }
+    return (await this.signer.readContract({
+      address: BATCH_SETTLEMENT_ADDRESS,
+      abi: batchSettlementABI,
+      functionName: "channels",
+      args: [channelId],
+    })) as [bigint, bigint];
+  }
+
+  /**
    * Recovers session from a corrective 402 that includes a server-provided voucher signature.
    * Verifies the signature matches the client's own signing key before accepting.
    *
@@ -448,7 +468,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    * @returns `true` when local session state was updated successfully.
    */
   private async recoverFromSignature(accept: PaymentRequirements): Promise<boolean> {
-    const ex = accept.extra!;
+    const ex = accept.extra ?? {};
     const chargedRaw = ex.chargedCumulativeAmount;
     const signedRaw = ex.signedMaxClaimable;
     const sig = ex.signature as `0x${string}`;
@@ -467,20 +487,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       return false;
     }
 
-    let chBalance: bigint;
-    let chTotalClaimed: bigint;
-    try {
-      const [balance, totalClaimed] = (await this.signer.readContract({
-        address: BATCH_SETTLEMENT_ADDRESS,
-        abi: batchSettlementABI,
-        functionName: "channels",
-        args: [channelId],
-      })) as [bigint, bigint];
-      chBalance = balance;
-      chTotalClaimed = totalClaimed;
-    } catch {
-      return false;
-    }
+    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
 
     if (charged < chTotalClaimed) {
       return false;
@@ -488,11 +495,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
 
     const chainId = getEvmChainId(accept.network);
     const recovered = await recoverTypedDataAddress({
-      domain: {
-        ...BATCH_SETTLEMENT_DOMAIN,
-        chainId,
-        verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
-      },
+      domain: getBatchSettlementEip712Domain(chainId),
       types: voucherTypes,
       primaryType: "Voucher",
       message: {
@@ -538,20 +541,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const config = this.buildChannelConfig(accept);
     const channelId = computeChannelId(config);
 
-    let chBalance: bigint;
-    let chTotalClaimed: bigint;
-    try {
-      const [balance, totalClaimed] = (await this.signer.readContract({
-        address: BATCH_SETTLEMENT_ADDRESS,
-        abi: batchSettlementABI,
-        functionName: "channels",
-        args: [channelId],
-      })) as [bigint, bigint];
-      chBalance = balance;
-      chTotalClaimed = totalClaimed;
-    } catch {
-      return false;
-    }
+    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
 
     const ctx: BatchSettlementClientContext = {
       chargedCumulativeAmount: chTotalClaimed.toString(),

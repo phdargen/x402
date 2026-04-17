@@ -2,13 +2,11 @@ import { open, readdir, readFile, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
 
-import { writeJsonAtomic } from "../storage-utils";
+import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
+import type { FileSessionStorageOptions } from "../types";
 import type { SessionStorage, ChannelSession } from "./storage";
 
-export interface FileSessionStorageOptions {
-  /** Root directory; sessions are stored under `{directory}/server/{channelId}.json`. */
-  directory: string;
-}
+export type { FileSessionStorageOptions };
 
 /**
  * Node.js file-backed {@link SessionStorage} for the batched server scheme.
@@ -32,18 +30,7 @@ export class FileSessionStorage implements SessionStorage {
    * @returns Parsed session or `undefined` when the file is missing.
    */
   async get(channelId: string): Promise<ChannelSession | undefined> {
-    const path = this.filePath(channelId);
-    try {
-      const raw = await readFile(path, "utf8");
-      return JSON.parse(raw) as ChannelSession;
-    } catch (err: unknown) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-      if (code === "ENOENT") return undefined;
-      throw err;
-    }
+    return readJsonFile<ChannelSession>(this.filePath(channelId));
   }
 
   /**
@@ -65,11 +52,7 @@ export class FileSessionStorage implements SessionStorage {
     try {
       await unlink(this.filePath(channelId));
     } catch (err: unknown) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-      if (code === "ENOENT") return;
+      if (isNodeEnoent(err)) return;
       throw err;
     }
   }
@@ -85,11 +68,7 @@ export class FileSessionStorage implements SessionStorage {
     try {
       names = await readdir(dir);
     } catch (err: unknown) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-      if (code === "ENOENT") return [];
+      if (isNodeEnoent(err)) return [];
       throw err;
     }
 
@@ -100,8 +79,11 @@ export class FileSessionStorage implements SessionStorage {
       try {
         const raw = await readFile(path, "utf8");
         sessions.push(JSON.parse(raw) as ChannelSession);
-      } catch {
-        /* skip unreadable entries */
+      } catch (err: unknown) {
+        // Skip files that disappeared between readdir and readFile (e.g. concurrent delete).
+        // Rethrow other failures (corrupt JSON, permission denied) so callers see them.
+        if (isNodeEnoent(err)) continue;
+        throw err;
       }
     }
     return sessions.sort((a, b) => a.channelId.localeCompare(b.channelId));
@@ -140,8 +122,7 @@ export class FileSessionStorage implements SessionStorage {
           return false;
         }
       } catch (err: unknown) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") throw err;
+        if (!isNodeEnoent(err)) throw err;
       }
       await writeJsonAtomic(path, session);
       return true;

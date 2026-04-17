@@ -1,8 +1,8 @@
-import { getAddress } from "viem";
 import { ClientEvmSigner } from "../../signer";
-import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN, voucherTypes } from "../constants";
+import { voucherTypes } from "../constants";
 import { BatchSettlementVoucherFields } from "../types";
 import { getEvmChainId } from "../../utils";
+import { getBatchSettlementEip712Domain } from "../utils";
 
 /**
  * Signs a cumulative voucher using the client's wallet.
@@ -26,11 +26,7 @@ export async function signVoucher(
   const chainId = getEvmChainId(network);
 
   const signature = await signer.signTypedData({
-    domain: {
-      ...BATCH_SETTLEMENT_DOMAIN,
-      chainId,
-      verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
-    },
+    domain: getBatchSettlementEip712Domain(chainId),
     types: voucherTypes,
     primaryType: "Voucher",
     message: {

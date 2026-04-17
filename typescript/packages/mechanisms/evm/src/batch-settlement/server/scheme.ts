@@ -2,15 +2,19 @@ import {
   AssetAmount,
   Network,
   PaymentRequirements,
-  PaymentPayload,
   Price,
   SchemeNetworkServer,
   SchemeServerHooks,
   MoneyParser,
   SettleResponse,
-  VerifyResponse,
 } from "@x402/core/types";
-import type { FacilitatorClient, SettleContext, VerifyContext } from "@x402/core/server";
+import type {
+  FacilitatorClient,
+  SettleContext,
+  SettleResultContext,
+  VerifyContext,
+  VerifyResultContext,
+} from "@x402/core/server";
 import { BatchSettlementChannelManager } from "./channelManager";
 import { getDefaultAsset } from "../../shared/defaultAssets";
 import {
@@ -25,7 +29,7 @@ import type {
   BatchSettlementVoucherClaim,
   BatchSettlementRefundWithSignaturePayload,
 } from "../types";
-import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
 import { computeChannelId } from "../utils";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import { InMemorySessionStorage, SessionStorage, ChannelSession } from "./storage";
@@ -116,8 +120,7 @@ function readExtraNumber(
 }
 
 /**
- * Server-side implementation of the `batched` scheme for EVM networks.
- *
+ * Server-side implementation of the `batch-settlement` scheme for EVM networks.
  */
 export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
@@ -128,7 +131,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
   private readonly withdrawDelay: number;
-  private pendingRefundChannels = new Set<string>();
 
   /**
    * Constructs a batched server scheme.
@@ -140,7 +142,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     this.receiverAddress = receiverAddress;
     this.storage = config?.storage ?? new InMemorySessionStorage();
     this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
-    this.withdrawDelay = config?.withdrawDelay ?? 900;
+    this.withdrawDelay = config?.withdrawDelay ?? MIN_WITHDRAW_DELAY;
     this.schemeHooks = {
       onBeforeVerify: this.handleBeforeVerify.bind(this),
       onAfterVerify: this.handleAfterVerify.bind(this),
@@ -360,12 +362,12 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
-    const raw = paymentPayload.payload as Record<string, unknown>;
+    const raw = paymentPayload.payload;
     if (!isBatchSettlementVoucherPayload(raw)) {
       return;
     }
 
-    const session = await this.storage.get(raw.channelId as string);
+    const session = await this.storage.get(raw.channelId);
     if (!session) {
       return;
     }
@@ -373,7 +375,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     const expectedMaxClaimable =
       BigInt(session.chargedCumulativeAmount) + BigInt(requirements.amount);
 
-    if (BigInt(raw.maxClaimableAmount as string) === expectedMaxClaimable) {
+    if (BigInt(raw.maxClaimableAmount) === expectedMaxClaimable) {
       return;
     }
 
@@ -403,17 +405,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param ctx.result - Facilitator verify response.
    * @returns Resolves when session state has been persisted (no return value).
    */
-  private async handleAfterVerify(ctx: {
-    paymentPayload: PaymentPayload;
-    requirements: PaymentRequirements;
-    result: VerifyResponse;
-  }): Promise<void> {
+  private async handleAfterVerify(ctx: VerifyResultContext): Promise<void> {
     const { paymentPayload, requirements, result } = ctx;
     if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.isValid || !result.payer) {
       return;
     }
 
-    const raw = paymentPayload.payload as Record<string, unknown>;
+    const raw = paymentPayload.payload;
     let channelId: string;
     let signedMaxClaimable: string;
     let signature: `0x${string}`;
@@ -421,48 +419,26 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     let channelConfig: ChannelConfig | undefined;
 
     if (isBatchSettlementDepositPayload(raw)) {
-      channelId = raw.voucher.channelId as string;
-      signedMaxClaimable = raw.voucher.maxClaimableAmount as string;
-      signature = raw.voucher.signature as `0x${string}`;
-      channelConfig = (raw.deposit as Record<string, unknown>).channelConfig as
-        | ChannelConfig
-        | undefined;
+      channelId = raw.voucher.channelId;
+      signedMaxClaimable = raw.voucher.maxClaimableAmount;
+      signature = raw.voucher.signature;
+      channelConfig = raw.deposit.channelConfig;
       payer = channelConfig?.payer ?? result.payer;
     } else if (isBatchSettlementVoucherPayload(raw)) {
-      channelId = raw.channelId as string;
-      signedMaxClaimable = raw.maxClaimableAmount as string;
-      signature = raw.signature as `0x${string}`;
-      channelConfig = raw.channelConfig as ChannelConfig | undefined;
+      channelId = raw.channelId;
+      signedMaxClaimable = raw.maxClaimableAmount;
+      signature = raw.signature;
+      channelConfig = raw.channelConfig;
       payer = channelConfig?.payer ?? result.payer;
     } else {
       return;
     }
 
     const ex = result.extra ?? {};
-    const balance =
-      typeof ex.balance === "string"
-        ? ex.balance
-        : typeof ex.balance === "number"
-          ? String(ex.balance)
-          : "0";
-    const totalClaimed =
-      typeof ex.totalClaimed === "string"
-        ? ex.totalClaimed
-        : typeof ex.totalClaimed === "number"
-          ? String(ex.totalClaimed)
-          : "0";
-    const withdrawRequestedAt =
-      typeof ex.withdrawRequestedAt === "number"
-        ? ex.withdrawRequestedAt
-        : typeof ex.withdrawRequestedAt === "string"
-          ? parseInt(ex.withdrawRequestedAt, 10) || 0
-          : 0;
-    const refundNonce =
-      typeof ex.refundNonce === "string"
-        ? parseInt(ex.refundNonce, 10) || 0
-        : typeof ex.refundNonce === "number"
-          ? ex.refundNonce
-          : 0;
+    const balance = readExtraString(ex, "balance", "0");
+    const totalClaimed = readExtraString(ex, "totalClaimed", "0");
+    const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
+    const refundNonce = readExtraNumber(ex, "refundNonce", 0);
 
     const prev = await this.storage.get(channelId);
     const resolvedConfig = channelConfig ?? prev?.channelConfig;
@@ -513,14 +489,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
-    const raw = paymentPayload.payload as Record<string, unknown>;
+    const raw = paymentPayload.payload;
 
     if (isBatchSettlementDepositPayload(raw)) {
-      const channelId = raw.voucher.channelId as string;
+      const channelId = raw.voucher.channelId;
       const session = await this.storage.get(channelId);
       const prevCharged = BigInt(session?.chargedCumulativeAmount ?? "0");
       const newCharged = (prevCharged + BigInt(requirements.amount)).toString();
-      (raw as Record<string, unknown>).responseExtra = { chargedCumulativeAmount: newCharged };
+      raw.responseExtra = { chargedCumulativeAmount: newCharged };
       return;
     }
 
@@ -528,7 +504,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
-    const channelId = raw.channelId as string;
+    const channelId = raw.channelId;
     const session = await this.storage.get(channelId);
     if (!session) {
       return {
@@ -539,7 +515,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     }
 
     const increment = BigInt(requirements.amount);
-    const signedCap = BigInt(raw.maxClaimableAmount as string);
+    const signedCap = BigInt(raw.maxClaimableAmount);
     const prevCharged = BigInt(session.chargedCumulativeAmount);
     const newCharged = prevCharged + increment;
 
@@ -602,7 +578,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         responseExtra,
       };
 
-      this.pendingRefundChannels.add(channelId.toLowerCase());
       return;
     }
 
@@ -633,6 +608,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       };
     }
 
+    const skipExtra: BatchSettlementPaymentResponseExtra = {
+      channelId: channelId as `0x${string}`,
+      chargedCumulativeAmount: newCharged.toString(),
+      balance: session.balance,
+      totalClaimed: session.totalClaimed,
+      withdrawRequestedAt: session.withdrawRequestedAt,
+      refundNonce: String(session.refundNonce),
+    };
+
     return {
       skip: true,
       result: {
@@ -641,14 +625,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         network: requirements.network,
         payer: session.payer as `0x${string}`,
         amount: requirements.amount,
-        extra: {
-          channelId,
-          chargedCumulativeAmount: newCharged.toString(),
-          balance: session.balance,
-          totalClaimed: session.totalClaimed,
-          withdrawRequestedAt: session.withdrawRequestedAt,
-          refundNonce: String(session.refundNonce),
-        },
+        extra: skipExtra,
       },
     };
   }
@@ -665,28 +642,23 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param ctx.result - Facilitator settle response.
    * @returns Resolves when session updates are complete (no return value).
    */
-  private async handleAfterSettle(ctx: {
-    paymentPayload: PaymentPayload;
-    requirements: PaymentRequirements;
-    result: SettleResponse;
-  }): Promise<void> {
+  private async handleAfterSettle(ctx: SettleResultContext): Promise<void> {
     const { paymentPayload, requirements, result } = ctx;
     if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.success) {
       return;
     }
 
-    const raw = paymentPayload.payload as Record<string, unknown>;
+    const raw = paymentPayload.payload;
 
     if (isBatchSettlementRefundWithSignaturePayload(raw)) {
-      const refundPayload = raw as BatchSettlementRefundWithSignaturePayload;
-      const channelId = computeChannelId(refundPayload.config);
+      const channelId = computeChannelId(raw.config);
       const prevSession = await this.storage.get(channelId);
       const fallback =
         prevSession?.channelId !== undefined
-          ? buildRefundResponseSnapshot(prevSession, refundPayload)
-          : (refundPayload.responseExtra ?? emptyResponseSnapshot(channelId));
+          ? buildRefundResponseSnapshot(prevSession, raw)
+          : (raw.responseExtra ?? emptyResponseSnapshot(channelId));
 
-      const extra = result.extra as Record<string, unknown> | undefined;
+      const extra = result.extra;
       result.extra = {
         channelId:
           typeof extra?.channelId === "string" && extra.channelId
@@ -708,7 +680,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         refund: true,
       };
 
-      this.pendingRefundChannels.delete(channelId.toLowerCase());
       await this.storage.delete(channelId);
       return;
     }
@@ -718,25 +689,21 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     }
 
     if (isBatchSettlementDepositPayload(raw)) {
-      const channelId = (raw.voucher as Record<string, unknown>).channelId as string;
+      const channelId = raw.voucher.channelId;
       const ex = result.extra ?? {};
       const prevSession = await this.storage.get(channelId);
-      const depositConfig = (raw.deposit as Record<string, unknown>)?.channelConfig as
-        | ChannelConfig
-        | undefined;
-      const resolvedConfig = depositConfig ?? prevSession?.channelConfig;
+      const resolvedConfig = raw.deposit.channelConfig ?? prevSession?.channelConfig;
       if (!resolvedConfig) {
         return;
       }
       const prevCharged =
         prevSession?.chargedCumulativeAmount ?? readExtraString(ex, "totalClaimed", "0");
       const chargedActual = (BigInt(prevCharged) + BigInt(requirements.amount)).toString();
-      const signedMaxClaimable = (raw.voucher as Record<string, unknown>)
-        .maxClaimableAmount as string;
+      const signedMaxClaimable = raw.voucher.maxClaimableAmount;
       const payer = resolvedConfig.payer ?? result.payer ?? "";
-      const depositAmount = (raw.deposit as Record<string, unknown>).amount as string;
+      const depositAmount = raw.deposit.amount;
       const fallback: BatchSettlementPaymentResponseExtra = {
-        channelId: channelId as `0x${string}`,
+        channelId,
         chargedCumulativeAmount: chargedActual,
         balance: (BigInt(prevSession?.balance ?? "0") + BigInt(depositAmount)).toString(),
         totalClaimed: prevSession?.totalClaimed ?? "0",
@@ -763,7 +730,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         payer: payer.toLowerCase(),
         chargedCumulativeAmount: chargedActual,
         signedMaxClaimable,
-        signature: (raw.voucher as Record<string, unknown>).signature as `0x${string}`,
+        signature: raw.voucher.signature,
         balance: responseExtra.balance,
         totalClaimed: responseExtra.totalClaimed,
         withdrawRequestedAt: responseExtra.withdrawRequestedAt,

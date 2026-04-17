@@ -43,6 +43,7 @@ export { BatchSettlementEvmScheme } from "./batch-settlement";
 export type {
   AuthorizerSigner,
   ChannelConfig,
+  ChannelState,
   BatchSettlementDepositPayload,
   BatchSettlementVoucherPayload,
   BatchSettlementVoucherFields,
@@ -53,6 +54,8 @@ export type {
   BatchSettlementVoucherClaim,
   BatchSettlementPayload,
   BatchSettlementSettlePayload,
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementPaymentResponseExtra,
 } from "./types";
 export {
   isBatchSettlementDepositPayload,

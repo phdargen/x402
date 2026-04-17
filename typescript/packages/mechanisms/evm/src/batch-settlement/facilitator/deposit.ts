@@ -1,5 +1,5 @@
 import { PaymentRequirements, VerifyResponse, SettleResponse } from "@x402/core/types";
-import { getAddress, encodeAbiParameters, keccak256 } from "viem";
+import { getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import { BatchSettlementDepositPayload } from "../types";
 import { batchSettlementABI, erc20BalanceOfABI } from "../abi";
@@ -13,9 +13,11 @@ import { multicall } from "../../multicall";
 import * as Errors from "./errors";
 import {
   erc3009AuthorizationTimeInvalidReason,
+  toContractChannelConfig,
   validateChannelConfig,
   verifyBatchSettlementVoucherTypedData,
 } from "./utils";
+import { buildErc3009CollectorData, buildErc3009DepositNonce } from "../encoding";
 
 /**
  * Verifies a deposit payload (ERC-3009 authorization + voucher) without executing any
@@ -74,38 +76,20 @@ export async function verifyDeposit(
     return { isValid: false, invalidReason: timeInvalid, payer };
   }
 
-  const erc3009Nonce = keccak256(
-    encodeAbiParameters(
-      [{ type: "bytes32" }, { type: "uint256" }],
-      [voucher.channelId, BigInt(auth.salt)],
-    ),
-  );
+  const erc3009Nonce = buildErc3009DepositNonce(voucher.channelId, auth.salt);
 
-  let receiveAuthOk = false;
-  try {
-    receiveAuthOk = await signer.verifyTypedData({
-      address: getAddress(payer),
-      domain: {
-        name: extra.name,
-        version: extra.version,
-        chainId,
-        verifyingContract: getAddress(requirements.asset),
-      },
-      types: receiveAuthorizationTypes,
-      primaryType: "ReceiveWithAuthorization",
-      message: {
-        from: getAddress(payer),
-        to: getAddress(ERC3009_DEPOSIT_COLLECTOR_ADDRESS),
-        value: BigInt(deposit.amount),
-        validAfter,
-        validBefore,
-        nonce: erc3009Nonce,
-      },
-      signature: auth.signature,
-    });
-  } catch {
-    receiveAuthOk = false;
-  }
+  const receiveAuthOk = await verifyReceiveAuth(signer, {
+    payer,
+    asset: requirements.asset,
+    name: extra.name,
+    version: extra.version,
+    chainId,
+    amount: deposit.amount,
+    validAfter,
+    validBefore,
+    nonce: erc3009Nonce,
+    signature: auth.signature,
+  });
 
   if (!receiveAuthOk) {
     return { isValid: false, invalidReason: Errors.ErrInvalidReceiveAuthorizationSignature, payer };
@@ -160,7 +144,7 @@ export async function verifyDeposit(
     wdRes.status === "failure" ||
     rnRes.status === "failure"
   ) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType, payer };
+    return { isValid: false, invalidReason: Errors.ErrRpcReadFailed, payer };
   }
 
   const [chBalance, chTotalClaimed] = chRes.result as [bigint, bigint];
@@ -184,19 +168,13 @@ export async function verifyDeposit(
     return { isValid: false, invalidReason: Errors.ErrCumulativeAmountBelowClaimed, payer };
   }
 
-  const configTuple = {
-    payer: getAddress(config.payer),
-    payerAuthorizer: getAddress(config.payerAuthorizer),
-    receiver: getAddress(config.receiver),
-    receiverAuthorizer: getAddress(config.receiverAuthorizer),
-    token: getAddress(config.token),
-    withdrawDelay: config.withdrawDelay,
-    salt: config.salt,
-  };
+  const configTuple = toContractChannelConfig(config);
 
-  const collectorData = encodeAbiParameters(
-    [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "bytes" }],
-    [BigInt(auth.validAfter), BigInt(auth.validBefore), BigInt(auth.salt), auth.signature],
+  const collectorData = buildErc3009CollectorData(
+    auth.validAfter,
+    auth.validBefore,
+    auth.salt,
+    auth.signature,
   );
 
   try {
@@ -211,8 +189,13 @@ export async function verifyDeposit(
         collectorData,
       ],
     });
-  } catch {
-    return { isValid: false, invalidReason: Errors.ErrDepositSimulationFailed, payer };
+  } catch (e) {
+    return {
+      isValid: false,
+      invalidReason: Errors.ErrDepositSimulationFailed,
+      invalidMessage: e instanceof Error ? e.message : String(e),
+      payer,
+    };
   }
 
   return {
@@ -254,7 +237,7 @@ export async function settleDeposit(
     return {
       success: false,
       errorReason: Errors.ErrInvalidPayloadType,
-      errorMessage: "Only erc3009Authorization is currently supported",
+      errorMessage: "unsupported asset transfer method (expected erc3009Authorization)",
       transaction: "",
       network: requirements.network,
       payer,
@@ -275,20 +258,13 @@ export async function settleDeposit(
   }
 
   try {
-    const configTuple = {
-      payer: getAddress(config.payer),
-      payerAuthorizer: getAddress(config.payerAuthorizer),
-      receiver: getAddress(config.receiver),
-      receiverAuthorizer: getAddress(config.receiverAuthorizer),
-      token: getAddress(config.token),
-      withdrawDelay: config.withdrawDelay,
-      salt: config.salt,
-    };
+    const configTuple = toContractChannelConfig(config);
 
-    const salt = BigInt(auth.salt);
-    const collectorData = encodeAbiParameters(
-      [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "bytes" }],
-      [BigInt(auth.validAfter), BigInt(auth.validBefore), salt, auth.signature],
+    const collectorData = buildErc3009CollectorData(
+      auth.validAfter,
+      auth.validBefore,
+      auth.salt,
+      auth.signature,
     );
 
     const tx = await signer.writeContract({
@@ -343,5 +319,67 @@ export async function settleDeposit(
       network: requirements.network,
       payer,
     };
+  }
+}
+
+/**
+ * Verifies an ERC-3009 `ReceiveWithAuthorization` signature.
+ *
+ * Returns `false` for known signature failures and rethrows infrastructure errors
+ * (RPC outages, decode failures) so callers can distinguish a bad signature from
+ * a transient transport problem.
+ *
+ * @param signer - Facilitator signer used for typed-data verification.
+ * @param params - Authorization parameters and the signature to verify.
+ * @param params.payer - Address that signed the authorization (`from`).
+ * @param params.asset - ERC-20 contract address (used as `verifyingContract`).
+ * @param params.name - EIP-712 domain `name` for the asset.
+ * @param params.version - EIP-712 domain `version` for the asset.
+ * @param params.chainId - Numeric EVM chain id.
+ * @param params.amount - Authorized transfer amount as a decimal string.
+ * @param params.validAfter - Unix timestamp the authorization becomes valid.
+ * @param params.validBefore - Unix timestamp the authorization expires.
+ * @param params.nonce - Unique 32-byte nonce for the authorization.
+ * @param params.signature - 65-byte ECDSA signature over the typed data.
+ * @returns `true` when the signature is valid for the supplied authorization.
+ */
+async function verifyReceiveAuth(
+  signer: FacilitatorEvmSigner,
+  params: {
+    payer: `0x${string}`;
+    asset: string;
+    name: string;
+    version: string;
+    chainId: number;
+    amount: string;
+    validAfter: bigint;
+    validBefore: bigint;
+    nonce: `0x${string}`;
+    signature: `0x${string}`;
+  },
+): Promise<boolean> {
+  try {
+    return await signer.verifyTypedData({
+      address: getAddress(params.payer),
+      domain: {
+        name: params.name,
+        version: params.version,
+        chainId: params.chainId,
+        verifyingContract: getAddress(params.asset),
+      },
+      types: receiveAuthorizationTypes,
+      primaryType: "ReceiveWithAuthorization",
+      message: {
+        from: getAddress(params.payer),
+        to: getAddress(ERC3009_DEPOSIT_COLLECTOR_ADDRESS),
+        value: BigInt(params.amount),
+        validAfter: params.validAfter,
+        validBefore: params.validBefore,
+        nonce: params.nonce,
+      },
+      signature: params.signature,
+    });
+  } catch {
+    return false;
   }
 }

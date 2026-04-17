@@ -113,6 +113,7 @@ export type UptoPermit2Payload = {
 export type {
   AuthorizerSigner,
   ChannelConfig,
+  ChannelState,
   BatchSettlementDepositPayload,
   BatchSettlementVoucherPayload,
   BatchSettlementVoucherFields,
@@ -123,6 +124,8 @@ export type {
   BatchSettlementVoucherClaim,
   BatchSettlementPayload,
   BatchSettlementSettlePayload,
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementPaymentResponseExtra,
 } from "./batch-settlement/types";
 export {
   isBatchSettlementDepositPayload,

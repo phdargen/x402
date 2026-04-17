@@ -251,7 +251,9 @@ describe("Batch-Settlement EVM Integration Tests", () => {
       "verifies and settles a deposit-with-voucher payment, then a follow-up voucher payment",
       { timeout: 60000 },
       async () => {
-        const accepts = [buildBatchSettlementRequirements(receiverAddress, "1000", receiverAuthorizer)];
+        const accepts = [
+          buildBatchSettlementRequirements(receiverAddress, "1000", receiverAuthorizer),
+        ];
         const resource = {
           url: "https://example.com/api",
           description: "Batched test resource",

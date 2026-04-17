@@ -30,7 +30,7 @@ export interface SessionStorage {
  * In-memory {@link SessionStorage} backed by a Map keyed by `channelId`.
  */
 export class InMemorySessionStorage implements SessionStorage {
-  private sessions = new Map<string, ChannelSession>();
+  private readonly sessions = new Map<string, ChannelSession>();
 
   /**
    * Returns the session for a channel, if present.

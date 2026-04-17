@@ -1,5 +1,8 @@
 import { toClientEvmSigner } from "@x402/evm";
-import { BatchSettlementEvmScheme, FileClientSessionStorage } from "@x402/evm/batch-settlement/client";
+import {
+  BatchSettlementEvmScheme,
+  FileClientSessionStorage,
+} from "@x402/evm/batch-settlement/client";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 import { config } from "dotenv";
 import { createPublicClient, http } from "viem";
@@ -10,11 +13,23 @@ config();
 
 const CONCURRENCY = Number(process.env.CONCURRENCY ?? 3);
 
+/**
+ * Formats a duration in milliseconds as seconds with three decimal places.
+ *
+ * @param ms - Elapsed time in milliseconds.
+ * @returns String like `"1.234"`.
+ */
 function formatSeconds(ms: number): string {
   return (ms / 1000).toFixed(3);
 }
 
-/** Derive a unique salt by adding an integer offset to a base bytes32 value. */
+/**
+ * Derives a unique salt by adding an integer offset to a base bytes32 value.
+ *
+ * @param base - 32-byte hex string (`0x` + 64 hex chars).
+ * @param offset - Non-negative integer added to the base as `BigInt`.
+ * @returns New `0x`-prefixed 32-byte hex salt.
+ */
 function saltAdd(base: `0x${string}`, offset: number): `0x${string}` {
   return `0x${(BigInt(base) + BigInt(offset)).toString(16).padStart(64, "0")}` as `0x${string}`;
 }
@@ -31,6 +46,11 @@ const baseSalt = (process.env.CHANNEL_SALT ??
   "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
 const numberOfChannels = Number(process.env.NUMBER_OF_CHANNELS ?? "3");
 
+/**
+ * Runs concurrent paid requests across multiple channels (unique salts per slot).
+ *
+ * @returns Resolves after all rounds complete.
+ */
 async function main(): Promise<void> {
   const account = privateKeyToAccount(evmPrivateKey);
   const publicClient = createPublicClient({

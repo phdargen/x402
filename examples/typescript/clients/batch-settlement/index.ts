@@ -1,5 +1,8 @@
 import { toClientEvmSigner } from "@x402/evm";
-import { BatchSettlementEvmScheme, FileClientSessionStorage } from "@x402/evm/batch-settlement/client";
+import {
+  BatchSettlementEvmScheme,
+  FileClientSessionStorage,
+} from "@x402/evm/batch-settlement/client";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 import { config } from "dotenv";
 import { createPublicClient, http } from "viem";
@@ -8,6 +11,12 @@ import { privateKeyToAccount } from "viem/accounts";
 
 config();
 
+/**
+ * Formats a duration in milliseconds as seconds with three decimal places.
+ *
+ * @param ms - Elapsed time in milliseconds.
+ * @returns String like `"1.234"`.
+ */
 function formatSeconds(ms: number): string {
   return (ms / 1000).toFixed(3);
 }
@@ -25,6 +34,11 @@ const channelSalt = (process.env.CHANNEL_SALT ??
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
 const refundOnLastRequest = process.env.REFUND_ON_LAST_REQUEST === "true";
 
+/**
+ * Runs sequential paid requests against the configured resource server endpoint.
+ *
+ * @returns Resolves after all configured requests complete.
+ */
 async function main(): Promise<void> {
   const account = privateKeyToAccount(evmPrivateKey);
   const publicClient = createPublicClient({
