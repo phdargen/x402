@@ -88,11 +88,6 @@ export type BatchSettlementSettleActionPayload = {
   token: `0x${string}`;
 };
 
-export type BatchSettlementDepositSettlePayload = {
-  settleAction: "deposit";
-  deposit: BatchSettlementDepositPayload["deposit"];
-};
-
 export type BatchSettlementRefundWithSignaturePayload = {
   settleAction: "refundWithSignature";
   config: ChannelConfig;
@@ -107,7 +102,6 @@ export type BatchSettlementRefundWithSignaturePayload = {
 export type BatchSettlementPayload = BatchSettlementDepositPayload | BatchSettlementVoucherPayload;
 
 export type BatchSettlementSettlePayload =
-  | BatchSettlementDepositSettlePayload
   | BatchSettlementClaimWithSignaturePayload
   | BatchSettlementSettleActionPayload
   | BatchSettlementRefundWithSignaturePayload;
@@ -176,16 +170,4 @@ export function isBatchSettlementRefundWithSignaturePayload(
   payload: Record<string, unknown>,
 ): payload is BatchSettlementRefundWithSignaturePayload {
   return payload.settleAction === "refundWithSignature" && "config" in payload;
-}
-
-/**
- * Type guard for a deposit-only settle envelope.
- *
- * @param payload - The raw payload object.
- * @returns True if the object matches {@link BatchSettlementDepositSettlePayload}.
- */
-export function isBatchSettlementDepositSettlePayload(
-  payload: Record<string, unknown>,
-): payload is BatchSettlementDepositSettlePayload {
-  return payload.settleAction === "deposit" && "deposit" in payload;
 }

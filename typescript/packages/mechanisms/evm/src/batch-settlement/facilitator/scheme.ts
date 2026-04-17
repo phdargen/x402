@@ -13,13 +13,11 @@ import {
   BatchSettlementVoucherPayload,
   BatchSettlementClaimWithSignaturePayload,
   BatchSettlementSettleActionPayload,
-  BatchSettlementDepositSettlePayload,
   BatchSettlementRefundWithSignaturePayload,
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
   isBatchSettlementClaimWithSignaturePayload,
   isBatchSettlementSettleActionPayload,
-  isBatchSettlementDepositSettlePayload,
   isBatchSettlementRefundWithSignaturePayload,
 } from "../types";
 import type { AuthorizerSigner } from "../types";
@@ -137,16 +135,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
       return settleDeposit(this.signer, rawPayload as BatchSettlementDepositPayload, requirements);
-    }
-
-    if (isBatchSettlementDepositSettlePayload(rawPayload)) {
-      const dsPayload = rawPayload as unknown as BatchSettlementDepositSettlePayload;
-      const depositPayload = {
-        type: "deposit" as const,
-        deposit: dsPayload.deposit,
-        voucher: undefined as never,
-      } as unknown as BatchSettlementDepositPayload;
-      return settleDeposit(this.signer, depositPayload, requirements);
     }
 
     if (isBatchSettlementClaimWithSignaturePayload(rawPayload)) {

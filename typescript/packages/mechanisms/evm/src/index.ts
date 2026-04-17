@@ -49,7 +49,6 @@ export type {
   BatchSettlementErc3009Authorization,
   BatchSettlementClaimWithSignaturePayload,
   BatchSettlementSettleActionPayload,
-  BatchSettlementDepositSettlePayload,
   BatchSettlementRefundWithSignaturePayload,
   BatchSettlementVoucherClaim,
   BatchSettlementPayload,
@@ -60,7 +59,6 @@ export {
   isBatchSettlementVoucherPayload,
   isBatchSettlementClaimWithSignaturePayload,
   isBatchSettlementSettleActionPayload,
-  isBatchSettlementDepositSettlePayload,
   isBatchSettlementRefundWithSignaturePayload,
 } from "./types";
 
