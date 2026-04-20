@@ -46,7 +46,7 @@ const prompt = cliOptions.prompt ?? process.env.PROMPT ?? "Tell me a fun fact ab
 const verbose = cliOptions.verbose || isTruthyEnvFlag(process.env.VERBOSE);
 const depositPolicy = {
   maxDeposit: "10000000",
-  depositMultiplier: 20,
+  depositMultiplier: 100,
 };
 
 // ---------------------------------------------------------------------------
