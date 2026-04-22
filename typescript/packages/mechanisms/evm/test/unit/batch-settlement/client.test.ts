@@ -278,7 +278,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
   });
 
-  it("attaches refund: true on the voucher when requestRefund() was called", async () => {
+  it("createPaymentPayload no longer attaches refund flags (refund() handles it)", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
@@ -291,13 +291,11 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
       totalClaimed: "0",
     });
 
-    client.requestRefund(channelId);
     const result = await client.createPaymentPayload(2, makeRequirements());
-    expect((result.payload as { refund?: boolean }).refund).toBe(true);
-
-    // refund flag should be cleared after one use
-    const second = await client.createPaymentPayload(2, makeRequirements());
-    expect((second.payload as { refund?: boolean }).refund).toBeUndefined();
+    expect((result.payload as { refund?: boolean }).refund).toBeUndefined();
+    expect(
+      (client as unknown as { requestRefund?: (id: string) => void }).requestRefund,
+    ).toBeUndefined();
   });
 
   it("uses voucherSigner to sign the voucher when provided", async () => {
@@ -651,5 +649,180 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
     } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);
 
     expect(result).toEqual({ recovered: true });
+  });
+});
+
+describe("BatchSettlementEvmScheme — refund()", () => {
+  const REFUND_URL = "https://example.test/protected";
+
+  function buildRefundRequirements(): PaymentRequirements {
+    return makeRequirements({
+      extra: {
+        name: "USDC",
+        version: "2",
+        withdrawDelay: 900,
+        receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+      },
+    });
+  }
+
+  function makeFetch(
+    handlers: Array<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>,
+  ): typeof fetch {
+    let i = 0;
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const handler = handlers[i++] ?? handlers[handlers.length - 1];
+      return handler(input, init);
+    }) as typeof fetch;
+  }
+
+  async function probe402Response(): Promise<Response> {
+    const { encodePaymentRequiredHeader } = await import("@x402/core/http");
+    const reqs = buildRefundRequirements();
+    const header = encodePaymentRequiredHeader({ x402Version: 2, accepts: [reqs] });
+    return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } });
+  }
+
+  async function refundSuccessResponse(extra: Record<string, unknown>): Promise<Response> {
+    const { encodePaymentResponseHeader } = await import("@x402/core/http");
+    const settle: SettleResponse = {
+      success: true,
+      transaction: "0xtx",
+      network: NETWORK,
+      payer: privateKeyToAccount(PAYER_PRIVATE_KEY).address,
+      extra,
+    } as SettleResponse;
+    const header = encodePaymentResponseHeader(settle);
+    return new Response(null, { status: 200, headers: { "PAYMENT-RESPONSE": header } });
+  }
+
+  it("performs a full refund: probes, sends voucher, deletes session", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "500",
+      balance: "10000",
+      totalClaimed: "0",
+    });
+
+    let capturedSig: string | undefined;
+    const fetchImpl = makeFetch([
+      async () => probe402Response(),
+      async (_url, init) => {
+        capturedSig = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
+        return refundSuccessResponse({ channelId, refund: true, balance: "0" });
+      },
+    ]);
+
+    const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
+    expect(settle.success).toBe(true);
+    expect(capturedSig).toBeTruthy();
+    expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
+  });
+
+  it("performs a partial refund: keeps the session and updates balance", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "500",
+      balance: "10000",
+      totalClaimed: "0",
+    });
+
+    const fetchImpl = makeFetch([
+      async () => probe402Response(),
+      async () =>
+        refundSuccessResponse({
+          channelId,
+          refund: true,
+          refundedAmount: "2000",
+          balance: "8000",
+          chargedCumulativeAmount: "500",
+          totalClaimed: "0",
+        }),
+    ]);
+
+    const settle = await client.refund(REFUND_URL, { amount: "2000", fetch: fetchImpl });
+    expect(settle.success).toBe(true);
+
+    const ctx = await storage.get(channelId.toLowerCase());
+    expect(ctx?.balance).toBe("8000");
+    expect(ctx?.chargedCumulativeAmount).toBe("500");
+  });
+
+  it("rejects an invalid refund amount before contacting the server", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    await expect(client.refund(REFUND_URL, { amount: "0", fetch: fetchImpl })).rejects.toThrow(
+      /Invalid refund amount/,
+    );
+    await expect(client.refund(REFUND_URL, { amount: "1.5", fetch: fetchImpl })).rejects.toThrow(
+      /Invalid refund amount/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("recovers from a corrective 402 and retries once", async () => {
+    const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
+    const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+
+    const { encodePaymentRequiredHeader } = await import("@x402/core/http");
+    const correctiveHeader = encodePaymentRequiredHeader({
+      x402Version: 2,
+      error: "batch_settlement_evm_cumulative_below_claimed",
+      accepts: [buildRefundRequirements()],
+    } as PaymentRequired);
+
+    const fetchImpl = makeFetch([
+      async () => probe402Response(),
+      async () =>
+        new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": correctiveHeader } }),
+      async () => refundSuccessResponse({ channelId, refund: true, balance: "0" }),
+    ]);
+
+    const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
+    expect(settle.success).toBe(true);
+    expect(readContract).toHaveBeenCalled();
+  });
+
+  it("throws when the probe receives a non-402 response", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const fetchImpl = makeFetch([async () => new Response("ok", { status: 200 })]);
+
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /Refund probe expected 402/,
+    );
+  });
+
+  it("throws when the receiver lacks a configured receiverAuthorizer", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+
+    const { encodePaymentRequiredHeader } = await import("@x402/core/http");
+    const reqs = makeRequirements({ extra: { name: "USDC", version: "2", withdrawDelay: 900 } });
+    const header = encodePaymentRequiredHeader({ x402Version: 2, accepts: [reqs] });
+    const fetchImpl = makeFetch([
+      async () => new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } }),
+    ]);
+
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /receiverAuthorizer/,
+    );
   });
 });

@@ -32,7 +32,8 @@ const storageDir = process.env.STORAGE_DIR ?? process.env.STORAGE_DIR_DIR;
 const channelSalt = (process.env.CHANNEL_SALT ??
   "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
-const refundOnLastRequest = process.env.REFUND_ON_LAST_REQUEST === "true";
+const refundAfterRequests = process.env.REFUND_AFTER_REQUESTS === "true";
+const refundAmount = process.env.REFUND_AMOUNT;
 
 /**
  * Runs sequential paid requests against the configured resource server endpoint.
@@ -68,19 +69,12 @@ async function main(): Promise<void> {
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
   const httpClient = new x402HTTPClient(client);
 
-  let channelId: string | undefined;
-
   console.log(`Base URL: ${baseURL}, endpoint: ${endpointPath}`);
   console.log("payer:", signer.address);
   console.log("payerAuthorizer:", voucherSigner?.address ?? signer.address, "\n");
 
   for (let i = 0; i < numberOfRequests; i++) {
     const requestT0 = performance.now();
-
-    if (refundOnLastRequest && i === numberOfRequests - 1 && channelId) {
-      console.log(`REQUESTING REFUND`);
-      batchedScheme.requestRefund(channelId);
-    }
 
     const response = await fetchWithPayment(url, { method: "GET" });
     const result = await httpClient.processResponse(response);
@@ -89,16 +83,27 @@ async function main(): Promise<void> {
       console.log(`Request ${i + 1} — RESPONSE`);
       console.log(result.body);
       console.log(JSON.stringify(result.settleResponse, null, 2));
-      if (
-        result.settleResponse.extra &&
-        typeof result.settleResponse.extra.channelId === "string"
-      ) {
-        channelId = result.settleResponse.extra.channelId;
-      }
+    } else {
+      console.log(`Request ${i + 1} — ${result.kind}`);
+      console.log(JSON.stringify(result, null, 2));
     }
     console.log(
       `Request ${i + 1} — completed in ${formatSeconds(performance.now() - requestT0)}s\n`,
     );
+  }
+
+  if (refundAfterRequests) {
+    console.log(
+      refundAmount
+        ? `REQUESTING PARTIAL REFUND of ${refundAmount} base units`
+        : "REQUESTING FULL REFUND of remaining channel balance",
+    );
+    const refundT0 = performance.now();
+    const settle = await batchedScheme.refund(url, {
+      ...(refundAmount ? { amount: refundAmount } : {}),
+    });
+    console.log(JSON.stringify(settle, null, 2));
+    console.log(`Refund completed in ${formatSeconds(performance.now() - refundT0)}s`);
   }
 }
 

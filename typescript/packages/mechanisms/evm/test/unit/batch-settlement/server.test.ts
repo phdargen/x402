@@ -334,6 +334,69 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result).toBeUndefined();
   });
 
+  it("aborts a refund voucher when no session exists, requesting on-chain recovery", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "0", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+    } as never)) as { abort: true; reason: string };
+
+    expect(result?.abort).toBe(true);
+    expect(result?.reason).toBe("batch_settlement_evm_cumulative_below_claimed");
+  });
+
+  it("accepts a zero-charge refund voucher whose maxClaimable equals chargedCumulativeAmount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1500",
+      signedMaxClaimable: "1500",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1500", config, true),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("aborts a refund voucher whose maxClaimable does not match chargedCumulativeAmount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1500",
+      signedMaxClaimable: "1500",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "2500", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+    } as never)) as { abort: true; reason: string };
+
+    expect(result?.abort).toBe(true);
+    expect(result?.reason).toBe("batch_settlement_stale_cumulative_amount");
+  });
+
   it("aborts with stale_cumulative_amount when client cumulative is wrong", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
@@ -416,6 +479,46 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
       result: { isValid: true, payer: PAYER } as VerifyResponse,
     } as never);
     expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("returns a skipHandler directive for a refund voucher", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const result: VerifyResponse = {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+    } as VerifyResponse;
+
+    const directive = await server.schemeHooks.onAfterVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "0", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+      result,
+    } as never);
+
+    expect(directive).toBeDefined();
+    expect(directive!.skipHandler).toBe(true);
+    expect(directive!.response?.contentType).toBe("application/json");
+    expect((directive!.response?.body as { message: string }).message).toBe("Refund acknowledged");
+    expect((directive!.response?.body as { channelId: string }).channelId).toBe(channelId);
+  });
+
+  it("does not return a skipHandler directive for a non-refund voucher", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const result: VerifyResponse = {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "10000", totalClaimed: "1000", refundNonce: "0" },
+    } as VerifyResponse;
+
+    const directive = await server.schemeHooks.onAfterVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1000", config),
+      requirements: makeRequirements(),
+      result,
+    } as never);
+
+    expect(directive).toBeUndefined();
   });
 });
 
@@ -509,7 +612,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(updated?.signedMaxClaimable).toBe("1000");
   });
 
-  it("rewrites a voucher with refund=true into a refundWithSignature payload", async () => {
+  it("rewrites a zero-charge refund voucher into a full refundWithSignature payload", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storage.set(channelId, {
@@ -526,18 +629,52 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       lastRequestTimestamp: 0,
     });
 
-    const payload = buildVoucherPayload(channelId, "1000", config, true);
+    // Zero-charge voucher: maxClaimableAmount equals the existing chargedCumulativeAmount.
+    const payload = buildVoucherPayload(channelId, "500", config, true);
     const ret = await server.schemeHooks.onBeforeSettle!({
       paymentPayload: payload,
-      requirements: makeRequirements({ amount: "500" }),
+      requirements: makeRequirements({ amount: "0" }),
     } as never);
     expect(ret).toBeUndefined();
 
     const rewritten = payload.payload as Record<string, unknown>;
     expect(rewritten.settleAction).toBe("refundWithSignature");
     expect(rewritten.config).toEqual(config);
-    expect(rewritten.amount).toBe("9000");
+    // Full refund drains the remainder: balance(10000) - charged(500) = 9500.
+    expect(rewritten.amount).toBe("9500");
     expect(rewritten.nonce).toBe("1");
+  });
+
+  it("honors refundAmount on the voucher for a partial refundWithSignature", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "500",
+      signedMaxClaimable: "500",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const payload = buildVoucherPayload(channelId, "500", config, true);
+    (payload.payload as Record<string, unknown>).refundAmount = "1000";
+
+    const ret = await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(ret).toBeUndefined();
+
+    const rewritten = payload.payload as Record<string, unknown>;
+    expect(rewritten.settleAction).toBe("refundWithSignature");
+    expect(rewritten.amount).toBe("1000");
+    expect(rewritten.nonce).toBe("0");
   });
 });
 
@@ -629,6 +766,65 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect(await storage.get(channelId)).toBeUndefined();
     expect((result.extra as Record<string, unknown>).refund).toBe(true);
     expect((result.extra as Record<string, string>).channelId).toBe(channelId);
+  });
+
+  it("retains session and increments refundNonce on a partial refundWithSignature", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const session: ChannelSession = {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 2,
+      lastRequestTimestamp: 0,
+    };
+    await storage.set(channelId, session);
+
+    const refundPayload = {
+      x402Version: 2,
+      scheme: "batch-settlement",
+      network: NETWORK,
+      payload: {
+        settleAction: "refundWithSignature",
+        config,
+        amount: "2000",
+        nonce: "2",
+        claims: [
+          {
+            voucher: { channel: config, maxClaimableAmount: "1000" },
+            signature: "0xabcd" as `0x${string}`,
+            totalClaimed: "1000",
+          },
+        ],
+      } as unknown as Record<string, unknown>,
+    } as PaymentPayload;
+
+    const result: SettleResponse = {
+      success: true,
+      transaction: "0xref",
+      network: NETWORK,
+      payer: PAYER,
+      extra: { refundedAmount: "2000" },
+    } as SettleResponse;
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload: refundPayload,
+      requirements: makeRequirements(),
+      result,
+    } as never);
+
+    const updated = await storage.get(channelId);
+    expect(updated).toBeDefined();
+    expect(updated?.balance).toBe("8000");
+    expect(updated?.refundNonce).toBe(3);
+    expect((result.extra as Record<string, unknown>).refund).toBe(true);
+    expect((result.extra as Record<string, unknown>).refundedAmount).toBe("2000");
   });
 
   it("does not modify state when result.success is false", async () => {

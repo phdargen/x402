@@ -2,7 +2,6 @@
 
 Fetch-based client that pays for a sequence of `GET /api/generate` requests over a single payment channel using the **batch-settlement** EVM scheme. The first request opens the channel with a deposit; subsequent requests pay with a fresh cumulative voucher.
 
-Optionally requests a cooperative refund on the last call (`REFUND_ON_LAST_REQUEST=true`), which signals the server to claim outstanding vouchers and return the unclaimed balance.
 
 See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme_batch_settlement_evm.md) and the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md) for protocol details.
 
@@ -50,4 +49,4 @@ pnpm start
 | `CHANNEL_SALT` | no | `bytes32` salt for channel id; change to open a fresh channel |
 | `STORAGE_DIR` | no | Persist client session state (defaults to in-memory) |
 | `NUMBER_OF_REQUESTS` | no | How many paid requests to issue (default 3) |
-| `REFUND_ON_LAST_REQUEST` | no | If `true`, request a cooperative refund on the last call |
+| `REFUND_AFTER_REQUESTS` | no | If `true`, issue a self-contained refund via `scheme.refund(url)` after the request loop |

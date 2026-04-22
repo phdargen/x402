@@ -27,8 +27,10 @@ import type {
   ChannelConfig,
   BatchSettlementPaymentResponseExtra,
   BatchSettlementVoucherClaim,
+  BatchSettlementVoucherPayload,
   BatchSettlementRefundWithSignaturePayload,
 } from "../types";
+import type { PaymentPayload } from "@x402/core/types";
 import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
 import { computeChannelId } from "../utils";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
@@ -61,6 +63,7 @@ function buildRefundResponseSnapshot(
     totalClaimed: payload.claims[payload.claims.length - 1]?.totalClaimed ?? session.totalClaimed,
     withdrawRequestedAt: 0,
     refundNonce: String(session.refundNonce + 1),
+    refundedAmount: payload.amount,
   };
 }
 
@@ -351,6 +354,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * state.  If stale, aborts with `batch_settlement_stale_cumulative_amount` and embeds
    * the correct state in `requirements.extra` so the client can resync.
    *
+   * Refund vouchers (`refund: true`) are zero-charge: the expected
+   * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
+   *
    * @param ctx - Verify lifecycle context (payload, requirements, and related state).
    * @returns Nothing to continue verification; or an object with `abort` to fail with a reason.
    */
@@ -367,13 +373,23 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
+    const isRefund = raw.refund === true;
     const session = await this.storage.get(raw.channelId);
+
     if (!session) {
+      if (isRefund) {
+        return {
+          abort: true,
+          reason: "batch_settlement_evm_cumulative_below_claimed",
+          message: "No server session for refund voucher; client must resync from on-chain state",
+        };
+      }
       return;
     }
 
-    const expectedMaxClaimable =
-      BigInt(session.chargedCumulativeAmount) + BigInt(requirements.amount);
+    const expectedMaxClaimable = isRefund
+      ? BigInt(session.chargedCumulativeAmount)
+      : BigInt(session.chargedCumulativeAmount) + BigInt(requirements.amount);
 
     if (BigInt(raw.maxClaimableAmount) === expectedMaxClaimable) {
       return;
@@ -399,13 +415,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * Persists channel session state (balance, totalClaimed, voucher info) so that
    * subsequent requests can correctly calculate cumulative amounts and detect stale state.
    *
+   * For refund vouchers (`refund: true`), additionally returns a `skipHandler`
+   * directive so that the resource server bypasses the application handler and settles inline.
+   *
    * @param ctx - Post-verify lifecycle context.
    * @param ctx.paymentPayload - Incoming payment payload that was verified.
    * @param ctx.requirements - Requirements used for verification.
    * @param ctx.result - Facilitator verify response.
-   * @returns Resolves when session state has been persisted (no return value).
+   * @returns Optional `skipHandler` directive when this is a refund voucher; otherwise void.
    */
-  private async handleAfterVerify(ctx: VerifyResultContext): Promise<void> {
+  private async handleAfterVerify(
+    ctx: VerifyResultContext,
+  ): Promise<void | { skipHandler: true; response?: { contentType?: string; body?: unknown } }> {
     const { paymentPayload, requirements, result } = ctx;
     if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.isValid || !result.payer) {
       return;
@@ -417,6 +438,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     let signature: `0x${string}`;
     let payer: string;
     let channelConfig: ChannelConfig | undefined;
+    let isRefundVoucher = false;
 
     if (isBatchSettlementDepositPayload(raw)) {
       channelId = raw.voucher.channelId;
@@ -430,6 +452,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       signature = raw.signature;
       channelConfig = raw.channelConfig;
       payer = channelConfig?.payer ?? result.payer;
+      isRefundVoucher = raw.refund === true;
     } else {
       return;
     }
@@ -463,6 +486,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       prev?.chargedCumulativeAmount ?? totalClaimed,
       session,
     );
+
+    if (isRefundVoucher) {
+      return {
+        skipHandler: true,
+        response: {
+          contentType: "application/json",
+          body: { message: "Refund acknowledged", channelId },
+        },
+      };
+    }
   }
 
   /**
@@ -514,6 +547,10 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       };
     }
 
+    if (raw.refund === true) {
+      return this.buildRefundSettlePayload(paymentPayload, requirements, session, raw);
+    }
+
     const increment = BigInt(requirements.amount);
     const signedCap = BigInt(raw.maxClaimableAmount);
     const prevCharged = BigInt(session.chargedCumulativeAmount);
@@ -525,60 +562,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         reason: "batch_settlement_charge_exceeds_signed_cumulative",
         message: `Charged ${newCharged.toString()} exceeds signed max ${signedCap.toString()}`,
       };
-    }
-
-    if (raw.refund === true) {
-      const config = session.channelConfig;
-
-      const claimEntry: BatchSettlementVoucherClaim = {
-        voucher: {
-          channel: config,
-          maxClaimableAmount: raw.maxClaimableAmount as string,
-        },
-        signature: raw.signature as `0x${string}`,
-        totalClaimed: newCharged.toString(),
-      };
-
-      const refundAmount = (BigInt(session.balance) - newCharged).toString();
-
-      const nonce = String(session.refundNonce ?? 0);
-
-      const refundAuthorizerSignature = this.receiverAuthorizerSigner
-        ? await signRefund(
-            this.receiverAuthorizerSigner,
-            channelId as `0x${string}`,
-            refundAmount,
-            nonce,
-            requirements.network,
-          )
-        : undefined;
-
-      const claimAuthorizerSignature = this.receiverAuthorizerSigner
-        ? await signClaimBatch(this.receiverAuthorizerSigner, [claimEntry], requirements.network)
-        : undefined;
-
-      const responseExtra = buildRefundResponseSnapshot(session, {
-        settleAction: "refundWithSignature",
-        config,
-        amount: refundAmount,
-        nonce,
-        claims: [claimEntry],
-        refundAuthorizerSignature,
-        claimAuthorizerSignature,
-      });
-
-      (paymentPayload as { payload: unknown }).payload = {
-        settleAction: "refundWithSignature",
-        config,
-        amount: refundAmount,
-        nonce,
-        claims: [claimEntry],
-        refundAuthorizerSignature,
-        claimAuthorizerSignature,
-        responseExtra,
-      };
-
-      return;
     }
 
     const updatedSession: ChannelSession = {
@@ -631,6 +614,110 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
+   * Builds a `refundWithSignature` settle payload for a zero-charge refund voucher
+   * and rewrites the in-flight `paymentPayload.payload` so the facilitator submits
+   * the cooperative refund on-chain.
+   *
+   * Refund amount semantics:
+   * - When the client supplied `raw.refundAmount`, that is used (partial refund).
+   *   The amount is clamped at the channel's available remainder
+   *   (`balance - chargedCumulativeAmount`).
+   * - Otherwise the entire remainder is refunded (full refund) and the channel
+   *   will be torn down in `handleAfterSettle`.
+   *
+   * @param paymentPayload - The in-flight payment payload whose `payload` field will be rewritten.
+   * @param requirements - Payment requirements for the route (network is read for signing).
+   * @param session - Current server-side session for the channel.
+   * @param raw - The original voucher payload carrying `refund: true`.
+   * @returns Either `void` to proceed, or an `abort` directive on misuse.
+   */
+  private async buildRefundSettlePayload(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+    session: ChannelSession,
+    raw: BatchSettlementVoucherPayload,
+  ): Promise<void | { abort: true; reason: string; message?: string }> {
+    const channelId = raw.channelId;
+    const config = session.channelConfig;
+
+    const claimEntry: BatchSettlementVoucherClaim = {
+      voucher: {
+        channel: config,
+        maxClaimableAmount: raw.maxClaimableAmount as string,
+      },
+      signature: raw.signature as `0x${string}`,
+      totalClaimed: session.chargedCumulativeAmount,
+    };
+
+    const remainder = BigInt(session.balance) - BigInt(session.chargedCumulativeAmount);
+    if (remainder <= 0n) {
+      return {
+        abort: true,
+        reason: "batch_settlement_refund_no_balance",
+        message: "Channel has no remaining balance to refund",
+      };
+    }
+
+    let refundAmountBig = remainder;
+    if (raw.refundAmount !== undefined) {
+      const requested = BigInt(raw.refundAmount);
+      if (requested <= 0n) {
+        return {
+          abort: true,
+          reason: "batch_settlement_refund_amount_invalid",
+          message: "refundAmount must be a positive integer",
+        };
+      }
+      if (requested > remainder) {
+        return {
+          abort: true,
+          reason: "batch_settlement_refund_amount_exceeds_balance",
+          message: `refundAmount ${requested.toString()} exceeds remainder ${remainder.toString()}`,
+        };
+      }
+      refundAmountBig = requested;
+    }
+
+    const refundAmount = refundAmountBig.toString();
+    const nonce = String(session.refundNonce ?? 0);
+
+    const refundAuthorizerSignature = this.receiverAuthorizerSigner
+      ? await signRefund(
+          this.receiverAuthorizerSigner,
+          channelId as `0x${string}`,
+          refundAmount,
+          nonce,
+          requirements.network,
+        )
+      : undefined;
+
+    const claimAuthorizerSignature = this.receiverAuthorizerSigner
+      ? await signClaimBatch(this.receiverAuthorizerSigner, [claimEntry], requirements.network)
+      : undefined;
+
+    const responseExtra = buildRefundResponseSnapshot(session, {
+      settleAction: "refundWithSignature",
+      config,
+      amount: refundAmount,
+      nonce,
+      claims: [claimEntry],
+      refundAuthorizerSignature,
+      claimAuthorizerSignature,
+    });
+
+    (paymentPayload as { payload: unknown }).payload = {
+      settleAction: "refundWithSignature",
+      config,
+      amount: refundAmount,
+      nonce,
+      claims: [claimEntry],
+      refundAuthorizerSignature,
+      claimAuthorizerSignature,
+      responseExtra,
+    };
+  }
+
+  /**
    * Lifecycle hook: runs after the facilitator settles a payment.
    *
    * Updates session state to reflect the settlement outcome — adjusting charged amounts,
@@ -659,6 +746,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
           : (raw.responseExtra ?? emptyResponseSnapshot(channelId));
 
       const extra = result.extra;
+      const refundedAmount = readExtraString(extra, "refundedAmount", raw.amount);
+
       result.extra = {
         channelId:
           typeof extra?.channelId === "string" && extra.channelId
@@ -678,9 +767,27 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         ),
         refundNonce: readExtraString(extra, "refundNonce", fallback.refundNonce),
         refund: true,
+        refundedAmount,
       };
 
-      await this.storage.delete(channelId);
+      const remainderAfter = prevSession
+        ? BigInt(prevSession.balance) -
+          BigInt(prevSession.chargedCumulativeAmount) -
+          BigInt(refundedAmount)
+        : 0n;
+
+      if (!prevSession || remainderAfter <= 0n) {
+        await this.storage.delete(channelId);
+        return;
+      }
+
+      const updatedSession: ChannelSession = {
+        ...prevSession,
+        balance: (BigInt(prevSession.balance) - BigInt(refundedAmount)).toString(),
+        refundNonce: (prevSession.refundNonce ?? 0) + 1,
+        lastRequestTimestamp: Date.now(),
+      };
+      await this.storage.set(channelId, updatedSession);
       return;
     }
 

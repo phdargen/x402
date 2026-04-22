@@ -72,6 +72,16 @@ export interface VerifyResultContext extends VerifyContext {
   result: DeepReadonly<VerifyResponse>;
 }
 
+/**
+ * Optional acknowledgement body returned to the caller when an `AfterVerifyHook`
+ * requests that the resource handler be skipped for a self-contained operation
+ * (e.g. cooperative refund). Travels in-process only — never on the facilitator wire.
+ */
+export interface SkipHandlerDirective {
+  contentType?: string;
+  body?: unknown;
+}
+
 export interface VerifyFailureContext extends VerifyContext {
   error: Error;
 }
@@ -95,7 +105,9 @@ export type BeforeVerifyHook = (
   context: VerifyContext,
 ) => Promise<void | { abort: true; reason: string; message?: string }>;
 
-export type AfterVerifyHook = (context: VerifyResultContext) => Promise<void>;
+export type AfterVerifyHook = (
+  context: VerifyResultContext,
+) => Promise<void | { skipHandler: true; response?: SkipHandlerDirective }>;
 
 export type OnVerifyFailureHook = (
   context: VerifyFailureContext,
@@ -784,18 +796,25 @@ export class x402ResourceServer {
   /**
    * Verifies a payment against requirements, running manual and in-use extension hooks.
    *
+   * The returned object is a {@link VerifyResponse} (the wire-level type),
+   * optionally extended with an in-process `skipHandler` directive when an
+   * `AfterVerifyHook` requested that the resource handler be bypassed. The
+   * extra property is invisible to callers that only read standard fields and
+   * is never serialized to the facilitator wire.
+   *
    * @param paymentPayload - Signed payment payload from the client
    * @param requirements - Requirements matched to the payload
    * @param declaredExtensions - Optional per-extension declarations for the request
    * @param transportContext - Optional transport-specific context (e.g. HTTP, MCP)
-   * @returns Facilitator verify outcome, or abort/recovery as driven by hooks
+   * @returns Facilitator verify outcome (optionally carrying a `skipHandler` directive),
+   *   or abort/recovery as driven by hooks
    */
   async verifyPayment(
     paymentPayload: PaymentPayload,
     requirements: PaymentRequirements,
     declaredExtensions?: Record<string, unknown>,
     transportContext?: unknown,
-  ): Promise<VerifyResponse> {
+  ): Promise<VerifyResponse & { skipHandler?: SkipHandlerDirective }> {
     const resolvedDeclaredExtensions = declaredExtensions ?? {};
     const extensionKeysInUse = Object.keys(resolvedDeclaredExtensions);
 
@@ -857,21 +876,30 @@ export class x402ResourceServer {
         verifyResult = await facilitatorClient.verify(paymentPayload, requirements);
       }
 
-      // Execute afterVerify hooks
+      // Execute afterVerify hooks. The last hook to return a `skipHandler`
+      // directive wins; this lets schemes signal that a self-contained
+      // operation (e.g. cooperative refund) should bypass the resource
+      // handler and settle inline. The directive is attached as an extra
+      // optional property on the returned response — the wire-level
+      // `VerifyResponse` is never modified.
       const resultContext: VerifyResultContext = {
         ...context,
         result: verifyResult,
       };
 
+      let skipHandler: SkipHandlerDirective | undefined;
       for (const { label, hook } of this.getLabeledHooks("afterVerify", extensionKeysInUse)) {
         try {
-          await hook(resultContext);
+          const directive = await hook(resultContext);
+          if (directive && "skipHandler" in directive && directive.skipHandler) {
+            skipHandler = directive.response ?? {};
+          }
         } catch (error) {
           this.warnResourceServerHookFailure("afterVerify", label, error);
         }
       }
 
-      return verifyResult;
+      return skipHandler ? { ...verifyResult, skipHandler } : verifyResult;
     } catch (error) {
       const failureContext: VerifyFailureContext = {
         ...context,

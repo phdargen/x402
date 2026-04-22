@@ -1022,6 +1022,66 @@ describe("x402HTTPResourceServer", () => {
       }
     });
 
+    it("should bypass the resource handler when an AfterVerifyHook returns skipHandler", async () => {
+      mockFacilitator.setVerifyResponse({
+        isValid: true,
+        payer: "0xpayer",
+      });
+
+      ResourceServer.onAfterVerify(async () => ({
+        skipHandler: true,
+        response: {
+          contentType: "application/json",
+          body: { message: "Refund acknowledged" },
+        },
+      }));
+
+      const routes = {
+        "/api/refund": {
+          accepts: {
+            scheme: "exact",
+            payTo: "0xabc",
+            price: "$1.00" as Price,
+            network: "eip155:8453" as Network,
+          },
+        },
+      };
+
+      const httpServer = new x402HTTPResourceServer(ResourceServer, routes);
+
+      const matchingRequirements = buildPaymentRequirements({
+        scheme: "exact",
+        network: "eip155:8453" as Network,
+        payTo: "0xabc",
+        amount: "1000000",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        maxTimeoutSeconds: 300,
+        extra: {},
+      });
+      const payload = buildPaymentPayload({ accepted: matchingRequirements });
+      const { encodePaymentSignatureHeader } = await import("../../../src/http");
+      const paymentHeader = encodePaymentSignatureHeader(payload);
+
+      const adapter = new MockHTTPAdapter({ "payment-signature": paymentHeader });
+      const context: HTTPRequestContext = {
+        adapter,
+        path: "/api/refund",
+        method: "GET",
+      };
+
+      const result = await httpServer.processHTTPRequest(context);
+
+      expect(mockFacilitator.verifyCalls.length).toBe(1);
+      expect(mockFacilitator.settleCalls.length).toBe(1);
+
+      expect(result.type).toBe("payment-error");
+      if (result.type === "payment-error") {
+        expect(result.response.status).toBe(200);
+        expect(result.response.headers["PAYMENT-RESPONSE"]).toBeDefined();
+        expect(result.response.body).toEqual({ message: "Refund acknowledged" });
+      }
+    });
+
     it("should not treat API clients as browsers", async () => {
       const routes = {
         "/api/test": {

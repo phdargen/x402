@@ -1,4 +1,4 @@
-import { x402ResourceServer, SettlementOverrides } from "../server";
+import { x402ResourceServer, SettlementOverrides, SkipHandlerDirective } from "../server";
 import {
   decodePaymentSignatureHeader,
   encodePaymentRequiredHeader,
@@ -564,6 +564,17 @@ export class x402HTTPResourceServer {
         };
       }
 
+      // Bypass the resource handler
+      if (verifyResult.skipHandler) {
+        return await this.processSkipHandlerSettlement(
+          paymentPayload,
+          matchingRequirements,
+          routeConfig.extensions,
+          transportContext,
+          verifyResult.skipHandler,
+        );
+      }
+
       // Payment is valid, return data needed for settlement
       return {
         type: "payment-verified",
@@ -710,6 +721,56 @@ export class x402HTTPResourceServer {
   requiresPayment(context: HTTPRequestContext): boolean {
     const method = context.method || context.adapter.getMethod();
     return this.getRouteConfig(context.path, method) !== undefined;
+  }
+
+  /**
+   * Settle a verified payment that requested `skipHandler`, packaging the
+   * result as a `payment-error` HTTPProcessResult so framework adapters can
+   * write the response without invoking the route handler.
+   *
+   * - On success: status 200 + PAYMENT-RESPONSE header + configured body.
+   * - On failure: the standard 402 settlement-failure response.
+   *
+   * @param paymentPayload - Verified payment payload.
+   * @param requirements - Matched payment requirements.
+   * @param declaredExtensions - Optional declared extensions for the route.
+   * @param transportContext - Optional HTTP transport context.
+   * @param skipHandlerResponse - Optional content type + body to return on success.
+   * @returns A `payment-error` HTTPProcessResult carrying the final response.
+   */
+  private async processSkipHandlerSettlement(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+    declaredExtensions: Record<string, unknown> | undefined,
+    transportContext: HTTPTransportContext,
+    skipHandlerResponse: SkipHandlerDirective | undefined,
+  ): Promise<HTTPProcessResult> {
+    const settleResult = await this.processSettlement(
+      paymentPayload,
+      requirements,
+      declaredExtensions,
+      transportContext,
+    );
+
+    if (!settleResult.success) {
+      return { type: "payment-error", response: settleResult.response };
+    }
+
+    const contentType = skipHandlerResponse?.contentType ?? "application/json";
+    const body = skipHandlerResponse?.body ?? {};
+
+    return {
+      type: "payment-error",
+      response: {
+        status: 200,
+        headers: {
+          "Content-Type": contentType,
+          ...settleResult.headers,
+        },
+        body,
+        isHtml: contentType.includes("text/html"),
+      },
+    };
   }
 
   /**

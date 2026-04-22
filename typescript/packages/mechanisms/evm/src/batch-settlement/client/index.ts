@@ -9,4 +9,6 @@ export { InMemoryClientSessionStorage } from "./storage";
 export { FileClientSessionStorage } from "./fileStorage";
 export { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
 export { signVoucher } from "./voucher";
+export { refundChannel, updateSessionAfterRefund } from "./refund";
+export type { RefundOptions, RefundContext } from "./refund";
 export { computeChannelId } from "../utils";

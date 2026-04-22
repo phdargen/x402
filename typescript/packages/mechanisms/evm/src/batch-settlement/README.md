@@ -59,13 +59,17 @@ const scheme = new BatchSettlementEvmScheme(signer, { voucherSigner });
 
 ### Cooperative Refund
 
-Request the server to refund the unclaimed balance on the next request:
+Trigger a cooperative refund request:
 
 ```typescript
-scheme.requestRefund(channelId);
+// Full refund: refunds the remaining channel balance.
+const settle = await scheme.refund("https://api.example.com/any-protected-route");
+
+// Partial refund:
+await scheme.refund(url, { amount: "1000000" });
 ```
 
-The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` to the payer.
+The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or `amount` to the payer.
 
 ### Persistence
 

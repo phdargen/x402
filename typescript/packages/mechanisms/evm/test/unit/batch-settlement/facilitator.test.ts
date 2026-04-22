@@ -362,6 +362,53 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountBelowClaimed);
   });
 
+  it("accepts a refund voucher whose maxClaimable equals totalClaimed", async () => {
+    const signer = buildSigner();
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 1000n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const refundVoucher: BatchSettlementVoucherPayload = {
+      type: "voucher",
+      channelConfig: config,
+      channelId,
+      maxClaimableAmount: "1000",
+      signature: "0xdead",
+      refund: true,
+    };
+
+    const result = await scheme.verify(envelopeVoucher(refundVoucher), makeRequirements());
+    expect(result.isValid).toBe(true);
+  });
+
+  it("still rejects a refund voucher whose maxClaimable is below totalClaimed", async () => {
+    const signer = buildSigner();
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 1000n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const refundVoucher: BatchSettlementVoucherPayload = {
+      type: "voucher",
+      channelConfig: config,
+      channelId,
+      maxClaimableAmount: "500",
+      signature: "0xdead",
+      refund: true,
+    };
+
+    const result = await scheme.verify(envelopeVoucher(refundVoucher), makeRequirements());
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountBelowClaimed);
+  });
+
   it("returns ChannelIdMismatch when payload channelId does not match config", async () => {
     const signer = buildSigner();
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);

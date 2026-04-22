@@ -132,20 +132,9 @@ if (avmSigner) {
 
 const axiosWithPayment = wrapAxiosWithPayment(axios.create(), client);
 
-// Multi-request scenarios (used by batch-settlement) issue several paid requests
-// against the same endpoint so the server can amortise on-chain claims, then
-// optionally signal a cooperative refund on the last request.
+// Multi-request scenarios (used by batch-settlement) 
 const numberOfRequests = Number.parseInt(process.env.MULTI_REQUEST_COUNT ?? "1", 10);
-const refundOnLastRequest = process.env.REFUND_ON_LAST === "true";
-
-function getBatchSettlementChannelId(paymentResponse: unknown): string | undefined {
-  const extra =
-    typeof paymentResponse === "object" && paymentResponse && "extra" in paymentResponse
-      ? (paymentResponse.extra as Record<string, unknown> | undefined)
-      : undefined;
-  const channelId = extra?.channelId;
-  return typeof channelId === "string" && channelId.length > 0 ? channelId : undefined;
-}
+const refundAfterRequests = process.env.REFUND_ON_LAST ?? "true";
 
 /**
  * Issues a single paid request and returns the parsed result.
@@ -177,21 +166,19 @@ async function issueRequest(): Promise<{
 
 try {
   const results: Awaited<ReturnType<typeof issueRequest>>[] = [];
-  let lastChannelId: string | undefined;
   for (let i = 0; i < numberOfRequests; i++) {
-    const isLast = i === numberOfRequests - 1;
-
-    if (isLast && refundOnLastRequest && lastChannelId) {
-      batchSettlementScheme.requestRefund(lastChannelId);
-    }
-
     const result = await issueRequest();
     results.push(result);
+  }
 
-    const channelId = getBatchSettlementChannelId(result.payment_response);
-    if (channelId) {
-      lastChannelId = channelId;
-    }
+  if (refundAfterRequests) {
+    const refundSettle = await batchSettlementScheme.refund(url);
+    results.push({
+      success: refundSettle.success,
+      data: { refund: true },
+      status_code: 200,
+      payment_response: refundSettle,
+    });
   }
 
   const last = results[results.length - 1]!;

@@ -10,14 +10,7 @@ import {
 } from "./utils";
 
 /**
- * Verifies a cumulative voucher payload against on-chain channel state.
- *
- * Checks that:
- * 1. The voucher signature is valid (ECDSA or ERC-1271 depending on `payerAuthorizer`).
- * 2. The token in the channel config matches the payment requirements asset.
- * 3. The channel exists on-chain with a non-zero balance.
- * 4. The `maxClaimableAmount` does not exceed the channel's deposited balance.
- * 5. The `maxClaimableAmount` is greater than what has already been claimed.
+ * Verifies a cumulative voucher payload against onchain channel state.
  *
  * @param signer - Facilitator signer used for on-chain reads and signature verification.
  * @param payload - The voucher payload (channelId, maxClaimableAmount, signature).
@@ -74,7 +67,11 @@ export async function verifyVoucher(
     };
   }
 
-  if (maxClaimableAmount <= state.totalClaimed) {
+  const isRefundVoucher = payload.refund === true;
+  const belowClaimed = isRefundVoucher
+    ? maxClaimableAmount < state.totalClaimed
+    : maxClaimableAmount <= state.totalClaimed;
+  if (belowClaimed) {
     return {
       isValid: false,
       invalidReason: Errors.ErrCumulativeAmountBelowClaimed,

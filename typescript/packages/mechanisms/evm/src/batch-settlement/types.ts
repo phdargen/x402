@@ -57,6 +57,7 @@ export type BatchSettlementVoucherFields = {
   maxClaimableAmount: string;
   signature: `0x${string}`;
   refund?: boolean;
+  refundAmount?: string;
 };
 
 export type BatchSettlementVoucherClaim = {
@@ -89,6 +90,7 @@ export type BatchSettlementPaymentResponseExtra = {
   withdrawRequestedAt: number;
   refundNonce: string;
   refund?: true;
+  refundedAmount?: string;
 };
 
 export type BatchSettlementClaimWithSignaturePayload = {

@@ -9,6 +9,7 @@ export type {
   SettleResultContext,
   SettleFailureContext,
   SettlementOverrides,
+  SkipHandlerDirective,
   BeforeVerifyHook,
   AfterVerifyHook,
   OnVerifyFailureHook,

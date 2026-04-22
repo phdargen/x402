@@ -24,10 +24,13 @@ import {
 } from "../types";
 import { getEvmChainId } from "../../utils";
 import { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
+import { refundChannel, RefundOptions, updateSessionAfterRefund } from "./refund";
 import { ClientSessionStorage, InMemoryClientSessionStorage } from "./storage";
 import type { BatchSettlementClientContext } from "./storage";
 import { signVoucher } from "./voucher";
 import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
+
+export type { RefundOptions } from "./refund";
 
 export interface BatchSettlementDepositPolicy {
   depositMultiplier?: number;
@@ -149,7 +152,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   private readonly salt: `0x${string}`;
   private readonly payerAuthorizer: `0x${string}` | undefined;
   private readonly voucherSigner: ClientEvmSigner | undefined;
-  private pendingRefund = new Set<string>();
 
   /**
    * Constructs a batched client scheme.
@@ -228,9 +230,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   /**
    * Updates local session state from a parsed `SettleResponse`.
    *
-   * Updates chargedCumulativeAmount, balance, and totalClaimed, or
-   * deletes the session if the response indicates a cooperative refund completed.
-   *
    * @param settle - The parsed settle response.
    */
   async processSettleResponse(settle: SettleResponse): Promise<void> {
@@ -242,7 +241,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const key = channelId.toLowerCase();
 
     if (extra.refund === true) {
-      await this.storage.delete(key);
+      await updateSessionAfterRefund(this.storage, key, extra);
       return;
     }
 
@@ -260,15 +259,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     }
 
     await this.storage.set(key, next);
-  }
-
-  /**
-   * Flags a channel for cooperative refund on the next voucher request.
-   *
-   * @param channelId - The channel to request refund for.
-   */
-  requestRefund(channelId: string): void {
-    this.pendingRefund.add(channelId.toLowerCase());
   }
 
   /**
@@ -318,6 +308,33 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    */
   async getSession(channelId: string): Promise<BatchSettlementClientContext | undefined> {
     return this.storage.get(channelId.toLowerCase());
+  }
+
+  /**
+   * Sends a cooperative refund request
+   *
+   * Thin wrapper that delegates to {@link refundChannel}. See the function
+   * documentation for the full flow and error semantics.
+   *
+   * @param url - The route URL backing the channel to refund (any protected
+   *   route on that channel works; the resource handler is bypassed).
+   * @param options - Optional `amount` (partial refund) and `fetch` override.
+   * @returns The settle response describing the refund outcome.
+   */
+  async refund(url: string, options?: RefundOptions): Promise<SettleResponse> {
+    return refundChannel(
+      {
+        storage: this.storage,
+        signer: this.signer,
+        voucherSigner: this.voucherSigner,
+        buildChannelConfig: req => this.buildChannelConfig(req),
+        recoverSession: req => this.recoverSession(req),
+        processSettleResponse: settle => this.processSettleResponse(settle),
+        processCorrectivePaymentRequired: pr => this.processCorrectivePaymentRequired(pr),
+      },
+      url,
+      options,
+    );
   }
 
   /**
@@ -422,16 +439,10 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       paymentRequirements.network,
     );
 
-    const shouldRefund = this.pendingRefund.has(channelId.toLowerCase());
-    if (shouldRefund) {
-      this.pendingRefund.delete(channelId.toLowerCase());
-    }
-
     const payload: BatchSettlementVoucherPayload = {
       type: "voucher",
       channelConfig: config,
       ...voucher,
-      ...(shouldRefund ? { refund: true } : {}),
     };
 
     return {
