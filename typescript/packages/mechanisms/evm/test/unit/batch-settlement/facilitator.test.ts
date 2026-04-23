@@ -573,12 +573,21 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
 
   it("dispatches deposit settle payloads via settleDeposit", async () => {
     const signer = buildSigner();
-    mockedMulticall.mockResolvedValue([
-      { status: "success", result: [0n, 0n] },
-      { status: "success", result: 1_000_000n },
-      { status: "success", result: [0n, 0n] },
-      { status: "success", result: 0n },
-    ]);
+    // verifyDeposit uses a 4-call batch; post-tx readChannelState uses 3 calls with a
+    // different shape — reusing the 4-tuple for the second batch mis-associates
+    // token balance with pendingWithdrawals and throws.
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1_000_000n },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [10_000n, 0n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ]);
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);

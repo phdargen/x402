@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/scheme";
+import { BatchSettlementChannelManager } from "../../../src/batch-settlement/server/channelManager";
 import {
   InMemorySessionStorage,
   type ChannelSession,
@@ -17,7 +18,18 @@ import type {
   VerifyResponse,
   SettleResponse,
 } from "@x402/core/types";
+import type { FacilitatorClient } from "@x402/core/server";
 import { privateKeyToAccount } from "viem/accounts";
+
+function buildManager(scheme: BatchSettlementEvmScheme): BatchSettlementChannelManager {
+  return new BatchSettlementChannelManager({
+    scheme,
+    facilitator: {} as FacilitatorClient,
+    receiver: RECEIVER,
+    token: ASSET_BASE_SEPOLIA,
+    network: NETWORK,
+  });
+}
 
 const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
 const RECEIVER = "0x9876543210987654321098765432109876543210" as `0x${string}`;
@@ -839,17 +851,19 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
   });
 });
 
-describe("BatchSettlementEvmScheme — getClaimableVouchers", () => {
+describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
   let server: BatchSettlementEvmScheme;
+  let manager: BatchSettlementChannelManager;
   let storage: InMemorySessionStorage;
 
   beforeEach(() => {
     storage = new InMemorySessionStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
+    manager = buildManager(server);
   });
 
   it("returns [] when no sessions exist", async () => {
-    expect(await server.getClaimableVouchers()).toEqual([]);
+    expect(await manager.getClaimableVouchers()).toEqual([]);
   });
 
   it("filters out sessions that have nothing to claim", async () => {
@@ -868,7 +882,7 @@ describe("BatchSettlementEvmScheme — getClaimableVouchers", () => {
       refundNonce: 0,
       lastRequestTimestamp: Date.now(),
     });
-    expect(await server.getClaimableVouchers()).toEqual([]);
+    expect(await manager.getClaimableVouchers()).toEqual([]);
   });
 
   it("returns claimable vouchers when charged > totalClaimed", async () => {
@@ -888,7 +902,7 @@ describe("BatchSettlementEvmScheme — getClaimableVouchers", () => {
       lastRequestTimestamp: Date.now(),
     });
 
-    const claims = await server.getClaimableVouchers();
+    const claims = await manager.getClaimableVouchers();
     expect(claims).toHaveLength(1);
     expect(claims[0].voucher.maxClaimableAmount).toBe("5000");
     expect(claims[0].totalClaimed).toBe("5000");
@@ -913,14 +927,15 @@ describe("BatchSettlementEvmScheme — getClaimableVouchers", () => {
       lastRequestTimestamp: Date.now(),
     });
 
-    expect(await server.getClaimableVouchers({ idleSecs: 60 })).toEqual([]);
+    expect(await manager.getClaimableVouchers({ idleSecs: 60 })).toEqual([]);
   });
 });
 
-describe("BatchSettlementEvmScheme — getWithdrawalPendingSessions", () => {
+describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () => {
   it("returns sessions with withdrawRequestedAt > 0", async () => {
     const storage = new InMemorySessionStorage();
     const server = new BatchSettlementEvmScheme(RECEIVER, { storage });
+    const manager = buildManager(server);
 
     const config1 = buildChannelConfig();
     const id1 = computeChannelId(config1);
@@ -956,7 +971,7 @@ describe("BatchSettlementEvmScheme — getWithdrawalPendingSessions", () => {
       lastRequestTimestamp: 0,
     });
 
-    const result = await server.getWithdrawalPendingSessions();
+    const result = await manager.getWithdrawalPendingSessions();
     expect(result).toHaveLength(1);
     expect(result[0].channelId).toBe(id2);
   });

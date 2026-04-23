@@ -297,9 +297,7 @@ export async function settleDeposit(
       channelId: voucher.channelId,
       chargedCumulativeAmount:
         payload.responseExtra?.chargedCumulativeAmount ?? requirements.amount,
-      balance: (
-        BigInt(String(verified.extra?.balance ?? "0")) + BigInt(deposit.amount)
-      ).toString(),
+      balance: (BigInt(String(verified.extra?.balance ?? "0")) + BigInt(deposit.amount)).toString(),
       totalClaimed: verified.extra?.totalClaimed ?? "0",
       withdrawRequestedAt: Number(verified.extra?.withdrawRequestedAt ?? 0),
       refundNonce: String(verified.extra?.refundNonce ?? "0"),
@@ -324,12 +322,12 @@ export async function settleDeposit(
       amount: requirements.amount,
       extra: rpcCaughtUp
         ? {
-          ...optimisticExtra,
-          balance: postState.balance.toString(),
-          totalClaimed: postState.totalClaimed.toString(),
-          withdrawRequestedAt: postState.withdrawRequestedAt,
-          refundNonce: postState.refundNonce.toString(),
-        }
+            ...optimisticExtra,
+            balance: postState.balance.toString(),
+            totalClaimed: postState.totalClaimed.toString(),
+            withdrawRequestedAt: postState.withdrawRequestedAt,
+            refundNonce: postState.refundNonce.toString(),
+          }
         : optimisticExtra,
     };
   } catch (e) {

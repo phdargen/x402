@@ -10,6 +10,7 @@ import type { BatchSettlementEvmScheme } from "./scheme";
 import { computeChannelId } from "../utils";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
+import type { ChannelSession } from "./storage";
 
 export interface ChannelManagerConfig {
   scheme: BatchSettlementEvmScheme;
@@ -108,7 +109,7 @@ export class BatchSettlementChannelManager {
    */
   async claim(opts?: { maxClaimsPerBatch?: number; idleSecs?: number }): Promise<ClaimResult[]> {
     const maxBatch = opts?.maxClaimsPerBatch ?? 50;
-    const allClaims = await this.scheme.getClaimableVouchers(
+    const allClaims = await this.getClaimableVouchers(
       opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : undefined,
     );
 
@@ -255,6 +256,55 @@ export class BatchSettlementChannelManager {
   }
 
   /**
+   * Collects vouchers that are eligible for on-chain claiming.
+   *
+   * A voucher is claimable when its `chargedCumulativeAmount` exceeds what has already
+   * been claimed on-chain.  An optional idle filter skips sessions that received a
+   * request within the last `idleSecs` seconds.
+   *
+   * @param opts - Optional filtering: `idleSecs` to only return idle channels.
+   * @param opts.idleSecs - Minimum seconds since last request for a channel to be included.
+   * @returns Array of {@link BatchSettlementVoucherClaim} entries for batch submission.
+   */
+  async getClaimableVouchers(opts?: { idleSecs?: number }): Promise<BatchSettlementVoucherClaim[]> {
+    const sessions = await this.scheme.getStorage().list();
+    const now = Date.now();
+    const claims: BatchSettlementVoucherClaim[] = [];
+
+    for (const s of sessions) {
+      if (BigInt(s.chargedCumulativeAmount) <= BigInt(s.totalClaimed)) {
+        continue;
+      }
+      if (opts?.idleSecs !== undefined) {
+        const idleMs = now - s.lastRequestTimestamp;
+        if (idleMs < opts.idleSecs * 1000) {
+          continue;
+        }
+      }
+      claims.push({
+        voucher: {
+          channel: s.channelConfig,
+          maxClaimableAmount: s.signedMaxClaimable,
+        },
+        signature: s.signature as `0x${string}`,
+        totalClaimed: s.chargedCumulativeAmount,
+      });
+    }
+
+    return claims;
+  }
+
+  /**
+   * Returns sessions that have a pending payer-initiated withdrawal.
+   *
+   * @returns All stored sessions with `withdrawRequestedAt` set.
+   */
+  async getWithdrawalPendingSessions(): Promise<ChannelSession[]> {
+    const sessions = await this.scheme.getStorage().list();
+    return sessions.filter(s => s.withdrawRequestedAt > 0);
+  }
+
+  /**
    * Starts the auto-settlement loop that periodically evaluates claim/settle/refund
    * triggers and executes them.
    *
@@ -330,7 +380,7 @@ export class BatchSettlementChannelManager {
    * @param cfg - Resolved auto-settlement options for this tick.
    * @param cfg.claimIntervalMs - Minimum milliseconds between automatic claim rounds.
    * @param cfg.settleIntervalMs - Minimum milliseconds between automatic settle rounds.
-   * @param cfg.claimOnIdleSecs - Optional idle threshold to trigger claims (see {@link BatchSettlementEvmScheme.getClaimableVouchers}).
+   * @param cfg.claimOnIdleSecs - Optional idle threshold to trigger claims (see {@link BatchSettlementChannelManager.getClaimableVouchers}).
    * @param cfg.claimThreshold - Optional min cumulative claimable amount to trigger a claim.
    * @param cfg.claimOnWithdrawal - Whether pending withdrawals can trigger a claim.
    * @param cfg.settleThreshold - Optional min claimed-not-settled amount to trigger settle.
@@ -487,7 +537,7 @@ export class BatchSettlementChannelManager {
     }
 
     if (cfg.claimOnIdleSecs !== undefined) {
-      const idleClaims = await this.scheme.getClaimableVouchers({
+      const idleClaims = await this.getClaimableVouchers({
         idleSecs: cfg.claimOnIdleSecs,
       });
       if (idleClaims.length > 0) {
@@ -496,7 +546,7 @@ export class BatchSettlementChannelManager {
     }
 
     if (cfg.claimThreshold !== undefined) {
-      const allClaims = await this.scheme.getClaimableVouchers();
+      const allClaims = await this.getClaimableVouchers();
       const total = allClaims.reduce((sum, c) => sum + BigInt(c.totalClaimed), 0n);
       if (total > BigInt(cfg.claimThreshold)) {
         return true;
@@ -504,9 +554,9 @@ export class BatchSettlementChannelManager {
     }
 
     if (cfg.claimOnWithdrawal) {
-      const withdrawals = await this.scheme.getWithdrawalPendingSessions();
+      const withdrawals = await this.getWithdrawalPendingSessions();
       if (withdrawals.length > 0) {
-        const claimableWithdrawals = await this.scheme.getClaimableVouchers();
+        const claimableWithdrawals = await this.getClaimableVouchers();
         const withdrawalChannels = new Set(withdrawals.map(w => w.channelId.toLowerCase()));
         const hasClaimableForWithdrawal = claimableWithdrawals.some(c =>
           withdrawalChannels.has(computeChannelId(c.voucher.channel).toLowerCase()),

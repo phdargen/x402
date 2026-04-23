@@ -1,0 +1,159 @@
+import type { VerifyContext, VerifyResultContext } from "@x402/core/server";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
+import type { ChannelConfig } from "../types";
+import type { BatchSettlementEvmScheme } from "./scheme";
+import type { ChannelSession } from "./storage";
+import { readExtraNumber, readExtraString } from "./utils";
+
+/**
+ * Lifecycle hook: runs before the facilitator verifies a payment.
+ *
+ * For voucher payloads, checks whether the client's cumulative amount matches server
+ * state.  If stale, aborts with `batch_settlement_stale_cumulative_amount` and embeds
+ * the correct state in `requirements.extra` so the client can resync.
+ *
+ * Refund vouchers (`refund: true`) are zero-charge: the expected
+ * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
+ *
+ * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
+ * @param ctx - Verify lifecycle context (payload, requirements, and related state).
+ * @returns Nothing to continue verification; or an object with `abort` to fail with a reason.
+ */
+export async function handleBeforeVerify(
+  scheme: BatchSettlementEvmScheme,
+  ctx: VerifyContext,
+): Promise<void | { abort: true; reason: string; message?: string }> {
+  const { paymentPayload, requirements } = ctx;
+  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME) {
+    return;
+  }
+
+  const raw = paymentPayload.payload;
+  if (!isBatchSettlementVoucherPayload(raw)) {
+    return;
+  }
+
+  const isRefund = raw.refund === true;
+  const session = await scheme.getStorage().get(raw.channelId);
+
+  if (!session) {
+    if (isRefund) {
+      return {
+        abort: true,
+        reason: "batch_settlement_evm_cumulative_below_claimed",
+        message: "No server session for refund voucher; client must resync from on-chain state",
+      };
+    }
+    return;
+  }
+
+  const expectedMaxClaimable = isRefund
+    ? BigInt(session.chargedCumulativeAmount)
+    : BigInt(session.chargedCumulativeAmount) + BigInt(requirements.amount);
+
+  if (BigInt(raw.maxClaimableAmount) === expectedMaxClaimable) {
+    return;
+  }
+
+  requirements.extra = {
+    ...requirements.extra,
+    chargedCumulativeAmount: session.chargedCumulativeAmount,
+    signedMaxClaimable: session.signedMaxClaimable,
+    signature: session.signature,
+  };
+
+  return {
+    abort: true,
+    reason: "batch_settlement_stale_cumulative_amount",
+    message: "Client voucher base does not match server state",
+  };
+}
+
+/**
+ * Lifecycle hook: runs after the facilitator verifies a payment.
+ *
+ * Persists channel session state (balance, totalClaimed, voucher info) so that
+ * subsequent requests can correctly calculate cumulative amounts and detect stale state.
+ *
+ * For refund vouchers (`refund: true`), additionally returns a `skipHandler`
+ * directive so that the resource server bypasses the application handler and settles inline.
+ *
+ * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
+ * @param ctx - Post-verify lifecycle context.
+ * @param ctx.paymentPayload - Incoming payment payload that was verified.
+ * @param ctx.requirements - Requirements used for verification.
+ * @param ctx.result - Facilitator verify response.
+ * @returns Optional `skipHandler` directive when this is a refund voucher; otherwise void.
+ */
+export async function handleAfterVerify(
+  scheme: BatchSettlementEvmScheme,
+  ctx: VerifyResultContext,
+): Promise<void | { skipHandler: true; response?: { contentType?: string; body?: unknown } }> {
+  const { paymentPayload, requirements, result } = ctx;
+  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.isValid || !result.payer) {
+    return;
+  }
+
+  const raw = paymentPayload.payload;
+  let channelId: string;
+  let signedMaxClaimable: string;
+  let signature: `0x${string}`;
+  let payer: string;
+  let channelConfig: ChannelConfig | undefined;
+  let isRefundVoucher = false;
+
+  if (isBatchSettlementDepositPayload(raw)) {
+    channelId = raw.voucher.channelId;
+    signedMaxClaimable = raw.voucher.maxClaimableAmount;
+    signature = raw.voucher.signature;
+    channelConfig = raw.deposit.channelConfig;
+    payer = channelConfig?.payer ?? result.payer;
+  } else if (isBatchSettlementVoucherPayload(raw)) {
+    channelId = raw.channelId;
+    signedMaxClaimable = raw.maxClaimableAmount;
+    signature = raw.signature;
+    channelConfig = raw.channelConfig;
+    payer = channelConfig?.payer ?? result.payer;
+    isRefundVoucher = raw.refund === true;
+  } else {
+    return;
+  }
+
+  const ex = result.extra ?? {};
+  const balance = readExtraString(ex, "balance", "0");
+  const totalClaimed = readExtraString(ex, "totalClaimed", "0");
+  const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
+  const refundNonce = readExtraNumber(ex, "refundNonce", 0);
+
+  const storage = scheme.getStorage();
+  const prev = await storage.get(channelId);
+  const resolvedConfig = channelConfig ?? prev?.channelConfig;
+  if (!resolvedConfig) {
+    return;
+  }
+  const session: ChannelSession = {
+    channelId,
+    channelConfig: resolvedConfig,
+    payer: payer.toLowerCase(),
+    chargedCumulativeAmount: prev?.chargedCumulativeAmount ?? totalClaimed,
+    signedMaxClaimable,
+    signature,
+    balance,
+    totalClaimed,
+    withdrawRequestedAt,
+    refundNonce,
+    lastRequestTimestamp: Date.now(),
+  };
+  await storage.compareAndSet(channelId, prev?.chargedCumulativeAmount ?? totalClaimed, session);
+
+  if (isRefundVoucher) {
+    return {
+      skipHandler: true,
+      response: {
+        contentType: "application/json",
+        body: { message: "Refund acknowledged", channelId },
+      },
+    };
+  }
+}
