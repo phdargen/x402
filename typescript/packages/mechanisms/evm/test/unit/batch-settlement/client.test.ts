@@ -810,6 +810,97 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     );
   });
 
+  it("fails fast (no retry) when server returns 402 with batch_settlement_refund_no_balance", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    // Local session shows remaining balance so the pre-check passes and the request is sent.
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "500",
+      balance: "10000",
+      totalClaimed: "0",
+    });
+
+    const { encodePaymentResponseHeader } = await import("@x402/core/http");
+    const failureSettle: SettleResponse = {
+      success: false,
+      transaction: "",
+      network: NETWORK,
+      payer: signer.address,
+      errorReason: "batch_settlement_refund_no_balance",
+      errorMessage: "Channel has no remaining balance to refund",
+    } as SettleResponse;
+    const failureHeader = encodePaymentResponseHeader(failureSettle);
+
+    const refundCall = vi.fn(async () => {
+      return new Response(null, { status: 402, headers: { "PAYMENT-RESPONSE": failureHeader } });
+    });
+    const fetchImpl = makeFetch([async () => probe402Response(), refundCall]);
+
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /batch_settlement_refund_no_balance/,
+    );
+    expect(refundCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails fast on a verify-side 402 with a non-recoverable refund error", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "500",
+      balance: "10000",
+      totalClaimed: "0",
+    });
+
+    const { encodePaymentRequiredHeader } = await import("@x402/core/http");
+    const requiredHeader = encodePaymentRequiredHeader({
+      x402Version: 2,
+      error: "batch_settlement_refund_no_balance",
+      accepts: [buildRefundRequirements()],
+    } as PaymentRequired);
+
+    const refundCall = vi.fn(async () => {
+      return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": requiredHeader } });
+    });
+    const fetchImpl = makeFetch([async () => probe402Response(), refundCall]);
+
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /batch_settlement_refund_no_balance/,
+    );
+    expect(refundCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws before any PAYMENT-SIGNATURE request when local session shows the channel is drained", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientSessionStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+
+    const config = client.buildChannelConfig(buildRefundRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "61800",
+      balance: "61800",
+      totalClaimed: "61800",
+    });
+
+    const refundCall = vi.fn(async () => {
+      throw new Error("refund request should not have been sent");
+    });
+    const fetchImpl = makeFetch([async () => probe402Response(), refundCall]);
+
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /channel has no remaining balance/,
+    );
+    expect(refundCall).not.toHaveBeenCalled();
+  });
+
   it("throws when the receiver lacks a configured receiverAuthorizer", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const client = new BatchSettlementEvmScheme(signer);

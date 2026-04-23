@@ -16,6 +16,9 @@ import { readExtraNumber, readExtraString } from "./utils";
  * Refund vouchers (`refund: true`) are zero-charge: the expected
  * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
  *
+ * When no local session exists, verification is delegated to the facilitator (which checks on-chain state);
+ * `handleAfterVerify` then rebuilds the session from the verify response.
+ *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Verify lifecycle context (payload, requirements, and related state).
  * @returns Nothing to continue verification; or an object with `abort` to fail with a reason.
@@ -38,13 +41,6 @@ export async function handleBeforeVerify(
   const session = await scheme.getStorage().get(raw.channelId);
 
   if (!session) {
-    if (isRefund) {
-      return {
-        abort: true,
-        reason: "batch_settlement_evm_cumulative_below_claimed",
-        message: "No server session for refund voucher; client must resync from on-chain state",
-      };
-    }
     return;
   }
 

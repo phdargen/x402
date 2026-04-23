@@ -346,16 +346,15 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result).toBeUndefined();
   });
 
-  it("aborts a refund voucher when no session exists, requesting on-chain recovery", async () => {
+  it("does nothing for a refund voucher when no session exists (defers to facilitator for on-chain recovery)", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const result = (await server.schemeHooks.onBeforeVerify!({
+    const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload: buildVoucherPayload(channelId, "0", config, true),
       requirements: makeRequirements({ amount: "0" }),
-    } as never)) as { abort: true; reason: string };
+    } as never);
 
-    expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_evm_cumulative_below_claimed");
+    expect(result).toBeUndefined();
   });
 
   it("accepts a zero-charge refund voucher whose maxClaimable equals chargedCumulativeAmount", async () => {
@@ -655,6 +654,78 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     // Full refund drains the remainder: balance(10000) - charged(500) = 9500.
     expect(rewritten.amount).toBe("9500");
     expect(rewritten.nonce).toBe("1");
+  });
+
+  it("recovers a refund voucher session from facilitator extras when local state was lost", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+
+    // Local server state is empty (session loss scenario).
+    expect(await storage.get(channelId)).toBeUndefined();
+
+    // 1. handleBeforeVerify must not abort — it should defer to the facilitator.
+    const beforeVerify = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1500", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(beforeVerify).toBeUndefined();
+
+    // 2. handleAfterVerify rebuilds the session from on-chain snapshot returned by the facilitator.
+    const verifyResult: VerifyResponse = {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "10000", totalClaimed: "1500", refundNonce: "3" },
+    } as VerifyResponse;
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1500", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+      result: verifyResult,
+    } as never);
+    const recovered = await storage.get(channelId);
+    expect(recovered).toBeDefined();
+    expect(recovered?.balance).toBe("10000");
+    expect(recovered?.totalClaimed).toBe("1500");
+    expect(recovered?.chargedCumulativeAmount).toBe("1500");
+    expect(recovered?.refundNonce).toBe(3);
+
+    // 3. handleBeforeSettle rewrites into a refundWithSignature with amount = balance - totalClaimed.
+    const settlePayload = buildVoucherPayload(channelId, "1500", config, true);
+    const settleRet = await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: settlePayload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(settleRet).toBeUndefined();
+
+    const rewritten = settlePayload.payload as Record<string, unknown>;
+    expect(rewritten.settleAction).toBe("refundWithSignature");
+    expect(rewritten.amount).toBe("8500");
+    expect(rewritten.nonce).toBe("3");
+  });
+
+  it("aborts a recovered refund voucher with refund_no_balance when channel is fully drained", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+
+    // Local state is empty; on-chain shows the channel was already drained (balance == totalClaimed).
+    const verifyResult: VerifyResponse = {
+      isValid: true,
+      payer: PAYER,
+      extra: { balance: "61800", totalClaimed: "61800", refundNonce: "1" },
+    } as VerifyResponse;
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "61800", config, true),
+      requirements: makeRequirements({ amount: "0" }),
+      result: verifyResult,
+    } as never);
+
+    const settlePayload = buildVoucherPayload(channelId, "61800", config, true);
+    const ret = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: settlePayload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never)) as { abort: true; reason: string; message: string };
+
+    expect(ret?.abort).toBe(true);
+    expect(ret?.reason).toBe("batch_settlement_refund_no_balance");
   });
 
   it("honors refundAmount on the voucher for a partial refundWithSignature", async () => {

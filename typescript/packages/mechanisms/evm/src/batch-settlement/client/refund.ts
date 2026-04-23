@@ -17,6 +17,17 @@ import type { BatchSettlementClientContext, ClientSessionStorage } from "./stora
 import { signVoucher } from "./voucher";
 
 /**
+ * Refund-specific server errors that the client cannot recover from automatically.
+ * Seeing any of these means the user should adjust their request (or accept that the
+ * channel has nothing left to refund) — retrying will not help.
+ */
+const NON_RECOVERABLE_REFUND_ERRORS: ReadonlySet<string> = new Set([
+  "batch_settlement_refund_no_balance",
+  "batch_settlement_refund_amount_invalid",
+  "batch_settlement_refund_amount_exceeds_balance",
+]);
+
+/**
  * Caller-facing options for {@link refundChannel}.
  */
 export interface RefundOptions {
@@ -180,8 +191,13 @@ async function executeRefund(
     const response = await fetchImpl(url, { method: "GET", headers });
 
     if (response.status === 402) {
-      if (attempt >= maxAttempts) {
-        throw new Error(`Refund failed: server returned 402 after ${attempt} attempt(s)`);
+      // A 402 may carry either a PAYMENT-RESPONSE (settle aborted with a structured SettleResponse)
+      // or a PAYMENT-REQUIRED (verify aborted with corrective hints).
+      // Settle-side aborts for refunds are non-recoverable, so fail fast instead of retrying
+      const settleHeader = response.headers.get("PAYMENT-RESPONSE");
+      if (settleHeader) {
+        const settle = decodePaymentResponseHeader(settleHeader);
+        throw new Error(formatRefundFailure(settle));
       }
 
       const requiredHeader = response.headers.get("PAYMENT-REQUIRED");
@@ -190,9 +206,18 @@ async function executeRefund(
       }
 
       const paymentRequired = decodePaymentRequiredHeader(requiredHeader);
+      const errorCode = paymentRequired.error;
+      if (errorCode && NON_RECOVERABLE_REFUND_ERRORS.has(errorCode)) {
+        throw new Error(`Refund failed: ${errorCode}`);
+      }
+
+      if (attempt >= maxAttempts) {
+        throw new Error(`Refund failed: server returned 402 after ${attempt} attempt(s)`);
+      }
+
       const recovered = await ctx.processCorrectivePaymentRequired(paymentRequired);
       if (!recovered) {
-        throw new Error(`Refund failed: ${paymentRequired.error ?? "unknown"}`);
+        throw new Error(`Refund failed: ${errorCode ?? "unknown"}`);
       }
       continue;
     }
@@ -239,7 +264,14 @@ async function buildRefundVoucherPayload(
     );
   }
 
+  // Skip the network round-trip when our local view of the channel already shows it is fully drained
   const charged = session.chargedCumulativeAmount ?? "0";
+  if (session.balance !== undefined && BigInt(session.balance) <= BigInt(charged)) {
+    throw new Error(
+      `Refund failed: channel has no remaining balance (balance=${session.balance}, chargedCumulativeAmount=${charged})`,
+    );
+  }
+
   const voucherSigner = ctx.voucherSigner ?? ctx.signer;
   const voucher = await signVoucher(voucherSigner, channelId, charged, requirements.network);
 
@@ -255,6 +287,21 @@ async function buildRefundVoucherPayload(
     x402Version: 2,
     payload,
   };
+}
+
+/**
+ * Builds a human-readable error message from a settle failure response.
+ *
+ * @param settle - The decoded SettleResponse from the server's 402 reply.
+ * @returns A formatted error string suitable for `throw new Error(...)`.
+ */
+function formatRefundFailure(settle: SettleResponse): string {
+  const reason = settle.errorReason ?? "unknown_settlement_error";
+  const message = settle.errorMessage;
+  if (message && message !== reason) {
+    return `Refund failed: ${reason}: ${message}`;
+  }
+  return `Refund failed: ${reason}`;
 }
 
 /**
