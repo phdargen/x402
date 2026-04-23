@@ -8,6 +8,7 @@ import {
   MoneyParser,
   SettleResponse,
 } from "@x402/core/types";
+import { convertToTokenAmount, numberToDecimalString } from "@x402/core/utils";
 import type {
   FacilitatorClient,
   SettleContext,
@@ -879,7 +880,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   private defaultMoneyConversion(amount: number, network: Network): AssetAmount {
     const assetInfo = getDefaultAsset(network);
-    const tokenAmount = this.convertToTokenAmount(amount.toString(), assetInfo.decimals);
+    const tokenAmount = convertToTokenAmount(numberToDecimalString(amount), assetInfo.decimals);
 
     return {
       amount: tokenAmount,
@@ -889,23 +890,5 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         version: assetInfo.version,
       },
     };
-  }
-
-  /**
-   * Converts a decimal amount string to its integer token representation.
-   *
-   * @param decimalAmount - Amount as a decimal string (e.g. `"1.23"`).
-   * @param decimals - Token decimals (fractional digit count).
-   * @returns Integer token amount as a string (no decimal point).
-   */
-  private convertToTokenAmount(decimalAmount: string, decimals: number): string {
-    const amount = parseFloat(decimalAmount);
-    if (isNaN(amount)) {
-      throw new Error(`Invalid amount: ${decimalAmount}`);
-    }
-    const [intPart, decPart = ""] = String(amount).split(".");
-    const paddedDec = decPart.padEnd(decimals, "0").slice(0, decimals);
-    const tokenAmount = (intPart + paddedDec).replace(/^0+/, "") || "0";
-    return tokenAmount;
   }
 }
