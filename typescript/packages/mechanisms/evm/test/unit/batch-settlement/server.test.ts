@@ -539,20 +539,6 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
-  it("annotates deposit payloads with a responseExtra.chargedCumulativeAmount", async () => {
-    const config = buildChannelConfig();
-    const channelId = computeChannelId(config);
-    const payload = buildDepositPayload(channelId, config, "10000", "1000");
-    await server.schemeHooks.onBeforeSettle!({
-      paymentPayload: payload,
-      requirements: makeRequirements({ amount: "1000" }),
-    } as never);
-
-    const ann = (payload.payload as { responseExtra?: { chargedCumulativeAmount?: string } })
-      .responseExtra;
-    expect(ann?.chargedCumulativeAmount).toBe("1000");
-  });
-
   it("aborts a voucher payload when no channel record exists", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);

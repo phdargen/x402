@@ -49,15 +49,6 @@ export async function handleBeforeSettle(
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
 
-  if (isBatchSettlementDepositPayload(raw)) {
-    const channelId = raw.voucher.channelId;
-    const channel = await storage.get(channelId);
-    const prevCharged = BigInt(channel?.chargedCumulativeAmount ?? "0");
-    const newCharged = (prevCharged + BigInt(requirements.amount)).toString();
-    raw.responseExtra = { chargedCumulativeAmount: newCharged };
-    return;
-  }
-
   if (!isBatchSettlementVoucherPayload(raw)) {
     return;
   }

@@ -295,8 +295,6 @@ export async function settleDeposit(
 
     const optimisticExtra = {
       channelId: voucher.channelId,
-      chargedCumulativeAmount:
-        payload.responseExtra?.chargedCumulativeAmount ?? requirements.amount,
       balance: (BigInt(String(verified.extra?.balance ?? "0")) + BigInt(deposit.amount)).toString(),
       totalClaimed: verified.extra?.totalClaimed ?? "0",
       withdrawRequestedAt: Number(verified.extra?.withdrawRequestedAt ?? 0),

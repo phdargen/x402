@@ -44,7 +44,6 @@ export type BatchSettlementDepositPayload = {
     };
   };
   voucher: BatchSettlementVoucherFields;
-  responseExtra?: { chargedCumulativeAmount: string };
 };
 
 export type BatchSettlementVoucherPayload = {
