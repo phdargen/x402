@@ -16,8 +16,8 @@ import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
   processSettleResponse,
-  recoverSession,
-} from "./session";
+  recoverChannel,
+} from "./channel";
 import { signVoucher } from "./voucher";
 
 /**
@@ -206,21 +206,21 @@ async function buildRefundVoucherPayload(
   const channelId = computeChannelId(config);
   const key = channelId.toLowerCase();
 
-  let session = await ctx.storage.get(key);
-  if (session === undefined && ctx.signer.readContract) {
-    session = await recoverSession(ctx, requirements);
+  let channel = await ctx.storage.get(key);
+  if (channel === undefined && ctx.signer.readContract) {
+    channel = await recoverChannel(ctx, requirements);
   }
-  if (session === undefined) {
+  if (channel === undefined) {
     throw new Error(
-      "Refund requires an existing channel session; deposit first or call from a context with an EVM RPC",
+      "Refund requires an existing channel record; deposit first or call from a context with an EVM RPC",
     );
   }
 
   // Skip the network round-trip when our local view of the channel already shows it is fully drained
-  const charged = session.chargedCumulativeAmount ?? "0";
-  if (session.balance !== undefined && BigInt(session.balance) <= BigInt(charged)) {
+  const charged = channel.chargedCumulativeAmount ?? "0";
+  if (channel.balance !== undefined && BigInt(channel.balance) <= BigInt(charged)) {
     throw new Error(
-      `Refund failed: channel has no remaining balance (balance=${session.balance}, chargedCumulativeAmount=${charged})`,
+      `Refund failed: channel has no remaining balance (balance=${channel.balance}, chargedCumulativeAmount=${charged})`,
     );
   }
 

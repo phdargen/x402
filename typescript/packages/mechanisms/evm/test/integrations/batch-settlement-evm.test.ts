@@ -19,8 +19,8 @@ import {
 } from "@x402/core/types";
 import { toClientEvmSigner, toFacilitatorEvmSigner } from "../../src";
 import { BatchSettlementEvmScheme as BatchSettlementEvmClient } from "../../src/batch-settlement/client/scheme";
-import { processSettleResponse } from "../../src/batch-settlement/client/session";
-import { InMemoryClientSessionStorage } from "../../src/batch-settlement/client/storage";
+import { processSettleResponse } from "../../src/batch-settlement/client/channel";
+import { InMemoryClientChannelStorage } from "../../src/batch-settlement/client/storage";
 import { BatchSettlementEvmScheme as BatchSettlementEvmServer } from "../../src/batch-settlement/server/scheme";
 import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "../../src/batch-settlement/facilitator/scheme";
 import type { AuthorizerSigner } from "../../src/batch-settlement/types";
@@ -158,7 +158,7 @@ function buildPipeline(): {
   authorizerSigner: AuthorizerSigner;
   publicClient: ReturnType<typeof createPublicClient>;
   batchSettlementClient: BatchSettlementEvmClient;
-  batchSettlementStorage: InMemoryClientSessionStorage;
+  batchSettlementStorage: InMemoryClientChannelStorage;
 } {
   const clientAccount = privateKeyToAccount(CLIENT_PRIVATE_KEY!);
   const facilitatorAccount = privateKeyToAccount(FACILITATOR_PRIVATE_KEY!);
@@ -203,7 +203,7 @@ function buildPipeline(): {
 
   const clientSigner = toClientEvmSigner(clientAccount, publicClient);
   const channelSalt = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
-  const batchSettlementStorage = new InMemoryClientSessionStorage();
+  const batchSettlementStorage = new InMemoryClientChannelStorage();
   const batchSettlementClient = new BatchSettlementEvmClient(clientSigner, {
     depositPolicy: { maxDeposit: "100000", depositMultiplier: 2 },
     salt: channelSalt,
@@ -238,7 +238,7 @@ describe("Batch-Settlement EVM Integration Tests", () => {
     let receiverAddress: `0x${string}`;
     let clientAddress: `0x${string}`;
     let receiverAuthorizer: `0x${string}`;
-    let batchSettlementStorage: InMemoryClientSessionStorage;
+    let batchSettlementStorage: InMemoryClientChannelStorage;
     let publicClient: ReturnType<typeof createPublicClient>;
 
     beforeEach(async () => {

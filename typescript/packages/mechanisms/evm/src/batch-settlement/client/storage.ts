@@ -1,5 +1,5 @@
 /**
- * Client-side channel session fields mirrored from PAYMENT-RESPONSE / recovery flows.
+ * Client-side channel fields mirrored from PAYMENT-RESPONSE / recovery flows.
  */
 export interface BatchSettlementClientContext {
   /** Current cumulative amount charged by the server for this channel */
@@ -16,46 +16,46 @@ export interface BatchSettlementClientContext {
   signature?: `0x${string}`;
 }
 
-export interface ClientSessionStorage {
+export interface ClientChannelStorage {
   get(key: string): Promise<BatchSettlementClientContext | undefined>;
   set(key: string, context: BatchSettlementClientContext): Promise<void>;
   delete(key: string): Promise<void>;
 }
 
 /**
- * Default in-memory {@link ClientSessionStorage} (sessions do not survive process restart).
+ * Default in-memory {@link ClientChannelStorage} (channel records do not survive process restart).
  */
-export class InMemoryClientSessionStorage implements ClientSessionStorage {
-  private readonly sessions = new Map<string, BatchSettlementClientContext>();
+export class InMemoryClientChannelStorage implements ClientChannelStorage {
+  private readonly channels = new Map<string, BatchSettlementClientContext>();
 
   /**
-   * Returns the session for `key` if present.
+   * Returns the channel record for `key` if present.
    *
-   * @param key - Session storage key (channelId).
+   * @param key - Channel storage key (channelId).
    * @returns Persisted context or undefined.
    */
   async get(key: string): Promise<BatchSettlementClientContext | undefined> {
-    return this.sessions.get(key);
+    return this.channels.get(key);
   }
 
   /**
-   * Stores or replaces the session for `key`.
+   * Stores or replaces the channel record for `key`.
    *
-   * @param key - Session storage key.
+   * @param key - Channel storage key.
    * @param context - Channel fields to persist.
    * @returns Resolves when stored.
    */
   async set(key: string, context: BatchSettlementClientContext): Promise<void> {
-    this.sessions.set(key, context);
+    this.channels.set(key, context);
   }
 
   /**
-   * Removes the session for `key` if it exists.
+   * Removes the channel record for `key` if it exists.
    *
-   * @param key - Session storage key.
+   * @param key - Channel storage key.
    * @returns Resolves when removed.
    */
   async delete(key: string): Promise<void> {
-    this.sessions.delete(key);
+    this.channels.delete(key);
   }
 }

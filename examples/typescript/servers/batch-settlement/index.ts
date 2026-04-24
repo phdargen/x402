@@ -1,5 +1,5 @@
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { BatchSettlementEvmScheme, FileSessionStorage } from "@x402/evm/batch-settlement/server";
+import { BatchSettlementEvmScheme, FileChannelStorage } from "@x402/evm/batch-settlement/server";
 import { paymentMiddleware, setSettlementOverrides, x402ResourceServer } from "@x402/express";
 import { config } from "dotenv";
 import express from "express";
@@ -36,7 +36,7 @@ const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
   ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
   withdrawDelay,
-  ...(storageDir ? { storage: new FileSessionStorage({ directory: storageDir }) } : {}),
+  ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
 });
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);

@@ -5,7 +5,7 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import type { PaymentPayload, SettleResponse } from "@x402/core/types";
-import { BatchSettlementEvmScheme, FileSessionStorage } from "@x402/evm/batch-settlement/server";
+import { BatchSettlementEvmScheme, FileChannelStorage } from "@x402/evm/batch-settlement/server";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
@@ -85,7 +85,7 @@ const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
   ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
   withdrawDelay,
-  ...(storageDir ? { storage: new FileSessionStorage({ directory: storageDir }) } : {}),
+  ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
 });
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);

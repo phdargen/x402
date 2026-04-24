@@ -3,7 +3,7 @@ import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
 import type { ChannelConfig } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import type { ChannelSession } from "./storage";
+import type { Channel } from "./storage";
 import { readExtraNumber, readExtraString } from "./utils";
 
 /**
@@ -16,8 +16,8 @@ import { readExtraNumber, readExtraString } from "./utils";
  * Refund vouchers (`refund: true`) are zero-charge: the expected
  * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
  *
- * When no local session exists, verification is delegated to the facilitator (which checks on-chain state);
- * `handleAfterVerify` then rebuilds the session from the verify response.
+ * When no local channel record exists, verification is delegated to the facilitator (which checks on-chain state);
+ * `handleAfterVerify` then rebuilds the channel record from the verify response.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Verify lifecycle context (payload, requirements, and related state).
@@ -38,15 +38,15 @@ export async function handleBeforeVerify(
   }
 
   const isRefund = raw.refund === true;
-  const session = await scheme.getStorage().get(raw.channelId);
+  const channel = await scheme.getStorage().get(raw.channelId);
 
-  if (!session) {
+  if (!channel) {
     return;
   }
 
   const expectedMaxClaimable = isRefund
-    ? BigInt(session.chargedCumulativeAmount)
-    : BigInt(session.chargedCumulativeAmount) + BigInt(requirements.amount);
+    ? BigInt(channel.chargedCumulativeAmount)
+    : BigInt(channel.chargedCumulativeAmount) + BigInt(requirements.amount);
 
   if (BigInt(raw.maxClaimableAmount) === expectedMaxClaimable) {
     return;
@@ -54,9 +54,9 @@ export async function handleBeforeVerify(
 
   requirements.extra = {
     ...requirements.extra,
-    chargedCumulativeAmount: session.chargedCumulativeAmount,
-    signedMaxClaimable: session.signedMaxClaimable,
-    signature: session.signature,
+    chargedCumulativeAmount: channel.chargedCumulativeAmount,
+    signedMaxClaimable: channel.signedMaxClaimable,
+    signature: channel.signature,
   };
 
   return {
@@ -69,7 +69,7 @@ export async function handleBeforeVerify(
 /**
  * Lifecycle hook: runs after the facilitator verifies a payment.
  *
- * Persists channel session state (balance, totalClaimed, voucher info) so that
+ * Persists channel state (balance, totalClaimed, voucher info) so that
  * subsequent requests can correctly calculate cumulative amounts and detect stale state.
  *
  * For refund vouchers (`refund: true`), additionally returns a `skipHandler`
@@ -128,7 +128,7 @@ export async function handleAfterVerify(
   if (!resolvedConfig) {
     return;
   }
-  const session: ChannelSession = {
+  const channel: Channel = {
     channelId,
     channelConfig: resolvedConfig,
     payer: payer.toLowerCase(),
@@ -141,7 +141,7 @@ export async function handleAfterVerify(
     refundNonce,
     lastRequestTimestamp: Date.now(),
   };
-  await storage.compareAndSet(channelId, prev?.chargedCumulativeAmount ?? totalClaimed, session);
+  await storage.compareAndSet(channelId, prev?.chargedCumulativeAmount ?? totalClaimed, channel);
 
   if (isRefundVoucher) {
     return {

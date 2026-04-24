@@ -13,12 +13,12 @@ import { BatchSettlementChannelManager } from "./channelManager";
 import { getDefaultAsset } from "../../shared/defaultAssets";
 import type { AuthorizerSigner } from "../types";
 import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
-import { InMemorySessionStorage, SessionStorage } from "./storage";
+import { InMemoryChannelStorage, ChannelStorage } from "./storage";
 import { handleAfterVerify, handleBeforeVerify } from "./verify";
 import { handleAfterSettle, handleBeforeSettle } from "./settle";
 
 export interface BatchSettlementEvmSchemeServerConfig {
-  storage?: SessionStorage;
+  storage?: ChannelStorage;
   receiverAuthorizerSigner?: AuthorizerSigner;
   withdrawDelay?: number;
 }
@@ -31,7 +31,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly schemeHooks: SchemeServerHooks;
 
   private moneyParsers: MoneyParser[] = [];
-  private readonly storage: SessionStorage;
+  private readonly storage: ChannelStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
   private readonly withdrawDelay: number;
@@ -44,7 +44,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   constructor(receiverAddress: `0x${string}`, config?: BatchSettlementEvmSchemeServerConfig) {
     this.receiverAddress = receiverAddress;
-    this.storage = config?.storage ?? new InMemorySessionStorage();
+    this.storage = config?.storage ?? new InMemoryChannelStorage();
     this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
     this.withdrawDelay = config?.withdrawDelay ?? MIN_WITHDRAW_DELAY;
     this.schemeHooks = {
@@ -142,11 +142,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Returns the underlying session storage instance.
+   * Returns the underlying channel storage instance.
    *
-   * @returns The configured {@link SessionStorage} backend.
+   * @returns The configured {@link ChannelStorage} backend.
    */
-  getStorage(): SessionStorage {
+  getStorage(): ChannelStorage {
     return this.storage;
   }
 

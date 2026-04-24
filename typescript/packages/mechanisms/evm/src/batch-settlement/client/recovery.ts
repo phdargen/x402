@@ -8,7 +8,7 @@ import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
   readChannelBalanceAndTotalClaimed,
-} from "./session";
+} from "./channel";
 
 /**
  * Handles a corrective 402 response from the server when the client's
@@ -16,11 +16,11 @@ import {
  *
  * Validates the server-provided state (chargedCumulativeAmount,
  * signedMaxClaimable, signature) against on-chain data and the client's own
- * signing key, then updates the local session if everything checks out.
+ * signing key, then updates the local channel state if everything checks out.
  *
  * @param deps - Signer + storage + identity inputs.
  * @param paymentRequired - The decoded 402 response body.
- * @returns `true` if the session was successfully resynced and the request can be retried.
+ * @returns `true` if the channel state was successfully resynced and the request can be retried.
  */
 export async function processCorrectivePaymentRequired(
   deps: BatchSettlementClientDeps,
@@ -52,13 +52,13 @@ export async function processCorrectivePaymentRequired(
 }
 
 /**
- * Recovers session from a corrective 402 that includes a server-provided
+ * Recovers channel state from a corrective 402 that includes a server-provided
  * voucher signature. Verifies the signature matches the client's own signing
  * key before accepting.
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
- * @returns `true` when local session state was updated successfully.
+ * @returns `true` when local channel state was updated successfully.
  */
 export async function recoverFromSignature(
   deps: BatchSettlementClientDeps,
@@ -124,15 +124,15 @@ export async function recoverFromSignature(
 }
 
 /**
- * Recovers session purely from on-chain state when the server has no stored
- * voucher (e.g. after a cooperative refund deleted the session). The on-chain
+ * Recovers channel state purely from on-chain state when the server has no stored
+ * voucher (e.g. after a cooperative refund deleted the channel record). The on-chain
  * `totalClaimed` becomes the new baseline — no signature verification is
  * needed because the contract is the source of truth when no outstanding
  * voucher exists.
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
- * @returns `true` when local session state was updated from on-chain data.
+ * @returns `true` when local channel state was updated from on-chain data.
  */
 export async function recoverFromOnChainState(
   deps: BatchSettlementClientDeps,

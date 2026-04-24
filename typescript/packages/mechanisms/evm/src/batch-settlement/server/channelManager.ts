@@ -10,7 +10,7 @@ import type { BatchSettlementEvmScheme } from "./scheme";
 import { computeChannelId } from "../utils";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
-import type { ChannelSession } from "./storage";
+import type { Channel } from "./storage";
 
 export interface ChannelManagerConfig {
   scheme: BatchSettlementEvmScheme;
@@ -177,26 +177,26 @@ export class BatchSettlementChannelManager {
    */
   async refund(channelIds?: string[]): Promise<RefundResult> {
     const storage = this.scheme.getStorage();
-    const sessions = await storage.list();
+    const channels = await storage.list();
 
     const targets = channelIds
-      ? sessions.filter(s => channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()))
-      : sessions;
+      ? channels.filter(s => channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()))
+      : channels;
 
     if (targets.length === 0) {
       return { channels: [], transaction: "" };
     }
 
     const claims: BatchSettlementVoucherClaim[] = [];
-    for (const s of targets) {
-      if (BigInt(s.chargedCumulativeAmount) > BigInt(s.totalClaimed)) {
+    for (const c of targets) {
+      if (BigInt(c.chargedCumulativeAmount) > BigInt(c.totalClaimed)) {
         claims.push({
           voucher: {
-            channel: s.channelConfig,
-            maxClaimableAmount: s.signedMaxClaimable,
+            channel: c.channelConfig,
+            maxClaimableAmount: c.signedMaxClaimable,
           },
-          signature: s.signature as `0x${string}`,
-          totalClaimed: s.chargedCumulativeAmount,
+          signature: c.signature as `0x${string}`,
+          totalClaimed: c.chargedCumulativeAmount,
         });
       }
     }
@@ -245,12 +245,12 @@ export class BatchSettlementChannelManager {
       throw new Error(formatFacilitatorFailure("Refund", response));
     }
 
-    for (const s of targets) {
-      await storage.delete(s.channelId);
+    for (const c of targets) {
+      await storage.delete(c.channelId);
     }
 
     return {
-      channels: targets.map(s => s.channelId),
+      channels: targets.map(c => c.channelId),
       transaction: response.transaction,
     };
   }
@@ -267,27 +267,27 @@ export class BatchSettlementChannelManager {
    * @returns Array of {@link BatchSettlementVoucherClaim} entries for batch submission.
    */
   async getClaimableVouchers(opts?: { idleSecs?: number }): Promise<BatchSettlementVoucherClaim[]> {
-    const sessions = await this.scheme.getStorage().list();
+    const channels = await this.scheme.getStorage().list();
     const now = Date.now();
     const claims: BatchSettlementVoucherClaim[] = [];
 
-    for (const s of sessions) {
-      if (BigInt(s.chargedCumulativeAmount) <= BigInt(s.totalClaimed)) {
+    for (const c of channels) {
+      if (BigInt(c.chargedCumulativeAmount) <= BigInt(c.totalClaimed)) {
         continue;
       }
       if (opts?.idleSecs !== undefined) {
-        const idleMs = now - s.lastRequestTimestamp;
+        const idleMs = now - c.lastRequestTimestamp;
         if (idleMs < opts.idleSecs * 1000) {
           continue;
         }
       }
       claims.push({
         voucher: {
-          channel: s.channelConfig,
-          maxClaimableAmount: s.signedMaxClaimable,
+          channel: c.channelConfig,
+          maxClaimableAmount: c.signedMaxClaimable,
         },
-        signature: s.signature as `0x${string}`,
-        totalClaimed: s.chargedCumulativeAmount,
+        signature: c.signature as `0x${string}`,
+        totalClaimed: c.chargedCumulativeAmount,
       });
     }
 
@@ -295,13 +295,13 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Returns sessions that have a pending payer-initiated withdrawal.
+   * Returns channels that have a pending payer-initiated withdrawal.
    *
-   * @returns All stored sessions with `withdrawRequestedAt` set.
+   * @returns All stored channel records with `withdrawRequestedAt` set.
    */
-  async getWithdrawalPendingSessions(): Promise<ChannelSession[]> {
-    const sessions = await this.scheme.getStorage().list();
-    return sessions.filter(s => s.withdrawRequestedAt > 0);
+  async getWithdrawalPendingSessions(): Promise<Channel[]> {
+    const channels = await this.scheme.getStorage().list();
+    return channels.filter(s => s.withdrawRequestedAt > 0);
   }
 
   /**
@@ -593,8 +593,8 @@ export class BatchSettlementChannelManager {
     }
 
     if (cfg.settleThreshold !== undefined) {
-      const sessions = await this.scheme.getStorage().list();
-      const unsettled = sessions.reduce((sum, s) => sum + BigInt(s.totalClaimed), 0n);
+      const channels = await this.scheme.getStorage().list();
+      const unsettled = channels.reduce((sum, s) => sum + BigInt(s.totalClaimed), 0n);
       if (unsettled > BigInt(cfg.settleThreshold)) {
         return true;
       }
@@ -612,21 +612,21 @@ export class BatchSettlementChannelManager {
    */
   private async getIdleChannelsForRefund(idleSecs: number): Promise<string[]> {
     const storage = this.scheme.getStorage();
-    const sessions = await storage.list();
+    const channels = await storage.list();
     const now = Date.now();
     const idleMs = idleSecs * 1000;
-    const channels: string[] = [];
+    const result: string[] = [];
 
-    for (const s of sessions) {
-      if (BigInt(s.balance) === 0n) {
+    for (const c of channels) {
+      if (BigInt(c.balance) === 0n) {
         continue;
       }
-      if (now - s.lastRequestTimestamp >= idleMs) {
-        channels.push(s.channelId);
+      if (now - c.lastRequestTimestamp >= idleMs) {
+        result.push(c.channelId);
       }
     }
 
-    return channels;
+    return result;
   }
 
   /**
@@ -708,16 +708,16 @@ export class BatchSettlementChannelManager {
     const storage = this.scheme.getStorage();
     for (const claim of claims) {
       const channelId = computeChannelId(claim.voucher.channel);
-      const session = await storage.get(channelId);
-      if (!session) {
+      const channel = await storage.get(channelId);
+      if (!channel) {
         continue;
       }
       const claimedAmount = BigInt(claim.totalClaimed);
-      if (claimedAmount <= BigInt(session.totalClaimed)) {
+      if (claimedAmount <= BigInt(channel.totalClaimed)) {
         continue;
       }
       await storage.set(channelId, {
-        ...session,
+        ...channel,
         totalClaimed: claimedAmount.toString(),
       });
     }

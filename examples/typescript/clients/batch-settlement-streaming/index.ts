@@ -1,11 +1,11 @@
 import { isBatchSettlementDepositPayload, toClientEvmSigner } from "@x402/evm";
 import {
   BatchSettlementEvmScheme,
-  FileClientSessionStorage,
-  InMemoryClientSessionStorage,
+  FileClientChannelStorage,
+  InMemoryClientChannelStorage,
   computeChannelId,
 } from "@x402/evm/batch-settlement/client";
-import type { ClientSessionStorage } from "@x402/evm/batch-settlement/client";
+import type { ClientChannelStorage } from "@x402/evm/batch-settlement/client";
 import { x402Client, x402HTTPClient } from "@x402/fetch";
 import {
   decodePaymentRequiredHeader,
@@ -68,14 +68,14 @@ const voucherSigner = evmVoucherSignerPrivateKey
 
 const effectiveVoucherSigner = voucherSigner ?? signer;
 
-const sessionStorage: ClientSessionStorage = storageDir
-  ? new FileClientSessionStorage({ directory: storageDir })
-  : new InMemoryClientSessionStorage();
+const channelStorage: ClientChannelStorage = storageDir
+  ? new FileClientChannelStorage({ directory: storageDir })
+  : new InMemoryClientChannelStorage();
 
 const batchedScheme = new BatchSettlementEvmScheme(signer, {
   depositPolicy,
   salt: channelSalt,
-  storage: sessionStorage,
+  storage: channelStorage,
   ...(voucherSigner ? { voucherSigner } : {}),
 });
 

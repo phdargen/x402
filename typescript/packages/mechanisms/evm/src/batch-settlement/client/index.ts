@@ -4,9 +4,9 @@ export type {
   BatchSettlementDepositPolicy,
   BatchSettlementEvmSchemeOptions,
 } from "./scheme";
-export type { ClientSessionStorage } from "./storage";
-export { InMemoryClientSessionStorage } from "./storage";
-export { FileClientSessionStorage } from "./fileStorage";
+export type { ClientChannelStorage } from "./storage";
+export { InMemoryClientChannelStorage } from "./storage";
+export { FileClientChannelStorage } from "./fileStorage";
 export { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
 export { signVoucher } from "./voucher";
 export { refundChannel } from "./refund";
@@ -23,15 +23,15 @@ export type { ResolvedClientOptions } from "./config";
 
 export {
   buildChannelConfig,
-  getSession,
-  hasSession,
+  getChannel,
+  hasChannel,
   processPaymentResponse,
   processSettleResponse,
   readChannelBalanceAndTotalClaimed,
-  recoverSession,
-  updateSessionAfterRefund,
-} from "./session";
-export type { BatchSettlementClientDeps } from "./session";
+  recoverChannel,
+  updateChannelAfterRefund,
+} from "./channel";
+export type { BatchSettlementClientDeps } from "./channel";
 
 export {
   processCorrectivePaymentRequired,

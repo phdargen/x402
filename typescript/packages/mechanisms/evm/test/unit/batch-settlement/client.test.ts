@@ -5,13 +5,13 @@ import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/client/s
 import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
-  getSession,
-  hasSession,
+  getChannel,
+  hasChannel,
   processSettleResponse,
-  recoverSession,
-} from "../../../src/batch-settlement/client/session";
+  recoverChannel,
+} from "../../../src/batch-settlement/client/channel";
 import { processCorrectivePaymentRequired } from "../../../src/batch-settlement/client/recovery";
-import { InMemoryClientSessionStorage } from "../../../src/batch-settlement/client/storage";
+import { InMemoryClientChannelStorage } from "../../../src/batch-settlement/client/storage";
 import { computeChannelId } from "../../../src/batch-settlement/utils";
 import {
   isBatchSettlementDepositPayload,
@@ -69,7 +69,7 @@ function makeRequirements(overrides?: Partial<PaymentRequirements>): PaymentRequ
 
 interface ClientShape {
   signer: ClientEvmSigner;
-  storage?: InMemoryClientSessionStorage;
+  storage?: InMemoryClientChannelStorage;
   salt?: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
   voucherSigner?: ClientEvmSigner;
@@ -78,7 +78,7 @@ interface ClientShape {
 function makeDeps(c: ClientShape): BatchSettlementClientDeps {
   return {
     signer: c.signer,
-    storage: c.storage ?? new InMemoryClientSessionStorage(),
+    storage: c.storage ?? new InMemoryClientChannelStorage(),
     salt: c.salt ?? DEFAULT_SALT,
     payerAuthorizer: c.payerAuthorizer,
     voucherSigner: c.voucherSigner,
@@ -101,7 +101,7 @@ describe("BatchSettlementEvmScheme — construction", () => {
   });
 
   it("accepts full options object", () => {
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
       storage,
       depositPolicy: { depositMultiplier: 2 },
@@ -249,7 +249,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 
   it("returns a voucher-only payload when balance is sufficient", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
@@ -268,7 +268,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
   it("creates a top-up deposit when balance is insufficient and autoTopUp is on", async () => {
     const readContract = vi.fn().mockResolvedValue([100n, 0n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
@@ -285,7 +285,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 
   it("does not auto-top-up when autoTopUp is false (returns voucher even if low balance)", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, {
       storage,
       depositPolicy: { autoTopUp: false },
@@ -305,7 +305,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 
   it("createPaymentPayload no longer attaches refund flags (refund() handles it)", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
@@ -326,7 +326,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
   it("uses voucherSigner to sign the voucher when provided", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const voucherSigner = buildSigner(VOUCHER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage, voucherSigner });
 
     const config = buildChannelConfig(makeDeps({ signer, voucherSigner }), makeRequirements());
@@ -386,7 +386,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 describe("processSettleResponse / schemeHooks", () => {
   it("updates session fields from settle response extras", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000001";
 
@@ -412,7 +412,7 @@ describe("processSettleResponse / schemeHooks", () => {
 
   it("ignores settle responses with no channelId", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     await processSettleResponse(storage, {
       success: true,
@@ -430,9 +430,9 @@ describe("processSettleResponse / schemeHooks", () => {
     expect(all.every(c => c === undefined)).toBe(true);
   });
 
-  it("deletes session when refund flag is set in settle response", async () => {
+  it("deletes channel record when refund flag is set in settle response", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000002";
     await storage.set(channelId.toLowerCase(), { chargedCumulativeAmount: "1000" });
@@ -450,7 +450,7 @@ describe("processSettleResponse / schemeHooks", () => {
 
   it("schemeHooks.onPaymentResponse delegates to processSettleResponse", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000003";
@@ -469,13 +469,13 @@ describe("processSettleResponse / schemeHooks", () => {
   });
 });
 
-describe("recoverSession / hasSession / getSession", () => {
-  it("recoverSession reads on-chain channels() and stores context", async () => {
+describe("recoverChannel / hasChannel / getChannel", () => {
+  it("recoverChannel reads on-chain channels() and stores context", async () => {
     const readContract = vi.fn().mockResolvedValue([5000n, 1000n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
-    const ctx = await recoverSession(makeDeps({ signer, storage }), makeRequirements());
+    const ctx = await recoverChannel(makeDeps({ signer, storage }), makeRequirements());
     expect(ctx.balance).toBe("5000");
     expect(ctx.totalClaimed).toBe("1000");
     expect(ctx.chargedCumulativeAmount).toBe("1000");
@@ -485,24 +485,24 @@ describe("recoverSession / hasSession / getSession", () => {
     expect((await storage.get(id.toLowerCase()))?.balance).toBe("5000");
   });
 
-  it("recoverSession throws when readContract is unavailable", async () => {
+  it("recoverChannel throws when readContract is unavailable", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
-    await expect(recoverSession(makeDeps({ signer, storage }), makeRequirements())).rejects.toThrow(
+    const storage = new InMemoryClientChannelStorage();
+    await expect(recoverChannel(makeDeps({ signer, storage }), makeRequirements())).rejects.toThrow(
       /readContract/,
     );
   });
 
-  it("hasSession / getSession reflect storage state", async () => {
-    const storage = new InMemoryClientSessionStorage();
+  it("hasChannel / getChannel reflect storage state", async () => {
+    const storage = new InMemoryClientChannelStorage();
 
     const id = "0xabc1230000000000000000000000000000000000000000000000000000000010";
-    expect(await hasSession(storage, id)).toBe(false);
-    expect(await getSession(storage, id)).toBeUndefined();
+    expect(await hasChannel(storage, id)).toBe(false);
+    expect(await getChannel(storage, id)).toBeUndefined();
 
     await storage.set(id.toLowerCase(), { chargedCumulativeAmount: "100" });
-    expect(await hasSession(storage, id)).toBe(true);
-    expect((await getSession(storage, id))?.chargedCumulativeAmount).toBe("100");
+    expect(await hasChannel(storage, id)).toBe(true);
+    expect((await getChannel(storage, id))?.chargedCumulativeAmount).toBe("100");
   });
 });
 
@@ -513,7 +513,7 @@ describe("processCorrectivePaymentRequired", () => {
 
   it("returns false for unrelated error codes", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -525,7 +525,7 @@ describe("processCorrectivePaymentRequired", () => {
 
   it("returns false when no batch-settlement accept entry is present", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -538,7 +538,7 @@ describe("processCorrectivePaymentRequired", () => {
   it("recoverFromOnChainState updates session when no signature is present", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 2500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -556,7 +556,7 @@ describe("processCorrectivePaymentRequired", () => {
   it("recoverFromSignature succeeds when signature comes from this client's signer", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
@@ -587,7 +587,7 @@ describe("processCorrectivePaymentRequired", () => {
   it("recoverFromSignature returns false when signature is from a different signer", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const otherSigner = buildSigner(VOUCHER_PRIVATE_KEY);
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
@@ -612,7 +612,7 @@ describe("processCorrectivePaymentRequired", () => {
   it("recoverFromSignature returns false when charged > signedMaxClaimable", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const accept = makeAccept({
       chargedCumulativeAmount: "2000",
@@ -631,7 +631,7 @@ describe("processCorrectivePaymentRequired", () => {
   it("recoverFromSignature returns false when charged < on-chain totalClaimed", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 5000n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
@@ -713,9 +713,9 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     return new Response(null, { status: 200, headers: { "PAYMENT-RESPONSE": header } });
   }
 
-  it("performs a full refund: probes, sends voucher, deletes session", async () => {
+  it("performs a full refund: probes, sends voucher, deletes channel record", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
@@ -741,9 +741,9 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
   });
 
-  it("performs a partial refund: keeps the session and updates balance", async () => {
+  it("performs a partial refund: keeps the channel record and updates balance", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
@@ -792,7 +792,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
   it("recovers from a corrective 402 and retries once", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
@@ -829,7 +829,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
 
   it("fails fast (no retry) when server returns 402 with batch_settlement_refund_no_balance", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
@@ -864,7 +864,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
 
   it("fails fast on a verify-side 402 with a non-recoverable refund error", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
@@ -895,7 +895,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
 
   it("throws before any PAYMENT-SIGNATURE request when local session shows the channel is drained", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const storage = new InMemoryClientSessionStorage();
+    const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());

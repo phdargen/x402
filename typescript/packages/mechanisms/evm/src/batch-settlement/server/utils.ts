@@ -3,29 +3,29 @@ import type {
   BatchSettlementRefundWithSignaturePayload,
 } from "../types";
 import { computeChannelId } from "../utils";
-import type { ChannelSession } from "./storage";
+import type { Channel } from "./storage";
 
 /**
- * Builds the payment `responseExtra` snapshot after a refund is applied to the session.
+ * Builds the payment `responseExtra` snapshot after a refund is applied to the channel record.
  *
- * @param session - Current channel session before the refund.
+ * @param channel - Current channel record before the refund.
  * @param payload - Refund payload (amount and claims) used to compute post-refund totals.
  * @returns `BatchSettlementPaymentResponseExtra` reflecting updated balance and refund nonce.
  */
 export function buildRefundResponseSnapshot(
-  session: ChannelSession,
+  channel: Channel,
   payload: BatchSettlementRefundWithSignaturePayload,
 ): BatchSettlementPaymentResponseExtra {
   const finalClaimed =
-    payload.claims[payload.claims.length - 1]?.totalClaimed ?? session.chargedCumulativeAmount;
+    payload.claims[payload.claims.length - 1]?.totalClaimed ?? channel.chargedCumulativeAmount;
 
   return {
     channelId: computeChannelId(payload.config),
     chargedCumulativeAmount: finalClaimed,
-    balance: (BigInt(session.balance) - BigInt(payload.amount)).toString(),
-    totalClaimed: payload.claims[payload.claims.length - 1]?.totalClaimed ?? session.totalClaimed,
+    balance: (BigInt(channel.balance) - BigInt(payload.amount)).toString(),
+    totalClaimed: payload.claims[payload.claims.length - 1]?.totalClaimed ?? channel.totalClaimed,
     withdrawRequestedAt: 0,
-    refundNonce: String(session.refundNonce + 1),
+    refundNonce: String(channel.refundNonce + 1),
     refundedAmount: payload.amount,
   };
 }

@@ -73,13 +73,13 @@ The server claims any outstanding vouchers and then executes `refundWithSignatur
 
 ### Persistence
 
-By default, channel state is stored in memory. For long-lived clients, use `FileClientSessionStorage`:
+By default, channel state is stored in memory. For long-lived clients, use `FileClientChannelStorage`:
 
 ```typescript
-import { FileClientSessionStorage } from "@x402/evm/batch-settlement/client";
+import { FileClientChannelStorage } from "@x402/evm/batch-settlement/client";
 
 const scheme = new BatchSettlementEvmScheme(signer, {
-  storage: new FileClientSessionStorage({ directory: "./channels" }),
+  storage: new FileClientChannelStorage({ directory: "./channels" }),
 });
 ```
 
@@ -93,13 +93,13 @@ Register the scheme with an `x402ResourceServer` and pair it with a `ChannelMana
 import { x402ResourceServer } from "@x402/core/server";
 import {
   BatchSettlementEvmScheme,
-  FileSessionStorage,
+  FileChannelStorage,
 } from "@x402/evm/batch-settlement/server";
 
 const scheme = new BatchSettlementEvmScheme(receiverAddress, {
   receiverAuthorizerSigner,        // optional: self-managed authorizer (recommended)
   withdrawDelay: 900,              // 15 min – 30 days
-  storage: new FileSessionStorage({ directory: "./sessions" }),
+  storage: new FileChannelStorage({ directory: "./channels" }),
 });
 
 const server = new x402ResourceServer(facilitatorClient).register("eip155:84532", scheme);

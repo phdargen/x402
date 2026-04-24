@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
 import {
-  InMemorySessionStorage,
-  type ChannelSession,
-} from "../../../src/batch-settlement/server/storage";
-import {
-  InMemoryClientSessionStorage,
+  InMemoryClientChannelStorage,
   type BatchSettlementClientContext,
 } from "../../../src/batch-settlement/client/storage";
 import type { ChannelConfig } from "../../../src/batch-settlement/types";
@@ -21,7 +18,7 @@ const CHANNEL_CONFIG: ChannelConfig = {
 
 const CHANNEL_ID = "0xabc1230000000000000000000000000000000000000000000000000000000001";
 
-const buildSession = (overrides: Partial<ChannelSession> = {}): ChannelSession => ({
+const buildSession = (overrides: Partial<Channel> = {}): Channel => ({
   channelId: CHANNEL_ID,
   channelConfig: CHANNEL_CONFIG,
   payer: CHANNEL_CONFIG.payer,
@@ -36,11 +33,11 @@ const buildSession = (overrides: Partial<ChannelSession> = {}): ChannelSession =
   ...overrides,
 });
 
-describe("InMemorySessionStorage", () => {
-  let storage: InMemorySessionStorage;
+describe("InMemoryChannelStorage", () => {
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
   });
 
   describe("get/set/delete", () => {
@@ -135,11 +132,11 @@ describe("InMemorySessionStorage", () => {
   });
 });
 
-describe("InMemoryClientSessionStorage", () => {
-  let storage: InMemoryClientSessionStorage;
+describe("InMemoryClientChannelStorage", () => {
+  let storage: InMemoryClientChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemoryClientSessionStorage();
+    storage = new InMemoryClientChannelStorage();
   });
 
   it("returns undefined when no context exists", async () => {

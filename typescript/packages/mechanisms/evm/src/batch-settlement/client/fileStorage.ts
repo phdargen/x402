@@ -2,23 +2,23 @@ import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
-import type { FileSessionStorageOptions } from "../types";
-import type { ClientSessionStorage, BatchSettlementClientContext } from "./storage";
+import type { FileChannelStorageOptions } from "../types";
+import type { ClientChannelStorage, BatchSettlementClientContext } from "./storage";
 
 /**
- * Node.js file-backed {@link ClientSessionStorage} for the batched client scheme.
- * Each channel's context is persisted as `{root}/client/{channelId}.json` so that sessions
- * survive process restarts.
+ * Node.js file-backed {@link ClientChannelStorage} for the batched client scheme.
+ * Each channel's context is persisted as `{root}/client/{channelId}.json` so that channel
+ * records survive process restarts.
  */
-export class FileClientSessionStorage implements ClientSessionStorage {
+export class FileClientChannelStorage implements ClientChannelStorage {
   private readonly root: string;
 
   /**
-   * Creates file-backed client session storage under the given root directory.
+   * Creates file-backed client channel storage under the given root directory.
    *
    * @param options - Configuration including the storage root directory.
    */
-  constructor(options: FileSessionStorageOptions) {
+  constructor(options: FileChannelStorageOptions) {
     this.root = options.directory;
   }
 

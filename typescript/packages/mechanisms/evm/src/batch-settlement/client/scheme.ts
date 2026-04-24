@@ -26,9 +26,9 @@ import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
   processSettleResponse,
-  recoverSession,
-} from "./session";
-import type { ClientSessionStorage } from "./storage";
+  recoverChannel,
+} from "./channel";
+import type { ClientChannelStorage } from "./storage";
 import { signVoucher } from "./voucher";
 
 export type { BatchSettlementClientContext } from "./storage";
@@ -61,7 +61,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     },
   };
 
-  private readonly storage: ClientSessionStorage;
+  private readonly storage: ClientChannelStorage;
   private readonly depositPolicy: BatchSettlementDepositPolicy | undefined;
   private readonly salt: `0x${string}`;
   private readonly payerAuthorizer: `0x${string}` | undefined;
@@ -122,7 +122,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
 
     let batchedCtx = await this.storage.get(key);
     if (batchedCtx === undefined && this.signer.readContract) {
-      batchedCtx = await recoverSession(deps, paymentRequirements);
+      batchedCtx = await recoverChannel(deps, paymentRequirements);
     }
     batchedCtx = batchedCtx ?? {};
 
@@ -185,17 +185,17 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   }
 
   /**
-   * Updates local session state from a settle response.
+   * Updates local channel state from a settle response.
    *
    * @param settle - The parsed settle response from the server.
-   * @returns Resolves when local session state has been updated.
+   * @returns Resolves when local channel state has been updated.
    */
   async processSettleResponse(settle: SettleResponse): Promise<void> {
     return processSettleResponse(this.storage, settle);
   }
 
   /**
-   * Resyncs local session state from a corrective 402 response.
+   * Resyncs local channel state from a corrective 402 response.
    *
    * @param paymentRequired - The decoded 402 response body.
    * @returns `true` if local state was successfully resynced and a retry is warranted.
@@ -217,7 +217,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
 
   /**
    * Bundles the class state into the {@link BatchSettlementClientDeps} shape
-   * consumed by the `session`, `recovery`, and `refund` modules.
+   * consumed by the `channel`, `recovery`, and `refund` modules.
    *
    * @returns Client deps wrapping the scheme's own signer and storage.
    */

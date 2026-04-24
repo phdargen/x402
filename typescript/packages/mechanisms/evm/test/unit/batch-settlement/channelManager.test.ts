@@ -8,10 +8,7 @@ import {
   type RefundResult,
 } from "../../../src/batch-settlement/server/channelManager";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/scheme";
-import {
-  InMemorySessionStorage,
-  type ChannelSession,
-} from "../../../src/batch-settlement/server/storage";
+import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
 import { computeChannelId } from "../../../src/batch-settlement/utils";
 import type { ChannelConfig, AuthorizerSigner } from "../../../src/batch-settlement/types";
 import type { FacilitatorClient } from "@x402/core/server";
@@ -58,7 +55,7 @@ function buildChannelConfig(saltSuffix = "00"): ChannelConfig {
   };
 }
 
-function buildSession(overrides: Partial<ChannelSession> = {}): ChannelSession {
+function buildSession(overrides: Partial<Channel> = {}): Channel {
   const config = overrides.channelConfig ?? buildChannelConfig();
   const channelId = overrides.channelId ?? computeChannelId(config);
   return {
@@ -113,14 +110,14 @@ function buildFacilitator(
 function buildManager(opts?: {
   authorizerSigner?: AuthorizerSigner;
   facilitator?: FakeFacilitator;
-  storage?: InMemorySessionStorage;
+  storage?: InMemoryChannelStorage;
 }): {
   manager: BatchSettlementChannelManager;
   scheme: BatchSettlementEvmScheme;
   facilitator: FakeFacilitator;
-  storage: InMemorySessionStorage;
+  storage: InMemoryChannelStorage;
 } {
-  const storage = opts?.storage ?? new InMemorySessionStorage();
+  const storage = opts?.storage ?? new InMemoryChannelStorage();
   const scheme = new BatchSettlementEvmScheme(RECEIVER, {
     storage,
     receiverAuthorizerSigner: opts?.authorizerSigner,

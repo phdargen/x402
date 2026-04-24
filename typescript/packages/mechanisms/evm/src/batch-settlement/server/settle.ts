@@ -14,7 +14,7 @@ import type {
 } from "../types";
 import { computeChannelId } from "../utils";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import type { ChannelSession } from "./storage";
+import type { Channel } from "./storage";
 import {
   buildRefundResponseSnapshot,
   emptyResponseSnapshot,
@@ -51,8 +51,8 @@ export async function handleBeforeSettle(
 
   if (isBatchSettlementDepositPayload(raw)) {
     const channelId = raw.voucher.channelId;
-    const session = await storage.get(channelId);
-    const prevCharged = BigInt(session?.chargedCumulativeAmount ?? "0");
+    const channel = await storage.get(channelId);
+    const prevCharged = BigInt(channel?.chargedCumulativeAmount ?? "0");
     const newCharged = (prevCharged + BigInt(requirements.amount)).toString();
     raw.responseExtra = { chargedCumulativeAmount: newCharged };
     return;
@@ -63,22 +63,22 @@ export async function handleBeforeSettle(
   }
 
   const channelId = raw.channelId;
-  const session = await storage.get(channelId);
-  if (!session) {
+  const channel = await storage.get(channelId);
+  if (!channel) {
     return {
       abort: true,
-      reason: "missing_batch_settlement_session",
-      message: "No session for channel; verify may not have completed",
+      reason: "missing_batch_settlement_channel",
+      message: "No channel record",
     };
   }
 
   if (raw.refund === true) {
-    return buildRefundSettlePayload(scheme, paymentPayload, requirements, session, raw);
+    return buildRefundSettlePayload(scheme, paymentPayload, requirements, channel, raw);
   }
 
   const increment = BigInt(requirements.amount);
   const signedCap = BigInt(raw.maxClaimableAmount);
-  const prevCharged = BigInt(session.chargedCumulativeAmount);
+  const prevCharged = BigInt(channel.chargedCumulativeAmount);
   const newCharged = prevCharged + increment;
 
   if (newCharged > signedCap) {
@@ -89,24 +89,24 @@ export async function handleBeforeSettle(
     };
   }
 
-  const updatedSession: ChannelSession = {
+  const updatedChannel: Channel = {
     channelId,
-    channelConfig: session.channelConfig,
-    payer: session.payer,
+    channelConfig: channel.channelConfig,
+    payer: channel.payer,
     chargedCumulativeAmount: newCharged.toString(),
     signedMaxClaimable: raw.maxClaimableAmount as string,
     signature: raw.signature as `0x${string}`,
-    balance: session.balance,
-    totalClaimed: session.totalClaimed,
-    withdrawRequestedAt: session.withdrawRequestedAt,
-    refundNonce: session.refundNonce,
+    balance: channel.balance,
+    totalClaimed: channel.totalClaimed,
+    withdrawRequestedAt: channel.withdrawRequestedAt,
+    refundNonce: channel.refundNonce,
     lastRequestTimestamp: Date.now(),
   };
 
   const swapped = await storage.compareAndSet(
     channelId,
-    session.chargedCumulativeAmount,
-    updatedSession,
+    channel.chargedCumulativeAmount,
+    updatedChannel,
   );
   if (!swapped) {
     return {
@@ -119,10 +119,10 @@ export async function handleBeforeSettle(
   const skipExtra: BatchSettlementPaymentResponseExtra = {
     channelId: channelId as `0x${string}`,
     chargedCumulativeAmount: newCharged.toString(),
-    balance: session.balance,
-    totalClaimed: session.totalClaimed,
-    withdrawRequestedAt: session.withdrawRequestedAt,
-    refundNonce: String(session.refundNonce),
+    balance: channel.balance,
+    totalClaimed: channel.totalClaimed,
+    withdrawRequestedAt: channel.withdrawRequestedAt,
+    refundNonce: String(channel.refundNonce),
   };
 
   return {
@@ -131,7 +131,7 @@ export async function handleBeforeSettle(
       success: true,
       transaction: "",
       network: requirements.network,
-      payer: session.payer as `0x${string}`,
+      payer: channel.payer as `0x${string}`,
       amount: requirements.amount,
       extra: skipExtra,
     },
@@ -153,7 +153,7 @@ export async function handleBeforeSettle(
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for signer access.
  * @param paymentPayload - The in-flight payment payload whose `payload` field will be rewritten.
  * @param requirements - Payment requirements for the route (network is read for signing).
- * @param session - Current server-side session for the channel.
+ * @param channel - Current server-side channel record.
  * @param raw - The original voucher payload carrying `refund: true`.
  * @returns Either `void` to proceed, or an `abort` directive on misuse.
  */
@@ -161,11 +161,11 @@ export async function buildRefundSettlePayload(
   scheme: BatchSettlementEvmScheme,
   paymentPayload: PaymentPayload,
   requirements: PaymentRequirements,
-  session: ChannelSession,
+  channel: Channel,
   raw: BatchSettlementVoucherPayload,
 ): Promise<void | { abort: true; reason: string; message?: string }> {
   const channelId = raw.channelId;
-  const config = session.channelConfig;
+  const config = channel.channelConfig;
 
   const claimEntry: BatchSettlementVoucherClaim = {
     voucher: {
@@ -173,10 +173,10 @@ export async function buildRefundSettlePayload(
       maxClaimableAmount: raw.maxClaimableAmount as string,
     },
     signature: raw.signature as `0x${string}`,
-    totalClaimed: session.chargedCumulativeAmount,
+    totalClaimed: channel.chargedCumulativeAmount,
   };
 
-  const remainder = BigInt(session.balance) - BigInt(session.chargedCumulativeAmount);
+  const remainder = BigInt(channel.balance) - BigInt(channel.chargedCumulativeAmount);
   if (remainder <= 0n) {
     return {
       abort: true,
@@ -206,7 +206,7 @@ export async function buildRefundSettlePayload(
   }
 
   const refundAmount = refundAmountBig.toString();
-  const nonce = String(session.refundNonce ?? 0);
+  const nonce = String(channel.refundNonce ?? 0);
 
   const receiverAuthorizerSigner = scheme.getReceiverAuthorizerSigner();
 
@@ -224,7 +224,7 @@ export async function buildRefundSettlePayload(
     ? await signClaimBatch(receiverAuthorizerSigner, [claimEntry], requirements.network)
     : undefined;
 
-  const responseExtra = buildRefundResponseSnapshot(session, {
+  const responseExtra = buildRefundResponseSnapshot(channel, {
     settleAction: "refundWithSignature",
     config,
     amount: refundAmount,
@@ -249,8 +249,8 @@ export async function buildRefundSettlePayload(
 /**
  * Lifecycle hook: runs after the facilitator settles a payment.
  *
- * Updates session state to reflect the settlement outcome — adjusting charged amounts,
- * balances, and handling cooperative-refund cleanup (session deletion).
+ * Updates channel state to reflect the settlement outcome — adjusting charged amounts,
+ * balances, and handling cooperative-refund cleanup (channel record deletion).
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Post-settle lifecycle context.
@@ -273,10 +273,10 @@ export async function handleAfterSettle(
 
   if (isBatchSettlementRefundWithSignaturePayload(raw)) {
     const channelId = computeChannelId(raw.config);
-    const prevSession = await storage.get(channelId);
+    const prevChannel = await storage.get(channelId);
     const fallback =
-      prevSession?.channelId !== undefined
-        ? buildRefundResponseSnapshot(prevSession, raw)
+      prevChannel?.channelId !== undefined
+        ? buildRefundResponseSnapshot(prevChannel, raw)
         : (raw.responseExtra ?? emptyResponseSnapshot(channelId));
 
     const extra = result.extra;
@@ -304,24 +304,24 @@ export async function handleAfterSettle(
       refundedAmount,
     };
 
-    const remainderAfter = prevSession
-      ? BigInt(prevSession.balance) -
-        BigInt(prevSession.chargedCumulativeAmount) -
+    const remainderAfter = prevChannel
+      ? BigInt(prevChannel.balance) -
+        BigInt(prevChannel.chargedCumulativeAmount) -
         BigInt(refundedAmount)
       : 0n;
 
-    if (!prevSession || remainderAfter <= 0n) {
+    if (!prevChannel || remainderAfter <= 0n) {
       await storage.delete(channelId);
       return;
     }
 
-    const updatedSession: ChannelSession = {
-      ...prevSession,
-      balance: (BigInt(prevSession.balance) - BigInt(refundedAmount)).toString(),
-      refundNonce: (prevSession.refundNonce ?? 0) + 1,
+    const updatedChannel: Channel = {
+      ...prevChannel,
+      balance: (BigInt(prevChannel.balance) - BigInt(refundedAmount)).toString(),
+      refundNonce: (prevChannel.refundNonce ?? 0) + 1,
       lastRequestTimestamp: Date.now(),
     };
-    await storage.set(channelId, updatedSession);
+    await storage.set(channelId, updatedChannel);
     return;
   }
 
@@ -332,13 +332,13 @@ export async function handleAfterSettle(
   if (isBatchSettlementDepositPayload(raw)) {
     const channelId = raw.voucher.channelId;
     const ex = result.extra ?? {};
-    const prevSession = await storage.get(channelId);
-    const resolvedConfig = raw.deposit.channelConfig ?? prevSession?.channelConfig;
+    const prevChannel = await storage.get(channelId);
+    const resolvedConfig = raw.deposit.channelConfig ?? prevChannel?.channelConfig;
     if (!resolvedConfig) {
       return;
     }
     const prevCharged =
-      prevSession?.chargedCumulativeAmount ?? readExtraString(ex, "totalClaimed", "0");
+      prevChannel?.chargedCumulativeAmount ?? readExtraString(ex, "totalClaimed", "0");
     const chargedActual = (BigInt(prevCharged) + BigInt(requirements.amount)).toString();
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
     const payer = resolvedConfig.payer ?? result.payer ?? "";
@@ -346,10 +346,10 @@ export async function handleAfterSettle(
     const fallback: BatchSettlementPaymentResponseExtra = {
       channelId,
       chargedCumulativeAmount: chargedActual,
-      balance: (BigInt(prevSession?.balance ?? "0") + BigInt(depositAmount)).toString(),
-      totalClaimed: prevSession?.totalClaimed ?? "0",
-      withdrawRequestedAt: prevSession?.withdrawRequestedAt ?? 0,
-      refundNonce: String(prevSession?.refundNonce ?? 0),
+      balance: (BigInt(prevChannel?.balance ?? "0") + BigInt(depositAmount)).toString(),
+      totalClaimed: prevChannel?.totalClaimed ?? "0",
+      withdrawRequestedAt: prevChannel?.withdrawRequestedAt ?? 0,
+      refundNonce: String(prevChannel?.refundNonce ?? 0),
     };
     const responseExtra = {
       channelId:
@@ -361,7 +361,7 @@ export async function handleAfterSettle(
       refundNonce: readExtraString(ex, "refundNonce", fallback.refundNonce),
     };
 
-    const session: ChannelSession = {
+    const channel: Channel = {
       channelId,
       channelConfig: resolvedConfig,
       payer: payer.toLowerCase(),
@@ -374,7 +374,7 @@ export async function handleAfterSettle(
       refundNonce: parseInt(responseExtra.refundNonce, 10) || 0,
       lastRequestTimestamp: Date.now(),
     };
-    await storage.set(channelId, session);
+    await storage.set(channelId, channel);
     result.extra = responseExtra;
   }
 }

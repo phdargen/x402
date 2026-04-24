@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/scheme";
 import { BatchSettlementChannelManager } from "../../../src/batch-settlement/server/channelManager";
-import {
-  InMemorySessionStorage,
-  type ChannelSession,
-} from "../../../src/batch-settlement/server/storage";
+import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
 import { computeChannelId } from "../../../src/batch-settlement/utils";
 import type {
   ChannelConfig,
@@ -135,17 +132,17 @@ function makeRequirements(overrides: Partial<PaymentRequirements> = {}): Payment
 }
 
 describe("BatchSettlementEvmScheme — construction", () => {
-  it("uses an in-memory session storage by default", () => {
+  it("uses an in-memory channel storage by default", () => {
     const server = new BatchSettlementEvmScheme(RECEIVER);
     expect(server.scheme).toBe("batch-settlement");
-    expect(server.getStorage()).toBeInstanceOf(InMemorySessionStorage);
+    expect(server.getStorage()).toBeInstanceOf(InMemoryChannelStorage);
     expect(server.getReceiverAddress()).toBe(RECEIVER);
     expect(server.getWithdrawDelay()).toBe(900);
     expect(server.getReceiverAuthorizerSigner()).toBeUndefined();
   });
 
   it("allows custom storage and withdrawDelay", () => {
-    const storage = new InMemorySessionStorage();
+    const storage = new InMemoryChannelStorage();
     const signer = buildAuthorizerSigner();
     const server = new BatchSettlementEvmScheme(RECEIVER, {
       storage,
@@ -284,10 +281,10 @@ describe("BatchSettlementEvmScheme — enhancePaymentRequirements", () => {
 
 describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
   let server: BatchSettlementEvmScheme;
-  let storage: InMemorySessionStorage;
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
@@ -312,7 +309,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result).toBeUndefined();
   });
 
-  it("does nothing when no session is stored yet", async () => {
+  it("does nothing when no channel record is stored yet", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const result = await server.schemeHooks.onBeforeVerify!({
@@ -346,7 +343,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result).toBeUndefined();
   });
 
-  it("does nothing for a refund voucher when no session exists (defers to facilitator for on-chain recovery)", async () => {
+  it("does nothing for a refund voucher when no channel record exists (defers to facilitator for on-chain recovery)", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const result = await server.schemeHooks.onBeforeVerify!({
@@ -441,14 +438,14 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
 
 describe("BatchSettlementEvmScheme — onAfterVerify", () => {
   let server: BatchSettlementEvmScheme;
-  let storage: InMemorySessionStorage;
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
-  it("creates a session from a deposit payload after a successful verify", async () => {
+  it("creates a channel record from a deposit payload after a successful verify", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const result: VerifyResponse = {
@@ -463,14 +460,14 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
       result,
     } as never);
 
-    const session = await storage.get(channelId);
-    expect(session?.payer).toBe(PAYER.toLowerCase());
-    expect(session?.balance).toBe("10000");
-    expect(session?.signedMaxClaimable).toBe("1000");
-    expect(session?.signature).toBe("0xcafebabe");
+    const channel = await storage.get(channelId);
+    expect(channel?.payer).toBe(PAYER.toLowerCase());
+    expect(channel?.balance).toBe("10000");
+    expect(channel?.signedMaxClaimable).toBe("1000");
+    expect(channel?.signature).toBe("0xcafebabe");
   });
 
-  it("does not create session when result.isValid is false", async () => {
+  it("does not create channel record when result.isValid is false", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await server.schemeHooks.onAfterVerify!({
@@ -535,10 +532,10 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
 
 describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
   let server: BatchSettlementEvmScheme;
-  let storage: InMemorySessionStorage;
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
@@ -556,7 +553,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(ann?.chargedCumulativeAmount).toBe("1000");
   });
 
-  it("aborts a voucher payload when no session exists", async () => {
+  it("aborts a voucher payload when no channel record exists", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const result = (await server.schemeHooks.onBeforeSettle!({
@@ -564,7 +561,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       requirements: makeRequirements({ amount: "1000" }),
     } as never)) as { abort: true; reason: string };
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("missing_batch_settlement_session");
+    expect(result?.reason).toBe("missing_batch_settlement_channel");
   });
 
   it("aborts when charged exceeds the signed cap", async () => {
@@ -591,7 +588,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(result?.reason).toBe("batch_settlement_charge_exceeds_signed_cumulative");
   });
 
-  it("returns skip+result for a normal voucher and updates session", async () => {
+  it("returns skip+result for a normal voucher and updates channel record", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storage.set(channelId, {
@@ -656,11 +653,11 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(rewritten.nonce).toBe("1");
   });
 
-  it("recovers a refund voucher session from facilitator extras when local state was lost", async () => {
+  it("recovers a refund voucher channel record from facilitator extras when local state was lost", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
 
-    // Local server state is empty (session loss scenario).
+    // Local server state is empty (channel record loss scenario).
     expect(await storage.get(channelId)).toBeUndefined();
 
     // 1. handleBeforeVerify must not abort — it should defer to the facilitator.
@@ -670,7 +667,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     } as never);
     expect(beforeVerify).toBeUndefined();
 
-    // 2. handleAfterVerify rebuilds the session from on-chain snapshot returned by the facilitator.
+    // 2. handleAfterVerify rebuilds the channel record from on-chain snapshot returned by the facilitator.
     const verifyResult: VerifyResponse = {
       isValid: true,
       payer: PAYER,
@@ -763,14 +760,14 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
 
 describe("BatchSettlementEvmScheme — onAfterSettle", () => {
   let server: BatchSettlementEvmScheme;
-  let storage: InMemorySessionStorage;
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
-  it("updates session and result.extra for deposit payloads", async () => {
+  it("updates channel record and result.extra for deposit payloads", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const payload = buildDepositPayload(channelId, config, "10000", "1000");
@@ -788,17 +785,17 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       result,
     } as never);
 
-    const session = await storage.get(channelId);
-    expect(session?.chargedCumulativeAmount).toBe("1000");
-    expect(session?.balance).toBe("10000");
+    const channel = await storage.get(channelId);
+    expect(channel?.chargedCumulativeAmount).toBe("1000");
+    expect(channel?.balance).toBe("10000");
     expect((result.extra as Record<string, string>).chargedCumulativeAmount).toBe("1000");
     expect((result.extra as Record<string, string>).channelId).toBe(channelId);
   });
 
-  it("deletes session and adds refund=true on result.extra after a refundWithSignature", async () => {
+  it("deletes channel record and adds refund=true on result.extra after a refundWithSignature", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const session: ChannelSession = {
+    const channel: Channel = {
       channelId,
       channelConfig: config,
       payer: PAYER.toLowerCase(),
@@ -811,7 +808,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       refundNonce: 0,
       lastRequestTimestamp: 0,
     };
-    await storage.set(channelId, session);
+    await storage.set(channelId, channel);
 
     const refundPayload = {
       x402Version: 2,
@@ -851,10 +848,10 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect((result.extra as Record<string, string>).channelId).toBe(channelId);
   });
 
-  it("retains session and increments refundNonce on a partial refundWithSignature", async () => {
+  it("retains channel record and increments refundNonce on a partial refundWithSignature", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const session: ChannelSession = {
+    const channel: Channel = {
       channelId,
       channelConfig: config,
       payer: PAYER.toLowerCase(),
@@ -867,7 +864,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       refundNonce: 2,
       lastRequestTimestamp: 0,
     };
-    await storage.set(channelId, session);
+    await storage.set(channelId, channel);
 
     const refundPayload = {
       x402Version: 2,
@@ -925,19 +922,19 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
 describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
   let server: BatchSettlementEvmScheme;
   let manager: BatchSettlementChannelManager;
-  let storage: InMemorySessionStorage;
+  let storage: InMemoryChannelStorage;
 
   beforeEach(() => {
-    storage = new InMemorySessionStorage();
+    storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
     manager = buildManager(server);
   });
 
-  it("returns [] when no sessions exist", async () => {
+  it("returns [] when no channel records exist", async () => {
     expect(await manager.getClaimableVouchers()).toEqual([]);
   });
 
-  it("filters out sessions that have nothing to claim", async () => {
+  it("filters out channel records that have nothing to claim", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storage.set(channelId, {
@@ -1003,8 +1000,8 @@ describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
 });
 
 describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () => {
-  it("returns sessions with withdrawRequestedAt > 0", async () => {
-    const storage = new InMemorySessionStorage();
+  it("returns channel records with withdrawRequestedAt > 0", async () => {
+    const storage = new InMemoryChannelStorage();
     const server = new BatchSettlementEvmScheme(RECEIVER, { storage });
     const manager = buildManager(server);
 

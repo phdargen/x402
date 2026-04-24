@@ -3,48 +3,48 @@ import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
-import type { FileSessionStorageOptions } from "../types";
-import type { SessionStorage, ChannelSession } from "./storage";
+import type { FileChannelStorageOptions } from "../types";
+import type { ChannelStorage, Channel } from "./storage";
 
-export type { FileSessionStorageOptions };
+export type { FileChannelStorageOptions };
 
 /**
- * Node.js file-backed {@link SessionStorage} for the batched server scheme.
+ * Node.js file-backed {@link ChannelStorage} for the batched server scheme.
  */
-export class FileSessionStorage implements SessionStorage {
+export class FileChannelStorage implements ChannelStorage {
   private readonly root: string;
 
   /**
-   * Creates file-backed server session storage under the given root directory.
+   * Creates file-backed server channel storage under the given root directory.
    *
    * @param options - Configuration including the storage root directory.
    */
-  constructor(options: FileSessionStorageOptions) {
+  constructor(options: FileChannelStorageOptions) {
     this.root = options.directory;
   }
 
   /**
-   * Loads a persisted channel session, if present.
+   * Loads a persisted channel record, if present.
    *
    * @param channelId - The channel identifier (path segment is lowercased).
-   * @returns Parsed session or `undefined` when the file is missing.
+   * @returns Parsed channel record or `undefined` when the file is missing.
    */
-  async get(channelId: string): Promise<ChannelSession | undefined> {
-    return readJsonFile<ChannelSession>(this.filePath(channelId));
+  async get(channelId: string): Promise<Channel | undefined> {
+    return readJsonFile<Channel>(this.filePath(channelId));
   }
 
   /**
-   * Persists a channel session.
+   * Persists a channel record.
    *
    * @param channelId - The channel identifier.
-   * @param session - Session record to write.
+   * @param channel - Channel record to write.
    */
-  async set(channelId: string, session: ChannelSession): Promise<void> {
-    await writeJsonAtomic(this.filePath(channelId), session);
+  async set(channelId: string, channel: Channel): Promise<void> {
+    await writeJsonAtomic(this.filePath(channelId), channel);
   }
 
   /**
-   * Removes the persisted session file for a channel, if it exists.
+   * Removes the persisted channel record file for a channel, if it exists.
    *
    * @param channelId - The channel identifier.
    */
@@ -58,11 +58,11 @@ export class FileSessionStorage implements SessionStorage {
   }
 
   /**
-   * Lists all stored sessions by reading the server directory.
+   * Lists all stored channel records by reading the server directory.
    *
-   * @returns Sessions sorted by channelId; empty array if the directory is missing.
+   * @returns Channel records sorted by channelId; empty array if the directory is missing.
    */
-  async list(): Promise<ChannelSession[]> {
+  async list(): Promise<Channel[]> {
     const dir = join(this.root, "server");
     let names: string[];
     try {
@@ -72,13 +72,13 @@ export class FileSessionStorage implements SessionStorage {
       throw err;
     }
 
-    const sessions: ChannelSession[] = [];
+    const channels: Channel[] = [];
     for (const name of names) {
       if (!name.endsWith(".json")) continue;
       const path = join(dir, name);
       try {
         const raw = await readFile(path, "utf8");
-        sessions.push(JSON.parse(raw) as ChannelSession);
+        channels.push(JSON.parse(raw) as Channel);
       } catch (err: unknown) {
         // Skip files that disappeared between readdir and readFile (e.g. concurrent delete).
         // Rethrow other failures (corrupt JSON, permission denied) so callers see them.
@@ -86,23 +86,23 @@ export class FileSessionStorage implements SessionStorage {
         throw err;
       }
     }
-    return sessions.sort((a, b) => a.channelId.localeCompare(b.channelId));
+    return channels.sort((a, b) => a.channelId.localeCompare(b.channelId));
   }
 
   /**
-   * Atomically updates a session only if the current `chargedCumulativeAmount` matches
+   * Atomically updates a channel record only if the current `chargedCumulativeAmount` matches
    * `expectedCharged`. Uses an exclusive lockfile (`O_CREAT | O_EXCL`) so that exactly
    * one caller can hold the lock — others get `EEXIST` immediately. No TOCTOU window.
    *
    * @param channelId - The channel identifier.
    * @param expectedCharged - Expected current `chargedCumulativeAmount`.
-   * @param session - The new session to store if the check passes.
+   * @param channel - The new channel record to store if the check passes.
    * @returns `true` if the swap succeeded, `false` if the lock was held or the value changed.
    */
   async compareAndSet(
     channelId: string,
     expectedCharged: string,
-    session: ChannelSession,
+    channel: Channel,
   ): Promise<boolean> {
     const lockPath = this.filePath(channelId) + ".lock";
     await mkdir(dirname(lockPath), { recursive: true });
@@ -118,14 +118,14 @@ export class FileSessionStorage implements SessionStorage {
       const path = this.filePath(channelId);
       try {
         const raw = await readFile(path, "utf8");
-        const current = JSON.parse(raw) as ChannelSession;
+        const current = JSON.parse(raw) as Channel;
         if (current.chargedCumulativeAmount !== expectedCharged) {
           return false;
         }
       } catch (err: unknown) {
         if (!isNodeEnoent(err)) throw err;
       }
-      await writeJsonAtomic(path, session);
+      await writeJsonAtomic(path, channel);
       return true;
     } finally {
       await lockHandle.close();

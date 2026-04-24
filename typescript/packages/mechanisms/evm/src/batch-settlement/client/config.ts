@@ -1,5 +1,5 @@
 import type { ClientEvmSigner } from "../../signer";
-import { type ClientSessionStorage, InMemoryClientSessionStorage } from "./storage";
+import { type ClientChannelStorage, InMemoryClientChannelStorage } from "./storage";
 
 const DEFAULT_SALT =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
@@ -21,7 +21,7 @@ export interface BatchSettlementDepositPolicy {
  */
 export interface BatchSettlementEvmSchemeOptions {
   depositPolicy?: BatchSettlementDepositPolicy;
-  storage?: ClientSessionStorage;
+  storage?: ClientChannelStorage;
   salt?: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
   /** When set, EIP-712 vouchers are signed with this key; deposits still use the main `signer`. */
@@ -34,7 +34,7 @@ export interface BatchSettlementEvmSchemeOptions {
  */
 export interface ResolvedClientOptions {
   depositPolicy?: BatchSettlementDepositPolicy;
-  storage: ClientSessionStorage;
+  storage: ClientChannelStorage;
   salt: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
   voucherSigner?: ClientEvmSigner;
@@ -70,11 +70,11 @@ export function resolveClientOptions(
   second?: BatchSettlementEvmSchemeOptions | BatchSettlementDepositPolicy,
 ): ResolvedClientOptions {
   if (second === undefined) {
-    return { storage: new InMemoryClientSessionStorage(), salt: DEFAULT_SALT };
+    return { storage: new InMemoryClientChannelStorage(), salt: DEFAULT_SALT };
   }
   if (isBatchSettlementEvmSchemeOptions(second)) {
     return {
-      storage: second.storage ?? new InMemoryClientSessionStorage(),
+      storage: second.storage ?? new InMemoryClientChannelStorage(),
       depositPolicy: second.depositPolicy,
       salt: second.salt ?? DEFAULT_SALT,
       payerAuthorizer: second.payerAuthorizer,
@@ -82,7 +82,7 @@ export function resolveClientOptions(
     };
   }
   return {
-    storage: new InMemoryClientSessionStorage(),
+    storage: new InMemoryClientChannelStorage(),
     depositPolicy: second,
     salt: DEFAULT_SALT,
   };

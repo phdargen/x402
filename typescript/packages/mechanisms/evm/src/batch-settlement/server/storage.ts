@@ -1,6 +1,6 @@
 import type { ChannelConfig } from "../types";
 
-export interface ChannelSession {
+export interface Channel {
   channelId: string;
   channelConfig: ChannelConfig;
   payer: string;
@@ -14,83 +14,79 @@ export interface ChannelSession {
   lastRequestTimestamp: number;
 }
 
-export interface SessionStorage {
-  get(channelId: string): Promise<ChannelSession | undefined>;
-  set(channelId: string, session: ChannelSession): Promise<void>;
+export interface ChannelStorage {
+  get(channelId: string): Promise<Channel | undefined>;
+  set(channelId: string, channel: Channel): Promise<void>;
   delete(channelId: string): Promise<void>;
-  list(): Promise<ChannelSession[]>;
-  compareAndSet(
-    channelId: string,
-    expectedCharged: string,
-    session: ChannelSession,
-  ): Promise<boolean>;
+  list(): Promise<Channel[]>;
+  compareAndSet(channelId: string, expectedCharged: string, channel: Channel): Promise<boolean>;
 }
 
 /**
- * In-memory {@link SessionStorage} backed by a Map keyed by `channelId`.
+ * In-memory {@link ChannelStorage} backed by a Map keyed by `channelId`.
  */
-export class InMemorySessionStorage implements SessionStorage {
-  private readonly sessions = new Map<string, ChannelSession>();
+export class InMemoryChannelStorage implements ChannelStorage {
+  private readonly channels = new Map<string, Channel>();
 
   /**
-   * Returns the session for a channel, if present.
+   * Returns the channel record for a channel, if present.
    *
    * @param channelId - The channel identifier.
-   * @returns The session or undefined when not found.
+   * @returns The channel record or undefined when not found.
    */
-  async get(channelId: string): Promise<ChannelSession | undefined> {
-    return this.sessions.get(channelId.toLowerCase());
+  async get(channelId: string): Promise<Channel | undefined> {
+    return this.channels.get(channelId.toLowerCase());
   }
 
   /**
-   * Stores or replaces the session for a channel.
+   * Stores or replaces the channel record for a channel.
    *
    * @param channelId - The channel identifier.
-   * @param session - The session record to persist.
+   * @param channel - The channel record to persist.
    */
-  async set(channelId: string, session: ChannelSession): Promise<void> {
-    this.sessions.set(channelId.toLowerCase(), session);
+  async set(channelId: string, channel: Channel): Promise<void> {
+    this.channels.set(channelId.toLowerCase(), channel);
   }
 
   /**
-   * Deletes the session for a channel.
+   * Deletes the channel record for a channel.
    *
    * @param channelId - The channel identifier.
    */
   async delete(channelId: string): Promise<void> {
-    this.sessions.delete(channelId.toLowerCase());
+    this.channels.delete(channelId.toLowerCase());
   }
 
   /**
-   * Lists all stored sessions.
+   * Lists all stored channel records.
    *
-   * @returns All sessions in storage.
+   * @returns All channel records in storage.
    */
-  async list(): Promise<ChannelSession[]> {
-    return [...this.sessions.values()];
+  async list(): Promise<Channel[]> {
+    return [...this.channels.values()];
   }
 
   /**
-   * Atomically updates a session only if the current `chargedCumulativeAmount` matches
+   * Atomically updates a channel record only if the current `chargedCumulativeAmount` matches
    * `expectedCharged`. All Map operations run synchronously within the async body,
    * so no concurrent microtask can interleave between the read and write.
    *
    * @param channelId - The channel identifier.
    * @param expectedCharged - Expected current `chargedCumulativeAmount` (compare-and-set guard).
-   * @param session - The new session to store if the check passes.
+   * @param channel - The new channel record to store if the check passes.
    * @returns `true` if the swap succeeded, `false` if the value changed underneath.
    */
   async compareAndSet(
     channelId: string,
     expectedCharged: string,
-    session: ChannelSession,
+    channel: Channel,
   ): Promise<boolean> {
     const key = channelId.toLowerCase();
-    const current = this.sessions.get(key);
+    const current = this.channels.get(key);
     if (current && current.chargedCumulativeAmount !== expectedCharged) {
       return false;
     }
-    this.sessions.set(key, session);
+    this.channels.set(key, channel);
     return true;
   }
 }

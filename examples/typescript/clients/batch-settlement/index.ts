@@ -1,7 +1,7 @@
 import { toClientEvmSigner } from "@x402/evm";
 import {
   BatchSettlementEvmScheme,
-  FileClientSessionStorage,
+  FileClientChannelStorage,
 } from "@x402/evm/batch-settlement/client";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 import { config } from "dotenv";
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     },
     salt: channelSalt,
     ...(voucherSigner ? { voucherSigner } : {}),
-    ...(storageDir ? { storage: new FileClientSessionStorage({ directory: storageDir }) } : {}),
+    ...(storageDir ? { storage: new FileClientChannelStorage({ directory: storageDir }) } : {}),
   });
 
   const client = new x402Client();

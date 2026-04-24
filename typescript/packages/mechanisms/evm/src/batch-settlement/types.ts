@@ -77,8 +77,8 @@ export type BatchSettlementPaymentRequirementsExtra = {
   assetTransferMethod?: "eip3009";
 };
 
-export type FileSessionStorageOptions = {
-  /** Root directory; sessions are stored under `{directory}/{client|server}/{channelId}.json`. */
+export type FileChannelStorageOptions = {
+  /** Root directory; channels are stored under `{directory}/{client|server}/{channelId}.json`. */
   directory: string;
 };
 

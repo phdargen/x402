@@ -6,17 +6,15 @@ import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS, MIN_WITHDRAW_DELAY } from "../constants";
 import type { BatchSettlementPaymentRequirementsExtra, ChannelConfig } from "../types";
 import { computeChannelId } from "../utils";
-import type { BatchSettlementClientContext, ClientSessionStorage } from "./storage";
+import type { BatchSettlementClientContext, ClientChannelStorage } from "./storage";
 
 /**
- * Runtime dependency bag shared by every storage-bound client helper (session,
- * recovery, refund) and the {@link BatchSettlementEvmScheme} class. Carries the
- * live signer + storage plus the channel-id inputs (`salt`, `payerAuthorizer`,
- * optional separate `voucherSigner`).
+ * Runtime dependency bag shared by every storage-bound client helper (channel,
+ * recovery, refund) and the {@link BatchSettlementEvmScheme} class.
  */
 export interface BatchSettlementClientDeps {
   signer: ClientEvmSigner;
-  storage: ClientSessionStorage;
+  storage: ClientChannelStorage;
   salt: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
   voucherSigner?: ClientEvmSigner;
@@ -53,13 +51,13 @@ export function buildChannelConfig(
 }
 
 /**
- * Updates local session state from a parsed `SettleResponse`.
+ * Updates local channel state from a parsed `SettleResponse`.
  *
- * @param storage - Client session storage.
+ * @param storage - Client channel storage.
  * @param settle - The parsed settle response.
  */
 export async function processSettleResponse(
-  storage: ClientSessionStorage,
+  storage: ClientChannelStorage,
   settle: SettleResponse,
 ): Promise<void> {
   const extra = settle.extra ?? {};
@@ -70,7 +68,7 @@ export async function processSettleResponse(
   const key = channelId.toLowerCase();
 
   if (extra.refund === true) {
-    await updateSessionAfterRefund(storage, key, extra);
+    await updateChannelAfterRefund(storage, key, extra);
     return;
   }
 
@@ -91,18 +89,18 @@ export async function processSettleResponse(
 }
 
 /**
- * Reconciles local session state with the outcome of a cooperative refund.
+ * Reconciles local channel state with the outcome of a cooperative refund.
  *
- * Deletes the session when the post-refund balance is zero (full refund),
+ * Deletes the channel record when the post-refund balance is zero (full refund),
  * otherwise updates `balance`, `chargedCumulativeAmount`, and `totalClaimed`
  * from the server snapshot (partial refund — channel stays open).
  *
- * @param storage - Client session storage.
+ * @param storage - Client channel storage.
  * @param channelKey - Lowercased channel id used as the storage key.
  * @param settleExtra - The `extra` block from the refund settle response.
  */
-export async function updateSessionAfterRefund(
-  storage: ClientSessionStorage,
+export async function updateChannelAfterRefund(
+  storage: ClientChannelStorage,
   channelKey: string,
   settleExtra: Record<string, unknown>,
 ): Promise<void> {
@@ -132,11 +130,11 @@ export async function updateSessionAfterRefund(
  * Decodes the header into a `SettleResponse` and delegates to
  * {@link processSettleResponse}.
  *
- * @param storage - Client session storage.
+ * @param storage - Client channel storage.
  * @param getHeader - Function to retrieve a response header by name.
  */
 export async function processPaymentResponse(
-  storage: ClientSessionStorage,
+  storage: ClientChannelStorage,
   getHeader: (name: string) => string | null | undefined,
 ): Promise<void> {
   const raw = getHeader("PAYMENT-RESPONSE");
@@ -147,19 +145,19 @@ export async function processPaymentResponse(
 }
 
 /**
- * Recovers a channel session from on-chain state (useful after a cold start or
- * session loss).
+ * Recovers a channel record from on-chain state (useful after a cold start or
+ * channel record loss).
  *
  * @param deps - Signer + storage + identity inputs.
  * @param paymentRequirements - Server payment requirements used to derive the ChannelConfig.
  * @returns The recovered client context.
  */
-export async function recoverSession(
+export async function recoverChannel(
   deps: BatchSettlementClientDeps,
   paymentRequirements: PaymentRequirements,
 ): Promise<BatchSettlementClientContext> {
   if (!deps.signer.readContract) {
-    throw new Error("recoverSession requires ClientEvmSigner.readContract");
+    throw new Error("recoverChannel requires ClientEvmSigner.readContract");
   }
 
   const config = buildChannelConfig(deps, paymentRequirements);
@@ -203,29 +201,29 @@ export async function readChannelBalanceAndTotalClaimed(
 }
 
 /**
- * Returns whether a local session exists for the given channel.
+ * Returns whether a local channel record exists for the given channel.
  *
- * @param storage - Client session storage.
+ * @param storage - Client channel storage.
  * @param channelId - The channel identifier to check.
- * @returns `true` when a session is stored for the channel.
+ * @returns `true` when a channel record is stored.
  */
-export async function hasSession(
-  storage: ClientSessionStorage,
+export async function hasChannel(
+  storage: ClientChannelStorage,
   channelId: string,
 ): Promise<boolean> {
-  const session = await storage.get(channelId.toLowerCase());
-  return session !== undefined;
+  const channel = await storage.get(channelId.toLowerCase());
+  return channel !== undefined;
 }
 
 /**
- * Returns the local session context for a channel, if present.
+ * Returns the local channel context for a channel, if present.
  *
- * @param storage - Client session storage.
+ * @param storage - Client channel storage.
  * @param channelId - The channel identifier.
  * @returns Stored context or `undefined`.
  */
-export async function getSession(
-  storage: ClientSessionStorage,
+export async function getChannel(
+  storage: ClientChannelStorage,
   channelId: string,
 ): Promise<BatchSettlementClientContext | undefined> {
   return storage.get(channelId.toLowerCase());
