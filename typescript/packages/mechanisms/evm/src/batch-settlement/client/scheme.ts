@@ -1,134 +1,48 @@
-import { decodePaymentResponseHeader } from "@x402/core/http";
-import type { PaymentRequired } from "@x402/core/types";
 import {
   SchemeNetworkClient,
   SchemeClientHooks,
+  PaymentRequired,
   PaymentRequirements,
   PaymentPayloadResult,
   PaymentPayloadContext,
   SettleResponse,
 } from "@x402/core/types";
-import { getAddress, recoverTypedDataAddress } from "viem";
+import { getAddress } from "viem";
 import { ClientEvmSigner } from "../../signer";
-import { batchSettlementABI } from "../abi";
-import {
-  BATCH_SETTLEMENT_ADDRESS,
-  BATCH_SETTLEMENT_SCHEME,
-  MIN_WITHDRAW_DELAY,
-  voucherTypes,
-} from "../constants";
-import {
-  BatchSettlementPaymentRequirementsExtra,
-  BatchSettlementVoucherPayload,
-  ChannelConfig,
-} from "../types";
-import { getEvmChainId } from "../../utils";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import { BatchSettlementVoucherPayload, ChannelConfig } from "../types";
+import { computeChannelId } from "../utils";
 import { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
-import { refundChannel, RefundOptions, updateSessionAfterRefund } from "./refund";
-import { ClientSessionStorage, InMemoryClientSessionStorage } from "./storage";
-import type { BatchSettlementClientContext } from "./storage";
+import {
+  type BatchSettlementDepositPolicy,
+  type BatchSettlementEvmSchemeOptions,
+  depositAmountForRequest,
+  resolveClientOptions,
+  validateDepositPolicy,
+} from "./config";
+import { refundChannel, type RefundOptions } from "./refund";
+import { processCorrectivePaymentRequired } from "./recovery";
+import {
+  type BatchSettlementClientDeps,
+  buildChannelConfig,
+  processSettleResponse,
+  recoverSession,
+} from "./session";
+import type { ClientSessionStorage } from "./storage";
 import { signVoucher } from "./voucher";
-import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
-
-export type { RefundOptions } from "./refund";
-
-export interface BatchSettlementDepositPolicy {
-  depositMultiplier?: number;
-  maxDeposit?: string;
-  autoTopUp?: boolean;
-}
-
-export interface BatchSettlementEvmSchemeOptions {
-  depositPolicy?: BatchSettlementDepositPolicy;
-  storage?: ClientSessionStorage;
-  salt?: `0x${string}`;
-  payerAuthorizer?: `0x${string}`;
-  /** When set, EIP-712 vouchers are signed with this key; deposits still use the main `signer`. */
-  voucherSigner?: ClientEvmSigner;
-}
 
 export type { BatchSettlementClientContext } from "./storage";
-
-/**
- * Discriminates a full options object from a bare deposit-policy object.
- *
- * @param o - Constructor argument that may be options, deposit policy only, or undefined.
- * @returns `true` when `o` is a {@link BatchSettlementEvmSchemeOptions} object.
- */
-function isBatchSettlementEvmSchemeOptions(
-  o: BatchSettlementEvmSchemeOptions | BatchSettlementDepositPolicy | undefined,
-): o is BatchSettlementEvmSchemeOptions {
-  return (
-    o !== undefined &&
-    typeof o === "object" &&
-    ("storage" in o ||
-      "depositPolicy" in o ||
-      "salt" in o ||
-      "payerAuthorizer" in o ||
-      "voucherSigner" in o)
-  );
-}
-
-/**
- * Normalises the constructor's second argument into a uniform options shape.
- *
- * @param second - Optional second constructor argument (options or deposit policy).
- * @returns Resolved storage, salt, deposit policy, and optional payer authorizer.
- */
-function resolveClientOptions(
-  second?: BatchSettlementEvmSchemeOptions | BatchSettlementDepositPolicy,
-): {
-  depositPolicy?: BatchSettlementDepositPolicy;
-  storage: ClientSessionStorage;
-  salt: `0x${string}`;
-  payerAuthorizer?: `0x${string}`;
-  voucherSigner?: ClientEvmSigner;
-} {
-  const defaultSalt =
-    "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
-  if (second === undefined) {
-    return { storage: new InMemoryClientSessionStorage(), salt: defaultSalt };
-  }
-  if (isBatchSettlementEvmSchemeOptions(second)) {
-    return {
-      storage: second.storage ?? new InMemoryClientSessionStorage(),
-      depositPolicy: second.depositPolicy,
-      salt: second.salt ?? defaultSalt,
-      payerAuthorizer: second.payerAuthorizer,
-      voucherSigner: second.voucherSigner,
-    };
-  }
-  return {
-    storage: new InMemoryClientSessionStorage(),
-    depositPolicy: second,
-    salt: defaultSalt,
-  };
-}
-
-/**
- * Validates a {@link BatchSettlementDepositPolicy}, throwing on invalid fields.
- *
- * @param policy - The policy to validate (no-op when undefined).
- */
-function validateDepositPolicy(policy: BatchSettlementDepositPolicy | undefined): void {
-  if (!policy) return;
-
-  const m = policy.depositMultiplier;
-  if (m !== undefined && (!Number.isInteger(m) || m < 1)) {
-    throw new Error("depositMultiplier must be an integer >= 1");
-  }
-
-  if (policy.maxDeposit !== undefined && !/^\d+$/.test(policy.maxDeposit)) {
-    throw new Error("maxDeposit must be a non-negative integer string");
-  }
-}
+export type { BatchSettlementDepositPolicy, BatchSettlementEvmSchemeOptions } from "./config";
+export type { RefundOptions } from "./refund";
 
 /**
  * Client-side implementation of the `batch-settlement` scheme for EVM networks.
  *
- * Builds payment payloads (deposit + voucher or voucher-only), processes server responses
- * to update local session state, handles corrective 402 resynchronisation, and supports
- * on-demand cooperative refund requests.
+ * Builds payment payloads (deposit + voucher or voucher-only), processes server
+ * responses to update local session state via {@link processSettleResponse},
+ * handles corrective 402 resynchronisation via
+ * {@link processCorrectivePaymentRequired}, and supports on-demand cooperative
+ * refund requests via {@link refundChannel}.
  */
 export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
@@ -136,12 +50,12 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   readonly schemeHooks: SchemeClientHooks = {
     onPaymentResponse: async ctx => {
       if (ctx.settleResponse) {
-        await this.processSettleResponse(ctx.settleResponse);
+        await processSettleResponse(this.storage, ctx.settleResponse);
         return;
       }
 
       if (ctx.paymentRequired) {
-        const ok = await this.processCorrectivePaymentRequired(ctx.paymentRequired);
+        const ok = await processCorrectivePaymentRequired(this.deps(), ctx.paymentRequired);
         return ok ? { recovered: true } : undefined;
       }
     },
@@ -183,204 +97,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   }
 
   /**
-   * Constructs the immutable {@link ChannelConfig} from payment requirements and client
-   * settings (signer address, salt, payerAuthorizer).
-   *
-   * @param paymentRequirements - Server payment requirements providing receiver, asset, and extra fields.
-   * @returns The ChannelConfig that uniquely identifies this payment channel.
-   */
-  buildChannelConfig(paymentRequirements: PaymentRequirements): ChannelConfig {
-    const extra = paymentRequirements.extra as
-      | Partial<BatchSettlementPaymentRequirementsExtra>
-      | undefined;
-    return {
-      payer: this.signer.address,
-      payerAuthorizer: getAddress(
-        this.payerAuthorizer ?? this.voucherSigner?.address ?? this.signer.address,
-      ),
-      receiver: paymentRequirements.payTo as `0x${string}`,
-      receiverAuthorizer:
-        extra?.receiverAuthorizer ??
-        ("0x0000000000000000000000000000000000000000" as `0x${string}`),
-      token: paymentRequirements.asset as `0x${string}`,
-      withdrawDelay:
-        typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : MIN_WITHDRAW_DELAY,
-      salt: this.salt,
-    };
-  }
-
-  /**
-   * Processes the `PAYMENT-RESPONSE` header after a successful request.
-   *
-   * Decodes the header into a `SettleResponse` and delegates to `processSettleResponse`.
-   * Kept as public API for manual / advanced use.
-   *
-   * @param getHeader - Function to retrieve a response header by name.
-   */
-  async processPaymentResponse(
-    getHeader: (name: string) => string | null | undefined,
-  ): Promise<void> {
-    const raw = getHeader("PAYMENT-RESPONSE");
-    if (!raw) return;
-
-    const settle = decodePaymentResponseHeader(raw);
-    await this.processSettleResponse(settle);
-  }
-
-  /**
-   * Updates local session state from a parsed `SettleResponse`.
-   *
-   * @param settle - The parsed settle response.
-   */
-  async processSettleResponse(settle: SettleResponse): Promise<void> {
-    const extra = settle.extra ?? {};
-    const channelId =
-      typeof extra.channelId === "string" && extra.channelId ? extra.channelId : undefined;
-    if (!channelId) return;
-
-    const key = channelId.toLowerCase();
-
-    if (extra.refund === true) {
-      await updateSessionAfterRefund(this.storage, key, extra);
-      return;
-    }
-
-    const prev = await this.storage.get(key);
-    const next: BatchSettlementClientContext = { ...(prev ?? {}) };
-
-    if (extra.chargedCumulativeAmount !== undefined) {
-      next.chargedCumulativeAmount = String(extra.chargedCumulativeAmount);
-    }
-    if (extra.balance !== undefined) {
-      next.balance = String(extra.balance);
-    }
-    if (extra.totalClaimed !== undefined) {
-      next.totalClaimed = String(extra.totalClaimed);
-    }
-
-    await this.storage.set(key, next);
-  }
-
-  /**
-   * Recovers a channel session from on-chain state (useful after a cold start or session loss).
-   *
-   * @param paymentRequirements - Server payment requirements used to derive the ChannelConfig.
-   * @returns The recovered client context.
-   */
-  async recoverSession(
-    paymentRequirements: PaymentRequirements,
-  ): Promise<BatchSettlementClientContext> {
-    if (!this.signer.readContract) {
-      throw new Error("recoverSession requires ClientEvmSigner.readContract");
-    }
-
-    const config = this.buildChannelConfig(paymentRequirements);
-    const channelId = computeChannelId(config);
-
-    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
-
-    const ctx: BatchSettlementClientContext = {
-      chargedCumulativeAmount: chTotalClaimed.toString(),
-      balance: chBalance.toString(),
-      totalClaimed: chTotalClaimed.toString(),
-    };
-
-    await this.storage.set(channelId.toLowerCase(), ctx);
-    return ctx;
-  }
-
-  /**
-   * Returns whether a local session exists for the given channel.
-   *
-   * @param channelId - The channel identifier to check.
-   * @returns `true` when a session is stored for the channel.
-   */
-  async hasSession(channelId: string): Promise<boolean> {
-    const session = await this.storage.get(channelId.toLowerCase());
-    return session !== undefined;
-  }
-
-  /**
-   * Returns the local session context for a channel, if present.
-   *
-   * @param channelId - The channel identifier.
-   * @returns Stored context or `undefined`.
-   */
-  async getSession(channelId: string): Promise<BatchSettlementClientContext | undefined> {
-    return this.storage.get(channelId.toLowerCase());
-  }
-
-  /**
-   * Sends a cooperative refund request
-   *
-   * Thin wrapper that delegates to {@link refundChannel}. See the function
-   * documentation for the full flow and error semantics.
-   *
-   * @param url - The route URL backing the channel to refund (any protected
-   *   route on that channel works; the resource handler is bypassed).
-   * @param options - Optional `amount` (partial refund) and `fetch` override.
-   * @returns The settle response describing the refund outcome.
-   */
-  async refund(url: string, options?: RefundOptions): Promise<SettleResponse> {
-    return refundChannel(
-      {
-        storage: this.storage,
-        signer: this.signer,
-        voucherSigner: this.voucherSigner,
-        buildChannelConfig: req => this.buildChannelConfig(req),
-        recoverSession: req => this.recoverSession(req),
-        processSettleResponse: settle => this.processSettleResponse(settle),
-        processCorrectivePaymentRequired: pr => this.processCorrectivePaymentRequired(pr),
-      },
-      url,
-      options,
-    );
-  }
-
-  /**
-   * Handles a corrective 402 response from the server when the client's cumulative base
-   * is out of sync.
-   *
-   * Validates the server-provided state (chargedCumulativeAmount, signedMaxClaimable,
-   * signature) against on-chain data and the client's own signing key, then updates the
-   * local session if everything checks out.
-   *
-   * @param paymentRequired - The decoded 402 response body.
-   * @returns `true` if the session was successfully resynced and the request can be retried.
-   */
-  async processCorrectivePaymentRequired(paymentRequired: PaymentRequired): Promise<boolean> {
-    if (
-      paymentRequired.error !== "batch_settlement_stale_cumulative_amount" &&
-      paymentRequired.error !== "batch_settlement_evm_cumulative_below_claimed"
-    ) {
-      return false;
-    }
-
-    const accept = paymentRequired.accepts.find(a => a.scheme === BATCH_SETTLEMENT_SCHEME);
-    if (!accept) {
-      return false;
-    }
-
-    const ex = accept.extra;
-    const hasSig =
-      ex?.chargedCumulativeAmount !== undefined &&
-      ex?.signedMaxClaimable !== undefined &&
-      ex?.signature !== undefined;
-
-    if (!hasSig) {
-      return this.recoverFromOnChainState(accept);
-    }
-
-    return this.recoverFromSignature(accept);
-  }
-
-  /**
    * Creates the payment payload for a batched request.
    *
-   * If the channel has no on-chain deposit (or needs a top-up), builds an ERC-3009 deposit
-   * payload bundled with a voucher.  Otherwise, signs and returns a voucher-only payload.
-   * If a cooperative refund has been requested for this channel, the `refund` flag
-   * is set on the voucher so the server initiates the on-chain refund.
+   * If the channel has no on-chain deposit (or needs a top-up), builds an
+   * ERC-3009 deposit payload bundled with a voucher. Otherwise, signs and
+   * returns a voucher-only payload.
    *
    * @param x402Version - Protocol version for the payload envelope.
    * @param paymentRequirements - Server payment requirements (scheme, network, asset, amount).
@@ -394,13 +115,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   ): Promise<PaymentPayloadResult> {
     void _context;
 
-    const config = this.buildChannelConfig(paymentRequirements);
+    const deps = this.deps();
+    const config = buildChannelConfig(deps, paymentRequirements);
     const channelId = computeChannelId(config);
     const key = channelId.toLowerCase();
 
     let batchedCtx = await this.storage.get(key);
     if (batchedCtx === undefined && this.signer.readContract) {
-      batchedCtx = await this.recoverSession(paymentRequirements);
+      batchedCtx = await recoverSession(deps, paymentRequirements);
     }
     batchedCtx = batchedCtx ?? {};
 
@@ -416,7 +138,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       autoTopUp && !needsInitialDeposit && BigInt(maxClaimableAmount) > currentBalance;
 
     if (needsInitialDeposit || needsTopUp) {
-      const computedDeposit = this.depositAmountForRequest(requestAmount);
+      const computedDeposit = depositAmountForRequest(this.depositPolicy, requestAmount);
       const depositAmount = needsInitialDeposit
         ? (batchedCtx.depositAmount ?? computedDeposit)
         : computedDeposit;
@@ -452,132 +174,60 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   }
 
   /**
-   * Reads `channels(channelId)` returning `[balance, totalClaimed]`.
+   * Sends a cooperative refund request.
    *
-   * @param channelId - The `bytes32` channel id to query.
-   * @returns Tuple of `[balance, totalClaimed]` as bigints.
+   * @param url - The route URL backing the channel to refund.
+   * @param options - Optional `amount` (partial refund) and `fetch` override.
+   * @returns The settle response describing the refund outcome.
    */
-  private async readChannelBalanceAndTotalClaimed(
-    channelId: `0x${string}`,
-  ): Promise<[bigint, bigint]> {
-    if (!this.signer.readContract) {
-      throw new Error("readChannelBalanceAndTotalClaimed requires ClientEvmSigner.readContract");
-    }
-    return (await this.signer.readContract({
-      address: BATCH_SETTLEMENT_ADDRESS,
-      abi: batchSettlementABI,
-      functionName: "channels",
-      args: [channelId],
-    })) as [bigint, bigint];
+  async refund(url: string, options?: RefundOptions): Promise<SettleResponse> {
+    return refundChannel(this.deps(), url, options);
   }
 
   /**
-   * Recovers session from a corrective 402 that includes a server-provided voucher signature.
-   * Verifies the signature matches the client's own signing key before accepting.
+   * Updates local session state from a settle response.
    *
-   * @param accept - Batch settlement payment requirements from the corrective 402.
-   * @returns `true` when local session state was updated successfully.
+   * @param settle - The parsed settle response from the server.
+   * @returns Resolves when local session state has been updated.
    */
-  private async recoverFromSignature(accept: PaymentRequirements): Promise<boolean> {
-    const ex = accept.extra ?? {};
-    const chargedRaw = ex.chargedCumulativeAmount;
-    const signedRaw = ex.signedMaxClaimable;
-    const sig = ex.signature as `0x${string}`;
+  async processSettleResponse(settle: SettleResponse): Promise<void> {
+    return processSettleResponse(this.storage, settle);
+  }
 
-    const charged = BigInt(String(chargedRaw));
-    const signed = BigInt(String(signedRaw));
+  /**
+   * Resyncs local session state from a corrective 402 response.
+   *
+   * @param paymentRequired - The decoded 402 response body.
+   * @returns `true` if local state was successfully resynced and a retry is warranted.
+   */
+  async processCorrectivePaymentRequired(paymentRequired: PaymentRequired): Promise<boolean> {
+    return processCorrectivePaymentRequired(this.deps(), paymentRequired);
+  }
 
-    if (charged > signed) {
-      return false;
-    }
+  /**
+   * Builds the immutable {@link ChannelConfig} for a given set of payment
+   * requirements, using the scheme's own signer and salt.
+   *
+   * @param paymentRequirements - Server payment requirements for the channel.
+   * @returns The channel config that uniquely identifies the payment channel.
+   */
+  buildChannelConfig(paymentRequirements: PaymentRequirements): ChannelConfig {
+    return buildChannelConfig(this.deps(), paymentRequirements);
+  }
 
-    const config = this.buildChannelConfig(accept);
-    const channelId = computeChannelId(config);
-
-    if (!this.signer.readContract) {
-      return false;
-    }
-
-    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
-
-    if (charged < chTotalClaimed) {
-      return false;
-    }
-
-    const chainId = getEvmChainId(accept.network);
-    const recovered = await recoverTypedDataAddress({
-      domain: getBatchSettlementEip712Domain(chainId),
-      types: voucherTypes,
-      primaryType: "Voucher",
-      message: {
-        channelId,
-        maxClaimableAmount: signed,
-      },
-      signature: sig,
-    });
-
-    const expectedSigner = getAddress(
-      this.payerAuthorizer ?? this.voucherSigner?.address ?? this.signer.address,
-    );
-    if (recovered.toLowerCase() !== expectedSigner.toLowerCase()) {
-      return false;
-    }
-
-    const ctx: BatchSettlementClientContext = {
-      chargedCumulativeAmount: charged.toString(),
-      signedMaxClaimable: signed.toString(),
-      signature: sig,
-      balance: chBalance.toString(),
-      totalClaimed: chTotalClaimed.toString(),
+  /**
+   * Bundles the class state into the {@link BatchSettlementClientDeps} shape
+   * consumed by the `session`, `recovery`, and `refund` modules.
+   *
+   * @returns Client deps wrapping the scheme's own signer and storage.
+   */
+  private deps(): BatchSettlementClientDeps {
+    return {
+      signer: this.signer,
+      storage: this.storage,
+      salt: this.salt,
+      payerAuthorizer: this.payerAuthorizer,
+      voucherSigner: this.voucherSigner,
     };
-
-    await this.storage.set(channelId.toLowerCase(), ctx);
-    return true;
-  }
-
-  /**
-   * Recovers session purely from on-chain state when the server has no stored voucher
-   * (e.g. after a cooperative refund deleted the session). The on-chain `totalClaimed`
-   * becomes the new baseline — no signature verification is needed because the contract
-   * is the source of truth when no outstanding voucher exists.
-   *
-   * @param accept - Batch settlement payment requirements from the corrective 402.
-   * @returns `true` when local session state was updated from on-chain data.
-   */
-  private async recoverFromOnChainState(accept: PaymentRequirements): Promise<boolean> {
-    if (!this.signer.readContract) {
-      return false;
-    }
-
-    const config = this.buildChannelConfig(accept);
-    const channelId = computeChannelId(config);
-
-    const [chBalance, chTotalClaimed] = await this.readChannelBalanceAndTotalClaimed(channelId);
-
-    const ctx: BatchSettlementClientContext = {
-      chargedCumulativeAmount: chTotalClaimed.toString(),
-      balance: chBalance.toString(),
-      totalClaimed: chTotalClaimed.toString(),
-    };
-
-    await this.storage.set(channelId.toLowerCase(), ctx);
-    return true;
-  }
-
-  /**
-   * Computes the deposit amount based on the deposit policy (multiplier and cap).
-   *
-   * @param requestAmount - Amount requested for this operation, in token base units.
-   * @returns Deposit amount string in token base units.
-   */
-  private depositAmountForRequest(requestAmount: bigint): string {
-    const mult = BigInt(this.depositPolicy?.depositMultiplier ?? 10);
-    let depositBig = mult * requestAmount;
-    const cap = this.depositPolicy?.maxDeposit;
-    if (cap !== undefined) {
-      const capBig = BigInt(cap);
-      if (depositBig > capBig) depositBig = capBig;
-    }
-    return depositBig.toString();
   }
 }

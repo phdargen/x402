@@ -2,6 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { getAddress } from "viem";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/client/scheme";
+import {
+  type BatchSettlementClientDeps,
+  buildChannelConfig,
+  getSession,
+  hasSession,
+  processSettleResponse,
+  recoverSession,
+} from "../../../src/batch-settlement/client/session";
+import { processCorrectivePaymentRequired } from "../../../src/batch-settlement/client/recovery";
 import { InMemoryClientSessionStorage } from "../../../src/batch-settlement/client/storage";
 import { computeChannelId } from "../../../src/batch-settlement/utils";
 import {
@@ -16,6 +25,8 @@ const VOUCHER_PRIVATE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3
 const RECEIVER_ADDRESS = "0x9876543210987654321098765432109876543210" as `0x${string}`;
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const NETWORK = "eip155:84532";
+const DEFAULT_SALT =
+  "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
 function buildSigner(privateKey: `0x${string}`): ClientEvmSigner {
   const account = privateKeyToAccount(privateKey);
@@ -53,6 +64,24 @@ function makeRequirements(overrides?: Partial<PaymentRequirements>): PaymentRequ
       withdrawDelay: 900,
     },
     ...overrides,
+  };
+}
+
+interface ClientShape {
+  signer: ClientEvmSigner;
+  storage?: InMemoryClientSessionStorage;
+  salt?: `0x${string}`;
+  payerAuthorizer?: `0x${string}`;
+  voucherSigner?: ClientEvmSigner;
+}
+
+function makeDeps(c: ClientShape): BatchSettlementClientDeps {
+  return {
+    signer: c.signer,
+    storage: c.storage ?? new InMemoryClientSessionStorage(),
+    salt: c.salt ?? DEFAULT_SALT,
+    payerAuthorizer: c.payerAuthorizer,
+    voucherSigner: c.voucherSigner,
   };
 }
 
@@ -142,11 +171,10 @@ describe("BatchSettlementEvmScheme — construction", () => {
   });
 });
 
-describe("BatchSettlementEvmScheme — buildChannelConfig", () => {
+describe("buildChannelConfig", () => {
   it("uses signer's address as payer and payerAuthorizer when not overridden", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
 
     expect(config.payer).toBe(signer.address);
     expect(config.payerAuthorizer).toBe(getAddress(signer.address));
@@ -159,38 +187,35 @@ describe("BatchSettlementEvmScheme — buildChannelConfig", () => {
   it("uses payerAuthorizer override when provided", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const voucherSigner = buildSigner(VOUCHER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer, {
-      payerAuthorizer: voucherSigner.address,
-      voucherSigner,
-    });
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(
+      makeDeps({ signer, voucherSigner, payerAuthorizer: voucherSigner.address }),
+      makeRequirements(),
+    );
     expect(config.payerAuthorizer).toBe(getAddress(voucherSigner.address));
   });
 
   it("falls back to voucherSigner.address when payerAuthorizer is not set", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const voucherSigner = buildSigner(VOUCHER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer, { voucherSigner });
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer, voucherSigner }), makeRequirements());
     expect(config.payerAuthorizer).toBe(getAddress(voucherSigner.address));
   });
 
   it("uses receiverAuthorizer from extra when present, else zero", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
     const recv = "0x1111111111111111111111111111111111111111" as `0x${string}`;
-    const cfg = client.buildChannelConfig(
+    const cfg = buildChannelConfig(
+      makeDeps({ signer }),
       makeRequirements({ extra: { receiverAuthorizer: recv } }),
     );
     expect(cfg.receiverAuthorizer).toBe(recv);
-    const cfgZero = client.buildChannelConfig(makeRequirements({ extra: {} }));
+    const cfgZero = buildChannelConfig(makeDeps({ signer }), makeRequirements({ extra: {} }));
     expect(cfgZero.receiverAuthorizer).toBe("0x0000000000000000000000000000000000000000");
   });
 
   it("defaults withdrawDelay to 900 when not in extra", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
-    const cfg = client.buildChannelConfig(makeRequirements({ extra: {} }));
+    const cfg = buildChannelConfig(makeDeps({ signer }), makeRequirements({ extra: {} }));
     expect(cfg.withdrawDelay).toBe(900);
   });
 
@@ -198,8 +223,8 @@ describe("BatchSettlementEvmScheme — buildChannelConfig", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const salt =
       "0xabc1230000000000000000000000000000000000000000000000000000000099" as `0x${string}`;
-    const client = new BatchSettlementEvmScheme(signer, { salt });
-    expect(client.buildChannelConfig(makeRequirements()).salt).toBe(salt);
+    const cfg = buildChannelConfig(makeDeps({ signer, salt }), makeRequirements());
+    expect(cfg.salt).toBe(salt);
   });
 });
 
@@ -227,7 +252,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "0",
@@ -246,7 +271,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "100",
@@ -266,7 +291,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
       depositPolicy: { autoTopUp: false },
     });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "0",
@@ -283,7 +308,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "0",
@@ -304,7 +329,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage, voucherSigner });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer, voucherSigner }), makeRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "0",
@@ -320,7 +345,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, async () => [0n, 0n]);
     const client = new BatchSettlementEvmScheme(signer);
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const expectedId = computeChannelId(config);
 
     const result = await client.createPaymentPayload(2, makeRequirements());
@@ -358,11 +383,10 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
   });
 });
 
-describe("BatchSettlementEvmScheme — processSettleResponse / hooks", () => {
+describe("processSettleResponse / schemeHooks", () => {
   it("updates session fields from settle response extras", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000001";
 
@@ -379,7 +403,7 @@ describe("BatchSettlementEvmScheme — processSettleResponse / hooks", () => {
       },
     };
 
-    await client.processSettleResponse(settle);
+    await processSettleResponse(storage, settle);
     const ctx = await storage.get(channelId.toLowerCase());
     expect(ctx?.chargedCumulativeAmount).toBe("1000");
     expect(ctx?.balance).toBe("9000");
@@ -389,9 +413,8 @@ describe("BatchSettlementEvmScheme — processSettleResponse / hooks", () => {
   it("ignores settle responses with no channelId", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    await client.processSettleResponse({
+    await processSettleResponse(storage, {
       success: true,
       transaction: "0x",
       network: NETWORK,
@@ -410,12 +433,11 @@ describe("BatchSettlementEvmScheme — processSettleResponse / hooks", () => {
   it("deletes session when refund flag is set in settle response", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000002";
     await storage.set(channelId.toLowerCase(), { chargedCumulativeAmount: "1000" });
 
-    await client.processSettleResponse({
+    await processSettleResponse(storage, {
       success: true,
       transaction: "0x",
       network: NETWORK,
@@ -447,54 +469,53 @@ describe("BatchSettlementEvmScheme — processSettleResponse / hooks", () => {
   });
 });
 
-describe("BatchSettlementEvmScheme — recoverSession / hasSession / getSession", () => {
+describe("recoverSession / hasSession / getSession", () => {
   it("recoverSession reads on-chain channels() and stores context", async () => {
     const readContract = vi.fn().mockResolvedValue([5000n, 1000n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const ctx = await client.recoverSession(makeRequirements());
+    const ctx = await recoverSession(makeDeps({ signer, storage }), makeRequirements());
     expect(ctx.balance).toBe("5000");
     expect(ctx.totalClaimed).toBe("1000");
     expect(ctx.chargedCumulativeAmount).toBe("1000");
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const id = computeChannelId(config);
     expect((await storage.get(id.toLowerCase()))?.balance).toBe("5000");
   });
 
   it("recoverSession throws when readContract is unavailable", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
-    await expect(client.recoverSession(makeRequirements())).rejects.toThrow(/readContract/);
+    const storage = new InMemoryClientSessionStorage();
+    await expect(recoverSession(makeDeps({ signer, storage }), makeRequirements())).rejects.toThrow(
+      /readContract/,
+    );
   });
 
   it("hasSession / getSession reflect storage state", async () => {
-    const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const id = "0xabc1230000000000000000000000000000000000000000000000000000000010";
-    expect(await client.hasSession(id)).toBe(false);
-    expect(await client.getSession(id)).toBeUndefined();
+    expect(await hasSession(storage, id)).toBe(false);
+    expect(await getSession(storage, id)).toBeUndefined();
 
     await storage.set(id.toLowerCase(), { chargedCumulativeAmount: "100" });
-    expect(await client.hasSession(id)).toBe(true);
-    expect((await client.getSession(id))?.chargedCumulativeAmount).toBe("100");
+    expect(await hasSession(storage, id)).toBe(true);
+    expect((await getSession(storage, id))?.chargedCumulativeAmount).toBe("100");
   });
 });
 
-describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => {
+describe("processCorrectivePaymentRequired", () => {
   function makeAccept(extra: Record<string, unknown>): PaymentRequirements {
     return makeRequirements({ extra: { ...makeRequirements().extra, ...extra } });
   }
 
   it("returns false for unrelated error codes", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
+    const storage = new InMemoryClientSessionStorage();
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "some_other_error",
       accepts: [makeRequirements()],
@@ -504,9 +525,9 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
 
   it("returns false when no batch-settlement accept entry is present", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const client = new BatchSettlementEvmScheme(signer);
+    const storage = new InMemoryClientSessionStorage();
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [{ ...makeRequirements(), scheme: "exact" }],
@@ -518,16 +539,15 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
     const readContract = vi.fn().mockResolvedValue([10000n, 2500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [makeRequirements()],
     } as PaymentRequired);
 
     expect(ok).toBe(true);
-    const id = computeChannelId(client.buildChannelConfig(makeRequirements()));
+    const id = computeChannelId(buildChannelConfig(makeDeps({ signer }), makeRequirements()));
     const ctx = await storage.get(id.toLowerCase());
     expect(ctx?.chargedCumulativeAmount).toBe("2500");
     expect(ctx?.balance).toBe("10000");
@@ -537,12 +557,10 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
 
-    // Sign a voucher using the same signer
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "1500", NETWORK);
 
@@ -552,7 +570,7 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
       signature: signed.signature,
     });
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
@@ -570,10 +588,9 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientSessionStorage();
-    const client = new BatchSettlementEvmScheme(signer, { storage });
 
     const otherSigner = buildSigner(VOUCHER_PRIVATE_KEY);
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(otherSigner, channelId, "1500", NETWORK);
@@ -584,7 +601,7 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
       signature: signed.signature,
     });
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
@@ -595,7 +612,7 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
   it("recoverFromSignature returns false when charged > signedMaxClaimable", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 500n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const client = new BatchSettlementEvmScheme(signer);
+    const storage = new InMemoryClientSessionStorage();
 
     const accept = makeAccept({
       chargedCumulativeAmount: "2000",
@@ -603,7 +620,7 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
       signature: "0xdead",
     });
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
@@ -614,9 +631,9 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
   it("recoverFromSignature returns false when charged < on-chain totalClaimed", async () => {
     const readContract = vi.fn().mockResolvedValue([10000n, 5000n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
-    const client = new BatchSettlementEvmScheme(signer);
+    const storage = new InMemoryClientSessionStorage();
 
-    const config = client.buildChannelConfig(makeRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
     const channelId = computeChannelId(config);
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "2000", NETWORK);
@@ -627,7 +644,7 @@ describe("BatchSettlementEvmScheme — processCorrectivePaymentRequired", () => 
       signature: signed.signature,
     });
 
-    const ok = await client.processCorrectivePaymentRequired({
+    const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
@@ -701,7 +718,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "500",
@@ -729,7 +746,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "500",
@@ -778,7 +795,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
 
     const { encodePaymentRequiredHeader } = await import("@x402/core/http");
@@ -815,8 +832,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    // Local session shows remaining balance so the pre-check passes and the request is sent.
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "500",
@@ -851,7 +867,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "500",
@@ -882,7 +898,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const storage = new InMemoryClientSessionStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
 
-    const config = client.buildChannelConfig(buildRefundRequirements());
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
     const channelId = computeChannelId(config);
     await storage.set(channelId.toLowerCase(), {
       chargedCumulativeAmount: "61800",

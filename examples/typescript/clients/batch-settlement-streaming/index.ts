@@ -2,8 +2,10 @@ import { isBatchSettlementDepositPayload, toClientEvmSigner } from "@x402/evm";
 import {
   BatchSettlementEvmScheme,
   FileClientSessionStorage,
+  InMemoryClientSessionStorage,
   computeChannelId,
 } from "@x402/evm/batch-settlement/client";
+import type { ClientSessionStorage } from "@x402/evm/batch-settlement/client";
 import { x402Client, x402HTTPClient } from "@x402/fetch";
 import {
   decodePaymentRequiredHeader,
@@ -66,11 +68,15 @@ const voucherSigner = evmVoucherSignerPrivateKey
 
 const effectiveVoucherSigner = voucherSigner ?? signer;
 
+const sessionStorage: ClientSessionStorage = storageDir
+  ? new FileClientSessionStorage({ directory: storageDir })
+  : new InMemoryClientSessionStorage();
+
 const batchedScheme = new BatchSettlementEvmScheme(signer, {
   depositPolicy,
   salt: channelSalt,
+  storage: sessionStorage,
   ...(voucherSigner ? { voucherSigner } : {}),
-  ...(storageDir ? { storage: new FileClientSessionStorage({ directory: storageDir }) } : {}),
 });
 
 const client = new x402Client();
@@ -164,13 +170,19 @@ async function main(): Promise<void> {
   // corrective 402 (e.g. stale cumulative amount), let the scheme resync local
   // state from PAYMENT-REQUIRED `extra` and retry once with a fresh payload.
   console.log("--- Paid request (SSE stream) ---");
-  let paid = await streamRequest(streamURL, httpClient.encodePaymentSignatureHeader(paymentPayload));
+  let paid = await streamRequest(
+    streamURL,
+    httpClient.encodePaymentSignatureHeader(paymentPayload),
+  );
 
   if (paid.statusCode === 402) {
     const recovered = await tryRecoverFromCorrective402(paid);
     if (recovered) {
       paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
-      paid = await streamRequest(streamURL, httpClient.encodePaymentSignatureHeader(paymentPayload));
+      paid = await streamRequest(
+        streamURL,
+        httpClient.encodePaymentSignatureHeader(paymentPayload),
+      );
     }
   }
 

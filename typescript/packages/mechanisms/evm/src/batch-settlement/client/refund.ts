@@ -5,15 +5,19 @@ import {
 } from "@x402/core/http";
 import type { PaymentRequired } from "@x402/core/types";
 import type { PaymentRequirements, PaymentPayloadResult, SettleResponse } from "@x402/core/types";
-import type { ClientEvmSigner } from "../../signer";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import type {
   BatchSettlementPaymentRequirementsExtra,
   BatchSettlementVoucherPayload,
-  ChannelConfig,
 } from "../types";
 import { computeChannelId } from "../utils";
-import type { BatchSettlementClientContext, ClientSessionStorage } from "./storage";
+import { processCorrectivePaymentRequired } from "./recovery";
+import {
+  type BatchSettlementClientDeps,
+  buildChannelConfig,
+  processSettleResponse,
+  recoverSession,
+} from "./session";
 import { signVoucher } from "./voucher";
 
 /**
@@ -38,41 +42,25 @@ export interface RefundOptions {
 }
 
 /**
- * Narrow view of the client scheme that the refund flow needs.
- *
- * Defining a structural contract here (rather than importing the scheme class)
- * keeps `refund.ts` decoupled from `scheme.ts` and breaks the import cycle.
- */
-export interface RefundContext {
-  storage: ClientSessionStorage;
-  signer: ClientEvmSigner;
-  voucherSigner?: ClientEvmSigner;
-  buildChannelConfig(requirements: PaymentRequirements): ChannelConfig;
-  recoverSession(requirements: PaymentRequirements): Promise<BatchSettlementClientContext>;
-  processSettleResponse(settle: SettleResponse): Promise<void>;
-  processCorrectivePaymentRequired(paymentRequired: PaymentRequired): Promise<boolean>;
-}
-
-/**
  * Sends a cooperative refund request to the channel that backs `url`.
  *
  * Flow:
  * 1. Probe the URL with `GET` (no payment) to obtain the route's payment requirements.
- * 2. Build the {@link ChannelConfig} and resolve the local session (or recover it).
+ * 2. Build the `ChannelConfig` and resolve the local session (or recover it).
  * 3. Sign a zero-charge voucher (`maxClaimableAmount = chargedCumulativeAmount`)
  *    with `refund: true` and the optional `refundAmount` (partial refund).
  * 4. Send the voucher via `PAYMENT-SIGNATURE`. On a corrective 402, run the
  *    standard recovery path and retry once.
  * 5. Return the parsed `SettleResponse` from the server.
  *
- * @param ctx - The scheme view providing storage, signers, and recovery helpers.
+ * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
  * @param url - Any protected route on the channel to refund (the resource handler is bypassed).
  * @param options - Optional `amount` (partial refund) and `fetch` override.
  * @returns The settle response describing the refund outcome.
  * @throws When the probe fails, the receiver lacks an authorizer, or recovery fails.
  */
 export async function refundChannel(
-  ctx: RefundContext,
+  ctx: BatchSettlementClientDeps,
   url: string,
   options?: RefundOptions,
 ): Promise<SettleResponse> {
@@ -84,42 +72,6 @@ export async function refundChannel(
   const refundAmount = normalizeRefundAmount(options?.amount);
   const requirements = await probeRefundRequirements(url, fetchImpl);
   return executeRefund(ctx, url, requirements, refundAmount, fetchImpl);
-}
-
-/**
- * Reconciles local session state with the outcome of a cooperative refund.
- *
- * Deletes the session when the post-refund balance is zero (full refund),
- * otherwise updates `balance`, `chargedCumulativeAmount`, and `totalClaimed`
- * from the server snapshot (partial refund — channel stays open).
- *
- * @param storage - Client session storage.
- * @param channelKey - Lowercased channel id used as the storage key.
- * @param settleExtra - The `extra` block from the refund settle response.
- */
-export async function updateSessionAfterRefund(
-  storage: ClientSessionStorage,
-  channelKey: string,
-  settleExtra: Record<string, unknown>,
-): Promise<void> {
-  const balanceAfter =
-    settleExtra.balance !== undefined ? BigInt(String(settleExtra.balance)) : undefined;
-
-  if (balanceAfter === undefined || balanceAfter <= 0n) {
-    await storage.delete(channelKey);
-    return;
-  }
-
-  const prev = await storage.get(channelKey);
-  const next: BatchSettlementClientContext = { ...(prev ?? {}) };
-  next.balance = balanceAfter.toString();
-  if (settleExtra.chargedCumulativeAmount !== undefined) {
-    next.chargedCumulativeAmount = String(settleExtra.chargedCumulativeAmount);
-  }
-  if (settleExtra.totalClaimed !== undefined) {
-    next.totalClaimed = String(settleExtra.totalClaimed);
-  }
-  await storage.set(channelKey, next);
 }
 
 /**
@@ -161,7 +113,7 @@ async function probeRefundRequirements(
 /**
  * Builds and submits the refund voucher, retrying once after a corrective 402.
  *
- * @param ctx - The scheme view providing storage, signers, and recovery helpers.
+ * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
  * @param url - The protected URL to send the refund voucher to.
  * @param requirements - Resolved payment requirements for this channel.
  * @param refundAmount - Optional partial refund amount in token base units.
@@ -169,7 +121,7 @@ async function probeRefundRequirements(
  * @returns The parsed settle response.
  */
 async function executeRefund(
-  ctx: RefundContext,
+  ctx: BatchSettlementClientDeps,
   url: string,
   requirements: PaymentRequirements,
   refundAmount: string | undefined,
@@ -205,7 +157,7 @@ async function executeRefund(
         throw new Error("Refund 402 missing PAYMENT-REQUIRED header");
       }
 
-      const paymentRequired = decodePaymentRequiredHeader(requiredHeader);
+      const paymentRequired: PaymentRequired = decodePaymentRequiredHeader(requiredHeader);
       const errorCode = paymentRequired.error;
       if (errorCode && NON_RECOVERABLE_REFUND_ERRORS.has(errorCode)) {
         throw new Error(`Refund failed: ${errorCode}`);
@@ -215,7 +167,7 @@ async function executeRefund(
         throw new Error(`Refund failed: server returned 402 after ${attempt} attempt(s)`);
       }
 
-      const recovered = await ctx.processCorrectivePaymentRequired(paymentRequired);
+      const recovered = await processCorrectivePaymentRequired(ctx, paymentRequired);
       if (!recovered) {
         throw new Error(`Refund failed: ${errorCode ?? "unknown"}`);
       }
@@ -230,7 +182,7 @@ async function executeRefund(
     }
 
     const settle = decodePaymentResponseHeader(settleHeader);
-    await ctx.processSettleResponse(settle);
+    await processSettleResponse(ctx.storage, settle);
     return settle;
   }
 
@@ -240,23 +192,23 @@ async function executeRefund(
 /**
  * Builds the voucher payload (zero-charge `maxClaimableAmount`) for a refund.
  *
- * @param ctx - The scheme view providing storage, signers, and recovery helpers.
+ * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
  * @param requirements - Resolved payment requirements for the channel.
  * @param refundAmount - Optional partial refund amount in token base units.
  * @returns A payment payload result wrapping the signed refund voucher.
  */
 async function buildRefundVoucherPayload(
-  ctx: RefundContext,
+  ctx: BatchSettlementClientDeps,
   requirements: PaymentRequirements,
   refundAmount: string | undefined,
 ): Promise<PaymentPayloadResult> {
-  const config = ctx.buildChannelConfig(requirements);
+  const config = buildChannelConfig(ctx, requirements);
   const channelId = computeChannelId(config);
   const key = channelId.toLowerCase();
 
   let session = await ctx.storage.get(key);
   if (session === undefined && ctx.signer.readContract) {
-    session = await ctx.recoverSession(requirements);
+    session = await recoverSession(ctx, requirements);
   }
   if (session === undefined) {
     throw new Error(
