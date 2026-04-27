@@ -618,8 +618,16 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
 
     expect(result?.skip).toBe(true);
     expect(result?.result.success).toBe(true);
+    expect(Object.keys(result?.result ?? {}).slice(0, 5)).toEqual([
+      "success",
+      "payer",
+      "transaction",
+      "network",
+      "amount",
+    ]);
     expect(result?.result.extra?.channelId).toBe(channelId);
     expect(result?.result.extra?.chargedCumulativeAmount).toBe("1000");
+    expect(Object.keys(result?.result.extra ?? {}).at(-1)).toBe("chargedCumulativeAmount");
 
     const updated = await storage.get(channelId);
     expect(updated?.chargedCumulativeAmount).toBe("1000");
@@ -860,7 +868,13 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       transaction: "0xref",
       network: NETWORK,
       payer: PAYER,
-      extra: {},
+      extra: {
+        channelId,
+        balance: "1000",
+        totalClaimed: "1000",
+        withdrawRequestedAt: 0,
+        refundNonce: "1",
+      },
     } as SettleResponse;
 
     await server.schemeHooks.onAfterSettle!({
@@ -928,7 +942,14 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       transaction: "0xref",
       network: NETWORK,
       payer: PAYER,
-      extra: { refundedAmount: "2000" },
+      extra: {
+        channelId,
+        balance: "8000",
+        totalClaimed: "1000",
+        withdrawRequestedAt: 0,
+        refundNonce: "3",
+        refundedAmount: "2000",
+      },
     } as SettleResponse;
 
     await server.schemeHooks.onAfterSettle!({

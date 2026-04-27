@@ -22,19 +22,24 @@ type RefundSettlementExtra = {
   refundNonce: string;
 };
 
+type RefundSettlementDetails = {
+  amount: string;
+  extra: RefundSettlementExtra;
+};
+
 /**
- * Builds facilitator-owned extra fields for a refund settlement after applying the refund amount.
+ * Builds facilitator-owned response details for a refund settlement after applying the refund amount.
  *
  * @param payload - Refund payload containing claims and amount.
  * @param channelId - Canonical channel id for the refund.
  * @param preState - On-chain channel state before this refund, or null if unknown.
- * @returns Extra fields for the settlement response.
+ * @returns Actual refund amount and extra fields for the settlement response.
  */
 function buildRefundExtra(
   payload: BatchSettlementEnrichedRefundPayload,
   channelId: `0x${string}`,
   preState: ChannelState | null,
-): RefundSettlementExtra {
+): RefundSettlementDetails {
   const preTotalClaimed = preState?.totalClaimed ?? 0n;
   const preBalance = preState?.balance ?? 0n;
 
@@ -49,11 +54,14 @@ function buildRefundExtra(
   const actualRefund = requestedAmount > available ? available : requestedAmount;
 
   return {
-    channelId,
-    balance: (preBalance - actualRefund).toString(),
-    totalClaimed: postClaimTotalClaimed.toString(),
-    withdrawRequestedAt: 0,
-    refundNonce: String((preState?.refundNonce ?? 0n) + 1n),
+    amount: actualRefund.toString(),
+    extra: {
+      channelId,
+      balance: (preBalance - actualRefund).toString(),
+      totalClaimed: postClaimTotalClaimed.toString(),
+      withdrawRequestedAt: 0,
+      refundNonce: String((preState?.refundNonce ?? 0n) + 1n),
+    },
   };
 }
 
@@ -199,13 +207,15 @@ export async function executeRefundWithSignature(
       };
     }
 
+    const refundDetails = buildRefundExtra(payload, channelId, preState);
+
     return {
       success: true,
       transaction: tx,
       network,
       payer: payload.channelConfig.payer,
-      amount: requirements.amount,
-      extra: buildRefundExtra(payload, channelId, preState),
+      amount: refundDetails.amount,
+      extra: refundDetails.extra,
     };
   } catch (e) {
     return {

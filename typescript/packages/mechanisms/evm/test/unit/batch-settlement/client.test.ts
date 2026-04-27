@@ -772,13 +772,17 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } });
   }
 
-  async function refundSuccessResponse(extra: Record<string, unknown>): Promise<Response> {
+  async function refundSuccessResponse(
+    extra: Record<string, unknown>,
+    amount?: string,
+  ): Promise<Response> {
     const { encodePaymentResponseHeader } = await import("@x402/core/http");
     const settle: SettleResponse = {
       success: true,
       transaction: "0xtx",
       network: NETWORK,
       payer: privateKeyToAccount(PAYER_PRIVATE_KEY).address,
+      ...(amount !== undefined ? { amount } : {}),
       extra,
     } as SettleResponse;
     const header = encodePaymentResponseHeader(settle);
@@ -803,13 +807,25 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () => probe402Response(),
       async (_url, init) => {
         capturedSig = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
-        return refundSuccessResponse({ channelId, balance: "0" });
+        return refundSuccessResponse(
+          {
+            channelId,
+            balance: "0",
+            totalClaimed: "500",
+            withdrawRequestedAt: 0,
+            refundNonce: "1",
+            chargedCumulativeAmount: "500",
+          },
+          "9500",
+        );
       },
     ]);
     const processSpy = vi.spyOn(x402HTTPClient.prototype, "processPaymentResult");
 
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
     expect(settle.success).toBe(true);
+    expect(settle.amount).toBe("9500");
+    expect(Object.keys(settle.extra ?? {}).at(-1)).toBe("chargedCumulativeAmount");
     expect(processSpy).toHaveBeenCalledTimes(1);
     expect(capturedSig).toBeTruthy();
     const { decodePaymentSignatureHeader } = await import("@x402/core/http");

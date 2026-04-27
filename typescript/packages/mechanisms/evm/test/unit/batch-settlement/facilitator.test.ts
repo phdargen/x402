@@ -769,6 +769,12 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       makeRequirements(),
     );
     expect(result.success).toBe(true);
+    expect(result.amount).toBe("9000");
+    expect(result.extra).toMatchObject({
+      channelId,
+      balance: "1000",
+      totalClaimed: "0",
+    });
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "refundWithSignature" }),
     );

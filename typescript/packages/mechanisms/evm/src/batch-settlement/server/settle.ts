@@ -92,20 +92,20 @@ export async function handleBeforeSettle(
 
   const skipExtra: BatchSettlementPaymentResponseExtra = {
     channelId: channelId as `0x${string}`,
-    chargedCumulativeAmount: newCharged.toString(),
     balance: channel.balance,
     totalClaimed: channel.totalClaimed,
     withdrawRequestedAt: channel.withdrawRequestedAt,
     refundNonce: String(channel.refundNonce),
+    chargedCumulativeAmount: newCharged.toString(),
   };
 
   return {
     skip: true,
     result: {
       success: true,
+      payer: channel.payer as `0x${string}`,
       transaction: "",
       network: requirements.network,
-      payer: channel.payer as `0x${string}`,
       amount: requirements.amount,
       extra: skipExtra,
     },

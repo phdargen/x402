@@ -313,6 +313,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
     const payload = paymentPayload.payload as Record<string, unknown>;
     expect(payload.type).toBe("refund");
     expect(payload.amount).toBe("9000");
+    expect(payload.chargedCumulativeAmount).toBeUndefined();
   });
 
   it("includes outstanding voucher claims and deletes session on success", async () => {
