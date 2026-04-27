@@ -557,6 +557,7 @@ export class x402HTTPResourceServer {
           verifyResult.invalidReason,
           extensions ?? {},
           transportContext,
+          verifyResult.errorDetails,
         );
         return {
           type: "payment-error",

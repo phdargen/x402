@@ -62,6 +62,15 @@ export type OnPaymentResponseHook = (
 
 export type SelectPaymentRequirements = (x402Version: number, paymentRequirements: PaymentRequirements[]) => PaymentRequirements;
 
+type ClientHookAdapterHandles = {
+  beforePaymentCreation?: BeforePaymentCreationHook;
+  afterPaymentCreation?: AfterPaymentCreationHook;
+  onPaymentCreationFailure?: OnPaymentCreationFailureHook;
+  onPaymentResponse?: OnPaymentResponseHook;
+};
+
+type ClientHookPhase = keyof ClientHookAdapterHandles;
+
 /**
  * Extension that can enrich payment payloads on the client side.
  *
@@ -154,6 +163,7 @@ export interface x402ClientConfig {
 export class x402Client {
   private readonly paymentRequirementsSelector: SelectPaymentRequirements;
   private readonly registeredClientSchemes: Map<number, Map<string, Map<string, SchemeNetworkClient>>> = new Map();
+  private readonly schemeClientHookAdapters: Map<number, Map<string, Map<string, ClientHookAdapterHandles>>> = new Map();
   private readonly policies: PaymentPolicy[] = [];
   private readonly registeredExtensions: Map<string, ClientExtension> = new Map();
 
@@ -200,17 +210,7 @@ export class x402Client {
    * @returns The x402Client instance for chaining
    */
   register(network: Network, client: SchemeNetworkClient): x402Client {
-    this._registerScheme(x402Version, network, client);
-
-    if (client.schemeHooks) {
-      const h = client.schemeHooks;
-      if (h.onBeforePaymentCreation) this.onBeforePaymentCreation(h.onBeforePaymentCreation);
-      if (h.onAfterPaymentCreation) this.onAfterPaymentCreation(h.onAfterPaymentCreation);
-      if (h.onPaymentCreationFailure) this.onPaymentCreationFailure(h.onPaymentCreationFailure);
-      if (h.onPaymentResponse) this.onPaymentResponse(h.onPaymentResponse);
-    }
-
-    return this;
+    return this._registerScheme(x402Version, network, client);
   }
 
   /**
@@ -324,7 +324,11 @@ export class x402Client {
   async handlePaymentResponse(
     ctx: PaymentResponseContext,
   ): Promise<{ recovered: true } | undefined> {
-    for (const hook of this.paymentResponseHooks) {
+    for (const hook of this.getLabeledHooks(
+      "onPaymentResponse",
+      ctx.paymentPayload.x402Version,
+      ctx.requirements,
+    )) {
       const result = await hook(ctx);
       if (result && "recovered" in result && result.recovered) {
         return { recovered: true };
@@ -357,8 +361,11 @@ export class x402Client {
       selectedRequirements: requirements,
     };
 
-    // Execute beforePaymentCreation hooks
-    for (const hook of this.beforePaymentCreationHooks) {
+    for (const hook of this.getLabeledHooks(
+      "beforePaymentCreation",
+      paymentRequired.x402Version,
+      requirements,
+    )) {
       const result = await hook(context);
       if (result && "abort" in result && result.abort) {
         throw new Error(`Payment creation aborted: ${result.reason}`);
@@ -400,13 +407,16 @@ export class x402Client {
       // Enrich payload via registered client extensions (for non-scheme extensions)
       paymentPayload = await this.enrichPaymentPayloadWithExtensions(paymentPayload, paymentRequired);
 
-      // Execute afterPaymentCreation hooks
       const createdContext: PaymentCreatedContext = {
         ...context,
         paymentPayload,
       };
 
-      for (const hook of this.afterPaymentCreationHooks) {
+      for (const hook of this.getLabeledHooks(
+        "afterPaymentCreation",
+        paymentRequired.x402Version,
+        requirements,
+      )) {
         await hook(createdContext);
       }
 
@@ -417,8 +427,11 @@ export class x402Client {
         error: error as Error,
       };
 
-      // Execute onPaymentCreationFailure hooks
-      for (const hook of this.onPaymentCreationFailureHooks) {
+      for (const hook of this.getLabeledHooks(
+        "onPaymentCreationFailure",
+        paymentRequired.x402Version,
+        requirements,
+      )) {
         const result = await hook(failureContext);
         if (result && "recovered" in result && result.recovered) {
           return result.payload;
@@ -562,10 +575,90 @@ export class x402Client {
     }
 
     const clientByScheme = clientSchemesByNetwork.get(network)!;
-    if (!clientByScheme.has(client.scheme)) {
-      clientByScheme.set(client.scheme, client);
+    clientByScheme.set(client.scheme, client);
+
+    if (!this.schemeClientHookAdapters.has(x402Version)) {
+      this.schemeClientHookAdapters.set(x402Version, new Map());
+    }
+    const adaptersByNetwork = this.schemeClientHookAdapters.get(x402Version)!;
+    if (!adaptersByNetwork.has(network)) {
+      adaptersByNetwork.set(network, new Map());
+    }
+
+    const adaptersByScheme = adaptersByNetwork.get(network)!;
+    const hooks = client.schemeHooks;
+    if (!hooks) {
+      adaptersByScheme.delete(client.scheme);
+      return this;
+    }
+
+    const handles: ClientHookAdapterHandles = {};
+    if (hooks.onBeforePaymentCreation) {
+      handles.beforePaymentCreation = hooks.onBeforePaymentCreation;
+    }
+    if (hooks.onAfterPaymentCreation) {
+      handles.afterPaymentCreation = hooks.onAfterPaymentCreation;
+    }
+    if (hooks.onPaymentCreationFailure) {
+      handles.onPaymentCreationFailure = hooks.onPaymentCreationFailure;
+    }
+    if (hooks.onPaymentResponse) {
+      handles.onPaymentResponse = hooks.onPaymentResponse;
+    }
+
+    if (Object.keys(handles).length > 0) {
+      adaptersByScheme.set(client.scheme, handles);
+    } else {
+      adaptersByScheme.delete(client.scheme);
     }
 
     return this;
+  }
+
+  /**
+   * Returns manual hooks followed by the hook for the selected scheme, if present.
+   *
+   * @param phase - Hook slot to collect
+   * @param x402Version - Protocol version for the selected requirement
+   * @param requirements - Selected payment requirement
+   * @returns Hooks in invocation order
+   */
+  private getLabeledHooks<P extends ClientHookPhase>(
+    phase: P,
+    x402Version: number,
+    requirements: PaymentRequirements,
+  ): Array<NonNullable<ClientHookAdapterHandles[P]>> {
+    let manual: Array<NonNullable<ClientHookAdapterHandles[P]>>;
+    switch (phase) {
+      case "beforePaymentCreation":
+        manual = this.beforePaymentCreationHooks as Array<
+          NonNullable<ClientHookAdapterHandles[P]>
+        >;
+        break;
+      case "afterPaymentCreation":
+        manual = this.afterPaymentCreationHooks as Array<
+          NonNullable<ClientHookAdapterHandles[P]>
+        >;
+        break;
+      case "onPaymentCreationFailure":
+        manual = this.onPaymentCreationFailureHooks as Array<
+          NonNullable<ClientHookAdapterHandles[P]>
+        >;
+        break;
+      case "onPaymentResponse":
+        manual = this.paymentResponseHooks as Array<NonNullable<ClientHookAdapterHandles[P]>>;
+        break;
+    }
+
+    const out: Array<NonNullable<ClientHookAdapterHandles[P]>> = [...manual];
+    const adaptersByNetwork = this.schemeClientHookAdapters.get(x402Version);
+    const schemeAdapter = adaptersByNetwork
+      ? findByNetworkAndScheme(adaptersByNetwork, requirements.scheme, requirements.network)
+      : undefined;
+    const hook = schemeAdapter?.[phase];
+    if (hook !== undefined) {
+      out.push(hook);
+    }
+    return out;
   }
 }

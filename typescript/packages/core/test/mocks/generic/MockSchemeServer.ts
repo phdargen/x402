@@ -1,4 +1,4 @@
-import { SchemeNetworkServer } from "../../../src/types/mechanisms";
+import { SchemeNetworkServer, SchemeServerHooks } from "../../../src/types/mechanisms";
 import { AssetAmount, Network, Price } from "../../../src/types";
 import { PaymentRequirements } from "../../../src/types/payments";
 
@@ -7,6 +7,7 @@ import { PaymentRequirements } from "../../../src/types/payments";
  */
 export class MockSchemeNetworkServer implements SchemeNetworkServer {
   public readonly scheme: string;
+  public readonly schemeHooks?: SchemeServerHooks;
   private parsePriceResult: AssetAmount | Error;
   private enhanceResult: PaymentRequirements | Error | null = null;
   private assetDecimalsResult: number | null = null;
@@ -23,9 +24,11 @@ export class MockSchemeNetworkServer implements SchemeNetworkServer {
   constructor(
     scheme: string,
     parsePriceResult: AssetAmount = { amount: "1000000", asset: "USDC", extra: {} },
+    schemeHooks?: SchemeServerHooks,
   ) {
     this.scheme = scheme;
     this.parsePriceResult = parsePriceResult;
+    this.schemeHooks = schemeHooks;
   }
 
   /**

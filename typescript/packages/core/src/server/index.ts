@@ -10,6 +10,7 @@ export type {
   SettleFailureContext,
   SettlementOverrides,
   SkipHandlerDirective,
+  ResourceVerifyRespone,
   BeforeVerifyHook,
   AfterVerifyHook,
   OnVerifyFailureHook,
@@ -17,6 +18,7 @@ export type {
   AfterSettleHook,
   OnSettleFailureHook,
 } from "./x402ResourceServer";
+export type { PaymentRequiredErrorDetails } from "../types/payments";
 
 export {
   assertAcceptsAllowlistedAfterExtensionEnrich,

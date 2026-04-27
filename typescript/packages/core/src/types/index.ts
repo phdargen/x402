@@ -15,6 +15,7 @@ export type {
   PaymentRequirements,
   PaymentPayload,
   PaymentRequired,
+  PaymentRequiredErrorDetails,
   ResourceInfo,
 } from "./payments";
 export type {

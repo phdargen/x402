@@ -726,6 +726,62 @@ describe("x402HTTPResourceServer", () => {
       }
     });
 
+    it("threads verify errorDetails into the PAYMENT-REQUIRED response", async () => {
+      ResourceServer.onBeforeVerify(async () => ({
+        abort: true,
+        reason: "stale_state",
+        errorDetails: {
+          recoverable: true,
+          data: { channelId: "0x123" },
+        },
+      }));
+
+      const routes = {
+        "/api/test": {
+          accepts: {
+            scheme: "exact",
+            payTo: "0xabc",
+            price: "$1.00" as Price,
+            network: "eip155:8453" as Network,
+          },
+        },
+      };
+      const httpServer = new x402HTTPResourceServer(ResourceServer, routes);
+      const matchingRequirements = buildPaymentRequirements({
+        scheme: "exact",
+        network: "eip155:8453" as Network,
+        payTo: "0xabc",
+        amount: "1000000",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        maxTimeoutSeconds: 300,
+        extra: {},
+      });
+      const payload = buildPaymentPayload({ accepted: matchingRequirements });
+      const { decodePaymentRequiredHeader, encodePaymentSignatureHeader } = await import(
+        "../../../src/http"
+      );
+      const adapter = new MockHTTPAdapter({
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      });
+
+      const result = await httpServer.processHTTPRequest({
+        adapter,
+        path: "/api/test",
+        method: "GET",
+      });
+
+      expect(result.type).toBe("payment-error");
+      if (result.type === "payment-error") {
+        const paymentRequired = decodePaymentRequiredHeader(
+          result.response.headers["PAYMENT-REQUIRED"],
+        );
+        expect(paymentRequired.errorDetails).toEqual({
+          recoverable: true,
+          data: { channelId: "0x123" },
+        });
+      }
+    });
+
     it("should delegate verification to resource service", async () => {
       const routes = {
         "/api/test": {

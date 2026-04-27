@@ -61,7 +61,7 @@ export class VerifyError extends Error {
    * Creates a VerifyError from a failed verification response.
    *
    * @param statusCode - HTTP status code from the facilitator
-   * @param response - The verify response containing error details
+   * @param response - The verify response containing failure details
    */
   constructor(statusCode: number, response: VerifyResponse) {
     const reason = response.invalidReason || "unknown reason";
