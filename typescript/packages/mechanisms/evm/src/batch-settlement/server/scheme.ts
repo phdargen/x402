@@ -69,9 +69,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param ctx - Settlement context for the current payment.
    * @returns Additive payload fields, or nothing when no enrichment is needed.
    */
-  enrichSettlementPayload(ctx: SettleContext): Promise<Record<string, unknown> | void> {
-    return handleEnrichSettlementPayload(this, ctx);
-  }
+  enrichSettlementPayload = (ctx: SettleContext): Promise<Record<string, unknown> | void> =>
+    handleEnrichSettlementPayload(this, ctx);
 
   /**
    * Adds server-owned extra fields after facilitator settlement.
@@ -79,9 +78,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param ctx - Settlement result context for the current payment.
    * @returns Additive response extra fields, or nothing when no enrichment is needed.
    */
-  enrichSettlementResponse(ctx: SettleResultContext): Promise<Record<string, unknown> | void> {
-    return handleEnrichSettlementResponse(this, ctx);
-  }
+  enrichSettlementResponse = (ctx: SettleResultContext): Promise<Record<string, unknown> | void> =>
+    handleEnrichSettlementResponse(this, ctx);
 
   /**
    * Stores a channel snapshot for the current settlement request.

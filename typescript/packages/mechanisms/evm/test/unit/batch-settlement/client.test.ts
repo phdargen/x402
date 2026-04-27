@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
 import { getAddress } from "viem";
+import { x402HTTPClient } from "@x402/core/client";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/client/scheme";
 import {
   type BatchSettlementClientDeps,
@@ -18,8 +19,14 @@ import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
 } from "../../../src/batch-settlement/types";
+import { createBatchSettlementClientHooks } from "../../../src/batch-settlement/client/hooks";
 import type { ClientEvmSigner } from "../../../src/signer";
-import type { PaymentRequirements, SettleResponse, PaymentRequired } from "@x402/core/types";
+import type {
+  PaymentPayload,
+  PaymentRequirements,
+  SettleResponse,
+  PaymentRequired,
+} from "@x402/core/types";
 
 const PAYER_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const VOUCHER_PRIVATE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
@@ -65,6 +72,14 @@ function makeRequirements(overrides?: Partial<PaymentRequirements>): PaymentRequ
       withdrawDelay: 900,
     },
     ...overrides,
+  };
+}
+
+function makePaymentPayload(payload: Record<string, unknown>): PaymentPayload {
+  return {
+    x402Version: 2,
+    accepted: makeRequirements(),
+    payload,
   };
 }
 
@@ -451,6 +466,8 @@ describe("processSettleResponse / schemeHooks", () => {
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000003";
     await client.schemeHooks.onPaymentResponse!({
+      paymentPayload: makePaymentPayload({ type: "voucher" }),
+      requirements: makeRequirements(),
       settleResponse: {
         success: true,
         transaction: "0x",
@@ -462,6 +479,52 @@ describe("processSettleResponse / schemeHooks", () => {
 
     const ctx = await storage.get(channelId.toLowerCase());
     expect(ctx?.chargedCumulativeAmount).toBe("42");
+  });
+
+  it("routes refund settle responses through refund reconciliation", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientChannelStorage();
+    const deps = makeDeps({ signer, storage });
+    const hooks = createBatchSettlementClientHooks(deps);
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000004";
+    const config = buildChannelConfig(deps, makeRequirements());
+
+    await storage.set(channelId.toLowerCase(), { chargedCumulativeAmount: "1000" });
+    await hooks.onPaymentResponse!({
+      paymentPayload: makePaymentPayload({
+        type: "refund",
+        channelConfig: config,
+        voucher: {
+          channelId,
+          maxClaimableAmount: "1000",
+          signature: "0xdead",
+        },
+      }),
+      requirements: makeRequirements(),
+      settleResponse: {
+        success: true,
+        transaction: "0x",
+        network: NETWORK,
+        payer: signer.address,
+        extra: { channelId, balance: "0" },
+      } as SettleResponse,
+    });
+
+    expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
+
+    await hooks.onPaymentResponse!({
+      paymentPayload: makePaymentPayload({ type: "voucher" }),
+      requirements: makeRequirements(),
+      settleResponse: {
+        success: true,
+        transaction: "0x",
+        network: NETWORK,
+        payer: signer.address,
+        extra: { channelId, balance: "0" },
+      } as SettleResponse,
+    });
+
+    expect((await storage.get(channelId.toLowerCase()))?.balance).toBe("0");
   });
 });
 
@@ -662,6 +725,8 @@ describe("processCorrectivePaymentRequired", () => {
     const client = new BatchSettlementEvmScheme(signer);
 
     const result = await client.schemeHooks.onPaymentResponse!({
+      paymentPayload: makePaymentPayload({ type: "voucher" }),
+      requirements: makeRequirements(),
       paymentRequired: {
         x402Version: 2,
         error: "batch_settlement_stale_cumulative_amount",
@@ -741,15 +806,19 @@ describe("BatchSettlementEvmScheme — refund()", () => {
         return refundSuccessResponse({ channelId, balance: "0" });
       },
     ]);
+    const processSpy = vi.spyOn(x402HTTPClient.prototype, "processPaymentResult");
 
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
     expect(settle.success).toBe(true);
+    expect(processSpy).toHaveBeenCalledTimes(1);
     expect(capturedSig).toBeTruthy();
     const { decodePaymentSignatureHeader } = await import("@x402/core/http");
     const sentPayload = decodePaymentSignatureHeader(capturedSig!);
     expect(sentPayload.payload.type).toBe("refund");
+    expect(sentPayload.accepted).toEqual(buildRefundRequirements());
     expect((sentPayload.payload as { amount?: string }).amount).toBeUndefined();
     expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
+    processSpy.mockRestore();
   });
 
   it("performs a partial refund: keeps the channel record and updates balance", async () => {
@@ -820,10 +889,13 @@ describe("BatchSettlementEvmScheme — refund()", () => {
         new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": correctiveHeader } }),
       async () => refundSuccessResponse({ channelId, balance: "0" }),
     ]);
+    const processSpy = vi.spyOn(x402HTTPClient.prototype, "processPaymentResult");
 
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
     expect(settle.success).toBe(true);
     expect(readContract).toHaveBeenCalled();
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    processSpy.mockRestore();
   });
 
   it("throws when the probe receives a non-402 response", async () => {

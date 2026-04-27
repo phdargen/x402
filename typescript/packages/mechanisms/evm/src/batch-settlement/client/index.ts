@@ -11,6 +11,7 @@ export { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
 export { signVoucher } from "./voucher";
 export { refundChannel } from "./refund";
 export type { RefundOptions } from "./refund";
+export { createBatchSettlementClientHooks, handleBatchSettlementPaymentResponse } from "./hooks";
 export { computeChannelId } from "../utils";
 
 export {

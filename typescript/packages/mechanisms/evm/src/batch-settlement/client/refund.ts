@@ -1,23 +1,19 @@
-import {
-  decodePaymentRequiredHeader,
-  decodePaymentResponseHeader,
-  encodePaymentSignatureHeader,
-} from "@x402/core/http";
-import type { PaymentRequired } from "@x402/core/types";
-import type { PaymentRequirements, PaymentPayloadResult, SettleResponse } from "@x402/core/types";
+import { decodePaymentRequiredHeader, decodePaymentResponseHeader } from "@x402/core/http";
+import { x402Client, x402HTTPClient } from "@x402/core/client";
+import type {
+  PaymentPayload,
+  PaymentRequired,
+  PaymentRequirements,
+  SettleResponse,
+} from "@x402/core/types";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import type {
   BatchSettlementPaymentRequirementsExtra,
   BatchSettlementRefundPayload,
 } from "../types";
 import { computeChannelId } from "../utils";
-import { processCorrectivePaymentRequired } from "./recovery";
-import {
-  type BatchSettlementClientDeps,
-  buildChannelConfig,
-  recoverChannel,
-  updateChannelAfterRefund,
-} from "./channel";
+import { type BatchSettlementClientDeps, buildChannelConfig, recoverChannel } from "./channel";
+import { createBatchSettlementClientHooks } from "./hooks";
 import { signVoucher } from "./voucher";
 
 /**
@@ -29,6 +25,11 @@ const NON_RECOVERABLE_REFUND_ERRORS: ReadonlySet<string> = new Set([
   "batch_settlement_refund_no_balance",
   "batch_settlement_refund_amount_invalid",
 ]);
+
+interface RefundRequirementsProbe {
+  paymentRequired: PaymentRequired;
+  requirements: PaymentRequirements;
+}
 
 /**
  * Caller-facing options for {@link refundChannel}.
@@ -68,8 +69,8 @@ export async function refundChannel(
   }
 
   const refundAmount = normalizeRefundAmount(options?.amount);
-  const requirements = await probeRefundRequirements(url, fetchImpl);
-  return executeRefund(ctx, url, requirements, refundAmount, fetchImpl);
+  const probe = await probeRefundRequirements(url, fetchImpl);
+  return executeRefund(ctx, url, probe, refundAmount, fetchImpl);
 }
 
 /**
@@ -83,7 +84,7 @@ export async function refundChannel(
 async function probeRefundRequirements(
   url: string,
   fetchImpl: typeof fetch,
-): Promise<PaymentRequirements> {
+): Promise<RefundRequirementsProbe> {
   const probe = await fetchImpl(url, { method: "GET" });
   if (probe.status !== 402) {
     throw new Error(`Refund probe expected 402, got ${probe.status}`);
@@ -105,7 +106,7 @@ async function probeRefundRequirements(
     throw new Error("Refund requires a configured receiverAuthorizer on the receiver");
   }
 
-  return requirements;
+  return { paymentRequired, requirements };
 }
 
 /**
@@ -113,7 +114,7 @@ async function probeRefundRequirements(
  *
  * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
  * @param url - The protected URL to send the refund voucher to.
- * @param requirements - Resolved payment requirements for this channel.
+ * @param probe - Resolved payment requirements and probe metadata for this channel.
  * @param refundAmount - Optional partial refund amount in token base units.
  * @param fetchImpl - Fetch implementation used for the request.
  * @returns The parsed settle response.
@@ -121,70 +122,57 @@ async function probeRefundRequirements(
 async function executeRefund(
   ctx: BatchSettlementClientDeps,
   url: string,
-  requirements: PaymentRequirements,
+  probe: RefundRequirementsProbe,
   refundAmount: string | undefined,
   fetchImpl: typeof fetch,
 ): Promise<SettleResponse> {
   const maxAttempts = 2;
+  const { paymentRequired, requirements } = probe;
+  const httpClient = createRefundHttpClient(ctx, requirements);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const voucherPayload = await buildRefundVoucherPayload(ctx, requirements, refundAmount);
-    const headers = {
-      "PAYMENT-SIGNATURE": encodePaymentSignatureHeader({
-        x402Version: voucherPayload.x402Version,
-        accepted: requirements,
-        payload: voucherPayload.payload as Record<string, unknown>,
-        ...(voucherPayload.extensions ? { extensions: voucherPayload.extensions } : {}),
-      }),
-    };
+    const paymentPayload = await buildRefundPaymentPayload(
+      ctx,
+      paymentRequired,
+      requirements,
+      refundAmount,
+    );
+    const headers = httpClient.encodePaymentSignatureHeader(paymentPayload);
 
     const response = await fetchImpl(url, { method: "GET", headers });
 
     if (response.status === 402) {
-      // A 402 may carry either a PAYMENT-RESPONSE (settle aborted with a structured SettleResponse)
-      // or a PAYMENT-REQUIRED (verify aborted with corrective hints).
-      // Settle-side aborts for refunds are non-recoverable, so fail fast instead of retrying
-      const settleHeader = response.headers.get("PAYMENT-RESPONSE");
-      if (settleHeader) {
-        const settle = decodePaymentResponseHeader(settleHeader);
-        throw new Error(formatRefundFailure(settle));
+      const nonRecoverable = getNonRecoverableRefundFailure(response);
+      if (nonRecoverable) {
+        throw new Error(nonRecoverable);
       }
+    }
 
-      const requiredHeader = response.headers.get("PAYMENT-REQUIRED");
-      if (!requiredHeader) {
-        throw new Error("Refund 402 missing PAYMENT-REQUIRED header");
+    const result = await httpClient.processPaymentResult(
+      paymentPayload,
+      name => response.headers.get(name),
+      response.status,
+    );
+
+    if (response.status === 402) {
+      if (result.recovered && attempt < maxAttempts) {
+        continue;
       }
-
-      const paymentRequired: PaymentRequired = decodePaymentRequiredHeader(requiredHeader);
-      const errorCode = paymentRequired.error;
-      if (errorCode && NON_RECOVERABLE_REFUND_ERRORS.has(errorCode)) {
-        throw new Error(`Refund failed: ${errorCode}`);
-      }
-
-      if (attempt >= maxAttempts) {
+      if (result.recovered) {
         throw new Error(`Refund failed: server returned 402 after ${attempt} attempt(s)`);
       }
 
-      const recovered = await processCorrectivePaymentRequired(ctx, paymentRequired);
-      if (!recovered) {
-        throw new Error(`Refund failed: ${errorCode ?? "unknown"}`);
-      }
-      continue;
+      const corrective = getRefundPaymentRequired(response);
+      throw new Error(`Refund failed: ${corrective.error ?? "unknown"}`);
     }
 
-    const settleHeader = response.headers.get("PAYMENT-RESPONSE");
-    if (!settleHeader) {
+    if (!result.settleResponse) {
       throw new Error(
         `Refund response missing PAYMENT-RESPONSE header (status ${response.status})`,
       );
     }
 
-    const settle = decodePaymentResponseHeader(settleHeader);
-    const channelId = settle.extra?.channelId;
-    if (typeof channelId === "string" && channelId) {
-      await updateChannelAfterRefund(ctx.storage, channelId.toLowerCase(), settle.extra ?? {});
-    }
-    return settle;
+    return result.settleResponse;
   }
 
   throw new Error("Refund failed: retry budget exhausted");
@@ -194,15 +182,17 @@ async function executeRefund(
  * Builds the refund payload with a zero-charge `maxClaimableAmount`.
  *
  * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
+ * @param paymentRequired - Decoded 402 body from the probe (resource, extensions, etc.).
  * @param requirements - Resolved payment requirements for the channel.
  * @param refundAmount - Optional partial refund amount in token base units.
- * @returns A payment payload result wrapping the signed refund request.
+ * @returns A full payment payload wrapping the signed refund request.
  */
-async function buildRefundVoucherPayload(
+async function buildRefundPaymentPayload(
   ctx: BatchSettlementClientDeps,
+  paymentRequired: PaymentRequired,
   requirements: PaymentRequirements,
   refundAmount: string | undefined,
-): Promise<PaymentPayloadResult> {
+): Promise<PaymentPayload> {
   const config = buildChannelConfig(ctx, requirements);
   const channelId = computeChannelId(config);
   const key = channelId.toLowerCase();
@@ -217,7 +207,7 @@ async function buildRefundVoucherPayload(
     );
   }
 
-  // Skip the network round-trip when our local view of the channel already shows it is fully drained
+  // Avoid a refund request when local state shows the channel has no refundable balance.
   const charged = channel.chargedCumulativeAmount ?? "0";
   if (channel.balance !== undefined && BigInt(channel.balance) <= BigInt(charged)) {
     throw new Error(
@@ -237,8 +227,68 @@ async function buildRefundVoucherPayload(
 
   return {
     x402Version: 2,
-    payload,
+    accepted: requirements,
+    payload: payload as unknown as Record<string, unknown>,
+    ...(paymentRequired.resource ? { resource: paymentRequired.resource } : {}),
+    ...(paymentRequired.extensions ? { extensions: paymentRequired.extensions } : {}),
   };
+}
+
+/**
+ * Creates an x402 HTTP client for batch settlement with hooks; refund payloads are supplied
+ * by {@link refundChannel} instead of the default payment builder.
+ *
+ * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
+ * @param requirements - Resolved payment requirements for the channel network.
+ * @returns An `x402HTTPClient` wired for batch-settlement scheme hooks.
+ */
+function createRefundHttpClient(
+  ctx: BatchSettlementClientDeps,
+  requirements: PaymentRequirements,
+): x402HTTPClient {
+  const client = new x402Client().register(requirements.network, {
+    scheme: BATCH_SETTLEMENT_SCHEME,
+    schemeHooks: createBatchSettlementClientHooks(ctx),
+    createPaymentPayload: async () => {
+      throw new Error("Refund payloads are built by refundChannel");
+    },
+  });
+  return new x402HTTPClient(client);
+}
+
+/**
+ * If the refund HTTP response cannot be recovered by retrying, returns a user-facing message;
+ * otherwise returns `undefined`.
+ *
+ * @param response - The refund request response (402 with headers or settle failure).
+ * @returns A formatted failure string, or `undefined` when retry may succeed.
+ */
+function getNonRecoverableRefundFailure(response: Response): string | undefined {
+  const settleHeader = response.headers.get("PAYMENT-RESPONSE");
+  if (settleHeader) {
+    return formatRefundFailure(decodePaymentResponseHeader(settleHeader));
+  }
+
+  const paymentRequired = getRefundPaymentRequired(response);
+  const errorCode = paymentRequired.error;
+  if (errorCode && NON_RECOVERABLE_REFUND_ERRORS.has(errorCode)) {
+    return `Refund failed: ${errorCode}`;
+  }
+}
+
+/**
+ * Reads and decodes the `PAYMENT-REQUIRED` header from a refund-related 402 response.
+ *
+ * @param response - HTTP response that must include `PAYMENT-REQUIRED`.
+ * @returns The decoded {@link PaymentRequired} payload.
+ * @throws When the header is missing.
+ */
+function getRefundPaymentRequired(response: Response): PaymentRequired {
+  const requiredHeader = response.headers.get("PAYMENT-REQUIRED");
+  if (!requiredHeader) {
+    throw new Error("Refund 402 missing PAYMENT-REQUIRED header");
+  }
+  return decodePaymentRequiredHeader(requiredHeader);
 }
 
 /**

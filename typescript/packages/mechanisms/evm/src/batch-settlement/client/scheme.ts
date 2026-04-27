@@ -21,13 +21,14 @@ import {
   validateDepositPolicy,
 } from "./config";
 import { refundChannel, type RefundOptions } from "./refund";
-import { processCorrectivePaymentRequired } from "./recovery";
 import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
   processSettleResponse,
   recoverChannel,
 } from "./channel";
+import { createBatchSettlementClientHooks } from "./hooks";
+import { processCorrectivePaymentRequired } from "./recovery";
 import type { ClientChannelStorage } from "./storage";
 import { signVoucher } from "./voucher";
 
@@ -47,19 +48,7 @@ export type { RefundOptions } from "./refund";
 export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
 
-  readonly schemeHooks: SchemeClientHooks = {
-    onPaymentResponse: async ctx => {
-      if (ctx.settleResponse) {
-        await processSettleResponse(this.storage, ctx.settleResponse);
-        return;
-      }
-
-      if (ctx.paymentRequired) {
-        const ok = await processCorrectivePaymentRequired(this.deps(), ctx.paymentRequired);
-        return ok ? { recovered: true } : undefined;
-      }
-    },
-  };
+  readonly schemeHooks: SchemeClientHooks;
 
   private readonly storage: ClientChannelStorage;
   private readonly depositPolicy: BatchSettlementDepositPolicy | undefined;
@@ -94,6 +83,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     }
 
     validateDepositPolicy(depositPolicy);
+    this.schemeHooks = createBatchSettlementClientHooks(this.deps());
   }
 
   /**
