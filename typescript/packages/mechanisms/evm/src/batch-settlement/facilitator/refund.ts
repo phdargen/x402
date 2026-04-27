@@ -3,7 +3,7 @@ import { encodeFunctionData, getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import type {
   AuthorizerSigner,
-  BatchSettlementRefundWithSignaturePayload,
+  BatchSettlementEnrichedRefundPayload,
   ChannelState,
 } from "../types";
 import { batchSettlementABI } from "../abi";
@@ -31,7 +31,7 @@ type RefundSettlementExtra = {
  * @returns Extra fields for the settlement response.
  */
 function buildRefundExtra(
-  payload: BatchSettlementRefundWithSignaturePayload,
+  payload: BatchSettlementEnrichedRefundPayload,
   channelId: `0x${string}`,
   preState: ChannelState | null,
 ): RefundSettlementExtra {
@@ -76,20 +76,20 @@ function buildRefundExtra(
  */
 export async function executeRefundWithSignature(
   signer: FacilitatorEvmSigner,
-  payload: BatchSettlementRefundWithSignaturePayload,
+  payload: BatchSettlementEnrichedRefundPayload,
   requirements: PaymentRequirements,
   authorizerSigner: AuthorizerSigner,
 ): Promise<SettleResponse> {
   const network = requirements.network;
 
   try {
-    const channelId = computeChannelId(payload.config);
+    const channelId = computeChannelId(payload.channelConfig);
     const preState = await readChannelState(signer, channelId);
     const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
 
     const hasClientSig = payload.refundAuthorizerSignature !== undefined;
     const authorizerMismatch =
-      getAddress(payload.config.receiverAuthorizer) !== getAddress(authorizerSigner.address);
+      getAddress(payload.channelConfig.receiverAuthorizer) !== getAddress(authorizerSigner.address);
 
     if (!hasClientSig && authorizerMismatch) {
       return {
@@ -102,15 +102,15 @@ export async function executeRefundWithSignature(
 
     const refundSig =
       payload.refundAuthorizerSignature ??
-      (await signRefund(authorizerSigner, channelId, payload.amount, payload.nonce, network));
+      (await signRefund(authorizerSigner, channelId, payload.amount, payload.refundNonce, network));
 
     const refundCalldata = encodeFunctionData({
       abi: batchSettlementABI,
       functionName: "refundWithSignature",
       args: [
-        toContractChannelConfig(payload.config),
+        toContractChannelConfig(payload.channelConfig),
         BigInt(payload.amount),
-        BigInt(payload.nonce),
+        BigInt(payload.refundNonce),
         refundSig,
       ],
     });
@@ -159,9 +159,9 @@ export async function executeRefundWithSignature(
           abi: batchSettlementABI,
           functionName: "refundWithSignature",
           args: [
-            toContractChannelConfig(payload.config),
+            toContractChannelConfig(payload.channelConfig),
             BigInt(payload.amount),
-            BigInt(payload.nonce),
+            BigInt(payload.refundNonce),
             refundSig,
           ],
         });
@@ -180,9 +180,9 @@ export async function executeRefundWithSignature(
         abi: batchSettlementABI,
         functionName: "refundWithSignature",
         args: [
-          toContractChannelConfig(payload.config),
+          toContractChannelConfig(payload.channelConfig),
           BigInt(payload.amount),
-          BigInt(payload.nonce),
+          BigInt(payload.refundNonce),
           refundSig,
         ],
       });
@@ -203,7 +203,7 @@ export async function executeRefundWithSignature(
       success: true,
       transaction: tx,
       network,
-      payer: payload.config.payer,
+      payer: payload.channelConfig.payer,
       amount: requirements.amount,
       extra: buildRefundExtra(payload, channelId, preState),
     };

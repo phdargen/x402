@@ -3,7 +3,7 @@ import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import {
   isBatchSettlementDepositPayload,
-  isBatchSettlementRefundWithSignaturePayload,
+  isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
 import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim } from "../types";
@@ -39,7 +39,8 @@ export async function handleBeforeSettle(
     return;
   }
 
-  const channelId = raw.channelId;
+  const { voucher } = raw;
+  const channelId = voucher.channelId;
   const channel = await storage.get(channelId);
   if (!channel) {
     return {
@@ -49,12 +50,8 @@ export async function handleBeforeSettle(
     };
   }
 
-  if (raw.refund === true) {
-    return;
-  }
-
   const increment = BigInt(requirements.amount);
-  const signedCap = BigInt(raw.maxClaimableAmount);
+  const signedCap = BigInt(voucher.maxClaimableAmount);
   const prevCharged = BigInt(channel.chargedCumulativeAmount);
   const newCharged = prevCharged + increment;
 
@@ -71,8 +68,8 @@ export async function handleBeforeSettle(
     channelConfig: channel.channelConfig,
     payer: channel.payer,
     chargedCumulativeAmount: newCharged.toString(),
-    signedMaxClaimable: raw.maxClaimableAmount as string,
-    signature: raw.signature as `0x${string}`,
+    signedMaxClaimable: voucher.maxClaimableAmount,
+    signature: voucher.signature,
     balance: channel.balance,
     totalClaimed: channel.totalClaimed,
     withdrawRequestedAt: channel.withdrawRequestedAt,
@@ -128,30 +125,34 @@ export async function handleEnrichSettlementPayload(
 ): Promise<Record<string, unknown> | void> {
   const { paymentPayload, requirements } = ctx;
   const raw = paymentPayload.payload;
-  if (!isBatchSettlementVoucherPayload(raw) || raw.refund !== true) {
+  if (!isBatchSettlementRefundPayload(raw)) {
     return;
   }
 
-  const channelId = raw.channelId;
+  const channelId = computeChannelId(raw.channelConfig);
+  if (raw.voucher.channelId !== channelId) {
+    throw new Error("refund channelId does not match channelConfig");
+  }
+
   const channel = await scheme.getStorage().get(channelId);
   if (!channel) {
     throw new Error("missing_batch_settlement_channel");
   }
-  if (BigInt(raw.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
+  if (BigInt(raw.voucher.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
     throw new Error("batch_settlement_stale_cumulative_amount");
   }
-  if (raw.signature !== channel.signature) {
+  if (raw.voucher.signature !== channel.signature) {
     throw new Error("batch_settlement_refund_signature_mismatch");
   }
 
-  const config = channel.channelConfig;
+  const config = raw.channelConfig;
 
   const claimEntry: BatchSettlementVoucherClaim = {
     voucher: {
       channel: config,
-      maxClaimableAmount: raw.maxClaimableAmount as string,
+      maxClaimableAmount: raw.voucher.maxClaimableAmount,
     },
-    signature: raw.signature as `0x${string}`,
+    signature: raw.voucher.signature,
     totalClaimed: channel.chargedCumulativeAmount,
   };
 
@@ -161,13 +162,13 @@ export async function handleEnrichSettlementPayload(
   }
 
   let refundAmountBig = remainder;
-  if (raw.refundAmount !== undefined) {
-    const requested = BigInt(raw.refundAmount);
-    if (requested <= 0n) {
+  if (raw.amount !== undefined) {
+    if (!/^\d+$/.test(raw.amount)) {
       throw new Error("batch_settlement_refund_amount_invalid");
     }
-    if (requested > remainder) {
-      throw new Error("batch_settlement_refund_amount_exceeds_balance");
+    const requested = BigInt(raw.amount);
+    if (requested <= 0n) {
+      throw new Error("batch_settlement_refund_amount_invalid");
     }
     refundAmountBig = requested;
   }
@@ -194,10 +195,8 @@ export async function handleEnrichSettlementPayload(
   scheme.rememberChannelSnapshot(paymentPayload, channel);
 
   return {
-    settleAction: "refundWithSignature",
-    config,
-    amount: refundAmount,
-    nonce,
+    ...(raw.amount === undefined ? { amount: refundAmount } : {}),
+    refundNonce: nonce,
     claims: [claimEntry],
     refundAuthorizerSignature,
     claimAuthorizerSignature,
@@ -229,14 +228,15 @@ export async function handleAfterSettle(
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
 
-  if (isBatchSettlementRefundWithSignaturePayload(raw)) {
-    const channelId = computeChannelId(raw.config);
+  if (isBatchSettlementRefundPayload(raw)) {
+    const channelId = computeChannelId(raw.channelConfig);
     const prevChannel = await storage.get(channelId);
-    if (prevChannel) {
-      scheme.rememberChannelSnapshot(paymentPayload, prevChannel);
+
+    if (raw.amount === undefined) {
+      return;
     }
 
-    const refundedAmount = readExtraString(result.extra, "refundedAmount", raw.amount);
+    const refundedAmount = raw.amount;
 
     const remainderAfter = prevChannel
       ? BigInt(prevChannel.balance) -
@@ -267,15 +267,12 @@ export async function handleAfterSettle(
     const channelId = raw.voucher.channelId;
     const ex = result.extra ?? {};
     const prevChannel = await storage.get(channelId);
-    const resolvedConfig = raw.deposit.channelConfig ?? prevChannel?.channelConfig;
-    if (!resolvedConfig) {
-      return;
-    }
+    const config = raw.channelConfig;
     const prevCharged =
       prevChannel?.chargedCumulativeAmount ?? readExtraString(ex, "totalClaimed", "0");
     const chargedActual = (BigInt(prevCharged) + BigInt(requirements.amount)).toString();
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    const payer = resolvedConfig.payer ?? result.payer ?? "";
+    const payer = config.payer;
     const depositAmount = raw.deposit.amount;
     const fallback: BatchSettlementPaymentResponseExtra = {
       channelId,
@@ -297,7 +294,7 @@ export async function handleAfterSettle(
 
     const channel: Channel = {
       channelId,
-      channelConfig: resolvedConfig,
+      channelConfig: config,
       payer: payer.toLowerCase(),
       chargedCumulativeAmount: chargedActual,
       signedMaxClaimable,
@@ -325,7 +322,7 @@ export async function handleEnrichSettlementResponse(
   ctx: SettleResultContext,
 ): Promise<Record<string, unknown> | void> {
   const raw = ctx.paymentPayload.payload;
-  if (isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundWithSignaturePayload(raw)) {
+  if (isBatchSettlementVoucherPayload(raw)) {
     return;
   }
 

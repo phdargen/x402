@@ -9,6 +9,7 @@ import {
   hasChannel,
   processSettleResponse,
   recoverChannel,
+  updateChannelAfterRefund,
 } from "../../../src/batch-settlement/client/channel";
 import { processCorrectivePaymentRequired } from "../../../src/batch-settlement/client/recovery";
 import { InMemoryClientChannelStorage } from "../../../src/batch-settlement/client/storage";
@@ -262,7 +263,9 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 
     const result = await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
     expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
-    expect((result.payload as { maxClaimableAmount: string }).maxClaimableAmount).toBe("1000");
+    expect(
+      (result.payload as { voucher: { maxClaimableAmount: string } }).voucher.maxClaimableAmount,
+    ).toBe("1000");
   });
 
   it("creates a top-up deposit when balance is insufficient and autoTopUp is on", async () => {
@@ -303,7 +306,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
   });
 
-  it("createPaymentPayload no longer attaches refund flags (refund() handles it)", async () => {
+  it("createPaymentPayload keeps refund requests on the refund() path", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
@@ -317,7 +320,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     });
 
     const result = await client.createPaymentPayload(2, makeRequirements());
-    expect((result.payload as { refund?: boolean }).refund).toBeUndefined();
+    expect(result.payload.type).toBe("voucher");
     expect(
       (client as unknown as { requestRefund?: (id: string) => void }).requestRefund,
     ).toBeUndefined();
@@ -430,20 +433,13 @@ describe("processSettleResponse / schemeHooks", () => {
     expect(all.every(c => c === undefined)).toBe(true);
   });
 
-  it("deletes channel record when refund flag is set in settle response", async () => {
-    const signer = buildSigner(PAYER_PRIVATE_KEY);
+  it("deletes channel record after a full refund response", async () => {
     const storage = new InMemoryClientChannelStorage();
 
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000002";
     await storage.set(channelId.toLowerCase(), { chargedCumulativeAmount: "1000" });
 
-    await processSettleResponse(storage, {
-      success: true,
-      transaction: "0x",
-      network: NETWORK,
-      payer: signer.address,
-      extra: { channelId, refund: true },
-    } as SettleResponse);
+    await updateChannelAfterRefund(storage, channelId.toLowerCase(), { channelId, balance: "0" });
 
     expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
   });
@@ -742,13 +738,17 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () => probe402Response(),
       async (_url, init) => {
         capturedSig = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
-        return refundSuccessResponse({ channelId, refund: true, balance: "0" });
+        return refundSuccessResponse({ channelId, balance: "0" });
       },
     ]);
 
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
     expect(settle.success).toBe(true);
     expect(capturedSig).toBeTruthy();
+    const { decodePaymentSignatureHeader } = await import("@x402/core/http");
+    const sentPayload = decodePaymentSignatureHeader(capturedSig!);
+    expect(sentPayload.payload.type).toBe("refund");
+    expect((sentPayload.payload as { amount?: string }).amount).toBeUndefined();
     expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
   });
 
@@ -770,8 +770,6 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () =>
         refundSuccessResponse({
           channelId,
-          refund: true,
-          refundedAmount: "2000",
           balance: "8000",
           chargedCumulativeAmount: "500",
           totalClaimed: "0",
@@ -820,7 +818,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () => probe402Response(),
       async () =>
         new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": correctiveHeader } }),
-      async () => refundSuccessResponse({ channelId, refund: true, balance: "0" }),
+      async () => refundSuccessResponse({ channelId, balance: "0" }),
     ]);
 
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });

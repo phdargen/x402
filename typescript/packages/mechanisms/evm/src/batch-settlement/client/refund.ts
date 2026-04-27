@@ -8,15 +8,15 @@ import type { PaymentRequirements, PaymentPayloadResult, SettleResponse } from "
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import type {
   BatchSettlementPaymentRequirementsExtra,
-  BatchSettlementVoucherPayload,
+  BatchSettlementRefundPayload,
 } from "../types";
 import { computeChannelId } from "../utils";
 import { processCorrectivePaymentRequired } from "./recovery";
 import {
   type BatchSettlementClientDeps,
   buildChannelConfig,
-  processSettleResponse,
   recoverChannel,
+  updateChannelAfterRefund,
 } from "./channel";
 import { signVoucher } from "./voucher";
 
@@ -28,7 +28,6 @@ import { signVoucher } from "./voucher";
 const NON_RECOVERABLE_REFUND_ERRORS: ReadonlySet<string> = new Set([
   "batch_settlement_refund_no_balance",
   "batch_settlement_refund_amount_invalid",
-  "batch_settlement_refund_amount_exceeds_balance",
 ]);
 
 /**
@@ -47,8 +46,7 @@ export interface RefundOptions {
  * Flow:
  * 1. Probe the URL with `GET` (no payment) to obtain the route's payment requirements.
  * 2. Build the `ChannelConfig` and resolve the local session (or recover it).
- * 3. Sign a zero-charge voucher (`maxClaimableAmount = chargedCumulativeAmount`)
- *    with `refund: true` and the optional `refundAmount` (partial refund).
+ * 3. Sign a zero-charge refund voucher (`maxClaimableAmount = chargedCumulativeAmount`).
  * 4. Send the voucher via `PAYMENT-SIGNATURE`. On a corrective 402, run the
  *    standard recovery path and retry once.
  * 5. Return the parsed `SettleResponse` from the server.
@@ -182,7 +180,10 @@ async function executeRefund(
     }
 
     const settle = decodePaymentResponseHeader(settleHeader);
-    await processSettleResponse(ctx.storage, settle);
+    const channelId = settle.extra?.channelId;
+    if (typeof channelId === "string" && channelId) {
+      await updateChannelAfterRefund(ctx.storage, channelId.toLowerCase(), settle.extra ?? {});
+    }
     return settle;
   }
 
@@ -190,12 +191,12 @@ async function executeRefund(
 }
 
 /**
- * Builds the voucher payload (zero-charge `maxClaimableAmount`) for a refund.
+ * Builds the refund payload with a zero-charge `maxClaimableAmount`.
  *
  * @param ctx - Identity inputs (storage, signers, salt, payerAuthorizer).
  * @param requirements - Resolved payment requirements for the channel.
  * @param refundAmount - Optional partial refund amount in token base units.
- * @returns A payment payload result wrapping the signed refund voucher.
+ * @returns A payment payload result wrapping the signed refund request.
  */
 async function buildRefundVoucherPayload(
   ctx: BatchSettlementClientDeps,
@@ -227,12 +228,11 @@ async function buildRefundVoucherPayload(
   const voucherSigner = ctx.voucherSigner ?? ctx.signer;
   const voucher = await signVoucher(voucherSigner, channelId, charged, requirements.network);
 
-  const payload: BatchSettlementVoucherPayload = {
-    type: "voucher",
+  const payload: BatchSettlementRefundPayload = {
+    type: "refund",
     channelConfig: config,
-    ...voucher,
-    refund: true,
-    ...(refundAmount !== undefined ? { refundAmount } : {}),
+    voucher,
+    ...(refundAmount !== undefined ? { amount: refundAmount } : {}),
   };
 
   return {

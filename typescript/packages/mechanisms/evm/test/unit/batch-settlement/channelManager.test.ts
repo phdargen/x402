@@ -154,7 +154,7 @@ describe("BatchSettlementChannelManager — claim()", () => {
     expect(facilitator.settle).toHaveBeenCalledTimes(1);
     const [paymentPayload] = facilitator.settle.mock.calls[0];
     const payload = paymentPayload.payload as Record<string, unknown>;
-    expect(payload.settleAction).toBe("claimWithSignature");
+    expect(payload.type).toBe("claim");
     expect(payload.claims).toHaveLength(1);
   });
 
@@ -244,13 +244,13 @@ describe("BatchSettlementChannelManager — claim()", () => {
 });
 
 describe("BatchSettlementChannelManager — settle()", () => {
-  it("calls the facilitator with a settleAction=settle payload", async () => {
+  it('calls the facilitator with a type="settle" payload', async () => {
     const { manager, facilitator } = buildManager();
     const result = await manager.settle();
 
     expect(result.transaction).toBe("0xtx");
     const [paymentPayload, reqs] = facilitator.settle.mock.calls[0];
-    expect((paymentPayload.payload as Record<string, unknown>).settleAction).toBe("settle");
+    expect((paymentPayload.payload as Record<string, unknown>).type).toBe("settle");
     expect((paymentPayload.payload as Record<string, unknown>).receiver).toBe(RECEIVER);
     expect((paymentPayload.payload as Record<string, unknown>).token).toBe(TOKEN);
     expect(reqs.network).toBe(NETWORK);
@@ -311,7 +311,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
     expect(facilitator.settle).toHaveBeenCalledTimes(1);
     const [paymentPayload] = facilitator.settle.mock.calls[0];
     const payload = paymentPayload.payload as Record<string, unknown>;
-    expect(payload.settleAction).toBe("refundWithSignature");
+    expect(payload.type).toBe("refund");
     expect(payload.amount).toBe("9000");
   });
 
@@ -405,8 +405,8 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
 
   it("forwards refund-on-shutdown errors to onError callback", async () => {
     const facilitator = buildFacilitator(async payload => {
-      const action = (payload.payload as Record<string, unknown>).settleAction;
-      if (action === "refundWithSignature") {
+      const action = (payload.payload as Record<string, unknown>).type;
+      if (action === "refund") {
         return {
           success: false,
           errorReason: "boom",
@@ -473,10 +473,10 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
 
     await manager.stop();
     expect(onSettle).toHaveBeenCalled();
-    const settleAction = facilitator.settle.mock.calls.map(
-      ([p]) => (p.payload as Record<string, unknown>).settleAction,
+    const settleTypes = facilitator.settle.mock.calls.map(
+      ([p]) => (p.payload as Record<string, unknown>).type,
     );
-    expect(settleAction).toContain("settle");
+    expect(settleTypes).toContain("settle");
   });
 
   it("invokes onError when a tick step throws", async () => {

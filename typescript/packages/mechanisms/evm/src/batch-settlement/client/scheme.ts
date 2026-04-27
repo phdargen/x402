@@ -164,7 +164,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const payload: BatchSettlementVoucherPayload = {
       type: "voucher",
       channelConfig: config,
-      ...voucher,
+      voucher,
     };
 
     return {

@@ -67,11 +67,6 @@ export async function processSettleResponse(
 
   const key = channelId.toLowerCase();
 
-  if (extra.refund === true) {
-    await updateChannelAfterRefund(storage, key, extra);
-    return;
-  }
-
   const prev = await storage.get(key);
   const next: BatchSettlementClientContext = { ...(prev ?? {}) };
 

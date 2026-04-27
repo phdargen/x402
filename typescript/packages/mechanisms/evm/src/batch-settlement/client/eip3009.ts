@@ -78,8 +78,9 @@ export async function createBatchSettlementEIP3009DepositPayload(
 
   const payload: BatchSettlementDepositPayload = {
     type: "deposit",
+    channelConfig,
+    voucher,
     deposit: {
-      channelConfig,
       amount: depositAmount,
       authorization: {
         erc3009Authorization: {
@@ -90,7 +91,6 @@ export async function createBatchSettlementEIP3009DepositPayload(
         },
       },
     },
-    voucher,
   };
 
   return {

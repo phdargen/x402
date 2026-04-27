@@ -1,6 +1,10 @@
 import { PaymentRequirements, VerifyResponse } from "@x402/core/types";
 import { FacilitatorEvmSigner } from "../../signer";
-import { BatchSettlementVoucherPayload, ChannelConfig } from "../types";
+import {
+  BatchSettlementRefundPayload,
+  BatchSettlementVoucherPayload,
+  ChannelConfig,
+} from "../types";
 import { getEvmChainId } from "../../utils";
 import * as Errors from "./errors";
 import {
@@ -13,18 +17,19 @@ import {
  * Verifies a cumulative voucher payload against onchain channel state.
  *
  * @param signer - Facilitator signer used for on-chain reads and signature verification.
- * @param payload - The voucher payload (channelId, maxClaimableAmount, signature).
+ * @param payload - Voucher or refund payload with signed voucher fields.
  * @param requirements - Server payment requirements (asset, network, amount).
  * @param channelConfig - Reconstructed channel configuration for the payer/receiver pair.
  * @returns A {@link VerifyResponse} indicating validity and returning channel state in `extra`.
  */
 export async function verifyVoucher(
   signer: FacilitatorEvmSigner,
-  payload: BatchSettlementVoucherPayload,
+  payload: BatchSettlementVoucherPayload | BatchSettlementRefundPayload,
   requirements: PaymentRequirements,
   channelConfig: ChannelConfig,
 ): Promise<VerifyResponse> {
-  const channelId = payload.channelId;
+  const { voucher } = payload;
+  const channelId = voucher.channelId;
   const chainId = getEvmChainId(requirements.network);
 
   const configErr = validateChannelConfig(channelConfig, channelId, requirements);
@@ -36,10 +41,10 @@ export async function verifyVoucher(
     signer,
     {
       channelId,
-      maxClaimableAmount: payload.maxClaimableAmount,
+      maxClaimableAmount: voucher.maxClaimableAmount,
       payerAuthorizer: channelConfig.payerAuthorizer,
       payer: channelConfig.payer,
-      signature: payload.signature,
+      signature: voucher.signature,
     },
     chainId,
   );
@@ -57,7 +62,7 @@ export async function verifyVoucher(
     return { isValid: false, invalidReason: Errors.ErrChannelNotFound, payer: channelConfig.payer };
   }
 
-  const maxClaimableAmount = BigInt(payload.maxClaimableAmount);
+  const maxClaimableAmount = BigInt(voucher.maxClaimableAmount);
 
   if (maxClaimableAmount > state.balance) {
     return {
@@ -67,10 +72,10 @@ export async function verifyVoucher(
     };
   }
 
-  const isRefundVoucher = payload.refund === true;
-  const belowClaimed = isRefundVoucher
-    ? maxClaimableAmount < state.totalClaimed
-    : maxClaimableAmount <= state.totalClaimed;
+  const belowClaimed =
+    payload.type === "refund"
+      ? maxClaimableAmount < state.totalClaimed
+      : maxClaimableAmount <= state.totalClaimed;
   if (belowClaimed) {
     return {
       isValid: false,

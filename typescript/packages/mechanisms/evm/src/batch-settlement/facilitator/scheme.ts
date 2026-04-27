@@ -11,9 +11,10 @@ import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
-  isBatchSettlementClaimWithSignaturePayload,
-  isBatchSettlementSettleActionPayload,
-  isBatchSettlementRefundWithSignaturePayload,
+  isBatchSettlementClaimPayload,
+  isBatchSettlementSettlePayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementEnrichedRefundPayload,
 } from "../types";
 import type { AuthorizerSigner } from "../types";
 import { verifyDeposit, settleDeposit } from "./deposit";
@@ -27,7 +28,7 @@ import * as Errors from "./errors";
  * Facilitator-side implementation of the `batch-settlement` scheme for EVM networks.
  *
  * Routes incoming verify/settle requests to the appropriate handler based on payload
- * type (deposit, voucher, claimWithSignature, settle, refundWithSignature).
+ * type (deposit, voucher, claim, settle, refund).
  */
 export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
@@ -103,6 +104,10 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       return verifyVoucher(this.signer, rawPayload, requirements, rawPayload.channelConfig);
     }
 
+    if (isBatchSettlementRefundPayload(rawPayload)) {
+      return verifyVoucher(this.signer, rawPayload, requirements, rawPayload.channelConfig);
+    }
+
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
   }
 
@@ -111,9 +116,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    *
    * Dispatches to the correct handler based on payload settle action:
    * - `deposit` → on-chain `deposit(config, amount, collector, collectorData)`
-   * - `claimWithSignature` → on-chain `claimWithSignature(VoucherClaim[], bytes)`
+   * - `claim` → on-chain `claimWithSignature(VoucherClaim[], bytes)`
    * - `settle` → on-chain `settle(receiver, token)`
-   * - `refundWithSignature` → optional claim + onchain `refundWithSignature(config, amount, nonce, sig)`
+   * - `refund` → optional claim + onchain `refundWithSignature(config, amount, nonce, sig)`
    *
    * @param payload - The x402 payment payload envelope.
    * @param requirements - Server payment requirements.
@@ -131,7 +136,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       return settleDeposit(this.signer, rawPayload, requirements);
     }
 
-    if (isBatchSettlementClaimWithSignaturePayload(rawPayload)) {
+    if (isBatchSettlementClaimPayload(rawPayload)) {
       return executeClaimWithSignature(
         this.signer,
         rawPayload,
@@ -140,7 +145,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       );
     }
 
-    if (isBatchSettlementRefundWithSignaturePayload(rawPayload)) {
+    if (isBatchSettlementEnrichedRefundPayload(rawPayload)) {
       return executeRefundWithSignature(
         this.signer,
         rawPayload,
@@ -149,7 +154,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       );
     }
 
-    if (isBatchSettlementSettleActionPayload(rawPayload)) {
+    if (isBatchSettlementSettlePayload(rawPayload)) {
       return executeSettle(this.signer, rawPayload, requirements);
     }
 

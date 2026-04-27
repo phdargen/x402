@@ -21,9 +21,10 @@ import type {
   AuthorizerSigner,
   BatchSettlementDepositPayload,
   BatchSettlementVoucherPayload,
-  BatchSettlementClaimWithSignaturePayload,
-  BatchSettlementSettleActionPayload,
-  BatchSettlementRefundWithSignaturePayload,
+  BatchSettlementRefundPayload,
+  BatchSettlementClaimPayload,
+  BatchSettlementSettlePayload,
+  BatchSettlementEnrichedRefundPayload,
 } from "../../../src/batch-settlement/types";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
@@ -103,7 +104,15 @@ function envelopeVoucher(payload: BatchSettlementVoucherPayload): PaymentPayload
     x402Version: 2,
     accepted: { scheme: "batch-settlement", network: NETWORK },
     payload: payload as unknown as Record<string, unknown>,
-  } as PaymentPayload;
+  } as unknown as PaymentPayload;
+}
+
+function envelopeRefund(payload: BatchSettlementRefundPayload): PaymentPayload {
+  return {
+    x402Version: 2,
+    accepted: { scheme: "batch-settlement", network: NETWORK },
+    payload: payload as unknown as Record<string, unknown>,
+  } as unknown as PaymentPayload;
 }
 
 function envelopeDeposit(payload: BatchSettlementDepositPayload): PaymentPayload {
@@ -111,7 +120,7 @@ function envelopeDeposit(payload: BatchSettlementDepositPayload): PaymentPayload
     x402Version: 2,
     accepted: { scheme: "batch-settlement", network: NETWORK },
     payload: payload as unknown as Record<string, unknown>,
-  } as PaymentPayload;
+  } as unknown as PaymentPayload;
 }
 
 function envelopeSettle(payload: Record<string, unknown>): PaymentPayload {
@@ -119,7 +128,7 @@ function envelopeSettle(payload: Record<string, unknown>): PaymentPayload {
     x402Version: 2,
     accepted: { scheme: "batch-settlement", network: NETWORK },
     payload,
-  } as PaymentPayload;
+  } as unknown as PaymentPayload;
 }
 
 beforeEach(() => {
@@ -157,7 +166,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — verify routing", () => {
         x402Version: 2,
         accepted: { scheme: "exact", network: NETWORK },
         payload: { type: "voucher", channelConfig: config } as Record<string, unknown>,
-      } as PaymentPayload,
+      } as unknown as PaymentPayload,
       makeRequirements(),
     );
     expect(result.isValid).toBe(false);
@@ -171,16 +180,18 @@ describe("BatchSettlementEvmScheme (Facilitator) — verify routing", () => {
     const voucher: BatchSettlementVoucherPayload = {
       type: "voucher",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: "1000",
-      signature: "0xdead",
+      voucher: {
+        channelId,
+        maxClaimableAmount: "1000",
+        signature: "0xdead",
+      },
     };
     const result = await scheme.verify(
       {
         x402Version: 2,
         accepted: { scheme: "batch-settlement", network: "eip155:1" },
         payload: voucher as unknown as Record<string, unknown>,
-      } as PaymentPayload,
+      } as unknown as PaymentPayload,
       makeRequirements(),
     );
     expect(result.isValid).toBe(false);
@@ -194,7 +205,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — verify routing", () => {
         x402Version: 2,
         accepted: { scheme: "batch-settlement", network: NETWORK },
         payload: { foo: "bar" } as Record<string, unknown>,
-      } as PaymentPayload,
+      } as unknown as PaymentPayload,
       makeRequirements(),
     );
     expect(result.isValid).toBe(false);
@@ -206,16 +217,21 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
   const authorizer = buildAuthorizerSigner();
 
   function makeVoucherPayload(
-    overrides: Partial<BatchSettlementVoucherPayload> & { config?: ChannelConfig } = {},
+    overrides: {
+      config?: ChannelConfig;
+      voucher?: Partial<BatchSettlementVoucherPayload["voucher"]>;
+    } = {},
   ): { payload: PaymentPayload; channelId: `0x${string}`; config: ChannelConfig } {
     const config = overrides.config ?? buildChannelConfig();
     const channelId = computeChannelId(config);
     const voucher: BatchSettlementVoucherPayload = {
       type: "voucher",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: overrides.maxClaimableAmount ?? "1000",
-      signature: overrides.signature ?? ("0xdead" as `0x${string}`),
+      voucher: {
+        channelId,
+        maxClaimableAmount: overrides.voucher?.maxClaimableAmount ?? "1000",
+        signature: overrides.voucher?.signature ?? ("0xdead" as `0x${string}`),
+      },
     };
     return { payload: envelopeVoucher(voucher), channelId, config };
   }
@@ -248,9 +264,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const payload = envelopeVoucher({
       type: "voucher",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: "1000",
-      signature: "0xdead",
+      voucher: {
+        channelId,
+        maxClaimableAmount: "1000",
+        signature: "0xdead",
+      },
     });
 
     const result = await scheme.verify(payload, makeRequirements());
@@ -292,9 +310,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const payload = envelopeVoucher({
       type: "voucher",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: "1000",
-      signature: sig,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "1000",
+        signature: sig,
+      },
     });
 
     const result = await scheme.verify(payload, makeRequirements());
@@ -340,7 +360,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
       { status: "success", result: 0n },
     ]);
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
-    const { payload } = makeVoucherPayload({ maxClaimableAmount: "1000" });
+    const { payload } = makeVoucherPayload({ voucher: { maxClaimableAmount: "1000" } });
 
     const result = await scheme.verify(payload, makeRequirements());
     expect(result.isValid).toBe(false);
@@ -355,14 +375,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
       { status: "success", result: 0n },
     ]);
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
-    const { payload } = makeVoucherPayload({ maxClaimableAmount: "1000" });
+    const { payload } = makeVoucherPayload({ voucher: { maxClaimableAmount: "1000" } });
 
     const result = await scheme.verify(payload, makeRequirements());
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountBelowClaimed);
   });
 
-  it("accepts a refund voucher whose maxClaimable equals totalClaimed", async () => {
+  it("accepts a refund payload whose maxClaimable equals totalClaimed", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
       { status: "success", result: [10000n, 1000n] },
@@ -372,20 +392,21 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const refundVoucher: BatchSettlementVoucherPayload = {
-      type: "voucher",
+    const refundVoucher: BatchSettlementRefundPayload = {
+      type: "refund",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: "1000",
-      signature: "0xdead",
-      refund: true,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "1000",
+        signature: "0xdead",
+      },
     };
 
-    const result = await scheme.verify(envelopeVoucher(refundVoucher), makeRequirements());
+    const result = await scheme.verify(envelopeRefund(refundVoucher), makeRequirements());
     expect(result.isValid).toBe(true);
   });
 
-  it("still rejects a refund voucher whose maxClaimable is below totalClaimed", async () => {
+  it("still rejects a refund payload whose maxClaimable is below totalClaimed", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
       { status: "success", result: [10000n, 1000n] },
@@ -395,16 +416,17 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const refundVoucher: BatchSettlementVoucherPayload = {
-      type: "voucher",
+    const refundVoucher: BatchSettlementRefundPayload = {
+      type: "refund",
       channelConfig: config,
-      channelId,
-      maxClaimableAmount: "500",
-      signature: "0xdead",
-      refund: true,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "500",
+        signature: "0xdead",
+      },
     };
 
-    const result = await scheme.verify(envelopeVoucher(refundVoucher), makeRequirements());
+    const result = await scheme.verify(envelopeRefund(refundVoucher), makeRequirements());
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountBelowClaimed);
   });
@@ -416,10 +438,12 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyVoucher", () => {
     const payload = envelopeVoucher({
       type: "voucher",
       channelConfig: config,
-      channelId:
-        "0x0000000000000000000000000000000000000000000000000000000000000099" as `0x${string}`,
-      maxClaimableAmount: "1000",
-      signature: "0xdead",
+      voucher: {
+        channelId:
+          "0x0000000000000000000000000000000000000000000000000000000000000099" as `0x${string}`,
+        maxClaimableAmount: "1000",
+        signature: "0xdead",
+      },
     });
 
     const result = await scheme.verify(payload, makeRequirements());
@@ -440,8 +464,13 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
     const now = Math.floor(Date.now() / 1000);
     const dp: BatchSettlementDepositPayload = {
       type: "deposit",
+      channelConfig: config,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "1000",
+        signature: "0xcafebabe",
+      },
       deposit: {
-        channelConfig: config,
         amount: "10000",
         authorization: {
           erc3009Authorization: {
@@ -452,11 +481,6 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
           },
         },
         ...overrides,
-      },
-      voucher: {
-        channelId,
-        maxClaimableAmount: "1000",
-        signature: "0xcafebabe",
       },
     };
     return { payload: envelopeDeposit(dp), channelId };
@@ -512,8 +536,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
     const channelId = computeChannelId(config);
     const dp: BatchSettlementDepositPayload = {
       type: "deposit",
-      deposit: { channelConfig: config, amount: "10000", authorization: {} },
+      channelConfig: config,
       voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: { amount: "10000", authorization: {} },
     };
     const result = await scheme.verify(envelopeDeposit(dp), makeRequirements());
     expect(result.isValid).toBe(false);
@@ -595,8 +620,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
 
     const dp: BatchSettlementDepositPayload = {
       type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
       deposit: {
-        channelConfig: config,
         amount: "10000",
         authorization: {
           erc3009Authorization: {
@@ -607,7 +633,6 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
           },
         },
       },
-      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
     };
 
     const result = await scheme.settle(envelopeDeposit(dp), makeRequirements());
@@ -620,15 +645,15 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     );
   });
 
-  it('rejects voucher-less settleAction:"deposit" envelopes as unknown payload type', async () => {
+  it('rejects voucher-less type:"deposit" envelopes as unknown payload type', async () => {
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
     const config = buildChannelConfig();
     const now = Math.floor(Date.now() / 1000);
 
     const voucherLessDeposit = {
-      settleAction: "deposit",
+      type: "deposit",
+      channelConfig: config,
       deposit: {
-        channelConfig: config,
         amount: "10000",
         authorization: {
           erc3009Authorization: {
@@ -649,11 +674,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(result.errorReason).toBe(Errors.ErrInvalidPayloadType);
   });
 
-  it("dispatches settle-action payloads via executeSettle", async () => {
+  it("dispatches settle payloads via executeSettle", async () => {
     const signer = buildSigner();
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
-    const sp: BatchSettlementSettleActionPayload = {
-      settleAction: "settle",
+    const sp: BatchSettlementSettlePayload = {
+      type: "settle",
       receiver: RECEIVER,
       token: ASSET,
     };
@@ -669,12 +694,12 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     );
   });
 
-  it("dispatches claim-with-signature payloads via executeClaimWithSignature", async () => {
+  it("dispatches claim payloads via executeClaimWithSignature", async () => {
     const signer = buildSigner();
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
-    const cp: BatchSettlementClaimWithSignaturePayload = {
-      settleAction: "claimWithSignature",
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
       claims: [
         {
           voucher: { channel: config, maxClaimableAmount: "1000" },
@@ -699,8 +724,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     const config = buildChannelConfig({
       receiverAuthorizer: "0x1111111111111111111111111111111111111111",
     });
-    const cp: BatchSettlementClaimWithSignaturePayload = {
-      settleAction: "claimWithSignature",
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
       claims: [
         {
           voucher: { channel: config, maxClaimableAmount: "1000" },
@@ -717,7 +742,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(result.errorReason).toBe(Errors.ErrAuthorizerAddressMismatch);
   });
 
-  it("dispatches refund-with-signature payloads via executeRefundWithSignature", async () => {
+  it("dispatches enriched refund payloads via executeRefundWithSignature", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
       { status: "success", result: [10000n, 0n] },
@@ -726,11 +751,17 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     ]);
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
-    const rp: BatchSettlementRefundWithSignaturePayload = {
-      settleAction: "refundWithSignature",
-      config,
+    const channelId = computeChannelId(config);
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "0",
+        signature: "0xdead",
+      },
       amount: "9000",
-      nonce: "0",
+      refundNonce: "0",
       claims: [],
     };
     const result = await scheme.settle(
@@ -748,8 +779,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       readContract: vi.fn().mockRejectedValue(new Error("revert")),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
-    const sp: BatchSettlementSettleActionPayload = {
-      settleAction: "settle",
+    const sp: BatchSettlementSettlePayload = {
+      type: "settle",
       receiver: RECEIVER,
       token: ASSET,
     };
@@ -766,8 +797,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "reverted" }),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
-    const sp: BatchSettlementSettleActionPayload = {
-      settleAction: "settle",
+    const sp: BatchSettlementSettlePayload = {
+      type: "settle",
       receiver: RECEIVER,
       token: ASSET,
     };

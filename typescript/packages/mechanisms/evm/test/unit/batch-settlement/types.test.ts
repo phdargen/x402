@@ -2,17 +2,19 @@ import { describe, it, expect } from "vitest";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
-  isBatchSettlementClaimWithSignaturePayload,
-  isBatchSettlementSettleActionPayload,
-  isBatchSettlementRefundWithSignaturePayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementClaimPayload,
+  isBatchSettlementSettlePayload,
+  isBatchSettlementEnrichedRefundPayload,
 } from "../../../src/batch-settlement/types";
 import type {
   ChannelConfig,
   BatchSettlementDepositPayload,
   BatchSettlementVoucherPayload,
-  BatchSettlementClaimWithSignaturePayload,
-  BatchSettlementSettleActionPayload,
-  BatchSettlementRefundWithSignaturePayload,
+  BatchSettlementRefundPayload,
+  BatchSettlementClaimPayload,
+  BatchSettlementSettlePayload,
+  BatchSettlementEnrichedRefundPayload,
 } from "../../../src/batch-settlement/types";
 
 const CHANNEL_CONFIG: ChannelConfig = {
@@ -27,8 +29,13 @@ const CHANNEL_CONFIG: ChannelConfig = {
 
 const VALID_DEPOSIT_PAYLOAD: BatchSettlementDepositPayload = {
   type: "deposit",
+  channelConfig: CHANNEL_CONFIG,
+  voucher: {
+    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+    maxClaimableAmount: "1000000",
+    signature: "0xcafebabe",
+  },
   deposit: {
-    channelConfig: CHANNEL_CONFIG,
     amount: "10000000",
     authorization: {
       erc3009Authorization: {
@@ -39,23 +46,30 @@ const VALID_DEPOSIT_PAYLOAD: BatchSettlementDepositPayload = {
       },
     },
   },
-  voucher: {
-    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
-    maxClaimableAmount: "1000000",
-    signature: "0xcafebabe",
-  },
 };
 
 const VALID_VOUCHER_PAYLOAD: BatchSettlementVoucherPayload = {
   type: "voucher",
   channelConfig: CHANNEL_CONFIG,
-  channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
-  maxClaimableAmount: "2000000",
-  signature: "0xfeedface",
+  voucher: {
+    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+    maxClaimableAmount: "2000000",
+    signature: "0xfeedface",
+  },
 };
 
-const VALID_CLAIM_PAYLOAD: BatchSettlementClaimWithSignaturePayload = {
-  settleAction: "claimWithSignature",
+const VALID_REFUND_PAYLOAD: BatchSettlementRefundPayload = {
+  type: "refund",
+  channelConfig: CHANNEL_CONFIG,
+  voucher: {
+    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+    maxClaimableAmount: "2000000",
+    signature: "0xfeedface",
+  },
+};
+
+const VALID_CLAIM_PAYLOAD: BatchSettlementClaimPayload = {
+  type: "claim",
   claims: [
     {
       voucher: { channel: CHANNEL_CONFIG, maxClaimableAmount: "1000000" },
@@ -65,17 +79,16 @@ const VALID_CLAIM_PAYLOAD: BatchSettlementClaimWithSignaturePayload = {
   ],
 };
 
-const VALID_SETTLE_PAYLOAD: BatchSettlementSettleActionPayload = {
-  settleAction: "settle",
+const VALID_SETTLE_PAYLOAD: BatchSettlementSettlePayload = {
+  type: "settle",
   receiver: "0x9876543210987654321098765432109876543210",
   token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
 };
 
-const VALID_REFUND_PAYLOAD: BatchSettlementRefundWithSignaturePayload = {
-  settleAction: "refundWithSignature",
-  config: CHANNEL_CONFIG,
+const VALID_ENRICHED_REFUND_PAYLOAD: BatchSettlementEnrichedRefundPayload = {
+  ...VALID_REFUND_PAYLOAD,
   amount: "100000",
-  nonce: "0",
+  refundNonce: "0",
   claims: [],
 };
 
@@ -133,21 +146,21 @@ describe("isBatchSettlementVoucherPayload", () => {
   });
 
   it("returns false when channelId is missing", () => {
-    const { channelId, ...rest } = VALID_VOUCHER_PAYLOAD;
+    const { channelId, ...voucher } = VALID_VOUCHER_PAYLOAD.voucher;
     void channelId;
-    expect(isBatchSettlementVoucherPayload(rest as unknown as Record<string, unknown>)).toBe(false);
+    expect(isBatchSettlementVoucherPayload({ ...VALID_VOUCHER_PAYLOAD, voucher })).toBe(false);
   });
 
   it("returns false when maxClaimableAmount is missing", () => {
-    const { maxClaimableAmount, ...rest } = VALID_VOUCHER_PAYLOAD;
+    const { maxClaimableAmount, ...voucher } = VALID_VOUCHER_PAYLOAD.voucher;
     void maxClaimableAmount;
-    expect(isBatchSettlementVoucherPayload(rest as unknown as Record<string, unknown>)).toBe(false);
+    expect(isBatchSettlementVoucherPayload({ ...VALID_VOUCHER_PAYLOAD, voucher })).toBe(false);
   });
 
   it("returns false when signature is missing", () => {
-    const { signature, ...rest } = VALID_VOUCHER_PAYLOAD;
+    const { signature, ...voucher } = VALID_VOUCHER_PAYLOAD.voucher;
     void signature;
-    expect(isBatchSettlementVoucherPayload(rest as unknown as Record<string, unknown>)).toBe(false);
+    expect(isBatchSettlementVoucherPayload({ ...VALID_VOUCHER_PAYLOAD, voucher })).toBe(false);
   });
 
   it("returns false for an empty object", () => {
@@ -162,19 +175,19 @@ describe("settle payload guards (mutual exclusivity)", () => {
     matching: Record<string, unknown>;
   }> = [
     {
-      name: "isBatchSettlementClaimWithSignaturePayload",
-      fn: isBatchSettlementClaimWithSignaturePayload,
+      name: "isBatchSettlementClaimPayload",
+      fn: isBatchSettlementClaimPayload,
       matching: VALID_CLAIM_PAYLOAD as unknown as Record<string, unknown>,
     },
     {
-      name: "isBatchSettlementSettleActionPayload",
-      fn: isBatchSettlementSettleActionPayload,
+      name: "isBatchSettlementSettlePayload",
+      fn: isBatchSettlementSettlePayload,
       matching: VALID_SETTLE_PAYLOAD as unknown as Record<string, unknown>,
     },
     {
-      name: "isBatchSettlementRefundWithSignaturePayload",
-      fn: isBatchSettlementRefundWithSignaturePayload,
-      matching: VALID_REFUND_PAYLOAD as unknown as Record<string, unknown>,
+      name: "isBatchSettlementEnrichedRefundPayload",
+      fn: isBatchSettlementEnrichedRefundPayload,
+      matching: VALID_ENRICHED_REFUND_PAYLOAD as unknown as Record<string, unknown>,
     },
   ];
 
@@ -201,40 +214,44 @@ describe("settle payload guards (mutual exclusivity)", () => {
   }
 });
 
-describe("isBatchSettlementClaimWithSignaturePayload (specific fields)", () => {
-  it("returns false when claims array is missing", () => {
-    const { claims, ...rest } = VALID_CLAIM_PAYLOAD;
-    void claims;
-    expect(
-      isBatchSettlementClaimWithSignaturePayload(rest as unknown as Record<string, unknown>),
-    ).toBe(false);
+describe("isBatchSettlementRefundPayload", () => {
+  it("returns true for a valid refund payload", () => {
+    expect(isBatchSettlementRefundPayload(VALID_REFUND_PAYLOAD)).toBe(true);
+  });
+
+  it("does not require amount for a full refund", () => {
+    expect(isBatchSettlementRefundPayload(VALID_REFUND_PAYLOAD)).toBe(true);
   });
 });
 
-describe("isBatchSettlementSettleActionPayload (specific fields)", () => {
+describe("isBatchSettlementClaimPayload (specific fields)", () => {
+  it("returns false when claims array is missing", () => {
+    const { claims, ...rest } = VALID_CLAIM_PAYLOAD;
+    void claims;
+    expect(isBatchSettlementClaimPayload(rest as unknown as Record<string, unknown>)).toBe(false);
+  });
+});
+
+describe("isBatchSettlementSettlePayload (specific fields)", () => {
   it("returns false when receiver is missing", () => {
     const { receiver, ...rest } = VALID_SETTLE_PAYLOAD;
     void receiver;
-    expect(isBatchSettlementSettleActionPayload(rest as unknown as Record<string, unknown>)).toBe(
-      false,
-    );
+    expect(isBatchSettlementSettlePayload(rest as unknown as Record<string, unknown>)).toBe(false);
   });
 
   it("returns false when token is missing", () => {
     const { token, ...rest } = VALID_SETTLE_PAYLOAD;
     void token;
-    expect(isBatchSettlementSettleActionPayload(rest as unknown as Record<string, unknown>)).toBe(
-      false,
-    );
+    expect(isBatchSettlementSettlePayload(rest as unknown as Record<string, unknown>)).toBe(false);
   });
 });
 
-describe("isBatchSettlementRefundWithSignaturePayload (specific fields)", () => {
-  it("returns false when config is missing", () => {
-    const { config, ...rest } = VALID_REFUND_PAYLOAD;
-    void config;
-    expect(
-      isBatchSettlementRefundWithSignaturePayload(rest as unknown as Record<string, unknown>),
-    ).toBe(false);
+describe("isBatchSettlementEnrichedRefundPayload (specific fields)", () => {
+  it("returns false when refundNonce is missing", () => {
+    const { refundNonce, ...rest } = VALID_ENRICHED_REFUND_PAYLOAD;
+    void refundNonce;
+    expect(isBatchSettlementEnrichedRefundPayload(rest as unknown as Record<string, unknown>)).toBe(
+      false,
+    );
   });
 });

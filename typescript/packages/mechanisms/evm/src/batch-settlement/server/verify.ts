@@ -1,6 +1,10 @@
 import type { VerifyContext, VerifyResultContext } from "@x402/core/server";
 import type { PaymentRequiredErrorDetails } from "@x402/core/types";
-import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
+import {
+  isBatchSettlementDepositPayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementVoucherPayload,
+} from "../types";
 import type { ChannelConfig } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
@@ -13,8 +17,8 @@ import { readExtraNumber, readExtraString } from "./utils";
  * state. If stale, aborts with `batch_settlement_stale_cumulative_amount` and includes
  * recovery metadata in the 402 response.
  *
- * Refund vouchers (`refund: true`) are zero-charge: the expected
- * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
+ * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
+ * the existing `chargedCumulativeAmount`.
  *
  * When no local channel record exists, verification is delegated to the facilitator (which checks on-chain state);
  * `handleAfterVerify` then rebuilds the channel record from the verify response.
@@ -35,22 +39,21 @@ export async function handleBeforeVerify(
   const { paymentPayload, requirements } = ctx;
 
   const raw = paymentPayload.payload;
-  if (!isBatchSettlementVoucherPayload(raw)) {
+  if (!isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundPayload(raw)) {
     return;
   }
 
-  const isRefund = raw.refund === true;
-  const channel = await scheme.getStorage().get(raw.channelId);
+  const channel = await scheme.getStorage().get(raw.voucher.channelId);
 
   if (!channel) {
     return;
   }
 
-  const expectedMaxClaimable = isRefund
+  const expectedMaxClaimable = isBatchSettlementRefundPayload(raw)
     ? BigInt(channel.chargedCumulativeAmount)
     : BigInt(channel.chargedCumulativeAmount) + BigInt(requirements.amount);
 
-  if (BigInt(raw.maxClaimableAmount) === expectedMaxClaimable) {
+  if (BigInt(raw.voucher.maxClaimableAmount) === expectedMaxClaimable) {
     return;
   }
 
@@ -76,8 +79,8 @@ export async function handleBeforeVerify(
  * Persists channel state (balance, totalClaimed, voucher info) so that
  * subsequent requests can correctly calculate cumulative amounts and detect stale state.
  *
- * For refund vouchers (`refund: true`), additionally returns a `skipHandler`
- * directive so that the resource server bypasses the application handler and settles inline.
+ * For refund payloads, additionally returns a `skipHandler` directive so that
+ * the resource server bypasses the application handler and settles inline.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Post-verify lifecycle context.
@@ -107,15 +110,21 @@ export async function handleAfterVerify(
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
     signature = raw.voucher.signature;
-    channelConfig = raw.deposit.channelConfig;
-    payer = channelConfig?.payer ?? result.payer;
-  } else if (isBatchSettlementVoucherPayload(raw)) {
-    channelId = raw.channelId;
-    signedMaxClaimable = raw.maxClaimableAmount;
-    signature = raw.signature;
     channelConfig = raw.channelConfig;
     payer = channelConfig?.payer ?? result.payer;
-    isRefundVoucher = raw.refund === true;
+  } else if (isBatchSettlementVoucherPayload(raw)) {
+    channelId = raw.voucher.channelId;
+    signedMaxClaimable = raw.voucher.maxClaimableAmount;
+    signature = raw.voucher.signature;
+    channelConfig = raw.channelConfig;
+    payer = channelConfig?.payer ?? result.payer;
+  } else if (isBatchSettlementRefundPayload(raw)) {
+    channelId = raw.voucher.channelId;
+    signedMaxClaimable = raw.voucher.maxClaimableAmount;
+    signature = raw.voucher.signature;
+    channelConfig = raw.channelConfig;
+    payer = channelConfig?.payer ?? result.payer;
+    isRefundVoucher = true;
   } else {
     return;
   }

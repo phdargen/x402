@@ -116,23 +116,25 @@ export type {
   ChannelState,
   BatchSettlementDepositPayload,
   BatchSettlementVoucherPayload,
+  BatchSettlementRefundPayload,
   BatchSettlementVoucherFields,
   BatchSettlementErc3009Authorization,
-  BatchSettlementClaimWithSignaturePayload,
-  BatchSettlementSettleActionPayload,
-  BatchSettlementRefundWithSignaturePayload,
+  BatchSettlementClaimPayload,
+  BatchSettlementEnrichedRefundPayload,
   BatchSettlementVoucherClaim,
   BatchSettlementPayload,
   BatchSettlementSettlePayload,
+  BatchSettlementFacilitatorSettlePayload,
   BatchSettlementPaymentRequirementsExtra,
   BatchSettlementPaymentResponseExtra,
 } from "./batch-settlement/types";
 export {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
-  isBatchSettlementClaimWithSignaturePayload,
-  isBatchSettlementSettleActionPayload,
-  isBatchSettlementRefundWithSignaturePayload,
+  isBatchSettlementRefundPayload,
+  isBatchSettlementClaimPayload,
+  isBatchSettlementSettlePayload,
+  isBatchSettlementEnrichedRefundPayload,
 } from "./batch-settlement/types";
 
 /**

@@ -1,7 +1,7 @@
 import { SettleResponse, PaymentRequirements } from "@x402/core/types";
 import { getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
-import type { AuthorizerSigner, BatchSettlementClaimWithSignaturePayload } from "../types";
+import type { AuthorizerSigner, BatchSettlementClaimPayload } from "../types";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { signClaimBatch } from "../authorizerSigner";
@@ -15,7 +15,7 @@ import { toContractChannelConfig } from "./utils";
  * @param claims - Typed voucher claims with channel config, amounts, and signatures.
  * @returns Contract-ready VoucherClaim argument array.
  */
-export function buildVoucherClaimArgs(claims: BatchSettlementClaimWithSignaturePayload["claims"]) {
+export function buildVoucherClaimArgs(claims: BatchSettlementClaimPayload["claims"]) {
   return claims.map(c => ({
     voucher: {
       channel: toContractChannelConfig(c.voucher.channel),
@@ -42,7 +42,7 @@ export function buildVoucherClaimArgs(claims: BatchSettlementClaimWithSignatureP
  */
 export async function executeClaimWithSignature(
   signer: FacilitatorEvmSigner,
-  payload: BatchSettlementClaimWithSignaturePayload,
+  payload: BatchSettlementClaimPayload,
   requirements: PaymentRequirements,
   authorizerSigner: AuthorizerSigner,
 ): Promise<SettleResponse> {

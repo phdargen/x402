@@ -43,7 +43,7 @@ export async function verifyDeposit(
   requirements: PaymentRequirements,
 ): Promise<VerifyResponse> {
   const { deposit, voucher } = payload;
-  const config = deposit.channelConfig;
+  const config = payload.channelConfig;
   const payer = config.payer;
   const chainId = getEvmChainId(requirements.network);
 
@@ -230,7 +230,7 @@ export async function settleDeposit(
   requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   const { deposit, voucher } = payload;
-  const config = deposit.channelConfig;
+  const config = payload.channelConfig;
   const payer = config.payer;
   const auth = deposit.authorization.erc3009Authorization;
 

@@ -230,10 +230,15 @@ export class BatchSettlementChannelManager {
       x402Version: 2,
       accepted: this.buildPaymentRequirements(),
       payload: {
-        settleAction: "refundWithSignature",
-        config,
+        type: "refund",
+        channelConfig: config,
+        voucher: {
+          channelId: firstTarget.channelId as `0x${string}`,
+          maxClaimableAmount: firstTarget.signedMaxClaimable,
+          signature: firstTarget.signature as `0x${string}`,
+        },
         amount: refundAmount,
-        nonce,
+        refundNonce: nonce,
         claims,
         ...(refundAuthorizerSignature ? { refundAuthorizerSignature } : {}),
         ...(claimAuthorizerSignature ? { claimAuthorizerSignature } : {}),
@@ -632,7 +637,7 @@ export class BatchSettlementChannelManager {
   /**
    * Submits a batch of voucher claims to the facilitator.
    *
-   * @param claims - Voucher claims to send in one `settleAction: "claim"` payload.
+   * @param claims - Voucher claims to send in one `type: "claim"` payload.
    * @returns Per-batch claim summary (count and transaction hash).
    */
   private async submitClaim(claims: BatchSettlementVoucherClaim[]): Promise<ClaimResult> {
@@ -646,7 +651,7 @@ export class BatchSettlementChannelManager {
       x402Version: 2,
       accepted: this.buildPaymentRequirements(),
       payload: {
-        settleAction: "claimWithSignature",
+        type: "claim",
         claims,
         ...(claimAuthorizerSignature ? { claimAuthorizerSignature } : {}),
       },
@@ -665,16 +670,16 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Builds a settle-action payment payload for `settle(receiver, token)`.
+   * Builds a settlement payment payload for `settle(receiver, token)`.
    *
-   * @returns Payload with `settleAction: "settle"` and receiver/token fields.
+   * @returns Payload with `type: "settle"` and receiver/token fields.
    */
   private buildSettlePaymentPayload(): PaymentPayload {
     return {
       x402Version: 2,
       accepted: this.buildPaymentRequirements(),
       payload: {
-        settleAction: "settle",
+        type: "settle",
         receiver: this.receiver,
         token: this.token,
       },
