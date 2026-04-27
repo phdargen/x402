@@ -38,17 +38,17 @@ export async function processCorrectivePaymentRequired(
     return false;
   }
 
-  const ex = accept.extra;
+  const details = paymentRequired.errorDetails?.data ?? {};
   const hasSig =
-    ex?.chargedCumulativeAmount !== undefined &&
-    ex?.signedMaxClaimable !== undefined &&
-    ex?.signature !== undefined;
+    details.chargedCumulativeAmount !== undefined &&
+    details.signedMaxClaimable !== undefined &&
+    details.signature !== undefined;
 
   if (!hasSig) {
     return recoverFromOnChainState(deps, accept);
   }
 
-  return recoverFromSignature(deps, accept);
+  return recoverFromSignature(deps, accept, details);
 }
 
 /**
@@ -58,16 +58,17 @@ export async function processCorrectivePaymentRequired(
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
+ * @param details - Structured recovery fields from `PaymentRequired.errorDetails.data`.
  * @returns `true` when local channel state was updated successfully.
  */
 export async function recoverFromSignature(
   deps: BatchSettlementClientDeps,
   accept: PaymentRequirements,
+  details: Record<string, unknown>,
 ): Promise<boolean> {
-  const ex = accept.extra ?? {};
-  const chargedRaw = ex.chargedCumulativeAmount;
-  const signedRaw = ex.signedMaxClaimable;
-  const sig = ex.signature as `0x${string}`;
+  const chargedRaw = details.chargedCumulativeAmount;
+  const signedRaw = details.signedMaxClaimable;
+  const sig = details.signature as `0x${string}`;
 
   const charged = BigInt(String(chargedRaw));
   const signed = BigInt(String(signedRaw));

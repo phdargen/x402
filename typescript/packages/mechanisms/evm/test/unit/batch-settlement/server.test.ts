@@ -78,8 +78,7 @@ function buildVoucherPayload(
   };
   return {
     x402Version: 2,
-    scheme: "batch-settlement",
-    network: NETWORK,
+    accepted: makeRequirements(),
     payload: payload as unknown as Record<string, unknown>,
   };
 }
@@ -112,8 +111,7 @@ function buildDepositPayload(
   };
   return {
     x402Version: 2,
-    scheme: "batch-settlement",
-    network: NETWORK,
+    accepted: makeRequirements(),
     payload: payload as unknown as Record<string, unknown>,
   };
 }
@@ -426,13 +424,22 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     const result = (await server.schemeHooks.onBeforeVerify!({
       paymentPayload: buildVoucherPayload(channelId, "500", config),
       requirements: reqs,
-    } as never)) as { abort: true; reason: string };
+    } as never)) as {
+      abort: true;
+      reason: string;
+      errorDetails?: { recoverable?: boolean; data?: Record<string, unknown> };
+    };
 
     expect(result?.abort).toBe(true);
     expect(result?.reason).toBe("batch_settlement_stale_cumulative_amount");
-    expect(reqs.extra?.chargedCumulativeAmount).toBe("1000");
-    expect(reqs.extra?.signedMaxClaimable).toBe("1000");
-    expect(reqs.extra?.signature).toBe("0xabcd");
+    expect(result.errorDetails?.recoverable).toBe(true);
+    expect(result.errorDetails?.data).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+    });
+    expect(reqs.extra?.chargedCumulativeAmount).toBeUndefined();
   });
 });
 
@@ -474,17 +481,6 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
       paymentPayload: buildVoucherPayload(channelId, "1000", config),
       requirements: makeRequirements(),
       result: { isValid: false } as VerifyResponse,
-    } as never);
-    expect(await storage.get(channelId)).toBeUndefined();
-  });
-
-  it("noops when scheme does not match", async () => {
-    const config = buildChannelConfig();
-    const channelId = computeChannelId(config);
-    await server.schemeHooks.onAfterVerify!({
-      paymentPayload: buildVoucherPayload(channelId, "1000", config),
-      requirements: makeRequirements({ scheme: "exact" }),
-      result: { isValid: true, payer: PAYER } as VerifyResponse,
     } as never);
     expect(await storage.get(channelId)).toBeUndefined();
   });
@@ -606,7 +602,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(updated?.signedMaxClaimable).toBe("1000");
   });
 
-  it("rewrites a zero-charge refund voucher into a full refundWithSignature payload", async () => {
+  it("enriches a zero-charge refund voucher into a full refundWithSignature payload", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storage.set(channelId, {
@@ -615,7 +611,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "500",
       signedMaxClaimable: "500",
-      signature: "0xabcd",
+      signature: "0xdeadbeef",
       balance: "10000",
       totalClaimed: "0",
       withdrawRequestedAt: 0,
@@ -631,12 +627,14 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     } as never);
     expect(ret).toBeUndefined();
 
-    const rewritten = payload.payload as Record<string, unknown>;
-    expect(rewritten.settleAction).toBe("refundWithSignature");
-    expect(rewritten.config).toEqual(config);
-    // Full refund drains the remainder: balance(10000) - charged(500) = 9500.
-    expect(rewritten.amount).toBe("9500");
-    expect(rewritten.nonce).toBe("1");
+    const enrichment = await server.enrichSettlementPayload({
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(enrichment?.settleAction).toBe("refundWithSignature");
+    expect(enrichment?.config).toEqual(config);
+    expect(enrichment?.amount).toBe("9500");
+    expect(enrichment?.nonce).toBe("1");
   });
 
   it("recovers a refund voucher channel record from facilitator extras when local state was lost", async () => {
@@ -671,7 +669,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(recovered?.chargedCumulativeAmount).toBe("1500");
     expect(recovered?.refundNonce).toBe(3);
 
-    // 3. handleBeforeSettle rewrites into a refundWithSignature with amount = balance - totalClaimed.
+    // 3. Settlement enrichment builds a refundWithSignature payload with amount = balance - totalClaimed.
     const settlePayload = buildVoucherPayload(channelId, "1500", config, true);
     const settleRet = await server.schemeHooks.onBeforeSettle!({
       paymentPayload: settlePayload,
@@ -679,10 +677,13 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     } as never);
     expect(settleRet).toBeUndefined();
 
-    const rewritten = settlePayload.payload as Record<string, unknown>;
-    expect(rewritten.settleAction).toBe("refundWithSignature");
-    expect(rewritten.amount).toBe("8500");
-    expect(rewritten.nonce).toBe("3");
+    const enrichment = await server.enrichSettlementPayload({
+      paymentPayload: settlePayload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(enrichment?.settleAction).toBe("refundWithSignature");
+    expect(enrichment?.amount).toBe("8500");
+    expect(enrichment?.nonce).toBe("3");
   });
 
   it("aborts a recovered refund voucher with refund_no_balance when channel is fully drained", async () => {
@@ -702,13 +703,18 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     } as never);
 
     const settlePayload = buildVoucherPayload(channelId, "61800", config, true);
-    const ret = (await server.schemeHooks.onBeforeSettle!({
+    const ret = await server.schemeHooks.onBeforeSettle!({
       paymentPayload: settlePayload,
       requirements: makeRequirements({ amount: "0" }),
-    } as never)) as { abort: true; reason: string; message: string };
+    } as never);
+    expect(ret).toBeUndefined();
 
-    expect(ret?.abort).toBe(true);
-    expect(ret?.reason).toBe("batch_settlement_refund_no_balance");
+    await expect(
+      server.enrichSettlementPayload({
+        paymentPayload: settlePayload,
+        requirements: makeRequirements({ amount: "0" }),
+      } as never),
+    ).rejects.toThrow("batch_settlement_refund_no_balance");
   });
 
   it("honors refundAmount on the voucher for a partial refundWithSignature", async () => {
@@ -720,7 +726,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "500",
       signedMaxClaimable: "500",
-      signature: "0xabcd",
+      signature: "0xdeadbeef",
       balance: "10000",
       totalClaimed: "0",
       withdrawRequestedAt: 0,
@@ -737,10 +743,13 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     } as never);
     expect(ret).toBeUndefined();
 
-    const rewritten = payload.payload as Record<string, unknown>;
-    expect(rewritten.settleAction).toBe("refundWithSignature");
-    expect(rewritten.amount).toBe("1000");
-    expect(rewritten.nonce).toBe("0");
+    const enrichment = await server.enrichSettlementPayload({
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(enrichment?.settleAction).toBe("refundWithSignature");
+    expect(enrichment?.amount).toBe("1000");
+    expect(enrichment?.nonce).toBe("0");
   });
 });
 
@@ -753,7 +762,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
-  it("updates channel record and result.extra for deposit payloads", async () => {
+  it("updates channel record and exposes deposit response enrichment", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const payload = buildDepositPayload(channelId, config, "10000", "1000");
@@ -774,11 +783,17 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const channel = await storage.get(channelId);
     expect(channel?.chargedCumulativeAmount).toBe("1000");
     expect(channel?.balance).toBe("10000");
-    expect((result.extra as Record<string, string>).chargedCumulativeAmount).toBe("1000");
-    expect((result.extra as Record<string, string>).channelId).toBe(channelId);
+    expect((result.extra as Record<string, string>).chargedCumulativeAmount).toBeUndefined();
+
+    const enrichment = await server.enrichSettlementResponse({
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "1000" }),
+      result,
+    } as never);
+    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
   });
 
-  it("deletes channel record and adds refund=true on result.extra after a refundWithSignature", async () => {
+  it("deletes channel record and exposes refund response enrichment after a full refund", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const channel: Channel = {
@@ -813,7 +828,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
           },
         ],
       } as unknown as Record<string, unknown>,
-    } as PaymentPayload;
+    } as unknown as PaymentPayload;
 
     const result: SettleResponse = {
       success: true,
@@ -830,8 +845,14 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     } as never);
 
     expect(await storage.get(channelId)).toBeUndefined();
-    expect((result.extra as Record<string, unknown>).refund).toBe(true);
-    expect((result.extra as Record<string, string>).channelId).toBe(channelId);
+    expect((result.extra as Record<string, unknown>).refund).toBeUndefined();
+
+    const enrichment = await server.enrichSettlementResponse({
+      paymentPayload: refundPayload,
+      requirements: makeRequirements(),
+      result,
+    } as never);
+    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
   });
 
   it("retains channel record and increments refundNonce on a partial refundWithSignature", async () => {
@@ -869,7 +890,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
           },
         ],
       } as unknown as Record<string, unknown>,
-    } as PaymentPayload;
+    } as unknown as PaymentPayload;
 
     const result: SettleResponse = {
       success: true,
@@ -889,8 +910,14 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect(updated).toBeDefined();
     expect(updated?.balance).toBe("8000");
     expect(updated?.refundNonce).toBe(3);
-    expect((result.extra as Record<string, unknown>).refund).toBe(true);
     expect((result.extra as Record<string, unknown>).refundedAmount).toBe("2000");
+
+    const enrichment = await server.enrichSettlementResponse({
+      paymentPayload: refundPayload,
+      requirements: makeRequirements(),
+      result,
+    } as never);
+    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
   });
 
   it("does not modify state when result.success is false", async () => {

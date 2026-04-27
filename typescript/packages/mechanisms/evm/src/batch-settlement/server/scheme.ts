@@ -1,21 +1,28 @@
 import {
   AssetAmount,
   Network,
+  PaymentPayload,
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
   SchemeServerHooks,
   MoneyParser,
 } from "@x402/core/types";
+import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { convertToTokenAmount, numberToDecimalString } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
 import { BatchSettlementChannelManager } from "./channelManager";
 import { getDefaultAsset } from "../../shared/defaultAssets";
 import type { AuthorizerSigner } from "../types";
 import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
-import { InMemoryChannelStorage, ChannelStorage } from "./storage";
+import { InMemoryChannelStorage, ChannelStorage, type Channel } from "./storage";
 import { handleAfterVerify, handleBeforeVerify } from "./verify";
-import { handleAfterSettle, handleBeforeSettle } from "./settle";
+import {
+  handleAfterSettle,
+  handleBeforeSettle,
+  handleEnrichSettlementPayload,
+  handleEnrichSettlementResponse,
+} from "./settle";
 
 export interface BatchSettlementEvmSchemeServerConfig {
   storage?: ChannelStorage;
@@ -30,6 +37,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   readonly schemeHooks: SchemeServerHooks;
 
+  private readonly channelSnapshots = new WeakMap<PaymentPayload, Channel>();
   private moneyParsers: MoneyParser[] = [];
   private readonly storage: ChannelStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
@@ -53,6 +61,48 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       onBeforeSettle: ctx => handleBeforeSettle(this, ctx),
       onAfterSettle: ctx => handleAfterSettle(this, ctx),
     };
+  }
+
+  /**
+   * Adds server-owned settlement fields before facilitator settlement.
+   *
+   * @param ctx - Settlement context for the current payment.
+   * @returns Additive payload fields, or nothing when no enrichment is needed.
+   */
+  enrichSettlementPayload(ctx: SettleContext): Promise<Record<string, unknown> | void> {
+    return handleEnrichSettlementPayload(this, ctx);
+  }
+
+  /**
+   * Adds server-owned extra fields after facilitator settlement.
+   *
+   * @param ctx - Settlement result context for the current payment.
+   * @returns Additive response extra fields, or nothing when no enrichment is needed.
+   */
+  enrichSettlementResponse(ctx: SettleResultContext): Promise<Record<string, unknown> | void> {
+    return handleEnrichSettlementResponse(this, ctx);
+  }
+
+  /**
+   * Stores a channel snapshot for the current settlement request.
+   *
+   * @param payload - Request-scoped payment payload object.
+   * @param channel - Channel state to use during response enrichment.
+   */
+  rememberChannelSnapshot(payload: PaymentPayload, channel: Channel): void {
+    this.channelSnapshots.set(payload, channel);
+  }
+
+  /**
+   * Reads and clears a channel snapshot for the current settlement request.
+   *
+   * @param payload - Request-scoped payment payload object.
+   * @returns Stored channel state, if one was recorded.
+   */
+  takeChannelSnapshot(payload: PaymentPayload): Channel | undefined {
+    const channel = this.channelSnapshots.get(payload);
+    this.channelSnapshots.delete(payload);
+    return channel;
   }
 
   /**

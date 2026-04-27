@@ -519,7 +519,7 @@ describe("processCorrectivePaymentRequired", () => {
       x402Version: 2,
       error: "some_other_error",
       accepts: [makeRequirements()],
-    } as PaymentRequired);
+    } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
 
@@ -531,7 +531,7 @@ describe("processCorrectivePaymentRequired", () => {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [{ ...makeRequirements(), scheme: "exact" }],
-    } as PaymentRequired);
+    } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
 
@@ -544,7 +544,7 @@ describe("processCorrectivePaymentRequired", () => {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [makeRequirements()],
-    } as PaymentRequired);
+    } as unknown as PaymentRequired);
 
     expect(ok).toBe(true);
     const id = computeChannelId(buildChannelConfig(makeDeps({ signer }), makeRequirements()));
@@ -564,17 +564,19 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "1500", NETWORK);
 
-    const accept = makeAccept({
+    const data = {
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
-    });
+    };
+    const accept = makeAccept(data);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
-    } as PaymentRequired);
+      errorDetails: { recoverable: true, data },
+    } as unknown as PaymentRequired);
 
     expect(ok).toBe(true);
     const ctx = await storage.get(channelId.toLowerCase());
@@ -595,17 +597,19 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(otherSigner, channelId, "1500", NETWORK);
 
-    const accept = makeAccept({
+    const data = {
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
-    });
+    };
+    const accept = makeAccept(data);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
-    } as PaymentRequired);
+      errorDetails: { recoverable: true, data },
+    } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
 
@@ -614,17 +618,19 @@ describe("processCorrectivePaymentRequired", () => {
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientChannelStorage();
 
-    const accept = makeAccept({
+    const data = {
       chargedCumulativeAmount: "2000",
       signedMaxClaimable: "1500",
       signature: "0xdead",
-    });
+    };
+    const accept = makeAccept(data);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
-    } as PaymentRequired);
+      errorDetails: { recoverable: true, data },
+    } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
 
@@ -638,17 +644,19 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "2000", NETWORK);
 
-    const accept = makeAccept({
+    const data = {
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
-    });
+    };
+    const accept = makeAccept(data);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
       error: "batch_settlement_stale_cumulative_amount",
       accepts: [accept],
-    } as PaymentRequired);
+      errorDetails: { recoverable: true, data },
+    } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
 
@@ -662,7 +670,7 @@ describe("processCorrectivePaymentRequired", () => {
         x402Version: 2,
         error: "batch_settlement_stale_cumulative_amount",
         accepts: [makeRequirements()],
-      } as PaymentRequired,
+      } as unknown as PaymentRequired,
     } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);
 
     expect(result).toEqual({ recovered: true });
@@ -696,7 +704,10 @@ describe("BatchSettlementEvmScheme — refund()", () => {
   async function probe402Response(): Promise<Response> {
     const { encodePaymentRequiredHeader } = await import("@x402/core/http");
     const reqs = buildRefundRequirements();
-    const header = encodePaymentRequiredHeader({ x402Version: 2, accepts: [reqs] });
+    const header = encodePaymentRequiredHeader({
+      x402Version: 2,
+      accepts: [reqs],
+    } as unknown as PaymentRequired);
     return new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } });
   }
 
@@ -923,7 +934,10 @@ describe("BatchSettlementEvmScheme — refund()", () => {
 
     const { encodePaymentRequiredHeader } = await import("@x402/core/http");
     const reqs = makeRequirements({ extra: { name: "USDC", version: "2", withdrawDelay: 900 } });
-    const header = encodePaymentRequiredHeader({ x402Version: 2, accepts: [reqs] });
+    const header = encodePaymentRequiredHeader({
+      x402Version: 2,
+      accepts: [reqs],
+    } as unknown as PaymentRequired);
     const fetchImpl = makeFetch([
       async () => new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } }),
     ]);

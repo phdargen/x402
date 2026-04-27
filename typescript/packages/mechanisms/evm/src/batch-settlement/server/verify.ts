@@ -1,5 +1,5 @@
 import type { VerifyContext, VerifyResultContext } from "@x402/core/server";
-import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import type { PaymentRequiredErrorDetails } from "@x402/core/types";
 import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
 import type { ChannelConfig } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
@@ -10,8 +10,8 @@ import { readExtraNumber, readExtraString } from "./utils";
  * Lifecycle hook: runs before the facilitator verifies a payment.
  *
  * For voucher payloads, checks whether the client's cumulative amount matches server
- * state.  If stale, aborts with `batch_settlement_stale_cumulative_amount` and embeds
- * the correct state in `requirements.extra` so the client can resync.
+ * state. If stale, aborts with `batch_settlement_stale_cumulative_amount` and includes
+ * recovery metadata in the 402 response.
  *
  * Refund vouchers (`refund: true`) are zero-charge: the expected
  * `maxClaimableAmount` equals the existing `chargedCumulativeAmount`.
@@ -26,11 +26,13 @@ import { readExtraNumber, readExtraString } from "./utils";
 export async function handleBeforeVerify(
   scheme: BatchSettlementEvmScheme,
   ctx: VerifyContext,
-): Promise<void | { abort: true; reason: string; message?: string }> {
+): Promise<void | {
+  abort: true;
+  reason: string;
+  message?: string;
+  errorDetails?: PaymentRequiredErrorDetails;
+}> {
   const { paymentPayload, requirements } = ctx;
-  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME) {
-    return;
-  }
 
   const raw = paymentPayload.payload;
   if (!isBatchSettlementVoucherPayload(raw)) {
@@ -52,17 +54,19 @@ export async function handleBeforeVerify(
     return;
   }
 
-  requirements.extra = {
-    ...requirements.extra,
-    chargedCumulativeAmount: channel.chargedCumulativeAmount,
-    signedMaxClaimable: channel.signedMaxClaimable,
-    signature: channel.signature,
-  };
-
   return {
     abort: true,
     reason: "batch_settlement_stale_cumulative_amount",
     message: "Client voucher base does not match server state",
+    errorDetails: {
+      recoverable: true,
+      data: {
+        channelId: channel.channelId,
+        chargedCumulativeAmount: channel.chargedCumulativeAmount,
+        signedMaxClaimable: channel.signedMaxClaimable,
+        signature: channel.signature,
+      },
+    },
   };
 }
 
@@ -86,8 +90,8 @@ export async function handleAfterVerify(
   scheme: BatchSettlementEvmScheme,
   ctx: VerifyResultContext,
 ): Promise<void | { skipHandler: true; response?: { contentType?: string; body?: unknown } }> {
-  const { paymentPayload, requirements, result } = ctx;
-  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.isValid || !result.payer) {
+  const { paymentPayload, result } = ctx;
+  if (!result.isValid || !result.payer) {
     return;
   }
 

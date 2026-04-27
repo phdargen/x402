@@ -112,7 +112,6 @@ export type BatchSettlementRefundWithSignaturePayload = {
   claims: BatchSettlementVoucherClaim[];
   refundAuthorizerSignature?: `0x${string}`;
   claimAuthorizerSignature?: `0x${string}`;
-  responseExtra?: BatchSettlementPaymentResponseExtra;
 };
 
 export type BatchSettlementPayload = BatchSettlementDepositPayload | BatchSettlementVoucherPayload;

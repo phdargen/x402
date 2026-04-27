@@ -1,35 +1,24 @@
-import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/core/types";
+import type { SettleResponse } from "@x402/core/types";
 import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
-import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementRefundWithSignaturePayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
-import type {
-  BatchSettlementPaymentResponseExtra,
-  BatchSettlementVoucherClaim,
-  BatchSettlementVoucherPayload,
-} from "../types";
+import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim } from "../types";
 import { computeChannelId } from "../utils";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
-import {
-  buildRefundResponseSnapshot,
-  emptyResponseSnapshot,
-  readExtraNumber,
-  readExtraString,
-} from "./utils";
+import { readExtraNumber, readExtraString } from "./utils";
 
 /**
  * Lifecycle hook: runs before the facilitator settles a payment.
  *
  * For voucher payloads the server does NOT trigger an onchain settle.  Instead, it
  * increments the local `chargedCumulativeAmount` and returns a `skip` result so the
- * middleware responds immediately.  If the client requests a
- * cooperative refund, the payload is rewritten to a `refund` settle
- * action that the facilitator will execute onchain.
+ * middleware responds immediately. Cooperative refund payloads proceed to settlement
+ * enrichment before facilitator settlement.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Settle lifecycle context (payload and requirements).
@@ -42,9 +31,6 @@ export async function handleBeforeSettle(
   void | { abort: true; reason: string; message?: string } | { skip: true; result: SettleResponse }
 > {
   const { paymentPayload, requirements } = ctx;
-  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME) {
-    return;
-  }
 
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
@@ -64,7 +50,7 @@ export async function handleBeforeSettle(
   }
 
   if (raw.refund === true) {
-    return buildRefundSettlePayload(scheme, paymentPayload, requirements, channel, raw);
+    return;
   }
 
   const increment = BigInt(requirements.amount);
@@ -130,32 +116,34 @@ export async function handleBeforeSettle(
 }
 
 /**
- * Builds a `refundWithSignature` settle payload for a zero-charge refund voucher
- * and rewrites the in-flight `paymentPayload.payload` so the facilitator submits
- * the cooperative refund on-chain.
+ * Enriches cooperative refund vouchers with facilitator settlement fields.
  *
- * Refund amount semantics:
- * - When the client supplied `raw.refundAmount`, that is used (partial refund).
- *   The amount is clamped at the channel's available remainder
- *   (`balance - chargedCumulativeAmount`).
- * - Otherwise the entire remainder is refunded (full refund) and the channel
- *   will be torn down in `handleAfterSettle`.
- *
- * @param scheme - Owning `BatchSettlementEvmScheme` instance for signer access.
- * @param paymentPayload - The in-flight payment payload whose `payload` field will be rewritten.
- * @param requirements - Payment requirements for the route (network is read for signing).
- * @param channel - Current server-side channel record.
- * @param raw - The original voucher payload carrying `refund: true`.
- * @returns Either `void` to proceed, or an `abort` directive on misuse.
+ * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage and signer access.
+ * @param ctx - Settlement context for the current payment.
+ * @returns Additive refund settlement fields, or nothing for non-refund payloads.
  */
-export async function buildRefundSettlePayload(
+export async function handleEnrichSettlementPayload(
   scheme: BatchSettlementEvmScheme,
-  paymentPayload: PaymentPayload,
-  requirements: PaymentRequirements,
-  channel: Channel,
-  raw: BatchSettlementVoucherPayload,
-): Promise<void | { abort: true; reason: string; message?: string }> {
+  ctx: SettleContext,
+): Promise<Record<string, unknown> | void> {
+  const { paymentPayload, requirements } = ctx;
+  const raw = paymentPayload.payload;
+  if (!isBatchSettlementVoucherPayload(raw) || raw.refund !== true) {
+    return;
+  }
+
   const channelId = raw.channelId;
+  const channel = await scheme.getStorage().get(channelId);
+  if (!channel) {
+    throw new Error("missing_batch_settlement_channel");
+  }
+  if (BigInt(raw.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
+    throw new Error("batch_settlement_stale_cumulative_amount");
+  }
+  if (raw.signature !== channel.signature) {
+    throw new Error("batch_settlement_refund_signature_mismatch");
+  }
+
   const config = channel.channelConfig;
 
   const claimEntry: BatchSettlementVoucherClaim = {
@@ -169,29 +157,17 @@ export async function buildRefundSettlePayload(
 
   const remainder = BigInt(channel.balance) - BigInt(channel.chargedCumulativeAmount);
   if (remainder <= 0n) {
-    return {
-      abort: true,
-      reason: "batch_settlement_refund_no_balance",
-      message: "Channel has no remaining balance to refund",
-    };
+    throw new Error("batch_settlement_refund_no_balance");
   }
 
   let refundAmountBig = remainder;
   if (raw.refundAmount !== undefined) {
     const requested = BigInt(raw.refundAmount);
     if (requested <= 0n) {
-      return {
-        abort: true,
-        reason: "batch_settlement_refund_amount_invalid",
-        message: "refundAmount must be a positive integer",
-      };
+      throw new Error("batch_settlement_refund_amount_invalid");
     }
     if (requested > remainder) {
-      return {
-        abort: true,
-        reason: "batch_settlement_refund_amount_exceeds_balance",
-        message: `refundAmount ${requested.toString()} exceeds remainder ${remainder.toString()}`,
-      };
+      throw new Error("batch_settlement_refund_amount_exceeds_balance");
     }
     refundAmountBig = requested;
   }
@@ -215,17 +191,9 @@ export async function buildRefundSettlePayload(
     ? await signClaimBatch(receiverAuthorizerSigner, [claimEntry], requirements.network)
     : undefined;
 
-  const responseExtra = buildRefundResponseSnapshot(channel, {
-    settleAction: "refundWithSignature",
-    config,
-    amount: refundAmount,
-    nonce,
-    claims: [claimEntry],
-    refundAuthorizerSignature,
-    claimAuthorizerSignature,
-  });
+  scheme.rememberChannelSnapshot(paymentPayload, channel);
 
-  (paymentPayload as { payload: unknown }).payload = {
+  return {
     settleAction: "refundWithSignature",
     config,
     amount: refundAmount,
@@ -233,7 +201,6 @@ export async function buildRefundSettlePayload(
     claims: [claimEntry],
     refundAuthorizerSignature,
     claimAuthorizerSignature,
-    responseExtra,
   };
 }
 
@@ -255,7 +222,7 @@ export async function handleAfterSettle(
   ctx: SettleResultContext,
 ): Promise<void> {
   const { paymentPayload, requirements, result } = ctx;
-  if (requirements.scheme !== BATCH_SETTLEMENT_SCHEME || !result.success) {
+  if (!result.success) {
     return;
   }
 
@@ -265,35 +232,11 @@ export async function handleAfterSettle(
   if (isBatchSettlementRefundWithSignaturePayload(raw)) {
     const channelId = computeChannelId(raw.config);
     const prevChannel = await storage.get(channelId);
-    const fallback =
-      prevChannel?.channelId !== undefined
-        ? buildRefundResponseSnapshot(prevChannel, raw)
-        : (raw.responseExtra ?? emptyResponseSnapshot(channelId));
+    if (prevChannel) {
+      scheme.rememberChannelSnapshot(paymentPayload, prevChannel);
+    }
 
-    const extra = result.extra;
-    const refundedAmount = readExtraString(extra, "refundedAmount", raw.amount);
-
-    result.extra = {
-      channelId:
-        typeof extra?.channelId === "string" && extra.channelId
-          ? extra.channelId
-          : fallback.channelId,
-      chargedCumulativeAmount: readExtraString(
-        extra,
-        "chargedCumulativeAmount",
-        fallback.chargedCumulativeAmount,
-      ),
-      balance: readExtraString(extra, "balance", fallback.balance),
-      totalClaimed: readExtraString(extra, "totalClaimed", fallback.totalClaimed),
-      withdrawRequestedAt: readExtraNumber(
-        extra,
-        "withdrawRequestedAt",
-        fallback.withdrawRequestedAt,
-      ),
-      refundNonce: readExtraString(extra, "refundNonce", fallback.refundNonce),
-      refund: true,
-      refundedAmount,
-    };
+    const refundedAmount = readExtraString(result.extra, "refundedAmount", raw.amount);
 
     const remainderAfter = prevChannel
       ? BigInt(prevChannel.balance) -
@@ -342,7 +285,7 @@ export async function handleAfterSettle(
       withdrawRequestedAt: prevChannel?.withdrawRequestedAt ?? 0,
       refundNonce: String(prevChannel?.refundNonce ?? 0),
     };
-    const responseExtra = {
+    const channelFields = {
       channelId:
         typeof ex.channelId === "string" && ex.channelId ? ex.channelId : fallback.channelId,
       chargedCumulativeAmount: chargedActual,
@@ -359,13 +302,37 @@ export async function handleAfterSettle(
       chargedCumulativeAmount: chargedActual,
       signedMaxClaimable,
       signature: raw.voucher.signature,
-      balance: responseExtra.balance,
-      totalClaimed: responseExtra.totalClaimed,
-      withdrawRequestedAt: responseExtra.withdrawRequestedAt,
-      refundNonce: parseInt(responseExtra.refundNonce, 10) || 0,
+      balance: channelFields.balance,
+      totalClaimed: channelFields.totalClaimed,
+      withdrawRequestedAt: channelFields.withdrawRequestedAt,
+      refundNonce: parseInt(channelFields.refundNonce, 10) || 0,
       lastRequestTimestamp: Date.now(),
     };
+    scheme.rememberChannelSnapshot(paymentPayload, channel);
     await storage.set(channelId, channel);
-    result.extra = responseExtra;
   }
+}
+
+/**
+ * Supplies server-owned settlement response fields from the channel snapshot.
+ *
+ * @param scheme - Owning `BatchSettlementEvmScheme` instance for snapshot access.
+ * @param ctx - Settlement result context for the current payment.
+ * @returns Additive response extra fields, or nothing when no snapshot exists.
+ */
+export async function handleEnrichSettlementResponse(
+  scheme: BatchSettlementEvmScheme,
+  ctx: SettleResultContext,
+): Promise<Record<string, unknown> | void> {
+  const raw = ctx.paymentPayload.payload;
+  if (isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundWithSignaturePayload(raw)) {
+    return;
+  }
+
+  const channel = scheme.takeChannelSnapshot(ctx.paymentPayload);
+  if (!channel) {
+    return;
+  }
+
+  return { chargedCumulativeAmount: channel.chargedCumulativeAmount };
 }

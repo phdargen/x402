@@ -3,7 +3,6 @@ import { encodeFunctionData, getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import type {
   AuthorizerSigner,
-  BatchSettlementPaymentResponseExtra,
   BatchSettlementRefundWithSignaturePayload,
   ChannelState,
 } from "../types";
@@ -15,10 +14,18 @@ import * as Errors from "./errors";
 import { buildVoucherClaimArgs } from "./claim";
 import { readChannelState, toContractChannelConfig } from "./utils";
 
+type RefundSettlementExtra = {
+  channelId: `0x${string}`;
+  balance: string;
+  totalClaimed: string;
+  withdrawRequestedAt: number;
+  refundNonce: string;
+};
+
 /**
- * Builds `responseExtra` fields for a refund settlement after applying the refund amount to channel state.
+ * Builds facilitator-owned extra fields for a refund settlement after applying the refund amount.
  *
- * @param payload - Refund payload containing claims, amount, and optional prior `responseExtra`.
+ * @param payload - Refund payload containing claims and amount.
  * @param channelId - Canonical channel id for the refund.
  * @param preState - On-chain channel state before this refund, or null if unknown.
  * @returns Extra fields for the settlement response.
@@ -27,7 +34,7 @@ function buildRefundExtra(
   payload: BatchSettlementRefundWithSignaturePayload,
   channelId: `0x${string}`,
   preState: ChannelState | null,
-): BatchSettlementPaymentResponseExtra {
+): RefundSettlementExtra {
   const preTotalClaimed = preState?.totalClaimed ?? 0n;
   const preBalance = preState?.balance ?? 0n;
 
@@ -43,7 +50,6 @@ function buildRefundExtra(
 
   return {
     channelId,
-    chargedCumulativeAmount: payload.responseExtra?.chargedCumulativeAmount ?? "0",
     balance: (preBalance - actualRefund).toString(),
     totalClaimed: postClaimTotalClaimed.toString(),
     withdrawRequestedAt: 0,
