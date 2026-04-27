@@ -1293,6 +1293,133 @@ describe("x402ResourceServer", () => {
       expect(order).toEqual(["manual", "scheme", "extension"]);
     });
 
+    it("applies scheme payload enrichment before facilitator settlement", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse(),
+        buildVerifyResponse({ isValid: true }),
+        buildSettleResponse({ success: true }),
+      );
+      const server = new x402ResourceServer(mockClient);
+      const order: string[] = [];
+
+      server.register(
+        "test:network",
+        Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+          enrichSettlementPayload: async () => {
+            order.push("payload");
+            return { serverField: "server" };
+          },
+        }),
+      );
+
+      await server.settlePayment(
+        buildPaymentPayload({ payload: { clientField: "client" } }),
+        buildPaymentRequirements(),
+      );
+
+      expect(order).toEqual(["payload"]);
+      expect(mockClient.settleCalls[0].payload.payload).toEqual({
+        clientField: "client",
+        serverField: "server",
+      });
+    });
+
+    it("rejects payload enrichment that overwrites client payload fields", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse(),
+        buildVerifyResponse({ isValid: true }),
+        buildSettleResponse({ success: true }),
+      );
+      const server = new x402ResourceServer(mockClient);
+
+      server.register(
+        "test:network",
+        Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+          enrichSettlementPayload: async () => ({ clientField: "server" }),
+        }),
+      );
+
+      await expect(
+        server.settlePayment(
+          buildPaymentPayload({ payload: { clientField: "client" } }),
+          buildPaymentRequirements(),
+        ),
+      ).rejects.toThrow(/clientField/);
+      expect(mockClient.settleCalls.length).toBe(0);
+    });
+
+    it("runs settlement response enrichment after afterSettle and extension enrichment", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse(),
+        buildVerifyResponse({ isValid: true }),
+        buildSettleResponse({ success: true, extra: { facilitatorField: "facilitator" } }),
+      );
+      const server = new x402ResourceServer(mockClient);
+      const order: string[] = [];
+
+      server.onAfterSettle(async () => {
+        order.push("afterSettle");
+      });
+      server.registerExtension({
+        key: "ext",
+        enrichSettlementResponse: async () => {
+          order.push("extension");
+          return { extensionField: "extension" };
+        },
+      });
+      server.register(
+        "test:network",
+        Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+          enrichSettlementResponse: async () => {
+            order.push("scheme");
+            return { schemeField: "scheme" };
+          },
+        }),
+      );
+
+      const result = await server.settlePayment(buildPaymentPayload(), buildPaymentRequirements(), {
+        ext: {},
+      });
+
+      expect(order).toEqual(["afterSettle", "extension", "scheme"]);
+      expect(result.extensions).toEqual({ ext: { extensionField: "extension" } });
+      expect(result.extra).toEqual({
+        facilitatorField: "facilitator",
+        schemeField: "scheme",
+      });
+    });
+
+    it("skips payload enrichment and still runs response enrichment for skip results", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse(),
+        buildVerifyResponse({ isValid: true }),
+        buildSettleResponse({ success: true }),
+      );
+      const server = new x402ResourceServer(mockClient);
+      const enrichSettlementPayload = vi.fn(async () => ({ serverField: "server" }));
+
+      server.onBeforeSettle(async () => ({
+        skip: true,
+        result: buildSettleResponse({ success: true, extra: { skipField: "skip" } }),
+      }));
+      server.register(
+        "test:network",
+        Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+          enrichSettlementPayload,
+          enrichSettlementResponse: async () => ({ schemeField: "scheme" }),
+        }),
+      );
+
+      const result = await server.settlePayment(buildPaymentPayload(), buildPaymentRequirements());
+
+      expect(enrichSettlementPayload).not.toHaveBeenCalled();
+      expect(mockClient.settleCalls.length).toBe(0);
+      expect(result.extra).toEqual({
+        skipField: "skip",
+        schemeField: "scheme",
+      });
+    });
+
     it("rejects enrichSettlementResponse that mutates facilitator core fields", async () => {
       const mockClient = new MockFacilitatorClient(
         buildSupportedResponse(),

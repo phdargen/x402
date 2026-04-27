@@ -1,15 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
   assertAcceptsAllowlistedAfterExtensionEnrich,
+  assertAdditivePayloadEnrichment,
+  assertAdditiveSettlementExtra,
   assertSettleResponseCoreUnchanged,
   isVacantStringField,
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
-} from "../../../src/server/extensionResponsePolicy";
+} from "../../../src/server/hookPolicy";
 import { buildPaymentRequirements, buildSettleResponse } from "../../mocks";
 import type { Network } from "../../../src/types";
 
-describe("extensionResponsePolicy", () => {
+describe("hookPolicy", () => {
   describe("isVacantStringField", () => {
     it("treats empty and whitespace-only strings as vacant", () => {
       expect(isVacantStringField("")).toBe(true);
@@ -122,6 +124,50 @@ describe("extensionResponsePolicy", () => {
       const snap = snapshotSettleResponseCore(base);
       base.transaction = "0xother";
       expect(() => assertSettleResponseCoreUnchanged(snap, base, "ext")).toThrow(/transaction/);
+    });
+  });
+
+  describe("assertAdditivePayloadEnrichment", () => {
+    it("allows adding new payload fields", () => {
+      expect(() =>
+        assertAdditivePayloadEnrichment(
+          { clientField: "client" },
+          { serverField: "server" },
+          "scheme test",
+        ),
+      ).not.toThrow();
+    });
+
+    it("rejects overwriting payload fields", () => {
+      expect(() =>
+        assertAdditivePayloadEnrichment(
+          { clientField: "client" },
+          { clientField: "server" },
+          "scheme test",
+        ),
+      ).toThrow(/clientField/);
+    });
+  });
+
+  describe("assertAdditiveSettlementExtra", () => {
+    it("allows adding new settlement extra fields", () => {
+      expect(() =>
+        assertAdditiveSettlementExtra(
+          { facilitatorField: "facilitator" },
+          { schemeField: "scheme" },
+          "scheme test",
+        ),
+      ).not.toThrow();
+    });
+
+    it("rejects overwriting settlement extra fields", () => {
+      expect(() =>
+        assertAdditiveSettlementExtra(
+          { facilitatorField: "facilitator" },
+          { facilitatorField: "scheme" },
+          "scheme test",
+        ),
+      ).toThrow(/facilitatorField/);
     });
   });
 });

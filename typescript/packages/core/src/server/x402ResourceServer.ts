@@ -18,10 +18,12 @@ import type { DeepReadonly } from "../types/readonly";
 import { deepEqual, findByNetworkAndScheme } from "../utils";
 import {
   assertAcceptsAllowlistedAfterExtensionEnrich,
+  assertAdditivePayloadEnrichment,
+  assertAdditiveSettlementExtra,
   assertSettleResponseCoreUnchanged,
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
-} from "./extensionResponsePolicy";
+} from "./hookPolicy";
 import { FacilitatorClient, HTTPFacilitatorClient } from "../http/httpFacilitatorClient";
 import { x402Version } from "..";
 
@@ -1042,29 +1044,12 @@ export class x402ResourceServer {
               this.warnResourceServerHookFailure("afterSettle", label, error);
             }
           }
-          if (Object.keys(resolvedDeclaredExtensions).length > 0) {
-            const settleCoreSnapshot = snapshotSettleResponseCore(settleResult);
-            for (const [key, declaration] of Object.entries(resolvedDeclaredExtensions)) {
-              const extension = this.registeredExtensions.get(key);
-              if (extension?.enrichSettlementResponse) {
-                try {
-                  const extensionData = await extension.enrichSettlementResponse(
-                    declaration,
-                    skipResultContext,
-                  );
-                  if (extensionData !== undefined) {
-                    if (!settleResult.extensions) {
-                      settleResult.extensions = {};
-                    }
-                    settleResult.extensions[key] = extensionData;
-                  }
-                } catch (error) {
-                  this.warnExtensionHookFailure(key, "enrichSettlementResponse", error);
-                }
-                assertSettleResponseCoreUnchanged(settleCoreSnapshot, settleResult, key);
-              }
-            }
-          }
+          await this.enrichSettlementResponse(
+            settleResult,
+            skipResultContext,
+            resolvedDeclaredExtensions,
+            matchedScheme,
+          );
           return settleResult;
         }
       } catch (error) {
@@ -1076,6 +1061,21 @@ export class x402ResourceServer {
     }
 
     try {
+      const scheme = findByNetworkAndScheme(
+        this.registeredServerSchemes,
+        matchedScheme.scheme,
+        matchedScheme.network,
+      );
+      const payloadEnrichmentHook = scheme?.enrichSettlementPayload;
+      if (payloadEnrichmentHook) {
+        const label = `scheme "${matchedScheme.scheme}" enrichSettlementPayload`;
+        const enrichment = await payloadEnrichmentHook(context);
+        if (enrichment !== undefined) {
+          assertAdditivePayloadEnrichment(paymentPayload.payload, enrichment, label);
+          paymentPayload.payload = { ...paymentPayload.payload, ...enrichment };
+        }
+      }
+
       // Find the facilitator that supports this payment type
       const facilitatorClient = this.getFacilitatorClient(
         paymentPayload.x402Version,
@@ -1129,30 +1129,12 @@ export class x402ResourceServer {
         }
       }
 
-      // Let declared extensions add data to settlement response
-      if (Object.keys(resolvedDeclaredExtensions).length > 0) {
-        const settleCoreSnapshot = snapshotSettleResponseCore(settleResult);
-        for (const [key, declaration] of Object.entries(resolvedDeclaredExtensions)) {
-          const extension = this.registeredExtensions.get(key);
-          if (extension?.enrichSettlementResponse) {
-            try {
-              const extensionData = await extension.enrichSettlementResponse(
-                declaration,
-                resultContext,
-              );
-              if (extensionData !== undefined) {
-                if (!settleResult.extensions) {
-                  settleResult.extensions = {};
-                }
-                settleResult.extensions[key] = extensionData;
-              }
-            } catch (error) {
-              this.warnExtensionHookFailure(key, "enrichSettlementResponse", error);
-            }
-            assertSettleResponseCoreUnchanged(settleCoreSnapshot, settleResult, key);
-          }
-        }
-      }
+      await this.enrichSettlementResponse(
+        settleResult,
+        resultContext,
+        resolvedDeclaredExtensions,
+        matchedScheme,
+      );
 
       return settleResult;
     } catch (error) {
@@ -1218,11 +1200,7 @@ export class x402ResourceServer {
    * @param label - Hook source label from {@link getLabeledHooks} (manual index or extension key)
    * @param error - Thrown value or rejection reason
    */
-  private warnResourceServerHookFailure(
-    phase: ResourceServerHookPhase,
-    label: string,
-    error: unknown,
-  ): void {
+  private warnResourceServerHookFailure(phase: string, label: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
     console.warn(`[x402] Resource server ${phase} hook threw (${label}): ${detail}`);
   }
@@ -1237,6 +1215,63 @@ export class x402ResourceServer {
   private warnExtensionHookFailure(extensionKey: string, hookName: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
     console.warn(`[x402] extension "${extensionKey}" ${hookName} threw: ${detail}`);
+  }
+
+  /**
+   * Runs response enrichment after settlement lifecycle hooks complete.
+   *
+   * @param settleResult - Mutable settlement result being returned to the caller
+   * @param context - Read-only hook context for enrichment callbacks
+   * @param declaredExtensions - Extension declarations present on this payment
+   * @param matchedScheme - Scheme/network selected for this settlement
+   * @param matchedScheme.network - Matched payment network
+   * @param matchedScheme.scheme - Matched payment scheme
+   */
+  private async enrichSettlementResponse(
+    settleResult: SettleResponse,
+    context: SettleResultContext,
+    declaredExtensions: Record<string, unknown>,
+    matchedScheme: { network: Network; scheme: string },
+  ): Promise<void> {
+    if (Object.keys(declaredExtensions).length > 0) {
+      const settleCoreSnapshot = snapshotSettleResponseCore(settleResult);
+      for (const [key, declaration] of Object.entries(declaredExtensions)) {
+        const extension = this.registeredExtensions.get(key);
+        if (!extension?.enrichSettlementResponse) continue;
+
+        try {
+          const extensionData = await extension.enrichSettlementResponse(declaration, context);
+          if (extensionData !== undefined) {
+            if (!settleResult.extensions) {
+              settleResult.extensions = {};
+            }
+            settleResult.extensions[key] = extensionData;
+          }
+        } catch (error) {
+          this.warnExtensionHookFailure(key, "enrichSettlementResponse", error);
+        }
+        assertSettleResponseCoreUnchanged(settleCoreSnapshot, settleResult, key);
+      }
+    }
+
+    const scheme = findByNetworkAndScheme(
+      this.registeredServerSchemes,
+      matchedScheme.scheme,
+      matchedScheme.network,
+    );
+    const hook = scheme?.enrichSettlementResponse;
+    if (!hook) return;
+
+    const label = `scheme "${matchedScheme.scheme}" enrichSettlementResponse`;
+    try {
+      const enrichment = await hook(context);
+      if (enrichment === undefined) return;
+
+      assertAdditiveSettlementExtra(settleResult.extra ?? {}, enrichment, label);
+      settleResult.extra = { ...settleResult.extra, ...enrichment };
+    } catch (error) {
+      this.warnResourceServerHookFailure("enrichSettlementResponse", label, error);
+    }
   }
 
   /**

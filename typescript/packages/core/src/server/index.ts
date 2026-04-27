@@ -18,16 +18,22 @@ export type {
   AfterSettleHook,
   OnSettleFailureHook,
 } from "./x402ResourceServer";
+export type {
+  SchemeEnrichSettlementPayloadHook,
+  SchemeEnrichSettlementResponseHook,
+} from "../types/mechanisms";
 export type { PaymentRequiredErrorDetails } from "../types/payments";
 
 export {
+  assertAdditivePayloadEnrichment,
+  assertAdditiveSettlementExtra,
   assertAcceptsAllowlistedAfterExtensionEnrich,
   assertSettleResponseCoreUnchanged,
   isVacantStringField,
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
-} from "./extensionResponsePolicy";
-export type { SettleResponseCoreSnapshot } from "./extensionResponsePolicy";
+} from "./hookPolicy";
+export type { SettleResponseCoreSnapshot } from "./hookPolicy";
 
 export { HTTPFacilitatorClient } from "../http/httpFacilitatorClient";
 export type { FacilitatorClient, FacilitatorConfig } from "../http/httpFacilitatorClient";

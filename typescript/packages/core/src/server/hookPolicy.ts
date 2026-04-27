@@ -1,5 +1,5 @@
-import type { PaymentRequirements } from "../types/payments";
 import type { SettleResponse } from "../types/facilitator";
+import type { PaymentRequirements } from "../types/payments";
 import { deepEqual } from "../utils";
 
 /**
@@ -145,5 +145,47 @@ export function assertSettleResponseCoreUnchanged(
         `[x402] extension "${extensionKey}" violated settlement mutation policy: field "${String(k)}" is immutable after facilitator settle`,
       );
     }
+  }
+}
+
+/**
+ * Ensures scheme settlement-payload enrichment only adds server-owned fields.
+ *
+ * @param payload - Existing scheme payload before enrichment
+ * @param enrichment - Fields returned by the scheme enrichment hook
+ * @param callerLabel - Hook source label used in policy error messages
+ */
+export function assertAdditivePayloadEnrichment(
+  payload: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+  callerLabel: string,
+): void {
+  for (const key of Object.keys(enrichment)) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+
+    throw new Error(
+      `[x402] ${callerLabel} violated settlement payload enrichment policy: "${key}" already exists on the client payload`,
+    );
+  }
+}
+
+/**
+ * Ensures scheme response enrichment only adds new `extra` fields.
+ *
+ * @param extra - Existing settlement extra fields
+ * @param enrichment - Fields returned by the scheme response enrichment hook
+ * @param callerLabel - Hook label used in policy error messages
+ */
+export function assertAdditiveSettlementExtra(
+  extra: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+  callerLabel: string,
+): void {
+  for (const key of Object.keys(enrichment)) {
+    if (!Object.prototype.hasOwnProperty.call(extra, key)) continue;
+
+    throw new Error(
+      `[x402] ${callerLabel} violated settlement response enrichment policy: extra["${key}"] already exists on the settlement result`,
+    );
   }
 }

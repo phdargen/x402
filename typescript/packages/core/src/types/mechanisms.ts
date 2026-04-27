@@ -10,6 +10,8 @@ import type {
   AfterSettleHook,
   OnVerifyFailureHook,
   OnSettleFailureHook,
+  SettleContext,
+  SettleResultContext,
 } from "../server/x402ResourceServer";
 import type {
   BeforePaymentCreationHook,
@@ -159,9 +161,19 @@ export interface SchemeServerHooks {
   onSettleFailure?: OnSettleFailureHook;
 }
 
+export type SchemeEnrichSettlementPayloadHook = (
+  ctx: SettleContext,
+) => Promise<Record<string, unknown> | void>;
+
+export type SchemeEnrichSettlementResponseHook = (
+  ctx: SettleResultContext,
+) => Promise<Record<string, unknown> | void>;
+
 export interface SchemeNetworkServer {
   readonly scheme: string;
   readonly schemeHooks?: SchemeServerHooks;
+  enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
+  enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;
 
   /**
    * Convert a user-friendly price to the scheme's specific amount and asset format
