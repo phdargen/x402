@@ -26,7 +26,7 @@ struct ChannelConfig {
     bytes32 salt;               // Differentiates channels with identical parameters
 }
 ```
-with `channelId = keccak256(abi.encode(channelConfig))`.
+with `channelId = EIP712Hash(ChannelConfig)` under the `x402 Batch Settlement` domain. The hash binds the immutable config to the EVM `chainId` and deployed `x402BatchSettlement` address, so the same config produces different IDs across chains or deployments.
 
 ### Requests and vouchers
 
@@ -81,11 +81,12 @@ The 402 response contains pricing terms and the server's channel parameters. The
 
 | Field                       | Type     | Required | Description                                            |
 | --------------------------- | -------- | -------- | ------------------------------------------------------ |
-| `extra.receiverAuthorizer`  | `string` | yes      | Address that will authorize claims/refunds              |
+| `extra.receiverAuthorizer`  | `string` | yes      | Address that will authorize claims/refunds             |
 | `extra.withdrawDelay`       | `number` | yes      | Withdrawal delay in seconds (15 min – 30 days)         |
 | `extra.assetTransferMethod` | `string` | optional | `"eip3009"` (default) or `"permit2"`                   |
 | `extra.name`                | `string` | yes      | EIP-712 domain name of the token contract              |
 | `extra.version`             | `string` | yes      | EIP-712 domain version of the token contract           |
+| `extra.ChannelState`        | `object` | optional | Corrective-only server state for cumulative amount resynchronization |
 
 ---
 
@@ -231,7 +232,7 @@ The server must maintain per-channel state, keyed by channel ID:
 The server must serialize request processing per channel and must not update voucher state until the resource handler has succeeded.
 
 1. **Verify**:
-   - For voucher payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `batch_settlement_stale_cumulative_amount` and return a corrective 402.
+   - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `batch_settlement_cumulative_amount_mismatch` and return a corrective 402.
    - For refund payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount` and skip the resource handler after facilitator verification.
    - Call facilitator `/verify`.
 2. **Execute**: Run the resource handler
@@ -250,7 +251,7 @@ When the server receives a `type: "refund"` payload:
 4. **Submit onchain**: `claimWithSignature(claims, claimSig)` (no-op when `maxClaimableAmount == totalClaimed`) followed by `refundWithSignature(config, amount, nonce, refundSig)`.
 5. **Update channel state**:
    - **Full refund** (refunded amount equals the remainder): delete the channel record.
-   - **Partial refund**: keep the channel record, decrement `balance` by the refunded amount, and increment `refundNonce`.
+   - **Partial refund**: keep the channel record, mirror the returned `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce`.
 6. Return the settle response in the standard `PAYMENT-RESPONSE` header. The response `amount` is the actual refunded amount; `extra` carries the updated channel snapshot plus `chargedCumulativeAmount`.
 
 After the server completes the refund payload, the facilitator receives:
@@ -396,7 +397,7 @@ The facilitator declares a receiver authorizer whose role is to produce EIP-712 
 
 A facilitator must enforce:
 
-1. **Channel config consistency** (deposit, voucher, and refund): the config must hash to the claimed channel ID.
+1. **Channel config consistency** (deposit, voucher, and refund): the config's chain-bound EIP-712 hash must equal the claimed channel ID.
 2. **Token match**: the channel token must match the payment requirements asset.
 3. **Receiver match**: the channel receiver must equal the payment requirements `payTo`.
 4. **Receiver authorizer match**: the channel receiver authorizer must equal `extra.receiverAuthorizer`.
@@ -454,22 +455,29 @@ The recovery baseline is:
 
 **Server state loss.** If the server has no local channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If the server lost unclaimed vouchers, those unclaimed charges are forfeited by the server.
 
-**Corrective 402.** If the server has local channel state and rejects a voucher because the client's cumulative base is stale, it returns `batch_settlement_stale_cumulative_amount` with top-level `errorDetails.recoverable: true` and `errorDetails.data` containing `channelId`, `chargedCumulativeAmount`, `signedMaxClaimable`, and `signature`. The client verifies the voucher signature, adopts `chargedCumulativeAmount` and retries. 
+**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `batch_settlement_cumulative_amount_mismatch` with `accepts[].extra.ChannelState` containing `channelId`, `chargedCumulativeAmount`, `signedMaxClaimable`, and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
 
 ```json
 {
   "x402Version": 2,
-  "error": "batch_settlement_stale_cumulative_amount",
-  "errorDetails": {
-    "recoverable": true,
-    "data": {
-      "channelId": "0xabc123...channelId",
-      "chargedCumulativeAmount": "3200",
-      "signedMaxClaimable": "3200",
-      "signature": "0x...last voucher signature"
+  "error": "batch_settlement_cumulative_amount_mismatch",
+  "accepts": [
+    {
+      "scheme": "batch-settlement",
+      "extra": {
+        "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+        "withdrawDelay": 900,
+        "name": "USDC",
+        "version": "2",
+        "ChannelState": {
+          "channelId": "0xabc123...channelId",
+          "chargedCumulativeAmount": "3200",
+          "signedMaxClaimable": "3200",
+          "signature": "0x...last voucher signature"
+        }
+      }
     }
-  },
-  "accepts": [{ "scheme": "batch-settlement", "..." : "..." }]
+  ]
 }
 ```
 
@@ -479,7 +487,7 @@ The recovery baseline is:
 
 | Error Code                                                     | Description                                                                  |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `batch_settlement_stale_cumulative_amount`                     | Client voucher base doesn't match server state; corrective 402               |
+| `batch_settlement_cumulative_amount_mismatch`                  | Client cumulative amount does not match server channel state; corrective 402 |
 | `batch_settlement_evm_channel_not_found`                       | No channel with positive balance for the given channel ID                    |
 | `batch_settlement_evm_cumulative_exceeds_balance`              | Voucher `maxClaimableAmount` exceeds onchain balance                         |
 | `batch_settlement_evm_cumulative_below_claimed`                | Voucher `maxClaimableAmount` is at or below onchain `totalClaimed`           |
