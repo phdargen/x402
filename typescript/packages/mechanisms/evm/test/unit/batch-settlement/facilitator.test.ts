@@ -10,10 +10,11 @@ vi.mock("../../../src/multicall", async importOriginal => {
 
 import { multicall } from "../../../src/multicall";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/facilitator/scheme";
-import { computeChannelId } from "../../../src/batch-settlement/utils";
+import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import {
   BATCH_SETTLEMENT_ADDRESS,
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
+  PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
 } from "../../../src/batch-settlement/constants";
 import * as Errors from "../../../src/batch-settlement/facilitator/errors";
 import type {
@@ -36,6 +37,10 @@ const RECEIVER = "0x9876543210987654321098765432109876543210" as `0x${string}`;
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const FACILITATOR_ADDRESS = "0xFAC11174700123456789012345678901234aBCDe" as `0x${string}`;
 const NETWORK = "eip155:84532";
+
+function computeChannelId(config: ChannelConfig): `0x${string}` {
+  return computeChannelIdForNetwork(config, NETWORK);
+}
 
 function buildAuthorizerSigner(): AuthorizerSigner {
   const account = privateKeyToAccount(
@@ -774,10 +779,58 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       channelId,
       balance: "1000",
       totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "1",
     });
+    expect(mockedMulticall).toHaveBeenCalledTimes(1);
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "refundWithSignature" }),
     );
+  });
+
+  it("polls post-refund state when a withdrawal is pending", async () => {
+    const signer = buildSigner();
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [10000n, 0n] },
+        { status: "success", result: [5000n, 1234n] },
+        { status: "success", result: 7n },
+      ])
+      .mockResolvedValueOnce([
+        { status: "success", result: [8000n, 0n] },
+        { status: "success", result: [3000n, 1234n] },
+        { status: "success", result: 8n },
+      ]);
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "0",
+        signature: "0xdead",
+      },
+      amount: "2000",
+      refundNonce: "7",
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.amount).toBe("2000");
+    expect(result.extra).toMatchObject({
+      channelId,
+      balance: "8000",
+      withdrawRequestedAt: 1234,
+      refundNonce: "8",
+    });
+    expect(mockedMulticall).toHaveBeenCalledTimes(2);
   });
 
   it("returns ErrSettleSimulationFailed when settle simulation reverts", async () => {
@@ -819,7 +872,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
 
 describe("BatchSettlementEvmScheme (Facilitator) — constants used in handlers", () => {
   it("contract addresses match the documented values", () => {
-    expect(BATCH_SETTLEMENT_ADDRESS).toBe("0x4020e07E964De72a79367828c9C6140fcaE00003");
-    expect(ERC3009_DEPOSIT_COLLECTOR_ADDRESS).toBe("0x402064ac4dA4f510EeC7D71fDc23A7D47fb10004");
+    expect(BATCH_SETTLEMENT_ADDRESS).toBe("0x4020e66668E58c108e7e94db2F800C9F8C150003");
+    expect(ERC3009_DEPOSIT_COLLECTOR_ADDRESS).toBe("0x4020aE5A8d3DC3B505942Ce8CECC6776a6ED0004");
+    expect(PERMIT2_DEPOSIT_COLLECTOR_ADDRESS).toBe("0x4020e27bcea6C226BF888C61b6C520C0fcC50005");
   });
 });

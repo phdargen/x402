@@ -81,7 +81,7 @@ export async function recoverFromSignature(
   }
 
   const config = buildChannelConfig(deps, accept);
-  const channelId = computeChannelId(config);
+  const channelId = computeChannelId(config, accept.network);
 
   if (!deps.signer.readContract) {
     return false;
@@ -147,7 +147,7 @@ export async function recoverFromOnChainState(
   }
 
   const config = buildChannelConfig(deps, accept);
-  const channelId = computeChannelId(config);
+  const channelId = computeChannelId(config, accept.network);
 
   const [chBalance, chTotalClaimed] = await readChannelBalanceAndTotalClaimed(
     deps.signer,

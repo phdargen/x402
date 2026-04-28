@@ -564,7 +564,7 @@ export class BatchSettlementChannelManager {
         const claimableWithdrawals = await this.getClaimableVouchers();
         const withdrawalChannels = new Set(withdrawals.map(w => w.channelId.toLowerCase()));
         const hasClaimableForWithdrawal = claimableWithdrawals.some(c =>
-          withdrawalChannels.has(computeChannelId(c.voucher.channel).toLowerCase()),
+          withdrawalChannels.has(computeChannelId(c.voucher.channel, this.network).toLowerCase()),
         );
         if (hasClaimableForWithdrawal) {
           return true;
@@ -712,7 +712,7 @@ export class BatchSettlementChannelManager {
   private async updateClaimedSessions(claims: BatchSettlementVoucherClaim[]): Promise<void> {
     const storage = this.scheme.getStorage();
     for (const claim of claims) {
-      const channelId = computeChannelId(claim.voucher.channel);
+      const channelId = computeChannelId(claim.voucher.channel, this.network);
       const channel = await storage.get(channelId);
       if (!channel) {
         continue;

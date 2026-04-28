@@ -1,12 +1,18 @@
+import { keccak256, toBytes } from "viem";
+
 /** Scheme identifier for the batch-settlement payment scheme. */
 export const BATCH_SETTLEMENT_SCHEME = "batch-settlement" as const;
 
 /** Deployed address of the x402BatchSettlement contract. */
-export const BATCH_SETTLEMENT_ADDRESS = "0x4020e07E964De72a79367828c9C6140fcaE00003" as const;
+export const BATCH_SETTLEMENT_ADDRESS = "0x4020e66668E58c108e7e94db2F800C9F8C150003" as const;
 
 /** Deployed address of the ERC3009DepositCollector contract. */
 export const ERC3009_DEPOSIT_COLLECTOR_ADDRESS =
-  "0x402064ac4dA4f510EeC7D71fDc23A7D47fb10004" as const;
+  "0x4020aE5A8d3DC3B505942Ce8CECC6776a6ED0004" as const;
+
+/** Deployed address of the Permit2DepositCollector contract. */
+export const PERMIT2_DEPOSIT_COLLECTOR_ADDRESS =
+  "0x4020e27bcea6C226BF888C61b6C520C0fcC50005" as const;
 
 /** Minimum withdraw delay in seconds (15 minutes), matching the on-chain constant. */
 export const MIN_WITHDRAW_DELAY = 900;
@@ -18,6 +24,26 @@ export const MAX_WITHDRAW_DELAY = 2_592_000;
 export const BATCH_SETTLEMENT_DOMAIN = {
   name: "x402 Batch Settlement",
   version: "1",
+} as const;
+
+/** EIP-712 type hash for channel identity. */
+export const CHANNEL_CONFIG_TYPEHASH = keccak256(
+  toBytes(
+    "ChannelConfig(address payer,address payerAuthorizer,address receiver,address receiverAuthorizer,address token,uint40 withdrawDelay,bytes32 salt)",
+  ),
+);
+
+/** EIP-712 type definition for a channel configuration. */
+export const channelConfigTypes = {
+  ChannelConfig: [
+    { name: "payer", type: "address" },
+    { name: "payerAuthorizer", type: "address" },
+    { name: "receiver", type: "address" },
+    { name: "receiverAuthorizer", type: "address" },
+    { name: "token", type: "address" },
+    { name: "withdrawDelay", type: "uint40" },
+    { name: "salt", type: "bytes32" },
+  ],
 } as const;
 
 /** EIP-712 type definition for a cumulative voucher: `Voucher(bytes32 channelId, uint128 maxClaimableAmount)`. */

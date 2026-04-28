@@ -107,7 +107,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
 
     const deps = this.deps();
     const config = buildChannelConfig(deps, paymentRequirements);
-    const channelId = computeChannelId(config);
+    const channelId = computeChannelId(config, paymentRequirements.network);
     const key = channelId.toLowerCase();
 
     let batchedCtx = await this.storage.get(key);

@@ -14,7 +14,7 @@ import {
 } from "../../../src/batch-settlement/client/channel";
 import { processCorrectivePaymentRequired } from "../../../src/batch-settlement/client/recovery";
 import { InMemoryClientChannelStorage } from "../../../src/batch-settlement/client/storage";
-import { computeChannelId } from "../../../src/batch-settlement/utils";
+import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
@@ -35,6 +35,10 @@ const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const NETWORK = "eip155:84532";
 const DEFAULT_SALT =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
+
+function computeChannelId(config: ReturnType<typeof buildChannelConfig>): `0x${string}` {
+  return computeChannelIdForNetwork(config, NETWORK);
+}
 
 function buildSigner(privateKey: `0x${string}`): ClientEvmSigner {
   const account = privateKeyToAccount(privateKey);

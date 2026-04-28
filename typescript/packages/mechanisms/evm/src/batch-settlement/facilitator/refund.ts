@@ -27,6 +27,9 @@ type RefundSettlementDetails = {
   extra: RefundSettlementExtra;
 };
 
+const REFUND_STATE_POLL_MS = 2_000;
+const REFUND_STATE_POLL_INTERVAL_MS = 150;
+
 /**
  * Builds facilitator-owned response details for a refund settlement after applying the refund amount.
  *
@@ -66,6 +69,66 @@ function buildRefundExtra(
 }
 
 /**
+ * Reads the post-refund state when pending withdrawal state can be affected.
+ *
+ * @param signer - Facilitator signer used for on-chain reads.
+ * @param channelId - Channel that was refunded.
+ * @param submittedNonce - Nonce used for this refund transaction.
+ * @returns Fresh channel state once the nonce advances, or `null` if RPC reads lag.
+ */
+async function readPostRefundState(
+  signer: FacilitatorEvmSigner,
+  channelId: `0x${string}`,
+  submittedNonce: string,
+): Promise<ChannelState | null> {
+  const expectedNonce = BigInt(submittedNonce) + 1n;
+  const deadline = Date.now() + REFUND_STATE_POLL_MS;
+
+  do {
+    let state: ChannelState;
+    try {
+      state = await readChannelState(signer, channelId);
+    } catch {
+      return null;
+    }
+    if (state.refundNonce >= expectedNonce) {
+      return state;
+    }
+    await new Promise(resolve => setTimeout(resolve, REFUND_STATE_POLL_INTERVAL_MS));
+  } while (Date.now() < deadline);
+
+  return null;
+}
+
+/**
+ * Builds refund response details from confirmed post-transaction state.
+ *
+ * @param channelId - Canonical channel id for the refund.
+ * @param preState - On-chain state read before the transaction.
+ * @param postState - On-chain state after the transaction.
+ * @returns Actual refund amount and extra fields for the settlement response.
+ */
+function buildRefundExtraFromPostState(
+  channelId: `0x${string}`,
+  preState: ChannelState,
+  postState: ChannelState,
+): RefundSettlementDetails {
+  const actualRefund =
+    preState.balance > postState.balance ? preState.balance - postState.balance : 0n;
+
+  return {
+    amount: actualRefund.toString(),
+    extra: {
+      channelId,
+      balance: postState.balance.toString(),
+      totalClaimed: postState.totalClaimed.toString(),
+      withdrawRequestedAt: postState.withdrawRequestedAt,
+      refundNonce: postState.refundNonce.toString(),
+    },
+  };
+}
+
+/**
  * Executes a cooperative refund via `refundWithSignature`.
  *
  * When `refundAuthorizerSignature` / `claimAuthorizerSignature` are present they are used
@@ -91,7 +154,7 @@ export async function executeRefundWithSignature(
   const network = requirements.network;
 
   try {
-    const channelId = computeChannelId(payload.channelConfig);
+    const channelId = computeChannelId(payload.channelConfig, network);
     const preState = await readChannelState(signer, channelId);
     const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
 
@@ -207,7 +270,14 @@ export async function executeRefundWithSignature(
       };
     }
 
-    const refundDetails = buildRefundExtra(payload, channelId, preState);
+    const postState =
+      preState && preState.withdrawRequestedAt !== 0
+        ? await readPostRefundState(signer, channelId, payload.refundNonce)
+        : null;
+    const refundDetails =
+      preState && postState
+        ? buildRefundExtraFromPostState(channelId, preState, postState)
+        : buildRefundExtra(payload, channelId, preState);
 
     return {
       success: true,

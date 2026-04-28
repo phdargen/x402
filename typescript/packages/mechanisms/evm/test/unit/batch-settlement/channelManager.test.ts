@@ -9,7 +9,7 @@ import {
 } from "../../../src/batch-settlement/server/channelManager";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/scheme";
 import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
-import { computeChannelId } from "../../../src/batch-settlement/utils";
+import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import type { ChannelConfig, AuthorizerSigner } from "../../../src/batch-settlement/types";
 import type { FacilitatorClient } from "@x402/core/server";
 import type {
@@ -25,6 +25,10 @@ const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
 const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const ZERO = "0x0000000000000000000000000000000000000000" as `0x${string}`;
 const NETWORK = "eip155:84532";
+
+function computeChannelId(config: ChannelConfig): `0x${string}` {
+  return computeChannelIdForNetwork(config, NETWORK);
+}
 
 function buildAuthorizerSigner(): AuthorizerSigner {
   const account = privateKeyToAccount(

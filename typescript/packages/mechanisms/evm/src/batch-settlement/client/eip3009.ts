@@ -45,7 +45,7 @@ export async function createBatchSettlementEIP3009DepositPayload(
 
   const { name, version } = paymentRequirements.extra;
 
-  const channelId = computeChannelId(channelConfig);
+  const channelId = computeChannelId(channelConfig, paymentRequirements.network);
 
   const erc3009Nonce = buildErc3009DepositNonce(channelId, salt);
 

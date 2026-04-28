@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/scheme";
 import { BatchSettlementChannelManager } from "../../../src/batch-settlement/server/channelManager";
 import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
-import { computeChannelId } from "../../../src/batch-settlement/utils";
+import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import type {
   ChannelConfig,
   AuthorizerSigner,
@@ -33,6 +33,10 @@ const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
 const RECEIVER = "0x9876543210987654321098765432109876543210" as `0x${string}`;
 const ASSET_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const NETWORK = "eip155:84532";
+
+function computeChannelId(config: ChannelConfig): `0x${string}` {
+  return computeChannelIdForNetwork(config, NETWORK);
+}
 
 function buildAuthorizerSigner(): AuthorizerSigner {
   const account = privateKeyToAccount(

@@ -10,7 +10,7 @@ import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim }
 import { computeChannelId } from "../utils";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
-import { readExtraNumber, readExtraString } from "./utils";
+import { parseRefundSettlementSnapshot, readExtraNumber, readExtraString } from "./utils";
 
 /**
  * Lifecycle hook: runs before the facilitator settles a payment.
@@ -129,7 +129,7 @@ export async function handleEnrichSettlementPayload(
     return;
   }
 
-  const channelId = computeChannelId(raw.channelConfig);
+  const channelId = computeChannelId(raw.channelConfig, requirements.network);
   if (raw.voucher.channelId !== channelId) {
     throw new Error("refund channelId does not match channelConfig");
   }
@@ -229,30 +229,22 @@ export async function handleAfterSettle(
   const storage = scheme.getStorage();
 
   if (isBatchSettlementRefundPayload(raw)) {
-    const channelId = computeChannelId(raw.channelConfig);
-    const prevChannel = await storage.get(channelId);
-
-    if (raw.amount === undefined) {
-      return;
+    const channelId = computeChannelId(raw.channelConfig, requirements.network);
+    const channel = await storage.get(channelId);
+    if (!channel) {
+      throw new Error("missing_batch_settlement_channel");
     }
 
-    const refundedAmount = raw.amount;
+    const snapshot = parseRefundSettlementSnapshot(result.extra);
 
-    const remainderAfter = prevChannel
-      ? BigInt(prevChannel.balance) -
-        BigInt(prevChannel.chargedCumulativeAmount) -
-        BigInt(refundedAmount)
-      : 0n;
-
-    if (!prevChannel || remainderAfter <= 0n) {
+    if (BigInt(snapshot.balance) <= BigInt(channel.chargedCumulativeAmount)) {
       await storage.delete(channelId);
       return;
     }
 
     const updatedChannel: Channel = {
-      ...prevChannel,
-      balance: (BigInt(prevChannel.balance) - BigInt(refundedAmount)).toString(),
-      refundNonce: (prevChannel.refundNonce ?? 0) + 1,
+      ...channel,
+      ...snapshot,
       lastRequestTimestamp: Date.now(),
     };
     await storage.set(channelId, updatedChannel);

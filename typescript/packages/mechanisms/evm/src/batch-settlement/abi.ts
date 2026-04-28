@@ -116,7 +116,14 @@ export const batchSettlementABI = [
     name: "getChannelId",
     inputs: [{ name: "config", type: "tuple", components: channelConfigComponents }],
     outputs: [{ name: "", type: "bytes32" }],
-    stateMutability: "pure",
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "CHANNEL_CONFIG_TYPEHASH",
+    inputs: [],
+    outputs: [{ name: "", type: "bytes32" }],
+    stateMutability: "view",
   },
   {
     type: "function",

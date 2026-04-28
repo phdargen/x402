@@ -87,8 +87,7 @@ export async function processSettleResponse(
  * Reconciles local channel state with the outcome of a cooperative refund.
  *
  * Deletes the channel record when the post-refund balance is zero (full refund),
- * otherwise updates `balance`, `chargedCumulativeAmount`, and `totalClaimed`
- * from the server snapshot (partial refund — channel stays open).
+ * otherwise updates local state from the server snapshot.
  *
  * @param storage - Client channel storage.
  * @param channelKey - Lowercased channel id used as the storage key.
@@ -156,7 +155,7 @@ export async function recoverChannel(
   }
 
   const config = buildChannelConfig(deps, paymentRequirements);
-  const channelId = computeChannelId(config);
+  const channelId = computeChannelId(config, paymentRequirements.network);
 
   const [chBalance, chTotalClaimed] = await readChannelBalanceAndTotalClaimed(
     deps.signer,

@@ -1,20 +1,26 @@
-import { encodeAbiParameters, getAddress, keccak256 } from "viem";
-import { channelConfigComponents } from "./abi";
-import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN } from "./constants";
+import { getAddress, hashTypedData } from "viem";
+import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN, channelConfigTypes } from "./constants";
 import type { ChannelConfig } from "./types";
-
-const channelConfigAbiType = [{ type: "tuple", components: channelConfigComponents }] as const;
+import { getEvmChainId } from "../utils";
 
 /**
- * Computes the channel id from a {@link ChannelConfig} struct, matching the on-chain
- * `getChannelId`: `keccak256(abi.encode(channelConfig))`.
+ * Computes the chain-bound channel id from a {@link ChannelConfig} struct.
  *
  * @param config - The immutable channel configuration.
+ * @param networkOrChainId - CAIP-2 network identifier or numeric EVM chain id.
  * @returns The `bytes32` channel id as a hex string.
  */
-export function computeChannelId(config: ChannelConfig): `0x${string}` {
-  const encoded = encodeAbiParameters(channelConfigAbiType, [
-    {
+export function computeChannelId(
+  config: ChannelConfig,
+  networkOrChainId: string | number,
+): `0x${string}` {
+  const chainId =
+    typeof networkOrChainId === "number" ? networkOrChainId : getEvmChainId(networkOrChainId);
+  return hashTypedData({
+    domain: getBatchSettlementEip712Domain(chainId),
+    types: channelConfigTypes,
+    primaryType: "ChannelConfig",
+    message: {
       payer: config.payer,
       payerAuthorizer: config.payerAuthorizer,
       receiver: config.receiver,
@@ -23,8 +29,7 @@ export function computeChannelId(config: ChannelConfig): `0x${string}` {
       withdrawDelay: config.withdrawDelay,
       salt: config.salt,
     },
-  ]);
-  return keccak256(encoded);
+  });
 }
 
 /**

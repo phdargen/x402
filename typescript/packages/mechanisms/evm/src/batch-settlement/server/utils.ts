@@ -37,3 +37,64 @@ export function readExtraNumber(
   if (typeof value === "string") return parseInt(value, 10) || fallback;
   return fallback;
 }
+
+export type RefundSettlementSnapshot = {
+  balance: string;
+  totalClaimed: string;
+  withdrawRequestedAt: number;
+  refundNonce: number;
+};
+
+/**
+ * Parses the facilitator's post-refund channel snapshot.
+ *
+ * @param extra - Settlement response extra fields.
+ * @returns Validated refund settlement snapshot.
+ */
+export function parseRefundSettlementSnapshot(
+  extra: Record<string, unknown> | undefined,
+): RefundSettlementSnapshot {
+  return {
+    balance: parseUintStringExtra(extra, "balance"),
+    totalClaimed: parseUintStringExtra(extra, "totalClaimed"),
+    withdrawRequestedAt: parseUintNumberExtra(extra, "withdrawRequestedAt"),
+    refundNonce: parseUintNumberExtra(extra, "refundNonce"),
+  };
+}
+
+/**
+ * Parses a non-negative integer as a decimal string from refund snapshot `extra`.
+ *
+ * @param extra - Settlement response extra fields from the facilitator.
+ * @param key - Field name: `balance` or `totalClaimed`.
+ * @returns Decimal string representation of the uint (digits only).
+ */
+function parseUintStringExtra(
+  extra: Record<string, unknown> | undefined,
+  key: "balance" | "totalClaimed",
+): string {
+  const value = extra?.[key];
+  if (typeof value === "string" && /^\d+$/.test(value)) return value;
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return String(value);
+  throw new Error(`batch_settlement_refund_invalid_${key}`);
+}
+
+/**
+ * Parses a non-negative integer from refund snapshot `extra`.
+ *
+ * @param extra - Settlement response extra fields from the facilitator.
+ * @param key - Field name: `withdrawRequestedAt` or `refundNonce`.
+ * @returns Parsed non-negative integer.
+ */
+function parseUintNumberExtra(
+  extra: Record<string, unknown> | undefined,
+  key: "withdrawRequestedAt" | "refundNonce",
+): number {
+  const value = extra?.[key];
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    const parsed = parseInt(value, 10);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  throw new Error(`batch_settlement_refund_invalid_${key}`);
+}

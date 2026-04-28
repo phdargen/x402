@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeChannelId } from "../../../src/batch-settlement/utils";
+import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import {
   channelIdsEqual,
   validateChannelConfig,
@@ -42,6 +42,13 @@ const BASE_REQUIREMENTS: PaymentRequirements = {
   },
 };
 
+function computeChannelId(
+  config: ChannelConfig,
+  network = BASE_REQUIREMENTS.network,
+): `0x${string}` {
+  return computeChannelIdForNetwork(config, network);
+}
+
 describe("computeChannelId", () => {
   it("is deterministic for identical configs", () => {
     expect(computeChannelId(BASE_CONFIG)).toBe(computeChannelId({ ...BASE_CONFIG }));
@@ -50,6 +57,18 @@ describe("computeChannelId", () => {
   it("returns a 32-byte hex string (0x + 64 chars)", () => {
     const id = computeChannelId(BASE_CONFIG);
     expect(id).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("changes when the chain changes", () => {
+    expect(computeChannelId(BASE_CONFIG, "eip155:84532")).not.toBe(
+      computeChannelId(BASE_CONFIG, "eip155:8453"),
+    );
+  });
+
+  it("matches the current Base Sepolia deployment digest", () => {
+    expect(computeChannelId(BASE_CONFIG)).toBe(
+      "0x2dee22ab0509e5405a971d73c29962b6315fca474b65a8275281a5c7972b039b",
+    );
   });
 
   it.each([

@@ -142,7 +142,7 @@ export function validateChannelConfig(
   channelId: `0x${string}`,
   requirements: PaymentRequirements,
 ): string | undefined {
-  const computedId = computeChannelId(config);
+  const computedId = computeChannelId(config, requirements.network);
   if (computedId.toLowerCase() !== channelId.toLowerCase()) {
     return Errors.ErrChannelIdMismatch;
   }

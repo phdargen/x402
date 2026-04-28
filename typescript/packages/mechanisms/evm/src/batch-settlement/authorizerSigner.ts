@@ -19,7 +19,7 @@ export async function signClaimBatch(
   const chainId = getEvmChainId(network);
 
   const claimEntries = claims.map(c => ({
-    channelId: computeChannelId(c.voucher.channel),
+    channelId: computeChannelId(c.voucher.channel, chainId),
     maxClaimableAmount: BigInt(c.voucher.maxClaimableAmount),
     totalClaimed: BigInt(c.totalClaimed),
   }));

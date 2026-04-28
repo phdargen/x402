@@ -194,7 +194,7 @@ async function buildRefundPaymentPayload(
   refundAmount: string | undefined,
 ): Promise<PaymentPayload> {
   const config = buildChannelConfig(ctx, requirements);
-  const channelId = computeChannelId(config);
+  const channelId = computeChannelId(config, requirements.network);
   const key = channelId.toLowerCase();
 
   let channel = await ctx.storage.get(key);
