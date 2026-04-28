@@ -8,6 +8,7 @@ import {
   SchemeServerHooks,
   MoneyParser,
 } from "@x402/core/types";
+import type { DeepReadonly } from "@x402/core/types";
 import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { convertToTokenAmount, numberToDecimalString } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
@@ -16,7 +17,11 @@ import { getDefaultAsset } from "../../shared/defaultAssets";
 import type { AuthorizerSigner } from "../types";
 import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
 import { InMemoryChannelStorage, ChannelStorage, type Channel } from "./storage";
-import { handleAfterVerify, handleBeforeVerify } from "./verify";
+import {
+  handleAfterVerify,
+  handleBeforeVerify,
+  handleEnrichPaymentRequiredResponse,
+} from "./verify";
 import {
   handleAfterSettle,
   handleBeforeSettle,
@@ -37,7 +42,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   readonly schemeHooks: SchemeServerHooks;
 
-  private readonly channelSnapshots = new WeakMap<PaymentPayload, Channel>();
+  private readonly channelSnapshots = new WeakMap<DeepReadonly<PaymentPayload>, Channel>();
   private moneyParsers: MoneyParser[] = [];
   private readonly storage: ChannelStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
@@ -73,6 +78,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     handleEnrichSettlementPayload(this, ctx);
 
   /**
+   * Adds corrective channel state to payment-required responses when available.
+   *
+   * @param ctx - Payment-required response context for the current request.
+   * @returns Updated payment requirements, or nothing when no enrichment is needed.
+   */
+  enrichPaymentRequiredResponse = (
+    ctx: Parameters<typeof handleEnrichPaymentRequiredResponse>[1],
+  ): Promise<PaymentRequirements[] | void> => handleEnrichPaymentRequiredResponse(this, ctx);
+
+  /**
    * Adds server-owned extra fields after facilitator settlement.
    *
    * @param ctx - Settlement result context for the current payment.
@@ -87,7 +102,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param payload - Request-scoped payment payload object.
    * @param channel - Channel state to use during response enrichment.
    */
-  rememberChannelSnapshot(payload: PaymentPayload, channel: Channel): void {
+  rememberChannelSnapshot(payload: DeepReadonly<PaymentPayload>, channel: Channel): void {
     this.channelSnapshots.set(payload, channel);
   }
 
@@ -97,7 +112,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param payload - Request-scoped payment payload object.
    * @returns Stored channel state, if one was recorded.
    */
-  takeChannelSnapshot(payload: PaymentPayload): Channel | undefined {
+  takeChannelSnapshot(payload: DeepReadonly<PaymentPayload>): Channel | undefined {
     const channel = this.channelSnapshots.get(payload);
     this.channelSnapshots.delete(payload);
     return channel;

@@ -91,6 +91,68 @@ export function assertAcceptsAllowlistedAfterExtensionEnrich(
 }
 
 /**
+ * Ensures scheme 402 enrichment only adds `extra` keys to matching accepts.
+ *
+ * @param baseline - Snapshot before the scheme enrich step
+ * @param current - Live `accepts` entries after scheme enrichment
+ * @param scheme - Scheme whose hook was invoked
+ * @param network - Network whose hook was invoked
+ */
+export function assertAcceptsAdditiveExtraAfterSchemeEnrich(
+  baseline: PaymentRequirements[],
+  current: PaymentRequirements[],
+  scheme: string,
+  network: string,
+): void {
+  if (baseline.length !== current.length) {
+    throw new Error(
+      `[x402] scheme "${scheme}" violated accepts mutation policy: accepts length changed (${baseline.length} → ${current.length})`,
+    );
+  }
+
+  for (let i = 0; i < baseline.length; i++) {
+    const b = baseline[i];
+    const c = current[i];
+    const isMatchingAccept = b.scheme === scheme && b.network === network;
+
+    if (b.scheme !== c.scheme || b.network !== c.network) {
+      throw new Error(
+        `[x402] scheme "${scheme}" violated accepts mutation policy: scheme/network are immutable (index ${i})`,
+      );
+    }
+    if (
+      b.maxTimeoutSeconds !== c.maxTimeoutSeconds ||
+      b.payTo !== c.payTo ||
+      b.amount !== c.amount ||
+      b.asset !== c.asset
+    ) {
+      throw new Error(
+        `[x402] scheme "${scheme}" violated accepts mutation policy: payment terms are immutable (index ${i})`,
+      );
+    }
+
+    for (const key of Object.keys(b.extra)) {
+      if (!Object.prototype.hasOwnProperty.call(c.extra, key)) {
+        throw new Error(
+          `[x402] scheme "${scheme}" violated accepts mutation policy: extra["${key}"] was removed (index ${i})`,
+        );
+      }
+      if (!deepEqual(c.extra[key], b.extra[key])) {
+        throw new Error(
+          `[x402] scheme "${scheme}" violated accepts mutation policy: extra["${key}"] may not be changed (index ${i})`,
+        );
+      }
+    }
+
+    if (!isMatchingAccept && Object.keys(c.extra).length !== Object.keys(b.extra).length) {
+      throw new Error(
+        `[x402] scheme "${scheme}" violated accepts mutation policy: only matching accepts may receive new extra fields (index ${i})`,
+      );
+    }
+  }
+}
+
+/**
  * Immutable subset of {@link SettleResponse} compared across settlement extension enrich.
  */
 export type SettleResponseCoreSnapshot = Pick<

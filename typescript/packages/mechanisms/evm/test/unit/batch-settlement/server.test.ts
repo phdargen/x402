@@ -153,6 +153,15 @@ function makeRequirements(overrides: Partial<PaymentRequirements> = {}): Payment
   };
 }
 
+class CountingChannelStorage extends InMemoryChannelStorage {
+  readonly getCalls: string[] = [];
+
+  override async get(channelId: string): Promise<Channel | undefined> {
+    this.getCalls.push(channelId);
+    return super.get(channelId);
+  }
+}
+
 describe("BatchSettlementEvmScheme — construction", () => {
   it("uses an in-memory channel storage by default", () => {
     const server = new BatchSettlementEvmScheme(RECEIVER);
@@ -424,10 +433,10 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as { abort: true; reason: string };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_stale_cumulative_amount");
+    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
   });
 
-  it("aborts with stale_cumulative_amount when client cumulative is wrong", async () => {
+  it("aborts with cumulative_amount_mismatch when client cumulative is wrong", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storage.set(channelId, {
@@ -451,19 +460,121 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as {
       abort: true;
       reason: string;
-      errorDetails?: { recoverable?: boolean; data?: Record<string, unknown> };
     };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_stale_cumulative_amount");
-    expect(result.errorDetails?.recoverable).toBe(true);
-    expect(result.errorDetails?.data).toMatchObject({
+    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(reqs.extra?.chargedCumulativeAmount).toBeUndefined();
+  });
+
+  it("adds channel state to corrective payment-required accepts via fallback storage read", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const requirements = [makeRequirements({ amount: "1000" })];
+    await server.enrichPaymentRequiredResponse({
+      requirements,
+      paymentPayload: buildVoucherPayload(channelId, "500", config),
+      resourceInfo: { url: "https://example.com" },
+      error: "batch_settlement_cumulative_amount_mismatch",
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: requirements,
+      },
+    });
+
+    expect(requirements[0].extra.ChannelState).toMatchObject({
       channelId,
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
     });
-    expect(reqs.extra?.chargedCumulativeAmount).toBeUndefined();
+  });
+
+  it("reuses the mismatch channel snapshot for corrective payment-required accepts", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const countingStorage = new CountingChannelStorage();
+    const snapshotServer = new BatchSettlementEvmScheme(RECEIVER, { storage: countingStorage });
+    const channel: Channel = {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    };
+    await countingStorage.set(channelId, channel);
+
+    const paymentPayload = buildVoucherPayload(channelId, "500", config);
+    const result = (await snapshotServer.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as {
+      abort: true;
+      reason: string;
+    };
+
+    expect(result?.abort).toBe(true);
+    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(countingStorage.getCalls).toHaveLength(1);
+
+    await countingStorage.delete(channelId);
+    const requirements = [makeRequirements({ amount: "1000" })];
+    await snapshotServer.enrichPaymentRequiredResponse({
+      requirements,
+      paymentPayload,
+      resourceInfo: { url: "https://example.com" },
+      error: "batch_settlement_cumulative_amount_mismatch",
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: requirements,
+      },
+    });
+
+    expect(requirements[0].extra.ChannelState).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+    });
+    expect(countingStorage.getCalls).toHaveLength(1);
+
+    const laterRequirements = [makeRequirements({ amount: "1000" })];
+    await snapshotServer.enrichPaymentRequiredResponse({
+      requirements: laterRequirements,
+      paymentPayload,
+      resourceInfo: { url: "https://example.com" },
+      error: "batch_settlement_cumulative_amount_mismatch",
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: laterRequirements,
+      },
+    });
+
+    expect(laterRequirements[0].extra.ChannelState).toBeUndefined();
+    expect(countingStorage.getCalls).toHaveLength(2);
   });
 });
 

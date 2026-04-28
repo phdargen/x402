@@ -567,7 +567,7 @@ describe("recoverChannel / hasChannel / getChannel", () => {
 
 describe("processCorrectivePaymentRequired", () => {
   function makeAccept(extra: Record<string, unknown>): PaymentRequirements {
-    return makeRequirements({ extra: { ...makeRequirements().extra, ...extra } });
+    return makeRequirements({ extra: { ...makeRequirements().extra, ChannelState: extra } });
   }
 
   it("returns false for unrelated error codes", async () => {
@@ -588,7 +588,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [{ ...makeRequirements(), scheme: "exact" }],
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
@@ -601,7 +601,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [makeRequirements()],
     } as unknown as PaymentRequired);
 
@@ -632,9 +632,8 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [accept],
-      errorDetails: { recoverable: true, data },
     } as unknown as PaymentRequired);
 
     expect(ok).toBe(true);
@@ -665,9 +664,8 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [accept],
-      errorDetails: { recoverable: true, data },
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
@@ -686,9 +684,8 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [accept],
-      errorDetails: { recoverable: true, data },
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
@@ -712,9 +709,8 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_stale_cumulative_amount",
+      error: "batch_settlement_cumulative_amount_mismatch",
       accepts: [accept],
-      errorDetails: { recoverable: true, data },
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
   });
@@ -729,7 +725,7 @@ describe("processCorrectivePaymentRequired", () => {
       requirements: makeRequirements(),
       paymentRequired: {
         x402Version: 2,
-        error: "batch_settlement_stale_cumulative_amount",
+        error: "batch_settlement_cumulative_amount_mismatch",
         accepts: [makeRequirements()],
       } as unknown as PaymentRequired,
     } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);

@@ -9,15 +9,15 @@ import {
   PaymentPayload,
   PaymentRequirements,
   PaymentRequired,
-  PaymentRequiredErrorDetails,
   ResourceInfo,
 } from "../types/payments";
-import { SchemeNetworkServer } from "../types/mechanisms";
+import { SchemeNetworkServer, SchemePaymentRequiredContext } from "../types/mechanisms";
 import { Price, Network, ResourceServerExtension, ResourceServerExtensionHooks } from "../types";
 import type { DeepReadonly } from "../types/readonly";
 import { deepEqual, findByNetworkAndScheme } from "../utils";
 import {
   assertAcceptsAllowlistedAfterExtensionEnrich,
+  assertAcceptsAdditiveExtraAfterSchemeEnrich,
   assertAdditivePayloadEnrichment,
   assertAdditiveSettlementExtra,
   assertSettleResponseCoreUnchanged,
@@ -86,7 +86,6 @@ export interface SkipHandlerDirective {
 }
 
 export type ResourceVerifyRespone = VerifyResponse & {
-  errorDetails?: PaymentRequiredErrorDetails;
   skipHandler?: SkipHandlerDirective;
 };
 
@@ -113,7 +112,6 @@ export type BeforeVerifyHook = (context: VerifyContext) => Promise<void | {
   abort: true;
   reason: string;
   message?: string;
-  errorDetails?: PaymentRequiredErrorDetails;
 }>;
 
 export type AfterVerifyHook = (
@@ -691,13 +689,9 @@ export class x402ResourceServer {
     };
 
     // Delegate to the implementation for scheme-specific enhancements
-    // Note: enhancePaymentRequirements expects x402Version in the kind, so we add it back
     const requirement = await SchemeNetworkServer.enhancePaymentRequirements(
       baseRequirements,
-      {
-        ...supportedKind,
-        x402Version,
-      },
+      supportedKind,
       facilitatorExtensions,
     );
 
@@ -758,7 +752,7 @@ export class x402ResourceServer {
    * @param error - Error message
    * @param extensions - Optional declared extensions (for per-key enrichment)
    * @param transportContext - Optional transport-specific context (e.g., HTTP request, MCP tool context)
-   * @param errorDetails - Optional machine-readable failure metadata
+   * @param paymentPayload - Optional failed payment payload for response-time scheme enrichment
    * @returns Payment required response object
    */
   async createPaymentRequiredResponse(
@@ -767,26 +761,59 @@ export class x402ResourceServer {
     error?: string,
     extensions?: Record<string, unknown>,
     transportContext?: unknown,
-    errorDetails?: PaymentRequiredErrorDetails,
+    paymentPayload?: PaymentPayload,
   ): Promise<PaymentRequired> {
     const acceptsClone = requirements.map(req => ({
       ...req,
       extra: structuredClone(req.extra),
     }));
-    let baselineAccepts = snapshotPaymentRequirementsList(acceptsClone);
+    let workingAccepts = acceptsClone;
+    let baselineAccepts = snapshotPaymentRequirementsList(workingAccepts);
 
     // V2 response with resource at top level
     let response: PaymentRequired = {
       x402Version: 2,
       error,
-      ...(errorDetails ? { errorDetails } : {}),
       resource: resourceInfo,
-      accepts: acceptsClone,
+      accepts: workingAccepts,
     };
 
     // Add extensions if provided
     if (extensions && Object.keys(extensions).length > 0) {
       response.extensions = extensions;
+    }
+
+    for (let i = 0; i < workingAccepts.length; i++) {
+      const accept = workingAccepts[i];
+      const scheme = findByNetworkAndScheme(
+        this.registeredServerSchemes,
+        accept.scheme,
+        accept.network as Network,
+      );
+      if (!scheme?.enrichPaymentRequiredResponse) {
+        continue;
+      }
+
+      const context: SchemePaymentRequiredContext = {
+        requirements: workingAccepts,
+        paymentPayload,
+        resourceInfo,
+        error,
+        paymentRequiredResponse: response,
+        transportContext,
+      };
+      const enrichedAccepts = await scheme.enrichPaymentRequiredResponse(context);
+      if (enrichedAccepts !== undefined) {
+        workingAccepts = enrichedAccepts;
+        response.accepts = workingAccepts;
+      }
+      assertAcceptsAdditiveExtraAfterSchemeEnrich(
+        baselineAccepts,
+        response.accepts,
+        accept.scheme,
+        accept.network,
+      );
+      baselineAccepts = snapshotPaymentRequirementsList(response.accepts);
     }
 
     // Let declared extensions add data to PaymentRequired response
@@ -796,7 +823,7 @@ export class x402ResourceServer {
         if (extension?.enrichPaymentRequiredResponse) {
           try {
             const context: PaymentRequiredContext = {
-              requirements: acceptsClone,
+              requirements: workingAccepts,
               resourceInfo,
               error,
               paymentRequiredResponse: response,
@@ -815,8 +842,8 @@ export class x402ResourceServer {
           } catch (error) {
             this.warnExtensionHookFailure(key, "enrichPaymentRequiredResponse", error);
           }
-          assertAcceptsAllowlistedAfterExtensionEnrich(baselineAccepts, acceptsClone, key);
-          baselineAccepts = snapshotPaymentRequirementsList(acceptsClone);
+          assertAcceptsAllowlistedAfterExtensionEnrich(baselineAccepts, workingAccepts, key);
+          baselineAccepts = snapshotPaymentRequirementsList(workingAccepts);
         }
       }
     }
@@ -866,7 +893,6 @@ export class x402ResourceServer {
             isValid: false,
             invalidReason: result.reason,
             invalidMessage: result.message,
-            errorDetails: result.errorDetails,
           };
         }
       } catch (error) {

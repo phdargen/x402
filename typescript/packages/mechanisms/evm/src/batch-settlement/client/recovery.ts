@@ -9,6 +9,7 @@ import {
   buildChannelConfig,
   readChannelBalanceAndTotalClaimed,
 } from "./channel";
+import type { BatchSettlementRequirementsChannelState } from "../types";
 
 /**
  * Handles a corrective 402 response from the server when the client's
@@ -27,7 +28,7 @@ export async function processCorrectivePaymentRequired(
   paymentRequired: PaymentRequired,
 ): Promise<boolean> {
   if (
-    paymentRequired.error !== "batch_settlement_stale_cumulative_amount" &&
+    paymentRequired.error !== "batch_settlement_cumulative_amount_mismatch" &&
     paymentRequired.error !== "batch_settlement_evm_cumulative_below_claimed"
   ) {
     return false;
@@ -38,17 +39,19 @@ export async function processCorrectivePaymentRequired(
     return false;
   }
 
-  const details = paymentRequired.errorDetails?.data ?? {};
+  const channelState = accept.extra.ChannelState as
+    | BatchSettlementRequirementsChannelState
+    | undefined;
   const hasSig =
-    details.chargedCumulativeAmount !== undefined &&
-    details.signedMaxClaimable !== undefined &&
-    details.signature !== undefined;
+    channelState?.chargedCumulativeAmount !== undefined &&
+    channelState.signedMaxClaimable !== undefined &&
+    channelState.signature !== undefined;
 
   if (!hasSig) {
     return recoverFromOnChainState(deps, accept);
   }
 
-  return recoverFromSignature(deps, accept, details);
+  return recoverFromSignature(deps, accept, channelState);
 }
 
 /**
@@ -58,17 +61,17 @@ export async function processCorrectivePaymentRequired(
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
- * @param details - Structured recovery fields from `PaymentRequired.errorDetails.data`.
+ * @param channelState - Structured recovery fields from `accept.extra.ChannelState`.
  * @returns `true` when local channel state was updated successfully.
  */
 export async function recoverFromSignature(
   deps: BatchSettlementClientDeps,
   accept: PaymentRequirements,
-  details: Record<string, unknown>,
+  channelState: BatchSettlementRequirementsChannelState,
 ): Promise<boolean> {
-  const chargedRaw = details.chargedCumulativeAmount;
-  const signedRaw = details.signedMaxClaimable;
-  const sig = details.signature as `0x${string}`;
+  const chargedRaw = channelState.chargedCumulativeAmount;
+  const signedRaw = channelState.signedMaxClaimable;
+  const sig = channelState.signature as `0x${string}`;
 
   const charged = BigInt(String(chargedRaw));
   const signed = BigInt(String(signedRaw));

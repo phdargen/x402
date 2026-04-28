@@ -4,6 +4,7 @@ export type {
   SettleRequest,
   SettleResponse,
   SupportedResponse,
+  SupportedKind,
 } from "./facilitator";
 export {
   VerifyError,
@@ -15,7 +16,6 @@ export type {
   PaymentRequirements,
   PaymentPayload,
   PaymentRequired,
-  PaymentRequiredErrorDetails,
   ResourceInfo,
 } from "./payments";
 export type {
@@ -28,6 +28,8 @@ export type {
   PaymentPayloadResult,
   PaymentPayloadContext,
   FacilitatorContext,
+  SchemePaymentRequiredContext,
+  SchemeEnrichPaymentRequiredResponseHook,
 } from "./mechanisms";
 export type { PaymentRequirementsV1, PaymentRequiredV1, PaymentPayloadV1 } from "./v1";
 export type {

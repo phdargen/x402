@@ -1,10 +1,11 @@
 import type { VerifyContext, VerifyResultContext } from "@x402/core/server";
-import type { PaymentRequiredErrorDetails } from "@x402/core/types";
+import type { SchemePaymentRequiredContext } from "@x402/core/types";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import type { ChannelConfig } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
@@ -14,8 +15,7 @@ import { readExtraNumber, readExtraString } from "./utils";
  * Lifecycle hook: runs before the facilitator verifies a payment.
  *
  * For voucher payloads, checks whether the client's cumulative amount matches server
- * state. If stale, aborts with `batch_settlement_stale_cumulative_amount` and includes
- * recovery metadata in the 402 response.
+ * state. If mismatched, aborts with `batch_settlement_cumulative_amount_mismatch`.
  *
  * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
  * the existing `chargedCumulativeAmount`.
@@ -34,7 +34,6 @@ export async function handleBeforeVerify(
   abort: true;
   reason: string;
   message?: string;
-  errorDetails?: PaymentRequiredErrorDetails;
 }> {
   const { paymentPayload, requirements } = ctx;
 
@@ -57,18 +56,61 @@ export async function handleBeforeVerify(
     return;
   }
 
+  scheme.rememberChannelSnapshot(paymentPayload, channel);
+
   return {
     abort: true,
-    reason: "batch_settlement_stale_cumulative_amount",
+    reason: "batch_settlement_cumulative_amount_mismatch",
     message: "Client voucher base does not match server state",
-    errorDetails: {
-      recoverable: true,
-      data: {
-        channelId: channel.channelId,
-        chargedCumulativeAmount: channel.chargedCumulativeAmount,
-        signedMaxClaimable: channel.signedMaxClaimable,
-        signature: channel.signature,
-      },
+  };
+}
+
+/**
+ * Adds server channel state to corrective 402 responses for cumulative mismatches.
+ *
+ * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
+ * @param ctx - Payment-required response context.
+ */
+export async function handleEnrichPaymentRequiredResponse(
+  scheme: BatchSettlementEvmScheme,
+  ctx: SchemePaymentRequiredContext,
+): Promise<void> {
+  if (ctx.error !== "batch_settlement_cumulative_amount_mismatch") {
+    return;
+  }
+
+  const { paymentPayload } = ctx;
+  if (!paymentPayload) {
+    return;
+  }
+
+  const raw = paymentPayload.payload;
+  if (!isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundPayload(raw)) {
+    return;
+  }
+
+  const channel =
+    scheme.takeChannelSnapshot(paymentPayload) ??
+    (await scheme.getStorage().get(raw.voucher.channelId));
+  if (!channel) {
+    return;
+  }
+
+  const accept = ctx.requirements.find(
+    req =>
+      req.scheme === BATCH_SETTLEMENT_SCHEME && req.network === paymentPayload.accepted.network,
+  );
+  if (!accept) {
+    return;
+  }
+
+  accept.extra = {
+    ...accept.extra,
+    ChannelState: {
+      channelId: channel.channelId,
+      chargedCumulativeAmount: channel.chargedCumulativeAmount,
+      signedMaxClaimable: channel.signedMaxClaimable,
+      signature: channel.signature,
     },
   };
 }

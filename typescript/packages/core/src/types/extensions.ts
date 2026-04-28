@@ -1,5 +1,4 @@
 import type { VerifyResponse, SettleResponse } from "./facilitator";
-import type { PaymentRequiredErrorDetails } from "./payments";
 import type {
   PaymentRequiredContext,
   SettleResultContext,
@@ -32,12 +31,7 @@ export interface ResourceServerExtensionHooks {
   onBeforeVerify?: (
     declaration: unknown,
     context: VerifyContext,
-  ) => Promise<void | {
-    abort: true;
-    reason: string;
-    message?: string;
-    errorDetails?: PaymentRequiredErrorDetails;
-  }>;
+  ) => Promise<void | { abort: true; reason: string; message?: string }>;
   onAfterVerify?: (declaration: unknown, context: VerifyResultContext) => Promise<void>;
   onVerifyFailure?: (
     declaration: unknown,

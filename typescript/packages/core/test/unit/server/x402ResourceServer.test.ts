@@ -394,6 +394,11 @@ describe("x402ResourceServer", () => {
       });
 
       expect(mockScheme.enhanceCalls.length).toBe(1);
+      expect(mockScheme.enhanceCalls[0].supportedKind).toEqual({
+        x402Version: 2,
+        scheme: "test-scheme",
+        network: "test:network",
+      });
     });
 
     it("should use default maxTimeoutSeconds of 300", async () => {
@@ -529,15 +534,11 @@ describe("x402ResourceServer", () => {
         expect(mockClient.verifyCalls.length).toBe(0); // Facilitator not called
       });
 
-      it("should include error details when a hook aborts verification", async () => {
+      it("should abort verification with the hook reason", async () => {
         server.onBeforeVerify(async () => {
           return {
             abort: true,
             reason: "stale_state",
-            errorDetails: {
-              recoverable: true,
-              data: { channelId: "0x123" },
-            },
           };
         });
 
@@ -549,10 +550,6 @@ describe("x402ResourceServer", () => {
         expect(result).toMatchObject({
           isValid: false,
           invalidReason: "stale_state",
-          errorDetails: {
-            recoverable: true,
-            data: { channelId: "0x123" },
-          },
         });
       });
 
@@ -1572,24 +1569,6 @@ describe("x402ResourceServer", () => {
       expect(result.error).toBe("Payment required");
     });
 
-    it("should include structured error details if provided", async () => {
-      const server = new x402ResourceServer();
-
-      const result = await server.createPaymentRequiredResponse(
-        [buildPaymentRequirements()],
-        { url: "https://example.com", description: "", mimeType: "" },
-        "stale_state",
-        undefined,
-        undefined,
-        { recoverable: true, data: { channelId: "0x123" } },
-      );
-
-      expect(result.errorDetails).toEqual({
-        recoverable: true,
-        data: { channelId: "0x123" },
-      });
-    });
-
     it("should include extensions if provided", async () => {
       const server = new x402ResourceServer();
 
@@ -1674,6 +1653,55 @@ describe("x402ResourceServer", () => {
 
       expect(result.accepts[0].extra.corrective).toBe("x");
       expect(requirements[0].extra.corrective).toBeUndefined();
+    });
+
+    it("lets a scheme enrich matching accepts with additive extra fields", async () => {
+      const server = new x402ResourceServer();
+      const scheme = new MockSchemeNetworkServer("test-scheme") as MockSchemeNetworkServer & {
+        enrichPaymentRequiredResponse: NonNullable<
+          import("../../../src/types").SchemeNetworkServer["enrichPaymentRequiredResponse"]
+        >;
+      };
+      const paymentPayload = buildPaymentPayload();
+      const enrich = vi.fn(async ctx => {
+        expect(ctx.paymentPayload).toBe(paymentPayload);
+        ctx.requirements[0].extra.ChannelState = { channelId: "0x123" };
+      });
+      scheme.enrichPaymentRequiredResponse = enrich;
+      server.register("test:network" as Network, scheme);
+
+      const result = await server.createPaymentRequiredResponse(
+        [buildPaymentRequirements()],
+        { url: "https://example.com", description: "", mimeType: "" },
+        "stale_state",
+        undefined,
+        undefined,
+        paymentPayload,
+      );
+
+      expect(enrich).toHaveBeenCalledTimes(1);
+      expect(result.accepts[0].extra.ChannelState).toEqual({ channelId: "0x123" });
+    });
+
+    it("rejects scheme response enrichment that overwrites baseline terms", async () => {
+      const server = new x402ResourceServer();
+      const scheme = new MockSchemeNetworkServer("test-scheme") as MockSchemeNetworkServer & {
+        enrichPaymentRequiredResponse: NonNullable<
+          import("../../../src/types").SchemeNetworkServer["enrichPaymentRequiredResponse"]
+        >;
+      };
+      scheme.enrichPaymentRequiredResponse = async ctx => {
+        ctx.requirements[0].extra = { ChannelState: { channelId: "0x123" } };
+      };
+      server.register("test:network" as Network, scheme);
+
+      await expect(
+        server.createPaymentRequiredResponse(
+          [buildPaymentRequirements({ extra: { name: "USDC" } })],
+          { url: "https://example.com", description: "", mimeType: "" },
+          "stale_state",
+        ),
+      ).rejects.toThrow(/extra\["name"\] was removed/);
     });
 
     it("rejects enrichPaymentRequiredResponse that overwrites a non-vacant payTo", async () => {

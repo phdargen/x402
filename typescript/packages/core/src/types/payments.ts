@@ -16,18 +16,12 @@ export type PaymentRequirements = {
   extra: Record<string, unknown>;
 };
 
-export type PaymentRequiredErrorDetails = {
-  recoverable?: boolean;
-  data?: Record<string, unknown>;
-};
-
 export type PaymentRequired = {
   x402Version: number;
   error?: string;
   resource: ResourceInfo;
   accepts: PaymentRequirements[];
   extensions?: Record<string, unknown>;
-  errorDetails?: PaymentRequiredErrorDetails;
 };
 
 export type PaymentPayload = {

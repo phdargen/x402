@@ -1,8 +1,8 @@
-import { SettleResponse, VerifyResponse } from "./facilitator";
-import { PaymentRequirements } from "./payments";
-import { PaymentPayload } from "./payments";
+import { SettleResponse, SupportedKind, VerifyResponse } from "./facilitator";
+import { PaymentPayload, PaymentRequired, PaymentRequirements, ResourceInfo } from "./payments";
 import { Price, Network, AssetAmount } from ".";
 import { FacilitatorExtension } from "./extensions";
+import type { DeepReadonly } from "./readonly";
 import type {
   BeforeVerifyHook,
   AfterVerifyHook,
@@ -169,9 +169,23 @@ export type SchemeEnrichSettlementResponseHook = (
   ctx: SettleResultContext,
 ) => Promise<Record<string, unknown> | void>;
 
+export interface SchemePaymentRequiredContext {
+  requirements: PaymentRequirements[];
+  paymentPayload?: DeepReadonly<PaymentPayload>;
+  resourceInfo: ResourceInfo;
+  error?: string;
+  paymentRequiredResponse: PaymentRequired;
+  transportContext?: unknown;
+}
+
+export type SchemeEnrichPaymentRequiredResponseHook = (
+  ctx: SchemePaymentRequiredContext,
+) => Promise<PaymentRequirements[] | void>;
+
 export interface SchemeNetworkServer {
   readonly scheme: string;
   readonly schemeHooks?: SchemeServerHooks;
+  enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
   enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;
 
@@ -217,12 +231,7 @@ export interface SchemeNetworkServer {
    */
   enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
-    supportedKind: {
-      x402Version: number;
-      scheme: string;
-      network: Network;
-      extra?: Record<string, unknown>;
-    },
+    supportedKind: SupportedKind,
     facilitatorExtensions: string[],
   ): Promise<PaymentRequirements>;
 }

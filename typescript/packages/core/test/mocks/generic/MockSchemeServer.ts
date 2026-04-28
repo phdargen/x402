@@ -1,6 +1,7 @@
 import { SchemeNetworkServer, SchemeServerHooks } from "../../../src/types/mechanisms";
 import { AssetAmount, Network, Price } from "../../../src/types";
 import { PaymentRequirements } from "../../../src/types/payments";
+import type { SupportedKind } from "../../../src/types/facilitator";
 
 /**
  * Mock scheme network server for testing.
@@ -14,7 +15,8 @@ export class MockSchemeNetworkServer implements SchemeNetworkServer {
 
   // Call tracking
   public parsePriceCalls: Array<{ price: Price; network: Network }> = [];
-  public enhanceCalls: Array<{ requirements: PaymentRequirements }> = [];
+  public enhanceCalls: Array<{ requirements: PaymentRequirements; supportedKind: SupportedKind }> =
+    [];
 
   /**
    *
@@ -57,15 +59,10 @@ export class MockSchemeNetworkServer implements SchemeNetworkServer {
    */
   async enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
-    _supportedKind: {
-      x402Version: number;
-      scheme: string;
-      network: Network;
-      extra?: Record<string, unknown>;
-    },
+    _supportedKind: SupportedKind,
     _facilitatorExtensions: string[],
   ): Promise<PaymentRequirements> {
-    this.enhanceCalls.push({ requirements: paymentRequirements });
+    this.enhanceCalls.push({ requirements: paymentRequirements, supportedKind: _supportedKind });
 
     if (this.enhanceResult instanceof Error) {
       throw this.enhanceResult;

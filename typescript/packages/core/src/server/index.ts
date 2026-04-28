@@ -19,14 +19,16 @@ export type {
   OnSettleFailureHook,
 } from "./x402ResourceServer";
 export type {
+  SchemeEnrichPaymentRequiredResponseHook,
+  SchemePaymentRequiredContext,
   SchemeEnrichSettlementPayloadHook,
   SchemeEnrichSettlementResponseHook,
 } from "../types/mechanisms";
-export type { PaymentRequiredErrorDetails } from "../types/payments";
 
 export {
   assertAdditivePayloadEnrichment,
   assertAdditiveSettlementExtra,
+  assertAcceptsAdditiveExtraAfterSchemeEnrich,
   assertAcceptsAllowlistedAfterExtensionEnrich,
   assertSettleResponseCoreUnchanged,
   isVacantStringField,

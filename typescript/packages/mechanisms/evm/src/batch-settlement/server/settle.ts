@@ -139,7 +139,7 @@ export async function handleEnrichSettlementPayload(
     throw new Error("missing_batch_settlement_channel");
   }
   if (BigInt(raw.voucher.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
-    throw new Error("batch_settlement_stale_cumulative_amount");
+    throw new Error("batch_settlement_cumulative_amount_mismatch");
   }
   if (raw.voucher.signature !== channel.signature) {
     throw new Error("batch_settlement_refund_signature_mismatch");

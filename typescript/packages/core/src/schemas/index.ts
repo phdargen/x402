@@ -143,12 +143,6 @@ export const PaymentRequiredV2Schema = z.object({
   resource: ResourceInfoSchema,
   accepts: z.array(PaymentRequirementsV2Schema).min(1),
   extensions: OptionalAny,
-  errorDetails: z
-    .object({
-      recoverable: z.boolean().optional(),
-      data: OptionalAny,
-    })
-    .optional(),
 });
 export type PaymentRequiredV2 = z.infer<typeof PaymentRequiredV2Schema>;
 

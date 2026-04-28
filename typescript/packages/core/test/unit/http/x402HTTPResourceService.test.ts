@@ -197,7 +197,7 @@ describe("x402HTTPResourceServer", () => {
       const result = await httpServer.processHTTPRequest(context);
 
       expect(contextReceived).toBeDefined();
-      expect(contextReceived?.path).toBe("/api/dynamic");
+      expect((contextReceived as HTTPRequestContext | null)?.path).toBe("/api/dynamic");
       expect(result.type).toBe("payment-error"); // No payment provided
     });
 
@@ -289,7 +289,7 @@ describe("x402HTTPResourceServer", () => {
       await httpServer.processHTTPRequest(context);
 
       expect(contextReceived).toBeDefined();
-      expect(contextReceived?.path).toBe("/api/dynamic");
+      expect((contextReceived as HTTPRequestContext | null)?.path).toBe("/api/dynamic");
     });
 
     it("should use static payTo if not a function", async () => {
@@ -726,15 +726,23 @@ describe("x402HTTPResourceServer", () => {
       }
     });
 
-    it("threads verify errorDetails into the PAYMENT-REQUIRED response", async () => {
-      ResourceServer.onBeforeVerify(async () => ({
-        abort: true,
-        reason: "stale_state",
-        errorDetails: {
-          recoverable: true,
-          data: { channelId: "0x123" },
-        },
-      }));
+    it("threads the failed payment payload into 402 response enrichment", async () => {
+      mockFacilitator.setVerifyResponse(
+        buildVerifyResponse({ isValid: false, invalidReason: "stale_state" }),
+      );
+      const scheme = mockScheme as MockSchemeNetworkServer & {
+        enrichPaymentRequiredResponse: NonNullable<
+          import("../../../src/types").SchemeNetworkServer["enrichPaymentRequiredResponse"]
+        >;
+      };
+      let sawFailedPayload = false;
+      scheme.enrichPaymentRequiredResponse = async ctx => {
+        if (ctx.error !== "stale_state") {
+          return;
+        }
+        sawFailedPayload = ctx.paymentPayload?.payload.signature === "test_signature";
+        ctx.requirements[0].extra.ChannelState = { channelId: "0x123" };
+      };
 
       const routes = {
         "/api/test": {
@@ -775,10 +783,8 @@ describe("x402HTTPResourceServer", () => {
         const paymentRequired = decodePaymentRequiredHeader(
           result.response.headers["PAYMENT-REQUIRED"],
         );
-        expect(paymentRequired.errorDetails).toEqual({
-          recoverable: true,
-          data: { channelId: "0x123" },
-        });
+        expect(sawFailedPayload).toBe(true);
+        expect(paymentRequired.accepts[0].extra.ChannelState).toEqual({ channelId: "0x123" });
       }
     });
 
