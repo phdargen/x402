@@ -944,6 +944,50 @@ describe("x402ResourceServer", () => {
         expect(result.transaction).toBe("0xRecoveredTx");
       });
     });
+
+    describe("onVerifiedPaymentCanceled", () => {
+      it("executes manual, scheme, and extension hooks once", async () => {
+        const server = new x402ResourceServer(mockClient);
+        const calls: string[] = [];
+
+        server.onVerifiedPaymentCanceled(async context => {
+          calls.push(`manual:${context.reason}:${context.responseStatus}`);
+        });
+        server.register(
+          "eip155:*" as Network,
+          new MockSchemeNetworkServer("exact", undefined, {
+            onVerifiedPaymentCanceled: async context => {
+              calls.push(`scheme:${context.reason}`);
+            },
+          }),
+        );
+        server.registerExtension({
+          key: "ext",
+          hooks: {
+            onVerifiedPaymentCanceled: async (_declaration, context) => {
+              calls.push(`extension:${context.reason}`);
+            },
+          },
+        });
+
+        const transportContext = { requestId: "req-1" };
+        const cancellation = server.createPaymentCancellationDispatcher(
+          buildPaymentPayload(),
+          buildPaymentRequirements({ scheme: "exact", network: "eip155:8453" as Network }),
+          { ext: {} },
+          transportContext,
+        );
+
+        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+
+        expect(calls).toEqual([
+          "manual:handler_failed:500",
+          "scheme:handler_failed",
+          "extension:handler_failed",
+        ]);
+      });
+    });
   });
 
   describe("verifyPayment", () => {

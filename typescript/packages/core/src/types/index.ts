@@ -43,6 +43,7 @@ export type {
   VerifyFailureContext,
   SettleContext,
   SettleFailureContext,
+  VerifiedPaymentCanceledContext,
 } from "./extensions";
 
 export type { DeepReadonly } from "./readonly";

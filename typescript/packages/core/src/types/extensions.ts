@@ -7,6 +7,7 @@ import type {
   VerifyFailureContext,
   SettleContext,
   SettleFailureContext,
+  VerifiedPaymentCanceledContext,
 } from "../server/x402ResourceServer";
 
 export type {
@@ -17,6 +18,7 @@ export type {
   VerifyFailureContext,
   SettleContext,
   SettleFailureContext,
+  VerifiedPaymentCanceledContext,
 };
 
 export interface FacilitatorExtension {
@@ -46,6 +48,10 @@ export interface ResourceServerExtensionHooks {
     declaration: unknown,
     context: SettleFailureContext,
   ) => Promise<void | { recovered: true; result: SettleResponse }>;
+  onVerifiedPaymentCanceled?: (
+    declaration: unknown,
+    context: VerifiedPaymentCanceledContext,
+  ) => Promise<void>;
 }
 
 export interface ResourceServerExtension {

@@ -8,6 +8,10 @@ export type {
   SettleContext,
   SettleResultContext,
   SettleFailureContext,
+  VerifiedPaymentCanceledContext,
+  VerifiedPaymentCancellationReason,
+  VerifiedPaymentCancelOptions,
+  PaymentCancellationDispatcher,
   SettlementOverrides,
   SkipHandlerDirective,
   ResourceVerifyRespone,
@@ -17,6 +21,7 @@ export type {
   BeforeSettleHook,
   AfterSettleHook,
   OnSettleFailureHook,
+  OnVerifiedPaymentCanceledHook,
 } from "./x402ResourceServer";
 export type {
   SchemeEnrichPaymentRequiredResponseHook,

@@ -1,4 +1,9 @@
-import { x402ResourceServer, SettlementOverrides, SkipHandlerDirective } from "../server";
+import {
+  x402ResourceServer,
+  SettlementOverrides,
+  SkipHandlerDirective,
+  PaymentCancellationDispatcher,
+} from "../server";
 import {
   decodePaymentSignatureHeader,
   encodePaymentRequiredHeader,
@@ -257,6 +262,7 @@ export type HTTPProcessResult =
   | { type: "no-payment-required" }
   | {
       type: "payment-verified";
+      cancellationDispatcher: PaymentCancellationDispatcher;
       paymentPayload: PaymentPayload;
       paymentRequirements: PaymentRequirements;
       declaredExtensions?: Record<string, unknown>;
@@ -570,15 +576,23 @@ export class x402HTTPResourceServer {
         return await this.processSkipHandlerSettlement(
           paymentPayload,
           matchingRequirements,
-          routeConfig.extensions,
+          extensions ?? {},
           transportContext,
           verifyResult.skipHandler,
         );
       }
 
+      const cancellationDispatcher = this.ResourceServer.createPaymentCancellationDispatcher(
+        paymentPayload,
+        matchingRequirements,
+        extensions ?? {},
+        transportContext,
+      );
+
       // Payment is valid, return data needed for settlement
       return {
         type: "payment-verified",
+        cancellationDispatcher,
         paymentPayload,
         paymentRequirements: matchingRequirements,
         declaredExtensions: extensions ?? {},

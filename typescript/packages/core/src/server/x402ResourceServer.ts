@@ -108,6 +108,24 @@ export interface SettleFailureContext extends SettleContext {
   error: Error;
 }
 
+export type VerifiedPaymentCancellationReason = "handler_threw" | "handler_failed";
+
+export interface VerifiedPaymentCanceledContext extends SettleContext {
+  reason: VerifiedPaymentCancellationReason;
+  error?: unknown;
+  responseStatus?: number;
+}
+
+export interface VerifiedPaymentCancelOptions {
+  reason: VerifiedPaymentCancellationReason;
+  error?: unknown;
+  responseStatus?: number;
+}
+
+export interface PaymentCancellationDispatcher {
+  cancel(options: VerifiedPaymentCancelOptions): Promise<void>;
+}
+
 export type BeforeVerifyHook = (context: VerifyContext) => Promise<void | {
   abort: true;
   reason: string;
@@ -133,6 +151,10 @@ export type AfterSettleHook = (context: SettleResultContext) => Promise<void>;
 export type OnSettleFailureHook = (
   context: SettleFailureContext,
 ) => Promise<void | { recovered: true; result: SettleResponse }>;
+
+export type OnVerifiedPaymentCanceledHook = (
+  context: VerifiedPaymentCanceledContext,
+) => Promise<void>;
 
 /**
  * Optional overrides for settlement parameters.
@@ -209,6 +231,7 @@ type HookAdapterHandles = {
   beforeSettle?: BeforeSettleHook;
   afterSettle?: AfterSettleHook;
   onSettleFailure?: OnSettleFailureHook;
+  onVerifiedPaymentCanceled?: OnVerifiedPaymentCanceledHook;
 };
 
 type ExtensionAdapterHandles = HookAdapterHandles;
@@ -240,6 +263,7 @@ export class x402ResourceServer {
   private beforeSettleHooks: BeforeSettleHook[] = [];
   private afterSettleHooks: AfterSettleHook[] = [];
   private onSettleFailureHooks: OnSettleFailureHook[] = [];
+  private onVerifiedPaymentCanceledHooks: OnVerifiedPaymentCanceledHook[] = [];
 
   /**
    * Creates a new x402ResourceServer instance.
@@ -294,6 +318,9 @@ export class x402ResourceServer {
     if (hooks.onBeforeSettle) handles.beforeSettle = hooks.onBeforeSettle;
     if (hooks.onAfterSettle) handles.afterSettle = hooks.onAfterSettle;
     if (hooks.onSettleFailure) handles.onSettleFailure = hooks.onSettleFailure;
+    if (hooks.onVerifiedPaymentCanceled) {
+      handles.onVerifiedPaymentCanceled = hooks.onVerifiedPaymentCanceled;
+    }
 
     if (Object.keys(handles).length > 0) {
       hooksByScheme.set(server.scheme, handles);
@@ -379,6 +406,7 @@ export class x402ResourceServer {
     bindExtensionHookAdapter("onBeforeSettle", "beforeSettle");
     bindExtensionHookAdapter("onAfterSettle", "afterSettle");
     bindExtensionHookAdapter("onSettleFailure", "onSettleFailure");
+    bindExtensionHookAdapter("onVerifiedPaymentCanceled", "onVerifiedPaymentCanceled");
     if (Object.keys(handles).length > 0) {
       this.extensionHookAdapters.set(extensionKey, handles);
     } else {
@@ -504,6 +532,17 @@ export class x402ResourceServer {
    */
   onSettleFailure(hook: OnSettleFailureHook): x402ResourceServer {
     this.onSettleFailureHooks.push(hook);
+    return this;
+  }
+
+  /**
+   * Register a hook to execute when verified payment work is canceled before settlement.
+   *
+   * @param hook - The hook function to register
+   * @returns The x402ResourceServer instance for chaining
+   */
+  onVerifiedPaymentCanceled(hook: OnVerifiedPaymentCanceledHook): x402ResourceServer {
+    this.onVerifiedPaymentCanceledHooks.push(hook);
     return this;
   }
 
@@ -990,6 +1029,40 @@ export class x402ResourceServer {
   }
 
   /**
+   * Create cancellation controls for a verified payment attempt.
+   *
+   * @param paymentPayload - Signed payment payload from the client
+   * @param requirements - Requirements matched to the payload
+   * @param declaredExtensions - Optional per-extension declarations for the request
+   * @param transportContext - Optional transport-specific context
+   * @returns Cancellation controls for the verified payment attempt
+   */
+  createPaymentCancellationDispatcher(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+    declaredExtensions?: Record<string, unknown>,
+    transportContext?: unknown,
+  ): PaymentCancellationDispatcher {
+    const resolvedDeclaredExtensions = declaredExtensions ?? {};
+    let cancelPromise: Promise<void> | undefined;
+
+    return {
+      cancel: (options: VerifiedPaymentCancelOptions) => {
+        if (!cancelPromise) {
+          cancelPromise = this.dispatchVerifiedPaymentCanceled(
+            paymentPayload,
+            requirements,
+            resolvedDeclaredExtensions,
+            options,
+            transportContext,
+          );
+        }
+        return cancelPromise;
+      },
+    };
+  }
+
+  /**
    * Settle a verified payment
    *
    * @param paymentPayload - The payment payload to settle
@@ -1297,6 +1370,50 @@ export class x402ResourceServer {
       settleResult.extra = { ...settleResult.extra, ...enrichment };
     } catch (error) {
       this.warnResourceServerHookFailure("enrichSettlementResponse", label, error);
+    }
+  }
+
+  /**
+   * Notify hooks that verified work ended before settlement.
+   *
+   * @param paymentPayload - Signed payment payload from the client
+   * @param requirements - Requirements matched to the payload
+   * @param declaredExtensions - Optional per-extension declarations for the request
+   * @param options - Cancellation reason and optional diagnostics
+   * @param fallbackTransportContext - Optional transport-specific context
+   */
+  private async dispatchVerifiedPaymentCanceled(
+    paymentPayload: PaymentPayload,
+    requirements: PaymentRequirements,
+    declaredExtensions: Record<string, unknown>,
+    options: VerifiedPaymentCancelOptions,
+    fallbackTransportContext?: unknown,
+  ): Promise<void> {
+    const extensionKeysInUse = Object.keys(declaredExtensions);
+    const matchedScheme = {
+      network: requirements.network as Network,
+      scheme: requirements.scheme,
+    };
+    const context: VerifiedPaymentCanceledContext = {
+      paymentPayload,
+      requirements,
+      declaredExtensions,
+      transportContext: fallbackTransportContext,
+      reason: options.reason,
+      error: options.error,
+      responseStatus: options.responseStatus,
+    };
+
+    for (const { label, hook } of this.getLabeledHooks(
+      "onVerifiedPaymentCanceled",
+      extensionKeysInUse,
+      matchedScheme,
+    )) {
+      try {
+        await hook(context);
+      } catch (error) {
+        this.warnResourceServerHookFailure("onVerifiedPaymentCanceled", label, error);
+      }
     }
   }
 

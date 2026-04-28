@@ -127,16 +127,15 @@ export function paymentProxyFromHTTPServer(
 
       case "payment-verified": {
         // Payment is valid, need to wrap response for settlement
-        const { paymentPayload, paymentRequirements, declaredExtensions } = result;
-
         // Proceed to the next proxy or route handler
         const nextResponse = NextResponse.next();
         return handleSettlement(
           httpServer,
           nextResponse,
-          paymentPayload,
-          paymentRequirements,
-          declaredExtensions,
+          result.paymentPayload,
+          result.paymentRequirements,
+          result.declaredExtensions,
+          result.cancellationDispatcher,
           context,
         );
       }
@@ -306,14 +305,23 @@ export function withX402FromHTTPServer<T = unknown>(
 
       case "payment-verified": {
         // Payment is valid, need to wrap response for settlement
-        const { paymentPayload, paymentRequirements, declaredExtensions } = result;
-        const handlerResponse = await routeHandler(request);
+        let handlerResponse: NextResponse<T>;
+        try {
+          handlerResponse = await routeHandler(request);
+        } catch (error) {
+          await result.cancellationDispatcher.cancel({
+            reason: "handler_threw",
+            error,
+          });
+          throw error;
+        }
         return handleSettlement(
           httpServer,
           handlerResponse,
-          paymentPayload,
-          paymentRequirements,
-          declaredExtensions,
+          result.paymentPayload,
+          result.paymentRequirements,
+          result.declaredExtensions,
+          result.cancellationDispatcher,
           context,
         ) as Promise<NextResponse<T>>;
       }

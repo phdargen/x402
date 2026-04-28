@@ -10,6 +10,7 @@ import type {
   AfterSettleHook,
   OnVerifyFailureHook,
   OnSettleFailureHook,
+  OnVerifiedPaymentCanceledHook,
   SettleContext,
   SettleResultContext,
 } from "../server/x402ResourceServer";
@@ -159,6 +160,7 @@ export interface SchemeServerHooks {
   onAfterSettle?: AfterSettleHook;
   onVerifyFailure?: OnVerifyFailureHook;
   onSettleFailure?: OnSettleFailureHook;
+  onVerifiedPaymentCanceled?: OnVerifiedPaymentCanceledHook;
 }
 
 export type SchemeEnrichSettlementPayloadHook = (
