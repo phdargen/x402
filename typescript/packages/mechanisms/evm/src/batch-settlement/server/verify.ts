@@ -14,7 +14,7 @@ import { readExtraNumber, readExtraString } from "./utils";
 /**
  * Lifecycle hook: runs before the facilitator verifies a payment.
  *
- * For voucher payloads, checks whether the client's cumulative amount matches server
+ * For paid payloads, checks whether the client's cumulative amount matches server
  * state. If mismatched, aborts with `batch_settlement_cumulative_amount_mismatch`.
  *
  * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
@@ -38,7 +38,10 @@ export async function handleBeforeVerify(
   const { paymentPayload, requirements } = ctx;
 
   const raw = paymentPayload.payload;
-  if (!isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundPayload(raw)) {
+  const isPaidPayload =
+    isBatchSettlementVoucherPayload(raw) || isBatchSettlementDepositPayload(raw);
+  const isZeroChargePayload = isBatchSettlementRefundPayload(raw);
+  if (!isPaidPayload && !isZeroChargePayload) {
     return;
   }
 
@@ -48,7 +51,7 @@ export async function handleBeforeVerify(
     return;
   }
 
-  const expectedMaxClaimable = isBatchSettlementRefundPayload(raw)
+  const expectedMaxClaimable = isZeroChargePayload
     ? BigInt(channel.chargedCumulativeAmount)
     : BigInt(channel.chargedCumulativeAmount) + BigInt(requirements.amount);
 
@@ -85,7 +88,11 @@ export async function handleEnrichPaymentRequiredResponse(
   }
 
   const raw = paymentPayload.payload;
-  if (!isBatchSettlementVoucherPayload(raw) && !isBatchSettlementRefundPayload(raw)) {
+  if (
+    !isBatchSettlementVoucherPayload(raw) &&
+    !isBatchSettlementDepositPayload(raw) &&
+    !isBatchSettlementRefundPayload(raw)
+  ) {
     return;
   }
 

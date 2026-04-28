@@ -330,11 +330,13 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result).toBeUndefined();
   });
 
-  it("does nothing when payload is not a voucher", async () => {
-    const config = buildChannelConfig();
-    const channelId = computeChannelId(config);
+  it("does nothing when payload is not a batch-settlement cumulative payload", async () => {
     const result = await server.schemeHooks.onBeforeVerify!({
-      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      paymentPayload: {
+        x402Version: 2,
+        accepted: makeRequirements(),
+        payload: { type: "other" },
+      },
       requirements: makeRequirements(),
     } as never);
     expect(result).toBeUndefined();
@@ -372,6 +374,68 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements: makeRequirements({ amount: "1000" }),
     } as never);
     expect(result).toBeUndefined();
+  });
+
+  it("does not abort initial deposit payloads with no server channel state", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1500"),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("accepts a deposit payload whose maxClaimable equals chargedCumulativeAmount plus amount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "2000"),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("aborts a deposit payload whose maxClaimable does not match chargedCumulativeAmount plus amount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1500"),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as { abort: true; reason: string };
+
+    expect(result?.abort).toBe(true);
+    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
   });
 
   it("does nothing for a refund voucher when no channel record exists (defers to facilitator for on-chain recovery)", async () => {
@@ -488,6 +552,44 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await server.enrichPaymentRequiredResponse({
       requirements,
       paymentPayload: buildVoucherPayload(channelId, "500", config),
+      resourceInfo: { url: "https://example.com" },
+      error: "batch_settlement_cumulative_amount_mismatch",
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: requirements,
+      },
+    });
+
+    expect(requirements[0].extra.ChannelState).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+    });
+  });
+
+  it("adds channel state to corrective payment-required accepts for deposit mismatches", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storage.set(channelId, {
+      channelId,
+      channelConfig: config,
+      payer: PAYER.toLowerCase(),
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const requirements = [makeRequirements({ amount: "1000" })];
+    await server.enrichPaymentRequiredResponse({
+      requirements,
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1500"),
       resourceInfo: { url: "https://example.com" },
       error: "batch_settlement_cumulative_amount_mismatch",
       paymentRequiredResponse: {
