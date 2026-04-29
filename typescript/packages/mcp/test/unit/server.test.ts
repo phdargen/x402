@@ -19,7 +19,6 @@ interface MockResourceServer {
   findMatchingRequirements: ReturnType<typeof vi.fn>;
   verifyPayment: ReturnType<typeof vi.fn>;
   settlePayment: ReturnType<typeof vi.fn>;
-  createVerifiedPaymentContext: ReturnType<typeof vi.fn>;
   createPaymentRequiredResponse: ReturnType<typeof vi.fn>;
 }
 
@@ -39,7 +38,6 @@ const mockPaymentRequirements: PaymentRequirements = {
 
 const mockPaymentPayload: PaymentPayload = {
   x402Version: 2,
-  accepted: mockPaymentRequirements,
   payload: {
     signature: "0x123",
     authorization: {
@@ -84,19 +82,10 @@ const mockPaymentRequired = {
  * @returns Mock resource server instance
  */
 function createMockResourceServer(): MockResourceServer {
-  const settle = vi.fn().mockResolvedValue(mockSettleResponse);
-  const cancel = vi.fn().mockResolvedValue(undefined);
   return {
     findMatchingRequirements: vi.fn().mockReturnValue(mockPaymentRequirements),
     verifyPayment: vi.fn().mockResolvedValue(mockVerifyResponse),
     settlePayment: vi.fn().mockResolvedValue(mockSettleResponse),
-    createVerifiedPaymentContext: vi.fn().mockReturnValue({
-      paymentPayload: mockPaymentPayload,
-      requirements: mockPaymentRequirements,
-      declaredExtensions: {},
-      settle,
-      cancel,
-    }),
     createPaymentRequiredResponse: vi.fn().mockResolvedValue(mockPaymentRequired),
   };
 }
@@ -176,8 +165,11 @@ describe("createPaymentWrapper", () => {
       const wrappedHandler = paid(handler);
       await wrappedHandler({ test: "arg" }, { _meta: { "x402/payment": mockPaymentPayload } });
 
-      const handle = mockResourceServer.createVerifiedPaymentContext.mock.results[0].value;
-      expect(handle.settle).toHaveBeenCalled();
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        {},
+      );
     });
 
     it("should preserve structuredContent from handler result", async () => {
@@ -225,9 +217,7 @@ describe("createPaymentWrapper", () => {
       );
 
       expect(result.isError).toBe(true);
-      const handle = mockResourceServer.createVerifiedPaymentContext.mock.results[0].value;
-      expect(handle.settle).not.toHaveBeenCalled();
-      expect(handle.cancel).toHaveBeenCalledWith({ reason: "handler_failed" });
+      expect(mockResourceServer.settlePayment).not.toHaveBeenCalled();
     });
 
     it("should return 402 if payment verification fails", async () => {
@@ -426,7 +416,7 @@ describe("createPaymentWrapper", () => {
 
       const handler = vi.fn(async () => {
         callOrder.push("handler");
-        return { content: [{ type: "text" as const, text: "success" }] };
+        return { content: [{ type: "text", text: "success" }] };
       });
 
       const wrappedHandler = paid(handler);
@@ -544,14 +534,7 @@ describe("createPaymentWrapper", () => {
 
   describe("settlement failures", () => {
     it("should return 402 error when settlement fails", async () => {
-      const settle = vi.fn().mockRejectedValueOnce(new Error("Settlement failed"));
-      mockResourceServer.createVerifiedPaymentContext.mockReturnValueOnce({
-        paymentPayload: mockPaymentPayload,
-        requirements: mockPaymentRequirements,
-        declaredExtensions: {},
-        settle,
-        cancel: vi.fn().mockResolvedValue(undefined),
-      });
+      mockResourceServer.settlePayment.mockRejectedValueOnce(new Error("Settlement failed"));
 
       const paid = createPaymentWrapper(
         mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],

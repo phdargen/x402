@@ -2,11 +2,14 @@ import {
   PaywallConfig,
   PaywallProvider,
   x402ResourceServer,
+  x402HTTPResourceServer,
   RoutesConfig,
   RouteConfig,
   FacilitatorClient,
   FacilitatorResponseError,
   checkIfBazaarNeeded,
+  SETTLEMENT_OVERRIDES_HEADER,
+  SettlementOverrides,
 } from "@x402/core/server";
 import { SchemeNetworkServer, Network } from "@x402/core/types";
 import { NextRequest, NextResponse } from "next/server";
@@ -18,7 +21,17 @@ import {
   createFacilitatorErrorResponse,
   getFacilitatorResponseError,
 } from "./utils";
-import { x402HTTPResourceServer } from "@x402/core/server";
+
+/**
+ * Set settlement overrides on the response for partial settlement.
+ * `withX402` reads this header before settlement and strips it from the client response.
+ *
+ * @param res - Next.js `NextResponse` from your route handler
+ * @param overrides - Settlement overrides (for example `{ amount: "50%" }` for partial settlement)
+ */
+export function setSettlementOverrides(res: NextResponse, overrides: SettlementOverrides): void {
+  res.headers.set(SETTLEMENT_OVERRIDES_HEADER, JSON.stringify(overrides));
+}
 
 /**
  * Configuration for registering a payment scheme with a specific network
@@ -400,7 +413,12 @@ export type {
   SchemeNetworkServer,
 } from "@x402/core/types";
 
-export type { PaywallProvider, PaywallConfig, RouteConfig } from "@x402/core/server";
+export type {
+  PaywallProvider,
+  PaywallConfig,
+  RouteConfig,
+  SettlementOverrides,
+} from "@x402/core/server";
 
 export {
   x402ResourceServer,

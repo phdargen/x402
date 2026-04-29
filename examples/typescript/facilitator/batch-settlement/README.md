@@ -8,9 +8,9 @@ See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme
 
 This example uses two distinct keys with very different responsibilities:
 
-| Env var | Role | On-chain effect |
-|---------|------|-----------------|
-| `EVM_PRIVATE_KEY` | **Relayer** — submits transactions | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature` |
+| Env var                               | Role                                                                       | On-chain effect                                                                                  |
+| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `EVM_PRIVATE_KEY`                     | **Relayer** — submits transactions                                         | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature`                 |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** — signs `ClaimBatch` and `Refund` EIP-712 messages | Address is committed into the channel identity for any server that delegates to this facilitator |
 
 If `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is omitted, the relayer key is reused for both roles. In production, keep them separate so the receiver-authorizer key (which controls how much gets claimed) can be rotated independently of the gas-paying hot wallet.
@@ -42,12 +42,12 @@ The facilitator listens on `http://localhost:4022` by default (`PORT` env var to
 
 Standard x402 facilitator endpoints — `POST /verify`, `POST /settle`, `GET /supported`. The `/settle` endpoint dispatches on `payload.type` / `settleAction`:
 
-| Action | Triggered by | Effect |
-|--------|--------------|--------|
-| `deposit` | First request or top-up | Funds the channel via EIP-3009 or Permit2 |
-| `claimWithSignature` | Server batches voucher claims | Updates on-chain `totalClaimed` (no transfer) |
-| `settle` | Server sweeps unsettled funds | Transfers claimed funds to the receiver |
-| `refundWithSignature` | Cooperative refund | Returns `balance - totalClaimed` to the payer |
+| Action                | Triggered by                  | Effect                                        |
+| --------------------- | ----------------------------- | --------------------------------------------- |
+| `deposit`             | First request or top-up       | Funds the channel via EIP-3009 or Permit2     |
+| `claimWithSignature`  | Server batches voucher claims | Updates on-chain `totalClaimed` (no transfer) |
+| `settle`              | Server sweeps unsettled funds | Transfers claimed funds to the receiver       |
+| `refundWithSignature` | Cooperative refund            | Returns `balance - totalClaimed` to the payer |
 
 `/verify` and `/settle` always return the on-chain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
 
