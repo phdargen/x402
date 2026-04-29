@@ -15,11 +15,13 @@ import { buildVoucherClaimArgs } from "./claim";
 import { readChannelState, toContractChannelConfig } from "./utils";
 
 type RefundSettlementExtra = {
-  channelId: `0x${string}`;
-  balance: string;
-  totalClaimed: string;
-  withdrawRequestedAt: number;
-  refundNonce: string;
+  channelState: {
+    channelId: `0x${string}`;
+    balance: string;
+    totalClaimed: string;
+    withdrawRequestedAt: number;
+    refundNonce: string;
+  };
 };
 
 type RefundSettlementDetails = {
@@ -59,11 +61,13 @@ function buildRefundExtra(
   return {
     amount: actualRefund.toString(),
     extra: {
-      channelId,
-      balance: (preBalance - actualRefund).toString(),
-      totalClaimed: postClaimTotalClaimed.toString(),
-      withdrawRequestedAt: 0,
-      refundNonce: String((preState?.refundNonce ?? 0n) + 1n),
+      channelState: {
+        channelId,
+        balance: (preBalance - actualRefund).toString(),
+        totalClaimed: postClaimTotalClaimed.toString(),
+        withdrawRequestedAt: 0,
+        refundNonce: String((preState?.refundNonce ?? 0n) + 1n),
+      },
     },
   };
 }
@@ -119,11 +123,13 @@ function buildRefundExtraFromPostState(
   return {
     amount: actualRefund.toString(),
     extra: {
-      channelId,
-      balance: postState.balance.toString(),
-      totalClaimed: postState.totalClaimed.toString(),
-      withdrawRequestedAt: postState.withdrawRequestedAt,
-      refundNonce: postState.refundNonce.toString(),
+      channelState: {
+        channelId,
+        balance: postState.balance.toString(),
+        totalClaimed: postState.totalClaimed.toString(),
+        withdrawRequestedAt: postState.withdrawRequestedAt,
+        refundNonce: postState.refundNonce.toString(),
+      },
     },
   };
 }

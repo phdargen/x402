@@ -223,11 +223,17 @@ export async function handleEnrichPaymentRequiredResponse(
 
   accept.extra = {
     ...accept.extra,
-    ChannelState: {
+    channelState: {
       channelId: channel.channelId,
+      balance: channel.balance,
+      totalClaimed: channel.totalClaimed,
+      withdrawRequestedAt: channel.withdrawRequestedAt,
+      refundNonce: String(channel.refundNonce),
       chargedCumulativeAmount: channel.chargedCumulativeAmount,
+    },
+    voucherState: {
       signedMaxClaimable: channel.signedMaxClaimable,
-      signature: channel.signature,
+      signature: channel.signature as `0x${string}`,
     },
   };
 }

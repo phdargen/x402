@@ -32,13 +32,14 @@ export async function handleBatchSettlementPaymentResponse(
 ): Promise<void | { recovered: true }> {
   if (ctx.settleResponse) {
     if (isBatchSettlementRefundPayload(ctx.paymentPayload.payload)) {
-      const channelId = ctx.settleResponse.extra?.channelId;
+      const extra = ctx.settleResponse.extra ?? {};
+      const channelState = extra.channelState;
+      const channelId =
+        typeof channelState === "object" && channelState !== null && "channelId" in channelState
+          ? channelState.channelId
+          : undefined;
       if (typeof channelId === "string" && channelId) {
-        await updateChannelAfterRefund(
-          deps.storage,
-          channelId.toLowerCase(),
-          ctx.settleResponse.extra ?? {},
-        );
+        await updateChannelAfterRefund(deps.storage, channelId.toLowerCase(), extra);
       }
       return;
     }

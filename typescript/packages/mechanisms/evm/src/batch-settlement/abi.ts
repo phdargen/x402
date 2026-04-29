@@ -193,6 +193,17 @@ export const batchSettlementABI = [
     outputs: [{ name: "", type: "bytes32" }],
     stateMutability: "view",
   },
+  {
+    type: "event",
+    name: "Settled",
+    inputs: [
+      { name: "receiver", type: "address", indexed: true },
+      { name: "token", type: "address", indexed: true },
+      { name: "sender", type: "address", indexed: true },
+      { name: "amount", type: "uint128", indexed: false },
+    ],
+    anonymous: false,
+  },
 ] as const;
 
 export const erc20BalanceOfABI = [

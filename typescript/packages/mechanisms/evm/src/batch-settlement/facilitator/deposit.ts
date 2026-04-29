@@ -294,15 +294,19 @@ export async function settleDeposit(
     }
 
     const optimisticExtra = {
-      channelId: voucher.channelId,
-      balance: (BigInt(String(verified.extra?.balance ?? "0")) + BigInt(deposit.amount)).toString(),
-      totalClaimed: verified.extra?.totalClaimed ?? "0",
-      withdrawRequestedAt: Number(verified.extra?.withdrawRequestedAt ?? 0),
-      refundNonce: String(verified.extra?.refundNonce ?? "0"),
+      channelState: {
+        channelId: voucher.channelId,
+        balance: (
+          BigInt(String(verified.extra?.balance ?? "0")) + BigInt(deposit.amount)
+        ).toString(),
+        totalClaimed: String(verified.extra?.totalClaimed ?? "0"),
+        withdrawRequestedAt: Number(verified.extra?.withdrawRequestedAt ?? 0),
+        refundNonce: String(verified.extra?.refundNonce ?? "0"),
+      },
     };
 
     // Poll the RPC until it reflects the just-confirmed deposit, so subsequent verify reads are guaranteed to see this balance
-    const expectedMinBalance = BigInt(optimisticExtra.balance);
+    const expectedMinBalance = BigInt(optimisticExtra.channelState.balance);
     const rpcDeadline = Date.now() + 2_000;
     let postState = await readChannelState(signer, voucher.channelId);
     while (postState.balance < expectedMinBalance && Date.now() < rpcDeadline) {
@@ -317,14 +321,17 @@ export async function settleDeposit(
       transaction: tx,
       network: requirements.network,
       payer,
-      amount: requirements.amount,
+      amount: deposit.amount,
       extra: rpcCaughtUp
         ? {
             ...optimisticExtra,
-            balance: postState.balance.toString(),
-            totalClaimed: postState.totalClaimed.toString(),
-            withdrawRequestedAt: postState.withdrawRequestedAt,
-            refundNonce: postState.refundNonce.toString(),
+            channelState: {
+              channelId: voucher.channelId,
+              balance: postState.balance.toString(),
+              totalClaimed: postState.totalClaimed.toString(),
+              withdrawRequestedAt: postState.withdrawRequestedAt,
+              refundNonce: postState.refundNonce.toString(),
+            },
           }
         : optimisticExtra,
     };

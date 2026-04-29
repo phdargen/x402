@@ -10,7 +10,36 @@ import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim }
 import { computeChannelId } from "../utils";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
-import { parseRefundSettlementSnapshot, readExtraNumber, readExtraString } from "./utils";
+import {
+  parseRefundSettlementSnapshot,
+  readChannelStateExtra,
+  readExtraNumber,
+  readExtraString,
+} from "./utils";
+
+/**
+ * Converts stored channel state into the public response snapshot shape.
+ *
+ * @param channel - Stored channel state.
+ * @param chargedCumulativeAmount - Optional current charged cumulative amount.
+ * @returns Response-ready channel snapshot.
+ */
+function channelStateExtra(
+  channel: Pick<
+    Channel,
+    "channelId" | "balance" | "totalClaimed" | "withdrawRequestedAt" | "refundNonce"
+  >,
+  chargedCumulativeAmount?: string,
+): NonNullable<BatchSettlementPaymentResponseExtra["channelState"]> {
+  return {
+    channelId: channel.channelId as `0x${string}`,
+    balance: channel.balance,
+    totalClaimed: channel.totalClaimed,
+    withdrawRequestedAt: channel.withdrawRequestedAt,
+    refundNonce: String(channel.refundNonce),
+    ...(chargedCumulativeAmount !== undefined ? { chargedCumulativeAmount } : {}),
+  };
+}
 
 /**
  * Lifecycle hook: runs before the facilitator settles a payment.
@@ -113,12 +142,8 @@ export async function handleBeforeSettle(
   scheme.takeRequestContext(paymentPayload);
 
   const skipExtra: BatchSettlementPaymentResponseExtra = {
-    channelId: channelId as `0x${string}`,
-    balance: outcome.previous.balance,
-    totalClaimed: outcome.previous.totalClaimed,
-    withdrawRequestedAt: outcome.previous.withdrawRequestedAt,
-    refundNonce: String(outcome.previous.refundNonce),
-    chargedCumulativeAmount: outcome.current.chargedCumulativeAmount,
+    chargedAmount: requirements.amount,
+    channelState: channelStateExtra(outcome.previous, outcome.current.chargedCumulativeAmount),
   };
 
   return {
@@ -128,7 +153,7 @@ export async function handleBeforeSettle(
       payer: outcome.previous.channelConfig.payer.toLowerCase() as `0x${string}`,
       transaction: "",
       network: requirements.network,
-      amount: requirements.amount,
+      amount: "",
       extra: skipExtra,
     },
   };
@@ -295,6 +320,7 @@ export async function handleAfterSettle(
     const channelId = raw.voucher.channelId;
     const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
     const ex = result.extra ?? {};
+    const channelState = readChannelStateExtra(ex);
     const config = raw.channelConfig;
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
     const now = Date.now();
@@ -315,14 +341,14 @@ export async function handleAfterSettle(
         chargedCumulativeAmount: chargedActual,
         signedMaxClaimable,
         signature: raw.voucher.signature,
-        balance: readExtraString(ex, "balance", current.balance),
-        totalClaimed: readExtraString(ex, "totalClaimed", current.totalClaimed),
+        balance: readExtraString(channelState, "balance", current.balance),
+        totalClaimed: readExtraString(channelState, "totalClaimed", current.totalClaimed),
         withdrawRequestedAt: readExtraNumber(
-          ex,
+          channelState,
           "withdrawRequestedAt",
           current.withdrawRequestedAt,
         ),
-        refundNonce: readExtraNumber(ex, "refundNonce", current.refundNonce),
+        refundNonce: readExtraNumber(channelState, "refundNonce", current.refundNonce),
         onchainSyncedAt: now,
         lastRequestTimestamp: now,
       };
@@ -370,5 +396,22 @@ export async function handleEnrichSettlementResponse(
     return;
   }
 
-  return { chargedCumulativeAmount: channel.chargedCumulativeAmount };
+  if (isBatchSettlementRefundPayload(raw)) {
+    const resultChannelState = readChannelStateExtra(ctx.result.extra);
+    return {
+      channelState: {
+        ...channelStateExtra(channel, channel.chargedCumulativeAmount),
+        ...resultChannelState,
+      },
+    };
+  }
+
+  const channelState = channelStateExtra(channel, channel.chargedCumulativeAmount);
+  if (isBatchSettlementDepositPayload(raw)) {
+    return {
+      chargedAmount: ctx.requirements.amount,
+      channelState,
+    };
+  }
+  return { channelState };
 }

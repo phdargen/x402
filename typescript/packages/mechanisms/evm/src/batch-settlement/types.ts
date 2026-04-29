@@ -74,9 +74,16 @@ export type BatchSettlementVoucherClaim = {
   totalClaimed: string;
 };
 
-export type BatchSettlementRequirementsChannelState = {
+export type BatchSettlementChannelStateExtra = {
   channelId: `0x${string}`;
+  balance: string;
+  totalClaimed: string;
+  withdrawRequestedAt: number;
+  refundNonce: string;
   chargedCumulativeAmount?: string;
+};
+
+export type BatchSettlementVoucherStateExtra = {
   signedMaxClaimable?: string;
   signature?: `0x${string}`;
 };
@@ -87,7 +94,8 @@ export type BatchSettlementPaymentRequirementsExtra = {
   name: string;
   version: string;
   assetTransferMethod?: "eip3009";
-  ChannelState?: BatchSettlementRequirementsChannelState;
+  channelState?: BatchSettlementChannelStateExtra;
+  voucherState?: BatchSettlementVoucherStateExtra;
 };
 
 export type FileChannelStorageOptions = {
@@ -96,12 +104,9 @@ export type FileChannelStorageOptions = {
 };
 
 export type BatchSettlementPaymentResponseExtra = {
-  channelId: `0x${string}`;
-  chargedCumulativeAmount: string;
-  balance: string;
-  totalClaimed: string;
-  withdrawRequestedAt: number;
-  refundNonce: string;
+  chargedAmount?: string;
+  channelState?: BatchSettlementChannelStateExtra;
+  voucherState?: BatchSettlementVoucherStateExtra;
 };
 
 export type BatchSettlementClaimPayload = {

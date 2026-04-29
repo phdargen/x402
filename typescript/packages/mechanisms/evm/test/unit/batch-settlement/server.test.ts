@@ -797,9 +797,15 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       },
     });
 
-    expect(requirements[0].extra.ChannelState).toMatchObject({
+    expect(requirements[0].extra.channelState).toMatchObject({
       channelId,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "0",
       chargedCumulativeAmount: "1000",
+    });
+    expect(requirements[0].extra.voucherState).toMatchObject({
       signedMaxClaimable: "1000",
       signature: "0xabcd",
     });
@@ -834,9 +840,15 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       },
     });
 
-    expect(requirements[0].extra.ChannelState).toMatchObject({
+    expect(requirements[0].extra.channelState).toMatchObject({
       channelId,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "0",
       chargedCumulativeAmount: "1000",
+    });
+    expect(requirements[0].extra.voucherState).toMatchObject({
       signedMaxClaimable: "1000",
       signature: "0xabcd",
     });
@@ -888,9 +900,15 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       },
     });
 
-    expect(requirements[0].extra.ChannelState).toMatchObject({
+    expect(requirements[0].extra.channelState).toMatchObject({
       channelId,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "0",
       chargedCumulativeAmount: "1000",
+    });
+    expect(requirements[0].extra.voucherState).toMatchObject({
       signedMaxClaimable: "1000",
       signature: "0xabcd",
     });
@@ -909,7 +927,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       },
     });
 
-    expect(laterRequirements[0].extra.ChannelState).toBeUndefined();
+    expect(laterRequirements[0].extra.channelState).toBeUndefined();
     expect(countingStorage.getCalls).toHaveLength(1);
   });
 
@@ -1260,9 +1278,16 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       "network",
       "amount",
     ]);
-    expect(result?.result.extra?.channelId).toBe(channelId);
-    expect(result?.result.extra?.chargedCumulativeAmount).toBe("1000");
-    expect(Object.keys(result?.result.extra ?? {}).at(-1)).toBe("chargedCumulativeAmount");
+    expect(result?.result.amount).toBe("");
+    expect(result?.result.extra?.chargedAmount).toBe("1000");
+    expect(result?.result.extra?.channelState).toMatchObject({
+      channelId,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "0",
+      chargedCumulativeAmount: "1000",
+    });
 
     const updated = await storage.get(channelId);
     expect(updated?.chargedCumulativeAmount).toBe("1000");
@@ -1432,7 +1457,15 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       transaction: "0xtx",
       network: NETWORK,
       payer: PAYER,
-      extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      extra: {
+        channelState: {
+          channelId,
+          balance: "10000",
+          totalClaimed: "0",
+          withdrawRequestedAt: 0,
+          refundNonce: "0",
+        },
+      },
     } as SettleResponse;
 
     await server.schemeHooks.onAfterSettle!({
@@ -1452,7 +1485,17 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       requirements: makeRequirements({ amount: "1000" }),
       result,
     } as never);
-    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
+    expect(enrichment).toEqual({
+      chargedAmount: "1000",
+      channelState: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "0",
+        chargedCumulativeAmount: "1000",
+      },
+    });
   });
 
   it("deletes channel record and exposes refund response enrichment after a full refund", async () => {
@@ -1504,11 +1547,13 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       network: NETWORK,
       payer: PAYER,
       extra: {
-        channelId,
-        balance: "1000",
-        totalClaimed: "1000",
-        withdrawRequestedAt: 0,
-        refundNonce: "1",
+        channelState: {
+          channelId,
+          balance: "1000",
+          totalClaimed: "1000",
+          withdrawRequestedAt: 0,
+          refundNonce: "1",
+        },
       },
     } as SettleResponse;
 
@@ -1526,7 +1571,16 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       requirements: makeRequirements(),
       result,
     } as never);
-    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
+    expect(enrichment).toEqual({
+      channelState: {
+        channelId,
+        balance: "1000",
+        totalClaimed: "1000",
+        withdrawRequestedAt: 0,
+        refundNonce: "1",
+        chargedCumulativeAmount: "1000",
+      },
+    });
   });
 
   it("retains channel record and increments refundNonce on a partial refundWithSignature", async () => {
@@ -1578,11 +1632,13 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       network: NETWORK,
       payer: PAYER,
       extra: {
-        channelId,
-        balance: "8000",
-        totalClaimed: "1000",
-        withdrawRequestedAt: 0,
-        refundNonce: "3",
+        channelState: {
+          channelId,
+          balance: "8000",
+          totalClaimed: "1000",
+          withdrawRequestedAt: 0,
+          refundNonce: "3",
+        },
         refundedAmount: "2000",
       },
     } as SettleResponse;
@@ -1605,7 +1661,16 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       requirements: makeRequirements(),
       result,
     } as never);
-    expect(enrichment).toEqual({ chargedCumulativeAmount: "1000" });
+    expect(enrichment).toEqual({
+      channelState: {
+        channelId,
+        balance: "8000",
+        totalClaimed: "1000",
+        withdrawRequestedAt: 0,
+        refundNonce: "3",
+        chargedCumulativeAmount: "1000",
+      },
+    });
   });
 
   it("does not modify state when result.success is false", async () => {

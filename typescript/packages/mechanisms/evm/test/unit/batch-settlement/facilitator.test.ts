@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { MockedFunction } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { getAddress } from "viem";
+import { encodeAbiParameters, encodeEventTopics, getAddress } from "viem";
+import type { Log } from "viem";
 
 vi.mock("../../../src/multicall", async importOriginal => {
   const actual = await importOriginal<typeof import("../../../src/multicall")>();
@@ -16,6 +17,7 @@ import {
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
   PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
 } from "../../../src/batch-settlement/constants";
+import { batchSettlementABI } from "../../../src/batch-settlement/abi";
 import * as Errors from "../../../src/batch-settlement/facilitator/errors";
 import type {
   ChannelConfig,
@@ -102,6 +104,36 @@ function buildSigner(overrides: Partial<FacilitatorEvmSigner> = {}): Facilitator
     getCode: vi.fn(),
     ...overrides,
   };
+}
+
+function buildSettledLog(
+  overrides: {
+    receiver?: `0x${string}`;
+    token?: `0x${string}`;
+    sender?: `0x${string}`;
+    amount?: string;
+    address?: `0x${string}`;
+  } = {},
+): Log {
+  const receiver = overrides.receiver ?? RECEIVER;
+  const token = overrides.token ?? ASSET;
+  const sender = overrides.sender ?? FACILITATOR_ADDRESS;
+
+  return {
+    address: overrides.address ?? BATCH_SETTLEMENT_ADDRESS,
+    topics: encodeEventTopics({
+      abi: batchSettlementABI,
+      eventName: "Settled",
+      args: { receiver, token, sender },
+    }),
+    data: encodeAbiParameters([{ type: "uint128" }], [BigInt(overrides.amount ?? "2500")]),
+    blockHash: null,
+    blockNumber: null,
+    logIndex: null,
+    transactionHash: null,
+    transactionIndex: null,
+    removed: false,
+  } as Log;
 }
 
 function envelopeVoucher(payload: BatchSettlementVoucherPayload): PaymentPayload {
@@ -642,6 +674,16 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
 
     const result = await scheme.settle(envelopeDeposit(dp), makeRequirements());
     expect(result.success).toBe(true);
+    expect(result.amount).toBe("10000");
+    expect(result.extra).toMatchObject({
+      channelState: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "0",
+      },
+    });
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({
         address: getAddress(BATCH_SETTLEMENT_ADDRESS),
@@ -680,6 +722,50 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
   });
 
   it("dispatches settle payloads via executeSettle", async () => {
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi.fn().mockResolvedValue({
+        status: "success",
+        logs: [buildSettledLog({ amount: "4321" })],
+      }),
+    });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const sp: BatchSettlementSettlePayload = {
+      type: "settle",
+      receiver: RECEIVER,
+      token: ASSET,
+    };
+    const result = await scheme.settle(
+      envelopeSettle(sp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(true);
+    expect(result.amount).toBe("4321");
+    expect(signer.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionName: "settle",
+      }),
+    );
+  });
+
+  it("returns zero amount for no-op settle receipts without a Settled event", async () => {
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", logs: [] }),
+    });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const sp: BatchSettlementSettlePayload = {
+      type: "settle",
+      receiver: RECEIVER,
+      token: ASSET,
+    };
+    const result = await scheme.settle(
+      envelopeSettle(sp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(true);
+    expect(result.amount).toBe("0");
+  });
+
+  it("returns empty amount when settle receipt logs are unavailable", async () => {
     const signer = buildSigner();
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const sp: BatchSettlementSettlePayload = {
@@ -692,11 +778,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       makeRequirements(),
     );
     expect(result.success).toBe(true);
-    expect(signer.writeContract).toHaveBeenCalledWith(
-      expect.objectContaining({
-        functionName: "settle",
-      }),
-    );
+    expect(result.amount).toBe("");
   });
 
   it("dispatches claim payloads via executeClaimWithSignature", async () => {
@@ -718,6 +800,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
       makeRequirements(),
     );
     expect(result.success).toBe(true);
+    expect(result.amount).toBe("");
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "claimWithSignature" }),
     );
@@ -776,11 +859,13 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(result.success).toBe(true);
     expect(result.amount).toBe("9000");
     expect(result.extra).toMatchObject({
-      channelId,
-      balance: "1000",
-      totalClaimed: "0",
-      withdrawRequestedAt: 0,
-      refundNonce: "1",
+      channelState: {
+        channelId,
+        balance: "1000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "1",
+      },
     });
     expect(mockedMulticall).toHaveBeenCalledTimes(1);
     expect(signer.writeContract).toHaveBeenCalledWith(
@@ -825,10 +910,12 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(result.success).toBe(true);
     expect(result.amount).toBe("2000");
     expect(result.extra).toMatchObject({
-      channelId,
-      balance: "8000",
-      withdrawRequestedAt: 1234,
-      refundNonce: "8",
+      channelState: {
+        channelId,
+        balance: "8000",
+        withdrawRequestedAt: 1234,
+        refundNonce: "8",
+      },
     });
     expect(mockedMulticall).toHaveBeenCalledTimes(2);
   });

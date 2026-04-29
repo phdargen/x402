@@ -418,10 +418,12 @@ describe("processSettleResponse / schemeHooks", () => {
       network: NETWORK,
       payer: signer.address,
       extra: {
-        channelId,
-        chargedCumulativeAmount: "1000",
-        balance: "9000",
-        totalClaimed: "500",
+        channelState: {
+          channelId,
+          chargedCumulativeAmount: "1000",
+          balance: "9000",
+          totalClaimed: "500",
+        },
       },
     };
 
@@ -458,7 +460,9 @@ describe("processSettleResponse / schemeHooks", () => {
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000002";
     await storage.set(channelId.toLowerCase(), { chargedCumulativeAmount: "1000" });
 
-    await updateChannelAfterRefund(storage, channelId.toLowerCase(), { channelId, balance: "0" });
+    await updateChannelAfterRefund(storage, channelId.toLowerCase(), {
+      channelState: { channelId, balance: "0" },
+    });
 
     expect(await storage.get(channelId.toLowerCase())).toBeUndefined();
   });
@@ -477,7 +481,7 @@ describe("processSettleResponse / schemeHooks", () => {
         transaction: "0x",
         network: NETWORK,
         payer: signer.address,
-        extra: { channelId, chargedCumulativeAmount: "42" },
+        extra: { channelState: { channelId, chargedCumulativeAmount: "42" } },
       } as SettleResponse,
     } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);
 
@@ -510,7 +514,7 @@ describe("processSettleResponse / schemeHooks", () => {
         transaction: "0x",
         network: NETWORK,
         payer: signer.address,
-        extra: { channelId, balance: "0" },
+        extra: { channelState: { channelId, balance: "0" } },
       } as SettleResponse,
     });
 
@@ -524,7 +528,7 @@ describe("processSettleResponse / schemeHooks", () => {
         transaction: "0x",
         network: NETWORK,
         payer: signer.address,
-        extra: { channelId, balance: "0" },
+        extra: { channelState: { channelId, balance: "0" } },
       } as SettleResponse,
     });
 
@@ -570,8 +574,13 @@ describe("recoverChannel / hasChannel / getChannel", () => {
 });
 
 describe("processCorrectivePaymentRequired", () => {
-  function makeAccept(extra: Record<string, unknown>): PaymentRequirements {
-    return makeRequirements({ extra: { ...makeRequirements().extra, ChannelState: extra } });
+  function makeAccept(
+    channelState: Record<string, unknown>,
+    voucherState: Record<string, unknown>,
+  ): PaymentRequirements {
+    return makeRequirements({
+      extra: { ...makeRequirements().extra, channelState, voucherState },
+    });
   }
 
   it("returns false for unrelated error codes", async () => {
@@ -627,12 +636,14 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "1500", NETWORK);
 
-    const data = {
+    const channelState = {
       chargedCumulativeAmount: "1000",
+    };
+    const voucherState = {
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
     };
-    const accept = makeAccept(data);
+    const accept = makeAccept(channelState, voucherState);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -659,12 +670,14 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(otherSigner, channelId, "1500", NETWORK);
 
-    const data = {
+    const channelState = {
       chargedCumulativeAmount: "1000",
+    };
+    const voucherState = {
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
     };
-    const accept = makeAccept(data);
+    const accept = makeAccept(channelState, voucherState);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -679,12 +692,14 @@ describe("processCorrectivePaymentRequired", () => {
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientChannelStorage();
 
-    const data = {
+    const channelState = {
       chargedCumulativeAmount: "2000",
+    };
+    const voucherState = {
       signedMaxClaimable: "1500",
       signature: "0xdead",
     };
-    const accept = makeAccept(data);
+    const accept = makeAccept(channelState, voucherState);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -704,12 +719,14 @@ describe("processCorrectivePaymentRequired", () => {
     const { signVoucher } = await import("../../../src/batch-settlement/client/voucher");
     const signed = await signVoucher(signer, channelId, "2000", NETWORK);
 
-    const data = {
+    const channelState = {
       chargedCumulativeAmount: "1000",
+    };
+    const voucherState = {
       signedMaxClaimable: signed.maxClaimableAmount,
       signature: signed.signature,
     };
-    const accept = makeAccept(data);
+    const accept = makeAccept(channelState, voucherState);
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
@@ -809,12 +826,14 @@ describe("BatchSettlementEvmScheme — refund()", () => {
         capturedSig = (init?.headers as Record<string, string> | undefined)?.["PAYMENT-SIGNATURE"];
         return refundSuccessResponse(
           {
-            channelId,
-            balance: "0",
-            totalClaimed: "500",
-            withdrawRequestedAt: 0,
-            refundNonce: "1",
-            chargedCumulativeAmount: "500",
+            channelState: {
+              channelId,
+              balance: "0",
+              totalClaimed: "500",
+              withdrawRequestedAt: 0,
+              refundNonce: "1",
+              chargedCumulativeAmount: "500",
+            },
           },
           "9500",
         );
@@ -825,7 +844,11 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const settle = await client.refund(REFUND_URL, { fetch: fetchImpl });
     expect(settle.success).toBe(true);
     expect(settle.amount).toBe("9500");
-    expect(Object.keys(settle.extra ?? {}).at(-1)).toBe("chargedCumulativeAmount");
+    expect(settle.extra?.channelState).toMatchObject({
+      channelId,
+      balance: "0",
+      chargedCumulativeAmount: "500",
+    });
     expect(processSpy).toHaveBeenCalledTimes(1);
     expect(capturedSig).toBeTruthy();
     const { decodePaymentSignatureHeader } = await import("@x402/core/http");
@@ -854,10 +877,12 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () => probe402Response(),
       async () =>
         refundSuccessResponse({
-          channelId,
-          balance: "8000",
-          chargedCumulativeAmount: "500",
-          totalClaimed: "0",
+          channelState: {
+            channelId,
+            balance: "8000",
+            chargedCumulativeAmount: "500",
+            totalClaimed: "0",
+          },
         }),
     ]);
 
@@ -903,7 +928,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       async () => probe402Response(),
       async () =>
         new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": correctiveHeader } }),
-      async () => refundSuccessResponse({ channelId, balance: "0" }),
+      async () => refundSuccessResponse({ channelState: { channelId, balance: "0" } }),
     ]);
     const processSpy = vi.spyOn(x402HTTPClient.prototype, "processPaymentResult");
 

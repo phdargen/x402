@@ -109,7 +109,7 @@ export async function executeClaimWithSignature(
       success: true,
       transaction: tx,
       network,
-      amount: requirements.amount,
+      amount: "",
     };
   } catch (e) {
     return {

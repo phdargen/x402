@@ -9,7 +9,7 @@ import {
   buildChannelConfig,
   readChannelBalanceAndTotalClaimed,
 } from "./channel";
-import type { BatchSettlementRequirementsChannelState } from "../types";
+import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 
 /**
  * Handles a corrective 402 response from the server when the client's
@@ -39,19 +39,18 @@ export async function processCorrectivePaymentRequired(
     return false;
   }
 
-  const channelState = accept.extra.ChannelState as
-    | BatchSettlementRequirementsChannelState
-    | undefined;
+  const channelState = accept.extra.channelState as BatchSettlementChannelStateExtra | undefined;
+  const voucherState = accept.extra.voucherState as BatchSettlementVoucherStateExtra | undefined;
   const hasSig =
     channelState?.chargedCumulativeAmount !== undefined &&
-    channelState.signedMaxClaimable !== undefined &&
-    channelState.signature !== undefined;
+    voucherState?.signedMaxClaimable !== undefined &&
+    voucherState.signature !== undefined;
 
   if (!hasSig) {
     return recoverFromOnChainState(deps, accept);
   }
 
-  return recoverFromSignature(deps, accept, channelState);
+  return recoverFromSignature(deps, accept, channelState, voucherState);
 }
 
 /**
@@ -61,17 +60,19 @@ export async function processCorrectivePaymentRequired(
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
- * @param channelState - Structured recovery fields from `accept.extra.ChannelState`.
+ * @param channelState - Server channel snapshot from `accept.extra.channelState`.
+ * @param voucherState - Latest signed voucher proof from `accept.extra.voucherState`.
  * @returns `true` when local channel state was updated successfully.
  */
 export async function recoverFromSignature(
   deps: BatchSettlementClientDeps,
   accept: PaymentRequirements,
-  channelState: BatchSettlementRequirementsChannelState,
+  channelState: BatchSettlementChannelStateExtra,
+  voucherState: BatchSettlementVoucherStateExtra,
 ): Promise<boolean> {
   const chargedRaw = channelState.chargedCumulativeAmount;
-  const signedRaw = channelState.signedMaxClaimable;
-  const sig = channelState.signature as `0x${string}`;
+  const signedRaw = voucherState.signedMaxClaimable;
+  const sig = voucherState.signature as `0x${string}`;
 
   const charged = BigInt(String(chargedRaw));
   const signed = BigInt(String(signedRaw));

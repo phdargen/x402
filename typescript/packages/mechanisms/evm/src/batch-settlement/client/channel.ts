@@ -4,9 +4,31 @@ import { getAddress } from "viem";
 import type { ClientEvmSigner } from "../../signer";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS, MIN_WITHDRAW_DELAY } from "../constants";
-import type { BatchSettlementPaymentRequirementsExtra, ChannelConfig } from "../types";
+import type {
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementPaymentResponseExtra,
+  ChannelConfig,
+} from "../types";
 import { computeChannelId } from "../utils";
 import type { BatchSettlementClientContext, ClientChannelStorage } from "./storage";
+
+type ResponseChannelState = NonNullable<BatchSettlementPaymentResponseExtra["channelState"]>;
+
+/**
+ * Reads the nested channel state from a settlement response extra object.
+ *
+ * @param extra - Settlement response extra fields.
+ * @returns Channel state fields, or undefined when absent.
+ */
+function readResponseChannelState(
+  extra: Record<string, unknown>,
+): ResponseChannelState | undefined {
+  const channelState = extra.channelState;
+  if (typeof channelState !== "object" || channelState === null) {
+    return undefined;
+  }
+  return channelState as ResponseChannelState;
+}
 
 /**
  * Runtime dependency bag shared by every storage-bound client helper (channel,
@@ -61,23 +83,23 @@ export async function processSettleResponse(
   settle: SettleResponse,
 ): Promise<void> {
   const extra = settle.extra ?? {};
-  const channelId =
-    typeof extra.channelId === "string" && extra.channelId ? extra.channelId : undefined;
-  if (!channelId) return;
+  const channelState = readResponseChannelState(extra);
+  if (!channelState) return;
 
+  const channelId = channelState.channelId;
   const key = channelId.toLowerCase();
 
   const prev = await storage.get(key);
   const next: BatchSettlementClientContext = { ...(prev ?? {}) };
 
-  if (extra.chargedCumulativeAmount !== undefined) {
-    next.chargedCumulativeAmount = String(extra.chargedCumulativeAmount);
+  if (channelState.chargedCumulativeAmount !== undefined) {
+    next.chargedCumulativeAmount = String(channelState.chargedCumulativeAmount);
   }
-  if (extra.balance !== undefined) {
-    next.balance = String(extra.balance);
+  if (channelState.balance !== undefined) {
+    next.balance = String(channelState.balance);
   }
-  if (extra.totalClaimed !== undefined) {
-    next.totalClaimed = String(extra.totalClaimed);
+  if (channelState.totalClaimed !== undefined) {
+    next.totalClaimed = String(channelState.totalClaimed);
   }
 
   await storage.set(key, next);
@@ -98,8 +120,14 @@ export async function updateChannelAfterRefund(
   channelKey: string,
   settleExtra: Record<string, unknown>,
 ): Promise<void> {
+  const channelState = readResponseChannelState(settleExtra);
+  if (!channelState) {
+    await storage.delete(channelKey);
+    return;
+  }
+
   const balanceAfter =
-    settleExtra.balance !== undefined ? BigInt(String(settleExtra.balance)) : undefined;
+    channelState.balance !== undefined ? BigInt(String(channelState.balance)) : undefined;
 
   if (balanceAfter === undefined || balanceAfter <= 0n) {
     await storage.delete(channelKey);
@@ -109,11 +137,11 @@ export async function updateChannelAfterRefund(
   const prev = await storage.get(channelKey);
   const next: BatchSettlementClientContext = { ...(prev ?? {}) };
   next.balance = balanceAfter.toString();
-  if (settleExtra.chargedCumulativeAmount !== undefined) {
-    next.chargedCumulativeAmount = String(settleExtra.chargedCumulativeAmount);
+  if (channelState.chargedCumulativeAmount !== undefined) {
+    next.chargedCumulativeAmount = String(channelState.chargedCumulativeAmount);
   }
-  if (settleExtra.totalClaimed !== undefined) {
-    next.totalClaimed = String(settleExtra.totalClaimed);
+  if (channelState.totalClaimed !== undefined) {
+    next.totalClaimed = String(channelState.totalClaimed);
   }
   await storage.set(channelKey, next);
 }

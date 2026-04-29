@@ -1,4 +1,20 @@
-import type { BatchSettlementPaymentResponseExtra } from "../types";
+import type { BatchSettlementChannelStateExtra } from "../types";
+
+/**
+ * Reads the nested channel snapshot from payment response extra fields.
+ *
+ * @param extra - Payment response extra fields.
+ * @returns Channel state object, or undefined when absent.
+ */
+export function readChannelStateExtra(
+  extra: Record<string, unknown> | undefined,
+): Partial<BatchSettlementChannelStateExtra> | undefined {
+  const value = extra?.channelState;
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  return value as Partial<BatchSettlementChannelStateExtra>;
+}
 
 /**
  * Reads a string value from optional payment `extra`, with a fallback when missing or invalid.
@@ -9,8 +25,8 @@ import type { BatchSettlementPaymentResponseExtra } from "../types";
  * @returns String representation of the value, or `fallback`.
  */
 export function readExtraString(
-  extra: Record<string, unknown> | undefined,
-  key: keyof BatchSettlementPaymentResponseExtra,
+  extra: Partial<Record<keyof BatchSettlementChannelStateExtra, unknown>> | undefined,
+  key: keyof BatchSettlementChannelStateExtra,
   fallback: string,
 ): string {
   const value = extra?.[key];
@@ -28,8 +44,8 @@ export function readExtraString(
  * @returns Parsed number, or `fallback`.
  */
 export function readExtraNumber(
-  extra: Record<string, unknown> | undefined,
-  key: keyof BatchSettlementPaymentResponseExtra,
+  extra: Partial<Record<keyof BatchSettlementChannelStateExtra, unknown>> | undefined,
+  key: keyof BatchSettlementChannelStateExtra,
   fallback: number,
 ): number {
   const value = extra?.[key];
@@ -54,11 +70,12 @@ export type RefundSettlementSnapshot = {
 export function parseRefundSettlementSnapshot(
   extra: Record<string, unknown> | undefined,
 ): RefundSettlementSnapshot {
+  const channelState = readChannelStateExtra(extra);
   return {
-    balance: parseUintStringExtra(extra, "balance"),
-    totalClaimed: parseUintStringExtra(extra, "totalClaimed"),
-    withdrawRequestedAt: parseUintNumberExtra(extra, "withdrawRequestedAt"),
-    refundNonce: parseUintNumberExtra(extra, "refundNonce"),
+    balance: parseUintStringExtra(channelState, "balance"),
+    totalClaimed: parseUintStringExtra(channelState, "totalClaimed"),
+    withdrawRequestedAt: parseUintNumberExtra(channelState, "withdrawRequestedAt"),
+    refundNonce: parseUintNumberExtra(channelState, "refundNonce"),
   };
 }
 
@@ -70,7 +87,7 @@ export function parseRefundSettlementSnapshot(
  * @returns Decimal string representation of the uint (digits only).
  */
 function parseUintStringExtra(
-  extra: Record<string, unknown> | undefined,
+  extra: Partial<Record<keyof BatchSettlementChannelStateExtra, unknown>> | undefined,
   key: "balance" | "totalClaimed",
 ): string {
   const value = extra?.[key];
@@ -87,7 +104,7 @@ function parseUintStringExtra(
  * @returns Parsed non-negative integer.
  */
 function parseUintNumberExtra(
-  extra: Record<string, unknown> | undefined,
+  extra: Partial<Record<keyof BatchSettlementChannelStateExtra, unknown>> | undefined,
   key: "withdrawRequestedAt" | "refundNonce",
 ): number {
   const value = extra?.[key];

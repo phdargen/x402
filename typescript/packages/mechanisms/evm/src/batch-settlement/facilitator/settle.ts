@@ -1,5 +1,5 @@
 import { SettleResponse, PaymentRequirements } from "@x402/core/types";
-import { getAddress } from "viem";
+import { getAddress, isAddressEqual, parseEventLogs } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import { BatchSettlementSettlePayload } from "../types";
 import { batchSettlementABI } from "../abi";
@@ -23,13 +23,16 @@ export async function executeSettle(
   requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   const network = requirements.network;
+  const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
+  const receiver = getAddress(payload.receiver);
+  const token = getAddress(payload.token);
 
   try {
     await signer.readContract({
-      address: getAddress(BATCH_SETTLEMENT_ADDRESS),
+      address: contractAddr,
       abi: batchSettlementABI,
       functionName: "settle",
-      args: [getAddress(payload.receiver), getAddress(payload.token)],
+      args: [receiver, token],
     });
   } catch (e) {
     return {
@@ -43,10 +46,10 @@ export async function executeSettle(
 
   try {
     const tx = await signer.writeContract({
-      address: getAddress(BATCH_SETTLEMENT_ADDRESS),
+      address: contractAddr,
       abi: batchSettlementABI,
       functionName: "settle",
-      args: [getAddress(payload.receiver), getAddress(payload.token)],
+      args: [receiver, token],
     });
 
     const receipt = await signer.waitForTransactionReceipt({ hash: tx });
@@ -61,11 +64,24 @@ export async function executeSettle(
       };
     }
 
+    let amount = "";
+    if (receipt.logs) {
+      const logs = parseEventLogs({
+        abi: batchSettlementABI,
+        eventName: "Settled",
+        logs: receipt.logs.filter(log => isAddressEqual(log.address, contractAddr)),
+      });
+      const settledLog = logs.find(
+        log => isAddressEqual(log.args.receiver, receiver) && isAddressEqual(log.args.token, token),
+      );
+      amount = settledLog?.args.amount.toString() ?? "0";
+    }
+
     return {
       success: true,
       transaction: tx,
       network,
-      amount: requirements.amount,
+      amount,
     };
   } catch (e) {
     return {
