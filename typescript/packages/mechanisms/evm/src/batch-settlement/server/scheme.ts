@@ -21,12 +21,15 @@ import {
   handleAfterVerify,
   handleBeforeVerify,
   handleEnrichPaymentRequiredResponse,
+  handleVerifyFailure,
+  handleVerifiedPaymentCanceled,
 } from "./verify";
 import {
   handleAfterSettle,
   handleBeforeSettle,
   handleEnrichSettlementPayload,
   handleEnrichSettlementResponse,
+  handleSettleFailure,
 } from "./settle";
 
 export interface BatchSettlementEvmSchemeServerConfig {
@@ -74,6 +77,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       onAfterVerify: ctx => handleAfterVerify(this, ctx),
       onBeforeSettle: ctx => handleBeforeSettle(this, ctx),
       onAfterSettle: ctx => handleAfterSettle(this, ctx),
+      onVerifyFailure: ctx => handleVerifyFailure(this, ctx),
+      onSettleFailure: ctx => handleSettleFailure(this, ctx),
+      onVerifiedPaymentCanceled: ctx => handleVerifiedPaymentCanceled(this, ctx),
     };
   }
 
@@ -168,6 +174,33 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   takeChannelSnapshot(payload: DeepReadonly<PaymentPayload>): Channel | undefined {
     return this.takeRequestContext(payload)?.channelSnapshot;
+  }
+
+  /**
+   * Clears this request's pending reservation without touching newer reservations.
+   *
+   * @param payload - Request-scoped payment payload object.
+   */
+  async clearPendingRequest(payload: DeepReadonly<PaymentPayload>): Promise<void> {
+    const context = this.takeRequestContext(payload);
+    if (!context?.channelId || !context.pendingId) {
+      return;
+    }
+
+    await this.storage.updateChannel(context.channelId, current => {
+      if (!current || current.pendingRequest?.pendingId !== context.pendingId) {
+        return current;
+      }
+
+      if (!context.channelSnapshot) {
+        return undefined;
+      }
+
+      return {
+        ...current,
+        pendingRequest: undefined,
+      };
+    });
   }
 
   /**

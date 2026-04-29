@@ -103,7 +103,9 @@ describe("InMemoryChannelStorage", () => {
     });
 
     it("updates from the current stored value", async () => {
-      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "500" }));
+      await storage.updateChannel(CHANNEL_ID, () =>
+        buildSession({ chargedCumulativeAmount: "500" }),
+      );
       const updated = buildSession({ chargedCumulativeAmount: "750" });
       const result = await storage.updateChannel(CHANNEL_ID, current =>
         current?.chargedCumulativeAmount === "500" ? updated : current,
@@ -113,7 +115,9 @@ describe("InMemoryChannelStorage", () => {
     });
 
     it("can leave the channel unchanged", async () => {
-      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "500" }));
+      await storage.updateChannel(CHANNEL_ID, () =>
+        buildSession({ chargedCumulativeAmount: "500" }),
+      );
       const updated = buildSession({ chargedCumulativeAmount: "750" });
       const result = await storage.updateChannel(CHANNEL_ID, current =>
         current?.chargedCumulativeAmount === "499" ? updated : current,

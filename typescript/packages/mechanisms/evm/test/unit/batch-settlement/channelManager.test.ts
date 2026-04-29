@@ -78,6 +78,10 @@ function buildSession(overrides: Partial<Channel> = {}): Channel {
   };
 }
 
+async function storeChannel(storage: InMemoryChannelStorage, channel: Channel): Promise<void> {
+  await storage.updateChannel(channel.channelId, () => channel);
+}
+
 type FakeFacilitator = FacilitatorClient & {
   verify: MockedFunction<FacilitatorClient["verify"]>;
   settle: MockedFunction<FacilitatorClient["settle"]>;
@@ -148,7 +152,7 @@ describe("BatchSettlementChannelManager — claim()", () => {
   it("submits a single claim batch when claimable vouchers exist", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000", totalClaimed: "0" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const results = await manager.claim();
     expect(results).toHaveLength(1);
@@ -166,8 +170,8 @@ describe("BatchSettlementChannelManager — claim()", () => {
     const { manager, storage, facilitator } = buildManager();
     for (let i = 0; i < 5; i++) {
       const config = buildChannelConfig(i.toString(16));
-      await storage.set(
-        computeChannelId(config),
+      await storeChannel(
+        storage,
         buildSession({
           channelConfig: config,
           channelId: computeChannelId(config),
@@ -189,7 +193,7 @@ describe("BatchSettlementChannelManager — claim()", () => {
       chargedCumulativeAmount: "5000",
       lastRequestTimestamp: Date.now(),
     });
-    await storage.set(fresh.channelId, fresh);
+    await storeChannel(storage, fresh);
 
     const results = await manager.claim({ idleSecs: 60 });
     expect(results).toEqual([]);
@@ -199,7 +203,7 @@ describe("BatchSettlementChannelManager — claim()", () => {
   it("updates session.totalClaimed after a successful claim", async () => {
     const { manager, storage } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000", totalClaimed: "0" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     await manager.claim();
 
@@ -212,8 +216,8 @@ describe("BatchSettlementChannelManager — claim()", () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId({ ...config, receiverAuthorizer: authorizer.address });
     const { manager, storage, facilitator } = buildManager({ authorizerSigner: authorizer });
-    await storage.set(
-      channelId,
+    await storeChannel(
+      storage,
       buildSession({
         channelId,
         channelConfig: { ...config, receiverAuthorizer: authorizer.address },
@@ -238,7 +242,7 @@ describe("BatchSettlementChannelManager — claim()", () => {
     }));
     const { manager, storage } = buildManager({ facilitator });
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     await expect(manager.claim()).rejects.toThrow(/Claim failed/);
 
@@ -285,7 +289,7 @@ describe("BatchSettlementChannelManager — claimAndSettle()", () => {
   it("runs both claim and settle when there are claimable vouchers", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const result = await manager.claimAndSettle();
     expect(result.claims).toHaveLength(1);
@@ -306,7 +310,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
   it("filters by provided channel ids (case-insensitive)", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const idUpper = session.channelId.toUpperCase().replace("0X", "0x");
     const result = await manager.refund([idUpper]);
@@ -327,7 +331,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
       totalClaimed: "1000",
       balance: "10000",
     });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     await manager.refund();
 
@@ -345,7 +349,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
     }));
     const { manager, storage } = buildManager({ facilitator });
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     await expect(manager.refund()).rejects.toThrow(/Refund failed/);
 
@@ -387,7 +391,7 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
   it("flushes pending claims and settles on stop({ flush: true })", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     manager.start({ tickSecs: 60 });
     await manager.stop({ flush: true });
@@ -398,7 +402,7 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
   it("invokes onRefund callback when refundOnShutdown produces channels", async () => {
     const { manager, storage } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const onRefund = vi.fn<(r: RefundResult) => void>();
     manager.start({ tickSecs: 60, refundOnShutdown: true, onRefund });
@@ -424,7 +428,7 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
     });
     const { manager, storage } = buildManager({ facilitator });
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const onError = vi.fn<(e: unknown) => void>();
     manager.start({ tickSecs: 60, refundOnShutdown: true, onError });
@@ -447,7 +451,7 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
   it("triggers a claim once claimIntervalSecs has elapsed", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const onClaim = vi.fn<(r: ClaimResult) => void>();
     manager.start({ tickSecs: 1, claimIntervalSecs: 1, onClaim });
@@ -463,7 +467,7 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
   it("triggers a settle once settleIntervalSecs elapses after a claim", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const onSettle = vi.fn<(r: SettleResult) => void>();
     manager.start({
@@ -490,7 +494,7 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
     });
     const { manager, storage } = buildManager({ facilitator });
     const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storage.set(session.channelId, session);
+    await storeChannel(storage, session);
 
     const onError = vi.fn<(e: unknown) => void>();
     manager.start({ tickSecs: 1, claimIntervalSecs: 1, onError });

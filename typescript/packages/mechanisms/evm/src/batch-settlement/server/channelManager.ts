@@ -63,6 +63,17 @@ function formatFacilitatorFailure(operation: string, response: SettleResponse): 
 }
 
 /**
+ * Checks whether a channel has a non-expired payer request reservation.
+ *
+ * @param channel - Channel state to inspect.
+ * @param now - Current wall-clock time in milliseconds.
+ * @returns Whether the channel is busy with a live pending request.
+ */
+function hasLivePendingRequest(channel: Channel, now = Date.now()): boolean {
+  return channel.pendingRequest !== undefined && channel.pendingRequest.expiresAt > now;
+}
+
+/**
  * Manages the server-side channel lifecycle for the `batch-settlement` scheme:
  * batch claiming of vouchers, settlement of claimed funds, and cooperative refund.
  *
@@ -179,9 +190,14 @@ export class BatchSettlementChannelManager {
     const storage = this.scheme.getStorage();
     const channels = await storage.list();
 
-    const targets = channelIds
-      ? channels.filter(s => channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()))
-      : channels;
+    const now = Date.now();
+    const targets = (
+      channelIds
+        ? channels.filter(s =>
+            channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()),
+          )
+        : channels
+    ).filter(channel => !hasLivePendingRequest(channel, now));
 
     if (targets.length === 0) {
       return { channels: [], transaction: "" };
@@ -251,7 +267,9 @@ export class BatchSettlementChannelManager {
     }
 
     for (const c of targets) {
-      await storage.updateChannel(c.channelId, () => undefined);
+      await storage.updateChannel(c.channelId, current =>
+        current && !hasLivePendingRequest(current) ? undefined : current,
+      );
     }
 
     return {
@@ -624,6 +642,9 @@ export class BatchSettlementChannelManager {
 
     for (const c of channels) {
       if (BigInt(c.balance) === 0n) {
+        continue;
+      }
+      if (hasLivePendingRequest(c, now)) {
         continue;
       }
       if (now - c.lastRequestTimestamp >= idleMs) {

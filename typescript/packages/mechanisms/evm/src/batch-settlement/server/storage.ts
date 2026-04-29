@@ -74,6 +74,13 @@ export class InMemoryChannelStorage implements ChannelStorage {
     return [...this.channels.values()];
   }
 
+  /**
+   * Atomically inspects and mutates a channel record while holding a per-channel lock.
+   *
+   * @param channelId - The channel identifier.
+   * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
+   * @returns The final stored channel and whether storage updated, stayed unchanged, or deleted.
+   */
   async updateChannel(
     channelId: string,
     update: (current: Channel | undefined) => Channel | undefined,
@@ -97,6 +104,13 @@ export class InMemoryChannelStorage implements ChannelStorage {
     });
   }
 
+  /**
+   * Runs `fn` after any prior locked work for the same channel key has finished.
+   *
+   * @param key - Lowercased channel id used as the lock key.
+   * @param fn - Async work to run while holding the logical per-channel lock.
+   * @returns The resolved result of `fn`.
+   */
   private async withChannelLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.channelLocks.get(key) ?? Promise.resolve();
     let release!: () => void;

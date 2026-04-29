@@ -65,6 +65,13 @@ export class FileChannelStorage implements ChannelStorage {
     return channels.sort((a, b) => a.channelId.localeCompare(b.channelId));
   }
 
+  /**
+   * Atomically inspects and mutates a channel record under a cross-process file lock.
+   *
+   * @param channelId - The channel identifier.
+   * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
+   * @returns The final stored channel and whether storage updated, stayed unchanged, or deleted.
+   */
   async updateChannel(
     channelId: string,
     update: (current: Channel | undefined) => Channel | undefined,
@@ -115,6 +122,12 @@ export class FileChannelStorage implements ChannelStorage {
     return join(this.root, "server", `${channelId.toLowerCase()}.json`);
   }
 
+  /**
+   * Creates an exclusive lock file, polling until no other process holds it.
+   *
+   * @param lockPath - Absolute path for the lock file (created with `O_EXCL`).
+   * @returns Writable file handle for the lock file; caller must close it to release.
+   */
   private async acquireLock(lockPath: string) {
     while (true) {
       try {
