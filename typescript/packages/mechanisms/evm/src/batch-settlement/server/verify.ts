@@ -297,6 +297,9 @@ export async function handleAfterVerify(
   if (!requestContext?.pendingId) {
     return;
   }
+  if (requestContext.localVerify && isBatchSettlementVoucherPayload(raw)) {
+    return;
+  }
 
   const updateResult = await storage.updateChannel(channelId, current => {
     if (!current || current.pendingRequest?.pendingId !== requestContext.pendingId) {
