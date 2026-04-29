@@ -244,8 +244,7 @@ export async function handleAfterVerify(
   let channelId: string;
   let signedMaxClaimable: string;
   let signature: `0x${string}`;
-  let payer: string;
-  let channelConfig: ChannelConfig | undefined;
+  let channelConfig: ChannelConfig;
   let isRefundVoucher = false;
 
   if (isBatchSettlementDepositPayload(raw)) {
@@ -253,19 +252,16 @@ export async function handleAfterVerify(
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
     signature = raw.voucher.signature;
     channelConfig = raw.channelConfig;
-    payer = channelConfig?.payer ?? result.payer;
   } else if (isBatchSettlementVoucherPayload(raw)) {
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
     signature = raw.voucher.signature;
     channelConfig = raw.channelConfig;
-    payer = channelConfig?.payer ?? result.payer;
   } else if (isBatchSettlementRefundPayload(raw)) {
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
     signature = raw.voucher.signature;
     channelConfig = raw.channelConfig;
-    payer = channelConfig?.payer ?? result.payer;
     isRefundVoucher = true;
   } else {
     return;
@@ -291,7 +287,6 @@ export async function handleAfterVerify(
     const channel: Channel = {
       channelId,
       channelConfig,
-      payer: payer.toLowerCase(),
       chargedCumulativeAmount: current.chargedCumulativeAmount,
       signedMaxClaimable,
       signature,
@@ -300,7 +295,7 @@ export async function handleAfterVerify(
       withdrawRequestedAt,
       refundNonce,
       lastRequestTimestamp: Date.now(),
-      pendingRequest: current?.pendingRequest,
+      pendingRequest: current.pendingRequest,
     };
     return channel;
   });
@@ -362,7 +357,6 @@ function buildProvisionalChannel(
   return {
     channelId: raw.voucher.channelId,
     channelConfig: raw.channelConfig,
-    payer: raw.channelConfig.payer.toLowerCase(),
     chargedCumulativeAmount,
     signedMaxClaimable: raw.voucher.maxClaimableAmount,
     signature: raw.voucher.signature,

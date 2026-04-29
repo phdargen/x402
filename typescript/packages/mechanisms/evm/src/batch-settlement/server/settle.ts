@@ -103,6 +103,7 @@ export async function handleBeforeSettle(
   }
 
   if (updateResult.status !== "updated" || outcome?.status !== "committed") {
+    scheme.takeRequestContext(paymentPayload);
     return {
       abort: true,
       reason: "batch_settlement_channel_busy",
@@ -124,7 +125,7 @@ export async function handleBeforeSettle(
     skip: true,
     result: {
       success: true,
-      payer: outcome.previous.payer as `0x${string}`,
+      payer: outcome.previous.channelConfig.payer.toLowerCase() as `0x${string}`,
       transaction: "",
       network: requirements.network,
       amount: requirements.amount,
@@ -292,31 +293,8 @@ export async function handleAfterSettle(
     const channelId = raw.voucher.channelId;
     const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
     const ex = result.extra ?? {};
-    const prevChannel = await storage.get(channelId);
     const config = raw.channelConfig;
-    const prevCharged =
-      prevChannel?.chargedCumulativeAmount ?? readExtraString(ex, "totalClaimed", "0");
-    const chargedActual = (BigInt(prevCharged) + BigInt(requirements.amount)).toString();
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    const payer = config.payer;
-    const depositAmount = raw.deposit.amount;
-    const fallback: BatchSettlementPaymentResponseExtra = {
-      channelId,
-      chargedCumulativeAmount: chargedActual,
-      balance: (BigInt(prevChannel?.balance ?? "0") + BigInt(depositAmount)).toString(),
-      totalClaimed: prevChannel?.totalClaimed ?? "0",
-      withdrawRequestedAt: prevChannel?.withdrawRequestedAt ?? 0,
-      refundNonce: String(prevChannel?.refundNonce ?? 0),
-    };
-    const channelFields = {
-      channelId:
-        typeof ex.channelId === "string" && ex.channelId ? ex.channelId : fallback.channelId,
-      chargedCumulativeAmount: chargedActual,
-      balance: readExtraString(ex, "balance", fallback.balance),
-      totalClaimed: readExtraString(ex, "totalClaimed", fallback.totalClaimed),
-      withdrawRequestedAt: readExtraNumber(ex, "withdrawRequestedAt", fallback.withdrawRequestedAt),
-      refundNonce: readExtraString(ex, "refundNonce", fallback.refundNonce),
-    };
 
     const updateResult = await storage.updateChannel(channelId, current => {
       if (!current) {
@@ -325,21 +303,27 @@ export async function handleAfterSettle(
       if (!pendingId || current.pendingRequest?.pendingId !== pendingId) {
         return current;
       }
+      const chargedActual = (
+        BigInt(current.chargedCumulativeAmount) + BigInt(requirements.amount)
+      ).toString();
       return {
         channelId,
         channelConfig: config,
-        payer: payer.toLowerCase(),
         chargedCumulativeAmount: chargedActual,
         signedMaxClaimable,
         signature: raw.voucher.signature,
-        balance: channelFields.balance,
-        totalClaimed: channelFields.totalClaimed,
-        withdrawRequestedAt: channelFields.withdrawRequestedAt,
-        refundNonce: parseInt(channelFields.refundNonce, 10) || 0,
+        balance: readExtraString(ex, "balance", current.balance),
+        totalClaimed: readExtraString(ex, "totalClaimed", current.totalClaimed),
+        withdrawRequestedAt: readExtraNumber(
+          ex,
+          "withdrawRequestedAt",
+          current.withdrawRequestedAt,
+        ),
+        refundNonce: readExtraNumber(ex, "refundNonce", current.refundNonce),
         lastRequestTimestamp: Date.now(),
       };
     });
-    if (updateResult.channel) {
+    if (updateResult.status === "updated" && updateResult.channel) {
       scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
       return;
     }

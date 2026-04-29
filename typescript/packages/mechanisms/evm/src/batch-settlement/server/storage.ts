@@ -3,7 +3,6 @@ import type { ChannelConfig } from "../types";
 export interface Channel {
   channelId: string;
   channelConfig: ChannelConfig;
-  payer: string;
   chargedCumulativeAmount: string;
   signedMaxClaimable: string;
   signature: string;

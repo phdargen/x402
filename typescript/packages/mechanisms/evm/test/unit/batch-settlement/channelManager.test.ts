@@ -65,7 +65,6 @@ function buildSession(overrides: Partial<Channel> = {}): Channel {
   return {
     channelId,
     channelConfig: config,
-    payer: PAYER.toLowerCase(),
     chargedCumulativeAmount: "1000",
     signedMaxClaimable: "1000",
     signature: "0xdeadbeef",
@@ -448,20 +447,31 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
     vi.useRealTimers();
   });
 
-  it("triggers a claim once claimIntervalSecs has elapsed", async () => {
+  it("triggers a claim without settling in the same tick", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
     await storeChannel(storage, session);
 
     const onClaim = vi.fn<(r: ClaimResult) => void>();
-    manager.start({ tickSecs: 1, claimIntervalSecs: 1, onClaim });
+    const onSettle = vi.fn<(r: SettleResult) => void>();
+    manager.start({
+      tickSecs: 1,
+      claimIntervalSecs: 1,
+      settleIntervalSecs: 1,
+      onClaim,
+      onSettle,
+    });
 
     await vi.advanceTimersByTimeAsync(1100);
     await vi.runAllTicks();
 
     await manager.stop();
     expect(onClaim).toHaveBeenCalled();
-    expect(facilitator.settle).toHaveBeenCalled();
+    expect(onSettle).not.toHaveBeenCalled();
+    const settleTypes = facilitator.settle.mock.calls.map(
+      ([p]) => (p.payload as Record<string, unknown>).type,
+    );
+    expect(settleTypes).toEqual(["claim"]);
   });
 
   it("triggers a settle once settleIntervalSecs elapses after a claim", async () => {

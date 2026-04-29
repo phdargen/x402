@@ -375,7 +375,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0x",
@@ -410,7 +409,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -435,7 +433,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -472,7 +469,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1500",
       signedMaxClaimable: "1500",
       signature: "0xabcd",
@@ -497,7 +493,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1500",
       signedMaxClaimable: "1500",
       signature: "0xabcd",
@@ -523,7 +518,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -554,7 +548,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -592,7 +585,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -632,7 +624,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     const channel: Channel = {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -702,7 +693,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -734,7 +724,6 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -791,7 +780,6 @@ describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -853,7 +841,6 @@ describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
     await storeChannel(storage, settleChannelId, {
       channelId: settleChannelId,
       channelConfig: settleConfig,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -903,7 +890,6 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
     } as never);
 
     const channel = await storage.get(channelId);
-    expect(channel?.payer).toBe(PAYER.toLowerCase());
     expect(channel?.balance).toBe("10000");
     expect(channel?.signedMaxClaimable).toBe("1000");
     expect(channel?.signature).toBe("0xcafebabe");
@@ -993,7 +979,6 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "900",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -1020,7 +1005,6 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -1063,7 +1047,6 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "500",
       signedMaxClaimable: "500",
       signature: "0xdeadbeef",
@@ -1173,7 +1156,6 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "500",
       signedMaxClaimable: "500",
       signature: "0xdeadbeef",
@@ -1249,7 +1231,6 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const channel: Channel = {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -1324,7 +1305,6 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const channel: Channel = {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -1430,7 +1410,6 @@ describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -1449,7 +1428,6 @@ describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "5000",
       signedMaxClaimable: "5000",
       signature: "0xabcd",
@@ -1474,7 +1452,6 @@ describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "5000",
       signedMaxClaimable: "5000",
       signature: "0xabcd",
@@ -1494,7 +1471,6 @@ describe("BatchSettlementChannelManager — getClaimableVouchers", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "5000",
       signedMaxClaimable: "5000",
       signature: "0xabcd",
@@ -1555,7 +1531,6 @@ describe("BatchSettlementChannelManager — refund pending channels", () => {
     await storeChannel(storage, channelId, {
       channelId,
       channelConfig: config,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "1000",
       signedMaxClaimable: "1000",
       signature: "0xabcd",
@@ -1595,7 +1570,6 @@ describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () =>
     await storeChannel(storage, id1, {
       channelId: id1,
       channelConfig: config1,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",
@@ -1608,7 +1582,6 @@ describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () =>
     await storeChannel(storage, id2, {
       channelId: id2,
       channelConfig: config2,
-      payer: PAYER.toLowerCase(),
       chargedCumulativeAmount: "0",
       signedMaxClaimable: "0",
       signature: "0x",

@@ -21,7 +21,6 @@ const CHANNEL_ID = "0xabc1230000000000000000000000000000000000000000000000000000
 const buildSession = (overrides: Partial<Channel> = {}): Channel => ({
   channelId: CHANNEL_ID,
   channelConfig: CHANNEL_CONFIG,
-  payer: CHANNEL_CONFIG.payer,
   chargedCumulativeAmount: "0",
   signedMaxClaimable: "0",
   signature: "0x",

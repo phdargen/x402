@@ -435,8 +435,10 @@ export class BatchSettlementChannelManager {
 
     this.tickInProgress = true;
     try {
-      await this.runClaimPhase(cfg);
-      await this.runSettlePhase(cfg);
+      const claimed = await this.runClaimPhase(cfg);
+      if (!claimed) {
+        await this.runSettlePhase(cfg);
+      }
       await this.runRefundPhase(cfg);
     } finally {
       this.tickInProgress = false;
@@ -455,6 +457,7 @@ export class BatchSettlementChannelManager {
    * @param cfg.maxClaimsPerBatch - Voucher batch size passed to {@link BatchSettlementChannelManager.claim}.
    * @param cfg.onClaim - Callback invoked after each successful claim batch.
    * @param cfg.onError - Callback invoked when an error is caught during the phase.
+   * @returns Whether this tick submitted one or more claim transactions.
    */
   private async runClaimPhase(cfg: {
     claimIntervalMs: number;
@@ -464,18 +467,23 @@ export class BatchSettlementChannelManager {
     maxClaimsPerBatch: number;
     onClaim?: (result: ClaimResult) => void;
     onError?: (error: unknown) => void;
-  }): Promise<void> {
+  }): Promise<boolean> {
     try {
       const shouldClaim = await this.evaluateClaimTriggers(cfg);
-      if (!shouldClaim) return;
+      if (!shouldClaim) return false;
 
       const results = await this.claim({ maxClaimsPerBatch: cfg.maxClaimsPerBatch });
       this.lastClaimTime = Date.now();
+      if (results.length > 0) {
+        this.lastSettleTime = Date.now();
+      }
       for (const r of results) {
         cfg.onClaim?.(r);
       }
+      return results.length > 0;
     } catch (err) {
       cfg.onError?.(err);
+      return false;
     }
   }
 
