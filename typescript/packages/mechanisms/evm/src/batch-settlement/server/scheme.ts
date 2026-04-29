@@ -36,12 +36,14 @@ export interface BatchSettlementEvmSchemeServerConfig {
   storage?: ChannelStorage;
   receiverAuthorizerSigner?: AuthorizerSigner;
   withdrawDelay?: number;
+  onchainStateTtlMs?: number;
 }
 
 export interface BatchSettlementRequestContext {
   channelId?: string;
   pendingId?: string;
   channelSnapshot?: Channel;
+  localVerify?: boolean;
 }
 
 /**
@@ -60,6 +62,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
   private readonly withdrawDelay: number;
+  private readonly onchainStateTtlMs: number;
 
   /**
    * Constructs a batched server scheme.
@@ -72,6 +75,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     this.storage = config?.storage ?? new InMemoryChannelStorage();
     this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
     this.withdrawDelay = config?.withdrawDelay ?? MIN_WITHDRAW_DELAY;
+    this.onchainStateTtlMs =
+      config?.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
     this.schemeHooks = {
       onBeforeVerify: ctx => handleBeforeVerify(this, ctx),
       onAfterVerify: ctx => handleAfterVerify(this, ctx),
@@ -317,6 +322,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
+   * Returns how long mirrored onchain channel state is trusted for local voucher verification.
+   *
+   * @returns Freshness window in milliseconds.
+   */
+  getOnchainStateTtlMs(): number {
+    return this.onchainStateTtlMs;
+  }
+
+  /**
    * Returns the receiver-authorizer signer, if configured.
    *
    * @returns Receiver-authorizer signer, or `undefined` when not set.
@@ -388,4 +402,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       },
     };
   }
+}
+
+/**
+ * Derives a reasonable on-chain state freshness window from the channel withdraw delay.
+ *
+ * @param withdrawDelaySeconds - On-chain withdraw delay for the channel, in seconds.
+ * @returns TTL in milliseconds, clamped between 30 seconds and 5 minutes.
+ */
+function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
+  const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1000;
+  return Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(withdrawDelayMs / 3)));
 }

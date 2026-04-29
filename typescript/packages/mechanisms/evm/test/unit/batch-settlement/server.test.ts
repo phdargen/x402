@@ -3,6 +3,7 @@ import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/server/s
 import { BatchSettlementChannelManager } from "../../../src/batch-settlement/server/channelManager";
 import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
 import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
+import { signVoucher } from "../../../src/batch-settlement/client/voucher";
 import type {
   ChannelConfig,
   AuthorizerSigner,
@@ -95,6 +96,7 @@ function buildVoucherPayload(
   channelId: string,
   maxClaimableAmount: string,
   config: ChannelConfig,
+  signature: `0x${string}` = "0xdeadbeef",
 ): PaymentPayload {
   const payload: BatchSettlementVoucherPayload = {
     type: "voucher",
@@ -102,7 +104,7 @@ function buildVoucherPayload(
     voucher: {
       channelId: channelId as `0x${string}`,
       maxClaimableAmount,
-      signature: "0xdeadbeef",
+      signature,
     },
   };
   return {
@@ -110,6 +112,20 @@ function buildVoucherPayload(
     accepted: makeRequirements(),
     payload: payload as unknown as Record<string, unknown>,
   };
+}
+
+async function buildSignedVoucherPayload(
+  channelId: `0x${string}`,
+  maxClaimableAmount: string,
+  config: ChannelConfig,
+): Promise<PaymentPayload> {
+  const voucher = await signVoucher(
+    buildAuthorizerSigner(),
+    channelId,
+    maxClaimableAmount,
+    NETWORK,
+  );
+  return buildVoucherPayload(channelId, maxClaimableAmount, config, voucher.signature);
 }
 
 function buildRefundPayload(
@@ -197,19 +213,22 @@ describe("BatchSettlementEvmScheme — construction", () => {
     expect(server.getStorage()).toBeInstanceOf(InMemoryChannelStorage);
     expect(server.getReceiverAddress()).toBe(RECEIVER);
     expect(server.getWithdrawDelay()).toBe(900);
+    expect(server.getOnchainStateTtlMs()).toBe(300_000);
     expect(server.getReceiverAuthorizerSigner()).toBeUndefined();
   });
 
-  it("allows custom storage and withdrawDelay", () => {
+  it("allows custom storage, withdrawDelay, and onchain state TTL", () => {
     const storage = new InMemoryChannelStorage();
     const signer = buildAuthorizerSigner();
     const server = new BatchSettlementEvmScheme(RECEIVER, {
       storage,
       withdrawDelay: 1800,
+      onchainStateTtlMs: 45_000,
       receiverAuthorizerSigner: signer,
     });
     expect(server.getStorage()).toBe(storage);
     expect(server.getWithdrawDelay()).toBe(1800);
+    expect(server.getOnchainStateTtlMs()).toBe(45_000);
     expect(server.getReceiverAuthorizerSigner()).toBe(signer);
   });
 });
@@ -382,6 +401,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       totalClaimed: "0",
       withdrawRequestedAt: 0,
       refundNonce: 0,
+      onchainSyncedAt: 123,
       lastRequestTimestamp: 0,
     });
 
@@ -390,6 +410,210 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements: makeRequirements({ amount: "1000" }),
     } as never);
     expect(result).toBeUndefined();
+  });
+
+  it("locally verifies a fresh EOA-authorized voucher", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 2,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as unknown as { skip: true; result: VerifyResponse };
+
+    expect(result?.skip).toBe(true);
+    expect(result.result).toMatchObject({
+      isValid: true,
+      payer: PAYER,
+      extra: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "2",
+      },
+    });
+    expect((await storage.get(channelId))?.pendingRequest).toBeDefined();
+  });
+
+  it("does not refresh onchain sync time after a local voucher verify", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const onchainSyncedAt = Date.now() - 1_000;
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt,
+      lastRequestTimestamp: 0,
+    });
+
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+    const verifyResult = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as unknown as { skip: true; result: VerifyResponse };
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements: makeRequirements({ amount: "1000" }),
+      result: verifyResult.result,
+    } as never);
+
+    expect((await storage.get(channelId))?.onchainSyncedAt).toBe(onchainSyncedAt);
+  });
+
+  it("falls through to facilitator verification when mirrored onchain state is stale", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt: Date.now() - server.getOnchainStateTtlMs() - 1,
+      lastRequestTimestamp: 0,
+    });
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toBeUndefined();
+    expect((await storage.get(channelId))?.pendingRequest).toBeDefined();
+  });
+
+  it("falls through to facilitator verification for EIP-1271 vouchers", async () => {
+    const config = buildChannelConfig({
+      payerAuthorizer: "0x0000000000000000000000000000000000000000",
+    });
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: 0,
+    });
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toBeUndefined();
+  });
+
+  it("rejects a locally invalid voucher signature without facilitator verification", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as unknown as { skip: true; result: VerifyResponse };
+
+    expect(result?.skip).toBe(true);
+    expect(result.result).toMatchObject({
+      isValid: false,
+      invalidReason: "batch_settlement_evm_invalid_voucher_signature",
+    });
+  });
+
+  it("rejects locally when the voucher cumulative amount exceeds balance", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "1500",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as unknown as { skip: true; result: VerifyResponse };
+
+    expect(result?.skip).toBe(true);
+    expect(result.result.invalidReason).toBe("batch_settlement_evm_cumulative_exceeds_balance");
+  });
+
+  it("rejects locally when the voucher cumulative amount is already claimed", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "2000",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: 0,
+    });
+
+    const result = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "2000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never)) as unknown as { skip: true; result: VerifyResponse };
+
+    expect(result?.skip).toBe(true);
+    expect(result.result.invalidReason).toBe("batch_settlement_evm_cumulative_below_claimed");
   });
 
   it("does not abort initial deposit payloads with no server channel state", async () => {
@@ -416,6 +640,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       totalClaimed: "0",
       withdrawRequestedAt: 0,
       refundNonce: 0,
+      onchainSyncedAt: 123,
       lastRequestTimestamp: 0,
     });
 
@@ -440,6 +665,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       totalClaimed: "0",
       withdrawRequestedAt: 0,
       refundNonce: 0,
+      onchainSyncedAt: 123,
       lastRequestTimestamp: 0,
     });
 
@@ -893,6 +1119,7 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
     expect(channel?.balance).toBe("10000");
     expect(channel?.signedMaxClaimable).toBe("1000");
     expect(channel?.signature).toBe("0xcafebabe");
+    expect(channel?.onchainSyncedAt).toBeGreaterThan(0);
   });
 
   it("does not create channel record when result.isValid is false", async () => {
@@ -1012,6 +1239,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       totalClaimed: "0",
       withdrawRequestedAt: 0,
       refundNonce: 0,
+      onchainSyncedAt: 123,
       lastRequestTimestamp: 0,
     });
 
@@ -1039,6 +1267,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     const updated = await storage.get(channelId);
     expect(updated?.chargedCumulativeAmount).toBe("1000");
     expect(updated?.signedMaxClaimable).toBe("1000");
+    expect(updated?.onchainSyncedAt).toBe(123);
   });
 
   it("enriches a zero-charge refund voucher into a full refundWithSignature payload", async () => {
@@ -1215,6 +1444,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const channel = await storage.get(channelId);
     expect(channel?.chargedCumulativeAmount).toBe("1000");
     expect(channel?.balance).toBe("10000");
+    expect(channel?.onchainSyncedAt).toBeGreaterThan(0);
     expect((result.extra as Record<string, string>).chargedCumulativeAmount).toBeUndefined();
 
     const enrichment = await server.enrichSettlementResponse({
@@ -1367,6 +1597,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect(updated).toBeDefined();
     expect(updated?.balance).toBe("8000");
     expect(updated?.refundNonce).toBe(3);
+    expect(updated?.onchainSyncedAt).toBeGreaterThan(0);
     expect((result.extra as Record<string, unknown>).refundedAmount).toBe("2000");
 
     const enrichment = await server.enrichSettlementResponse({

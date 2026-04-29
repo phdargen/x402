@@ -4,7 +4,9 @@ import type {
   VerifyFailureContext,
   VerifyResultContext,
 } from "@x402/core/server";
+import type { VerifyResponse } from "@x402/core/types";
 import type { SchemePaymentRequiredContext } from "@x402/core/types";
+import { getAddress, verifyTypedData } from "viem";
 import {
   type BatchSettlementDepositPayload,
   type BatchSettlementRefundPayload,
@@ -13,16 +15,20 @@ import {
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
-import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import { BATCH_SETTLEMENT_SCHEME, voucherTypes } from "../constants";
 import type { ChannelConfig } from "../types";
-import { createNonce } from "../../utils";
+import { createNonce, getEvmChainId } from "../../utils";
+import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
+import { validateChannelConfig } from "../facilitator/utils";
+import * as Errors from "../facilitator/errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel, PendingRequest } from "./storage";
 import { readExtraNumber, readExtraString } from "./utils";
 
-const PENDING_GRACE_MS = 5_000;
-const MIN_PENDING_TTL_MS = 5_000;
-const MAX_PENDING_TTL_MS = 10 * 60 * 1000;
+// Framework cleanup hooks clear pending reservations for normal failures
+// This bounded TTL releases channels when cleanup cannot run or complete
+const MIN_PENDING_TTL_MS = 5_000; // 5 seconds
+const MAX_PENDING_TTL_MS = 10 * 60 * 1000; // 600 seconds
 
 /**
  * Computes the bounded pending reservation expiry time.
@@ -32,7 +38,7 @@ const MAX_PENDING_TTL_MS = 10 * 60 * 1000;
  * @returns Expiry timestamp in milliseconds.
  */
 function pendingExpiresAt(maxTimeoutSeconds: number | undefined, now: number): number {
-  const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000 + PENDING_GRACE_MS;
+  const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000;
   const ttlMs = Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
   return now + ttlMs;
 }
@@ -67,11 +73,9 @@ function isPendingLive(pending: PendingRequest | undefined, now: number): boolea
 export async function handleBeforeVerify(
   scheme: BatchSettlementEvmScheme,
   ctx: VerifyContext,
-): Promise<void | {
-  abort: true;
-  reason: string;
-  message?: string;
-}> {
+): Promise<
+  void | { abort: true; reason: string; message?: string } | { skip: true; result: VerifyResponse }
+> {
   const { paymentPayload, requirements } = ctx;
 
   const raw = paymentPayload.payload;
@@ -157,6 +161,20 @@ export async function handleBeforeVerify(
       pendingId,
       channelSnapshot: outcome.channelSnapshot,
     });
+
+    if (isBatchSettlementVoucherPayload(raw)) {
+      const localResult = await verifyVoucherLocally(
+        scheme,
+        raw,
+        requirements,
+        outcome.channelSnapshot,
+        now,
+      );
+      if (localResult) {
+        scheme.mergeRequestContext(paymentPayload, { localVerify: true });
+        return { skip: true, result: localResult };
+      }
+    }
   }
 }
 
@@ -272,6 +290,7 @@ export async function handleAfterVerify(
   const totalClaimed = readExtraString(ex, "totalClaimed", "0");
   const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
   const refundNonce = readExtraNumber(ex, "refundNonce", 0);
+  const now = Date.now();
 
   const storage = scheme.getStorage();
   const requestContext = scheme.readRequestContext(paymentPayload);
@@ -294,7 +313,8 @@ export async function handleAfterVerify(
       totalClaimed,
       withdrawRequestedAt,
       refundNonce,
-      lastRequestTimestamp: Date.now(),
+      onchainSyncedAt: requestContext.localVerify ? current.onchainSyncedAt : now,
+      lastRequestTimestamp: now,
       pendingRequest: current.pendingRequest,
     };
     return channel;
@@ -341,6 +361,126 @@ export async function handleVerifiedPaymentCanceled(
     return;
   }
   await scheme.clearPendingRequest(ctx.paymentPayload);
+}
+
+/**
+ * Verifies a voucher against locally cached channel state when that state is fresh.
+ *
+ * @param scheme - Batch settlement scheme (TTL for on-chain sync freshness).
+ * @param raw - Decoded batch-settlement voucher payload.
+ * @param requirements - Payment requirements (network, etc.).
+ * @param channel - Cached channel row, if any.
+ * @param now - Current wall-clock time in milliseconds.
+ * @returns A {@link VerifyResponse}, or `undefined` to fall back to facilitator verification.
+ */
+async function verifyVoucherLocally(
+  scheme: BatchSettlementEvmScheme,
+  raw: BatchSettlementVoucherPayload,
+  requirements: VerifyContext["requirements"],
+  channel: Channel | undefined,
+  now: number,
+): Promise<VerifyResponse | undefined> {
+  if (!channel || !isOnchainStateFresh(channel, scheme.getOnchainStateTtlMs(), now)) {
+    return;
+  }
+
+  if (raw.channelConfig.payerAuthorizer === "0x0000000000000000000000000000000000000000") {
+    return;
+  }
+
+  const payer = raw.channelConfig.payer;
+  const configErr = validateChannelConfig(
+    raw.channelConfig,
+    raw.voucher.channelId,
+    requirements as Parameters<typeof validateChannelConfig>[2],
+  );
+  if (configErr) {
+    return invalidVerifyResponse(payer, configErr);
+  }
+
+  if (
+    computeChannelId(raw.channelConfig, requirements.network).toLowerCase() !==
+    channel.channelId.toLowerCase()
+  ) {
+    return invalidVerifyResponse(payer, Errors.ErrChannelIdMismatch);
+  }
+
+  const signatureOk = await verifyLocalVoucherSignature(raw, requirements.network);
+  if (!signatureOk) {
+    return invalidVerifyResponse(payer, Errors.ErrInvalidVoucherSignature);
+  }
+
+  const maxClaimableAmount = BigInt(raw.voucher.maxClaimableAmount);
+  if (maxClaimableAmount > BigInt(channel.balance)) {
+    return invalidVerifyResponse(payer, Errors.ErrCumulativeExceedsBalance);
+  }
+
+  if (maxClaimableAmount <= BigInt(channel.totalClaimed)) {
+    return invalidVerifyResponse(payer, Errors.ErrCumulativeAmountBelowClaimed);
+  }
+
+  return {
+    isValid: true,
+    payer,
+    extra: {
+      channelId: raw.voucher.channelId,
+      balance: channel.balance,
+      totalClaimed: channel.totalClaimed,
+      withdrawRequestedAt: channel.withdrawRequestedAt,
+      refundNonce: channel.refundNonce.toString(),
+    },
+  };
+}
+
+/**
+ * Returns whether cached on-chain fields for a channel are still within the freshness window.
+ *
+ * @param channel - Cached channel row.
+ * @param ttlMs - Maximum age of `onchainSyncedAt` in milliseconds.
+ * @param now - Current wall-clock time in milliseconds.
+ * @returns `true` if on-chain sync time is present and still within `ttlMs` of `now`.
+ */
+function isOnchainStateFresh(channel: Channel, ttlMs: number, now: number): boolean {
+  return channel.onchainSyncedAt !== undefined && now - channel.onchainSyncedAt <= ttlMs;
+}
+
+/**
+ * Verifies the EIP-712 voucher signature against the payer authorizer.
+ *
+ * @param raw - Decoded batch-settlement voucher payload.
+ * @param network - EVM network identifier for chain ID / domain.
+ * @returns Whether the typed-data signature is valid.
+ */
+async function verifyLocalVoucherSignature(
+  raw: BatchSettlementVoucherPayload,
+  network: string,
+): Promise<boolean> {
+  try {
+    return await verifyTypedData({
+      address: getAddress(raw.channelConfig.payerAuthorizer),
+      domain: getBatchSettlementEip712Domain(getEvmChainId(network)),
+      types: voucherTypes,
+      primaryType: "Voucher",
+      message: {
+        channelId: raw.voucher.channelId,
+        maxClaimableAmount: BigInt(raw.voucher.maxClaimableAmount),
+      },
+      signature: raw.voucher.signature,
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds a failed verify response with the payer address preserved for reporting.
+ *
+ * @param payer - Payer address from the payload.
+ * @param invalidReason - Machine-readable failure reason.
+ * @returns Invalid {@link VerifyResponse} with `isValid: false`.
+ */
+function invalidVerifyResponse(payer: `0x${string}`, invalidReason: string): VerifyResponse {
+  return { isValid: false, invalidReason, payer };
 }
 
 /**

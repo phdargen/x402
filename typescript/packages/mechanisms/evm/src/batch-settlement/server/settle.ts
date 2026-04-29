@@ -257,6 +257,7 @@ export async function handleAfterSettle(
   if (isBatchSettlementRefundPayload(raw)) {
     const channelId = computeChannelId(raw.channelConfig, requirements.network);
     const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
+    const now = Date.now();
 
     const snapshot = parseRefundSettlementSnapshot(result.extra);
     const updateResult = await storage.updateChannel(channelId, current => {
@@ -272,7 +273,8 @@ export async function handleAfterSettle(
       return {
         ...current,
         ...snapshot,
-        lastRequestTimestamp: Date.now(),
+        onchainSyncedAt: now,
+        lastRequestTimestamp: now,
         pendingRequest: undefined,
       };
     });
@@ -295,6 +297,7 @@ export async function handleAfterSettle(
     const ex = result.extra ?? {};
     const config = raw.channelConfig;
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
+    const now = Date.now();
 
     const updateResult = await storage.updateChannel(channelId, current => {
       if (!current) {
@@ -320,7 +323,8 @@ export async function handleAfterSettle(
           current.withdrawRequestedAt,
         ),
         refundNonce: readExtraNumber(ex, "refundNonce", current.refundNonce),
-        lastRequestTimestamp: Date.now(),
+        onchainSyncedAt: now,
+        lastRequestTimestamp: now,
       };
     });
     if (updateResult.status === "updated" && updateResult.channel) {

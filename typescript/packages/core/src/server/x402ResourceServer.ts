@@ -126,11 +126,11 @@ export interface PaymentCancellationDispatcher {
   cancel(options: VerifiedPaymentCancelOptions): Promise<void>;
 }
 
-export type BeforeVerifyHook = (context: VerifyContext) => Promise<void | {
-  abort: true;
-  reason: string;
-  message?: string;
-}>;
+export type BeforeVerifyHook = (
+  context: VerifyContext,
+) => Promise<
+  void | { abort: true; reason: string; message?: string } | { skip: true; result: VerifyResponse }
+>;
 
 export type AfterVerifyHook = (
   context: VerifyResultContext,
@@ -934,6 +934,14 @@ export class x402ResourceServer {
             invalidMessage: result.message,
           };
         }
+        if (result && "skip" in result && result.skip) {
+          return this.runAfterVerifyHooks(
+            result.result,
+            context,
+            extensionKeysInUse,
+            matchedScheme,
+          );
+        }
       } catch (error) {
         this.warnResourceServerHookFailure("beforeVerify", label, error);
       }
@@ -975,34 +983,7 @@ export class x402ResourceServer {
         verifyResult = await facilitatorClient.verify(paymentPayload, requirements);
       }
 
-      // Execute afterVerify hooks. The last hook to return a `skipHandler`
-      // directive wins; this lets schemes signal that a self-contained
-      // operation (e.g. cooperative refund) should bypass the resource
-      // handler and settle inline. The directive is attached as an extra
-      // optional property on the returned response — the wire-level
-      // `VerifyResponse` is never modified.
-      const resultContext: VerifyResultContext = {
-        ...context,
-        result: verifyResult,
-      };
-
-      let skipHandler: SkipHandlerDirective | undefined;
-      for (const { label, hook } of this.getLabeledHooks(
-        "afterVerify",
-        extensionKeysInUse,
-        matchedScheme,
-      )) {
-        try {
-          const directive = await hook(resultContext);
-          if (directive && "skipHandler" in directive && directive.skipHandler) {
-            skipHandler = directive.response ?? {};
-          }
-        } catch (error) {
-          this.warnResourceServerHookFailure("afterVerify", label, error);
-        }
-      }
-
-      return skipHandler ? { ...verifyResult, skipHandler } : verifyResult;
+      return this.runAfterVerifyHooks(verifyResult, context, extensionKeysInUse, matchedScheme);
     } catch (error) {
       const failureContext: VerifyFailureContext = {
         ...context,
@@ -1314,6 +1295,47 @@ export class x402ResourceServer {
   private warnExtensionHookFailure(extensionKey: string, hookName: string, error: unknown): void {
     const detail = error instanceof Error ? error.message : String(error);
     console.warn(`[x402] extension "${extensionKey}" ${hookName} threw: ${detail}`);
+  }
+
+  /**
+   * Executes after-verify hooks for facilitator and hook-provided verify results.
+   *
+   * @param verifyResult - Verify response passed to after-verify hooks.
+   * @param context - Verify context shared with before-verify hooks.
+   * @param extensionKeysInUse - Declared extension keys for this request.
+   * @param matchedScheme - Scheme/network selected for this payment.
+   * @param matchedScheme.network - Matched payment network.
+   * @param matchedScheme.scheme - Matched payment scheme.
+   * @returns Verify response with any in-process skip handler directive.
+   */
+  private async runAfterVerifyHooks(
+    verifyResult: VerifyResponse,
+    context: VerifyContext,
+    extensionKeysInUse: readonly string[],
+    matchedScheme: { network: Network; scheme: string },
+  ): Promise<ResourceVerifyRespone> {
+    const resultContext: VerifyResultContext = {
+      ...context,
+      result: verifyResult,
+    };
+
+    let skipHandler: SkipHandlerDirective | undefined;
+    for (const { label, hook } of this.getLabeledHooks(
+      "afterVerify",
+      extensionKeysInUse,
+      matchedScheme,
+    )) {
+      try {
+        const directive = await hook(resultContext);
+        if (directive && "skipHandler" in directive && directive.skipHandler) {
+          skipHandler = directive.response ?? {};
+        }
+      } catch (error) {
+        this.warnResourceServerHookFailure("afterVerify", label, error);
+      }
+    }
+
+    return skipHandler ? { ...verifyResult, skipHandler } : verifyResult;
   }
 
   /**

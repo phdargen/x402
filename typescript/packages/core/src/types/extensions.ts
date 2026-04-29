@@ -33,7 +33,11 @@ export interface ResourceServerExtensionHooks {
   onBeforeVerify?: (
     declaration: unknown,
     context: VerifyContext,
-  ) => Promise<void | { abort: true; reason: string; message?: string }>;
+  ) => Promise<
+    | void
+    | { abort: true; reason: string; message?: string }
+    | { skip: true; result: VerifyResponse }
+  >;
   onAfterVerify?: (declaration: unknown, context: VerifyResultContext) => Promise<void>;
   onVerifyFailure?: (
     declaration: unknown,
@@ -42,7 +46,11 @@ export interface ResourceServerExtensionHooks {
   onBeforeSettle?: (
     declaration: unknown,
     context: SettleContext,
-  ) => Promise<void | { abort: true; reason: string; message?: string }>;
+  ) => Promise<
+    | void
+    | { abort: true; reason: string; message?: string }
+    | { skip: true; result: SettleResponse }
+  >;
   onAfterSettle?: (declaration: unknown, context: SettleResultContext) => Promise<void>;
   onSettleFailure?: (
     declaration: unknown,

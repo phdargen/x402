@@ -553,6 +553,53 @@ describe("x402ResourceServer", () => {
         });
       });
 
+      it("should skip facilitator verification when a beforeVerify hook returns a result", async () => {
+        server.onBeforeVerify(async () => {
+          return {
+            skip: true,
+            result: buildVerifyResponse({
+              isValid: true,
+              payer: "0xlocal",
+              extra: { source: "local" },
+            }),
+          };
+        });
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(mockClient.verifyCalls.length).toBe(0);
+        expect(result).toMatchObject({
+          isValid: true,
+          payer: "0xlocal",
+          extra: { source: "local" },
+        });
+      });
+
+      it("should run afterVerify hooks when beforeVerify skips facilitator verification", async () => {
+        const executionOrder: string[] = [];
+
+        server
+          .onBeforeVerify(async () => {
+            executionOrder.push("before");
+            return {
+              skip: true,
+              result: buildVerifyResponse({ isValid: true, payer: "0xlocal" }),
+            };
+          })
+          .onAfterVerify(async context => {
+            executionOrder.push("after");
+            expect(context.result.payer).toBe("0xlocal");
+          });
+
+        await server.verifyPayment(buildPaymentPayload(), buildPaymentRequirements());
+
+        expect(mockClient.verifyCalls.length).toBe(0);
+        expect(executionOrder).toEqual(["before", "after"]);
+      });
+
       it("should execute multiple hooks in order", async () => {
         const executionOrder: number[] = [];
 

@@ -10,6 +10,7 @@ export interface Channel {
   totalClaimed: string;
   withdrawRequestedAt: number;
   refundNonce: number;
+  onchainSyncedAt?: number;
   lastRequestTimestamp: number;
   pendingRequest?: PendingRequest;
 }
