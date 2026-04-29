@@ -75,14 +75,16 @@ export async function handleBeforeSettle(
     withdrawRequestedAt: channel.withdrawRequestedAt,
     refundNonce: channel.refundNonce,
     lastRequestTimestamp: Date.now(),
+    pendingRequest: channel.pendingRequest,
   };
 
-  const swapped = await storage.compareAndSet(
-    channelId,
-    channel.chargedCumulativeAmount,
-    updatedChannel,
-  );
-  if (!swapped) {
+  const updateResult = await storage.updateChannel(channelId, current => {
+    if (!current || current.chargedCumulativeAmount !== channel.chargedCumulativeAmount) {
+      return current;
+    }
+    return updatedChannel;
+  });
+  if (updateResult.status !== "updated") {
     return {
       abort: true,
       reason: "batch_settlement_channel_busy",
@@ -238,7 +240,7 @@ export async function handleAfterSettle(
     const snapshot = parseRefundSettlementSnapshot(result.extra);
 
     if (BigInt(snapshot.balance) <= BigInt(channel.chargedCumulativeAmount)) {
-      await storage.delete(channelId);
+      await storage.updateChannel(channelId, () => undefined);
       return;
     }
 
@@ -247,7 +249,7 @@ export async function handleAfterSettle(
       ...snapshot,
       lastRequestTimestamp: Date.now(),
     };
-    await storage.set(channelId, updatedChannel);
+    await storage.updateChannel(channelId, () => updatedChannel);
     return;
   }
 
@@ -298,7 +300,7 @@ export async function handleAfterSettle(
       lastRequestTimestamp: Date.now(),
     };
     scheme.rememberChannelSnapshot(paymentPayload, channel);
-    await storage.set(channelId, channel);
+    await storage.updateChannel(channelId, () => channel);
   }
 }
 

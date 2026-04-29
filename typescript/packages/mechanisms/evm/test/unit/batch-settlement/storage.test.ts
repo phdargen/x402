@@ -40,38 +40,41 @@ describe("InMemoryChannelStorage", () => {
     storage = new InMemoryChannelStorage();
   });
 
-  describe("get/set/delete", () => {
+  describe("get/updateChannel", () => {
     it("returns undefined when no session exists", async () => {
       expect(await storage.get(CHANNEL_ID)).toBeUndefined();
     });
 
     it("stores and retrieves a session", async () => {
       const session = buildSession({ chargedCumulativeAmount: "1000" });
-      await storage.set(CHANNEL_ID, session);
+      await storage.updateChannel(CHANNEL_ID, () => session);
       expect(await storage.get(CHANNEL_ID)).toEqual(session);
     });
 
     it("treats channelId case-insensitively", async () => {
       const session = buildSession({ chargedCumulativeAmount: "500" });
-      await storage.set(CHANNEL_ID.toUpperCase(), session);
+      await storage.updateChannel(CHANNEL_ID.toUpperCase(), () => session);
       expect(await storage.get(CHANNEL_ID.toLowerCase())).toEqual(session);
     });
 
-    it("overwrites a session on subsequent set", async () => {
-      await storage.set(CHANNEL_ID, buildSession({ chargedCumulativeAmount: "1" }));
-      await storage.set(CHANNEL_ID, buildSession({ chargedCumulativeAmount: "2" }));
+    it("overwrites a session on subsequent update", async () => {
+      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "1" }));
+      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "2" }));
       const got = await storage.get(CHANNEL_ID);
       expect(got?.chargedCumulativeAmount).toBe("2");
     });
 
     it("deletes a session", async () => {
-      await storage.set(CHANNEL_ID, buildSession());
-      await storage.delete(CHANNEL_ID);
+      await storage.updateChannel(CHANNEL_ID, () => buildSession());
+      await storage.updateChannel(CHANNEL_ID, () => undefined);
       expect(await storage.get(CHANNEL_ID)).toBeUndefined();
     });
 
     it("delete is a no-op when nothing is stored", async () => {
-      await expect(storage.delete(CHANNEL_ID)).resolves.toBeUndefined();
+      await expect(storage.updateChannel(CHANNEL_ID, () => undefined)).resolves.toEqual({
+        channel: undefined,
+        status: "unchanged",
+      });
     });
   });
 
@@ -83,49 +86,57 @@ describe("InMemoryChannelStorage", () => {
     it("returns all stored sessions", async () => {
       const id1 = "0x1111111111111111111111111111111111111111111111111111111111111111";
       const id2 = "0x2222222222222222222222222222222222222222222222222222222222222222";
-      await storage.set(id1, buildSession({ channelId: id1 }));
-      await storage.set(id2, buildSession({ channelId: id2 }));
+      await storage.updateChannel(id1, () => buildSession({ channelId: id1 }));
+      await storage.updateChannel(id2, () => buildSession({ channelId: id2 }));
       const all = await storage.list();
       expect(all).toHaveLength(2);
       expect(all.map(s => s.channelId).sort()).toEqual([id1, id2].sort());
     });
   });
 
-  describe("compareAndSet", () => {
-    it("inserts a new session when none exists (regardless of expectedCharged)", async () => {
+  describe("updateChannel", () => {
+    it("inserts a new session when none exists", async () => {
       const session = buildSession({ chargedCumulativeAmount: "100" });
-      const ok = await storage.compareAndSet(CHANNEL_ID, "anything", session);
-      expect(ok).toBe(true);
+      const result = await storage.updateChannel(CHANNEL_ID, () => session);
+      expect(result).toEqual({ channel: session, status: "updated" });
       expect(await storage.get(CHANNEL_ID)).toEqual(session);
     });
 
-    it("succeeds when expectedCharged matches the stored value", async () => {
-      await storage.set(CHANNEL_ID, buildSession({ chargedCumulativeAmount: "500" }));
+    it("updates from the current stored value", async () => {
+      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "500" }));
       const updated = buildSession({ chargedCumulativeAmount: "750" });
-      const ok = await storage.compareAndSet(CHANNEL_ID, "500", updated);
-      expect(ok).toBe(true);
+      const result = await storage.updateChannel(CHANNEL_ID, current =>
+        current?.chargedCumulativeAmount === "500" ? updated : current,
+      );
+      expect(result.status).toBe("updated");
       expect((await storage.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("750");
     });
 
-    it("fails (and does not write) when expectedCharged is stale", async () => {
-      await storage.set(CHANNEL_ID, buildSession({ chargedCumulativeAmount: "500" }));
+    it("can leave the channel unchanged", async () => {
+      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "500" }));
       const updated = buildSession({ chargedCumulativeAmount: "750" });
-      const ok = await storage.compareAndSet(CHANNEL_ID, "499", updated);
-      expect(ok).toBe(false);
+      const result = await storage.updateChannel(CHANNEL_ID, current =>
+        current?.chargedCumulativeAmount === "499" ? updated : current,
+      );
+      expect(result.status).toBe("unchanged");
       expect((await storage.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("500");
     });
 
-    it("only the first concurrent compareAndSet wins", async () => {
-      await storage.set(CHANNEL_ID, buildSession({ chargedCumulativeAmount: "0" }));
+    it("serializes concurrent updateChannel mutations", async () => {
+      await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "0" }));
       const winner = buildSession({ chargedCumulativeAmount: "100" });
       const loser = buildSession({ chargedCumulativeAmount: "200" });
 
       const [a, b] = await Promise.all([
-        storage.compareAndSet(CHANNEL_ID, "0", winner),
-        storage.compareAndSet(CHANNEL_ID, "0", loser),
+        storage.updateChannel(CHANNEL_ID, current =>
+          current?.chargedCumulativeAmount === "0" ? winner : current,
+        ),
+        storage.updateChannel(CHANNEL_ID, current =>
+          current?.chargedCumulativeAmount === "0" ? loser : current,
+        ),
       ]);
 
-      expect([a, b].filter(Boolean)).toHaveLength(1);
+      expect([a, b].filter(result => result.status === "updated")).toHaveLength(1);
       const final = await storage.get(CHANNEL_ID);
       expect(["100", "200"]).toContain(final?.chargedCumulativeAmount);
     });

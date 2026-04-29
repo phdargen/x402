@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { isNodeEnoent, readJsonFile, writeJsonAtomic } from "../storage-utils";
 import type { FileChannelStorageOptions } from "../types";
-import type { ChannelStorage, Channel } from "./storage";
+import type { ChannelStorage, Channel, ChannelUpdateResult } from "./storage";
 
 export type { FileChannelStorageOptions };
 
@@ -31,30 +31,6 @@ export class FileChannelStorage implements ChannelStorage {
    */
   async get(channelId: string): Promise<Channel | undefined> {
     return readJsonFile<Channel>(this.filePath(channelId));
-  }
-
-  /**
-   * Persists a channel record.
-   *
-   * @param channelId - The channel identifier.
-   * @param channel - Channel record to write.
-   */
-  async set(channelId: string, channel: Channel): Promise<void> {
-    await writeJsonAtomic(this.filePath(channelId), channel);
-  }
-
-  /**
-   * Removes the persisted channel record file for a channel, if it exists.
-   *
-   * @param channelId - The channel identifier.
-   */
-  async delete(channelId: string): Promise<void> {
-    try {
-      await unlink(this.filePath(channelId));
-    } catch (err: unknown) {
-      if (isNodeEnoent(err)) return;
-      throw err;
-    }
   }
 
   /**
@@ -89,44 +65,40 @@ export class FileChannelStorage implements ChannelStorage {
     return channels.sort((a, b) => a.channelId.localeCompare(b.channelId));
   }
 
-  /**
-   * Atomically updates a channel record only if the current `chargedCumulativeAmount` matches
-   * `expectedCharged`. Uses an exclusive lockfile (`O_CREAT | O_EXCL`) so that exactly
-   * one caller can hold the lock — others get `EEXIST` immediately. No TOCTOU window.
-   *
-   * @param channelId - The channel identifier.
-   * @param expectedCharged - Expected current `chargedCumulativeAmount`.
-   * @param channel - The new channel record to store if the check passes.
-   * @returns `true` if the swap succeeded, `false` if the lock was held or the value changed.
-   */
-  async compareAndSet(
+  async updateChannel(
     channelId: string,
-    expectedCharged: string,
-    channel: Channel,
-  ): Promise<boolean> {
+    update: (current: Channel | undefined) => Channel | undefined,
+  ): Promise<ChannelUpdateResult> {
     const lockPath = this.filePath(channelId) + ".lock";
     await mkdir(dirname(lockPath), { recursive: true });
-    let lockHandle;
-    try {
-      lockHandle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw err;
-    }
+    const lockHandle = await this.acquireLock(lockPath);
 
     try {
       const path = this.filePath(channelId);
+      let current: Channel | undefined;
       try {
         const raw = await readFile(path, "utf8");
-        const current = JSON.parse(raw) as Channel;
-        if (current.chargedCumulativeAmount !== expectedCharged) {
-          return false;
-        }
+        current = JSON.parse(raw) as Channel;
       } catch (err: unknown) {
         if (!isNodeEnoent(err)) throw err;
       }
-      await writeJsonAtomic(path, channel);
-      return true;
+
+      const next = update(current);
+      if (next === current) {
+        return { channel: current, status: "unchanged" };
+      }
+
+      if (!next) {
+        try {
+          await unlink(path);
+        } catch (err: unknown) {
+          if (!isNodeEnoent(err)) throw err;
+        }
+        return { channel: undefined, status: current ? "deleted" : "unchanged" };
+      }
+
+      await writeJsonAtomic(path, next);
+      return { channel: next, status: "updated" };
     } finally {
       await lockHandle.close();
       await unlink(lockPath).catch(() => {});
@@ -141,5 +113,18 @@ export class FileChannelStorage implements ChannelStorage {
    */
   private filePath(channelId: string): string {
     return join(this.root, "server", `${channelId.toLowerCase()}.json`);
+  }
+
+  private async acquireLock(lockPath: string) {
+    while (true) {
+      try {
+        return await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw err;
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    }
   }
 }

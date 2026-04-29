@@ -35,6 +35,12 @@ export interface BatchSettlementEvmSchemeServerConfig {
   withdrawDelay?: number;
 }
 
+export interface BatchSettlementRequestContext {
+  channelId?: string;
+  pendingId?: string;
+  channelSnapshot?: Channel;
+}
+
 /**
  * Server-side implementation of the `batch-settlement` scheme for EVM networks.
  */
@@ -42,7 +48,10 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   readonly schemeHooks: SchemeServerHooks;
 
-  private readonly channelSnapshots = new WeakMap<DeepReadonly<PaymentPayload>, Channel>();
+  private readonly requestContexts = new WeakMap<
+    DeepReadonly<PaymentPayload>,
+    BatchSettlementRequestContext
+  >();
   private moneyParsers: MoneyParser[] = [];
   private readonly storage: ChannelStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
@@ -97,13 +106,58 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     handleEnrichSettlementResponse(this, ctx);
 
   /**
+   * Merges batch-settlement state into the current request context.
+   *
+   * @param payload - Request-scoped payment payload object.
+   * @param context - Partial context fields to merge.
+   */
+  mergeRequestContext(
+    payload: DeepReadonly<PaymentPayload>,
+    context: BatchSettlementRequestContext,
+  ): void {
+    this.requestContexts.set(payload, {
+      ...this.requestContexts.get(payload),
+      ...context,
+    });
+  }
+
+  /**
+   * Reads batch-settlement state for the current request without clearing it.
+   *
+   * @param payload - Request-scoped payment payload object.
+   * @returns Request context, if one was recorded.
+   */
+  readRequestContext(
+    payload: DeepReadonly<PaymentPayload>,
+  ): BatchSettlementRequestContext | undefined {
+    return this.requestContexts.get(payload);
+  }
+
+  /**
+   * Reads and clears batch-settlement state for the current request.
+   *
+   * @param payload - Request-scoped payment payload object.
+   * @returns Request context, if one was recorded.
+   */
+  takeRequestContext(
+    payload: DeepReadonly<PaymentPayload>,
+  ): BatchSettlementRequestContext | undefined {
+    const context = this.requestContexts.get(payload);
+    this.requestContexts.delete(payload);
+    return context;
+  }
+
+  /**
    * Stores a channel snapshot for the current settlement request.
    *
    * @param payload - Request-scoped payment payload object.
    * @param channel - Channel state to use during response enrichment.
    */
   rememberChannelSnapshot(payload: DeepReadonly<PaymentPayload>, channel: Channel): void {
-    this.channelSnapshots.set(payload, channel);
+    this.mergeRequestContext(payload, {
+      channelId: channel.channelId,
+      channelSnapshot: channel,
+    });
   }
 
   /**
@@ -113,9 +167,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Stored channel state, if one was recorded.
    */
   takeChannelSnapshot(payload: DeepReadonly<PaymentPayload>): Channel | undefined {
-    const channel = this.channelSnapshots.get(payload);
-    this.channelSnapshots.delete(payload);
-    return channel;
+    return this.takeRequestContext(payload)?.channelSnapshot;
   }
 
   /**

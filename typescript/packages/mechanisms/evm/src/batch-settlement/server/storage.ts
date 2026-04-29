@@ -12,14 +12,40 @@ export interface Channel {
   withdrawRequestedAt: number;
   refundNonce: number;
   lastRequestTimestamp: number;
+  pendingRequest?: PendingRequest;
+}
+
+export interface PendingRequest {
+  pendingId: string;
+  signedMaxClaimable: string;
+  expiresAt: number;
+}
+
+export interface ChannelUpdateResult {
+  channel: Channel | undefined;
+  status: "updated" | "unchanged" | "deleted";
 }
 
 export interface ChannelStorage {
   get(channelId: string): Promise<Channel | undefined>;
-  set(channelId: string, channel: Channel): Promise<void>;
-  delete(channelId: string): Promise<void>;
   list(): Promise<Channel[]>;
-  compareAndSet(channelId: string, expectedCharged: string, channel: Channel): Promise<boolean>;
+  /**
+   * Atomically inspects and mutates a channel record.
+   *
+   * Implementations must guarantee that no concurrent mutation can interleave between
+   * reading `current` and writing the callback result for all application instances that
+   * share the backend. The in-memory backend only provides this guarantee inside one JS
+   * runtime; production multi-instance deployments need storage with backend-level atomic
+   * conditional mutation, such as Redis/Valkey Lua scripts, SQL transactions, or Durable Objects.
+   *
+   * @param channelId - The channel identifier.
+   * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
+   * @returns The final stored channel and whether storage updated, stayed unchanged, or deleted.
+   */
+  updateChannel(
+    channelId: string,
+    update: (current: Channel | undefined) => Channel | undefined,
+  ): Promise<ChannelUpdateResult>;
 }
 
 /**
@@ -27,6 +53,7 @@ export interface ChannelStorage {
  */
 export class InMemoryChannelStorage implements ChannelStorage {
   private readonly channels = new Map<string, Channel>();
+  private readonly channelLocks = new Map<string, Promise<void>>();
 
   /**
    * Returns the channel record for a channel, if present.
@@ -39,25 +66,6 @@ export class InMemoryChannelStorage implements ChannelStorage {
   }
 
   /**
-   * Stores or replaces the channel record for a channel.
-   *
-   * @param channelId - The channel identifier.
-   * @param channel - The channel record to persist.
-   */
-  async set(channelId: string, channel: Channel): Promise<void> {
-    this.channels.set(channelId.toLowerCase(), channel);
-  }
-
-  /**
-   * Deletes the channel record for a channel.
-   *
-   * @param channelId - The channel identifier.
-   */
-  async delete(channelId: string): Promise<void> {
-    this.channels.delete(channelId.toLowerCase());
-  }
-
-  /**
    * Lists all stored channel records.
    *
    * @returns All channel records in storage.
@@ -66,27 +74,46 @@ export class InMemoryChannelStorage implements ChannelStorage {
     return [...this.channels.values()];
   }
 
-  /**
-   * Atomically updates a channel record only if the current `chargedCumulativeAmount` matches
-   * `expectedCharged`. All Map operations run synchronously within the async body,
-   * so no concurrent microtask can interleave between the read and write.
-   *
-   * @param channelId - The channel identifier.
-   * @param expectedCharged - Expected current `chargedCumulativeAmount` (compare-and-set guard).
-   * @param channel - The new channel record to store if the check passes.
-   * @returns `true` if the swap succeeded, `false` if the value changed underneath.
-   */
-  async compareAndSet(
+  async updateChannel(
     channelId: string,
-    expectedCharged: string,
-    channel: Channel,
-  ): Promise<boolean> {
+    update: (current: Channel | undefined) => Channel | undefined,
+  ): Promise<ChannelUpdateResult> {
     const key = channelId.toLowerCase();
-    const current = this.channels.get(key);
-    if (current && current.chargedCumulativeAmount !== expectedCharged) {
-      return false;
+    return this.withChannelLock(key, async () => {
+      const current = this.channels.get(key);
+      const next = update(current);
+
+      if (next === current) {
+        return { channel: current, status: "unchanged" };
+      }
+
+      if (!next) {
+        this.channels.delete(key);
+        return { channel: undefined, status: current ? "deleted" : "unchanged" };
+      }
+
+      this.channels.set(key, next);
+      return { channel: next, status: "updated" };
+    });
+  }
+
+  private async withChannelLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.channelLocks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const next = previous.catch(() => {}).then(() => current);
+    this.channelLocks.set(key, next);
+
+    await previous.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.channelLocks.get(key) === next) {
+        this.channelLocks.delete(key);
+      }
     }
-    this.channels.set(key, channel);
-    return true;
   }
 }

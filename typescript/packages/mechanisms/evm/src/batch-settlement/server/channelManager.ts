@@ -251,7 +251,7 @@ export class BatchSettlementChannelManager {
     }
 
     for (const c of targets) {
-      await storage.delete(c.channelId);
+      await storage.updateChannel(c.channelId, () => undefined);
     }
 
     return {
@@ -721,9 +721,14 @@ export class BatchSettlementChannelManager {
       if (claimedAmount <= BigInt(channel.totalClaimed)) {
         continue;
       }
-      await storage.set(channelId, {
-        ...channel,
-        totalClaimed: claimedAmount.toString(),
+      await storage.updateChannel(channelId, current => {
+        if (!current || claimedAmount <= BigInt(current.totalClaimed)) {
+          return current;
+        }
+        return {
+          ...current,
+          totalClaimed: claimedAmount.toString(),
+        };
       });
     }
   }

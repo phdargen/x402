@@ -186,24 +186,32 @@ export async function handleAfterVerify(
 
   const storage = scheme.getStorage();
   const prev = await storage.get(channelId);
+  const expectedCharged = prev?.chargedCumulativeAmount ?? totalClaimed;
   const resolvedConfig = channelConfig ?? prev?.channelConfig;
   if (!resolvedConfig) {
     return;
   }
-  const channel: Channel = {
-    channelId,
-    channelConfig: resolvedConfig,
-    payer: payer.toLowerCase(),
-    chargedCumulativeAmount: prev?.chargedCumulativeAmount ?? totalClaimed,
-    signedMaxClaimable,
-    signature,
-    balance,
-    totalClaimed,
-    withdrawRequestedAt,
-    refundNonce,
-    lastRequestTimestamp: Date.now(),
-  };
-  await storage.compareAndSet(channelId, prev?.chargedCumulativeAmount ?? totalClaimed, channel);
+  await storage.updateChannel(channelId, current => {
+    if (current && current.chargedCumulativeAmount !== expectedCharged) {
+      return current;
+    }
+
+    const channel: Channel = {
+      channelId,
+      channelConfig: resolvedConfig,
+      payer: payer.toLowerCase(),
+      chargedCumulativeAmount: current?.chargedCumulativeAmount ?? totalClaimed,
+      signedMaxClaimable,
+      signature,
+      balance,
+      totalClaimed,
+      withdrawRequestedAt,
+      refundNonce,
+      lastRequestTimestamp: Date.now(),
+      pendingRequest: current?.pendingRequest,
+    };
+    return channel;
+  });
 
   if (isRefundVoucher) {
     return {
