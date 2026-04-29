@@ -86,7 +86,8 @@ The 402 response contains pricing terms and the server's channel parameters. The
 | `extra.assetTransferMethod` | `string` | optional | `"eip3009"` (default) or `"permit2"`                   |
 | `extra.name`                | `string` | yes      | EIP-712 domain name of the token contract              |
 | `extra.version`             | `string` | yes      | EIP-712 domain version of the token contract           |
-| `extra.ChannelState`        | `object` | optional | Corrective-only server state for cumulative amount resynchronization |
+| `extra.channelState`        | `object` | optional | Corrective-only server channel snapshot for cumulative amount resynchronization |
+| `extra.voucherState`        | `object` | optional | Corrective-only signed voucher proof for cumulative amount resynchronization |
 
 ---
 
@@ -225,6 +226,7 @@ The server must maintain per-channel state, keyed by channel ID:
 | `totalClaimed`            | `uint128`       | Total claimed onchain (mirrored from onchain)                                              |
 | `withdrawRequestedAt`     | `uint64`        | Unix timestamp when timed withdrawal was initiated, or 0 if none (mirrored from onchain)   |
 | `refundNonce`             | `uint256`       | Next nonce required for `refundWithSignature` (mirrored from onchain)                      |
+| `onchainSyncedAt`         | `uint64`        | Local timestamp when mirrored onchain fields were refreshed                                |
 | `lastRequestTimestamp`    | `uint64`        | Timestamp of the last paid request                                                         |
 
 ### Request Processing
@@ -234,12 +236,42 @@ The server must serialize request processing per channel and must not update vou
 1. **Verify**:
    - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `batch_settlement_cumulative_amount_mismatch` and return a corrective 402.
    - For refund payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount` and skip the resource handler after facilitator verification.
-   - Call facilitator `/verify`.
+   - Always call facilitator `/verify` for `deposit` and `refund` payloads, as well as `voucher` payloads with EIP-1271 vouchers.
+   - A plain EOA-authorized `voucher` may be verified locally when the server's mirrored onchain state is fresh. 
 2. **Execute**: Run the resource handler
 3. **On success** — commit state:
    - `chargedCumulativeAmount += actualPrice` (where `actualPrice <= PaymentRequirements.amount`)
    - Mirror `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce` from the facilitator response
 4. **On failure**: State unchanged, client can retry the same voucher.
+
+### Payment Response Contract
+
+Successful paid responses distinguish onchain transfers from offchain charges:
+
+- Voucher-only response: `transaction` is `""`, top-level `amount` is `""`, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot.
+- Deposit response: `transaction` is the deposit transaction hash, top-level `amount` is the deposited amount, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot.
+- Refund response: `transaction` is the refund transaction hash, top-level `amount` is the refunded amount, `extra.channelState` carries the post-refund channel snapshot and `extra.chargedAmount` is omitted.
+
+```json
+{
+  "success": true,
+  "transaction": "",
+  "network": "eip155:8453",
+  "payer": "0xClientAddress",
+  "amount": "",
+  "extra": {
+    "chargedAmount": "700",
+    "channelState": {
+      "channelId": "0xabc123...channelId",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1",
+      "chargedCumulativeAmount": "3900"
+    }
+  }
+}
+```
 
 ### Cooperative refund flow
 
@@ -252,7 +284,7 @@ When the server receives a `type: "refund"` payload:
 5. **Update channel state**:
    - **Full refund** (refunded amount equals the remainder): delete the channel record.
    - **Partial refund**: keep the channel record, mirror the returned `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce`.
-6. Return the settle response in the standard `PAYMENT-RESPONSE` header. The response `amount` is the actual refunded amount; `extra` carries the updated channel snapshot plus `chargedCumulativeAmount`.
+6. Return the settle response in the standard `PAYMENT-RESPONSE` header.
 
 After the server completes the refund payload, the facilitator receives:
 
@@ -346,7 +378,33 @@ Server-authored claim and settle payloads use the same `type` discriminator:
 }
 ```
 
-Response:
+Example facilitator response for a claim:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "amount": ""
+}
+```
+
+`amount` is empty because claim only updates accounting; no funds move.
+
+Example facilitator response for a settle:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "amount": "5000"
+}
+```
+
+`amount` is the amount transferred to the receiver; if settlement is a no-op, it is `"0"`.
+
+Example facilitator response for a deposit:
 
 ```json
 {
@@ -354,18 +412,42 @@ Response:
   "transaction": "0x...transactionHash",
   "network": "eip155:8453",
   "payer": "0xPayerAddress",
-  "amount": "700",
+  "amount": "100000",
   "asset": "0xAssetAddress",
   "extra": {
-    "channelId": "0xabc123...",
-    "balance": "100000",
-    "totalClaimed": "3200",
-    "withdrawRequestedAt": 0,
-    "refundNonce": "1",
-    "chargedCumulativeAmount": "3200"
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1"
+    }
   }
 }
 ```
+
+Example facilitator response for a refund:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "payer": "0xPayerAddress",
+  "amount": "1500",
+  "extra": {
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "98500",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "2"
+    }
+  }
+}
+```
+
+`amount` is the amount returned to the payer.
 
 ### GET /supported
 
@@ -409,7 +491,7 @@ A facilitator must enforce:
 10. **Not below claimed**: `maxClaimableAmount` must exceed onchain `totalClaimed`. For refund payloads (`payload.type == "refund"`), this rule is relaxed to `maxClaimableAmount >= totalClaimed`, since refund vouchers are zero-charge and may match the already-claimed total exactly.
 11. **Signed refunds**: the refund nonce must equal the onchain refund nonce; the EIP-712 refund digest must bind the same amount submitted in the transaction.
 
-The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` and `/settle` response `extra` field. If `withdrawRequestedAt` is non-zero, the server should claim outstanding vouchers promptly before the withdraw delay elapses.
+The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` response `extra` field and in every `/settle` response under `extra.channelState`. If `withdrawRequestedAt` is non-zero, the server should claim outstanding vouchers promptly before the withdraw delay elapses.
 
 ---
 
@@ -435,10 +517,10 @@ The server must claim all outstanding vouchers before the withdraw delay elapses
 
 Before signing the next voucher, the client must verify from the payment response:
 
-1. `amount <= PaymentRequirements.amount`
-2. `chargedCumulativeAmount == previous + amount`
-3. `balance` is consistent with the client's expectation
-4. `channelId` matches
+1. `extra.chargedAmount <= PaymentRequirements.amount`
+2. `extra.channelState.chargedCumulativeAmount == previous + extra.chargedAmount`
+3. `extra.channelState.balance` is consistent with the client's expectation
+4. `extra.channelState.channelId` matches
 
 If any check fails, the client must not sign further vouchers and should initiate withdrawal.
 
@@ -455,7 +537,7 @@ The recovery baseline is:
 
 **Server state loss.** If the server has no local channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If the server lost unclaimed vouchers, those unclaimed charges are forfeited by the server.
 
-**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `batch_settlement_cumulative_amount_mismatch` with `accepts[].extra.ChannelState` containing `channelId`, `chargedCumulativeAmount`, `signedMaxClaimable`, and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
+**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `batch_settlement_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
 
 ```json
 {
@@ -469,9 +551,15 @@ The recovery baseline is:
         "withdrawDelay": 900,
         "name": "USDC",
         "version": "2",
-        "ChannelState": {
+        "channelState": {
           "channelId": "0xabc123...channelId",
-          "chargedCumulativeAmount": "3200",
+          "balance": "100000",
+          "totalClaimed": "500",
+          "withdrawRequestedAt": 0,
+          "refundNonce": "1",
+          "chargedCumulativeAmount": "3200"
+        },
+        "voucherState": {
           "signedMaxClaimable": "3200",
           "signature": "0x...last voucher signature"
         }
