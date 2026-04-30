@@ -48,6 +48,35 @@ const VALID_DEPOSIT_PAYLOAD: BatchSettlementDepositPayload = {
   },
 };
 
+const VALID_PERMIT2_DEPOSIT_PAYLOAD: BatchSettlementDepositPayload = {
+  type: "deposit",
+  channelConfig: CHANNEL_CONFIG,
+  voucher: {
+    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+    maxClaimableAmount: "1000000",
+    signature: "0xcafebabe",
+  },
+  deposit: {
+    amount: "10000000",
+    authorization: {
+      permit2Authorization: {
+        from: "0x1234567890123456789012345678901234567890",
+        permitted: {
+          token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          amount: "10000000",
+        },
+        spender: "0x4020e27bcea6C226BF888C61b6C520C0fcC50005",
+        nonce: "123",
+        deadline: "9999999999",
+        witness: {
+          channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+        },
+        signature: "0xdeadbeef",
+      },
+    },
+  },
+};
+
 const VALID_VOUCHER_PAYLOAD: BatchSettlementVoucherPayload = {
   type: "voucher",
   channelConfig: CHANNEL_CONFIG,
@@ -95,6 +124,10 @@ const VALID_ENRICHED_REFUND_PAYLOAD: BatchSettlementEnrichedRefundPayload = {
 describe("isBatchSettlementDepositPayload", () => {
   it("returns true for a complete deposit payload", () => {
     expect(isBatchSettlementDepositPayload(VALID_DEPOSIT_PAYLOAD)).toBe(true);
+  });
+
+  it("returns true for a Permit2 deposit payload", () => {
+    expect(isBatchSettlementDepositPayload(VALID_PERMIT2_DEPOSIT_PAYLOAD)).toBe(true);
   });
 
   it("returns false for a voucher-only payload", () => {

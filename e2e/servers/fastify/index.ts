@@ -188,6 +188,51 @@ paymentMiddleware(
         network: EVM_NETWORK,
       },
     },
+    "GET /batch-settlement/evm/permit2": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: {
+          amount: "1000",
+          asset: EVM_PERMIT2_ASSET,
+          extra: {
+            assetTransferMethod: "permit2",
+            name: EVM_NETWORK == "eip155:84532" ? "USDC" : "USD Coin",
+            version: "2",
+          },
+        },
+      },
+    },
+    "GET /batch-settlement/evm/permit2-eip2612GasSponsoring": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: "$0.001",
+        extra: { assetTransferMethod: "permit2" },
+      },
+      extensions: {
+        ...declareEip2612GasSponsoringExtension(),
+      },
+    },
+    "GET /batch-settlement/evm/permit2-erc20ApprovalGasSponsoring": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: {
+          amount: "1000",
+          asset: EVM_PERMIT2_ASSET,
+          extra: {
+            assetTransferMethod: "permit2",
+          },
+        },
+      },
+      extensions: {
+        ...declareErc20ApprovalGasSponsoringExtension(),
+      },
+    },
     "GET /exact/evm/eip3009": {
       accepts: {
         payTo: EVM_PAYEE_ADDRESS,
@@ -479,6 +524,30 @@ app.get("/batch-settlement/evm/eip3009", async () => {
   return {
     message: "Batch-settlement endpoint accessed successfully",
     timestamp: new Date().toISOString(),
+  };
+});
+
+app.get("/batch-settlement/evm/permit2", async () => {
+  return {
+    message: "Batch-settlement Permit2 endpoint accessed successfully",
+    timestamp: new Date().toISOString(),
+    method: "batch-settlement-permit2",
+  };
+});
+
+app.get("/batch-settlement/evm/permit2-eip2612GasSponsoring", async () => {
+  return {
+    message: "Batch-settlement Permit2 EIP-2612 endpoint accessed successfully",
+    timestamp: new Date().toISOString(),
+    method: "batch-settlement-permit2-eip2612",
+  };
+});
+
+app.get("/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring", async () => {
+  return {
+    message: "Batch-settlement Permit2 ERC-20 approval endpoint accessed successfully",
+    timestamp: new Date().toISOString(),
+    method: "batch-settlement-permit2-erc20-approval",
   };
 });
 

@@ -1,47 +1,167 @@
-import { PaymentRequirements, VerifyResponse, SettleResponse } from "@x402/core/types";
+import {
+  FacilitatorContext,
+  PaymentPayload,
+  PaymentRequirements,
+  VerifyResponse,
+  SettleResponse,
+} from "@x402/core/types";
 import { getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
-import { BatchSettlementDepositPayload } from "../types";
+import type { TransactionRequest } from "../../exact/extensions";
+import { BatchSettlementAssetTransferMethod, BatchSettlementDepositPayload } from "../types";
 import { batchSettlementABI, erc20BalanceOfABI } from "../abi";
-import {
-  BATCH_SETTLEMENT_ADDRESS,
-  ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
-  receiveAuthorizationTypes,
-} from "../constants";
+import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { getEvmChainId } from "../../utils";
 import { multicall } from "../../multicall";
 import * as Errors from "./errors";
 import {
-  erc3009AuthorizationTimeInvalidReason,
   readChannelState,
   toContractChannelConfig,
   validateChannelConfig,
   verifyBatchSettlementVoucherTypedData,
 } from "./utils";
-import { buildErc3009CollectorData, buildErc3009DepositNonce } from "../encoding";
+import {
+  buildEip3009DepositCollectorData,
+  getEip3009DepositCollectorAddress,
+  verifyEip3009DepositAuthorization,
+} from "./deposit-eip3009";
+import {
+  buildDepositTransaction,
+  getPermit2DepositCollectorAddress,
+  resolvePermit2DepositBranch,
+  verifyPermit2DepositAuthorization,
+} from "./deposit-permit2";
 
 /**
- * Verifies a deposit payload (ERC-3009 authorization + voucher) without executing any
+ * Verifies a deposit payload (authorization + voucher) without executing any
  * on-chain transaction.
  *
  * Performs the following validations:
  * - Token in channelConfig matches the payment requirements asset.
- * - ERC-3009 authorization is present and its time window is valid.
- * - `ReceiveWithAuthorization` signature is valid (payer → contract).
+ * - Deposit authorization is valid for the selected transfer method.
  * - Accompanying voucher signature is valid (ECDSA or ERC-1271).
  * - Payer has sufficient token balance for the deposit.
  * - Resulting `maxClaimableAmount` does not exceed effective balance (existing + deposit).
  *
  * @param signer - Facilitator signer for on-chain reads and signature verification.
+ * @param payment - Full payment envelope containing optional extensions.
  * @param payload - The full deposit payload including channelConfig, amount, authorization, and voucher.
  * @param requirements - Server payment requirements (asset, EIP-712 domain info, timeout, etc.).
+ * @param context - Optional facilitator extension context.
  * @returns A {@link VerifyResponse} with channel state in `extra` on success.
  */
 export async function verifyDeposit(
   signer: FacilitatorEvmSigner,
+  payment: PaymentPayload,
   payload: BatchSettlementDepositPayload,
   requirements: PaymentRequirements,
+  context?: FacilitatorContext,
 ): Promise<VerifyResponse> {
+  const payer = payload.channelConfig.payer;
+  const chainId = getEvmChainId(requirements.network);
+  const configErr = validateChannelConfig(
+    payload.channelConfig,
+    payload.voucher.channelId,
+    requirements,
+  );
+  if (configErr) {
+    return { isValid: false, invalidReason: configErr, payer };
+  }
+
+  const transferMethod = resolveDepositTransferMethod(payload, requirements);
+  if (transferMethod === "permit2" && !payload.deposit.authorization.permit2Authorization) {
+    return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType, payer };
+  }
+
+  const methodErr =
+    transferMethod === "permit2"
+      ? await verifyPermit2DepositAuthorization(
+          signer,
+          payment,
+          payload,
+          requirements,
+          chainId,
+          context,
+        )
+      : await verifyEip3009DepositAuthorization(signer, payload, requirements, chainId);
+
+  if (methodErr) {
+    return methodErr;
+  }
+
+  const shared = await verifySharedDepositState(signer, payload, requirements);
+  if (!shared.ok) {
+    return shared.response;
+  }
+
+  const { depositAmount, chBalance, chTotalClaimed, wdInitiatedAt, refundNonceVal } = shared;
+
+  const execution = await resolveDepositExecution(signer, payment, payload, requirements, context);
+  if ("isValid" in execution) {
+    return execution;
+  }
+
+  if (!execution.skipDirectSimulation) {
+    try {
+      await signer.readContract({
+        address: getAddress(BATCH_SETTLEMENT_ADDRESS),
+        abi: batchSettlementABI,
+        functionName: "deposit",
+        args: [
+          toContractChannelConfig(payload.channelConfig),
+          depositAmount,
+          execution.collector,
+          execution.collectorData,
+        ],
+      });
+    } catch (e) {
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrDepositSimulationFailed,
+        invalidMessage: e instanceof Error ? e.message : String(e),
+        payer,
+      };
+    }
+  }
+
+  return {
+    isValid: true,
+    payer,
+    extra: {
+      channelId: payload.voucher.channelId,
+      balance: chBalance.toString(),
+      totalClaimed: chTotalClaimed.toString(),
+      withdrawRequestedAt: Number(wdInitiatedAt),
+      refundNonce: refundNonceVal.toString(),
+    },
+  };
+}
+
+/**
+ * Verifies channel, voucher, balance, and cumulative amount invariants.
+ *
+ * @param signer - Facilitator signer for reads and voucher verification.
+ * @param payload - Batch deposit payload.
+ * @param requirements - Payment requirements for the request.
+ * @returns Shared channel state on success, or a verification failure.
+ */
+async function verifySharedDepositState(
+  signer: FacilitatorEvmSigner,
+  payload: BatchSettlementDepositPayload,
+  requirements: PaymentRequirements,
+): Promise<
+  | {
+      ok: true;
+      chainId: number;
+      depositAmount: bigint;
+      payer: `0x${string}`;
+      chBalance: bigint;
+      chTotalClaimed: bigint;
+      wdInitiatedAt: bigint;
+      refundNonceVal: bigint;
+    }
+  | { ok: false; response: VerifyResponse }
+> {
   const { deposit, voucher } = payload;
   const config = payload.channelConfig;
   const payer = config.payer;
@@ -49,51 +169,7 @@ export async function verifyDeposit(
 
   const configErr = validateChannelConfig(config, voucher.channelId, requirements);
   if (configErr) {
-    return { isValid: false, invalidReason: configErr, payer };
-  }
-
-  const extra = requirements.extra as
-    | { name?: string; version?: string; assetTransferMethod?: string }
-    | undefined;
-
-  const transferMethod = extra?.assetTransferMethod ?? "eip3009";
-  if (transferMethod !== "eip3009") {
-    return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType, payer };
-  }
-
-  const auth = deposit.authorization.erc3009Authorization;
-  if (!auth) {
-    return { isValid: false, invalidReason: Errors.ErrErc3009AuthorizationRequired, payer };
-  }
-
-  if (!extra?.name || !extra?.version) {
-    return { isValid: false, invalidReason: Errors.ErrMissingEip712Domain, payer };
-  }
-
-  const validAfter = BigInt(auth.validAfter);
-  const validBefore = BigInt(auth.validBefore);
-  const timeInvalid = erc3009AuthorizationTimeInvalidReason(validAfter, validBefore);
-  if (timeInvalid) {
-    return { isValid: false, invalidReason: timeInvalid, payer };
-  }
-
-  const erc3009Nonce = buildErc3009DepositNonce(voucher.channelId, auth.salt);
-
-  const receiveAuthOk = await verifyReceiveAuth(signer, {
-    payer,
-    asset: requirements.asset,
-    name: extra.name,
-    version: extra.version,
-    chainId,
-    amount: deposit.amount,
-    validAfter,
-    validBefore,
-    nonce: erc3009Nonce,
-    signature: auth.signature,
-  });
-
-  if (!receiveAuthOk) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidReceiveAuthorizationSignature, payer };
+    return { ok: false, response: { isValid: false, invalidReason: configErr, payer } };
   }
 
   const voucherOk = await verifyBatchSettlementVoucherTypedData(
@@ -108,7 +184,10 @@ export async function verifyDeposit(
     chainId,
   );
   if (!voucherOk) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidVoucherSignature, payer };
+    return {
+      ok: false,
+      response: { isValid: false, invalidReason: Errors.ErrInvalidVoucherSignature, payer },
+    };
   }
 
   const mcResults = await multicall(signer.readContract.bind(signer), [
@@ -145,7 +224,10 @@ export async function verifyDeposit(
     wdRes.status === "failure" ||
     rnRes.status === "failure"
   ) {
-    return { isValid: false, invalidReason: Errors.ErrRpcReadFailed, payer };
+    return {
+      ok: false,
+      response: { isValid: false, invalidReason: Errors.ErrRpcReadFailed, payer },
+    };
   }
 
   const [chBalance, chTotalClaimed] = chRes.result as [bigint, bigint];
@@ -155,97 +237,66 @@ export async function verifyDeposit(
   const depositAmount = BigInt(deposit.amount);
 
   if (payerBalance < depositAmount) {
-    return { isValid: false, invalidReason: Errors.ErrInsufficientBalance, payer };
+    return {
+      ok: false,
+      response: { isValid: false, invalidReason: Errors.ErrInsufficientBalance, payer },
+    };
   }
 
   const effectiveBalance = chBalance + depositAmount;
   const maxClaimableAmount = BigInt(voucher.maxClaimableAmount);
 
   if (maxClaimableAmount > effectiveBalance) {
-    return { isValid: false, invalidReason: Errors.ErrCumulativeExceedsBalance, payer };
+    return {
+      ok: false,
+      response: { isValid: false, invalidReason: Errors.ErrCumulativeExceedsBalance, payer },
+    };
   }
 
   if (maxClaimableAmount <= chTotalClaimed) {
-    return { isValid: false, invalidReason: Errors.ErrCumulativeAmountBelowClaimed, payer };
-  }
-
-  const configTuple = toContractChannelConfig(config);
-
-  const collectorData = buildErc3009CollectorData(
-    auth.validAfter,
-    auth.validBefore,
-    auth.salt,
-    auth.signature,
-  );
-
-  try {
-    await signer.readContract({
-      address: getAddress(BATCH_SETTLEMENT_ADDRESS),
-      abi: batchSettlementABI,
-      functionName: "deposit",
-      args: [
-        configTuple,
-        depositAmount,
-        getAddress(ERC3009_DEPOSIT_COLLECTOR_ADDRESS),
-        collectorData,
-      ],
-    });
-  } catch (e) {
     return {
-      isValid: false,
-      invalidReason: Errors.ErrDepositSimulationFailed,
-      invalidMessage: e instanceof Error ? e.message : String(e),
-      payer,
+      ok: false,
+      response: { isValid: false, invalidReason: Errors.ErrCumulativeAmountBelowClaimed, payer },
     };
   }
 
   return {
-    isValid: true,
+    ok: true,
+    chainId,
+    depositAmount,
     payer,
-    extra: {
-      channelId: voucher.channelId,
-      balance: chBalance.toString(),
-      totalClaimed: chTotalClaimed.toString(),
-      withdrawRequestedAt: Number(wdInitiatedAt),
-      refundNonce: refundNonceVal.toString(),
-    },
+    chBalance,
+    chTotalClaimed,
+    wdInitiatedAt,
+    refundNonceVal,
   };
 }
 
 /**
- * Executes an ERC-3009 deposit on-chain by calling `deposit` with the
- * ERC3009DepositCollector on the batched contract.
+ * Executes a deposit on-chain through the collector for the selected transfer method.
  *
  * The deposit is first verified via {@link verifyDeposit}; if invalid the returned
  * {@link SettleResponse} will have `success: false` with the verification reason.
  *
  * @param signer - Facilitator signer used to submit the on-chain transaction.
+ * @param payment - Full payment envelope containing optional extensions.
  * @param payload - The deposit payload (channelConfig, amount, authorization, voucher).
  * @param requirements - Server payment requirements.
+ * @param context - Optional facilitator extension context.
  * @returns A {@link SettleResponse} with the transaction hash and updated channel state in `extra`.
  */
 export async function settleDeposit(
   signer: FacilitatorEvmSigner,
+  payment: PaymentPayload,
   payload: BatchSettlementDepositPayload,
   requirements: PaymentRequirements,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const { deposit, voucher } = payload;
   const config = payload.channelConfig;
   const payer = config.payer;
-  const auth = deposit.authorization.erc3009Authorization;
 
-  if (!auth) {
-    return {
-      success: false,
-      errorReason: Errors.ErrInvalidPayloadType,
-      errorMessage: "unsupported asset transfer method (expected erc3009Authorization)",
-      transaction: "",
-      network: requirements.network,
-      payer,
-    };
-  }
-
-  const verified = await verifyDeposit(signer, payload, requirements);
+  const verified = await verifyDeposit(signer, payment, payload, requirements, context);
   if (!verified.isValid) {
     const reason = verified.invalidReason ?? Errors.ErrInvalidPayloadType;
     return {
@@ -259,26 +310,45 @@ export async function settleDeposit(
   }
 
   try {
-    const configTuple = toContractChannelConfig(config);
-
-    const collectorData = buildErc3009CollectorData(
-      auth.validAfter,
-      auth.validBefore,
-      auth.salt,
-      auth.signature,
+    const execution = await resolveDepositExecution(
+      signer,
+      payment,
+      payload,
+      requirements,
+      context,
     );
+    if ("isValid" in execution) {
+      const reason = execution.invalidReason ?? Errors.ErrInvalidPayloadType;
+      return {
+        success: false,
+        errorReason: reason,
+        errorMessage: execution.invalidMessage ?? reason,
+        transaction: "",
+        network: requirements.network,
+        payer: execution.payer,
+      };
+    }
 
-    const tx = await signer.writeContract({
-      address: getAddress(BATCH_SETTLEMENT_ADDRESS),
-      abi: batchSettlementABI,
-      functionName: "deposit",
-      args: [
-        configTuple,
-        BigInt(deposit.amount),
-        getAddress(ERC3009_DEPOSIT_COLLECTOR_ADDRESS),
-        collectorData,
-      ],
-    });
+    const depositTx = buildDepositTransaction(payload, execution.collectorData);
+    const tx =
+      execution.kind === "erc20Approval"
+        ? (
+            await execution.extensionSigner.sendTransactions([
+              execution.signedTransaction,
+              depositTx,
+            ])
+          )[1]
+        : await signer.writeContract({
+            address: getAddress(BATCH_SETTLEMENT_ADDRESS),
+            abi: batchSettlementABI,
+            functionName: "deposit",
+            args: [
+              toContractChannelConfig(config),
+              BigInt(deposit.amount),
+              execution.collector,
+              execution.collectorData,
+            ],
+          });
 
     const receipt = await signer.waitForTransactionReceipt({ hash: tx });
 
@@ -347,64 +417,89 @@ export async function settleDeposit(
   }
 }
 
+type DepositExecution =
+  | {
+      kind: "direct";
+      collector: `0x${string}`;
+      collectorData: `0x${string}`;
+      skipDirectSimulation?: false;
+    }
+  | {
+      kind: "erc20Approval";
+      collector: `0x${string}`;
+      collectorData: `0x${string}`;
+      signedTransaction: `0x${string}`;
+      extensionSigner: {
+        sendTransactions(transactions: TransactionRequest[]): Promise<`0x${string}`[]>;
+      };
+      skipDirectSimulation: true;
+    };
+
 /**
- * Verifies an ERC-3009 `ReceiveWithAuthorization` signature.
+ * Resolves the collector address and collector data for a deposit payload.
  *
- * Returns `false` for known signature failures and rethrows infrastructure errors
- * (RPC outages, decode failures) so callers can distinguish a bad signature from
- * a transient transport problem.
- *
- * @param signer - Facilitator signer used for typed-data verification.
- * @param params - Authorization parameters and the signature to verify.
- * @param params.payer - Address that signed the authorization (`from`).
- * @param params.asset - ERC-20 contract address (used as `verifyingContract`).
- * @param params.name - EIP-712 domain `name` for the asset.
- * @param params.version - EIP-712 domain `version` for the asset.
- * @param params.chainId - Numeric EVM chain id.
- * @param params.amount - Authorized transfer amount as a decimal string.
- * @param params.validAfter - Unix timestamp the authorization becomes valid.
- * @param params.validBefore - Unix timestamp the authorization expires.
- * @param params.nonce - Unique 32-byte nonce for the authorization.
- * @param params.signature - 65-byte ECDSA signature over the typed data.
- * @returns `true` when the signature is valid for the supplied authorization.
+ * @param signer - Facilitator signer for Permit2 allowance reads.
+ * @param payment - Full payment envelope containing optional extensions.
+ * @param payload - Batch deposit payload.
+ * @param requirements - Payment requirements for the request.
+ * @param context - Optional facilitator extension context.
+ * @returns Execution details, or a verification failure response.
  */
-async function verifyReceiveAuth(
+async function resolveDepositExecution(
   signer: FacilitatorEvmSigner,
-  params: {
-    payer: `0x${string}`;
-    asset: string;
-    name: string;
-    version: string;
-    chainId: number;
-    amount: string;
-    validAfter: bigint;
-    validBefore: bigint;
-    nonce: `0x${string}`;
-    signature: `0x${string}`;
-  },
-): Promise<boolean> {
-  try {
-    return await signer.verifyTypedData({
-      address: getAddress(params.payer),
-      domain: {
-        name: params.name,
-        version: params.version,
-        chainId: params.chainId,
-        verifyingContract: getAddress(params.asset),
-      },
-      types: receiveAuthorizationTypes,
-      primaryType: "ReceiveWithAuthorization",
-      message: {
-        from: getAddress(params.payer),
-        to: getAddress(ERC3009_DEPOSIT_COLLECTOR_ADDRESS),
-        value: BigInt(params.amount),
-        validAfter: params.validAfter,
-        validBefore: params.validBefore,
-        nonce: params.nonce,
-      },
-      signature: params.signature,
-    });
-  } catch {
-    return false;
+  payment: PaymentPayload,
+  payload: BatchSettlementDepositPayload,
+  requirements: PaymentRequirements,
+  context?: FacilitatorContext,
+): Promise<DepositExecution | VerifyResponse> {
+  const transferMethod = resolveDepositTransferMethod(payload, requirements);
+  if (transferMethod === "eip3009") {
+    return {
+      kind: "direct",
+      collector: getEip3009DepositCollectorAddress(),
+      collectorData: buildEip3009DepositCollectorData(payload),
+    };
   }
+
+  const branch = await resolvePermit2DepositBranch(signer, payment, payload, requirements, context);
+  if ("isValid" in branch) {
+    return branch;
+  }
+
+  if (branch.kind === "erc20Approval") {
+    return {
+      kind: "erc20Approval",
+      collector: getPermit2DepositCollectorAddress(),
+      collectorData: branch.collectorData,
+      signedTransaction: branch.signedTransaction,
+      extensionSigner: branch.extensionSigner,
+      skipDirectSimulation: true,
+    };
+  }
+
+  return {
+    kind: "direct",
+    collector: getPermit2DepositCollectorAddress(),
+    collectorData: branch.collectorData,
+  };
+}
+
+/**
+ * Selects the transfer method from requirements, falling back to payload shape.
+ *
+ * @param payload - Batch deposit payload.
+ * @param requirements - Payment requirements for the request.
+ * @returns Selected batch-settlement transfer method.
+ */
+function resolveDepositTransferMethod(
+  payload: BatchSettlementDepositPayload,
+  requirements: PaymentRequirements,
+): BatchSettlementAssetTransferMethod {
+  const hinted = (
+    requirements.extra as { assetTransferMethod?: BatchSettlementAssetTransferMethod }
+  )?.assetTransferMethod;
+  if (hinted) {
+    return hinted;
+  }
+  return payload.deposit.authorization.permit2Authorization ? "permit2" : "eip3009";
 }

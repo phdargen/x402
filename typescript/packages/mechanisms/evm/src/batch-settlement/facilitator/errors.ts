@@ -31,3 +31,16 @@ export const ErrClaimSimulationFailed = "batch_settlement_evm_claim_simulation_f
 export const ErrSettleSimulationFailed = "batch_settlement_evm_settle_simulation_failed";
 export const ErrRefundSimulationFailed = "batch_settlement_evm_refund_simulation_failed";
 export const ErrRpcReadFailed = "batch_settlement_evm_rpc_read_failed";
+export const ErrPermit2AuthorizationRequired =
+  "batch_settlement_evm_permit2_authorization_required";
+export const ErrPermit2InvalidSpender = "batch_settlement_evm_permit2_invalid_spender";
+export const ErrPermit2AmountMismatch = "batch_settlement_evm_permit2_amount_mismatch";
+export const ErrPermit2DeadlineExpired = "batch_settlement_evm_permit2_deadline_expired";
+export const ErrPermit2InvalidSignature = "batch_settlement_evm_permit2_invalid_signature";
+export const ErrPermit2AllowanceRequired = "batch_settlement_evm_permit2_allowance_required";
+export const ErrEip2612AmountMismatch = "batch_settlement_evm_eip2612_amount_mismatch";
+export const ErrEip2612OwnerMismatch = "batch_settlement_evm_eip2612_owner_mismatch";
+export const ErrEip2612AssetMismatch = "batch_settlement_evm_eip2612_asset_mismatch";
+export const ErrEip2612SpenderMismatch = "batch_settlement_evm_eip2612_spender_mismatch";
+export const ErrEip2612DeadlineExpired = "batch_settlement_evm_eip2612_deadline_expired";
+export const ErrErc20ApprovalUnavailable = "batch_settlement_evm_erc20_approval_unavailable";

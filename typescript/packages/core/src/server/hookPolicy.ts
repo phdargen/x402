@@ -232,7 +232,18 @@ export function assertAdditivePayloadEnrichment(
 }
 
 /**
- * Ensures scheme response enrichment only adds new `extra` fields.
+ * Whether `value` is a plain object record (not null or an array).
+ *
+ * @param value - Value to inspect
+ * @returns True when `value` is a non-null object and not an array
+ */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Ensures scheme response enrichment only adds new `extra` fields, including nested fields
+ * below existing objects.
  *
  * @param extra - Existing settlement extra fields
  * @param enrichment - Fields returned by the scheme response enrichment hook
@@ -243,11 +254,73 @@ export function assertAdditiveSettlementExtra(
   enrichment: Record<string, unknown>,
   callerLabel: string,
 ): void {
-  for (const key of Object.keys(enrichment)) {
-    if (!Object.prototype.hasOwnProperty.call(extra, key)) continue;
+  assertAdditiveRecord(extra, enrichment, callerLabel, "extra");
+}
+
+/**
+ * Merges server-owned settlement response fields after additive policy validation.
+ *
+ * @param extra - Existing settlement extra fields
+ * @param enrichment - Additive fields returned by the scheme response enrichment hook
+ * @returns A merged extra object
+ */
+export function mergeAdditiveSettlementExtra(
+  extra: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+): Record<string, unknown> {
+  return mergeAdditiveRecord(extra, enrichment);
+}
+
+/**
+ * Throws if enrichment would overwrite or collide with keys already present on `target`,
+ * recursively for nested plain objects.
+ *
+ * @param target - Existing record fields before enrichment
+ * @param enrichment - Fields proposed by the hook to merge into `target`
+ * @param callerLabel - Hook label used in policy error messages
+ * @param path - Dot-style path segment for nested keys (for error messages)
+ */
+function assertAdditiveRecord(
+  target: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+  callerLabel: string,
+  path: string,
+): void {
+  for (const [key, enrichmentValue] of Object.entries(enrichment)) {
+    const nextPath = `${path}["${key}"]`;
+    if (!Object.prototype.hasOwnProperty.call(target, key)) continue;
+
+    const targetValue = target[key];
+    if (isPlainRecord(targetValue) && isPlainRecord(enrichmentValue)) {
+      assertAdditiveRecord(targetValue, enrichmentValue, callerLabel, nextPath);
+      continue;
+    }
 
     throw new Error(
-      `[x402] ${callerLabel} violated settlement response enrichment policy: extra["${key}"] already exists on the settlement result`,
+      `[x402] ${callerLabel} violated settlement response enrichment policy: ${nextPath} already exists on the settlement result`,
     );
   }
+}
+
+/**
+ * Deep-merges `enrichment` into `target`, recursively merging nested plain objects.
+ *
+ * @param target - Base record to merge into
+ * @param enrichment - Additive fields to merge (caller must enforce additive policy first)
+ * @returns Shallow copy of `target` with `enrichment` applied
+ */
+function mergeAdditiveRecord(
+  target: Record<string, unknown>,
+  enrichment: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...target };
+  for (const [key, enrichmentValue] of Object.entries(enrichment)) {
+    const targetValue = merged[key];
+    if (isPlainRecord(targetValue) && isPlainRecord(enrichmentValue)) {
+      merged[key] = mergeAdditiveRecord(targetValue, enrichmentValue);
+      continue;
+    }
+    merged[key] = enrichmentValue;
+  }
+  return merged;
 }

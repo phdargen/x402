@@ -1,4 +1,5 @@
 import type { ClientEvmSigner } from "../../signer";
+import type { EvmSchemeOptions } from "../../shared/rpc";
 import { type ClientChannelStorage, InMemoryClientChannelStorage } from "./storage";
 
 const DEFAULT_SALT =
@@ -24,6 +25,7 @@ export interface BatchSettlementEvmSchemeOptions {
   storage?: ClientChannelStorage;
   salt?: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
+  rpcUrl?: string;
   /** When set, EIP-712 vouchers are signed with this key; deposits still use the main `signer`. */
   voucherSigner?: ClientEvmSigner;
 }
@@ -38,6 +40,7 @@ export interface ResolvedClientOptions {
   salt: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
   voucherSigner?: ClientEvmSigner;
+  extensionRpcOptions?: EvmSchemeOptions;
 }
 
 /**
@@ -56,6 +59,7 @@ export function isBatchSettlementEvmSchemeOptions(
       "depositPolicy" in o ||
       "salt" in o ||
       "payerAuthorizer" in o ||
+      "rpcUrl" in o ||
       "voucherSigner" in o)
   );
 }
@@ -79,6 +83,7 @@ export function resolveClientOptions(
       salt: second.salt ?? DEFAULT_SALT,
       payerAuthorizer: second.payerAuthorizer,
       voucherSigner: second.voucherSigner,
+      extensionRpcOptions: second.rpcUrl ? { rpcUrl: second.rpcUrl } : undefined,
     };
   }
   return {

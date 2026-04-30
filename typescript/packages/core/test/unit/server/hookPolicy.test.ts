@@ -5,6 +5,7 @@ import {
   assertAdditiveSettlementExtra,
   assertSettleResponseCoreUnchanged,
   isVacantStringField,
+  mergeAdditiveSettlementExtra,
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
 } from "../../../src/server/hookPolicy";
@@ -160,6 +161,25 @@ describe("hookPolicy", () => {
       ).not.toThrow();
     });
 
+    it("allows adding nested settlement extra fields", () => {
+      expect(() =>
+        assertAdditiveSettlementExtra(
+          {
+            channelState: {
+              channelId: "0xchannel",
+              balance: "1000",
+            },
+          },
+          {
+            channelState: {
+              chargedCumulativeAmount: "200",
+            },
+          },
+          "scheme test",
+        ),
+      ).not.toThrow();
+    });
+
     it("rejects overwriting settlement extra fields", () => {
       expect(() =>
         assertAdditiveSettlementExtra(
@@ -168,6 +188,52 @@ describe("hookPolicy", () => {
           "scheme test",
         ),
       ).toThrow(/facilitatorField/);
+    });
+
+    it("rejects overwriting nested settlement extra fields", () => {
+      expect(() =>
+        assertAdditiveSettlementExtra(
+          {
+            channelState: {
+              balance: "1000",
+            },
+          },
+          {
+            channelState: {
+              balance: "2000",
+            },
+          },
+          "scheme test",
+        ),
+      ).toThrow(/channelState.*balance/);
+    });
+  });
+
+  describe("mergeAdditiveSettlementExtra", () => {
+    it("merges nested settlement extra fields", () => {
+      expect(
+        mergeAdditiveSettlementExtra(
+          {
+            channelState: {
+              channelId: "0xchannel",
+              balance: "1000",
+            },
+          },
+          {
+            chargedAmount: "100",
+            channelState: {
+              chargedCumulativeAmount: "200",
+            },
+          },
+        ),
+      ).toEqual({
+        chargedAmount: "100",
+        channelState: {
+          channelId: "0xchannel",
+          balance: "1000",
+          chargedCumulativeAmount: "200",
+        },
+      });
     });
   });
 });

@@ -20,7 +20,10 @@
     "erc20ApprovalGasSponsoring"
   ],
   "evm": {
-    "transferMethods": ["eip3009", "permit2", "upto", "batch-settlement"]
+    "assetTransferMethods": [
+      "eip3009",
+      "permit2"
+    ]
   },
   "environment": {
     "required": [

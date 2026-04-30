@@ -575,7 +575,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
       type: "deposit",
       channelConfig: config,
       voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
-      deposit: { amount: "10000", authorization: {} },
+      deposit: {
+        amount: "10000",
+        authorization: {} as BatchSettlementDepositPayload["deposit"]["authorization"],
+      },
     };
     const result = await scheme.verify(envelopeDeposit(dp), makeRequirements());
     expect(result.isValid).toBe(false);
@@ -620,6 +623,112 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
     const result = await scheme.verify(payload, makeRequirements());
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrValidBeforeExpired);
+  });
+
+  function buildPermit2Deposit(
+    overrides: Partial<
+      NonNullable<BatchSettlementDepositPayload["deposit"]["authorization"]["permit2Authorization"]>
+    > = {},
+  ): { payload: PaymentPayload; channelId: `0x${string}` } {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const authorization = {
+      from: PAYER,
+      permitted: { token: ASSET, amount: "10000" },
+      spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+      nonce: "123",
+      deadline: String(now + 3600),
+      witness: { channelId },
+      signature: "0xfeedface" as `0x${string}`,
+      ...overrides,
+    };
+    const dp: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: { permit2Authorization: authorization },
+      },
+    };
+    return { payload: envelopeDeposit(dp), channelId };
+  }
+
+  it("accepts a Permit2 deposit and simulates with the Permit2 collector", async () => {
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "allowance") return 1_000_000n;
+      return undefined;
+    });
+    const signer = buildSigner({ readContract });
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 1_000_000n },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const { payload } = buildPermit2Deposit();
+
+    const result = await scheme.verify(
+      payload,
+      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(readContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionName: "deposit",
+        args: expect.arrayContaining([getAddress(PERMIT2_DEPOSIT_COLLECTOR_ADDRESS)]),
+      }),
+    );
+  });
+
+  it("rejects Permit2 deposits with a wrong spender", async () => {
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const { payload } = buildPermit2Deposit({
+      spender: "0x0000000000000000000000000000000000000001",
+    });
+
+    const result = await scheme.verify(
+      payload,
+      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrPermit2InvalidSpender);
+  });
+
+  it("rejects Permit2 deposits whose amount differs from deposit.amount", async () => {
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const { payload } = buildPermit2Deposit({
+      permitted: { token: ASSET, amount: "9999" },
+    });
+
+    const result = await scheme.verify(
+      payload,
+      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrPermit2AmountMismatch);
+  });
+
+  it("rejects Permit2 deposits without Permit2 allowance or sponsoring data", async () => {
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "allowance") return 1n;
+      return undefined;
+    });
+    const signer = buildSigner({ readContract });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer);
+    const { payload } = buildPermit2Deposit();
+
+    const result = await scheme.verify(
+      payload,
+      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrPermit2AllowanceRequired);
   });
 });
 

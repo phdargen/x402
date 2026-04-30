@@ -96,6 +96,51 @@ export const proxy = paymentProxy(
         network: EVM_NETWORK,
       },
     },
+    "/api/batch-settlement/evm/permit2/proxy": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: {
+          amount: "1000",
+          asset: EVM_PERMIT2_ASSET,
+          extra: {
+            assetTransferMethod: "permit2",
+            name: EVM_NETWORK == "eip155:84532" ? "USDC" : "USD Coin",
+            version: "2",
+          },
+        },
+      },
+    },
+    "/api/batch-settlement/evm/permit2-eip2612GasSponsoring/proxy": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: "$0.001",
+        extra: { assetTransferMethod: "permit2" },
+      },
+      extensions: {
+        ...declareEip2612GasSponsoringExtension(),
+      },
+    },
+    "/api/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring/proxy": {
+      accepts: {
+        payTo: EVM_PAYEE_ADDRESS,
+        scheme: "batch-settlement",
+        network: EVM_NETWORK,
+        price: {
+          amount: "1000",
+          asset: EVM_PERMIT2_ASSET,
+          extra: {
+            assetTransferMethod: "permit2",
+          },
+        },
+      },
+      extensions: {
+        ...declareErc20ApprovalGasSponsoringExtension(),
+      },
+    },
     "/api/exact/evm/eip3009/proxy": {
       accepts: {
         payTo: EVM_PAYEE_ADDRESS,
@@ -415,5 +460,8 @@ export const config = {
     "/api/upto/evm/permit2-eip2612GasSponsoring",
     "/api/upto/evm/permit2-erc20ApprovalGasSponsoring",
     "/api/batch-settlement/evm/eip3009/proxy",
+    "/api/batch-settlement/evm/permit2/proxy",
+    "/api/batch-settlement/evm/permit2-eip2612GasSponsoring/proxy",
+    "/api/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring/proxy",
   ],
 };

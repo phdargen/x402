@@ -75,13 +75,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    *
    * @param payload - The x402 payment payload envelope.
    * @param requirements - Server payment requirements (scheme, network, asset, amount).
-   * @param _ - Optional facilitator context (unused).
+   * @param context - Optional facilitator extension context.
    * @returns A {@link VerifyResponse} indicating validity with payer and channel state in `extra`.
    */
   async verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-    _?: FacilitatorContext,
+    context?: FacilitatorContext,
   ): Promise<VerifyResponse> {
     const rawPayload = payload.payload;
 
@@ -97,7 +97,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
-      return verifyDeposit(this.signer, rawPayload, requirements);
+      return verifyDeposit(this.signer, payload, rawPayload, requirements, context);
     }
 
     if (isBatchSettlementVoucherPayload(rawPayload)) {
@@ -122,18 +122,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    *
    * @param payload - The x402 payment payload envelope.
    * @param requirements - Server payment requirements.
-   * @param _ - Optional facilitator context (unused).
+   * @param context - Optional facilitator extension context.
    * @returns A {@link SettleResponse} with the transaction hash on success.
    */
   async settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-    _?: FacilitatorContext,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const rawPayload = payload.payload;
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
-      return settleDeposit(this.signer, rawPayload, requirements);
+      return settleDeposit(this.signer, payload, rawPayload, requirements, context);
     }
 
     if (isBatchSettlementClaimPayload(rawPayload)) {

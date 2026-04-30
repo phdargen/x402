@@ -397,21 +397,24 @@ export async function handleEnrichSettlementResponse(
   }
 
   if (isBatchSettlementRefundPayload(raw)) {
-    const resultChannelState = readChannelStateExtra(ctx.result.extra);
     return {
       channelState: {
-        ...channelStateExtra(channel, channel.chargedCumulativeAmount),
-        ...resultChannelState,
+        chargedCumulativeAmount: channel.chargedCumulativeAmount,
       },
     };
   }
 
-  const channelState = channelStateExtra(channel, channel.chargedCumulativeAmount);
   if (isBatchSettlementDepositPayload(raw)) {
     return {
       chargedAmount: ctx.requirements.amount,
-      channelState,
+      channelState: {
+        chargedCumulativeAmount: channel.chargedCumulativeAmount,
+      },
     };
   }
-  return { channelState };
+  return {
+    channelState: {
+      chargedCumulativeAmount: channel.chargedCumulativeAmount,
+    },
+  };
 }

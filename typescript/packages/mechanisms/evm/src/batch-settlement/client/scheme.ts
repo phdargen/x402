@@ -10,9 +10,19 @@ import {
 import { getAddress } from "viem";
 import { ClientEvmSigner } from "../../signer";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
-import { BatchSettlementVoucherPayload, ChannelConfig } from "../types";
+import {
+  BatchSettlementAssetTransferMethod,
+  BatchSettlementVoucherPayload,
+  ChannelConfig,
+} from "../types";
 import { computeChannelId } from "../utils";
+import {
+  trySignEip2612PermitExtension,
+  trySignErc20ApprovalExtension,
+} from "../../shared/extensions";
+import type { EvmSchemeOptions } from "../../shared/rpc";
 import { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
+import { createBatchSettlementPermit2DepositPayload } from "./permit2";
 import {
   type BatchSettlementDepositPolicy,
   type BatchSettlementEvmSchemeOptions,
@@ -55,6 +65,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   private readonly salt: `0x${string}`;
   private readonly payerAuthorizer: `0x${string}` | undefined;
   private readonly voucherSigner: ClientEvmSigner | undefined;
+  private readonly extensionRpcOptions: EvmSchemeOptions | undefined;
 
   /**
    * Constructs a batched client scheme.
@@ -66,13 +77,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     private readonly signer: ClientEvmSigner,
     optionsOrPolicy?: BatchSettlementEvmSchemeOptions | BatchSettlementDepositPolicy,
   ) {
-    const { storage, depositPolicy, salt, payerAuthorizer, voucherSigner } =
+    const { storage, depositPolicy, salt, payerAuthorizer, voucherSigner, extensionRpcOptions } =
       resolveClientOptions(optionsOrPolicy);
     this.storage = storage;
     this.depositPolicy = depositPolicy;
     this.salt = salt;
     this.payerAuthorizer = payerAuthorizer;
     this.voucherSigner = voucherSigner;
+    this.extensionRpcOptions = extensionRpcOptions;
 
     if (
       payerAuthorizer !== undefined &&
@@ -95,16 +107,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    *
    * @param x402Version - Protocol version for the payload envelope.
    * @param paymentRequirements - Server payment requirements (scheme, network, asset, amount).
-   * @param _context - Optional payment payload context (unused).
+   * @param context - Optional payment payload context with extension hints.
    * @returns A {@link PaymentPayloadResult} ready to be sent as the `X-PAYMENT` header.
    */
   async createPaymentPayload(
     x402Version: number,
     paymentRequirements: PaymentRequirements,
-    _context?: PaymentPayloadContext,
+    context?: PaymentPayloadContext,
   ): Promise<PaymentPayloadResult> {
-    void _context;
-
     const deps = this.deps();
     const config = buildChannelConfig(deps, paymentRequirements);
     const channelId = computeChannelId(config, paymentRequirements.network);
@@ -132,7 +142,27 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       const depositAmount = needsInitialDeposit
         ? (batchedCtx.depositAmount ?? computedDeposit)
         : computedDeposit;
-      return createBatchSettlementEIP3009DepositPayload(
+      const assetTransferMethod =
+        (paymentRequirements.extra?.assetTransferMethod as BatchSettlementAssetTransferMethod) ??
+        "eip3009";
+
+      if (assetTransferMethod === "eip3009") {
+        return createBatchSettlementEIP3009DepositPayload(
+          this.signer,
+          x402Version,
+          paymentRequirements,
+          config,
+          depositAmount,
+          maxClaimableAmount,
+          this.voucherSigner,
+        );
+      }
+
+      if (assetTransferMethod !== "permit2") {
+        throw new Error(`unsupported batch-settlement assetTransferMethod: ${assetTransferMethod}`);
+      }
+
+      const result = await createBatchSettlementPermit2DepositPayload(
         this.signer,
         x402Version,
         paymentRequirements,
@@ -141,6 +171,31 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
         maxClaimableAmount,
         this.voucherSigner,
       );
+
+      const eip2612Extensions = await trySignEip2612PermitExtension(
+        this.signer,
+        this.extensionRpcOptions,
+        paymentRequirements,
+        result,
+        context,
+        depositAmount,
+      );
+      if (eip2612Extensions) {
+        return { ...result, extensions: eip2612Extensions };
+      }
+
+      const erc20Extensions = await trySignErc20ApprovalExtension(
+        this.signer,
+        this.extensionRpcOptions,
+        paymentRequirements,
+        context,
+        depositAmount,
+      );
+      if (erc20Extensions) {
+        return { ...result, extensions: erc20Extensions };
+      }
+
+      return result;
     }
 
     const voucherSigner = this.voucherSigner ?? this.signer;

@@ -15,11 +15,9 @@
     2
   ],
   "evm": {
-    "transferMethods": [
+    "assetTransferMethods": [
       "eip3009",
-      "permit2",
-      "upto",
-      "batch-settlement"
+      "permit2"
     ]
   },
   "extensions": [

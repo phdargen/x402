@@ -84,3 +84,19 @@ export const receiveAuthorizationTypes = {
     { name: "nonce", type: "bytes32" },
   ],
 } as const;
+
+/** Permit2 typed data for channel-bound batch deposits. */
+export const batchPermit2WitnessTypes = {
+  PermitWitnessTransferFrom: [
+    { name: "permitted", type: "TokenPermissions" },
+    { name: "spender", type: "address" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+    { name: "witness", type: "DepositWitness" },
+  ],
+  TokenPermissions: [
+    { name: "token", type: "address" },
+    { name: "amount", type: "uint256" },
+  ],
+  DepositWitness: [{ name: "channelId", type: "bytes32" }],
+} as const;

@@ -2,7 +2,64 @@ import type { NetworkSet } from './networks/networks';
 
 export type ProtocolFamily = 'evm' | 'svm' | 'avm' | 'aptos' | 'hedera' | 'stellar';
 export type Transport = 'http' | 'mcp';
-export type TransferMethod = 'eip3009' | 'permit2' | 'upto' | 'batch-settlement';
+export type PaymentScheme = 'exact' | 'upto' | 'batch-settlement';
+export type AssetTransferMethod = 'eip3009' | 'permit2';
+
+/**
+ * Resolved asset transfer for an EVM endpoint.
+ */
+export function endpointAssetTransferMethod(endpoint: TestEndpoint): AssetTransferMethod | undefined {
+  const family = endpoint.protocolFamily ?? 'evm';
+  if (family !== 'evm') {
+    return undefined;
+  }
+  if (endpoint.assetTransferMethod != null) {
+    return endpoint.assetTransferMethod;
+  }
+  const scheme = endpoint.scheme ?? 'exact';
+  return scheme === 'upto' ? 'permit2' : 'eip3009';
+}
+
+/**
+ * Resolved payment scheme for an EVM endpoint.
+ * Defaults to `exact` when omitted (non-batch endpoints).
+ */
+export function endpointPaymentScheme(endpoint: TestEndpoint): PaymentScheme | undefined {
+  const family = endpoint.protocolFamily ?? 'evm';
+  if (family !== 'evm') {
+    return undefined;
+  }
+  return endpoint.scheme ?? 'exact';
+}
+
+/** Harness knobs for exact / upto endpoints (Permit2 settle paths). */
+export interface Permit2SchemeOptions {
+  permit2Direct?: boolean;
+  coldstart?: boolean;
+}
+
+/** Harness knobs for batch-settlement (channel sizing + optional Permit2 knobs). */
+export interface BatchSettlementSchemeOptions extends Permit2SchemeOptions {
+  count: number;
+  refundOnLast?: boolean;
+}
+
+export type SchemeOptions = Permit2SchemeOptions | BatchSettlementSchemeOptions;
+
+/** Batch channel options when `scheme === 'batch-settlement'` (requires `count` in config). */
+export function endpointBatchChannelOptions(
+  endpoint: TestEndpoint,
+): { count: number; refundOnLast?: boolean } | undefined {
+  if (endpoint.scheme !== 'batch-settlement') {
+    return undefined;
+  }
+  const o = endpoint.schemeOptions;
+  if (!o || !('count' in o) || o.count === undefined) {
+    return undefined;
+  }
+  const refundOnLast = o.refundOnLast;
+  return refundOnLast === true ? { count: o.count, refundOnLast: true } : { count: o.count };
+}
 
 export interface ClientResult {
   success: boolean;
@@ -81,21 +138,14 @@ export interface TestEndpoint {
   description: string;
   requiresPayment?: boolean;
   protocolFamily?: ProtocolFamily;
-  transferMethod?: TransferMethod;
+  scheme?: PaymentScheme;
+  assetTransferMethod?: AssetTransferMethod;
+  schemeOptions?: SchemeOptions;
   extensions?: string[];
   /** For MCP tools: the tool name used in tools/call. Defaults to path if not specified. */
   toolName?: string;
   /** For MCP tools: expected MCP wire transport for discovery metadata. */
   mcpTransport?: 'streamable-http' | 'sse';
-  /** True for Permit2 standard/direct settle - requires pre-approval (approve before test, not revoke) */
-  permit2Direct?: boolean;
-  /** True for endpoints that require Permit2 revocation + fund/drain state setup before the first test (coldstart). */
-  coldstart?: boolean;
-  /** Batch-settlement scenario configuration: how many vouchers to issue and whether to signal a cooperative refund. */
-  batchSettlement?: {
-    count: number;
-    refundOnLast?: boolean;
-  };
   health?: boolean;
   close?: boolean;
 }
@@ -110,7 +160,7 @@ export interface TestConfig {
   x402Versions?: number[];
   extensions?: string[];
   evm?: {
-    transferMethods: TransferMethod[];
+    assetTransferMethods?: AssetTransferMethod[];
   };
   endpoints?: TestEndpoint[];
   supportedMethods?: string[];

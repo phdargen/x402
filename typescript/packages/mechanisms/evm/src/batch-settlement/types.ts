@@ -34,15 +34,40 @@ export type BatchSettlementErc3009Authorization = {
   signature: `0x${string}`;
 };
 
+export type BatchSettlementPermit2Authorization = {
+  from: `0x${string}`;
+  permitted: {
+    token: `0x${string}`;
+    amount: string;
+  };
+  spender: `0x${string}`;
+  nonce: string;
+  deadline: string;
+  witness: {
+    channelId: `0x${string}`;
+  };
+  signature: `0x${string}`;
+};
+
+export type BatchSettlementAssetTransferMethod = "eip3009" | "permit2";
+
+export type BatchSettlementDepositAuthorization =
+  | {
+      erc3009Authorization: BatchSettlementErc3009Authorization;
+      permit2Authorization?: never;
+    }
+  | {
+      erc3009Authorization?: never;
+      permit2Authorization: BatchSettlementPermit2Authorization;
+    };
+
 export type BatchSettlementDepositPayload = {
   type: "deposit";
   channelConfig: ChannelConfig;
   voucher: BatchSettlementVoucherFields;
   deposit: {
     amount: string;
-    authorization: {
-      erc3009Authorization?: BatchSettlementErc3009Authorization;
-    };
+    authorization: BatchSettlementDepositAuthorization;
   };
 };
 
@@ -93,7 +118,7 @@ export type BatchSettlementPaymentRequirementsExtra = {
   withdrawDelay: number;
   name: string;
   version: string;
-  assetTransferMethod?: "eip3009";
+  assetTransferMethod?: BatchSettlementAssetTransferMethod;
   channelState?: BatchSettlementChannelStateExtra;
   voucherState?: BatchSettlementVoucherStateExtra;
 };
@@ -179,7 +204,9 @@ export function isBatchSettlementDepositPayload(
     payload.type === "deposit" &&
     "channelConfig" in payload &&
     isVoucherFields(payload.voucher) &&
-    "deposit" in payload
+    isObject(payload.deposit) &&
+    typeof payload.deposit.amount === "string" &&
+    isObject(payload.deposit.authorization)
   );
 }
 

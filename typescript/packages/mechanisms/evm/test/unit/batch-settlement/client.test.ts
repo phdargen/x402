@@ -15,6 +15,8 @@ import {
 import { processCorrectivePaymentRequired } from "../../../src/batch-settlement/client/recovery";
 import { InMemoryClientChannelStorage } from "../../../src/batch-settlement/client/storage";
 import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
+import { PERMIT2_ADDRESS } from "../../../src/constants";
+import { PERMIT2_DEPOSIT_COLLECTOR_ADDRESS } from "../../../src/batch-settlement/constants";
 import {
   isBatchSettlementDepositPayload,
   isBatchSettlementVoucherPayload,
@@ -402,6 +404,71 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const result = await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
     const payload = result.payload as { deposit: { amount: string } };
     expect(payload.deposit.amount).toBe("5000");
+  });
+
+  it("creates a Permit2 deposit payload when requested by assetTransferMethod", async () => {
+    const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, async () => [0n, 0n]);
+    const client = new BatchSettlementEvmScheme(signer);
+    const result = await client.createPaymentPayload(
+      2,
+      makeRequirements({ extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" } }),
+    );
+
+    expect(isBatchSettlementDepositPayload(result.payload as Record<string, unknown>)).toBe(true);
+    const payload = result.payload as {
+      voucher: { channelId: `0x${string}` };
+      deposit: {
+        amount: string;
+        authorization: {
+          permit2Authorization: {
+            from: `0x${string}`;
+            permitted: { token: `0x${string}`; amount: string };
+            spender: `0x${string}`;
+            witness: { channelId: `0x${string}` };
+          };
+        };
+      };
+    };
+
+    const auth = payload.deposit.authorization.permit2Authorization;
+    expect(payload.deposit.amount).toBe("10000");
+    expect(auth.from).toBe(signer.address);
+    expect(auth.permitted.token).toBe(ASSET);
+    expect(auth.permitted.amount).toBe(payload.deposit.amount);
+    expect(auth.spender).toBe(getAddress(PERMIT2_DEPOSIT_COLLECTOR_ADDRESS));
+    expect(auth.witness.channelId).toBe(payload.voucher.channelId);
+  });
+
+  it("signs EIP-2612 Permit2 approval for deposit.amount", async () => {
+    const storage = new InMemoryClientChannelStorage();
+    const baseSigner = buildSigner(PAYER_PRIVATE_KEY);
+    const config = buildChannelConfig(
+      makeDeps({ signer: baseSigner, storage }),
+      makeRequirements(),
+    );
+    await storage.set(computeChannelId(config).toLowerCase(), {});
+
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "allowance") return 0n;
+      if (functionName === "nonces") return 7n;
+      return [0n, 0n];
+    });
+    const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+    const result = await client.createPaymentPayload(
+      2,
+      makeRequirements({ extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" } }),
+      { extensions: { eip2612GasSponsoring: {} } } as never,
+    );
+
+    const extensions = result.extensions as
+      | Record<string, { info?: Record<string, unknown> }>
+      | undefined;
+    const info = extensions?.eip2612GasSponsoring?.info as
+      | { amount?: string; spender?: string }
+      | undefined;
+    expect(info?.amount).toBe("10000");
+    expect(info?.spender).toBe(getAddress(PERMIT2_ADDRESS));
   });
 });
 

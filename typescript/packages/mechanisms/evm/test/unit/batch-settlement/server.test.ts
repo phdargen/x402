@@ -355,6 +355,17 @@ describe("BatchSettlementEvmScheme — enhancePaymentRequirements", () => {
     );
     expect(enhanced.extra?.custom).toBe("yes");
   });
+
+  it("preserves explicit assetTransferMethod from payment requirements", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    const enhanced = await server.enhancePaymentRequirements(
+      makeRequirements({ extra: { assetTransferMethod: "permit2" } }),
+      { x402Version: 2, scheme: "batch-settlement", network: NETWORK },
+      [],
+    );
+
+    expect(enhanced.extra?.assetTransferMethod).toBe("permit2");
+  });
 });
 
 describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
@@ -1488,11 +1499,6 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect(enrichment).toEqual({
       chargedAmount: "1000",
       channelState: {
-        channelId,
-        balance: "10000",
-        totalClaimed: "0",
-        withdrawRequestedAt: 0,
-        refundNonce: "0",
         chargedCumulativeAmount: "1000",
       },
     });
@@ -1573,11 +1579,6 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     } as never);
     expect(enrichment).toEqual({
       channelState: {
-        channelId,
-        balance: "1000",
-        totalClaimed: "1000",
-        withdrawRequestedAt: 0,
-        refundNonce: "1",
         chargedCumulativeAmount: "1000",
       },
     });
@@ -1663,11 +1664,6 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     } as never);
     expect(enrichment).toEqual({
       channelState: {
-        channelId,
-        balance: "8000",
-        totalClaimed: "1000",
-        withdrawRequestedAt: 0,
-        refundNonce: "3",
         chargedCumulativeAmount: "1000",
       },
     });

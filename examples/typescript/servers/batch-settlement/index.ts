@@ -4,6 +4,7 @@ import { paymentMiddleware, setSettlementOverrides, x402ResourceServer } from "@
 import { config } from "dotenv";
 import express from "express";
 import { privateKeyToAccount } from "viem/accounts";
+import { declareEip2612GasSponsoringExtension } from "@x402/extensions";
 
 config();
 
@@ -80,6 +81,10 @@ app.use(
           price: maxPrice,
           network: NETWORK,
           payTo: evmAddress,
+          // extra: { assetTransferMethod: "permit2" },
+        },
+        extensions: {
+          ...declareEip2612GasSponsoringExtension(),
         },
         description:
           "Batch-settlement demo — voucher updates session without per-request chain settle",

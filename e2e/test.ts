@@ -6,7 +6,7 @@ import { createWalletClient, createPublicClient, http, parseEther, formatEther, 
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
 import { TestDiscovery } from './src/discovery';
-import { ClientConfig, ScenarioResult, ServerConfig, TestScenario } from './src/types';
+import { ClientConfig, ScenarioResult, ServerConfig, TestScenario, endpointAssetTransferMethod, endpointPaymentScheme, endpointBatchChannelOptions } from './src/types';
 import { config as loggerConfig, log, verboseLog, errorLog, close as closeLogger, createComboLogger } from './src/logger';
 import { handleDiscoveryValidation, shouldRunDiscoveryValidation } from './extensions/bazaar';
 import { parseArgs, printHelp } from './src/cli/args';
@@ -337,7 +337,6 @@ async function runClientTest(
     bufferLog(`  📞 Running client: ${JSON.stringify(callConfig, null, 2)}`);
     const result = await client.call(callConfig);
     bufferLog(`  📊 Client result: ${JSON.stringify(result, null, 2)}`);
-
     // Check if the client execution succeeded
     if (!result.success) {
       return {
@@ -570,25 +569,57 @@ async function runTest() {
   // Branch coverage assertions for EVM scenarios
   const evmScenarios = filteredScenarios.filter(s => s.protocolFamily === 'evm');
   if (evmScenarios.length > 0) {
-    const hasEip3009 = evmScenarios.some(s => (s.endpoint.transferMethod || 'eip3009') === 'eip3009');
-    const hasPermit2 = evmScenarios.some(s => s.endpoint.transferMethod === 'permit2');
-    const hasPermit2Direct = evmScenarios.some(s => s.endpoint.transferMethod === 'permit2' && s.endpoint.permit2Direct === true);
-    const hasPermit2Eip2612 = evmScenarios.some(s => s.endpoint.transferMethod === 'permit2' && !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') && !s.endpoint.permit2Direct);
-    const hasPermit2Erc20 = evmScenarios.some(s => s.endpoint.transferMethod === 'permit2' && s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'));
+    const hasEip3009 = evmScenarios.some(s => endpointAssetTransferMethod(s.endpoint) === 'eip3009');
+    const hasPermit2 = evmScenarios.some(
+      s => endpointPaymentScheme(s.endpoint) === 'exact' && endpointAssetTransferMethod(s.endpoint) === 'permit2',
+    );
+    const hasPermit2Direct = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'exact' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        s.endpoint.schemeOptions?.permit2Direct === true,
+    );
+    const hasPermit2Eip2612 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'exact' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') &&
+        s.endpoint.schemeOptions?.permit2Direct !== true,
+    );
+    const hasPermit2Erc20 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'exact' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'),
+    );
 
-    const hasUpto = evmScenarios.some(s => s.endpoint.transferMethod === 'upto');
-    const hasUptoDirect = evmScenarios.some(s => s.endpoint.transferMethod === 'upto' && s.endpoint.permit2Direct === true);
-    const hasUptoEip2612 = evmScenarios.some(s => s.endpoint.transferMethod === 'upto' && !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') && !s.endpoint.permit2Direct);
-    const hasUptoErc20 = evmScenarios.some(s => s.endpoint.transferMethod === 'upto' && s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'));
+    const hasUpto = evmScenarios.some(s => endpointPaymentScheme(s.endpoint) === 'upto');
+    const hasUptoDirect = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'upto' && s.endpoint.schemeOptions?.permit2Direct === true,
+    );
+    const hasUptoEip2612 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'upto' &&
+        !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') &&
+        s.endpoint.schemeOptions?.permit2Direct !== true,
+    );
+    const hasUptoErc20 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'upto' &&
+        s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'),
+    );
 
-    const hasBatchSettlement = evmScenarios.some(s => s.endpoint.transferMethod === 'batch-settlement');
+    const hasBatchSettlement = evmScenarios.some(s => endpointPaymentScheme(s.endpoint) === 'batch-settlement');
     const hasBatchSettlementMulti = evmScenarios.some(
-      s => s.endpoint.transferMethod === 'batch-settlement' && (s.endpoint.batchSettlement?.count ?? 1) > 1,
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
+        (endpointBatchChannelOptions(s.endpoint)?.count ?? 1) > 1,
     );
     const hasBatchSettlementRefund = evmScenarios.some(
       s =>
-        s.endpoint.transferMethod === 'batch-settlement' &&
-        s.endpoint.batchSettlement?.refundOnLast === true,
+        endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
+        endpointBatchChannelOptions(s.endpoint)?.refundOnLast === true,
     );
 
     log('🔍 EVM Branch Coverage Check:');
@@ -608,9 +639,7 @@ async function runTest() {
   }
 
   // Auto-detect Permit2 scenarios (upto uses Permit2 under the hood)
-  const hasPermit2Scenarios = filteredScenarios.some(
-    (s) => s.endpoint.transferMethod === 'permit2' || s.endpoint.transferMethod === 'upto'
-  );
+  const hasPermit2Scenarios = filteredScenarios.some(s => endpointAssetTransferMethod(s.endpoint) === 'permit2');
 
   if (hasPermit2Scenarios) {
     log('🔐 Permit2 scenarios detected — revoke before gas-sponsored tests, approve before permit2-direct tests');
@@ -849,9 +878,7 @@ async function runTest() {
     // Batch-settlement scenarios need a unique 32-byte salt per scenario so
     // concurrent runs don't collide on the same on-chain channel id (the salt
     // is one of the inputs that derives the channel from sender/receiver/etc.).
-    const batchCfg = scenario.endpoint.transferMethod === 'batch-settlement'
-      ? scenario.endpoint.batchSettlement
-      : undefined;
+    const batchCfg = endpointBatchChannelOptions(scenario.endpoint);
 
     const clientConfig: ClientConfig = {
       evmPrivateKey: clientEvmPrivateKey!,
@@ -869,15 +896,15 @@ async function runTest() {
       hederaNodeUrl: networks.hedera.rpcUrl,
       ...(batchCfg
         ? {
-            batchSettlement: {
-              channelSalt: generateChannelSalt(),
-              count: batchCfg.count,
-              refundOnLast: batchCfg.refundOnLast === true,
-              ...(process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY
-                ? { voucherSignerPrivateKey: process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY }
-                : {}),
-            },
-          }
+          batchSettlement: {
+            channelSalt: generateChannelSalt(),
+            count: batchCfg.count,
+            refundOnLast: batchCfg.refundOnLast === true,
+            ...(process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY
+              ? { voucherSignerPrivateKey: process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY }
+              : {}),
+          },
+        }
         : {}),
     };
 
@@ -968,8 +995,8 @@ async function runTest() {
       aptosPayTo: facilitatorSupportsAptos ? (serverAptosAddress || '') : '',
       hederaPayTo:
         facilitatorSupportsHedera &&
-        facilitatorHederaAccountId &&
-        facilitatorHederaPrivateKey
+          facilitatorHederaAccountId &&
+          facilitatorHederaPrivateKey
           ? (serverHederaAddress || '')
           : '',
       hederaAsset: process.env.HEDERA_ASSET,
@@ -982,11 +1009,11 @@ async function runTest() {
       // self-manage batch-settlement claim/refund signatures when set.
       ...(process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY
         ? {
-            batchSettlement: {
-              receiverAuthorizerPrivateKey:
-                process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
-            },
-          }
+          batchSettlement: {
+            receiverAuthorizerPrivateKey:
+              process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
+          },
+        }
         : {}),
     };
 
@@ -1016,9 +1043,9 @@ async function runTest() {
         const tn = nextTestNumber();
         const isEvm = scenario.protocolFamily === 'evm';
 
-        if (scenario.endpoint.permit2Direct) {
+        if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
           await approvePermit2Approval(USDC_BASE_SEPOLIA);
-        } else if (scenario.endpoint.coldstart) {
+        } else if (scenario.endpoint.schemeOptions?.coldstart === true) {
           // Key on (client, path) so each client independently runs its own
           // fund → revoke → drain cycle. Without the client name, the second
           // client in a combo silently skips the coldstart and inherits

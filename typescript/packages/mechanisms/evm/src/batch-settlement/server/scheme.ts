@@ -290,6 +290,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         withdrawDelay: this.withdrawDelay,
         name: assetInfo.name,
         version: assetInfo.version,
+        assetTransferMethod:
+          paymentRequirements.extra?.assetTransferMethod ?? assetInfo.assetTransferMethod,
       },
     });
   }

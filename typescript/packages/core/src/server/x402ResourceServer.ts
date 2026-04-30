@@ -21,6 +21,7 @@ import {
   assertAdditivePayloadEnrichment,
   assertAdditiveSettlementExtra,
   assertSettleResponseCoreUnchanged,
+  mergeAdditiveSettlementExtra,
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
 } from "./hookPolicy";
@@ -1389,7 +1390,7 @@ export class x402ResourceServer {
       if (enrichment === undefined) return;
 
       assertAdditiveSettlementExtra(settleResult.extra ?? {}, enrichment, label);
-      settleResult.extra = { ...settleResult.extra, ...enrichment };
+      settleResult.extra = mergeAdditiveSettlementExtra(settleResult.extra ?? {}, enrichment);
     } catch (error) {
       this.warnResourceServerHookFailure("enrichSettlementResponse", label, error);
     }
