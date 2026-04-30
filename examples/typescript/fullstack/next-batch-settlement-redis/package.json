@@ -7,6 +7,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "cron:claim": "tsx scripts/cron.ts claim",
+    "cron:settle": "tsx scripts/cron.ts settle",
+    "cron:claim-and-settle": "tsx scripts/cron.ts claim-and-settle",
     "format": "prettier -c .prettierrc --write \"**/*.{ts,js,cjs,json,md}\"",
     "format:check": "prettier -c .prettierrc --check \"**/*.{ts,js,cjs,json,md}\"",
     "lint": "eslint . --ext .ts --fix",
@@ -38,6 +41,7 @@
     "eslint-plugin-prettier": "^5.2.6",
     "prettier": "3.5.2",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }

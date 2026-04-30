@@ -186,6 +186,27 @@ describe("BatchSettlementChannelManager — claim()", () => {
     expect(facilitator.settle).toHaveBeenCalledTimes(3);
   });
 
+  it("defaults to 100 vouchers per claim batch", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    for (let i = 0; i < 101; i++) {
+      const config = buildChannelConfig(i.toString(16));
+      await storeChannel(
+        storage,
+        buildSession({
+          channelConfig: config,
+          channelId: computeChannelId(config),
+          chargedCumulativeAmount: String(1000 * (i + 1)),
+          totalClaimed: "0",
+        }),
+      );
+    }
+
+    const results = await manager.claim();
+    expect(results).toHaveLength(2);
+    expect(results.map(r => r.vouchers)).toEqual([100, 1]);
+    expect(facilitator.settle).toHaveBeenCalledTimes(2);
+  });
+
   it("skips sessions that are not idle long enough when idleSecs is set", async () => {
     const { manager, storage, facilitator } = buildManager();
     const fresh = buildSession({
@@ -301,8 +322,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
   it("returns no channels when storage is empty", async () => {
     const { manager, facilitator } = buildManager();
     const result = await manager.refund();
-    expect(result.channels).toEqual([]);
-    expect(result.transaction).toBe("");
+    expect(result).toEqual([]);
     expect(facilitator.settle).not.toHaveBeenCalled();
   });
 
@@ -314,7 +334,7 @@ describe("BatchSettlementChannelManager — refund()", () => {
     const idUpper = session.channelId.toUpperCase().replace("0X", "0x");
     const result = await manager.refund([idUpper]);
 
-    expect(result.channels).toEqual([session.channelId]);
+    expect(result).toEqual([{ channel: session.channelId, transaction: "0xtx" }]);
     expect(facilitator.settle).toHaveBeenCalledTimes(1);
     const [paymentPayload] = facilitator.settle.mock.calls[0];
     const payload = paymentPayload.payload as Record<string, unknown>;
@@ -336,6 +356,54 @@ describe("BatchSettlementChannelManager — refund()", () => {
 
     const stored = await storage.get(session.channelId);
     expect(stored).toBeUndefined();
+  });
+
+  it("refunds multiple channels with one facilitator transaction per channel", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    for (let i = 0; i < 2; i++) {
+      const config = buildChannelConfig(i.toString(16));
+      await storeChannel(
+        storage,
+        buildSession({
+          channelConfig: config,
+          channelId: computeChannelId(config),
+          chargedCumulativeAmount: "1000",
+          balance: "10000",
+        }),
+      );
+    }
+
+    const result = await manager.refund();
+
+    expect(result).toHaveLength(2);
+    expect(facilitator.settle).toHaveBeenCalledTimes(2);
+    for (const { channel } of result) {
+      expect(await storage.get(channel)).toBeUndefined();
+    }
+  });
+
+  it("refundIdleChannels only refunds channels idle long enough", async () => {
+    const { manager, storage } = buildManager();
+    const idleConfig = buildChannelConfig("01");
+    const freshConfig = buildChannelConfig("02");
+    const idle = buildSession({
+      channelConfig: idleConfig,
+      channelId: computeChannelId(idleConfig),
+      lastRequestTimestamp: Date.now() - 120_000,
+    });
+    const fresh = buildSession({
+      channelConfig: freshConfig,
+      channelId: computeChannelId(freshConfig),
+      lastRequestTimestamp: Date.now(),
+    });
+    await storeChannel(storage, idle);
+    await storeChannel(storage, fresh);
+
+    const result = await manager.refundIdleChannels({ idleSecs: 60 });
+
+    expect(result).toEqual([{ channel: idle.channelId, transaction: "0xtx" }]);
+    expect(await storage.get(idle.channelId)).toBeUndefined();
+    expect(await storage.get(fresh.channelId)).toBeDefined();
   });
 
   it("throws when facilitator reports failure", async () => {
@@ -366,24 +434,24 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
     vi.useRealTimers();
   });
 
-  it("schedules a periodic tick when started and clears it on stop", async () => {
+  it("schedules configured auto job timers and clears them on stop", async () => {
     const { manager } = buildManager();
     const setIntervalSpy = vi.spyOn(global, "setInterval");
     const clearIntervalSpy = vi.spyOn(global, "clearInterval");
 
-    manager.start({ tickSecs: 1 });
-    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    manager.start({ claimIntervalSecs: 1, settleIntervalSecs: 2, refundIntervalSecs: 3 });
+    expect(setIntervalSpy).toHaveBeenCalledTimes(3);
 
     await manager.stop();
-    expect(clearIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(3);
   });
 
   it("is a no-op to call start twice (single timer)", () => {
     const { manager } = buildManager();
     const setIntervalSpy = vi.spyOn(global, "setInterval");
 
-    manager.start({ tickSecs: 1 });
-    manager.start({ tickSecs: 1 });
+    manager.start({ claimIntervalSecs: 1 });
+    manager.start({ settleIntervalSecs: 1 });
     expect(setIntervalSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -392,33 +460,33 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
     const session = buildSession({ chargedCumulativeAmount: "5000" });
     await storeChannel(storage, session);
 
-    manager.start({ tickSecs: 60 });
+    manager.start();
     await manager.stop({ flush: true });
 
     expect(facilitator.settle).toHaveBeenCalledTimes(2);
   });
 
-  it("invokes onRefund callback when refundOnShutdown produces channels", async () => {
+  it("flushes pending claims and settles without refunding on stop({ flush: true })", async () => {
     const { manager, storage } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
     await storeChannel(storage, session);
 
     const onRefund = vi.fn<(r: RefundResult) => void>();
-    manager.start({ tickSecs: 60, refundOnShutdown: true, onRefund });
+    manager.start({ onRefund });
     await manager.stop({ flush: true });
 
-    expect(onRefund).toHaveBeenCalledTimes(1);
-    expect(onRefund.mock.calls[0][0].channels).toContain(session.channelId);
+    expect(onRefund).not.toHaveBeenCalled();
+    expect(await storage.get(session.channelId)).toBeDefined();
   });
 
-  it("forwards refund-on-shutdown errors to onError callback", async () => {
+  it("forwards flush errors from claimAndSettle", async () => {
     const facilitator = buildFacilitator(async payload => {
       const action = (payload.payload as Record<string, unknown>).type;
-      if (action === "refund") {
+      if (action === "claim") {
         return {
           success: false,
           errorReason: "boom",
-          errorMessage: "refund reverted",
+          errorMessage: "claim reverted",
           transaction: "",
           network: NETWORK,
         };
@@ -429,11 +497,9 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
     await storeChannel(storage, session);
 
-    const onError = vi.fn<(e: unknown) => void>();
-    manager.start({ tickSecs: 60, refundOnShutdown: true, onError });
-    await manager.stop({ flush: true });
+    manager.start();
 
-    expect(onError).toHaveBeenCalled();
+    await expect(manager.stop({ flush: true })).rejects.toThrow(/Claim failed/);
   });
 });
 
@@ -447,7 +513,7 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
     vi.useRealTimers();
   });
 
-  it("triggers a claim without settling in the same tick", async () => {
+  it("runs aligned claim and settle timers in priority order", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000" });
     await storeChannel(storage, session);
@@ -455,7 +521,6 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
     const onClaim = vi.fn<(r: ClaimResult) => void>();
     const onSettle = vi.fn<(r: SettleResult) => void>();
     manager.start({
-      tickSecs: 1,
       claimIntervalSecs: 1,
       settleIntervalSecs: 1,
       onClaim,
@@ -467,38 +532,118 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
 
     await manager.stop();
     expect(onClaim).toHaveBeenCalled();
-    expect(onSettle).not.toHaveBeenCalled();
-    const settleTypes = facilitator.settle.mock.calls.map(
-      ([p]) => (p.payload as Record<string, unknown>).type,
-    );
-    expect(settleTypes).toEqual(["claim"]);
-  });
-
-  it("triggers a settle once settleIntervalSecs elapses after a claim", async () => {
-    const { manager, storage, facilitator } = buildManager();
-    const session = buildSession({ chargedCumulativeAmount: "5000" });
-    await storeChannel(storage, session);
-
-    const onSettle = vi.fn<(r: SettleResult) => void>();
-    manager.start({
-      tickSecs: 1,
-      claimIntervalSecs: 1,
-      settleIntervalSecs: 1,
-      onSettle,
-    });
-
-    await vi.advanceTimersByTimeAsync(2200);
-    await vi.runAllTicks();
-
-    await manager.stop();
     expect(onSettle).toHaveBeenCalled();
     const settleTypes = facilitator.settle.mock.calls.map(
       ([p]) => (p.payload as Record<string, unknown>).type,
     );
-    expect(settleTypes).toContain("settle");
+    expect(settleTypes).toEqual(["claim", "settle"]);
   });
 
-  it("invokes onError when a tick step throws", async () => {
+  it("coalesces repeated same-type timer events while a job is running", async () => {
+    const { manager } = buildManager();
+    let releaseFirstSelection: (() => void) | undefined;
+    const firstSelection = new Promise<void>(resolve => {
+      releaseFirstSelection = resolve;
+    });
+    const selectClaimChannels = vi.fn(async (channels: Channel[]) => {
+      if (selectClaimChannels.mock.calls.length === 1) {
+        await firstSelection;
+      }
+      return channels;
+    });
+
+    manager.start({
+      claimIntervalSecs: 1,
+      selectClaimChannels,
+    });
+
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(selectClaimChannels).toHaveBeenCalledTimes(1);
+
+    releaseFirstSelection?.();
+    await vi.runAllTicks();
+
+    await manager.stop();
+    expect(selectClaimChannels).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles pending claims without reading the full channel list", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    const session = buildSession({ chargedCumulativeAmount: "5000" });
+    await storeChannel(storage, session);
+    await manager.claim();
+    facilitator.settle.mockClear();
+
+    const listSpy = vi.spyOn(storage, "list");
+    const onSettle = vi.fn<(r: SettleResult) => void>();
+    manager.start({
+      settleIntervalSecs: 1,
+      onSettle,
+    });
+
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.runAllTicks();
+
+    await manager.stop();
+    expect(onSettle).toHaveBeenCalled();
+    expect(listSpy).not.toHaveBeenCalled();
+    const settleTypes = facilitator.settle.mock.calls.map(
+      ([p]) => (p.payload as Record<string, unknown>).type,
+    );
+    expect(settleTypes).toEqual(["settle"]);
+  });
+
+  it("does not refund or read channels without a refund selector", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    const listSpy = vi.spyOn(storage, "list");
+    const onRefund = vi.fn<(r: RefundResult) => void>();
+
+    manager.start({ refundIntervalSecs: 1, onRefund });
+
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.runAllTicks();
+
+    await manager.stop();
+    expect(listSpy).not.toHaveBeenCalled();
+    expect(onRefund).not.toHaveBeenCalled();
+    expect(facilitator.settle).not.toHaveBeenCalled();
+  });
+
+  it("refunds only channels selected by the refund selector", async () => {
+    const { manager, storage } = buildManager();
+    const selectedConfig = buildChannelConfig("01");
+    const skippedConfig = buildChannelConfig("02");
+    const selected = buildSession({
+      channelConfig: selectedConfig,
+      channelId: computeChannelId(selectedConfig),
+      balance: "10000",
+    });
+    const skipped = buildSession({
+      channelConfig: skippedConfig,
+      channelId: computeChannelId(skippedConfig),
+      balance: "10000",
+    });
+    await storeChannel(storage, selected);
+    await storeChannel(storage, skipped);
+
+    const onRefund = vi.fn<(r: RefundResult) => void>();
+    manager.start({
+      refundIntervalSecs: 1,
+      selectRefundChannels: channels =>
+        channels.filter(channel => channel.channelId === selected.channelId),
+      onRefund,
+    });
+
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.runAllTicks();
+
+    await manager.stop();
+    expect(onRefund).toHaveBeenCalledWith({ channel: selected.channelId, transaction: "0xtx" });
+    expect(await storage.get(selected.channelId)).toBeUndefined();
+    expect(await storage.get(skipped.channelId)).toBeDefined();
+  });
+
+  it("invokes onError when an auto job throws", async () => {
     const facilitator = buildFacilitator(async () => {
       throw new Error("network down");
     });
@@ -507,7 +652,7 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
     await storeChannel(storage, session);
 
     const onError = vi.fn<(e: unknown) => void>();
-    manager.start({ tickSecs: 1, claimIntervalSecs: 1, onError });
+    manager.start({ claimIntervalSecs: 1, onError });
 
     await vi.advanceTimersByTimeAsync(1100);
     await vi.runAllTicks();

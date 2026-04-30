@@ -17,6 +17,7 @@ export { BatchSettlementChannelManager } from "./channelManager";
 export type {
   ChannelManagerConfig,
   AutoSettlementConfig,
+  AutoSettlementContext,
   ClaimResult,
   SettleResult,
   RefundResult,

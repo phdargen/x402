@@ -4,7 +4,6 @@ import { paymentMiddleware, setSettlementOverrides, x402ResourceServer } from "@
 import { config } from "dotenv";
 import express from "express";
 import { privateKeyToAccount } from "viem/accounts";
-import { declareEip2612GasSponsoringExtension } from "@x402/extensions";
 
 config();
 
@@ -15,7 +14,7 @@ const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE
   | `0x${string}`
   | undefined;
 const storageDir = process.env.STORAGE_DIR;
-const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "900");
+const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "86400");
 
 if (!evmAddress || !/^0x[0-9a-fA-F]{40}$/.test(evmAddress)) {
   console.error("Missing or invalid EVM_ADDRESS (checksummed 20-byte hex, 0x-prefixed)");
@@ -45,19 +44,21 @@ const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWOR
 const channelManager = batchedScheme.createChannelManager(facilitatorClient, NETWORK);
 
 channelManager.start({
-  tickSecs: 5, // evaluate policies every 5s
-  claimIntervalSecs: 10,
-  claimOnWithdrawal: true,
-  maxClaimsPerBatch: 50,
-  settleIntervalSecs: 20,
-  refundOnIdleSecs: 30,
-  refundOnShutdown: true,
+  claimIntervalSecs: 60,
+  settleIntervalSecs: 120,
+  refundIntervalSecs: 180,
+  maxClaimsPerBatch: 100,
+  selectRefundChannels: (channels, context) =>
+    channels.filter(channel => {
+      if (BigInt(channel.balance) === 0n) return false;
+      if (channel.pendingRequest && channel.pendingRequest.expiresAt > context.now) return false;
+      return context.now - channel.lastRequestTimestamp >= 180_000; // Refund channels after 3 minutes of inactivity
+    }),
   onClaim: (r: { vouchers: number; transaction: string }) =>
     console.log(`Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
   onSettle: (r: { transaction: string }) =>
     console.log(`Settled to ${evmAddress} (tx: ${r.transaction})`),
-  onRefund: (r: { channels: string[]; transaction: string }) =>
-    console.log(`Refund for ${r.channels.length} channel(s) (tx: ${r.transaction})`),
+  onRefund: r => console.log(`Refunded channel ${r.channel} (tx: ${r.transaction})`),
   onError: (e: unknown) => console.error("Settlement error:", e),
 });
 
@@ -81,10 +82,6 @@ app.use(
           price: maxPrice,
           network: NETWORK,
           payTo: evmAddress,
-          extra: { assetTransferMethod: "permit2" },
-        },
-        extensions: {
-          ...declareEip2612GasSponsoringExtension(),
         },
         description:
           "Batch-settlement demo — voucher updates session without per-request chain settle",

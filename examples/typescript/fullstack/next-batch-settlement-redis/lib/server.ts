@@ -14,7 +14,7 @@ const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE
   | `0x${string}`
   | undefined;
 
-const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "900");
+const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "108000");
 
 if (!facilitatorUrl) {
   console.error("Missing required FACILITATOR_URL environment variable");
@@ -35,16 +35,17 @@ const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
   ? privateKeyToAccount(receiverAuthorizerPrivateKey)
   : undefined;
 
-const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
+export const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 
 const redisAdapter = createLazyRedisChannelStorageClient(redisUrl);
 
-const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
+export const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
   ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
   withdrawDelay,
   storage: new RedisChannelStorage({ client: redisAdapter }),
 });
 
 export const server = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);
+export const channelManager = batchedScheme.createChannelManager(facilitatorClient, NETWORK);
 
 export { evmAddress };

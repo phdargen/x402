@@ -22,19 +22,29 @@ export interface ChannelManagerConfig {
 
 export interface AutoSettlementConfig {
   claimIntervalSecs?: number;
-  claimOnIdleSecs?: number;
-  claimThreshold?: string;
-  claimOnWithdrawal?: boolean;
   settleIntervalSecs?: number;
-  settleThreshold?: string;
+  refundIntervalSecs?: number;
   maxClaimsPerBatch?: number;
-  tickSecs?: number;
-  refundOnIdleSecs?: number;
-  refundOnShutdown?: boolean;
+  selectClaimChannels?: (
+    channels: Channel[],
+    context: AutoSettlementContext,
+  ) => Channel[] | Promise<Channel[]>;
+  shouldSettle?: (context: AutoSettlementContext) => boolean | Promise<boolean>;
+  selectRefundChannels?: (
+    channels: Channel[],
+    context: AutoSettlementContext,
+  ) => Channel[] | Promise<Channel[]>;
   onClaim?: (result: ClaimResult) => void;
   onSettle?: (result: SettleResult) => void;
   onRefund?: (result: RefundResult) => void;
   onError?: (error: unknown) => void;
+}
+
+export interface AutoSettlementContext {
+  now: number;
+  lastClaimTime: number;
+  lastSettleTime: number;
+  pendingSettle: boolean;
 }
 
 export interface ClaimResult {
@@ -47,9 +57,13 @@ export interface SettleResult {
 }
 
 export interface RefundResult {
-  channels: string[];
+  channel: string;
   transaction: string;
 }
+
+type AutoJob = "claim" | "settle" | "refund";
+
+const AUTO_JOB_PRIORITY: AutoJob[] = ["claim", "settle", "refund"];
 
 /**
  * Formats a `Facilitator.settle()` failure into a human-readable error message.
@@ -77,10 +91,8 @@ function hasLivePendingRequest(channel: Channel, now = Date.now()): boolean {
  * Manages the server-side channel lifecycle for the `batch-settlement` scheme:
  * batch claiming of vouchers, settlement of claimed funds, and cooperative refund.
  *
- * Provides both manual (`claim()`, `settle()`, `refund()`) and automatic
- * (`start()` / `stop()`) modes.  In automatic mode a periodic tick evaluates configurable
- * triggers (interval, idle time, threshold, pending withdrawal) and batches operations
- * accordingly.
+ * Provides one-shot operations (`claim()`, `settle()`, `claimAndSettle()`,
+ * `refundIdleChannels()`) and an optional interval runner.
  */
 export class BatchSettlementChannelManager {
   private readonly scheme: BatchSettlementEvmScheme;
@@ -89,12 +101,13 @@ export class BatchSettlementChannelManager {
   private readonly token: `0x${string}`;
   private readonly network: Network;
 
-  private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private timers: Partial<Record<AutoJob, ReturnType<typeof setInterval>>> = {};
   private lastClaimTime = 0;
   private lastSettleTime = 0;
   private pendingSettle = false;
   private running = false;
-  private tickInProgress = false;
+  private pendingJobs = new Set<AutoJob>();
+  private drainingJobs = false;
   private autoSettleConfig: AutoSettlementConfig = {};
 
   /**
@@ -113,34 +126,17 @@ export class BatchSettlementChannelManager {
   /**
    * Collects claimable vouchers and submits them in batches to the facilitator via `claim()`.
    *
-   * @param opts - Optional: `maxClaimsPerBatch` (default 50), `idleSecs` to filter idle channels.
+   * @param opts - Optional: `maxClaimsPerBatch` (default 100), `idleSecs` to filter idle channels.
    * @param opts.maxClaimsPerBatch - Max vouchers per facilitator `claim` batch.
    * @param opts.idleSecs - When set, only include channels idle for at least this many seconds.
    * @returns Array of claim results (one per batch).
    */
   async claim(opts?: { maxClaimsPerBatch?: number; idleSecs?: number }): Promise<ClaimResult[]> {
-    const maxBatch = opts?.maxClaimsPerBatch ?? 50;
-    const allClaims = await this.getClaimableVouchers(
-      opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : undefined,
-    );
-
-    if (allClaims.length === 0) {
-      return [];
-    }
-
-    const results: ClaimResult[] = [];
-    for (let i = 0; i < allClaims.length; i += maxBatch) {
-      const batch = allClaims.slice(i, i + maxBatch);
-      const result = await this.submitClaim(batch);
-      results.push(result);
-      await this.updateClaimedSessions(batch);
-    }
-
-    if (results.length > 0) {
-      this.pendingSettle = true;
-    }
-
-    return results;
+    const channels = await this.scheme.getStorage().list();
+    return this.claimFromChannels(channels, {
+      maxClaimsPerBatch: opts?.maxClaimsPerBatch ?? 100,
+      ...(opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : {}),
+    });
   }
 
   /**
@@ -180,13 +176,12 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Initiates a cooperative refund for one or more channels, optionally claiming
-   * outstanding vouchers first.
+   * Initiates cooperative refunds for one or more channels.
    *
    * @param channelIds - Specific channels to refund; defaults to all sessions.
-   * @returns Result with the list of refunded channels and the transaction hash.
+   * @returns One result per successfully refunded channel.
    */
-  async refund(channelIds?: string[]): Promise<RefundResult> {
+  async refund(channelIds?: string[]): Promise<RefundResult[]> {
     const storage = this.scheme.getStorage();
     const channels = await storage.list();
 
@@ -200,37 +195,111 @@ export class BatchSettlementChannelManager {
     ).filter(channel => !hasLivePendingRequest(channel, now));
 
     if (targets.length === 0) {
-      return { channels: [], transaction: "" };
+      return [];
     }
 
-    const claims: BatchSettlementVoucherClaim[] = [];
-    for (const c of targets) {
-      if (BigInt(c.chargedCumulativeAmount) > BigInt(c.totalClaimed)) {
-        claims.push({
-          voucher: {
-            channel: c.channelConfig,
-            maxClaimableAmount: c.signedMaxClaimable,
-          },
-          signature: c.signature as `0x${string}`,
-          totalClaimed: c.chargedCumulativeAmount,
-        });
-      }
+    return this.refundChannels(targets);
+  }
+
+  /**
+   * Refunds idle channels with non-zero balances.
+   *
+   * @param opts - Idle refund options.
+   * @param opts.idleSecs - Minimum seconds since the last request.
+   * @returns One result per successfully refunded channel.
+   */
+  async refundIdleChannels(opts: { idleSecs: number }): Promise<RefundResult[]> {
+    const channels = await this.getIdleChannelsForRefund(opts.idleSecs);
+    return this.refundChannels(channels);
+  }
+
+  /**
+   * Collects vouchers that are eligible for on-chain claiming.
+   *
+   * A voucher is claimable when its `chargedCumulativeAmount` exceeds what has already
+   * been claimed on-chain.  An optional idle filter skips sessions that received a
+   * request within the last `idleSecs` seconds.
+   *
+   * @param opts - Optional filtering: `idleSecs` to only return idle channels.
+   * @param opts.idleSecs - Minimum seconds since last request for a channel to be included.
+   * @returns Array of {@link BatchSettlementVoucherClaim} entries for batch submission.
+   */
+  async getClaimableVouchers(opts?: { idleSecs?: number }): Promise<BatchSettlementVoucherClaim[]> {
+    const channels = await this.scheme.getStorage().list();
+    return this.getClaimableVouchersFromChannels(channels, opts);
+  }
+
+  /**
+   * Returns channels that have a pending payer-initiated withdrawal.
+   *
+   * @returns All stored channel records with `withdrawRequestedAt` set.
+   */
+  async getWithdrawalPendingSessions(): Promise<Channel[]> {
+    const channels = await this.scheme.getStorage().list();
+    return channels.filter(s => s.withdrawRequestedAt > 0);
+  }
+
+  /**
+   * Starts auto-settlement jobs for configured claim, settle, and refund intervals.
+   *
+   * @param config - Auto-settlement policy configuration.
+   */
+  start(config: AutoSettlementConfig = {}): void {
+    if (this.running) {
+      return;
     }
 
-    const firstTarget = targets[0];
-    const config = firstTarget.channelConfig;
+    const now = Date.now();
+    this.lastClaimTime = now;
+    this.lastSettleTime = now;
+    this.running = true;
+    this.autoSettleConfig = config;
+
+    this.startAutoTimer("claim", config.claimIntervalSecs);
+    this.startAutoTimer("settle", config.settleIntervalSecs);
+    this.startAutoTimer("refund", config.refundIntervalSecs);
+  }
+
+  /**
+   * Stops the auto-settlement loop.
+   *
+   * @param opts - Stop options.
+   * @param opts.flush - When true, run `claimAndSettle` before stopping.
+   * @returns Resolves when the loop is stopped (and flush work completes, if requested).
+   */
+  async stop(opts?: { flush?: boolean }): Promise<void> {
+    this.running = false;
+    for (const timer of Object.values(this.timers)) {
+      clearInterval(timer);
+    }
+    this.timers = {};
+    this.pendingJobs.clear();
+
+    if (opts?.flush) {
+      await this.claimAndSettle({ maxClaimsPerBatch: this.autoSettleConfig.maxClaimsPerBatch });
+    }
+  }
+
+  /**
+   * Refunds a single channel and removes it from storage after success.
+   *
+   * @param target - Channel to refund.
+   * @returns Successful refund transaction.
+   */
+  private async refundChannel(target: Channel): Promise<RefundResult> {
     const authorizerSigner = this.scheme.getReceiverAuthorizerSigner();
+    const claims = this.buildRefundClaims(target);
 
     const refundAmount = (
-      BigInt(firstTarget.balance) - BigInt(firstTarget.chargedCumulativeAmount)
+      BigInt(target.balance) - BigInt(target.chargedCumulativeAmount)
     ).toString();
 
-    const nonce = String(firstTarget.refundNonce ?? 0);
+    const nonce = String(target.refundNonce ?? 0);
 
     const refundAuthorizerSignature = authorizerSigner
       ? await signRefund(
           authorizerSigner,
-          firstTarget.channelId as `0x${string}`,
+          target.channelId as `0x${string}`,
           refundAmount,
           nonce,
           this.network,
@@ -247,11 +316,11 @@ export class BatchSettlementChannelManager {
       accepted: this.buildPaymentRequirements(),
       payload: {
         type: "refund",
-        channelConfig: config,
+        channelConfig: target.channelConfig,
         voucher: {
-          channelId: firstTarget.channelId as `0x${string}`,
-          maxClaimableAmount: firstTarget.signedMaxClaimable,
-          signature: firstTarget.signature as `0x${string}`,
+          channelId: target.channelId as `0x${string}`,
+          maxClaimableAmount: target.signedMaxClaimable,
+          signature: target.signature as `0x${string}`,
         },
         amount: refundAmount,
         refundNonce: nonce,
@@ -266,31 +335,276 @@ export class BatchSettlementChannelManager {
       throw new Error(formatFacilitatorFailure("Refund", response));
     }
 
-    for (const c of targets) {
-      await storage.updateChannel(c.channelId, current =>
+    await this.scheme
+      .getStorage()
+      .updateChannel(target.channelId, current =>
         current && !hasLivePendingRequest(current) ? undefined : current,
       );
-    }
 
     return {
-      channels: targets.map(c => c.channelId),
+      channel: target.channelId,
       transaction: response.transaction,
     };
   }
 
   /**
-   * Collects vouchers that are eligible for on-chain claiming.
+   * Starts a recurring timer for one auto job.
    *
-   * A voucher is claimable when its `chargedCumulativeAmount` exceeds what has already
-   * been claimed on-chain.  An optional idle filter skips sessions that received a
-   * request within the last `idleSecs` seconds.
-   *
-   * @param opts - Optional filtering: `idleSecs` to only return idle channels.
-   * @param opts.idleSecs - Minimum seconds since last request for a channel to be included.
-   * @returns Array of {@link BatchSettlementVoucherClaim} entries for batch submission.
+   * @param job - Job to enqueue when the interval fires.
+   * @param intervalSecs - Timer interval in seconds.
    */
-  async getClaimableVouchers(opts?: { idleSecs?: number }): Promise<BatchSettlementVoucherClaim[]> {
-    const channels = await this.scheme.getStorage().list();
+  private startAutoTimer(job: AutoJob, intervalSecs?: number): void {
+    if (intervalSecs === undefined) {
+      return;
+    }
+
+    this.timers[job] = setInterval(() => {
+      this.enqueueJob(job);
+    }, intervalSecs * 1000);
+  }
+
+  /**
+   * Adds an auto job to the coalescing queue.
+   *
+   * @param job - Job to run.
+   */
+  private enqueueJob(job: AutoJob): void {
+    if (!this.running) {
+      return;
+    }
+
+    this.pendingJobs.add(job);
+    if (!this.drainingJobs) {
+      void this.drainJobs();
+    }
+  }
+
+  /**
+   * Drains queued auto jobs in priority order.
+   */
+  private async drainJobs(): Promise<void> {
+    if (this.drainingJobs) {
+      return;
+    }
+
+    this.drainingJobs = true;
+    try {
+      while (this.running && this.pendingJobs.size > 0) {
+        const job = this.nextPendingJob();
+        if (!job) {
+          return;
+        }
+        this.pendingJobs.delete(job);
+        await this.runAutoJob(job);
+      }
+    } finally {
+      this.drainingJobs = false;
+    }
+  }
+
+  /**
+   * Returns the highest-priority queued auto job.
+   *
+   * @returns Next job to run.
+   */
+  private nextPendingJob(): AutoJob | undefined {
+    return AUTO_JOB_PRIORITY.find(job => this.pendingJobs.has(job));
+  }
+
+  /**
+   * Runs one auto job.
+   *
+   * @param job - Job to run.
+   */
+  private async runAutoJob(job: AutoJob): Promise<void> {
+    switch (job) {
+      case "claim":
+        await this.runClaimJob();
+        return;
+      case "settle":
+        await this.runSettleJob();
+        return;
+      case "refund":
+        await this.runRefundJob();
+        return;
+    }
+  }
+
+  /**
+   * Runs the claim auto job.
+   */
+  private async runClaimJob(): Promise<void> {
+    const cfg = this.autoSettleConfig;
+    try {
+      const context = this.buildAutoSettlementContext(Date.now());
+      const channels = await this.scheme.getStorage().list();
+      const targets = cfg.selectClaimChannels
+        ? await cfg.selectClaimChannels(channels, context)
+        : channels;
+      const results = await this.claimFromChannels(targets, {
+        maxClaimsPerBatch: cfg.maxClaimsPerBatch ?? 100,
+      });
+
+      this.lastClaimTime = Date.now();
+      for (const result of results) {
+        cfg.onClaim?.(result);
+      }
+    } catch (err) {
+      cfg.onError?.(err);
+    }
+  }
+
+  /**
+   * Runs the settlement auto job.
+   */
+  private async runSettleJob(): Promise<void> {
+    const cfg = this.autoSettleConfig;
+    const context = this.buildAutoSettlementContext(Date.now());
+    if (!context.pendingSettle) {
+      return;
+    }
+
+    try {
+      if (cfg.shouldSettle && !(await cfg.shouldSettle(context))) {
+        return;
+      }
+
+      const result = await this.settle();
+      this.lastSettleTime = Date.now();
+      cfg.onSettle?.(result);
+    } catch (err) {
+      cfg.onError?.(err);
+    }
+  }
+
+  /**
+   * Runs the refund auto job.
+   */
+  private async runRefundJob(): Promise<void> {
+    const cfg = this.autoSettleConfig;
+    if (!cfg.selectRefundChannels) {
+      return;
+    }
+
+    try {
+      const context = this.buildAutoSettlementContext(Date.now());
+      const channels = await this.scheme.getStorage().list();
+      const targets = await cfg.selectRefundChannels(channels, context);
+      for (const result of await this.refundChannels(targets)) {
+        cfg.onRefund?.(result);
+      }
+    } catch (err) {
+      cfg.onError?.(err);
+    }
+  }
+
+  /**
+   * Claims vouchers from a provided channel snapshot.
+   *
+   * @param channels - Channels to inspect for claimable vouchers.
+   * @param opts - Claim batching and filtering options.
+   * @param opts.maxClaimsPerBatch - Max vouchers per facilitator claim transaction.
+   * @param opts.idleSecs - Optional idle filter.
+   * @returns Claim results, one per submitted batch.
+   */
+  private async claimFromChannels(
+    channels: Channel[],
+    opts: {
+      maxClaimsPerBatch: number;
+      idleSecs?: number;
+    },
+  ): Promise<ClaimResult[]> {
+    const allClaims = this.getClaimableVouchersFromChannels(
+      channels,
+      opts.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : undefined,
+    );
+
+    if (allClaims.length === 0) {
+      return [];
+    }
+
+    const results: ClaimResult[] = [];
+    for (let i = 0; i < allClaims.length; i += opts.maxClaimsPerBatch) {
+      const batch = allClaims.slice(i, i + opts.maxClaimsPerBatch);
+      const result = await this.submitClaim(batch);
+      results.push(result);
+      await this.updateClaimedSessions(batch);
+    }
+
+    if (results.length > 0) {
+      this.pendingSettle = true;
+    }
+
+    return results;
+  }
+
+  /**
+   * Refunds each eligible channel independently.
+   *
+   * @param channels - Channels to refund.
+   * @returns Successful refund results.
+   */
+  private async refundChannels(channels: Channel[]): Promise<RefundResult[]> {
+    const results: RefundResult[] = [];
+    for (const channel of channels) {
+      if (hasLivePendingRequest(channel)) {
+        continue;
+      }
+      results.push(await this.refundChannel(channel));
+    }
+    return results;
+  }
+
+  /**
+   * Builds an outstanding voucher claim for a refund payload.
+   *
+   * @param channel - Channel being refunded.
+   * @returns Claim payloads needed before refunding unclaimed balance.
+   */
+  private buildRefundClaims(channel: Channel): BatchSettlementVoucherClaim[] {
+    if (BigInt(channel.chargedCumulativeAmount) <= BigInt(channel.totalClaimed)) {
+      return [];
+    }
+
+    return [
+      {
+        voucher: {
+          channel: channel.channelConfig,
+          maxClaimableAmount: channel.signedMaxClaimable,
+        },
+        signature: channel.signature as `0x${string}`,
+        totalClaimed: channel.chargedCumulativeAmount,
+      },
+    ];
+  }
+
+  /**
+   * Builds the policy context passed to interval hooks.
+   *
+   * @param now - Current wall-clock time in milliseconds.
+   * @returns Auto-settlement policy context.
+   */
+  private buildAutoSettlementContext(now: number): AutoSettlementContext {
+    return {
+      now,
+      lastClaimTime: this.lastClaimTime,
+      lastSettleTime: this.lastSettleTime,
+      pendingSettle: this.pendingSettle,
+    };
+  }
+
+  /**
+   * Collects claimable vouchers from a provided channel snapshot.
+   *
+   * @param channels - Channels to inspect.
+   * @param opts - Optional idle filter.
+   * @param opts.idleSecs - Minimum seconds since last request.
+   * @returns Claimable voucher payloads.
+   */
+  private getClaimableVouchersFromChannels(
+    channels: Channel[],
+    opts?: { idleSecs?: number },
+  ): BatchSettlementVoucherClaim[] {
     const now = Date.now();
     const claims: BatchSettlementVoucherClaim[] = [];
 
@@ -318,349 +632,32 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Returns channels that have a pending payer-initiated withdrawal.
+   * Filters idle channels that can be cooperatively refunded.
    *
-   * @returns All stored channel records with `withdrawRequestedAt` set.
+   * @param channels - Channels to inspect.
+   * @param idleSecs - Minimum seconds since the last request.
+   * @returns Idle refundable channels.
    */
-  async getWithdrawalPendingSessions(): Promise<Channel[]> {
-    const channels = await this.scheme.getStorage().list();
-    return channels.filter(s => s.withdrawRequestedAt > 0);
-  }
-
-  /**
-   * Starts the auto-settlement loop that periodically evaluates claim/settle/refund
-   * triggers and executes them.
-   *
-   * @param config - Auto-settlement policy configuration (intervals, thresholds, callbacks).
-   */
-  start(config: AutoSettlementConfig = {}): void {
-    if (this.tickTimer) {
-      return;
-    }
-
-    const tickMs = (config.tickSecs ?? 10) * 1000;
-    const claimIntervalMs = (config.claimIntervalSecs ?? 60) * 1000;
-    const settleIntervalMs = (config.settleIntervalSecs ?? 300) * 1000;
-    const claimOnWithdrawal = config.claimOnWithdrawal ?? true;
-    const maxClaimsPerBatch = config.maxClaimsPerBatch ?? 50;
-
-    this.lastClaimTime = Date.now();
-    this.lastSettleTime = Date.now();
-    this.running = true;
-
-    this.autoSettleConfig = config;
-
-    this.tickTimer = setInterval(() => {
-      void this.tick({
-        claimIntervalMs,
-        settleIntervalMs,
-        claimOnIdleSecs: config.claimOnIdleSecs,
-        claimThreshold: config.claimThreshold,
-        claimOnWithdrawal,
-        settleThreshold: config.settleThreshold,
-        maxClaimsPerBatch,
-        refundOnIdleSecs: config.refundOnIdleSecs,
-        onClaim: config.onClaim,
-        onSettle: config.onSettle,
-        onRefund: config.onRefund,
-        onError: config.onError,
-      });
-    }, tickMs);
-  }
-
-  /**
-   * Stops the auto-settlement loop.
-   *
-   * @param opts - Stop options.
-   * @param opts.flush - When true, run `claimAndSettle` and optional shutdown cooperative refund first.
-   * @returns Resolves when the loop is stopped (and flush work completes, if requested).
-   */
-  async stop(opts?: { flush?: boolean }): Promise<void> {
-    this.running = false;
-    if (this.tickTimer) {
-      clearInterval(this.tickTimer);
-      this.tickTimer = null;
-    }
-    if (opts?.flush) {
-      await this.claimAndSettle();
-      if (this.autoSettleConfig.refundOnShutdown) {
-        try {
-          const result = await this.refund();
-          if (result.channels.length > 0) {
-            this.autoSettleConfig.onRefund?.(result);
-          }
-        } catch (err) {
-          this.autoSettleConfig.onError?.(err);
-        }
-      }
-    }
-  }
-
-  /**
-   * Single tick of the auto-settlement loop: evaluates claim, settle, and cooperative
-   * refund triggers and executes any that fire.
-   *
-   * @param cfg - Resolved auto-settlement options for this tick.
-   * @param cfg.claimIntervalMs - Minimum milliseconds between automatic claim rounds.
-   * @param cfg.settleIntervalMs - Minimum milliseconds between automatic settle rounds.
-   * @param cfg.claimOnIdleSecs - Optional idle threshold to trigger claims (see {@link BatchSettlementChannelManager.getClaimableVouchers}).
-   * @param cfg.claimThreshold - Optional min cumulative claimable amount to trigger a claim.
-   * @param cfg.claimOnWithdrawal - Whether pending withdrawals can trigger a claim.
-   * @param cfg.settleThreshold - Optional min claimed-not-settled amount to trigger settle.
-   * @param cfg.maxClaimsPerBatch - Voucher batch size passed to {@link BatchSettlementChannelManager.claim}.
-   * @param cfg.refundOnIdleSecs - Optional idle seconds before cooperative refund for non-zero balances.
-   * @param cfg.onClaim - Callback after each successful claim batch.
-   * @param cfg.onSettle - Callback after a successful settle.
-   * @param cfg.onRefund - Callback after a cooperative refund with channels.
-   * @param cfg.onError - Callback on errors inside the tick.
-   * @returns Resolves when this tick's work finishes (no return value).
-   */
-  private async tick(cfg: {
-    claimIntervalMs: number;
-    settleIntervalMs: number;
-    claimOnIdleSecs?: number;
-    claimThreshold?: string;
-    claimOnWithdrawal: boolean;
-    settleThreshold?: string;
-    maxClaimsPerBatch: number;
-    refundOnIdleSecs?: number;
-    onClaim?: (result: ClaimResult) => void;
-    onSettle?: (result: SettleResult) => void;
-    onRefund?: (result: RefundResult) => void;
-    onError?: (error: unknown) => void;
-  }): Promise<void> {
-    if (!this.running || this.tickInProgress) {
-      return;
-    }
-
-    this.tickInProgress = true;
-    try {
-      const claimed = await this.runClaimPhase(cfg);
-      if (!claimed) {
-        await this.runSettlePhase(cfg);
-      }
-      await this.runRefundPhase(cfg);
-    } finally {
-      this.tickInProgress = false;
-    }
-  }
-
-  /**
-   * Runs the claim portion of {@link tick}: evaluates triggers and claims if needed.
-   * Errors are reported via `cfg.onError` and do not propagate.
-   *
-   * @param cfg - Tick configuration with claim triggers and callbacks.
-   * @param cfg.claimIntervalMs - Time since last claim after which a claim should run.
-   * @param cfg.claimOnIdleSecs - If set, claim when any idle-eligible vouchers exist.
-   * @param cfg.claimThreshold - If set, claim when total claimable exceeds this amount.
-   * @param cfg.claimOnWithdrawal - If true, claim when any channel has a pending withdrawal.
-   * @param cfg.maxClaimsPerBatch - Voucher batch size passed to {@link BatchSettlementChannelManager.claim}.
-   * @param cfg.onClaim - Callback invoked after each successful claim batch.
-   * @param cfg.onError - Callback invoked when an error is caught during the phase.
-   * @returns Whether this tick submitted one or more claim transactions.
-   */
-  private async runClaimPhase(cfg: {
-    claimIntervalMs: number;
-    claimOnIdleSecs?: number;
-    claimThreshold?: string;
-    claimOnWithdrawal: boolean;
-    maxClaimsPerBatch: number;
-    onClaim?: (result: ClaimResult) => void;
-    onError?: (error: unknown) => void;
-  }): Promise<boolean> {
-    try {
-      const shouldClaim = await this.evaluateClaimTriggers(cfg);
-      if (!shouldClaim) return false;
-
-      const results = await this.claim({ maxClaimsPerBatch: cfg.maxClaimsPerBatch });
-      this.lastClaimTime = Date.now();
-      if (results.length > 0) {
-        this.lastSettleTime = Date.now();
-      }
-      for (const r of results) {
-        cfg.onClaim?.(r);
-      }
-      return results.length > 0;
-    } catch (err) {
-      cfg.onError?.(err);
-      return false;
-    }
-  }
-
-  /**
-   * Runs the settle portion of {@link tick}: evaluates triggers and settles if needed.
-   * Errors are reported via `cfg.onError` and do not propagate.
-   *
-   * @param cfg - Tick configuration with settle triggers and callbacks.
-   * @param cfg.settleIntervalMs - Time since last settle after which a settle should run.
-   * @param cfg.settleThreshold - If set, settle when claimed-not-settled exceeds this amount.
-   * @param cfg.onSettle - Callback invoked after a successful settle.
-   * @param cfg.onError - Callback invoked when an error is caught during the phase.
-   */
-  private async runSettlePhase(cfg: {
-    settleIntervalMs: number;
-    settleThreshold?: string;
-    onSettle?: (result: SettleResult) => void;
-    onError?: (error: unknown) => void;
-  }): Promise<void> {
-    try {
-      const shouldSettle = await this.evaluateSettleTriggers(cfg);
-      if (!shouldSettle) return;
-
-      const result = await this.settle();
-      this.lastSettleTime = Date.now();
-      cfg.onSettle?.(result);
-    } catch (err) {
-      cfg.onError?.(err);
-    }
-  }
-
-  /**
-   * Runs the refund portion of {@link tick}: cooperatively refunds idle channels.
-   * No-op when `refundOnIdleSecs` is undefined. Errors are reported via `cfg.onError`.
-   *
-   * @param cfg - Tick configuration with refund settings and callbacks.
-   * @param cfg.refundOnIdleSecs - Idle threshold (seconds) before triggering cooperative refund.
-   * @param cfg.onRefund - Callback invoked after a refund that touched at least one channel.
-   * @param cfg.onError - Callback invoked when an error is caught during the phase.
-   */
-  private async runRefundPhase(cfg: {
-    refundOnIdleSecs?: number;
-    onRefund?: (result: RefundResult) => void;
-    onError?: (error: unknown) => void;
-  }): Promise<void> {
-    if (cfg.refundOnIdleSecs === undefined) return;
-
-    try {
-      const idleChannels = await this.getIdleChannelsForRefund(cfg.refundOnIdleSecs);
-      if (idleChannels.length === 0) return;
-
-      const result = await this.refund(idleChannels);
-      if (result.channels.length > 0) {
-        cfg.onRefund?.(result);
-      }
-    } catch (err) {
-      cfg.onError?.(err);
-    }
-  }
-
-  /**
-   * Evaluates whether a claim should be triggered based on interval, idle, threshold,
-   * and withdrawal policies.
-   *
-   * @param cfg - Claim trigger configuration for this evaluation.
-   * @param cfg.claimIntervalMs - Time since last claim after which a claim should run.
-   * @param cfg.claimOnIdleSecs - If set, claim when any idle-eligible vouchers exist.
-   * @param cfg.claimThreshold - If set, claim when total claimable exceeds this amount.
-   * @param cfg.claimOnWithdrawal - If true, claim when withdrawals are pending and vouchers are claimable.
-   * @returns `true` when a claim should be submitted this tick.
-   */
-  private async evaluateClaimTriggers(cfg: {
-    claimIntervalMs: number;
-    claimOnIdleSecs?: number;
-    claimThreshold?: string;
-    claimOnWithdrawal: boolean;
-  }): Promise<boolean> {
+  private getIdleChannelsForRefundFromChannels(channels: Channel[], idleSecs: number): Channel[] {
     const now = Date.now();
-
-    if (now - this.lastClaimTime >= cfg.claimIntervalMs) {
-      return true;
-    }
-
-    if (cfg.claimOnIdleSecs !== undefined) {
-      const idleClaims = await this.getClaimableVouchers({
-        idleSecs: cfg.claimOnIdleSecs,
-      });
-      if (idleClaims.length > 0) {
-        return true;
-      }
-    }
-
-    if (cfg.claimThreshold !== undefined) {
-      const allClaims = await this.getClaimableVouchers();
-      const total = allClaims.reduce((sum, c) => sum + BigInt(c.totalClaimed), 0n);
-      if (total > BigInt(cfg.claimThreshold)) {
-        return true;
-      }
-    }
-
-    if (cfg.claimOnWithdrawal) {
-      const withdrawals = await this.getWithdrawalPendingSessions();
-      if (withdrawals.length > 0) {
-        const claimableWithdrawals = await this.getClaimableVouchers();
-        const withdrawalChannels = new Set(withdrawals.map(w => w.channelId.toLowerCase()));
-        const hasClaimableForWithdrawal = claimableWithdrawals.some(c =>
-          withdrawalChannels.has(computeChannelId(c.voucher.channel, this.network).toLowerCase()),
-        );
-        if (hasClaimableForWithdrawal) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    const idleMs = idleSecs * 1000;
+    return channels.filter(c => {
+      if (BigInt(c.balance) === 0n) return false;
+      if (hasLivePendingRequest(c, now)) return false;
+      return now - c.lastRequestTimestamp >= idleMs;
+    });
   }
 
   /**
-   * Evaluates whether a settle should be triggered based on interval and threshold policies.
-   *
-   * @param cfg - Settle trigger configuration for this evaluation.
-   * @param cfg.settleIntervalMs - Time since last settle after which settle should run (if pending).
-   * @param cfg.settleThreshold - If set, settle when total claimed-on-chain exceeds this amount.
-   * @returns `true` when a settle should run this tick.
-   */
-  private async evaluateSettleTriggers(cfg: {
-    settleIntervalMs: number;
-    settleThreshold?: string;
-  }): Promise<boolean> {
-    if (!this.pendingSettle) {
-      return false;
-    }
-
-    const now = Date.now();
-
-    if (now - this.lastSettleTime >= cfg.settleIntervalMs) {
-      return true;
-    }
-
-    if (cfg.settleThreshold !== undefined) {
-      const channels = await this.scheme.getStorage().list();
-      const unsettled = channels.reduce((sum, s) => sum + BigInt(s.totalClaimed), 0n);
-      if (unsettled > BigInt(cfg.settleThreshold)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  /**
-   * Returns channel ids that have been idle longer than `idleSecs` and still have
+   * Returns channels that have been idle longer than `idleSecs` and still have
    * a non-zero balance (candidates for cooperative refund).
    *
    * @param idleSecs - Minimum seconds since last request for a session to count as idle.
-   * @returns Channel ids meeting the idle and balance criteria.
+   * @returns Channels meeting the idle and balance criteria.
    */
-  private async getIdleChannelsForRefund(idleSecs: number): Promise<string[]> {
-    const storage = this.scheme.getStorage();
-    const channels = await storage.list();
-    const now = Date.now();
-    const idleMs = idleSecs * 1000;
-    const result: string[] = [];
-
-    for (const c of channels) {
-      if (BigInt(c.balance) === 0n) {
-        continue;
-      }
-      if (hasLivePendingRequest(c, now)) {
-        continue;
-      }
-      if (now - c.lastRequestTimestamp >= idleMs) {
-        result.push(c.channelId);
-      }
-    }
-
-    return result;
+  private async getIdleChannelsForRefund(idleSecs: number): Promise<Channel[]> {
+    const channels = await this.scheme.getStorage().list();
+    return this.getIdleChannelsForRefundFromChannels(channels, idleSecs);
   }
 
   /**

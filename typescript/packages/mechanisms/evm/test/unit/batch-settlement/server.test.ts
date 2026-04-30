@@ -1840,7 +1840,7 @@ describe("BatchSettlementChannelManager — refund pending channels", () => {
 
     const result = await manager.refund();
 
-    expect(result).toEqual({ channels: [], transaction: "" });
+    expect(result).toEqual([]);
     expect(facilitator.settle).not.toHaveBeenCalled();
     expect(await storage.get(channelId)).toBeDefined();
   });

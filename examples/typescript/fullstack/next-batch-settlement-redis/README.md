@@ -2,8 +2,6 @@
 
 Full-stack Next.js demo that protects **`GET /api/generate`** with `withX402` and the **batch-settlement** scheme. Channel state uses **`RedisChannelStorage`** (`@x402/evm/batch-settlement/server`), backed by the **`redis`** npm client via `lib/redisChannelClient.ts`.
 
-There is **no** `paymentProxy` / proxy middleware and **no** `BatchSettlementChannelManager` (no background tick loop). For automated claim/settle/refund you would run a separate worker or extend this app.
-
 Parallels:
 
 - API behavior: `examples/typescript/servers/batch-settlement/index.ts`
@@ -32,7 +30,8 @@ Copy `.env-local` to `.env` (or create `.env`) and set:
 | `EVM_ADDRESS` | yes | Receiver `0x…` address |
 | `REDIS_URL` | yes | e.g. `redis://127.0.0.1:6379` |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Local receiver-authorizer signer (omit to use facilitator) |
-| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Defaults to `900` |
+| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Defaults to `108000` (30 hours) |
+| `CRON_SECRET` | no | Bearer token required by cron routes when set |
 
 ```bash
 pnpm dev
@@ -40,9 +39,29 @@ pnpm dev
 
 Open `/` for links; paid endpoint: **`GET /api/generate`**.
 
+## Cron Jobs
+
+Run cron jobs locally before deploying:
+
+```bash
+pnpm cron:claim
+pnpm cron:settle
+pnpm cron:claim-and-settle
+```
+
+`cron:claim` claims up to 100 vouchers per facilitator transaction. `cron:settle` settles already-claimed funds. `cron:claim-and-settle` does both in one operation and skips settlement when there are no claim transactions.
+
+Vercel deployment uses `vercel.json` to call **`GET /api/cron/claim-and-settle`** once per day at `02:00 UTC`, which is compatible with Vercel Hobby cron limits. Set `CRON_SECRET` in Vercel to require `Authorization: Bearer <secret>` for manual calls.
+
+With a daily cron, `DEFERRED_WITHDRAW_DELAY_SECONDS` must exceed the daily cadence plus Vercel's hourly scheduling precision and operational safety margin. The default 30-hour delay is intended for this deployment shape. More frequent claim, settle, or refund policies require Vercel Pro cron frequency or an external scheduler.
+
 ## Files
 
 - `lib/server.ts` — facilitator client, `BatchSettlementEvmScheme` + `RedisChannelStorage`
+- `lib/cron.ts` — shared claim, settle, and claim-and-settle cron implementations
+- `lib/cronAuth.ts` — optional bearer-token check for cron routes
 - `lib/redisChannelClient.ts` — lazy `redis` adapter implementing `RedisChannelStorageClient`
 - `lib/paywall.ts` — EVM paywall for HTML discovery when clients negotiate payment in-browser
 - `app/api/generate/route.ts` — `withX402` wrapper and usage-based settlement overrides header
+- `app/api/cron/*/route.ts` — claim, settle, and claim-and-settle cron routes
+- `scripts/cron.ts` — local cron runner

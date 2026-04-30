@@ -31,20 +31,15 @@ new BatchSettlementEvmScheme(evmAddress, { /* no receiverAuthorizerSigner */ });
 
 This is simpler operationally but locks each channel to the current facilitator. **Switching facilitators (or even rotating their authorizer key) requires opening new channels.** Before swapping, drain the existing ones — claim outstanding vouchers and issue cooperative refunds — otherwise unclaimed value is left exposed to the old authorizer's withdraw delay.
 
-## Withdrawal: Out-of-Band Risk
+## Settlement Policy
 
 Clients can call `initiateWithdraw` directly on-chain at any time, **outside the request flow**. After the channel's `withdrawDelay` elapses, `finalizeWithdraw` drains the escrow and any unclaimed vouchers become unclaimable forever.
 
-The server only learns about a pending withdrawal when the facilitator returns it in `extra.withdrawRequestedAt` on the next request — and a long-idle channel may never trigger one. Recommended mitigations, all configurable on `ChannelManager.start()`:
+This demo uses local-friendly timing: claim every 1 minute, settle every 2 minutes, and refund channels idle for 3 minutes. The default channel `withdrawDelay` is 1 day.
 
-| Strategy | Setting | Why |
-|----------|---------|-----|
-| Claim immediately when a withdraw is observed | `claimOnWithdrawal: true` | Race the withdraw delay before `finalizeWithdraw` becomes callable |
-| Periodic claims regardless of activity | `claimIntervalSecs` / `claimThreshold` | Bound the maximum unclaimed exposure |
-| Refund idle channels proactively | `refundOnIdleSecs` | Close out abandoned channels (no idle channel = nothing to lose) |
-| Flush on shutdown | `refundOnShutdown: true` | Don't leave outstanding vouchers behind when the server stops |
+For production, choose a `withdrawDelay` greater than your claim cadence plus an operational safety margin. A daily claim job pairs well with a `withdrawDelay` longer than one day; settle less frequently when gas savings matter more than receiver cash-flow latency. Idle refunds are usually best on a week-scale cadence unless your product needs faster channel cleanup.
 
-This example wires a deliberately aggressive policy for demo purposes (`claimIntervalSecs: 10`, `refundOnIdleSecs: 30`); pick values appropriate for your traffic and gas budget.
+The `ChannelManager` can also be used with one-shot calls such as `claimAndSettle()` and `refundIdleChannels()` from a cron job or external worker.
 
 ## Prerequisites
 
@@ -75,4 +70,4 @@ The server listens on `http://localhost:4021`. Hit it with the [client example](
 | `FACILITATOR_URL` | yes | Batch-settlement facilitator endpoint |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate) |
 | `STORAGE_DIR` | no | Persist channel sessions on disk (defaults to in-memory) |
-| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Channel `withdrawDelay`; 900 (15 min) – 2,592,000 (30 days) |
+| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Channel `withdrawDelay`; defaults to 86,400 (1 day) |
