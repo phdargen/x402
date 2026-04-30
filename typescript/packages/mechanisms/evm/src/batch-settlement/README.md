@@ -1,6 +1,6 @@
 # Batch-Settlement EVM Scheme (`@x402/evm/batch-settlement`)
 
-The **batch-settlement** scheme enables high-throughput, low-cost EVM payments via **stateless unidirectional payment channels**. Clients deposit funds into an on-chain escrow once, then sign off-chain **cumulative vouchers** per request. Servers verify vouchers with a fast signature check and claim them on-chain in batches.
+The **batch-settlement** scheme enables high-throughput, low-cost EVM payments via **stateless unidirectional payment channels**. Clients deposit funds into an onchain escrow once, then sign off-chain **cumulative vouchers** per request. Servers verify vouchers with a fast signature check and claim them onchain in batches.
 
 A single claim transaction can cover many channels at once, and claimed funds are swept to the receiver in a separate `settle` step. The scheme also supports **dynamic pricing**: the client authorizes a max per-request and the server charges only what was actually used.
 
@@ -66,7 +66,7 @@ const scheme = new BatchSettlementEvmScheme(signer, {
 
 ### Voucher Signer Delegation
 
-By default, vouchers are signed by the same key as the payer. For better performance — especially when the payer is a **smart wallet** (EIP-1271) — delegate voucher signing to a dedicated EOA. The scheme commits this address as the channel's `payerAuthorizer`, so the facilitator can verify vouchers via fast ECDSA recovery instead of an on-chain `isValidSignature` RPC.
+By default, vouchers are signed by the same key as the payer. For better performance — especially when the payer is a **smart wallet** (EIP-1271) — delegate voucher signing to a dedicated EOA. The scheme commits this address as the channel's `payerAuthorizer`, so the facilitator can verify vouchers via fast ECDSA recovery instead of an onchain `isValidSignature` RPC.
 
 ```typescript
 const voucherSigner = toClientEvmSigner(privateKeyToAccount(VOUCHER_KEY));
@@ -99,7 +99,7 @@ const scheme = new BatchSettlementEvmScheme(signer, {
 });
 ```
 
-If state is lost, the client recovers from on-chain `channels(channelId)` plus corrective 402s — see the spec's *Recovery After State Loss* section.
+If state is lost, the client recovers from onchain `channels(channelId)` plus corrective 402s — see the spec's *Recovery After State Loss* section.
 
 ## Server Usage
 
@@ -191,7 +191,7 @@ Requires the x402 batch-settlement contract deployed on the target network.
 
 ## Asset Transfer Methods
 
-Deposits use one of two on-chain transfer methods, controlled by `extra.assetTransferMethod`:
+Deposits use one of two onchain transfer methods, controlled by `extra.assetTransferMethod`:
 
 | Method | Description |
 |--------|-------------|

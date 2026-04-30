@@ -118,7 +118,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   /**
    * Creates the payment payload for a batched request.
    *
-   * If the channel has no on-chain deposit (or needs a top-up), builds an
+   * If the channel has no onchain deposit (or needs a top-up), builds an
    * ERC-3009 deposit payload bundled with a voucher. Otherwise, signs and
    * returns a voucher-only payload.
    *

@@ -37,7 +37,7 @@ const REFUND_STATE_POLL_INTERVAL_MS = 150;
  *
  * @param payload - Refund payload containing claims and amount.
  * @param channelId - Canonical channel id for the refund.
- * @param preState - On-chain channel state before this refund, or null if unknown.
+ * @param preState - Onchain channel state before this refund, or null if unknown.
  * @returns Actual refund amount and extra fields for the settlement response.
  */
 function buildRefundExtra(
@@ -75,7 +75,7 @@ function buildRefundExtra(
 /**
  * Reads the post-refund state when pending withdrawal state can be affected.
  *
- * @param signer - Facilitator signer used for on-chain reads.
+ * @param signer - Facilitator signer used for onchain reads.
  * @param channelId - Channel that was refunded.
  * @param submittedNonce - Nonce used for this refund transaction.
  * @returns Fresh channel state once the nonce advances, or `null` if RPC reads lag.
@@ -108,8 +108,8 @@ async function readPostRefundState(
  * Builds refund response details from confirmed post-transaction state.
  *
  * @param channelId - Canonical channel id for the refund.
- * @param preState - On-chain state read before the transaction.
- * @param postState - On-chain state after the transaction.
+ * @param preState - Onchain state read before the transaction.
+ * @param postState - Onchain state after the transaction.
  * @returns Actual refund amount and extra fields for the settlement response.
  */
 function buildRefundExtraFromPostState(
@@ -145,7 +145,7 @@ function buildRefundExtraFromPostState(
  * If `payload.claims` is non-empty, the claim and refund are batched atomically via
  * the contract's `multicall`.
  *
- * @param signer - Facilitator signer used to submit the on-chain transactions.
+ * @param signer - Facilitator signer used to submit the onchain transactions.
  * @param payload - Refund payload with optional signatures, amount, and nonce.
  * @param requirements - Payment requirements for network identification.
  * @param authorizerSigner - Dedicated key for producing EIP-712 signatures.

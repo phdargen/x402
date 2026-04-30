@@ -12,7 +12,7 @@ import { buildErc3009DepositNonce } from "../encoding";
  * Creates a deposit payload that bundles an ERC-3009 `receiveWithAuthorization` approval
  * together with a cumulative voucher signature.
  *
- * When the facilitator submits this payload on-chain, the contract atomically transfers
+ * When the facilitator submits this payload onchain, the contract atomically transfers
  * tokens from the payer into the channel and records the initial voucher.
  *
  * @param signer - Client wallet used to sign the ERC-3009 authorization (`from` = payer).

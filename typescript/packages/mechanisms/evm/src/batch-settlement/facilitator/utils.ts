@@ -175,13 +175,13 @@ export function validateChannelConfig(
 }
 
 /**
- * Reads on-chain channel state via a 3-call multicall:
+ * Reads onchain channel state via a 3-call multicall:
  * `channels(channelId)`, `pendingWithdrawals(channelId)`, `refundNonce(channelId)`.
  *
  * Throws when any sub-call fails so callers can distinguish RPC failures
  * from missing channels (which return zero balance/totalClaimed/refundNonce).
  *
- * @param signer - Facilitator signer for on-chain reads.
+ * @param signer - Facilitator signer for onchain reads.
  * @param channelId - The `bytes32` channel id.
  * @returns Fresh {@link ChannelState}.
  */

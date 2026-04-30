@@ -10,7 +10,7 @@ import * as Errors from "./errors";
  * Transfers claimed funds from the contract.
  *
  * This should be called after one or more `claim()` transactions have updated the
- * receiver's `totalClaimed` accounting on-chain.
+ * receiver's `totalClaimed` accounting onchain.
  *
  * @param signer - Facilitator signer used to submit the settlement transaction.
  * @param payload - Settle payload containing the receiver address and token address.

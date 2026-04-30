@@ -150,7 +150,7 @@ app.post("/verify", async (req, res) => {
 
 /**
  * POST /settle
- * Settle a payment on-chain
+ * Settle a payment onchain
  *
  * Note: Verification validation and cleanup are handled by lifecycle hooks
  */

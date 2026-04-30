@@ -167,7 +167,7 @@ export async function processPaymentResponse(
 }
 
 /**
- * Recovers a channel record from on-chain state (useful after a cold start or
+ * Recovers a channel record from onchain state (useful after a cold start or
  * channel record loss).
  *
  * @param deps - Signer + storage + identity inputs.

@@ -9,7 +9,7 @@ import * as Errors from "./errors";
 import { toContractChannelConfig } from "./utils";
 
 /**
- * Converts an array of {@link BatchSettlementVoucherClaim} into the on-chain tuple format
+ * Converts an array of {@link BatchSettlementVoucherClaim} into the onchain tuple format
  * expected by the contract's `claimWithSignature()` function.
  *
  * @param claims - Typed voucher claims with channel config, amounts, and signatures.

@@ -16,7 +16,7 @@ import {
 /**
  * Verifies a cumulative voucher payload against onchain channel state.
  *
- * @param signer - Facilitator signer used for on-chain reads and signature verification.
+ * @param signer - Facilitator signer used for onchain reads and signature verification.
  * @param payload - Voucher or refund payload with signed voucher fields.
  * @param requirements - Server payment requirements (asset, network, amount).
  * @param channelConfig - Reconstructed channel configuration for the payer/receiver pair.

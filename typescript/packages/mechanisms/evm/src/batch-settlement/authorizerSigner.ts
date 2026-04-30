@@ -39,8 +39,8 @@ export async function signClaimBatch(
  *
  * @param signer - Authorizer signer holding the `receiverAuthorizer` key.
  * @param channelId - Channel to authorize refund for.
- * @param amount - Refund amount (capped to unclaimed escrow on-chain).
- * @param nonce - Must match on-chain `refundNonce(channelId)`.
+ * @param amount - Refund amount (capped to unclaimed escrow onchain).
+ * @param nonce - Must match onchain `refundNonce(channelId)`.
  * @param network - CAIP-2 network identifier (e.g. `"eip155:84532"`).
  * @returns EIP-712 signature over `Refund(channelId, nonce, amount)`.
  */

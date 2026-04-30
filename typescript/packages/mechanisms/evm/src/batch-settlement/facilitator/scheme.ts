@@ -37,7 +37,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   /**
    * Creates a facilitator scheme for verifying and settling batch-settlement payments.
    *
-   * @param signer - Facilitator EVM signer(s) used for tx submission and on-chain reads.
+   * @param signer - Facilitator EVM signer(s) used for tx submission and onchain reads.
    * @param authorizerSigner - Dedicated key that provides EIP-712 signatures for
    *   `claimWithSignature` / `refundWithSignature`.  The facilitator will sign missing
    *   authorizer signatures using this key when the server omits them.
@@ -115,9 +115,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    * Executes settlement for a payment payload.
    *
    * Dispatches to the correct handler based on payload settle action:
-   * - `deposit` → on-chain `deposit(config, amount, collector, collectorData)`
-   * - `claim` → on-chain `claimWithSignature(VoucherClaim[], bytes)`
-   * - `settle` → on-chain `settle(receiver, token)`
+   * - `deposit` → onchain `deposit(config, amount, collector, collectorData)`
+   * - `claim` → onchain `claimWithSignature(VoucherClaim[], bytes)`
+   * - `settle` → onchain `settle(receiver, token)`
    * - `refund` → optional claim + onchain `refundWithSignature(config, amount, nonce, sig)`
    *
    * @param payload - The x402 payment payload envelope.

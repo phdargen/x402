@@ -8,7 +8,7 @@ See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme
 
 This example can use separate keys for relaying transactions and authorizing receiver actions:
 
-| Env var                               | Role                                                                       | On-chain effect                                                                                  |
+| Env var                               | Role                                                                       | Onchain effect                                                                                   |
 | ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `EVM_PRIVATE_KEY`                     | **Relayer** — submits transactions                                         | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature`                 |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** — signs `ClaimBatch` and `Refund` EIP-712 messages | Address is committed into the channel identity for any server that delegates to this facilitator |
@@ -49,7 +49,7 @@ Standard x402 facilitator endpoints: `POST /verify`, `POST /settle`, `GET /suppo
 | `settle`     | Server sweeps unsettled funds | Calls `settle` to transfer claimed funds        |
 | `refund`     | Cooperative refund            | Calls `refundWithSignature` for unclaimed funds |
 
-`/verify` and `/settle` always return the on-chain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
+`/verify` and `/settle` always return the onchain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
 
 `GET /supported` advertises the receiver authorizer address:
 

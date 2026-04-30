@@ -34,7 +34,7 @@ import {
 
 /**
  * Verifies a deposit payload (authorization + voucher) without executing any
- * on-chain transaction.
+ * onchain transaction.
  *
  * Performs the following validations:
  * - Token in channelConfig matches the payment requirements asset.
@@ -43,7 +43,7 @@ import {
  * - Payer has sufficient token balance for the deposit.
  * - Resulting `maxClaimableAmount` does not exceed effective balance (existing + deposit).
  *
- * @param signer - Facilitator signer for on-chain reads and signature verification.
+ * @param signer - Facilitator signer for onchain reads and signature verification.
  * @param payment - Full payment envelope containing optional extensions.
  * @param payload - The full deposit payload including channelConfig, amount, authorization, and voucher.
  * @param requirements - Server payment requirements (asset, EIP-712 domain info, timeout, etc.).
@@ -273,12 +273,12 @@ async function verifySharedDepositState(
 }
 
 /**
- * Executes a deposit on-chain through the collector for the selected transfer method.
+ * Executes a deposit onchain through the collector for the selected transfer method.
  *
  * The deposit is first verified via {@link verifyDeposit}; if invalid the returned
  * {@link SettleResponse} will have `success: false` with the verification reason.
  *
- * @param signer - Facilitator signer used to submit the on-chain transaction.
+ * @param signer - Facilitator signer used to submit the onchain transaction.
  * @param payment - Full payment envelope containing optional extensions.
  * @param payload - The deposit payload (channelConfig, amount, authorization, voucher).
  * @param requirements - Server payment requirements.

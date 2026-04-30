@@ -63,7 +63,7 @@ function isPendingLive(pending: PendingRequest | undefined, now: number): boolea
  * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
  * the existing `chargedCumulativeAmount`.
  *
- * When no local channel record exists, verification is delegated to the facilitator (which checks on-chain state);
+ * When no local channel record exists, verification is delegated to the facilitator (which checks onchain state);
  * `handleAfterVerify` then rebuilds the channel record from the verify response.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
@@ -375,7 +375,7 @@ export async function handleVerifiedPaymentCanceled(
 /**
  * Verifies a voucher against locally cached channel state when that state is fresh.
  *
- * @param scheme - Batch settlement scheme (TTL for on-chain sync freshness).
+ * @param scheme - Batch settlement scheme (TTL for onchain sync freshness).
  * @param raw - Decoded batch-settlement voucher payload.
  * @param requirements - Payment requirements (network, etc.).
  * @param channel - Cached channel row, if any.
@@ -442,12 +442,12 @@ async function verifyVoucherLocally(
 }
 
 /**
- * Returns whether cached on-chain fields for a channel are still within the freshness window.
+ * Returns whether cached onchain fields for a channel are still within the freshness window.
  *
  * @param channel - Cached channel row.
  * @param ttlMs - Maximum age of `onchainSyncedAt` in milliseconds.
  * @param now - Current wall-clock time in milliseconds.
- * @returns `true` if on-chain sync time is present and still within `ttlMs` of `now`.
+ * @returns `true` if onchain sync time is present and still within `ttlMs` of `now`.
  */
 function isOnchainStateFresh(channel: Channel, ttlMs: number, now: number): boolean {
   return channel.onchainSyncedAt !== undefined && now - channel.onchainSyncedAt <= ttlMs;

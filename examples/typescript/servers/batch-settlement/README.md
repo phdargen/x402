@@ -1,6 +1,6 @@
 # @x402/express Batch-Settlement Example Server
 
-Express server that protects a resource with the **batch-settlement** EVM scheme. Each request is paid by an off-chain voucher; the server batches voucher claims and on-chain settlements via a `ChannelManager` running in the background.
+Express server that protects a resource with the **batch-settlement** EVM scheme. Each request is paid by an off-chain voucher; the server batches voucher claims and onchain settlements via a `ChannelManager` running in the background.
 
 The route demonstrates **dynamic pricing**: the client authorizes up to `$0.01` per request, and the handler bills a random fraction of that via `setSettlementOverrides`.
 
@@ -33,7 +33,7 @@ This is simpler operationally but binds each channel to the current facilitator 
 
 ## Settlement Policy
 
-Clients can call `initiateWithdraw` directly on-chain at any time, **outside the request flow**. After the channel's `withdrawDelay` elapses, `finalizeWithdraw` drains the escrow and any unclaimed vouchers become unclaimable forever.
+Clients can call `initiateWithdraw` directly onchain at any time, **outside the request flow**. After the channel's `withdrawDelay` elapses, `finalizeWithdraw` drains the escrow and any unclaimed vouchers become unclaimable forever.
 
 This demo uses local-friendly timing: claim every 1 minute, settle every 2 minutes, and refund channels idle for 3 minutes. The default channel `withdrawDelay` is 1 day.
 

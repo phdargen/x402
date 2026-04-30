@@ -225,10 +225,10 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Collects vouchers that are eligible for on-chain claiming.
+   * Collects vouchers that are eligible for onchain claiming.
    *
    * A voucher is claimable when its `chargedCumulativeAmount` exceeds what has already
-   * been claimed on-chain.  An optional idle filter skips sessions that received a
+   * been claimed onchain.  An optional idle filter skips sessions that received a
    * request within the last `idleSecs` seconds.
    *
    * @param opts - Optional filtering: `idleSecs` to only return idle channels.

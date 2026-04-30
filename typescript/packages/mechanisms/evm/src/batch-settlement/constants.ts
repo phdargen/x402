@@ -14,10 +14,10 @@ export const ERC3009_DEPOSIT_COLLECTOR_ADDRESS =
 export const PERMIT2_DEPOSIT_COLLECTOR_ADDRESS =
   "0x1D859871C289cB1e28DB38077272244C6343F7B9" as const;
 
-/** Minimum withdraw delay in seconds (15 minutes), matching the on-chain constant. */
+/** Minimum withdraw delay in seconds (15 minutes), matching the onchain constant. */
 export const MIN_WITHDRAW_DELAY = 900;
 
-/** Maximum withdraw delay in seconds (30 days), matching the on-chain constant. */
+/** Maximum withdraw delay in seconds (30 days), matching the onchain constant. */
 export const MAX_WITHDRAW_DELAY = 2_592_000;
 
 /** EIP-712 domain fields shared across all batch-settlement typed-data signatures. */

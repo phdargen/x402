@@ -16,7 +16,7 @@ import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra
  * cumulative base is out of sync.
  *
  * Validates the server-provided state (chargedCumulativeAmount,
- * signedMaxClaimable, signature) against on-chain data and the client's own
+ * signedMaxClaimable, signature) against onchain data and the client's own
  * signing key, then updates the local channel state if everything checks out.
  *
  * @param deps - Signer + storage + identity inputs.
@@ -129,15 +129,15 @@ export async function recoverFromSignature(
 }
 
 /**
- * Recovers channel state purely from on-chain state when the server has no stored
- * voucher (e.g. after a cooperative refund deleted the channel record). The on-chain
+ * Recovers channel state purely from onchain state when the server has no stored
+ * voucher (e.g. after a cooperative refund deleted the channel record). The onchain
  * `totalClaimed` becomes the new baseline — no signature verification is
  * needed because the contract is the source of truth when no outstanding
  * voucher exists.
  *
  * @param deps - Signer + storage + identity inputs.
  * @param accept - Batch settlement payment requirements from the corrective 402.
- * @returns `true` when local channel state was updated from on-chain data.
+ * @returns `true` when local channel state was updated from onchain data.
  */
 export async function recoverFromOnChainState(
   deps: BatchSettlementClientDeps,

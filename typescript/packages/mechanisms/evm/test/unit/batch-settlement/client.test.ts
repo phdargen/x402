@@ -416,14 +416,14 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
       maxClaimableAmount: "1000",
       currentBalance: "0",
       minimumDepositAmount: "1000",
-      depositAmount: "10000",
+      depositAmount: "5000",
     });
     expect(depositStrategy.mock.calls[1][0]).toMatchObject({
       requestAmount: "1000",
       maxClaimableAmount: "1100",
       currentBalance: "100",
       minimumDepositAmount: "1000",
-      depositAmount: "10000",
+      depositAmount: "5000",
     });
   });
 
@@ -489,7 +489,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     };
 
     const auth = payload.deposit.authorization.permit2Authorization;
-    expect(payload.deposit.amount).toBe("10000");
+    expect(payload.deposit.amount).toBe("5000");
     expect(auth.from).toBe(signer.address);
     expect(auth.permitted.token).toBe(ASSET);
     expect(auth.permitted.amount).toBe(payload.deposit.amount);
@@ -525,7 +525,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const info = extensions?.eip2612GasSponsoring?.info as
       | { amount?: string; spender?: string }
       | undefined;
-    expect(info?.amount).toBe("10000");
+    expect(info?.amount).toBe("5000");
     expect(info?.spender).toBe(getAddress(PERMIT2_ADDRESS));
   });
 });

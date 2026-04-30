@@ -220,7 +220,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Resolves a human-readable price (e.g. `"$0.01"`) into an on-chain token amount.
+   * Resolves a human-readable price (e.g. `"$0.01"`) into an onchain token amount.
    *
    * @param price - A price string, number, or explicit {@link AssetAmount}.
    * @param network - CAIP-2 network identifier for looking up the default asset.
@@ -345,7 +345,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * Creates a {@link BatchSettlementChannelManager} pre-configured with this scheme's
    * receiver, default token for the given network, and the provided facilitator.
    *
-   * @param facilitator - Facilitator client for submitting on-chain claims/settlements.
+   * @param facilitator - Facilitator client for submitting onchain claims/settlements.
    * @param network - CAIP-2 network identifier (e.g. `"eip155:84532"`).
    * @returns A ready-to-use channel manager.
    */
@@ -407,9 +407,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 }
 
 /**
- * Derives a reasonable on-chain state freshness window from the channel withdraw delay.
+ * Derives a reasonable onchain state freshness window from the channel withdraw delay.
  *
- * @param withdrawDelaySeconds - On-chain withdraw delay for the channel, in seconds.
+ * @param withdrawDelaySeconds - Onchain withdraw delay for the channel, in seconds.
  * @returns TTL in milliseconds, clamped between 30 seconds and 5 minutes.
  */
 function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {

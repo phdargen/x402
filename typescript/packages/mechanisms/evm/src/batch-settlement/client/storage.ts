@@ -4,9 +4,9 @@
 export interface BatchSettlementClientContext {
   /** Current cumulative amount charged by the server for this channel */
   chargedCumulativeAmount?: string;
-  /** Current on-chain channel balance */
+  /** Current onchain channel balance */
   balance?: string;
-  /** Total claimed on-chain */
+  /** Total claimed onchain */
   totalClaimed?: string;
   /** Latest client-signed maxClaimableAmount cap (after corrective recovery, optional) */
   signedMaxClaimable?: string;
