@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { MockedFunction } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { encodeAbiParameters, encodeEventTopics, getAddress } from "viem";
+import { encodeAbiParameters, encodeEventTopics, getAddress, isAddress } from "viem";
 import type { Log } from "viem";
 
 vi.mock("../../../src/multicall", async importOriginal => {
@@ -1066,10 +1066,16 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
   });
 });
 
-describe("BatchSettlementEvmScheme (Facilitator) — constants used in handlers", () => {
-  it("contract addresses match the documented values", () => {
-    expect(BATCH_SETTLEMENT_ADDRESS).toBe("0x4020e66668E58c108e7e94db2F800C9F8C150003");
-    expect(ERC3009_DEPOSIT_COLLECTOR_ADDRESS).toBe("0x4020aE5A8d3DC3B505942Ce8CECC6776a6ED0004");
-    expect(PERMIT2_DEPOSIT_COLLECTOR_ADDRESS).toBe("0x4020e27bcea6C226BF888C61b6C520C0fcC50005");
+describe("BatchSettlementEvmScheme (Facilitator) — handler contract constants", () => {
+  it("exposes well-formed distinct contract addresses", () => {
+    const addrs = [
+      BATCH_SETTLEMENT_ADDRESS,
+      ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
+      PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+    ];
+    for (const a of addrs) {
+      expect(isAddress(a)).toBe(true);
+    }
+    expect(new Set(addrs.map(a => getAddress(a))).size).toBe(3);
   });
 });

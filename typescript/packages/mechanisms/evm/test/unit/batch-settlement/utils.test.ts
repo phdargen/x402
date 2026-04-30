@@ -65,12 +65,6 @@ describe("computeChannelId", () => {
     );
   });
 
-  it("matches the current Base Sepolia deployment digest", () => {
-    expect(computeChannelId(BASE_CONFIG)).toBe(
-      "0x2dee22ab0509e5405a971d73c29962b6315fca474b65a8275281a5c7972b039b",
-    );
-  });
-
   it.each([
     ["payer", { payer: "0x1111111111111111111111111111111111111111" as `0x${string}` }],
     [

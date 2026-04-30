@@ -1001,8 +1001,8 @@ async function runTest() {
           });
           const fullError = fullResult.success
             ? validateBatchPaymentStep(fullResult, 'deposit', 'deposit', true) ||
-              validateBatchPaymentStep(fullResult, 'voucher', 'voucher', false) ||
-              validateBatchPaymentStep(fullResult, 'refund', 'refund', true)
+            validateBatchPaymentStep(fullResult, 'voucher', 'voucher', false) ||
+            validateBatchPaymentStep(fullResult, 'refund', 'refund', true)
             : fullResult.error || 'Batch-settlement client phase failed';
 
           const depositTransaction = getBatchStep(fullResult, 'deposit')?.payment_response?.transaction;
@@ -1048,7 +1048,7 @@ async function runTest() {
         });
         const initialError = initialResult.success
           ? validateBatchPaymentStep(initialResult, 'deposit', 'deposit', true) ||
-            validateBatchPaymentStep(initialResult, 'voucher', 'voucher', false)
+          validateBatchPaymentStep(initialResult, 'voucher', 'voucher', false)
           : initialResult.error || 'Initial batch-settlement client phase failed';
 
         if (initialError) {
@@ -1080,7 +1080,7 @@ async function runTest() {
         });
         const recoveryError = recoveryResult.success
           ? validateBatchPaymentStep(recoveryResult, 'recoveryVoucher', 'recovery voucher', false) ||
-            validateBatchPaymentStep(recoveryResult, 'refund', 'refund', true)
+          validateBatchPaymentStep(recoveryResult, 'refund', 'refund', true)
           : recoveryResult.error || 'Recovery/refund batch-settlement client phase failed';
 
         const depositTransaction = getBatchStep(initialResult, 'deposit')?.payment_response?.transaction;
