@@ -4,15 +4,15 @@ import { keccak256, toBytes } from "viem";
 export const BATCH_SETTLEMENT_SCHEME = "batch-settlement" as const;
 
 /** Deployed address of the x402BatchSettlement contract. */
-export const BATCH_SETTLEMENT_ADDRESS = "0x4020e66668E58c108e7e94db2F800C9F8C150003" as const;
+export const BATCH_SETTLEMENT_ADDRESS = "0x8f79473b50d67733349191d7349FE45977d44AF7" as const;
 
 /** Deployed address of the ERC3009DepositCollector contract. */
 export const ERC3009_DEPOSIT_COLLECTOR_ADDRESS =
-  "0x4020aE5A8d3DC3B505942Ce8CECC6776a6ED0004" as const;
+  "0xE9460Cb807D97325E70e41De191430Bea39497f5" as const;
 
 /** Deployed address of the Permit2DepositCollector contract. */
 export const PERMIT2_DEPOSIT_COLLECTOR_ADDRESS =
-  "0x4020e27bcea6C226BF888C61b6C520C0fcC50005" as const;
+  "0x1D859871C289cB1e28DB38077272244C6343F7B9" as const;
 
 /** Minimum withdraw delay in seconds (15 minutes), matching the on-chain constant. */
 export const MIN_WITHDRAW_DELAY = 900;

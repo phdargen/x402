@@ -81,7 +81,7 @@ app.use(
           price: maxPrice,
           network: NETWORK,
           payTo: evmAddress,
-          // extra: { assetTransferMethod: "permit2" },
+          extra: { assetTransferMethod: "permit2" },
         },
         extensions: {
           ...declareEip2612GasSponsoringExtension(),

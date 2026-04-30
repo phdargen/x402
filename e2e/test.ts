@@ -13,15 +13,11 @@ import { parseArgs, printHelp } from './src/cli/args';
 import { runInteractiveMode } from './src/cli/interactive';
 import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/cli/filters';
 import { minimizeScenarios } from './src/sampling';
-import { getNetworkSet, NetworkMode, NetworkSet, getNetworkModeDescription } from './src/networks/networks';
+import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset } from './src/networks/networks';
 import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, FacilitatorLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
 import { waitForHealth } from './src/health';
-
-// Base Sepolia token addresses used by permit2 E2E tests
-const USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-const MOCK_ERC20_BASE_SEPOLIA = '0xeED520980fC7C7B4eB379B96d61CEdea2423005a';
 
 /**
  * Generates a fresh 32-byte hex salt for a batch-settlement test scenario so
@@ -37,11 +33,11 @@ function generateChannelSalt(): `0x${string}` {
 
 /**
  * Approve Permit2 so that the standard/direct settle path can be exercised.
- * Grants unlimited Permit2 allowance for the given token (or USDC by default).
+ * Grants unlimited Permit2 allowance for the given token (permit2-approval script default if omitted).
  */
 async function approvePermit2Approval(tokenAddress?: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const label = tokenAddress ? `token ${tokenAddress}` : 'USDC (default)';
+    const label = tokenAddress ? `token ${tokenAddress}` : '(script default token)';
     verboseLog(`  🔓 Approving Permit2 for ${label}...`);
 
     const args = ['scripts/permit2-approval.ts', 'approve'];
@@ -87,12 +83,11 @@ async function approvePermit2Approval(tokenAddress?: string): Promise<boolean> {
 
 /**
  * Revoke Permit2 approval so that gas sponsoring extensions are exercised.
- * Sets the Permit2 allowance to 0 for the given token (or USDC by default),
- * forcing the client into the EIP-2612 or ERC-20 approval extension path.
+ * Sets the Permit2 allowance to 0 for the given token (permit2-approval script default if omitted).
  */
 async function revokePermit2Approval(tokenAddress?: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const label = tokenAddress ? `token ${tokenAddress}` : 'USDC (default)';
+    const label = tokenAddress ? `token ${tokenAddress}` : '(script default token)';
     verboseLog(`  🔓 Revoking Permit2 approval for ${label}...`);
 
     const args = ['scripts/permit2-approval.ts', 'revoke'];
@@ -526,9 +521,17 @@ async function runTest() {
 
   // Get network configuration based on selected mode
   const networks = getNetworkSet(networkMode);
+  const evmPermit2Asset = resolveEvmPermit2Asset(networks);
+
+  const permit2AssetSource = process.env.EVM_PERMIT2_ASSET?.trim()
+    ? 'EVM_PERMIT2_ASSET'
+    : networks.evm.permit2Asset
+      ? 'network default'
+      : 'unset';
 
   log(`\n🌐 Network Mode: ${networkMode.toUpperCase()}`);
   log(`   EVM: ${networks.evm.name} (${networks.evm.caip2})`);
+  log(`   EVM Permit2 asset: ${evmPermit2Asset || '(missing)'} (${permit2AssetSource})`);
   log(`   SVM: ${networks.svm.name} (${networks.svm.caip2})`);
   log(`   APTOS: ${networks.aptos.name} (${networks.aptos.caip2})`);
   log(`   HEDERA: ${networks.hedera.name} (${networks.hedera.caip2})`);
@@ -569,8 +572,10 @@ async function runTest() {
   // Branch coverage assertions for EVM scenarios
   const evmScenarios = filteredScenarios.filter(s => s.protocolFamily === 'evm');
   if (evmScenarios.length > 0) {
-    const hasEip3009 = evmScenarios.some(s => endpointAssetTransferMethod(s.endpoint) === 'eip3009');
-    const hasPermit2 = evmScenarios.some(
+    const hasExactEip3009 = evmScenarios.some(
+      s => endpointPaymentScheme(s.endpoint) === 'exact' && endpointAssetTransferMethod(s.endpoint) === 'eip3009',
+    );
+    const hasExactPermit2 = evmScenarios.some(
       s => endpointPaymentScheme(s.endpoint) === 'exact' && endpointAssetTransferMethod(s.endpoint) === 'permit2',
     );
     const hasPermit2Direct = evmScenarios.some(
@@ -610,31 +615,51 @@ async function runTest() {
         s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'),
     );
 
-    const hasBatchSettlement = evmScenarios.some(s => endpointPaymentScheme(s.endpoint) === 'batch-settlement');
-    const hasBatchSettlementMulti = evmScenarios.some(
+    const hasBatchSettlementEip3009 = evmScenarios.some(
       s =>
         endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
-        (endpointBatchChannelOptions(s.endpoint)?.count ?? 1) > 1,
+        endpointAssetTransferMethod(s.endpoint) === 'eip3009',
     );
-    const hasBatchSettlementRefund = evmScenarios.some(
+    const hasBatchSettlementPermit2 = evmScenarios.some(
       s =>
         endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
-        endpointBatchChannelOptions(s.endpoint)?.refundOnLast === true,
+        endpointAssetTransferMethod(s.endpoint) === 'permit2',
+    );
+    const hasBatchSettlementPermit2Direct = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        s.endpoint.schemeOptions?.permit2Direct === true,
+    );
+    const hasBatchSettlementPermit2Eip2612 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        !s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring') &&
+        s.endpoint.schemeOptions?.permit2Direct !== true,
+    );
+    const hasBatchSettlementPermit2Erc20 = evmScenarios.some(
+      s =>
+        endpointPaymentScheme(s.endpoint) === 'batch-settlement' &&
+        endpointAssetTransferMethod(s.endpoint) === 'permit2' &&
+        s.endpoint.extensions?.includes('erc20ApprovalGasSponsoring'),
     );
 
     log('🔍 EVM Branch Coverage Check:');
-    log(`   EIP-3009 route:                ${hasEip3009 ? '✅' : '❌ MISSING'}`);
-    log(`   Permit2 route:                 ${hasPermit2 ? '✅' : '❌ MISSING'}`);
-    log(`   Permit2+direct settle:         ${hasPermit2Direct ? '✅' : '⚠️  not found'}`);
-    log(`   Permit2+EIP2612 route:         ${hasPermit2Eip2612 ? '✅' : '⚠️  not found (may be covered by permit2 route if eip2612 extension enabled)'}`);
-    log(`   Permit2+ERC20 route:           ${hasPermit2Erc20 ? '✅' : '⚠️  not found'}`);
+    log(`   Exact EIP-3009 route:          ${hasExactEip3009 ? '✅' : '⚠️  not found'}`);
+    log(`   Exact Permit2 route:           ${hasExactPermit2 ? '✅' : '⚠️  not found'}`);
+    log(`   Exact Permit2+direct settle:   ${hasPermit2Direct ? '✅' : '⚠️  not found'}`);
+    log(`   Exact Permit2+EIP2612 route:   ${hasPermit2Eip2612 ? '✅' : '⚠️  not found (may be covered by permit2 route if eip2612 extension enabled)'}`);
+    log(`   Exact Permit2+ERC20 route:     ${hasPermit2Erc20 ? '✅' : '⚠️  not found'}`);
     log(`   Upto route:                    ${hasUpto ? '✅' : '⚠️  not found'}`);
     log(`   Upto+direct settle:            ${hasUptoDirect ? '✅' : '⚠️  not found'}`);
     log(`   Upto+EIP2612 route:            ${hasUptoEip2612 ? '✅' : '⚠️  not found'}`);
     log(`   Upto+ERC20 route:              ${hasUptoErc20 ? '✅' : '⚠️  not found'}`);
-    log(`   Batch-settlement route:        ${hasBatchSettlement ? '✅' : '⚠️  not found'}`);
-    log(`   Batch-settlement multi-req:    ${hasBatchSettlementMulti ? '✅' : '⚠️  not found'}`);
-    log(`   Batch-settlement refund:       ${hasBatchSettlementRefund ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement EIP-3009:     ${hasBatchSettlementEip3009 ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement Permit2:      ${hasBatchSettlementPermit2 ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement+direct:       ${hasBatchSettlementPermit2Direct ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement+EIP2612:      ${hasBatchSettlementPermit2Eip2612 ? '✅' : '⚠️  not found'}`);
+    log(`   Batch-settlement+ERC20:        ${hasBatchSettlementPermit2Erc20 ? '✅' : '⚠️  not found'}`);
     log('');
   }
 
@@ -643,6 +668,12 @@ async function runTest() {
 
   if (hasPermit2Scenarios) {
     log('🔐 Permit2 scenarios detected — revoke before gas-sponsored tests, approve before permit2-direct tests');
+    if (!evmPermit2Asset) {
+      errorLog(
+        '❌ Permit2 scenarios need a token address: set EVM_PERMIT2_ASSET or networks.evm.permit2Asset for this mode.',
+      );
+      process.exit(1);
+    }
   }
 
   // Collect unique facilitators and servers
@@ -1044,7 +1075,7 @@ async function runTest() {
         const isEvm = scenario.protocolFamily === 'evm';
 
         if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
-          await approvePermit2Approval(USDC_BASE_SEPOLIA);
+          await approvePermit2Approval(evmPermit2Asset);
         } else if (scenario.endpoint.schemeOptions?.coldstart === true) {
           // Key on (client, path) so each client independently runs its own
           // fund → revoke → drain cycle. Without the client name, the second
@@ -1053,14 +1084,10 @@ async function runTest() {
           const endpointKey = `${scenario.client.name}::${scenario.endpoint.path}`;
           if (!coldStartedEndpoints.has(endpointKey)) {
             coldStartedEndpoints.add(endpointKey);
-            const token =
-              scenario.endpoint.extensions?.includes('erc20ApprovalGasSponsoring')
-                ? MOCK_ERC20_BASE_SEPOLIA
-                : USDC_BASE_SEPOLIA;
             await fundClientForRevoke();
             // Give fund tx 1s to propagate before submitting revoke (from client wallet)
             await new Promise(resolve => setTimeout(resolve, 1000));
-            await revokePermit2Approval(token);
+            await revokePermit2Approval(evmPermit2Asset);
             // Give revoke tx 2s to propagate before drain reads pending nonce.
             // Load-balanced RPCs can return a stale pending nonce if queried
             // immediately after the revoke submission, causing the drain to
