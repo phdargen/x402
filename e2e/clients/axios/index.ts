@@ -132,21 +132,25 @@ if (avmSigner) {
 
 const axiosWithPayment = wrapAxiosWithPayment(axios.create(), client);
 
-// Multi-request scenarios (used by batch-settlement) 
-const numberOfRequests = Number.parseInt(process.env.MULTI_REQUEST_COUNT ?? "1", 10);
-const refundAfterRequests = process.env.REFUND_ON_LAST ?? "true";
+const batchSettlementPhase = process.env.BATCH_SETTLEMENT_PHASE as
+  | "initial"
+  | "recovery-refund"
+  | "full"
+  | undefined;
 
 /**
  * Issues a single paid request and returns the parsed result.
  *
  * @returns Structured result with response data and decoded payment-response.
  */
-async function issueRequest(): Promise<{
+interface RequestResult {
   success: boolean;
   data: unknown;
   status_code: number;
-  payment_response?: ReturnType<typeof decodePaymentResponseHeader>;
-}> {
+  payment_response?: any;
+}
+
+async function issueRequest(): Promise<RequestResult> {
   const response = await axiosWithPayment.get(url);
   const paymentResponseHeader =
     response.headers["payment-response"] || response.headers["x-payment-response"];
@@ -164,31 +168,75 @@ async function issueRequest(): Promise<{
   };
 }
 
+function aggregateBatchResult(
+  phase: "initial" | "recovery-refund" | "full",
+  results: RequestResult[],
+  details: Record<string, RequestResult>,
+) {
+  const last = results[results.length - 1]!;
+  return {
+    success: results.every(result => result.success),
+    data: {
+      batchSettlement: {
+        phase,
+        requests: results,
+        ...details,
+      },
+    },
+    status_code: last.status_code,
+    payment_response: last.payment_response,
+  };
+}
+
 try {
-  const results: Awaited<ReturnType<typeof issueRequest>>[] = [];
-  for (let i = 0; i < numberOfRequests; i++) {
+  if (!batchSettlementPhase) {
     const result = await issueRequest();
-    results.push(result);
+    console.log(JSON.stringify(result));
+    process.exit(0);
   }
 
-  if (refundAfterRequests) {
+  if (batchSettlementPhase === "initial") {
+    const deposit = await issueRequest();
+    const voucher = await issueRequest();
+    console.log(JSON.stringify(aggregateBatchResult("initial", [deposit, voucher], { deposit, voucher })));
+    process.exit(0);
+  }
+
+  if (batchSettlementPhase === "recovery-refund") {
+    const recoveryVoucher = await issueRequest();
     const refundSettle = await batchSettlementScheme.refund(url);
-    results.push({
+    const refund = {
       success: refundSettle.success,
       data: { refund: true },
       status_code: 200,
       payment_response: refundSettle,
-    });
+    };
+    console.log(
+      JSON.stringify(
+        aggregateBatchResult("recovery-refund", [recoveryVoucher, refund], {
+          recoveryVoucher,
+          refund,
+        }),
+      ),
+    );
+    process.exit(0);
   }
 
-  const last = results[results.length - 1]!;
-  const aggregate =
-    numberOfRequests > 1
-      ? { ...last, requests: results, request_count: numberOfRequests }
-      : last;
+  if (batchSettlementPhase === "full") {
+    const deposit = await issueRequest();
+    const voucher = await issueRequest();
+    const refundSettle = await batchSettlementScheme.refund(url);
+    const refund = {
+      success: refundSettle.success,
+      data: { refund: true },
+      status_code: 200,
+      payment_response: refundSettle,
+    };
+    console.log(JSON.stringify(aggregateBatchResult("full", [deposit, voucher, refund], { deposit, voucher, refund })));
+    process.exit(0);
+  }
 
-  console.log(JSON.stringify(aggregate));
-  process.exit(0);
+  throw new Error(`Unknown BATCH_SETTLEMENT_PHASE: ${batchSettlementPhase}`);
 } catch (error: unknown) {
   const err = error as { message?: string; response?: { status?: number } };
   console.error(

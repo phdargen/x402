@@ -6,7 +6,7 @@ import { createWalletClient, createPublicClient, http, parseEther, formatEther, 
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
 import { TestDiscovery } from './src/discovery';
-import { ClientConfig, ScenarioResult, ServerConfig, TestScenario, endpointAssetTransferMethod, endpointPaymentScheme, endpointBatchChannelOptions } from './src/types';
+import { ClientConfig, ScenarioResult, ServerConfig, TestScenario, endpointAssetTransferMethod, endpointPaymentScheme, endpointUsesBatchSettlement } from './src/types';
 import { config as loggerConfig, log, verboseLog, errorLog, close as closeLogger, createComboLogger } from './src/logger';
 import { handleDiscoveryValidation, shouldRunDiscoveryValidation } from './extensions/bazaar';
 import { parseArgs, printHelp } from './src/cli/args';
@@ -313,8 +313,10 @@ async function startServer(
 function isOffchainSettleResponse(paymentResponse: any): boolean {
   if (!paymentResponse) return false;
   const extra = paymentResponse.extra ?? {};
+  const channelState = extra.channelState ?? {};
   const isBatchSettlement =
-    typeof extra.channelId === 'string' && extra.channelId.length > 0;
+    (typeof extra.channelId === 'string' && extra.channelId.length > 0) ||
+    (typeof channelState.channelId === 'string' && channelState.channelId.length > 0);
   return isBatchSettlement;
 }
 
@@ -416,6 +418,61 @@ async function runClientTest(
   }
 }
 
+type ClientTestResult = ScenarioResult & { verboseLogs?: string[] };
+
+function getBatchStep(result: ClientTestResult, step: string): any {
+  return (result.data as any)?.batchSettlement?.[step];
+}
+
+function validateBatchPaymentStep(
+  result: ClientTestResult,
+  step: string,
+  label: string,
+  requireTransaction: boolean,
+): string | undefined {
+  const stepResult = getBatchStep(result, step);
+  if (!stepResult) {
+    return `Batch-settlement ${label} result missing`;
+  }
+
+  if (!stepResult.success) {
+    const reason = stepResult.payment_response?.errorReason || stepResult.error || 'unknown error';
+    return `Batch-settlement ${label} failed: ${reason}`;
+  }
+
+  const paymentResponse = stepResult.payment_response;
+  if (!paymentResponse) {
+    return `Batch-settlement ${label} missing payment response`;
+  }
+
+  if (!paymentResponse.success) {
+    return `Batch-settlement ${label} payment failed: ${paymentResponse.errorReason || 'unknown error'}`;
+  }
+
+  if (paymentResponse.errorReason) {
+    return `Batch-settlement ${label} payment has error reason: ${paymentResponse.errorReason}`;
+  }
+
+  if (requireTransaction && !paymentResponse.transaction) {
+    return `Batch-settlement ${label} succeeded but no transaction hash returned`;
+  }
+
+  if (!requireTransaction && !paymentResponse.transaction && !isOffchainSettleResponse(paymentResponse)) {
+    return `Batch-settlement ${label} succeeded but no transaction hash or channel state returned`;
+  }
+
+  return undefined;
+}
+
+function mergeVerboseLogs(...results: ClientTestResult[]): string[] {
+  return results.flatMap(result => result.verboseLogs ?? []);
+}
+
+function envFlagDefaultTrue(value: string | undefined): boolean {
+  if (value === undefined) return true;
+  return !['0', 'false', 'no', 'off'].includes(value.toLowerCase());
+}
+
 async function runTest() {
   // Show help if requested
   if (parsedArgs.showHelp) {
@@ -450,6 +507,7 @@ async function runTest() {
   const facilitatorHederaAccountId = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
   const facilitatorHederaPrivateKey = process.env.FACILITATOR_HEDERA_PRIVATE_KEY;
   const facilitatorStellarPrivateKey = process.env.FACILITATOR_STELLAR_PRIVATE_KEY;
+  const batchSettlementRecovery = envFlagDefaultTrue(process.env.BATCH_SETTLEMENT_RECOVERY);
   if (!serverEvmAddress || !serverSvmAddress || !clientEvmPrivateKey || !clientSvmPrivateKey || !facilitatorEvmPrivateKey || !facilitatorSvmPrivateKey) {
     errorLog('❌ Missing required environment variables:');
     errorLog(' SERVER_EVM_ADDRESS, SERVER_SVM_ADDRESS, CLIENT_EVM_PRIVATE_KEY, CLIENT_SVM_PRIVATE_KEY, FACILITATOR_EVM_PRIVATE_KEY, and FACILITATOR_SVM_PRIVATE_KEY must be set');
@@ -763,6 +821,8 @@ async function runTest() {
     passed: boolean;
     error?: string;
     transaction?: string;
+    depositTransaction?: string;
+    refundTransaction?: string;
     network?: string;
   }
 
@@ -906,12 +966,9 @@ async function runTest() {
     const facilitatorLabel = scenario.facilitator ? ` via ${scenario.facilitator.name}` : '';
     const testName = `${scenario.client.name} → ${scenario.server.name} → ${scenario.endpoint.path}${facilitatorLabel}`;
 
-    // Batch-settlement scenarios need a unique 32-byte salt per scenario so
-    // concurrent runs don't collide on the same on-chain channel id (the salt
-    // is one of the inputs that derives the channel from sender/receiver/etc.).
-    const batchCfg = endpointBatchChannelOptions(scenario.endpoint);
-
-    const clientConfig: ClientConfig = {
+    const isBatchSettlement = endpointUsesBatchSettlement(scenario.endpoint);
+    const voucherSignerPrivateKey = process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY;
+    const baseClientConfig: ClientConfig = {
       evmPrivateKey: clientEvmPrivateKey!,
       svmPrivateKey: clientSvmPrivateKey!,
       avmPrivateKey: clientAvmPrivateKey || '',
@@ -925,23 +982,159 @@ async function runTest() {
       evmRpcUrl: networks.evm.rpcUrl,
       hederaNetwork: networks.hedera.caip2,
       hederaNodeUrl: networks.hedera.rpcUrl,
-      ...(batchCfg
-        ? {
-          batchSettlement: {
-            channelSalt: generateChannelSalt(),
-            count: batchCfg.count,
-            refundOnLast: batchCfg.refundOnLast === true,
-            ...(process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY
-              ? { voucherSignerPrivateKey: process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY }
-              : {}),
-          },
-        }
-        : {}),
     };
 
     try {
       cLog.log(`🧪 Test #${localTestNumber}: ${testName}`);
-      const result = await runClientTest(scenario.client.proxy, clientConfig);
+
+      if (isBatchSettlement) {
+        const channelSalt = generateChannelSalt();
+        const batchBase = {
+          channelSalt,
+          ...(voucherSignerPrivateKey ? { voucherSignerPrivateKey } : {}),
+        };
+
+        if (!batchSettlementRecovery) {
+          const fullResult = await runClientTest(scenario.client.proxy, {
+            ...baseClientConfig,
+            batchSettlement: { ...batchBase, phase: 'full' },
+          });
+          const fullError = fullResult.success
+            ? validateBatchPaymentStep(fullResult, 'deposit', 'deposit', true) ||
+              validateBatchPaymentStep(fullResult, 'voucher', 'voucher', false) ||
+              validateBatchPaymentStep(fullResult, 'refund', 'refund', true)
+            : fullResult.error || 'Batch-settlement client phase failed';
+
+          const depositTransaction = getBatchStep(fullResult, 'deposit')?.payment_response?.transaction;
+          const refundTransaction = getBatchStep(fullResult, 'refund')?.payment_response?.transaction;
+          const network =
+            getBatchStep(fullResult, 'refund')?.payment_response?.network ||
+            getBatchStep(fullResult, 'deposit')?.payment_response?.network ||
+            fullResult.payment_response?.network;
+
+          const detailedResult: DetailedTestResult = {
+            testNumber: localTestNumber,
+            client: scenario.client.name,
+            server: scenario.server.name,
+            endpoint: scenario.endpoint.path,
+            facilitator: scenario.facilitator?.name || 'none',
+            protocolFamily: scenario.protocolFamily,
+            passed: !fullError,
+            error: fullError,
+            transaction: refundTransaction || depositTransaction,
+            depositTransaction,
+            refundTransaction,
+            network,
+          };
+
+          if (fullError) {
+            cLog.log(`  ❌ Test failed: ${fullError}`);
+            const verboseLogs = fullResult.verboseLogs ?? [];
+            if (verboseLogs.length > 0) {
+              cLog.log(`  🔍 Verbose logs:`);
+              verboseLogs.forEach(logLine => cLog.log(logLine));
+            }
+            cLog.verboseLog(`  🔍 Error details: ${JSON.stringify(fullResult, null, 2)}`);
+          } else {
+            cLog.log(`  ✅ Test passed`);
+          }
+
+          return detailedResult;
+        }
+
+        const initialResult = await runClientTest(scenario.client.proxy, {
+          ...baseClientConfig,
+          batchSettlement: { ...batchBase, phase: 'initial' },
+        });
+        const initialError = initialResult.success
+          ? validateBatchPaymentStep(initialResult, 'deposit', 'deposit', true) ||
+            validateBatchPaymentStep(initialResult, 'voucher', 'voucher', false)
+          : initialResult.error || 'Initial batch-settlement client phase failed';
+
+        if (initialError) {
+          const detailedResult: DetailedTestResult = {
+            testNumber: localTestNumber,
+            client: scenario.client.name,
+            server: scenario.server.name,
+            endpoint: scenario.endpoint.path,
+            facilitator: scenario.facilitator?.name || 'none',
+            protocolFamily: scenario.protocolFamily,
+            passed: false,
+            error: initialError,
+            depositTransaction: getBatchStep(initialResult, 'deposit')?.payment_response?.transaction,
+            network: initialResult.payment_response?.network,
+          };
+          cLog.log(`  ❌ Test failed: ${initialError}`);
+          const verboseLogs = initialResult.verboseLogs ?? [];
+          if (verboseLogs.length > 0) {
+            cLog.log(`  🔍 Verbose logs:`);
+            verboseLogs.forEach(logLine => cLog.log(logLine));
+          }
+          cLog.verboseLog(`  🔍 Error details: ${JSON.stringify(initialResult, null, 2)}`);
+          return detailedResult;
+        }
+
+        const recoveryResult = await runClientTest(scenario.client.proxy, {
+          ...baseClientConfig,
+          batchSettlement: { ...batchBase, phase: 'recovery-refund' },
+        });
+        const recoveryError = recoveryResult.success
+          ? validateBatchPaymentStep(recoveryResult, 'recoveryVoucher', 'recovery voucher', false) ||
+            validateBatchPaymentStep(recoveryResult, 'refund', 'refund', true)
+          : recoveryResult.error || 'Recovery/refund batch-settlement client phase failed';
+
+        const depositTransaction = getBatchStep(initialResult, 'deposit')?.payment_response?.transaction;
+        const refundTransaction = getBatchStep(recoveryResult, 'refund')?.payment_response?.transaction;
+        const network =
+          getBatchStep(recoveryResult, 'refund')?.payment_response?.network ||
+          getBatchStep(initialResult, 'deposit')?.payment_response?.network ||
+          recoveryResult.payment_response?.network ||
+          initialResult.payment_response?.network;
+
+        if (recoveryError) {
+          const detailedResult: DetailedTestResult = {
+            testNumber: localTestNumber,
+            client: scenario.client.name,
+            server: scenario.server.name,
+            endpoint: scenario.endpoint.path,
+            facilitator: scenario.facilitator?.name || 'none',
+            protocolFamily: scenario.protocolFamily,
+            passed: false,
+            error: recoveryError,
+            transaction: refundTransaction || depositTransaction,
+            depositTransaction,
+            refundTransaction,
+            network,
+          };
+          cLog.log(`  ❌ Test failed: ${recoveryError}`);
+          const verboseLogs = mergeVerboseLogs(initialResult, recoveryResult);
+          if (verboseLogs.length > 0) {
+            cLog.log(`  🔍 Verbose logs:`);
+            verboseLogs.forEach(logLine => cLog.log(logLine));
+          }
+          cLog.verboseLog(`  🔍 Error details: ${JSON.stringify({ initialResult, recoveryResult }, null, 2)}`);
+          return detailedResult;
+        }
+
+        const detailedResult: DetailedTestResult = {
+          testNumber: localTestNumber,
+          client: scenario.client.name,
+          server: scenario.server.name,
+          endpoint: scenario.endpoint.path,
+          facilitator: scenario.facilitator?.name || 'none',
+          protocolFamily: scenario.protocolFamily,
+          passed: true,
+          transaction: refundTransaction || depositTransaction,
+          depositTransaction,
+          refundTransaction,
+          network,
+        };
+
+        cLog.log(`  ✅ Test passed`);
+        return detailedResult;
+      }
+
+      const result = await runClientTest(scenario.client.proxy, baseClientConfig);
 
       const detailedResult: DetailedTestResult = {
         testNumber: localTestNumber,
@@ -1226,7 +1419,13 @@ async function runTest() {
       if (test.network) {
         log(`      Network: ${test.network}`);
       }
-      if (test.transaction) {
+      if (test.depositTransaction) {
+        log(`      Deposit Tx: ${test.depositTransaction}`);
+      }
+      if (test.refundTransaction) {
+        log(`      Refund Tx: ${test.refundTransaction}`);
+      }
+      if (test.transaction && !test.depositTransaction && !test.refundTransaction) {
         log(`      Tx: ${test.transaction}`);
       }
     });

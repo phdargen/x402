@@ -143,15 +143,11 @@
     {
       "path": "/api/batch-settlement/evm/eip3009/proxy",
       "method": "GET",
-      "description": "Batch-settlement EVM endpoint (proxy middleware): deposit + repeated vouchers + cooperative refund",
+      "description": "Batch-settlement EVM endpoint (proxy middleware): deposit + voucher + recovery voucher + cooperative refund",
       "requiresPayment": true,
       "protocolFamily": "evm",
       "scheme": "batch-settlement",
-      "assetTransferMethod": "eip3009",
-      "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true
-      }
+      "assetTransferMethod": "eip3009"
     },
     {
       "path": "/api/batch-settlement/evm/permit2/proxy",
@@ -162,8 +158,6 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "permit2Direct": true
       }
     },
@@ -176,8 +170,6 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "coldstart": true
       }
     },
@@ -193,23 +185,17 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "coldstart": true
       }
     },
     {
       "path": "/api/batch-settlement/evm/eip3009/withx402",
       "method": "GET",
-      "description": "Batch-settlement EVM endpoint (withX402 wrapper): deposit + repeated vouchers + cooperative refund",
+      "description": "Batch-settlement EVM endpoint (withX402 wrapper): deposit + voucher + recovery voucher + cooperative refund",
       "requiresPayment": true,
       "protocolFamily": "evm",
       "scheme": "batch-settlement",
-      "assetTransferMethod": "eip3009",
-      "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true
-      }
+      "assetTransferMethod": "eip3009"
     },
     {
       "path": "/api/exact/svm/withx402",

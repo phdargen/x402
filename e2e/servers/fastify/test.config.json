@@ -28,15 +28,11 @@
     {
       "path": "/batch-settlement/evm/eip3009",
       "method": "GET",
-      "description": "Protected endpoint exercised by deposit + repeated vouchers + cooperative refund",
+      "description": "Protected endpoint exercised by deposit + voucher + recovery voucher + cooperative refund",
       "requiresPayment": true,
       "protocolFamily": "evm",
       "scheme": "batch-settlement",
-      "assetTransferMethod": "eip3009",
-      "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true
-      }
+      "assetTransferMethod": "eip3009"
     },
     {
       "path": "/batch-settlement/evm/permit2",
@@ -47,8 +43,6 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "permit2Direct": true
       }
     },
@@ -61,8 +55,6 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "coldstart": true
       }
     },
@@ -78,8 +70,6 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "permit2",
       "schemeOptions": {
-        "count": 3,
-        "refundOnLast": true,
         "coldstart": true
       }
     },

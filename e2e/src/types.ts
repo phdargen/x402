@@ -38,27 +38,13 @@ export interface Permit2SchemeOptions {
   coldstart?: boolean;
 }
 
-/** Harness knobs for batch-settlement (channel sizing + optional Permit2 knobs). */
-export interface BatchSettlementSchemeOptions extends Permit2SchemeOptions {
-  count: number;
-  refundOnLast?: boolean;
-}
+/** Harness knobs for batch-settlement endpoints. */
+export type BatchSettlementSchemeOptions = Permit2SchemeOptions;
 
 export type SchemeOptions = Permit2SchemeOptions | BatchSettlementSchemeOptions;
 
-/** Batch channel options when `scheme === 'batch-settlement'` (requires `count` in config). */
-export function endpointBatchChannelOptions(
-  endpoint: TestEndpoint,
-): { count: number; refundOnLast?: boolean } | undefined {
-  if (endpoint.scheme !== 'batch-settlement') {
-    return undefined;
-  }
-  const o = endpoint.schemeOptions;
-  if (!o || !('count' in o) || o.count === undefined) {
-    return undefined;
-  }
-  const refundOnLast = o.refundOnLast;
-  return refundOnLast === true ? { count: o.count, refundOnLast: true } : { count: o.count };
+export function endpointUsesBatchSettlement(endpoint: TestEndpoint): boolean {
+  return endpoint.scheme === 'batch-settlement';
 }
 
 export interface ClientResult {
@@ -70,13 +56,13 @@ export interface ClientResult {
 }
 
 /** Scheme-specific configs for a batch-settlement scenario. */
+export type BatchSettlementPhase = 'initial' | 'recovery-refund' | 'full';
+
 export interface BatchSettlementClientConfig {
   /** Per-scenario unique salt that derives the onchain channel id (avoids collisions across runs). */
   channelSalt: string;
-  /** Number of paid requests to issue against the same endpoint within the channel. */
-  count: number;
-  /** When true, the last request signals a cooperative refund of any unused balance. */
-  refundOnLast: boolean;
+  /** Fixed e2e phase to run for this one-shot client process. */
+  phase: BatchSettlementPhase;
   /** Optional alternate EOA used to sign vouchers (deposits still use the main client signer). */
   voucherSignerPrivateKey?: string;
 }

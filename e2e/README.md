@@ -140,6 +140,7 @@ Optional environment variables (batch-settlement scheme):
 ```bash
 SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x... # server-side self-managed claim/refund signer
 CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY=0x...      # EOA the client uses to sign vouchers
+BATCH_SETTLEMENT_RECOVERY=false                  # test client state-loss recovery scenario (default: true)
 ```
 
 ### Account Setup Instructions

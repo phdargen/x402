@@ -36,8 +36,7 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
           ...(config.batchSettlement
             ? {
                 CHANNEL_SALT: config.batchSettlement.channelSalt,
-                MULTI_REQUEST_COUNT: String(config.batchSettlement.count),
-                ...(config.batchSettlement.refundOnLast ? { REFUND_ON_LAST: 'true' } : {}),
+                BATCH_SETTLEMENT_PHASE: config.batchSettlement.phase,
                 ...(config.batchSettlement.voucherSignerPrivateKey
                   ? { EVM_VOUCHER_SIGNER_PRIVATE_KEY: config.batchSettlement.voucherSignerPrivateKey }
                   : {}),

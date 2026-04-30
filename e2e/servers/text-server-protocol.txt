@@ -29,7 +29,8 @@ All explicit gas sponsorship extension endpoints (EIP-2612 and ERC-20 approval) 
 For EVM paid endpoints, servers must declare:
 - **`scheme`**: Payment scheme — **`exact`** (single settle), **`upto`** (usage-based settle), or **`batch-settlement`** (deposit + vouchers + refund). If omitted, the harness defaults to **`exact`**.
 - **`assetTransferMethod`**: **`eip3009`** vs **`permit2`**. If omitted: **`upto`** endpoints default to **`permit2`** (no EIP-3009 path); **`exact`** and **`batch-settlement`** default to **`eip3009`**.
-- **`schemeOptions`** (optional): Harness knobs as **`SchemeOptions`** — either **`Permit2SchemeOptions`** (`permit2Direct`, `coldstart`) for exact/upto, or **`BatchSettlementSchemeOptions`** (extends the former with **`count`**, **`refundOnLast`**) for batch-settlement.
+- **`schemeOptions`** (optional): Harness knobs as **`SchemeOptions`** — **`Permit2SchemeOptions`** (`permit2Direct`, `coldstart`) for exact/upto and the same optional Permit2 knobs for batch-settlement.
+- **`BATCH_SETTLEMENT_RECOVERY`** (optional env): Defaults to enabled. Set to `false`, `0`, `no`, or `off` to run batch-settlement as deposit + voucher + refund without a fresh client process recovery step.
 
 These fields apply only when `"protocolFamily": "evm"`. Discovery matches **`assetTransferMethod`** against each client/facilitator’s `evm.assetTransferMethods`; **`scheme`** is used for filters such as `--schemes=`.
 
