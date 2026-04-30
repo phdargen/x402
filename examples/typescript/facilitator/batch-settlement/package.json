@@ -1,5 +1,5 @@
 {
-  "name": "@x402/deferred-facilitator-typescript",
+  "name": "@x402/batch-settlement-facilitator-typescript",
   "version": "2.0.0",
   "type": "module",
   "private": true,

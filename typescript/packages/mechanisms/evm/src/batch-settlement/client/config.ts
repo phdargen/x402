@@ -150,6 +150,6 @@ export function depositAmountForRequest(
   policy: BatchSettlementDepositPolicy | undefined,
   requestAmount: bigint,
 ): string {
-  const mult = BigInt(policy?.depositMultiplier ?? 10);
+  const mult = BigInt(policy?.depositMultiplier ?? 5);
   return (mult * requestAmount).toString();
 }

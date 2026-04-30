@@ -14,10 +14,10 @@ const voucherSigner = toClientEvmSigner(privateKeyToAccount(VOUCHER_KEY));
 const scheme = new BatchSettlementEvmScheme(signer, { voucherSigner });
 ```
 
-Why bother:
+Use this when:
 
-- **Hot/cold separation.** The payer key only needs to sign the one-time deposit authorization. The voucher key signs every request and can live in a less-protected runtime.
-- **Smart-wallet payers — strongly recommended.** If the payer is a smart wallet (EIP-1271), voucher verification falls back to an on-chain `isValidSignature` RPC on every `/verify`, adding latency to every paid request. Delegating to an EOA voucher signer lets the facilitator verify via fast ECDSA recovery instead.
+- The payer key should only sign deposit authorizations.
+- The payer is a smart wallet (EIP-1271). Delegating to an EOA voucher signer lets the facilitator verify vouchers with ECDSA recovery instead of an onchain `isValidSignature` call.
 
 ## Deposit policy
 
@@ -71,3 +71,4 @@ pnpm start
 | `STORAGE_DIR` | no | Persist client session state (defaults to in-memory) |
 | `NUMBER_OF_REQUESTS` | no | How many paid requests to issue (default 3) |
 | `REFUND_AFTER_REQUESTS` | no | If `true`, issue a self-contained refund via `scheme.refund(url)` after the request loop |
+| `REFUND_AMOUNT` | no | Partial refund amount in base units; omit for a full refund |

@@ -1,6 +1,6 @@
 # Batch-Settlement EVM Scheme (`@x402/evm/batch-settlement`)
 
-The **batch-settlement** scheme enables high-throughput, low-cost EVM payments via **stateless unidirectional payment channels**. Clients deposit funds into an on-chain escrow once, then sign off-chain **cumulative vouchers** per request. Servers verify vouchers with a fast signature check and claim them on-chain in batches at their discretion.
+The **batch-settlement** scheme enables high-throughput, low-cost EVM payments via **stateless unidirectional payment channels**. Clients deposit funds into an on-chain escrow once, then sign off-chain **cumulative vouchers** per request. Servers verify vouchers with a fast signature check and claim them on-chain in batches.
 
 A single claim transaction can cover many channels at once, and claimed funds are swept to the receiver in a separate `settle` step. The scheme also supports **dynamic pricing**: the client authorizes a max per-request and the server charges only what was actually used.
 
@@ -16,7 +16,7 @@ See the [scheme specification](https://github.com/x402-foundation/x402/blob/main
 
 ## Client Usage
 
-Register `BatchSettlementEvmScheme` with an `x402Client`. The client handles deposit, voucher signing, channel-state recovery, and corrective 402 resync transparently.
+Register `BatchSettlementEvmScheme` with an `x402Client`. The client handles deposits, voucher signing, channel-state recovery, and corrective 402 resync.
 
 ```typescript
 import { x402Client } from "@x402/core/client";
@@ -50,7 +50,7 @@ Use `depositStrategy` for app-specific deposit decisions. The strategy can:
 
 - Return `undefined` to use the SDK default deposit amount.
 - Return `false` to skip this deposit attempt.
-- Return a base-unit string or bigint to choose a custom amount. The amount must be sufficient cover the next voucher.
+- Return a base-unit string or bigint to choose a custom amount. The amount must cover the next voucher.
 
 ```typescript
 const maxDeposit = 1_000_000n;
@@ -124,6 +124,7 @@ const manager = scheme.createChannelManager(facilitatorClient, "eip155:84532");
 manager.start({
   claimIntervalSecs: 60,
   settleIntervalSecs: 300,
+  refundIntervalSecs: 3600,
   selectClaimChannels: channels => channels,
   selectRefundChannels: channels =>
     channels.filter(channel => Date.now() - channel.lastRequestTimestamp >= 3_600_000),
@@ -147,7 +148,7 @@ await manager.claimAndSettle({
 The `receiverAuthorizer` signs `ClaimBatch` and `Refund` EIP-712 messages and is committed into the channel's identity at deposit time:
 
 - **Self-managed** (recommended): pass a `receiverAuthorizerSigner` (an EOA you control). Channels survive facilitator changes — any facilitator can relay your signed claims and refunds.
-- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so existing channels should be drained first via `claimAll()` and `refundAll()`.
+- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so claim and refund existing channels first with.
 
 ### Pricing
 

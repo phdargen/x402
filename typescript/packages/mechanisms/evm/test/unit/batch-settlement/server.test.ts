@@ -1497,10 +1497,10 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       result,
     } as never);
     expect(enrichment).toEqual({
-      chargedAmount: "1000",
       channelState: {
         chargedCumulativeAmount: "1000",
       },
+      chargedAmount: "1000",
     });
   });
 

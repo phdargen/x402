@@ -142,8 +142,8 @@ export async function handleBeforeSettle(
   scheme.takeRequestContext(paymentPayload);
 
   const skipExtra: BatchSettlementPaymentResponseExtra = {
-    chargedAmount: requirements.amount,
     channelState: channelStateExtra(outcome.previous, outcome.current.chargedCumulativeAmount),
+    chargedAmount: requirements.amount,
   };
 
   return {
@@ -406,10 +406,10 @@ export async function handleEnrichSettlementResponse(
 
   if (isBatchSettlementDepositPayload(raw)) {
     return {
-      chargedAmount: ctx.requirements.amount,
       channelState: {
         chargedCumulativeAmount: channel.chargedCumulativeAmount,
       },
+      chargedAmount: ctx.requirements.amount,
     };
   }
   return {

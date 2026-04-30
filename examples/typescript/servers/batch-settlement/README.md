@@ -10,7 +10,7 @@ See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme
 
 Every channel commits to a `receiverAuthorizer` — the address whose EIP-712 signatures authorize `claimWithSignature` and `refundWithSignature`. This server lets you choose between two strategies:
 
-### 1. Self-managed (recommended)
+### 1. Self-managed
 
 Set `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` to an EOA you own. The scheme uses it to sign claims/refunds locally; **any facilitator** can relay the resulting transactions.
 
@@ -29,7 +29,7 @@ Leave `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` unset. The scheme adopts the address
 new BatchSettlementEvmScheme(evmAddress, { /* no receiverAuthorizerSigner */ });
 ```
 
-This is simpler operationally but locks each channel to the current facilitator. **Switching facilitators (or even rotating their authorizer key) requires opening new channels.** Before swapping, drain the existing ones — claim outstanding vouchers and issue cooperative refunds — otherwise unclaimed value is left exposed to the old authorizer's withdraw delay.
+This is simpler operationally but binds each channel to the current facilitator authorizer. **Switching facilitators (or rotating their authorizer key) requires opening new channels.** Before swapping, claim outstanding vouchers and refund remaining balances on the old channels.
 
 ## Settlement Policy
 

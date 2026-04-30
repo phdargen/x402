@@ -1,12 +1,12 @@
 # Batch-Settlement Facilitator Example
 
-Express.js facilitator for the **batch-settlement** EVM scheme on Base Sepolia. Handles `deposit`, `claimWithSignature`, `settle`, and `refundWithSignature` operations against the on-chain channel contract.
+Express.js facilitator for the **batch-settlement** EVM scheme on Base Sepolia. It exposes standard x402 facilitator endpoints and submits the batch-settlement contract calls.
 
 See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme_batch_settlement_evm.md) and the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md) for protocol details.
 
 ## Two Signer Roles
 
-This example uses two distinct keys with very different responsibilities:
+This example can use separate keys for relaying transactions and authorizing receiver actions:
 
 | Env var                               | Role                                                                       | On-chain effect                                                                                  |
 | ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -40,14 +40,14 @@ The facilitator listens on `http://localhost:4022` by default (`PORT` env var to
 
 ## API Surface
 
-Standard x402 facilitator endpoints — `POST /verify`, `POST /settle`, `GET /supported`. The `/settle` endpoint dispatches on `payload.type` / `settleAction`:
+Standard x402 facilitator endpoints: `POST /verify`, `POST /settle`, `GET /supported`. The `/settle` endpoint dispatches on `payload.type`:
 
-| Action                | Triggered by                  | Effect                                        |
-| --------------------- | ----------------------------- | --------------------------------------------- |
-| `deposit`             | First request or top-up       | Funds the channel via EIP-3009 or Permit2     |
-| `claimWithSignature`  | Server batches voucher claims | Updates on-chain `totalClaimed` (no transfer) |
-| `settle`              | Server sweeps unsettled funds | Transfers claimed funds to the receiver       |
-| `refundWithSignature` | Cooperative refund            | Returns `balance - totalClaimed` to the payer |
+| Payload type | Triggered by                  | Contract call / effect                          |
+| ------------ | ----------------------------- | ----------------------------------------------- |
+| `deposit`    | First request or top-up       | Funds the channel via EIP-3009 or Permit2       |
+| `claim`      | Server batches voucher claims | Calls `claimWithSignature` (no transfer)        |
+| `settle`     | Server sweeps unsettled funds | Calls `settle` to transfer claimed funds        |
+| `refund`     | Cooperative refund            | Calls `refundWithSignature` for unclaimed funds |
 
 `/verify` and `/settle` always return the on-chain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
 

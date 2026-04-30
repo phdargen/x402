@@ -1,5 +1,5 @@
 {
-  "name": "@x402/deferred-client-example",
+  "name": "@x402/batch-settlement-client-example",
   "private": true,
   "type": "module",
   "scripts": {
