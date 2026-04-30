@@ -205,7 +205,7 @@ function buildPipeline(): {
   const channelSalt = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
   const batchSettlementStorage = new InMemoryClientChannelStorage();
   const batchSettlementClient = new BatchSettlementEvmClient(clientSigner, {
-    depositPolicy: { maxDeposit: "100000", depositMultiplier: 2 },
+    depositPolicy: { depositMultiplier: 3 },
     salt: channelSalt,
     storage: batchSettlementStorage,
   });

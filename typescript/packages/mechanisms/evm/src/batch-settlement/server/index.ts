@@ -18,6 +18,8 @@ export type {
   ChannelManagerConfig,
   AutoSettlementConfig,
   AutoSettlementContext,
+  ClaimChannelSelector,
+  ClaimOptions,
   ClaimResult,
   SettleResult,
   RefundResult,

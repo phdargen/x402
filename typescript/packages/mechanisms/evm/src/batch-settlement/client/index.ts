@@ -2,6 +2,9 @@ export { BatchSettlementEvmScheme } from "./scheme";
 export type {
   BatchSettlementClientContext,
   BatchSettlementDepositPolicy,
+  BatchSettlementDepositStrategy,
+  BatchSettlementDepositStrategyContext,
+  BatchSettlementDepositStrategyResult,
   BatchSettlementEvmSchemeOptions,
 } from "./scheme";
 export type { ClientChannelStorage } from "./storage";

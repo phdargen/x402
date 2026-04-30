@@ -31,7 +31,7 @@ const publicClient = createPublicClient({ chain: baseSepolia, transport: http() 
 const signer = toClientEvmSigner(account, publicClient);
 
 const scheme = new BatchSettlementEvmScheme(signer, {
-  depositPolicy: { maxDeposit: "1000000", depositMultiplier: 5 },
+  depositPolicy: { depositMultiplier: 5 },
 });
 
 const client = new x402Client();
@@ -40,13 +40,29 @@ client.register("eip155:*", scheme);
 
 ### Deposit Policy
 
-Controls how much the client deposits when the channel needs funding:
+Controls how much the client deposits when the channel needs funding or top-up:
 
 | Field | Description |
 |-------|-------------|
-| `depositMultiplier` | Per-request `amount × multiplier` is deposited (default 1) |
-| `maxDeposit` | Hard cap on a single deposit (atomic units) |
-| `autoTopUp` | Re-deposit automatically when balance is insufficient for the next voucher |
+| `depositMultiplier` | Per-request `amount × multiplier` is deposited (default 5, minimum 3) |
+
+Use `depositStrategy` for app-specific deposit decisions. The strategy can:
+
+- Return `undefined` to use the SDK default deposit amount.
+- Return `false` to skip this deposit attempt.
+- Return a base-unit string or bigint to choose a custom amount. The amount must be sufficient cover the next voucher.
+
+```typescript
+const maxDeposit = 1_000_000n;
+
+const scheme = new BatchSettlementEvmScheme(signer, {
+  depositPolicy: { depositMultiplier: 5 },
+  depositStrategy: ({ depositAmount }) => {
+    const amount = BigInt(depositAmount);
+    return amount > maxDeposit ? maxDeposit : undefined;
+  },
+});
+```
 
 ### Voucher Signer Delegation
 
@@ -107,10 +123,22 @@ const server = new x402ResourceServer(facilitatorClient).register("eip155:84532"
 const manager = scheme.createChannelManager(facilitatorClient, "eip155:84532");
 manager.start({
   claimIntervalSecs: 60,
-  claimOnWithdrawal: true,         // race the client's withdraw delay
   settleIntervalSecs: 300,
-  refundOnIdleSecs: 3600,
-  refundOnShutdown: true,
+  selectClaimChannels: channels => channels,
+  selectRefundChannels: channels =>
+    channels.filter(channel => Date.now() - channel.lastRequestTimestamp >= 3_600_000),
+});
+```
+
+Use the same `selectClaimChannels` policy with one-shot cron jobs when you need to claim a specific channel subset:
+
+```typescript
+const selectedChannelIds = new Set(["0x..."]);
+
+await manager.claimAndSettle({
+  maxClaimsPerBatch: 100,
+  selectClaimChannels: channels =>
+    channels.filter(channel => selectedChannelIds.has(channel.channelId.toLowerCase())),
 });
 ```
 

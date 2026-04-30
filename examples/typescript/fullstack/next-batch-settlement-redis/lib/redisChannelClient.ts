@@ -6,15 +6,18 @@ import type {
 } from "@x402/evm/batch-settlement/server";
 import { createClient } from "redis";
 
+export type LazyRedisChannelStorageClient = RedisChannelStorageClient & {
+  /** Close the TCP connection */
+  disconnect: () => Promise<void>;
+};
+
 /**
  * Wraps a lazily connected node-redis client as {@link RedisChannelStorageClient}.
  *
  * @param url - Redis connection URL (same shape as `REDIS_URL` / `redis://…`).
  * @returns An adapter compatible with Redis-backed batch-settlement channel storage.
  */
-export function createLazyRedisChannelStorageClient(url: string): RedisChannelStorageClient {
-  let connecting: Promise<Awaited<ReturnType<typeof connect>>> | undefined;
-
+export function createLazyRedisChannelStorageClient(url: string): LazyRedisChannelStorageClient {
   const connect = async () => {
     const client = createClient({ url });
     client.on("error", err => {
@@ -23,6 +26,8 @@ export function createLazyRedisChannelStorageClient(url: string): RedisChannelSt
     await client.connect();
     return client;
   };
+
+  let connecting: Promise<Awaited<ReturnType<typeof connect>>> | undefined;
 
   const ensureClient = () => {
     if (!connecting) connecting = connect();
@@ -38,6 +43,17 @@ export function createLazyRedisChannelStorageClient(url: string): RedisChannelSt
     typeof key === "string" ? key : key.toString("utf8");
 
   return {
+    disconnect: async () => {
+      if (!connecting) return;
+      try {
+        const c = await connecting;
+        if (c.isOpen) await c.quit();
+      } catch {
+        // connect or quit failed — still drop the handle so the process can exit
+      } finally {
+        connecting = undefined;
+      }
+    },
     get: key =>
       ensureClient()
         .then(c => c.get(key))

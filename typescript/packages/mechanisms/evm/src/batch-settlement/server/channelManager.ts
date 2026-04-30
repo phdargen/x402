@@ -20,15 +20,23 @@ export interface ChannelManagerConfig {
   network: Network;
 }
 
+export type ClaimChannelSelector = (
+  channels: Channel[],
+  context: AutoSettlementContext,
+) => Channel[] | Promise<Channel[]>;
+
+export interface ClaimOptions {
+  maxClaimsPerBatch?: number;
+  idleSecs?: number;
+  selectClaimChannels?: ClaimChannelSelector;
+}
+
 export interface AutoSettlementConfig {
   claimIntervalSecs?: number;
   settleIntervalSecs?: number;
   refundIntervalSecs?: number;
   maxClaimsPerBatch?: number;
-  selectClaimChannels?: (
-    channels: Channel[],
-    context: AutoSettlementContext,
-  ) => Channel[] | Promise<Channel[]>;
+  selectClaimChannels?: ClaimChannelSelector;
   shouldSettle?: (context: AutoSettlementContext) => boolean | Promise<boolean>;
   selectRefundChannels?: (
     channels: Channel[],
@@ -126,13 +134,14 @@ export class BatchSettlementChannelManager {
   /**
    * Collects claimable vouchers and submits them in batches to the facilitator via `claim()`.
    *
-   * @param opts - Optional: `maxClaimsPerBatch` (default 100), `idleSecs` to filter idle channels.
+   * @param opts - Optional claim execution and target selection options.
    * @param opts.maxClaimsPerBatch - Max vouchers per facilitator `claim` batch.
    * @param opts.idleSecs - When set, only include channels idle for at least this many seconds.
+   * @param opts.selectClaimChannels - Optional selector for choosing channels before claimability checks.
    * @returns Array of claim results (one per batch).
    */
-  async claim(opts?: { maxClaimsPerBatch?: number; idleSecs?: number }): Promise<ClaimResult[]> {
-    const channels = await this.scheme.getStorage().list();
+  async claim(opts?: ClaimOptions): Promise<ClaimResult[]> {
+    const channels = await this.selectClaimTargets(opts);
     return this.claimFromChannels(channels, {
       maxClaimsPerBatch: opts?.maxClaimsPerBatch ?? 100,
       ...(opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : {}),
@@ -160,13 +169,15 @@ export class BatchSettlementChannelManager {
   /**
    * Convenience: claims all eligible vouchers then settles in one call.
    *
-   * @param opts - Optional: `maxClaimsPerBatch`.
+   * @param opts - Optional claim execution and target selection options.
    * @param opts.maxClaimsPerBatch - Max vouchers per claim batch before settling.
+   * @param opts.idleSecs - When set, only include channels idle for at least this many seconds.
+   * @param opts.selectClaimChannels - Optional selector for choosing channels before claimability checks.
    * @returns Combined claim and settle results.
    */
-  async claimAndSettle(opts?: {
-    maxClaimsPerBatch?: number;
-  }): Promise<{ claims: ClaimResult[]; settle?: SettleResult }> {
+  async claimAndSettle(
+    opts?: ClaimOptions,
+  ): Promise<{ claims: ClaimResult[]; settle?: SettleResult }> {
     const claims = await this.claim(opts);
     let settleResult: SettleResult | undefined;
     if (claims.length > 0) {
@@ -276,7 +287,10 @@ export class BatchSettlementChannelManager {
     this.pendingJobs.clear();
 
     if (opts?.flush) {
-      await this.claimAndSettle({ maxClaimsPerBatch: this.autoSettleConfig.maxClaimsPerBatch });
+      await this.claimAndSettle({
+        maxClaimsPerBatch: this.autoSettleConfig.maxClaimsPerBatch,
+        selectClaimChannels: this.autoSettleConfig.selectClaimChannels,
+      });
     }
   }
 
@@ -436,11 +450,9 @@ export class BatchSettlementChannelManager {
   private async runClaimJob(): Promise<void> {
     const cfg = this.autoSettleConfig;
     try {
-      const context = this.buildAutoSettlementContext(Date.now());
-      const channels = await this.scheme.getStorage().list();
-      const targets = cfg.selectClaimChannels
-        ? await cfg.selectClaimChannels(channels, context)
-        : channels;
+      const targets = await this.selectClaimTargets({
+        selectClaimChannels: cfg.selectClaimChannels,
+      });
       const results = await this.claimFromChannels(targets, {
         maxClaimsPerBatch: cfg.maxClaimsPerBatch ?? 100,
       });
@@ -536,6 +548,24 @@ export class BatchSettlementChannelManager {
     }
 
     return results;
+  }
+
+  /**
+   * Loads stored channels and applies the configured claim selector, if any.
+   *
+   * @param opts - Claim options containing an optional target selector.
+   * @returns The channel snapshot that should be inspected for claimable vouchers.
+   */
+  private async selectClaimTargets(
+    opts?: Pick<ClaimOptions, "selectClaimChannels">,
+  ): Promise<Channel[]> {
+    const channels = await this.scheme.getStorage().list();
+    if (!opts?.selectClaimChannels) {
+      return channels;
+    }
+
+    const context = this.buildAutoSettlementContext(Date.now());
+    return opts.selectClaimChannels(channels, context);
   }
 
   /**

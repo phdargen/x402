@@ -1,19 +1,46 @@
+import type { PaymentRequirements } from "@x402/core/types";
 import type { ClientEvmSigner } from "../../signer";
 import type { EvmSchemeOptions } from "../../shared/rpc";
+import type { ChannelConfig } from "../types";
 import { type ClientChannelStorage, InMemoryClientChannelStorage } from "./storage";
+import type { BatchSettlementClientContext } from "./storage";
 
 const DEFAULT_SALT =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
 /**
- * Caller-tunable policy controlling how the client sizes channel deposits and
- * whether top-ups are issued automatically.
+ * Caller-tunable policy controlling how the client sizes channel deposits.
  */
 export interface BatchSettlementDepositPolicy {
   depositMultiplier?: number;
-  maxDeposit?: string;
-  autoTopUp?: boolean;
 }
+
+/**
+ * Return shape for custom deposit sizing.
+ */
+export type BatchSettlementDepositStrategyResult = string | bigint | false | undefined;
+
+/**
+ * Information supplied before the client signs a deposit authorization.
+ */
+export interface BatchSettlementDepositStrategyContext {
+  paymentRequirements: PaymentRequirements;
+  channelConfig: ChannelConfig;
+  channelId: `0x${string}`;
+  clientContext: BatchSettlementClientContext;
+  requestAmount: string;
+  maxClaimableAmount: string;
+  currentBalance: string;
+  minimumDepositAmount: string;
+  depositAmount: string;
+}
+
+/**
+ * Custom deposit sizing callback for initial deposits and top-ups.
+ */
+export type BatchSettlementDepositStrategy = (
+  context: BatchSettlementDepositStrategyContext,
+) => BatchSettlementDepositStrategyResult | Promise<BatchSettlementDepositStrategyResult>;
 
 /**
  * Full options object accepted by `BatchSettlementEvmScheme`. Either this or a
@@ -22,6 +49,8 @@ export interface BatchSettlementDepositPolicy {
  */
 export interface BatchSettlementEvmSchemeOptions {
   depositPolicy?: BatchSettlementDepositPolicy;
+  /** Optional callback for app-specific deposit sizing or skipping. */
+  depositStrategy?: BatchSettlementDepositStrategy;
   storage?: ClientChannelStorage;
   salt?: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
@@ -36,6 +65,7 @@ export interface BatchSettlementEvmSchemeOptions {
  */
 export interface ResolvedClientOptions {
   depositPolicy?: BatchSettlementDepositPolicy;
+  depositStrategy?: BatchSettlementDepositStrategy;
   storage: ClientChannelStorage;
   salt: `0x${string}`;
   payerAuthorizer?: `0x${string}`;
@@ -57,6 +87,7 @@ export function isBatchSettlementEvmSchemeOptions(
     typeof o === "object" &&
     ("storage" in o ||
       "depositPolicy" in o ||
+      "depositStrategy" in o ||
       "salt" in o ||
       "payerAuthorizer" in o ||
       "rpcUrl" in o ||
@@ -80,6 +111,7 @@ export function resolveClientOptions(
     return {
       storage: second.storage ?? new InMemoryClientChannelStorage(),
       depositPolicy: second.depositPolicy,
+      depositStrategy: second.depositStrategy,
       salt: second.salt ?? DEFAULT_SALT,
       payerAuthorizer: second.payerAuthorizer,
       voucherSigner: second.voucherSigner,
@@ -102,19 +134,15 @@ export function validateDepositPolicy(policy: BatchSettlementDepositPolicy | und
   if (!policy) return;
 
   const m = policy.depositMultiplier;
-  if (m !== undefined && (!Number.isInteger(m) || m < 1)) {
-    throw new Error("depositMultiplier must be an integer >= 1");
-  }
-
-  if (policy.maxDeposit !== undefined && !/^\d+$/.test(policy.maxDeposit)) {
-    throw new Error("maxDeposit must be a non-negative integer string");
+  if (m !== undefined && (!Number.isInteger(m) || m < 3)) {
+    throw new Error("depositMultiplier must be an integer >= 3");
   }
 }
 
 /**
- * Computes the deposit amount based on the deposit policy (multiplier and cap).
+ * Computes the deposit amount based on the deposit multiplier.
  *
- * @param policy - Deposit policy controlling multiplier and cap (may be undefined).
+ * @param policy - Deposit policy controlling multiplier (may be undefined).
  * @param requestAmount - Amount requested for this operation, in token base units.
  * @returns Deposit amount string in token base units.
  */
@@ -123,11 +151,5 @@ export function depositAmountForRequest(
   requestAmount: bigint,
 ): string {
   const mult = BigInt(policy?.depositMultiplier ?? 10);
-  let depositBig = mult * requestAmount;
-  const cap = policy?.maxDeposit;
-  if (cap !== undefined) {
-    const capBig = BigInt(cap);
-    if (depositBig > capBig) depositBig = capBig;
-  }
-  return depositBig.toString();
+  return (mult * requestAmount).toString();
 }

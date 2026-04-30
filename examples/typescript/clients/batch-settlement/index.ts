@@ -11,22 +11,12 @@ import { privateKeyToAccount } from "viem/accounts";
 
 config();
 
-/**
- * Formats a duration in milliseconds as seconds with three decimal places.
- *
- * @param ms - Elapsed time in milliseconds.
- * @returns String like `"1.234"`.
- */
-function formatSeconds(ms: number): string {
-  return (ms / 1000).toFixed(3);
-}
-
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
 const evmVoucherSignerPrivateKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
-const endpointPath = process.env.ENDPOINT_PATH || "/api/generate";
+const endpointPath = process.env.ENDPOINT_PATH || "/api/weather";
 const url = `${baseURL}${endpointPath}`;
 const storageDir = process.env.STORAGE_DIR ?? process.env.STORAGE_DIR_DIR;
 const channelSalt = (process.env.CHANNEL_SALT ??
@@ -34,6 +24,7 @@ const channelSalt = (process.env.CHANNEL_SALT ??
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
 const refundAfterRequests = process.env.REFUND_AFTER_REQUESTS === "true";
 const refundAmount = process.env.REFUND_AMOUNT;
+const depositMultiplier = Number(process.env.DEPOSIT_MULTIPLIER ?? "5");
 
 /**
  * Runs sequential paid requests against the configured resource server endpoint.
@@ -55,8 +46,7 @@ async function main(): Promise<void> {
 
   const batchedScheme = new BatchSettlementEvmScheme(signer, {
     depositPolicy: {
-      maxDeposit: "1000000",
-      depositMultiplier: 5,
+      depositMultiplier,
     },
     salt: channelSalt,
     ...(voucherSigner ? { voucherSigner } : {}),
@@ -88,7 +78,7 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(result, null, 2));
     }
     console.log(
-      `Request ${i + 1} — completed in ${formatSeconds(performance.now() - requestT0)}s\n`,
+      `Request ${i + 1} — completed in ${((performance.now() - requestT0) / 1000).toFixed(3)}s\n`,
     );
   }
 
@@ -103,7 +93,7 @@ async function main(): Promise<void> {
       ...(refundAmount ? { amount: refundAmount } : {}),
     });
     console.log(JSON.stringify(settle, null, 2));
-    console.log(`Refund completed in ${formatSeconds(performance.now() - refundT0)}s`);
+    console.log(`Refund completed in ${((performance.now() - refundT0) / 1000).toFixed(3)}s`);
   }
 }
 

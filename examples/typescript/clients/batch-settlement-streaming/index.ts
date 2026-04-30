@@ -47,7 +47,6 @@ const cliOptions = parseClientCliOptions(process.argv.slice(2));
 const prompt = cliOptions.prompt ?? process.env.PROMPT ?? "Tell me a fun fact about payments.";
 const verbose = cliOptions.verbose || isTruthyEnvFlag(process.env.VERBOSE);
 const depositPolicy = {
-  maxDeposit: "10000000",
   depositMultiplier: 100,
 };
 

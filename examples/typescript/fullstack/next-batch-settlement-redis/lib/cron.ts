@@ -1,4 +1,17 @@
+import type { AutoSettlementContext, Channel } from "@x402/evm/batch-settlement/server";
+
 import { channelManager } from "./server";
+
+export interface ClaimCronOptions {
+  maxClaimsPerBatch?: number;
+  idleSecs?: number;
+  selectClaimChannels?: (
+    channels: Channel[],
+    context: AutoSettlementContext,
+  ) => Channel[] | Promise<Channel[]>;
+}
+
+export type ClaimAndSettleCronOptions = ClaimCronOptions;
 
 export interface ClaimCronSummary {
   claimBatches: number;
@@ -24,10 +37,9 @@ export interface ClaimAndSettleCronSummary {
  * @param opts.maxClaimsPerBatch - Max vouchers per facilitator claim transaction.
  * @returns Compact claim summary.
  */
-export async function runClaimCron(opts?: {
-  maxClaimsPerBatch?: number;
-}): Promise<ClaimCronSummary> {
+export async function runClaimCron(opts?: ClaimCronOptions): Promise<ClaimCronSummary> {
   const claims = await channelManager.claim({
+    ...opts,
     maxClaimsPerBatch: opts?.maxClaimsPerBatch ?? 100,
   });
 
@@ -58,10 +70,11 @@ export async function runSettleCron(): Promise<SettleCronSummary> {
  * @param opts.maxClaimsPerBatch - Max vouchers per facilitator claim transaction.
  * @returns Compact claim-and-settle summary.
  */
-export async function runClaimAndSettleCron(opts?: {
-  maxClaimsPerBatch?: number;
-}): Promise<ClaimAndSettleCronSummary> {
+export async function runClaimAndSettleCron(
+  opts?: ClaimAndSettleCronOptions,
+): Promise<ClaimAndSettleCronSummary> {
   const { claims, settle } = await channelManager.claimAndSettle({
+    ...opts,
     maxClaimsPerBatch: opts?.maxClaimsPerBatch ?? 100,
   });
 

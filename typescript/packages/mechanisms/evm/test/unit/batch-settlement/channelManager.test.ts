@@ -220,6 +220,35 @@ describe("BatchSettlementChannelManager — claim()", () => {
     expect(facilitator.settle).not.toHaveBeenCalled();
   });
 
+  it("claims only channels selected by the claim selector", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    const selectedConfig = buildChannelConfig("01");
+    const skippedConfig = buildChannelConfig("02");
+    const selected = buildSession({
+      channelConfig: selectedConfig,
+      channelId: computeChannelId(selectedConfig),
+      chargedCumulativeAmount: "5000",
+    });
+    const skipped = buildSession({
+      channelConfig: skippedConfig,
+      channelId: computeChannelId(skippedConfig),
+      chargedCumulativeAmount: "7000",
+    });
+    await storeChannel(storage, selected);
+    await storeChannel(storage, skipped);
+
+    const results = await manager.claim({
+      selectClaimChannels: channels =>
+        channels.filter(channel => channel.channelId === selected.channelId),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].vouchers).toBe(1);
+    expect(facilitator.settle).toHaveBeenCalledTimes(1);
+    expect((await storage.get(selected.channelId))?.totalClaimed).toBe("5000");
+    expect((await storage.get(skipped.channelId))?.totalClaimed).toBe("0");
+  });
+
   it("updates session.totalClaimed after a successful claim", async () => {
     const { manager, storage } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "5000", totalClaimed: "0" });
@@ -315,6 +344,21 @@ describe("BatchSettlementChannelManager — claimAndSettle()", () => {
     expect(result.claims).toHaveLength(1);
     expect(result.settle?.transaction).toBe("0xtx");
     expect(facilitator.settle).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not settle when the claim selector returns no claim work", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    const session = buildSession({ chargedCumulativeAmount: "5000" });
+    await storeChannel(storage, session);
+
+    const result = await manager.claimAndSettle({
+      selectClaimChannels: () => [],
+    });
+
+    expect(result.claims).toEqual([]);
+    expect(result.settle).toBeUndefined();
+    expect(facilitator.settle).not.toHaveBeenCalled();
+    expect((await storage.get(session.channelId))?.totalClaimed).toBe("0");
   });
 });
 
@@ -479,6 +523,34 @@ describe("BatchSettlementChannelManager — start()/stop() loop", () => {
     expect(await storage.get(session.channelId)).toBeDefined();
   });
 
+  it("uses the configured claim selector during stop({ flush: true })", async () => {
+    const { manager, storage, facilitator } = buildManager();
+    const selectedConfig = buildChannelConfig("01");
+    const skippedConfig = buildChannelConfig("02");
+    const selected = buildSession({
+      channelConfig: selectedConfig,
+      channelId: computeChannelId(selectedConfig),
+      chargedCumulativeAmount: "5000",
+    });
+    const skipped = buildSession({
+      channelConfig: skippedConfig,
+      channelId: computeChannelId(skippedConfig),
+      chargedCumulativeAmount: "7000",
+    });
+    await storeChannel(storage, selected);
+    await storeChannel(storage, skipped);
+
+    manager.start({
+      selectClaimChannels: channels =>
+        channels.filter(channel => channel.channelId === selected.channelId),
+    });
+    await manager.stop({ flush: true });
+
+    expect(facilitator.settle).toHaveBeenCalledTimes(2);
+    expect((await storage.get(selected.channelId))?.totalClaimed).toBe("5000");
+    expect((await storage.get(skipped.channelId))?.totalClaimed).toBe("0");
+  });
+
   it("forwards flush errors from claimAndSettle", async () => {
     const facilitator = buildFacilitator(async payload => {
       const action = (payload.payload as Record<string, unknown>).type;
@@ -540,6 +612,21 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
   });
 
   it("coalesces repeated same-type timer events while a job is running", async () => {
+    vi.useRealTimers();
+    const flushMicrotasks = async () => {
+      for (let i = 0; i < 20; i++) {
+        await Promise.resolve();
+      }
+    };
+    let onClaimInterval: () => void = () => {};
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation((handler: TimerHandler) => {
+        onClaimInterval = typeof handler === "function" ? (handler as () => void) : () => {};
+        return 999 as unknown as ReturnType<typeof setInterval>;
+      });
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+
     const { manager } = buildManager();
     let releaseFirstSelection: (() => void) | undefined;
     const firstSelection = new Promise<void>(resolve => {
@@ -552,19 +639,30 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
       return channels;
     });
 
-    manager.start({
-      claimIntervalSecs: 1,
-      selectClaimChannels,
-    });
+    try {
+      manager.start({
+        claimIntervalSecs: 1,
+        selectClaimChannels,
+      });
 
-    await vi.advanceTimersByTimeAsync(3100);
-    expect(selectClaimChannels).toHaveBeenCalledTimes(1);
+      onClaimInterval();
+      await flushMicrotasks();
+      expect(selectClaimChannels).toHaveBeenCalledTimes(1);
 
-    releaseFirstSelection?.();
-    await vi.runAllTicks();
+      onClaimInterval();
+      onClaimInterval();
 
-    await manager.stop();
-    expect(selectClaimChannels).toHaveBeenCalledTimes(2);
+      releaseFirstSelection?.();
+      await flushMicrotasks();
+
+      await manager.stop();
+      expect(selectClaimChannels).toHaveBeenCalledTimes(2);
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
+    }
   });
 
   it("settles pending claims without reading the full channel list", async () => {
@@ -591,6 +689,37 @@ describe("BatchSettlementChannelManager — auto-loop tick policies", () => {
       ([p]) => (p.payload as Record<string, unknown>).type,
     );
     expect(settleTypes).toEqual(["settle"]);
+  });
+
+  it("claims only channels selected by the auto claim selector", async () => {
+    const { manager, storage } = buildManager();
+    const selectedConfig = buildChannelConfig("01");
+    const skippedConfig = buildChannelConfig("02");
+    const selected = buildSession({
+      channelConfig: selectedConfig,
+      channelId: computeChannelId(selectedConfig),
+      chargedCumulativeAmount: "5000",
+    });
+    const skipped = buildSession({
+      channelConfig: skippedConfig,
+      channelId: computeChannelId(skippedConfig),
+      chargedCumulativeAmount: "7000",
+    });
+    await storeChannel(storage, selected);
+    await storeChannel(storage, skipped);
+
+    manager.start({
+      claimIntervalSecs: 1,
+      selectClaimChannels: channels =>
+        channels.filter(channel => channel.channelId === selected.channelId),
+    });
+
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.runAllTicks();
+
+    await manager.stop();
+    expect((await storage.get(selected.channelId))?.totalClaimed).toBe("5000");
+    expect((await storage.get(skipped.channelId))?.totalClaimed).toBe("0");
   });
 
   it("does not refund or read channels without a refund selector", async () => {

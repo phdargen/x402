@@ -116,8 +116,6 @@ describe("BatchSettlementEvmScheme — construction", () => {
   it("accepts a bare deposit policy as second argument", () => {
     const client = new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
       depositMultiplier: 5,
-      maxDeposit: "1000000",
-      autoTopUp: false,
     });
     expect(client).toBeDefined();
   });
@@ -126,7 +124,7 @@ describe("BatchSettlementEvmScheme — construction", () => {
     const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
       storage,
-      depositPolicy: { depositMultiplier: 2 },
+      depositPolicy: { depositMultiplier: 3 },
       salt: "0x0000000000000000000000000000000000000000000000000000000000000077",
     });
     expect(client).toBeDefined();
@@ -141,31 +139,13 @@ describe("BatchSettlementEvmScheme — construction", () => {
     ).toThrow(/depositMultiplier/);
   });
 
-  it("rejects depositMultiplier < 1", () => {
+  it("rejects depositMultiplier < 3", () => {
     expect(
       () =>
         new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
-          depositMultiplier: 0,
+          depositMultiplier: 2,
         }),
     ).toThrow(/depositMultiplier/);
-  });
-
-  it("rejects negative maxDeposit", () => {
-    expect(
-      () =>
-        new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
-          maxDeposit: "-1",
-        }),
-    ).toThrow(/maxDeposit/);
-  });
-
-  it("rejects non-integer maxDeposit string", () => {
-    expect(
-      () =>
-        new BatchSettlementEvmScheme(buildSigner(PAYER_PRIVATE_KEY), {
-          maxDeposit: "abc",
-        }),
-    ).toThrow(/maxDeposit/);
   });
 
   it("rejects payerAuthorizer that does not match voucherSigner", () => {
@@ -289,7 +269,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     ).toBe("1000");
   });
 
-  it("creates a top-up deposit when balance is insufficient and autoTopUp is on", async () => {
+  it("creates a top-up deposit when balance is insufficient", async () => {
     const readContract = vi.fn().mockResolvedValue([100n, 0n]);
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, readContract);
     const storage = new InMemoryClientChannelStorage();
@@ -307,12 +287,13 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     expect(isBatchSettlementDepositPayload(result.payload as Record<string, unknown>)).toBe(true);
   });
 
-  it("does not auto-top-up when autoTopUp is false (returns voucher even if low balance)", async () => {
+  it("allows depositStrategy to skip a top-up and return a voucher", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientChannelStorage();
+    const depositStrategy = vi.fn(() => false);
     const client = new BatchSettlementEvmScheme(signer, {
       storage,
-      depositPolicy: { autoTopUp: false },
+      depositStrategy,
     });
 
     const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
@@ -325,6 +306,7 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
 
     const result = await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
     expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
+    expect(depositStrategy).toHaveBeenCalledTimes(1);
   });
 
   it("createPaymentPayload keeps refund requests on the refund() path", async () => {
@@ -395,15 +377,91 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     expect(payload.deposit.amount).toBe("7000");
   });
 
-  it("caps deposit amount at maxDeposit", async () => {
+  it("allows depositStrategy to cap deposits when the cap covers the request", async () => {
     const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, async () => [0n, 0n]);
     const client = new BatchSettlementEvmScheme(signer, {
-      depositMultiplier: 100,
-      maxDeposit: "5000",
+      depositPolicy: { depositMultiplier: 100 },
+      depositStrategy: ({ depositAmount }) => {
+        const maxDeposit = 5000n;
+        const amount = BigInt(depositAmount);
+        return amount > maxDeposit ? maxDeposit : amount;
+      },
     });
     const result = await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
     const payload = result.payload as { deposit: { amount: string } };
     expect(payload.deposit.amount).toBe("5000");
+  });
+
+  it("calls depositStrategy for initial deposits and top-ups", async () => {
+    const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, async () => [0n, 0n]);
+    const storage = new InMemoryClientChannelStorage();
+    const depositStrategy = vi.fn(({ depositAmount }) => depositAmount);
+    const client = new BatchSettlementEvmScheme(signer, { storage, depositStrategy });
+
+    await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
+
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "100",
+      balance: "100",
+      totalClaimed: "0",
+    });
+
+    await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
+
+    expect(depositStrategy).toHaveBeenCalledTimes(2);
+    expect(depositStrategy.mock.calls[0][0]).toMatchObject({
+      requestAmount: "1000",
+      maxClaimableAmount: "1000",
+      currentBalance: "0",
+      minimumDepositAmount: "1000",
+      depositAmount: "10000",
+    });
+    expect(depositStrategy.mock.calls[1][0]).toMatchObject({
+      requestAmount: "1000",
+      maxClaimableAmount: "1100",
+      currentBalance: "100",
+      minimumDepositAmount: "1000",
+      depositAmount: "10000",
+    });
+  });
+
+  it("allows depositStrategy to skip an initial deposit", async () => {
+    const signer = buildSignerWithRead(PAYER_PRIVATE_KEY, async () => [0n, 0n]);
+    const depositStrategy = vi.fn(() => false);
+    const client = new BatchSettlementEvmScheme(signer, { depositStrategy });
+
+    const result = await client.createPaymentPayload(2, makeRequirements({ amount: "1000" }));
+
+    expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
+    expect(depositStrategy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects insufficient strategy-returned deposit amounts before signing", async () => {
+    const baseSigner = buildSigner(PAYER_PRIVATE_KEY);
+    const signer = {
+      ...baseSigner,
+      signTypedData: vi.fn(baseSigner.signTypedData),
+    };
+    const storage = new InMemoryClientChannelStorage();
+    const client = new BatchSettlementEvmScheme(signer, {
+      storage,
+      depositStrategy: () => "999",
+    });
+
+    const config = buildChannelConfig(makeDeps({ signer }), makeRequirements());
+    const channelId = computeChannelId(config);
+    await storage.set(channelId.toLowerCase(), {
+      chargedCumulativeAmount: "100",
+      balance: "100",
+      totalClaimed: "0",
+    });
+
+    await expect(
+      client.createPaymentPayload(2, makeRequirements({ amount: "1000" })),
+    ).rejects.toThrow(/below required top-up/);
+    expect(signer.signTypedData).not.toHaveBeenCalled();
   });
 
   it("creates a Permit2 deposit payload when requested by assetTransferMethod", async () => {

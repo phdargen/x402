@@ -1,11 +1,12 @@
 # Next.js batch-settlement (Redis storage)
 
-Full-stack Next.js demo that protects **`GET /api/generate`** with `withX402` and the **batch-settlement** scheme. Channel state uses **`RedisChannelStorage`** (`@x402/evm/batch-settlement/server`), backed by the **`redis`** npm client via `lib/redisChannelClient.ts`.
+Next.js demo that exposes **`GET /api/weather`** behind `withX402` with the **batch-settlement** scheme. Channel state uses **`RedisChannelStorage`** (`@x402/evm/batch-settlement/server`), backed by the **`redis`** npm client via `lib/redisChannelClient.ts`.
 
 Parallels:
 
-- API behavior: `examples/typescript/servers/batch-settlement/index.ts`
-- `withX402` pattern: `examples/typescript/fullstack/miniapp/app/api/protected/route.ts`
+- Response shape / `withX402` usage: `examples/typescript/fullstack/next/app/api/weather/route.ts`
+- Batch-settlement server wiring: `examples/typescript/servers/batch-settlement/index.ts` (Express still uses `GET /api/generate` + usage-based overrides)
+- Fetch client: `examples/typescript/clients/batch-settlement` (default path `ENDPOINT_PATH=/api/weather` when targeting this app)
 
 ## Prerequisites
 
@@ -37,7 +38,7 @@ Copy `.env-local` to `.env` (or create `.env`) and set:
 pnpm dev
 ```
 
-Open `/` for links; paid endpoint: **`GET /api/generate`**.
+Paid endpoint: **`GET /api/weather`**.
 
 ## Cron Jobs
 
@@ -51,6 +52,16 @@ pnpm cron:claim-and-settle
 
 `cron:claim` claims up to 100 vouchers per facilitator transaction. `cron:settle` settles already-claimed funds. `cron:claim-and-settle` does both in one operation and skips settlement when there are no claim transactions.
 
+The shared cron helpers accept the same `selectClaimChannels` option as the background `ChannelManager` runner, so custom jobs can claim a subset without duplicating claim batching or signing logic:
+
+```typescript
+await runClaimAndSettleCron({
+  maxClaimsPerBatch: 100,
+  selectClaimChannels: channels =>
+    channels.filter(channel => channel.withdrawRequestedAt > 0),
+});
+```
+
 Vercel deployment uses `vercel.json` to call **`GET /api/cron/claim-and-settle`** once per day at `02:00 UTC`, which is compatible with Vercel Hobby cron limits. Set `CRON_SECRET` in Vercel to require `Authorization: Bearer <secret>` for manual calls.
 
 With a daily cron, `DEFERRED_WITHDRAW_DELAY_SECONDS` must exceed the daily cadence plus Vercel's hourly scheduling precision and operational safety margin. The default 30-hour delay is intended for this deployment shape. More frequent claim, settle, or refund policies require Vercel Pro cron frequency or an external scheduler.
@@ -61,7 +72,6 @@ With a daily cron, `DEFERRED_WITHDRAW_DELAY_SECONDS` must exceed the daily caden
 - `lib/cron.ts` — shared claim, settle, and claim-and-settle cron implementations
 - `lib/cronAuth.ts` — optional bearer-token check for cron routes
 - `lib/redisChannelClient.ts` — lazy `redis` adapter implementing `RedisChannelStorageClient`
-- `lib/paywall.ts` — EVM paywall for HTML discovery when clients negotiate payment in-browser
-- `app/api/generate/route.ts` — `withX402` wrapper and usage-based settlement overrides header
+- `app/api/weather/route.ts` — `withX402` + batch-settlement (weather JSON, discovery extension)
 - `app/api/cron/*/route.ts` — claim, settle, and claim-and-settle cron routes
 - `scripts/cron.ts` — local cron runner

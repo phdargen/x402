@@ -17,7 +17,8 @@ for (const file of [".env.local", ".env"]) {
 }
 
 const command = process.argv[2];
-const { runClaimAndSettleCron, runClaimCron, runSettleCron } = await import("../lib/cron");
+const [{ runClaimAndSettleCron, runClaimCron, runSettleCron }, { disconnectRedisChannelStorage }] =
+  await Promise.all([import("../lib/cron"), import("../lib/server")]);
 
 let summary;
 switch (command) {
@@ -38,3 +39,4 @@ if (!summary) {
 }
 
 console.log(JSON.stringify(summary, null, 2));
+await disconnectRedisChannelStorage();

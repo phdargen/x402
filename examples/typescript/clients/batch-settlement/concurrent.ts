@@ -39,7 +39,7 @@ const evmVoucherSignerPrivateKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
-const endpointPath = process.env.ENDPOINT_PATH || "/api/generate";
+const endpointPath = process.env.ENDPOINT_PATH || "/api/weather";
 const url = `${baseURL}${endpointPath}`;
 const storageDir = process.env.STORAGE_DIR ?? process.env.STORAGE_DIR_DIR;
 const baseSalt = (process.env.CHANNEL_SALT ??
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
   const channels = Array.from({ length: CONCURRENCY }, (_, i) => {
     const salt = saltAdd(baseSalt, i);
     const scheme = new BatchSettlementEvmScheme(signer, {
-      depositPolicy: { maxDeposit: "1000000", depositMultiplier: 5 },
+      depositPolicy: { depositMultiplier: 5 },
       salt,
       ...(voucherSigner ? { voucherSigner } : {}),
       ...(storageDir ? { storage: new FileClientChannelStorage({ directory: storageDir }) } : {}),

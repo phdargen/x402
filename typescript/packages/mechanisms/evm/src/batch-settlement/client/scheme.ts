@@ -24,6 +24,8 @@ import type { EvmSchemeOptions } from "../../shared/rpc";
 import { createBatchSettlementEIP3009DepositPayload } from "./eip3009";
 import { createBatchSettlementPermit2DepositPayload } from "./permit2";
 import {
+  type BatchSettlementDepositStrategy,
+  type BatchSettlementDepositStrategyContext,
   type BatchSettlementDepositPolicy,
   type BatchSettlementEvmSchemeOptions,
   depositAmountForRequest,
@@ -43,7 +45,13 @@ import type { ClientChannelStorage } from "./storage";
 import { signVoucher } from "./voucher";
 
 export type { BatchSettlementClientContext } from "./storage";
-export type { BatchSettlementDepositPolicy, BatchSettlementEvmSchemeOptions } from "./config";
+export type {
+  BatchSettlementDepositPolicy,
+  BatchSettlementDepositStrategy,
+  BatchSettlementDepositStrategyContext,
+  BatchSettlementDepositStrategyResult,
+  BatchSettlementEvmSchemeOptions,
+} from "./config";
 export type { RefundOptions } from "./refund";
 
 /**
@@ -62,6 +70,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
 
   private readonly storage: ClientChannelStorage;
   private readonly depositPolicy: BatchSettlementDepositPolicy | undefined;
+  private readonly depositStrategy: BatchSettlementDepositStrategy | undefined;
   private readonly salt: `0x${string}`;
   private readonly payerAuthorizer: `0x${string}` | undefined;
   private readonly voucherSigner: ClientEvmSigner | undefined;
@@ -77,10 +86,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     private readonly signer: ClientEvmSigner,
     optionsOrPolicy?: BatchSettlementEvmSchemeOptions | BatchSettlementDepositPolicy,
   ) {
-    const { storage, depositPolicy, salt, payerAuthorizer, voucherSigner, extensionRpcOptions } =
-      resolveClientOptions(optionsOrPolicy);
+    const {
+      storage,
+      depositPolicy,
+      depositStrategy,
+      salt,
+      payerAuthorizer,
+      voucherSigner,
+      extensionRpcOptions,
+    } = resolveClientOptions(optionsOrPolicy);
     this.storage = storage;
     this.depositPolicy = depositPolicy;
+    this.depositStrategy = depositStrategy;
     this.salt = salt;
     this.payerAuthorizer = payerAuthorizer;
     this.voucherSigner = voucherSigner;
@@ -132,16 +149,33 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const requestAmount = BigInt(paymentRequirements.amount);
     const maxClaimableAmount = (baseCumulative + requestAmount).toString();
 
-    const autoTopUp = this.depositPolicy?.autoTopUp !== false;
     const currentBalance = BigInt(batchedCtx.balance ?? "0");
-    const needsTopUp =
-      autoTopUp && !needsInitialDeposit && BigInt(maxClaimableAmount) > currentBalance;
+    const needsTopUp = !needsInitialDeposit && BigInt(maxClaimableAmount) > currentBalance;
 
     if (needsInitialDeposit || needsTopUp) {
       const computedDeposit = depositAmountForRequest(this.depositPolicy, requestAmount);
-      const depositAmount = needsInitialDeposit
-        ? (batchedCtx.depositAmount ?? computedDeposit)
-        : computedDeposit;
+      const minimumDepositAmount = BigInt(maxClaimableAmount) - currentBalance;
+      const depositAmount = await this.resolveDepositAmount({
+        paymentRequirements,
+        channelConfig: config,
+        channelId,
+        clientContext: batchedCtx,
+        requestAmount: requestAmount.toString(),
+        maxClaimableAmount,
+        currentBalance: currentBalance.toString(),
+        minimumDepositAmount: minimumDepositAmount.toString(),
+        depositAmount: computedDeposit,
+      });
+      if (depositAmount === false) {
+        return this.createVoucherPayload(
+          x402Version,
+          channelId,
+          maxClaimableAmount,
+          paymentRequirements.network,
+          config,
+        );
+      }
+
       const assetTransferMethod =
         (paymentRequirements.extra?.assetTransferMethod as BatchSettlementAssetTransferMethod) ??
         "eip3009";
@@ -198,24 +232,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       return result;
     }
 
-    const voucherSigner = this.voucherSigner ?? this.signer;
-    const voucher = await signVoucher(
-      voucherSigner,
+    return this.createVoucherPayload(
+      x402Version,
       channelId,
       maxClaimableAmount,
       paymentRequirements.network,
+      config,
     );
-
-    const payload: BatchSettlementVoucherPayload = {
-      type: "voucher",
-      channelConfig: config,
-      voucher,
-    };
-
-    return {
-      x402Version,
-      payload,
-    };
   }
 
   /**
@@ -258,6 +281,81 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    */
   buildChannelConfig(paymentRequirements: PaymentRequirements): ChannelConfig {
     return buildChannelConfig(this.deps(), paymentRequirements);
+  }
+
+  /**
+   * Resolves the deposit amount after applying the optional custom strategy.
+   *
+   * @param context - Deposit attempt context exposed to the strategy.
+   * @returns The deposit amount to sign, or `false` to skip this deposit attempt.
+   */
+  private async resolveDepositAmount(
+    context: BatchSettlementDepositStrategyContext,
+  ): Promise<string | false> {
+    const strategyResult = await this.depositStrategy?.(context);
+    if (strategyResult === false) return false;
+    if (strategyResult === undefined) return context.depositAmount;
+
+    const depositAmount = this.normalizeStrategyDepositAmount(strategyResult);
+    if (BigInt(depositAmount) < BigInt(context.minimumDepositAmount)) {
+      throw new Error(
+        `depositStrategy returned ${depositAmount}, below required top-up ${context.minimumDepositAmount}`,
+      );
+    }
+    return depositAmount;
+  }
+
+  /**
+   * Normalizes and validates a strategy-provided base-unit deposit amount.
+   *
+   * @param value - Strategy-provided string or bigint amount.
+   * @returns Normalized decimal string.
+   */
+  private normalizeStrategyDepositAmount(value: string | bigint): string {
+    if (typeof value === "bigint") {
+      if (value <= 0n) {
+        throw new Error("depositStrategy must return a positive integer deposit amount");
+      }
+      return value.toString();
+    }
+
+    if (/^\d+$/.test(value) && BigInt(value) > 0n) {
+      return BigInt(value).toString();
+    }
+
+    throw new Error("depositStrategy must return a positive integer deposit amount");
+  }
+
+  /**
+   * Signs a voucher-only payment payload for the current channel.
+   *
+   * @param x402Version - Protocol version for the payload envelope.
+   * @param channelId - Channel identifier for the voucher.
+   * @param maxClaimableAmount - Cumulative ceiling for the voucher.
+   * @param network - CAIP-2 network identifier.
+   * @param config - Immutable channel configuration.
+   * @returns Voucher-only payment payload.
+   */
+  private async createVoucherPayload(
+    x402Version: number,
+    channelId: `0x${string}`,
+    maxClaimableAmount: string,
+    network: string,
+    config: ChannelConfig,
+  ): Promise<PaymentPayloadResult> {
+    const voucherSigner = this.voucherSigner ?? this.signer;
+    const voucher = await signVoucher(voucherSigner, channelId, maxClaimableAmount, network);
+
+    const payload: BatchSettlementVoucherPayload = {
+      type: "voucher",
+      channelConfig: config,
+      voucher,
+    };
+
+    return {
+      x402Version,
+      payload,
+    };
   }
 
   /**

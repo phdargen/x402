@@ -8,8 +8,6 @@ export interface BatchSettlementClientContext {
   balance?: string;
   /** Total claimed on-chain */
   totalClaimed?: string;
-  /** Amount to deposit (only for deposit payloads) */
-  depositAmount?: string;
   /** Latest client-signed maxClaimableAmount cap (after corrective recovery, optional) */
   signedMaxClaimable?: string;
   /** Client voucher signature for {@link signedMaxClaimable} (optional) */

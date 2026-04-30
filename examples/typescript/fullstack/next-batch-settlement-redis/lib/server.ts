@@ -48,4 +48,9 @@ export const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
 export const server = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);
 export const channelManager = batchedScheme.createChannelManager(facilitatorClient, NETWORK);
 
+/** Release the Redis connection (required for CLI cron scripts to exit). */
+export async function disconnectRedisChannelStorage(): Promise<void> {
+  await redisAdapter.disconnect();
+}
+
 export { evmAddress };
