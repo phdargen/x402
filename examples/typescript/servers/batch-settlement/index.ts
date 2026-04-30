@@ -76,15 +76,14 @@ const maxPrice = "$0.01";
 app.use(
   paymentMiddleware(
     {
-      "GET /api/generate": {
+      "GET /weather": {
         accepts: {
           scheme: "batch-settlement",
           price: maxPrice,
           network: NETWORK,
           payTo: evmAddress,
         },
-        description:
-          "Batch-settlement demo — voucher updates session without per-request chain settle",
+        description: "Weather data",
         mimeType: "application/json",
       },
     },
@@ -92,26 +91,21 @@ app.use(
   ),
 );
 
-app.get("/api/generate", (req, res) => {
+app.get("/weather", (req, res) => {
   const chargedPercent = 1 + Math.floor(Math.random() * 100);
   setSettlementOverrides(res, { amount: `${chargedPercent}%` });
 
-  const maxDollars = parseFloat(maxPrice.slice(1));
-  const chargedDollars = (maxDollars * chargedPercent) / 100;
-  const chargedPrice = `$${String(Math.round(chargedDollars * 1e6) / 1e6)}`;
-
-  res.json({
-    result: "Here is your generated text...",
-    usage: {
-      maxPrice,
-      chargedPrice,
+  res.send({
+    report: {
+      weather: "sunny",
+      temperature: 70,
     },
   });
 });
 
 app.listen(4021, () => {
   console.log("Batch-settlement server listening at http://localhost:4021");
-  console.log("  GET /api/generate");
+  console.log("  GET /weather");
   if (receiverAuthorizerSigner) {
     console.log(`  Receiver authorizer: local signer ${receiverAuthorizerSigner.address}`);
   } else {

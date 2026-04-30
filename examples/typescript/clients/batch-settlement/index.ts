@@ -16,7 +16,7 @@ const evmVoucherSignerPrivateKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
-const endpointPath = process.env.ENDPOINT_PATH || "/api/weather";
+const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
 const storageDir = process.env.STORAGE_DIR ?? process.env.STORAGE_DIR_DIR;
 const channelSalt = (process.env.CHANNEL_SALT ??

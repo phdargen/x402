@@ -1,6 +1,6 @@
-# Batch-Settlement Server Example
+# @x402/express Batch-Settlement Example Server
 
-Express server that protects `GET /api/generate` with the **batch-settlement** EVM scheme. Each request is paid by an off-chain voucher; the server batches voucher claims and on-chain settlements via a `ChannelManager` running in the background.
+Express server that protects a resource with the **batch-settlement** EVM scheme. Each request is paid by an off-chain voucher; the server batches voucher claims and on-chain settlements via a `ChannelManager` running in the background.
 
 The route demonstrates **dynamic pricing**: the client authorizes up to `$0.01` per request, and the handler bills a random fraction of that via `setSettlementOverrides`.
 
@@ -68,6 +68,6 @@ The server listens on `http://localhost:4021`. Hit it with the [client example](
 |----------|----------|-------------|
 | `EVM_ADDRESS` | yes | `payTo` address (channel receiver) |
 | `FACILITATOR_URL` | yes | Batch-settlement facilitator endpoint |
-| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate) |
+| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate to facilitator) |
 | `STORAGE_DIR` | no | Persist channel sessions on disk (defaults to in-memory) |
 | `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Channel `withdrawDelay`; defaults to 86,400 (1 day) |

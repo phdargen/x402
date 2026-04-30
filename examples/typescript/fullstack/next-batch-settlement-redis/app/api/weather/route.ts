@@ -8,6 +8,9 @@ const price = "$0.001";
 
 /**
  * Weather API handler for the batch-settlement Next example (API-only; no paywall HTML).
+ *
+ * @param _ - Incoming Next.js request
+ * @returns JSON response with weather data
  */
 const handler = async (_: NextRequest) => {
   return NextResponse.json(
