@@ -58,6 +58,14 @@ cd clients/batch-settlement
 pnpm start
 ```
 
+## Concurrent requests
+
+Use the concurrent example to send requests over multiple channels in parallel. Each slot uses a unique salt derived from `CHANNEL_SALT`, so the server can serialize work per channel while still processing channels concurrently.
+
+```bash
+CONCURRENCY=3 NUMBER_OF_ROUNDS=3 pnpm dev:concurrent
+```
+
 ## Environment
 
 | Variable | Required | Description |
@@ -70,5 +78,7 @@ pnpm start
 | `DEPOSIT_MULTIPLIER` | no | Per-request deposit is payment amount × this multiplier (must be integer **≥ 3**; default `5`) |
 | `STORAGE_DIR` | no | Persist client session state (defaults to in-memory) |
 | `NUMBER_OF_REQUESTS` | no | How many paid requests to issue (default 3) |
+| `CONCURRENCY` | no | How many channels to run in parallel in `pnpm dev:concurrent` (default 3) |
+| `NUMBER_OF_ROUNDS` | no | How many concurrent rounds to run in `pnpm dev:concurrent` (default 3) |
 | `REFUND_AFTER_REQUESTS` | no | If `true`, issue a self-contained refund via `scheme.refund(url)` after the request loop |
 | `REFUND_AMOUNT` | no | Partial refund amount in base units; omit for a full refund |

@@ -110,6 +110,7 @@ import { x402ResourceServer } from "@x402/core/server";
 import {
   BatchSettlementEvmScheme,
   FileChannelStorage,
+  RedisChannelStorage,
 } from "@x402/evm/batch-settlement/server";
 
 const scheme = new BatchSettlementEvmScheme(receiverAddress, {
@@ -128,6 +129,14 @@ manager.start({
   selectClaimChannels: channels => channels,
   selectRefundChannels: channels =>
     channels.filter(channel => Date.now() - channel.lastRequestTimestamp >= 3_600_000),
+});
+```
+
+For serverless deployments or multi-instance servers, use Redis/Valkey-backed storage so channel updates survive cold starts and are atomic across processes:
+
+```typescript
+const scheme = new BatchSettlementEvmScheme(receiverAddress, {
+  storage: new RedisChannelStorage({ client: redisClient }),
 });
 ```
 
