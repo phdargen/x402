@@ -22,7 +22,7 @@ import { verifyVoucher } from "./voucher";
 import { executeClaimWithSignature } from "./claim";
 import { executeSettle } from "./settle";
 import { executeRefundWithSignature } from "./refund";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 
 /**
  * Facilitator-side implementation of the `batch-settlement` scheme for EVM networks.

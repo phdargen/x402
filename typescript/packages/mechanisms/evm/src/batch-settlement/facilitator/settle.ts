@@ -4,7 +4,7 @@ import { FacilitatorEvmSigner } from "../../signer";
 import { BatchSettlementSettlePayload } from "../types";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 
 /**
  * Transfers claimed funds from the contract.

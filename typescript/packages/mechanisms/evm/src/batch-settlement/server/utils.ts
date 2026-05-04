@@ -1,4 +1,5 @@
 import type { BatchSettlementChannelStateExtra } from "../types";
+import { ErrRefundPayload } from "../errors";
 
 /**
  * Reads the nested channel snapshot from payment response extra fields.
@@ -93,7 +94,7 @@ function parseUintStringExtra(
   const value = extra?.[key];
   if (typeof value === "string" && /^\d+$/.test(value)) return value;
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return String(value);
-  throw new Error(`batch_settlement_refund_invalid_${key}`);
+  throw new Error(ErrRefundPayload);
 }
 
 /**
@@ -113,5 +114,5 @@ function parseUintNumberExtra(
     const parsed = parseInt(value, 10);
     if (!Number.isNaN(parsed)) return parsed;
   }
-  throw new Error(`batch_settlement_refund_invalid_${key}`);
+  throw new Error(ErrRefundPayload);
 }

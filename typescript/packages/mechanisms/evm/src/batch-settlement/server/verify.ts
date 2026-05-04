@@ -20,7 +20,7 @@ import type { ChannelConfig } from "../types";
 import { createNonce, getEvmChainId } from "../../utils";
 import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
 import { validateChannelConfig } from "../facilitator/utils";
-import * as Errors from "../facilitator/errors";
+import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel, PendingRequest } from "./storage";
 import { readExtraNumber, readExtraString } from "./utils";
@@ -58,7 +58,7 @@ function isPendingLive(pending: PendingRequest | undefined, now: number): boolea
  * Lifecycle hook: runs before the facilitator verifies a payment.
  *
  * For paid payloads, checks whether the client's cumulative amount matches server
- * state. If mismatched, aborts with `batch_settlement_cumulative_amount_mismatch`.
+ * state. If mismatched, aborts with `invalid_batch_settlement_evm_cumulative_amount_mismatch`.
  *
  * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
  * the existing `chargedCumulativeAmount`.
@@ -141,7 +141,7 @@ export async function handleBeforeVerify(
   if (outcome?.status === "busy") {
     return {
       abort: true,
-      reason: "batch_settlement_channel_busy",
+      reason: Errors.ErrChannelBusy,
       message: "Channel is already processing a request",
     };
   }
@@ -150,7 +150,7 @@ export async function handleBeforeVerify(
     scheme.rememberChannelSnapshot(paymentPayload, outcome.channel);
     return {
       abort: true,
-      reason: "batch_settlement_cumulative_amount_mismatch",
+      reason: Errors.ErrCumulativeAmountMismatch,
       message: "Client voucher base does not match server state",
     };
   }
@@ -188,7 +188,7 @@ export async function handleEnrichPaymentRequiredResponse(
   scheme: BatchSettlementEvmScheme,
   ctx: SchemePaymentRequiredContext,
 ): Promise<void> {
-  if (ctx.error !== "batch_settlement_cumulative_amount_mismatch") {
+  if (ctx.error !== Errors.ErrCumulativeAmountMismatch) {
     return;
   }
 

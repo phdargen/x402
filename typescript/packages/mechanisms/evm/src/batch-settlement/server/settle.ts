@@ -8,6 +8,7 @@ import {
 } from "../types";
 import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim } from "../types";
 import { computeChannelId } from "../utils";
+import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
 import {
@@ -117,7 +118,7 @@ export async function handleBeforeSettle(
     scheme.takeRequestContext(paymentPayload);
     return {
       abort: true,
-      reason: "missing_batch_settlement_channel",
+      reason: Errors.ErrMissingChannel,
       message: "No channel record",
     };
   }
@@ -126,7 +127,7 @@ export async function handleBeforeSettle(
     scheme.takeRequestContext(paymentPayload);
     return {
       abort: true,
-      reason: "batch_settlement_charge_exceeds_signed_cumulative",
+      reason: Errors.ErrChargeExceedsSignedCumulative,
       message: `Charged ${outcome.charged} exceeds signed max ${signedCap.toString()}`,
     };
   }
@@ -135,7 +136,7 @@ export async function handleBeforeSettle(
     scheme.takeRequestContext(paymentPayload);
     return {
       abort: true,
-      reason: "batch_settlement_channel_busy",
+      reason: Errors.ErrChannelBusy,
       message: "Concurrent request modified channel state",
     };
   }
@@ -183,17 +184,17 @@ export async function handleEnrichSettlementPayload(
 
   const channel = await scheme.getStorage().get(channelId);
   if (!channel) {
-    throw new Error("missing_batch_settlement_channel");
+    throw new Error(Errors.ErrMissingChannel);
   }
   const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
   if (!pendingId || channel.pendingRequest?.pendingId !== pendingId) {
-    throw new Error("batch_settlement_channel_busy");
+    throw new Error(Errors.ErrChannelBusy);
   }
   if (BigInt(raw.voucher.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
-    throw new Error("batch_settlement_cumulative_amount_mismatch");
+    throw new Error(Errors.ErrCumulativeAmountMismatch);
   }
   if (raw.voucher.signature !== channel.signature) {
-    throw new Error("batch_settlement_refund_signature_mismatch");
+    throw new Error(Errors.ErrInvalidVoucherSignature);
   }
 
   const config = raw.channelConfig;
@@ -209,17 +210,17 @@ export async function handleEnrichSettlementPayload(
 
   const remainder = BigInt(channel.balance) - BigInt(channel.chargedCumulativeAmount);
   if (remainder <= 0n) {
-    throw new Error("batch_settlement_refund_no_balance");
+    throw new Error(Errors.ErrRefundNoBalance);
   }
 
   let refundAmountBig = remainder;
   if (raw.amount !== undefined) {
     if (!/^\d+$/.test(raw.amount)) {
-      throw new Error("batch_settlement_refund_amount_invalid");
+      throw new Error(Errors.ErrRefundAmountInvalid);
     }
     const requested = BigInt(raw.amount);
     if (requested <= 0n) {
-      throw new Error("batch_settlement_refund_amount_invalid");
+      throw new Error(Errors.ErrRefundAmountInvalid);
     }
     refundAmountBig = requested;
   }
@@ -304,7 +305,7 @@ export async function handleAfterSettle(
       };
     });
     if (updateResult.status === "unchanged") {
-      throw new Error("batch_settlement_channel_busy");
+      throw new Error(Errors.ErrChannelBusy);
     }
     if (!updateResult.channel) {
       return;
@@ -358,7 +359,7 @@ export async function handleAfterSettle(
       return;
     }
     scheme.takeRequestContext(paymentPayload);
-    throw new Error("batch_settlement_channel_busy");
+    throw new Error(Errors.ErrChannelBusy);
   }
 }
 

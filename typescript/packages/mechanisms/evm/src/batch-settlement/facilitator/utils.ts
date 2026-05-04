@@ -15,7 +15,7 @@ import type {
   ChannelState,
 } from "../types";
 import { computeChannelId, getBatchSettlementEip712Domain } from "../utils";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 
 /**
  * Normalises a {@link ChannelConfig} into the checksummed-address tuple expected by the

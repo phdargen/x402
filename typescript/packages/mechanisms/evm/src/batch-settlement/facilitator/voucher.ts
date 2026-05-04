@@ -6,7 +6,7 @@ import {
   ChannelConfig,
 } from "../types";
 import { getEvmChainId } from "../../utils";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 import {
   validateChannelConfig,
   verifyBatchSettlementVoucherTypedData,

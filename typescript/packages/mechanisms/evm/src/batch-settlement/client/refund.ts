@@ -7,6 +7,7 @@ import type {
   SettleResponse,
 } from "@x402/core/types";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import * as Errors from "../errors";
 import type {
   BatchSettlementPaymentRequirementsExtra,
   BatchSettlementRefundPayload,
@@ -22,8 +23,8 @@ import { signVoucher } from "./voucher";
  * channel has nothing left to refund) — retrying will not help.
  */
 const NON_RECOVERABLE_REFUND_ERRORS: ReadonlySet<string> = new Set([
-  "batch_settlement_refund_no_balance",
-  "batch_settlement_refund_amount_invalid",
+  Errors.ErrRefundNoBalance,
+  Errors.ErrRefundAmountInvalid,
 ]);
 
 interface RefundRequirementsProbe {

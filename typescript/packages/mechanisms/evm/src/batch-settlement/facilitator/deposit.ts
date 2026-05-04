@@ -13,7 +13,7 @@ import { batchSettlementABI, erc20BalanceOfABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { getEvmChainId } from "../../utils";
 import { multicall } from "../../multicall";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 import {
   readChannelState,
   toContractChannelConfig,

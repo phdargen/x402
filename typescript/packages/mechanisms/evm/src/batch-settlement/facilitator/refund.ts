@@ -10,7 +10,7 @@ import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { computeChannelId } from "../utils";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 import { buildVoucherClaimArgs } from "./claim";
 import { readChannelState, toContractChannelConfig } from "./utils";
 

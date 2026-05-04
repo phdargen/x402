@@ -4,7 +4,7 @@ import { FacilitatorEvmSigner } from "../../signer";
 import { BatchSettlementDepositPayload } from "../types";
 import { ERC3009_DEPOSIT_COLLECTOR_ADDRESS, receiveAuthorizationTypes } from "../constants";
 import { buildErc3009CollectorData, buildErc3009DepositNonce } from "../encoding";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 import { erc3009AuthorizationTimeInvalidReason } from "./utils";
 
 /**

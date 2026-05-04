@@ -29,6 +29,7 @@ import type {
   SettleResponse,
   PaymentRequired,
 } from "@x402/core/types";
+import * as Errors from "../../../src/batch-settlement/errors";
 
 const PAYER_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const VOUCHER_PRIVATE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
@@ -726,7 +727,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [{ ...makeRequirements(), scheme: "exact" }],
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
@@ -739,7 +740,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [makeRequirements()],
     } as unknown as PaymentRequired);
 
@@ -772,7 +773,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [accept],
     } as unknown as PaymentRequired);
 
@@ -806,7 +807,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [accept],
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
@@ -828,7 +829,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [accept],
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
@@ -855,7 +856,7 @@ describe("processCorrectivePaymentRequired", () => {
 
     const ok = await processCorrectivePaymentRequired(makeDeps({ signer, storage }), {
       x402Version: 2,
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       accepts: [accept],
     } as unknown as PaymentRequired);
     expect(ok).toBe(false);
@@ -871,7 +872,7 @@ describe("processCorrectivePaymentRequired", () => {
       requirements: makeRequirements(),
       paymentRequired: {
         x402Version: 2,
-        error: "batch_settlement_cumulative_amount_mismatch",
+        error: Errors.ErrCumulativeAmountMismatch,
         accepts: [makeRequirements()],
       } as unknown as PaymentRequired,
     } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);
@@ -1045,7 +1046,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const { encodePaymentRequiredHeader } = await import("@x402/core/http");
     const correctiveHeader = encodePaymentRequiredHeader({
       x402Version: 2,
-      error: "batch_settlement_evm_cumulative_below_claimed",
+      error: Errors.ErrCumulativeAmountBelowClaimed,
       accepts: [buildRefundRequirements()],
     } as PaymentRequired);
 
@@ -1074,7 +1075,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     );
   });
 
-  it("fails fast (no retry) when server returns 402 with batch_settlement_refund_no_balance", async () => {
+  it("fails fast (no retry) when server returns 402 with refund no balance error", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientChannelStorage();
     const client = new BatchSettlementEvmScheme(signer, { storage });
@@ -1093,7 +1094,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
       transaction: "",
       network: NETWORK,
       payer: signer.address,
-      errorReason: "batch_settlement_refund_no_balance",
+      errorReason: Errors.ErrRefundNoBalance,
       errorMessage: "Channel has no remaining balance to refund",
     } as SettleResponse;
     const failureHeader = encodePaymentResponseHeader(failureSettle);
@@ -1104,7 +1105,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const fetchImpl = makeFetch([async () => probe402Response(), refundCall]);
 
     await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
-      /batch_settlement_refund_no_balance/,
+      new RegExp(Errors.ErrRefundNoBalance),
     );
     expect(refundCall).toHaveBeenCalledTimes(1);
   });
@@ -1125,7 +1126,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const { encodePaymentRequiredHeader } = await import("@x402/core/http");
     const requiredHeader = encodePaymentRequiredHeader({
       x402Version: 2,
-      error: "batch_settlement_refund_no_balance",
+      error: Errors.ErrRefundNoBalance,
       accepts: [buildRefundRequirements()],
     } as PaymentRequired);
 
@@ -1135,7 +1136,7 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     const fetchImpl = makeFetch([async () => probe402Response(), refundCall]);
 
     await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
-      /batch_settlement_refund_no_balance/,
+      new RegExp(Errors.ErrRefundNoBalance),
     );
     expect(refundCall).toHaveBeenCalledTimes(1);
   });

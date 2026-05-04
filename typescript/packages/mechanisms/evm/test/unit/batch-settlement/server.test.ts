@@ -19,6 +19,7 @@ import type {
 } from "@x402/core/types";
 import type { FacilitatorClient } from "@x402/core/server";
 import { privateKeyToAccount } from "viem/accounts";
+import * as Errors from "../../../src/batch-settlement/errors";
 
 function buildManager(scheme: BatchSettlementEvmScheme): BatchSettlementChannelManager {
   return new BatchSettlementChannelManager({
@@ -571,7 +572,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(result?.skip).toBe(true);
     expect(result.result).toMatchObject({
       isValid: false,
-      invalidReason: "batch_settlement_evm_invalid_voucher_signature",
+      invalidReason: Errors.ErrInvalidVoucherSignature,
     });
   });
 
@@ -598,7 +599,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as unknown as { skip: true; result: VerifyResponse };
 
     expect(result?.skip).toBe(true);
-    expect(result.result.invalidReason).toBe("batch_settlement_evm_cumulative_exceeds_balance");
+    expect(result.result.invalidReason).toBe(Errors.ErrCumulativeExceedsBalance);
   });
 
   it("rejects locally when the voucher cumulative amount is already claimed", async () => {
@@ -624,7 +625,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as unknown as { skip: true; result: VerifyResponse };
 
     expect(result?.skip).toBe(true);
-    expect(result.result.invalidReason).toBe("batch_settlement_evm_cumulative_below_claimed");
+    expect(result.result.invalidReason).toBe(Errors.ErrCumulativeAmountBelowClaimed);
   });
 
   it("does not abort initial deposit payloads with no server channel state", async () => {
@@ -686,7 +687,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as { abort: true; reason: string };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(result?.reason).toBe(Errors.ErrCumulativeAmountMismatch);
   });
 
   it("does nothing for a refund voucher when no channel record exists (defers to facilitator for on-chain recovery)", async () => {
@@ -746,7 +747,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as { abort: true; reason: string };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(result?.reason).toBe(Errors.ErrCumulativeAmountMismatch);
   });
 
   it("aborts with cumulative_amount_mismatch when client cumulative is wrong", async () => {
@@ -775,7 +776,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(result?.reason).toBe(Errors.ErrCumulativeAmountMismatch);
     expect(reqs.extra?.chargedCumulativeAmount).toBeUndefined();
   });
 
@@ -800,7 +801,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements,
       paymentPayload: buildVoucherPayload(channelId, "500", config),
       resourceInfo: { url: "https://example.com" },
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       paymentRequiredResponse: {
         x402Version: 2,
         resource: { url: "https://example.com" },
@@ -843,7 +844,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements,
       paymentPayload: buildDepositPayload(channelId, config, "10000", "1500"),
       resourceInfo: { url: "https://example.com" },
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       paymentRequiredResponse: {
         x402Version: 2,
         resource: { url: "https://example.com" },
@@ -894,7 +895,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_cumulative_amount_mismatch");
+    expect(result?.reason).toBe(Errors.ErrCumulativeAmountMismatch);
     expect(countingStorage.getCalls).toHaveLength(0);
 
     await deleteChannel(countingStorage, channelId);
@@ -903,7 +904,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements,
       paymentPayload,
       resourceInfo: { url: "https://example.com" },
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       paymentRequiredResponse: {
         x402Version: 2,
         resource: { url: "https://example.com" },
@@ -930,7 +931,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements: laterRequirements,
       paymentPayload,
       resourceInfo: { url: "https://example.com" },
-      error: "batch_settlement_cumulative_amount_mismatch",
+      error: Errors.ErrCumulativeAmountMismatch,
       paymentRequiredResponse: {
         x402Version: 2,
         resource: { url: "https://example.com" },
@@ -970,7 +971,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     } as never)) as { abort: true; reason: string };
 
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_channel_busy");
+    expect(result?.reason).toBe(Errors.ErrChannelBusy);
   });
 
   it("replaces an expired pending reservation", async () => {
@@ -1226,7 +1227,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       requirements: makeRequirements({ amount: "1000" }),
     } as never)) as { abort: true; reason: string };
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("missing_batch_settlement_channel");
+    expect(result?.reason).toBe(Errors.ErrMissingChannel);
   });
 
   it("aborts when charged exceeds the signed cap", async () => {
@@ -1252,7 +1253,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       requirements: makeRequirements({ amount: "500" }),
     } as never)) as { abort: true; reason: string };
     expect(result?.abort).toBe(true);
-    expect(result?.reason).toBe("batch_settlement_charge_exceeds_signed_cumulative");
+    expect(result?.reason).toBe(Errors.ErrChargeExceedsSignedCumulative);
   });
 
   it("returns skip+result for a normal voucher and updates channel record", async () => {
@@ -1412,7 +1413,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
         paymentPayload: settlePayload,
         requirements: makeRequirements({ amount: "0" }),
       } as never),
-    ).rejects.toThrow("batch_settlement_refund_no_balance");
+    ).rejects.toThrow(Errors.ErrRefundNoBalance);
   });
 
   it("honors refund amount on a partial refund payload", async () => {

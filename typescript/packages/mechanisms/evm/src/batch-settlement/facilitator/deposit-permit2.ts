@@ -27,7 +27,7 @@ import {
 import { buildEip2612PermitData, buildPermit2CollectorData } from "../encoding";
 import { BatchSettlementDepositPayload } from "../types";
 import { toContractChannelConfig } from "./utils";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 
 export type Permit2DepositBranch =
   | {

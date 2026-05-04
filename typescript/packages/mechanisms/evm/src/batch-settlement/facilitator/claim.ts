@@ -5,7 +5,7 @@ import type { AuthorizerSigner, BatchSettlementClaimPayload } from "../types";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS } from "../constants";
 import { signClaimBatch } from "../authorizerSigner";
-import * as Errors from "./errors";
+import * as Errors from "../errors";
 import { toContractChannelConfig } from "./utils";
 
 /**

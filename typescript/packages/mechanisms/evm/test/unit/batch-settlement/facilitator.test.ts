@@ -18,7 +18,7 @@ import {
   PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
 } from "../../../src/batch-settlement/constants";
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
-import * as Errors from "../../../src/batch-settlement/facilitator/errors";
+import * as Errors from "../../../src/batch-settlement/errors";
 import type {
   ChannelConfig,
   AuthorizerSigner,

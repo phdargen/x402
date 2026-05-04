@@ -9,6 +9,7 @@ import {
   buildChannelConfig,
   readChannelBalanceAndTotalClaimed,
 } from "./channel";
+import * as Errors from "../errors";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 
 /**
@@ -28,8 +29,8 @@ export async function processCorrectivePaymentRequired(
   paymentRequired: PaymentRequired,
 ): Promise<boolean> {
   if (
-    paymentRequired.error !== "batch_settlement_cumulative_amount_mismatch" &&
-    paymentRequired.error !== "batch_settlement_evm_cumulative_below_claimed"
+    paymentRequired.error !== Errors.ErrCumulativeAmountMismatch &&
+    paymentRequired.error !== Errors.ErrCumulativeAmountBelowClaimed
   ) {
     return false;
   }

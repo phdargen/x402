@@ -14,7 +14,7 @@ import {
   ErrWithdrawDelayOutOfRange,
   ErrValidAfterInFuture,
   ErrValidBeforeExpired,
-} from "../../../src/batch-settlement/facilitator/errors";
+} from "../../../src/batch-settlement/errors";
 import { MIN_WITHDRAW_DELAY, MAX_WITHDRAW_DELAY } from "../../../src/batch-settlement/constants";
 import type { ChannelConfig } from "../../../src/batch-settlement/types";
 import type { PaymentRequirements } from "@x402/core/types";
