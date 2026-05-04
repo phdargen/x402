@@ -12,6 +12,7 @@ import type { DeepReadonly } from "@x402/core/types";
 import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { convertToTokenAmount, numberToDecimalString } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
+import { getAddress } from "viem";
 import { BatchSettlementChannelManager } from "./channelManager";
 import { getDefaultAsset } from "../../shared/defaultAssets";
 import type { AuthorizerSigner } from "../types";
@@ -255,17 +256,17 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * the client (receiverAuthorizer, withdrawDelay, EIP-712 domain info).
    *
    * @param paymentRequirements - Base payment requirements from the middleware.
-   * @param _supportedKind - Matched scheme/network kind (extra may contain overrides).
-   * @param _supportedKind.x402Version - Protocol version from the matched kind.
-   * @param _supportedKind.scheme - Scheme name from the matched kind.
-   * @param _supportedKind.network - Network identifier from the matched kind.
-   * @param _supportedKind.extra - Optional extra fields on the matched kind.
+   * @param supportedKind - Matched scheme/network kind (extra may contain overrides).
+   * @param supportedKind.x402Version - Protocol version from the matched kind.
+   * @param supportedKind.scheme - Scheme name from the matched kind.
+   * @param supportedKind.network - Network identifier from the matched kind.
+   * @param supportedKind.extra - Optional extra fields on the matched kind.
    * @param _extensionKeys - Extension keys (unused).
    * @returns Enhanced payment requirements with batched fields in `extra`.
    */
-  enhancePaymentRequirements(
+  async enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
-    _supportedKind: {
+    supportedKind: {
       x402Version: number;
       scheme: string;
       network: Network;
@@ -273,27 +274,35 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     },
     _extensionKeys: string[],
   ): Promise<PaymentRequirements> {
-    void _supportedKind;
     void _extensionKeys;
 
     const assetInfo = getDefaultAsset(paymentRequirements.network as Network);
 
-    const receiverAuthorizer = this.receiverAuthorizerSigner
-      ? this.receiverAuthorizerSigner.address
-      : (_supportedKind.extra?.receiverAuthorizer as string | undefined);
+    const receiverAuthorizer =
+      this.receiverAuthorizerSigner?.address ??
+      (typeof supportedKind.extra?.receiverAuthorizer === "string"
+        ? supportedKind.extra.receiverAuthorizer
+        : undefined);
 
-    return Promise.resolve({
+    if (
+      !receiverAuthorizer ||
+      getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
+    ) {
+      throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
+    }
+
+    return {
       ...paymentRequirements,
       extra: {
         ...paymentRequirements.extra,
-        receiverAuthorizer: receiverAuthorizer ?? "",
+        receiverAuthorizer: getAddress(receiverAuthorizer),
         withdrawDelay: this.withdrawDelay,
         name: assetInfo.name,
         version: assetInfo.version,
         assetTransferMethod:
           paymentRequirements.extra?.assetTransferMethod ?? assetInfo.assetTransferMethod,
       },
-    });
+    };
   }
 
   /**

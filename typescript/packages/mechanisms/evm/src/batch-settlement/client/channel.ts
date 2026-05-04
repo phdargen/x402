@@ -57,14 +57,21 @@ export function buildChannelConfig(
   const extra = paymentRequirements.extra as
     | Partial<BatchSettlementPaymentRequirementsExtra>
     | undefined;
+  const receiverAuthorizer = extra?.receiverAuthorizer;
+  if (
+    !receiverAuthorizer ||
+    getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
+  ) {
+    throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
+  }
+
   return {
     payer: deps.signer.address,
     payerAuthorizer: getAddress(
       deps.payerAuthorizer ?? deps.voucherSigner?.address ?? deps.signer.address,
     ),
     receiver: paymentRequirements.payTo as `0x${string}`,
-    receiverAuthorizer:
-      extra?.receiverAuthorizer ?? ("0x0000000000000000000000000000000000000000" as `0x${string}`),
+    receiverAuthorizer: getAddress(receiverAuthorizer),
     token: paymentRequirements.asset as `0x${string}`,
     withdrawDelay:
       typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : MIN_WITHDRAW_DELAY,

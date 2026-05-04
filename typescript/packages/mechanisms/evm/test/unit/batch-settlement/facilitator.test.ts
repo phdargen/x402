@@ -61,13 +61,14 @@ function buildAuthorizerSigner(): AuthorizerSigner {
 }
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+const RECEIVER_AUTHORIZER = "0x1111111111111111111111111111111111111111" as `0x${string}`;
 
 function buildChannelConfig(overrides: Partial<ChannelConfig> = {}): ChannelConfig {
   return {
     payer: PAYER,
     payerAuthorizer: ZERO_ADDR,
     receiver: RECEIVER,
-    receiverAuthorizer: ZERO_ADDR,
+    receiverAuthorizer: RECEIVER_AUTHORIZER,
     token: ASSET,
     withdrawDelay: 900,
     salt: "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -86,6 +87,7 @@ function makeRequirements(overrides: Partial<PaymentRequirements> = {}): Payment
     extra: {
       name: "USDC",
       version: "2",
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
       assetTransferMethod: "eip3009",
       withdrawDelay: 900,
     },
@@ -589,7 +591,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
     const signer = buildSigner();
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const { payload } = buildDeposit();
-    const reqs = makeRequirements({ extra: { assetTransferMethod: "eip3009" } });
+    const reqs = makeRequirements({
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, assetTransferMethod: "eip3009" },
+    });
     const result = await scheme.verify(payload, reqs);
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrMissingEip712Domain);
@@ -600,7 +604,12 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
     const scheme = new BatchSettlementEvmScheme(signer, authorizer);
     const { payload } = buildDeposit();
     const reqs = makeRequirements({
-      extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" },
+      extra: {
+        name: "USDC",
+        version: "2",
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        assetTransferMethod: "permit2",
+      },
     });
     const result = await scheme.verify(payload, reqs);
     expect(result.isValid).toBe(false);
@@ -672,7 +681,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
 
     const result = await scheme.verify(
       payload,
-      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+      makeRequirements({
+        extra: {
+          assetTransferMethod: "permit2",
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      }),
     );
 
     expect(result.isValid).toBe(true);
@@ -693,7 +709,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
 
     const result = await scheme.verify(
       payload,
-      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+      makeRequirements({
+        extra: {
+          assetTransferMethod: "permit2",
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      }),
     );
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrPermit2InvalidSpender);
@@ -708,7 +731,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
 
     const result = await scheme.verify(
       payload,
-      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+      makeRequirements({
+        extra: {
+          assetTransferMethod: "permit2",
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      }),
     );
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrPermit2AmountMismatch);
@@ -725,7 +755,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — verifyDeposit", () => {
 
     const result = await scheme.verify(
       payload,
-      makeRequirements({ extra: { assetTransferMethod: "permit2", name: "USDC", version: "2" } }),
+      makeRequirements({
+        extra: {
+          assetTransferMethod: "permit2",
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      }),
     );
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrPermit2AllowanceRequired);

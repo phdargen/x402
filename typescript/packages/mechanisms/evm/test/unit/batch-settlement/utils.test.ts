@@ -23,7 +23,7 @@ const BASE_CONFIG: ChannelConfig = {
   payer: "0x1234567890123456789012345678901234567890",
   payerAuthorizer: "0x1234567890123456789012345678901234567890",
   receiver: "0x9876543210987654321098765432109876543210",
-  receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+  receiverAuthorizer: "0x1111111111111111111111111111111111111111",
   token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   withdrawDelay: 900,
   salt: "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -37,7 +37,7 @@ const BASE_REQUIREMENTS: PaymentRequirements = {
   payTo: "0x9876543210987654321098765432109876543210",
   maxTimeoutSeconds: 3600,
   extra: {
-    receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+    receiverAuthorizer: "0x1111111111111111111111111111111111111111",
     withdrawDelay: 900,
   },
 };
@@ -177,18 +177,24 @@ describe("validateChannelConfig", () => {
   it("returns ErrWithdrawDelayOutOfRange when below minimum (and extra not present)", () => {
     const config: ChannelConfig = { ...BASE_CONFIG, withdrawDelay: MIN_WITHDRAW_DELAY - 1 };
     const channelId = computeChannelId(config);
-    const requirements: PaymentRequirements = { ...BASE_REQUIREMENTS, extra: {} };
+    const requirements: PaymentRequirements = {
+      ...BASE_REQUIREMENTS,
+      extra: { receiverAuthorizer: BASE_CONFIG.receiverAuthorizer },
+    };
     expect(validateChannelConfig(config, channelId, requirements)).toBe(ErrWithdrawDelayOutOfRange);
   });
 
   it("returns ErrWithdrawDelayOutOfRange when above maximum (and extra not present)", () => {
     const config: ChannelConfig = { ...BASE_CONFIG, withdrawDelay: MAX_WITHDRAW_DELAY + 1 };
     const channelId = computeChannelId(config);
-    const requirements: PaymentRequirements = { ...BASE_REQUIREMENTS, extra: {} };
+    const requirements: PaymentRequirements = {
+      ...BASE_REQUIREMENTS,
+      extra: { receiverAuthorizer: BASE_CONFIG.receiverAuthorizer },
+    };
     expect(validateChannelConfig(config, channelId, requirements)).toBe(ErrWithdrawDelayOutOfRange);
   });
 
-  it("accepts when receiverAuthorizer is not constrained by extra", () => {
+  it("returns ErrReceiverAuthorizerMismatch when receiverAuthorizer is missing from extra", () => {
     const config: ChannelConfig = {
       ...BASE_CONFIG,
       receiverAuthorizer: "0x2222222222222222222222222222222222222222",
@@ -198,7 +204,27 @@ describe("validateChannelConfig", () => {
       ...BASE_REQUIREMENTS,
       extra: { withdrawDelay: 900 },
     };
-    expect(validateChannelConfig(config, channelId, requirements)).toBeUndefined();
+    expect(validateChannelConfig(config, channelId, requirements)).toBe(
+      ErrReceiverAuthorizerMismatch,
+    );
+  });
+
+  it("returns ErrReceiverAuthorizerMismatch when receiverAuthorizer is zero", () => {
+    const config: ChannelConfig = {
+      ...BASE_CONFIG,
+      receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+    };
+    const requirements: PaymentRequirements = {
+      ...BASE_REQUIREMENTS,
+      extra: {
+        ...BASE_REQUIREMENTS.extra,
+        receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+      },
+    };
+    const channelId = computeChannelId(config);
+    expect(validateChannelConfig(config, channelId, requirements)).toBe(
+      ErrReceiverAuthorizerMismatch,
+    );
   });
 });
 

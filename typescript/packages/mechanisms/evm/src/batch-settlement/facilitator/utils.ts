@@ -152,11 +152,14 @@ export function validateChannelConfig(
   }
 
   const extra = requirements.extra as Partial<BatchSettlementPaymentRequirementsExtra> | undefined;
+  const requiredReceiverAuthorizer = extra?.receiverAuthorizer;
 
-  if (extra?.receiverAuthorizer) {
-    if (getAddress(config.receiverAuthorizer) !== getAddress(extra.receiverAuthorizer)) {
-      return Errors.ErrReceiverAuthorizerMismatch;
-    }
+  if (
+    !requiredReceiverAuthorizer ||
+    getAddress(requiredReceiverAuthorizer) === "0x0000000000000000000000000000000000000000" ||
+    getAddress(config.receiverAuthorizer) !== getAddress(requiredReceiverAuthorizer)
+  ) {
+    return Errors.ErrReceiverAuthorizerMismatch;
   }
 
   if (getAddress(config.token) !== getAddress(requirements.asset)) {

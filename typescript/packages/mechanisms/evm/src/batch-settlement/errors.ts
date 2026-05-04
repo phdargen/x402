@@ -3,11 +3,13 @@
 export const ErrChannelNotFound = "invalid_batch_settlement_evm_channel_not_found";
 export const ErrTokenMismatch = "invalid_batch_settlement_evm_token_mismatch";
 export const ErrInvalidVoucherSignature = "invalid_batch_settlement_evm_voucher_signature";
-export const ErrCumulativeExceedsBalance = "invalid_batch_settlement_evm_cumulative_exceeds_balance";
+export const ErrCumulativeExceedsBalance =
+  "invalid_batch_settlement_evm_cumulative_exceeds_balance";
 export const ErrCumulativeAmountBelowClaimed =
   "invalid_batch_settlement_evm_cumulative_below_claimed";
 export const ErrInsufficientBalance = "invalid_batch_settlement_evm_insufficient_balance";
-export const ErrDepositTransactionFailed = "invalid_batch_settlement_evm_deposit_transaction_failed";
+export const ErrDepositTransactionFailed =
+  "invalid_batch_settlement_evm_deposit_transaction_failed";
 export const ErrClaimTransactionFailed = "invalid_batch_settlement_evm_claim_transaction_failed";
 export const ErrSettleTransactionFailed = "invalid_batch_settlement_evm_settle_transaction_failed";
 export const ErrInvalidScheme = "invalid_batch_settlement_evm_scheme";
@@ -23,7 +25,8 @@ export const ErrErc3009AuthorizationRequired =
   "invalid_batch_settlement_evm_erc3009_authorization_required";
 export const ErrRefundTransactionFailed = "invalid_batch_settlement_evm_refund_transaction_failed";
 export const ErrInvalidPayloadType = "invalid_batch_settlement_evm_payload_type";
-export const ErrWithdrawDelayOutOfRange = "invalid_batch_settlement_evm_withdraw_delay_out_of_range";
+export const ErrWithdrawDelayOutOfRange =
+  "invalid_batch_settlement_evm_withdraw_delay_out_of_range";
 export const ErrChannelIdMismatch = "invalid_batch_settlement_evm_channel_id_mismatch";
 export const ErrReceiverMismatch = "invalid_batch_settlement_evm_receiver_mismatch";
 export const ErrReceiverAuthorizerMismatch =

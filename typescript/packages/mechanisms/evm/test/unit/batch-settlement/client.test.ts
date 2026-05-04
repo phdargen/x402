@@ -34,6 +34,7 @@ import * as Errors from "../../../src/batch-settlement/errors";
 const PAYER_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const VOUCHER_PRIVATE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 const RECEIVER_ADDRESS = "0x9876543210987654321098765432109876543210" as `0x${string}`;
+const RECEIVER_AUTHORIZER = "0x1111111111111111111111111111111111111111" as `0x${string}`;
 const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const NETWORK = "eip155:84532";
 const DEFAULT_SALT =
@@ -76,6 +77,7 @@ function makeRequirements(overrides?: Partial<PaymentRequirements>): PaymentRequ
     extra: {
       name: "USDC",
       version: "2",
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
       withdrawDelay: 900,
     },
     ...overrides,
@@ -204,21 +206,37 @@ describe("buildChannelConfig", () => {
     expect(config.payerAuthorizer).toBe(getAddress(voucherSigner.address));
   });
 
-  it("uses receiverAuthorizer from extra when present, else zero", () => {
+  it("uses receiverAuthorizer from extra when present", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const recv = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const recv = "0x2222222222222222222222222222222222222222" as `0x${string}`;
     const cfg = buildChannelConfig(
       makeDeps({ signer }),
       makeRequirements({ extra: { receiverAuthorizer: recv } }),
     );
-    expect(cfg.receiverAuthorizer).toBe(recv);
-    const cfgZero = buildChannelConfig(makeDeps({ signer }), makeRequirements({ extra: {} }));
-    expect(cfgZero.receiverAuthorizer).toBe("0x0000000000000000000000000000000000000000");
+    expect(cfg.receiverAuthorizer).toBe(getAddress(recv));
+  });
+
+  it("throws when receiverAuthorizer is missing or zero", () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    expect(() => buildChannelConfig(makeDeps({ signer }), makeRequirements({ extra: {} }))).toThrow(
+      /receiverAuthorizer/,
+    );
+    expect(() =>
+      buildChannelConfig(
+        makeDeps({ signer }),
+        makeRequirements({
+          extra: { receiverAuthorizer: "0x0000000000000000000000000000000000000000" },
+        }),
+      ),
+    ).toThrow(/receiverAuthorizer/);
   });
 
   it("defaults withdrawDelay to 900 when not in extra", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
-    const cfg = buildChannelConfig(makeDeps({ signer }), makeRequirements({ extra: {} }));
+    const cfg = buildChannelConfig(
+      makeDeps({ signer }),
+      makeRequirements({ extra: { receiverAuthorizer: RECEIVER_AUTHORIZER } }),
+    );
     expect(cfg.withdrawDelay).toBe(900);
   });
 
@@ -365,7 +383,12 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const client = new BatchSettlementEvmScheme(signer);
 
     await expect(
-      client.createPaymentPayload(2, makeRequirements({ extra: { withdrawDelay: 900 } })),
+      client.createPaymentPayload(
+        2,
+        makeRequirements({
+          extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, withdrawDelay: 900 },
+        }),
+      ),
     ).rejects.toThrow(/EIP-712 domain parameters/);
   });
 
@@ -470,7 +493,14 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const client = new BatchSettlementEvmScheme(signer);
     const result = await client.createPaymentPayload(
       2,
-      makeRequirements({ extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" } }),
+      makeRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          assetTransferMethod: "permit2",
+        },
+      }),
     );
 
     expect(isBatchSettlementDepositPayload(result.payload as Record<string, unknown>)).toBe(true);
@@ -516,7 +546,14 @@ describe("BatchSettlementEvmScheme — createPaymentPayload", () => {
     const client = new BatchSettlementEvmScheme(signer, { storage });
     const result = await client.createPaymentPayload(
       2,
-      makeRequirements({ extra: { name: "USDC", version: "2", assetTransferMethod: "permit2" } }),
+      makeRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          assetTransferMethod: "permit2",
+        },
+      }),
       { extensions: { eip2612GasSponsoring: {} } } as never,
     );
 

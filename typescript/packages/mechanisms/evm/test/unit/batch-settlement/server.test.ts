@@ -57,6 +57,7 @@ async function reservePending(
 
 const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
 const RECEIVER = "0x9876543210987654321098765432109876543210" as `0x${string}`;
+const RECEIVER_AUTHORIZER = "0x1111111111111111111111111111111111111111" as `0x${string}`;
 const ASSET_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const NETWORK = "eip155:84532";
 
@@ -85,7 +86,7 @@ function buildChannelConfig(overrides: Partial<ChannelConfig> = {}): ChannelConf
     payer: PAYER,
     payerAuthorizer: PAYER,
     receiver: RECEIVER,
-    receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+    receiverAuthorizer: RECEIVER_AUTHORIZER,
     token: ASSET_BASE_SEPOLIA,
     withdrawDelay: 900,
     salt: "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -193,7 +194,7 @@ function makeRequirements(overrides: Partial<PaymentRequirements> = {}): Payment
     asset: ASSET_BASE_SEPOLIA,
     payTo: RECEIVER,
     maxTimeoutSeconds: 3600,
-    extra: {},
+    extra: { receiverAuthorizer: RECEIVER_AUTHORIZER },
     ...overrides,
   };
 }
@@ -307,18 +308,34 @@ describe("BatchSettlementEvmScheme — parsePrice", () => {
 describe("BatchSettlementEvmScheme — enhancePaymentRequirements", () => {
   const baseReqs = makeRequirements();
 
-  it("injects withdrawDelay, receiverAuthorizer, name, version", async () => {
+  it("injects withdrawDelay, facilitator receiverAuthorizer, name, version", async () => {
     const server = new BatchSettlementEvmScheme(RECEIVER, { withdrawDelay: 1800 });
     const enhanced = await server.enhancePaymentRequirements(
       baseReqs,
-      { x402Version: 2, scheme: "batch-settlement", network: NETWORK },
+      {
+        x402Version: 2,
+        scheme: "batch-settlement",
+        network: NETWORK,
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER },
+      },
       [],
     );
 
     expect(enhanced.extra?.withdrawDelay).toBe(1800);
-    expect(enhanced.extra?.receiverAuthorizer).toBe("");
+    expect(enhanced.extra?.receiverAuthorizer).toBe(RECEIVER_AUTHORIZER);
     expect(enhanced.extra?.name).toBe("USDC");
     expect(enhanced.extra?.version).toBe("2");
+  });
+
+  it("throws when neither server nor facilitator provides receiverAuthorizer", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    await expect(
+      server.enhancePaymentRequirements(
+        baseReqs,
+        { x402Version: 2, scheme: "batch-settlement", network: NETWORK },
+        [],
+      ),
+    ).rejects.toThrow(/receiverAuthorizer/);
   });
 
   it("propagates receiver-authorizer from configured signer", async () => {
@@ -344,14 +361,19 @@ describe("BatchSettlementEvmScheme — enhancePaymentRequirements", () => {
       },
       [],
     );
-    expect(enhanced.extra?.receiverAuthorizer).toBe("0xabcdefABCDef0000000000000000000000000001");
+    expect(enhanced.extra?.receiverAuthorizer).toBe("0xaBCDEFABcdEf0000000000000000000000000001");
   });
 
   it("preserves existing extra entries", async () => {
     const server = new BatchSettlementEvmScheme(RECEIVER);
     const enhanced = await server.enhancePaymentRequirements(
       makeRequirements({ extra: { custom: "yes" } }),
-      { x402Version: 2, scheme: "batch-settlement", network: NETWORK },
+      {
+        x402Version: 2,
+        scheme: "batch-settlement",
+        network: NETWORK,
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER },
+      },
       [],
     );
     expect(enhanced.extra?.custom).toBe("yes");
@@ -361,7 +383,12 @@ describe("BatchSettlementEvmScheme — enhancePaymentRequirements", () => {
     const server = new BatchSettlementEvmScheme(RECEIVER);
     const enhanced = await server.enhancePaymentRequirements(
       makeRequirements({ extra: { assetTransferMethod: "permit2" } }),
-      { x402Version: 2, scheme: "batch-settlement", network: NETWORK },
+      {
+        x402Version: 2,
+        scheme: "batch-settlement",
+        network: NETWORK,
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER },
+      },
       [],
     );
 
