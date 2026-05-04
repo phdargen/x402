@@ -242,7 +242,7 @@ The server must maintain per-channel state, keyed by channel ID:
 The server must serialize request processing per channel and must not update voucher state until the resource handler has succeeded.
 
 1. **Verify**:
-   - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `batch_settlement_cumulative_amount_mismatch` and return a corrective 402.
+   - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `invalid_batch_settlement_evm_cumulative_amount_mismatch` and return a corrective 402.
    - For refund payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount` and skip the resource handler after facilitator verification.
    - Always call facilitator `/verify` for `deposit` and `refund` payloads, as well as `voucher` payloads with EIP-1271 vouchers.
    - A plain EOA-authorized `voucher` may be verified locally when the server's mirrored onchain state is fresh. 
@@ -545,12 +545,12 @@ The recovery baseline is:
 
 **Server state loss.** If the server has no local channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If the server lost unclaimed vouchers, those unclaimed charges are forfeited by the server.
 
-**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `batch_settlement_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
+**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
 
 ```json
 {
   "x402Version": 2,
-  "error": "batch_settlement_cumulative_amount_mismatch",
+  "error": "invalid_batch_settlement_evm_cumulative_amount_mismatch",
   "accepts": [
     {
       "scheme": "batch-settlement",
@@ -581,34 +581,71 @@ The recovery baseline is:
 
 ## Error Codes
 
-| Error Code                                                     | Description                                                                  |
-| -------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `batch_settlement_cumulative_amount_mismatch`                  | Client cumulative amount does not match server channel state; corrective 402 |
-| `batch_settlement_evm_channel_not_found`                       | No channel with positive balance for the given channel ID                    |
-| `batch_settlement_evm_cumulative_exceeds_balance`              | Voucher `maxClaimableAmount` exceeds onchain balance                         |
-| `batch_settlement_evm_cumulative_below_claimed`                | Voucher `maxClaimableAmount` is at or below onchain `totalClaimed`           |
-| `batch_settlement_evm_insufficient_balance`                    | Client token balance is insufficient for the deposit                         |
-| `batch_settlement_evm_invalid_voucher_signature`               | EIP-712 voucher signature does not recover to the expected signer            |
-| `batch_settlement_evm_invalid_scheme`                          | `scheme` is not `batch-settlement`                                           |
-| `batch_settlement_evm_network_mismatch`                        | `network` does not match the facilitator's chain                             |
-| `batch_settlement_evm_token_mismatch`                          | Channel token does not match the payment requirements asset                  |
-| `batch_settlement_evm_channel_id_mismatch`                     | Channel config does not hash to the claimed channel ID                       |
-| `batch_settlement_evm_receiver_mismatch`                       | Channel receiver does not match `payTo`                                      |
-| `batch_settlement_evm_receiver_authorizer_mismatch`            | Channel receiver authorizer does not match `extra.receiverAuthorizer`        |
-| `batch_settlement_evm_withdraw_delay_mismatch`                 | Channel withdraw delay does not match `extra.withdrawDelay`                  |
-| `batch_settlement_evm_withdraw_delay_out_of_range`             | Withdraw delay is outside the 15 min – 30 day bounds                         |
-| `batch_settlement_evm_deposit_voucher_mismatch`                | Deposit payload config does not match the voucher's channel ID               |
-| `batch_settlement_evm_missing_eip712_domain`                   | Token EIP-712 domain (`name`, `version`) could not be read                   |
-| `batch_settlement_evm_payload_authorization_valid_before`      | ERC-3009 authorization `validBefore` has already passed                      |
-| `batch_settlement_evm_payload_authorization_valid_after`       | ERC-3009 authorization `validAfter` is still in the future                   |
-| `batch_settlement_evm_invalid_receive_authorization_signature` | ERC-3009 `receiveWithAuthorization` signature is invalid                     |
-| `batch_settlement_evm_erc3009_authorization_required`          | Deposit payload is missing the required `erc3009Authorization`               |
-| `batch_settlement_evm_invalid_payload_type`                    | Payload `type` is not valid for the current verify/settle operation          |
-| `batch_settlement_evm_refund_not_supported`                    | Server cannot produce `refundWithSignature` (e.g. no signing key)            |
-| `batch_settlement_evm_deposit_transaction_failed`              | Onchain deposit transaction reverted                                         |
-| `batch_settlement_evm_claim_transaction_failed`                | Onchain claim transaction reverted                                           |
-| `batch_settlement_evm_settle_transaction_failed`               | Onchain settle (transfer) transaction reverted                               |
-| `batch_settlement_evm_refund_transaction_failed`               | Onchain refund transaction reverted                                          |
+| Error Code                                                               | Description                                                                  |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `invalid_batch_settlement_evm_authorizer_address_mismatch`               | Authorizer address does not match the expected receiver authorizer           |
+| `invalid_batch_settlement_evm_channel_busy`                              | Another request holds the per-channel lock; client should retry shortly      |
+| `invalid_batch_settlement_evm_channel_id_mismatch`                       | Channel config does not hash to the claimed channel ID                       |
+| `invalid_batch_settlement_evm_channel_not_found`                         | No channel with positive balance for the given channel ID                    |
+| `invalid_batch_settlement_evm_channel_state_read_failed`                 | Facilitator failed to read onchain channel state                             |
+| `invalid_batch_settlement_evm_charge_exceeds_signed_cumulative`          | Committing the charge would exceed the voucher's signed `maxClaimableAmount` |
+| `invalid_batch_settlement_evm_claim_payload`                             | Claim payload is malformed                                                   |
+| `invalid_batch_settlement_evm_claim_simulation_failed`                   | Claim simulation failed                                                      |
+| `invalid_batch_settlement_evm_claim_transaction_failed`                  | Onchain claim transaction failed                                             |
+| `invalid_batch_settlement_evm_cumulative_amount_mismatch`               | Corrective 402: client's cumulative voucher ceiling does not match the server's tracked `chargedCumulativeAmount` |
+| `invalid_batch_settlement_evm_cumulative_below_claimed`                  | Voucher `maxClaimableAmount` violates monotonicity vs onchain `totalClaimed` (non-refund: must be greater than `totalClaimed`; refund: must not be strictly below `totalClaimed`; deposit verify: must not be strictly below `totalClaimed`) |
+| `invalid_batch_settlement_evm_cumulative_exceeds_balance`                | Voucher `maxClaimableAmount` exceeds effective onchain balance               |
+| `invalid_batch_settlement_evm_deposit_payload`                           | Deposit payload is malformed                                                 |
+| `invalid_batch_settlement_evm_deposit_simulation_failed`                 | Deposit simulation failed                                                    |
+| `invalid_batch_settlement_evm_deposit_transaction_failed`                | Onchain deposit transaction failed                                           |
+| `invalid_batch_settlement_evm_eip2612_amount_mismatch`                   | EIP-2612 permit amount does not match the requested authorization          |
+| `invalid_batch_settlement_evm_eip2612_asset_mismatch`                    | EIP-2612 permit asset does not match the payment asset                       |
+| `invalid_batch_settlement_evm_eip2612_deadline_expired`                  | EIP-2612 permit deadline has expired                                         |
+| `invalid_batch_settlement_evm_eip2612_invalid_format`                    | EIP-2612 permit segment is malformed                                         |
+| `invalid_batch_settlement_evm_eip2612_invalid_signature`                 | EIP-2612 permit signature is invalid                                         |
+| `invalid_batch_settlement_evm_eip2612_owner_mismatch`                    | EIP-2612 permit owner does not match the payer                               |
+| `invalid_batch_settlement_evm_eip2612_spender_mismatch`                  | EIP-2612 permit spender does not match the expected spender                  |
+| `invalid_batch_settlement_evm_erc20_approval_asset_mismatch`             | ERC-20 approval asset does not match the payment asset                       |
+| `invalid_batch_settlement_evm_erc20_approval_broadcast_failed`           | Facilitator failed to broadcast the pre-signed ERC-20 approval transaction   |
+| `invalid_batch_settlement_evm_erc20_approval_from_mismatch`              | ERC-20 approval signer does not match the payer                              |
+| `invalid_batch_settlement_evm_erc20_approval_invalid_format`             | ERC-20 approval segment is malformed                                         |
+| `invalid_batch_settlement_evm_erc20_approval_unavailable`                | ERC-20 approval gas sponsorship is unavailable                               |
+| `invalid_batch_settlement_evm_erc20_approval_wrong_spender`              | ERC-20 approval spender is not Permit2                                       |
+| `invalid_batch_settlement_evm_erc3009_authorization_required`            | Deposit payload is missing the required `erc3009Authorization`               |
+| `invalid_batch_settlement_evm_insufficient_balance`                    | Client token balance is insufficient for the deposit                         |
+| `invalid_batch_settlement_evm_missing_channel`                           | Resource server has no channel session for the payload's channel ID          |
+| `invalid_batch_settlement_evm_missing_eip712_domain`                     | Token EIP-712 domain (`name`, `version`) is missing from payment requirements |
+| `invalid_batch_settlement_evm_network_mismatch`                          | Payment payload `accepted.network` does not match `paymentRequirements.network` on the verify request |
+| `invalid_batch_settlement_evm_payload_authorization_valid_after`         | ERC-3009 authorization `validAfter` is still in the future                   |
+| `invalid_batch_settlement_evm_payload_authorization_valid_before`        | ERC-3009 authorization `validBefore` has already passed                    |
+| `invalid_batch_settlement_evm_payload_type`                              | Payload `type` is not valid for the current verify/settle operation          |
+| `invalid_batch_settlement_evm_permit2_allowance_required`                | Permit2 allowance is required before deposit                                 |
+| `invalid_batch_settlement_evm_permit2_amount_mismatch`                   | Permit2 authorization amount does not match the requested deposit amount   |
+| `invalid_batch_settlement_evm_permit2_authorization_required`            | Deposit payload is missing the required Permit2 authorization              |
+| `invalid_batch_settlement_evm_permit2_deadline_expired`                  | Permit2 authorization deadline has expired                                   |
+| `invalid_batch_settlement_evm_permit2_invalid_signature`                 | Permit2 authorization signature is invalid                                   |
+| `invalid_batch_settlement_evm_permit2_invalid_spender`                   | Permit2 authorization spender is not the expected spender                  |
+| `invalid_batch_settlement_evm_receive_authorization_signature`           | ERC-3009 `receiveWithAuthorization` signature is invalid                     |
+| `invalid_batch_settlement_evm_receiver_authorizer_mismatch`              | Channel receiver authorizer does not match `extra.receiverAuthorizer`        |
+| `invalid_batch_settlement_evm_receiver_mismatch`                         | Channel receiver does not match `payTo`                                      |                         |
+| `invalid_batch_settlement_evm_refund_amount_invalid`                     | Refund `amount` is non-numeric or non-positive                               |
+| `invalid_batch_settlement_evm_refund_no_balance`                         | Cooperative refund requested but no refundable balance remains             |
+| `invalid_batch_settlement_evm_refund_payload`                            | Refund payload is malformed                                                  |
+| `invalid_batch_settlement_evm_refund_simulation_failed`                  | Refund simulation failed                                                     |
+| `invalid_batch_settlement_evm_refund_transaction_failed`                 | Onchain refund transaction failed                                            |
+| `invalid_batch_settlement_evm_rpc_read_failed`                           | Facilitator failed to read required onchain data                             |
+| `invalid_batch_settlement_evm_scheme`                                    | `scheme` is not `batch-settlement`                                           |
+| `invalid_batch_settlement_evm_settle_payload`                            | Settle payload is malformed                                                  |
+| `invalid_batch_settlement_evm_settle_simulation_failed`                  | Settle simulation failed                                                     |
+| `invalid_batch_settlement_evm_settle_transaction_failed`                 | Onchain settle transaction failed                                            |
+| `invalid_batch_settlement_evm_token_mismatch`                            | Channel token does not match the payment requirements asset                  |
+| `invalid_batch_settlement_evm_transaction_reverted`                      | Submitted transaction reverted                                               |
+| `invalid_batch_settlement_evm_unknown_settle_action`                     | Settle payload requested an unknown action                                   |
+| `invalid_batch_settlement_evm_voucher_payload`                           | Voucher payload is malformed                                                 |
+| `invalid_batch_settlement_evm_voucher_signature`                         | EIP-712 voucher signature does not recover to the expected signer          |
+| `invalid_batch_settlement_evm_wait_for_receipt_failed`                   | Facilitator failed while waiting for the transaction receipt                 |
+| `invalid_batch_settlement_evm_withdraw_delay_mismatch`                   | Channel withdraw delay does not match `extra.withdrawDelay`                  |
+| `invalid_batch_settlement_evm_withdraw_delay_out_of_range`               | Withdraw delay is outside the 15 min - 30 day bounds                         |
 
 ---
 
