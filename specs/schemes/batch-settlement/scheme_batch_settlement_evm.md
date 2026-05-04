@@ -6,8 +6,6 @@ The `batch-settlement` scheme on EVM is a **capital-backed** network binding usi
 
 The scheme supports **dynamic pricing**: the client authorizes a maximum per-request, and the server charges the actual cost within that ceiling.
 
-The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
-
 ---
 
 ## Channel Lifecycle
@@ -354,7 +352,7 @@ Verifies a deposit, voucher, or refund payment payload. Returns the onchain chan
 
 | `payload.type` | When Used                     | Onchain Effect                                        |
 | -------------- | ----------------------------- | ----------------------------------------------------- |
-| `"deposit"`    | First request or top-up       | Deposit via the EIP-3009 collector                    |
+| `"deposit"`    | First request or top-up       | Deposit via the canonical ERC-3009 or Permit2 collector |
 | `"claim"`      | Server batches voucher claims | Validate vouchers, update accounting (no transfer)    |
 | `"settle"`     | Server transfers earned funds | Transfer unsettled amount to receiver                 |
 | `"refund"`     | Cooperative refund            | Return specified amount to payer, increment refund nonce |
@@ -628,10 +626,15 @@ The recovery baseline is:
 
 ## Reference Implementation: `x402BatchSettlement`
 
-The `batch-settlement` scheme is implemented by the `x402BatchSettlement` contract, deployed to the same address across all supported EVM chains via CREATE2.
+The `batch-settlement` scheme is implemented by the `x402BatchSettlement` contract alongside the `ERC3009DepositCollector` and `Permit2DepositCollector` deposit collector contracts. Each contract is deployed to a deterministic address across all supported EVM chains via CREATE2.
 
-**Canonical Address:** `0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003`
+| Contract | Canonical Address |
+| -------- | ------- |
+| `x402BatchSettlement` | `0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003` |
+| `ERC3009DepositCollector` | `0x4020806089470a89826cB9fB1f4059150b550004` |
+| `Permit2DepositCollector` | `0x4020425FAf3B746C082C2f942b4E5159887B0005` |
 
+The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
 ---
 
 ## Version History
