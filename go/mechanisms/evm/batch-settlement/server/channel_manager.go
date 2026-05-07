@@ -12,7 +12,7 @@ import (
 
 	x402 "github.com/x402-foundation/x402/go"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 )
 
 // ChannelManagerConfig wires the channel manager to its dependencies.
@@ -606,7 +606,7 @@ func (m *BatchSettlementChannelManager) collectClaimsFromChannels(channels []*Ch
 		out = append(out, batchsettlement.BatchSettlementVoucherClaim{
 			Voucher: struct {
 				Channel            batchsettlement.ChannelConfig `json:"channel"`
-				MaxClaimableAmount string                `json:"maxClaimableAmount"`
+				MaxClaimableAmount string                        `json:"maxClaimableAmount"`
 			}{
 				Channel:            c.ChannelConfig,
 				MaxClaimableAmount: c.SignedMaxClaimable,
@@ -713,7 +713,7 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 		claims = []batchsettlement.BatchSettlementVoucherClaim{{
 			Voucher: struct {
 				Channel            batchsettlement.ChannelConfig `json:"channel"`
-				MaxClaimableAmount string                `json:"maxClaimableAmount"`
+				MaxClaimableAmount string                        `json:"maxClaimableAmount"`
 			}{
 				Channel:            target.ChannelConfig,
 				MaxClaimableAmount: target.SignedMaxClaimable,

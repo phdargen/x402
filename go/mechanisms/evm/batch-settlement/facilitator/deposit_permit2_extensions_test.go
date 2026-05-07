@@ -314,7 +314,7 @@ func TestResolvePermit2DepositBranch_Eip2612TakesPriorityOverErc20(t *testing.T)
 	})
 
 	exts := map[string]interface{}{
-		eip2612gassponsor.EIP2612GasSponsoring.Key(): map[string]interface{}{"info": goodEip2612Info()},
+		eip2612gassponsor.EIP2612GasSponsoring.Key():             map[string]interface{}{"info": goodEip2612Info()},
 		erc20approvalgassponsor.ERC20ApprovalGasSponsoring.Key(): map[string]interface{}{"info": goodErc20ApprovalInfo()},
 	}
 

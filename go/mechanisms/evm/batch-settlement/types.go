@@ -78,13 +78,13 @@ type BatchSettlementPermit2Witness struct {
 // authorization signed by the payer when the deposit uses the permit2 transfer
 // method. Mirrors the TS `BatchSettlementPermit2Authorization` shape.
 type BatchSettlementPermit2Authorization struct {
-	From      string                         `json:"from"`
+	From      string                                 `json:"from"`
 	Permitted BatchSettlementPermit2TokenPermissions `json:"permitted"`
-	Spender   string                         `json:"spender"`
-	Nonce     string                         `json:"nonce"`
-	Deadline  string                         `json:"deadline"`
+	Spender   string                                 `json:"spender"`
+	Nonce     string                                 `json:"nonce"`
+	Deadline  string                                 `json:"deadline"`
 	Witness   BatchSettlementPermit2Witness          `json:"witness"`
-	Signature string                         `json:"signature"`
+	Signature string                                 `json:"signature"`
 }
 
 // BatchSettlementVoucherFields holds the cumulative-ceiling voucher.
@@ -105,32 +105,32 @@ type BatchSettlementDepositAuthorization struct {
 
 // BatchSettlementDepositData is the deposit portion of a deposit payload.
 type BatchSettlementDepositData struct {
-	Amount        string                      `json:"amount"`
+	Amount        string                              `json:"amount"`
 	Authorization BatchSettlementDepositAuthorization `json:"authorization"`
 }
 
 // BatchSettlementDepositPayload is sent on the first request to fund a channel.
 type BatchSettlementDepositPayload struct {
-	Type          string               `json:"type"` // "deposit"
-	ChannelConfig ChannelConfig        `json:"channelConfig"`
+	Type          string                       `json:"type"` // "deposit"
+	ChannelConfig ChannelConfig                `json:"channelConfig"`
 	Voucher       BatchSettlementVoucherFields `json:"voucher"`
 	Deposit       BatchSettlementDepositData   `json:"deposit"`
 }
 
 // BatchSettlementVoucherPayload is sent on subsequent requests (no new deposit).
 type BatchSettlementVoucherPayload struct {
-	Type          string               `json:"type"` // "voucher"
-	ChannelConfig ChannelConfig        `json:"channelConfig"`
+	Type          string                       `json:"type"` // "voucher"
+	ChannelConfig ChannelConfig                `json:"channelConfig"`
 	Voucher       BatchSettlementVoucherFields `json:"voucher"`
 }
 
 // BatchSettlementRefundPayload is the client-side cooperative-refund request.
 // `Amount` is optional — when absent, it defaults to the full remaining balance.
 type BatchSettlementRefundPayload struct {
-	Type          string               `json:"type"` // "refund"
-	ChannelConfig ChannelConfig        `json:"channelConfig"`
+	Type          string                       `json:"type"` // "refund"
+	ChannelConfig ChannelConfig                `json:"channelConfig"`
 	Voucher       BatchSettlementVoucherFields `json:"voucher"`
-	Amount        string               `json:"amount,omitempty"`
+	Amount        string                       `json:"amount,omitempty"`
 }
 
 // BatchSettlementVoucherClaim is used in claim operations onchain.
@@ -164,7 +164,7 @@ type BatchSettlementVoucherStateExtra struct {
 // BatchSettlementPaymentResponseExtra carries channel state in settle/verify responses.
 // Mirrors TS `BatchSettlementPaymentResponseExtra`.
 type BatchSettlementPaymentResponseExtra struct {
-	ChargedAmount string                    `json:"chargedAmount,omitempty"`
+	ChargedAmount string                            `json:"chargedAmount,omitempty"`
 	ChannelState  *BatchSettlementChannelStateExtra `json:"channelState,omitempty"`
 	VoucherState  *BatchSettlementVoucherStateExtra `json:"voucherState,omitempty"`
 }
@@ -175,11 +175,11 @@ type BatchSettlementPaymentResponseExtra struct {
 // payload is split across two camelCase keys: `channelState` (channel snapshot)
 // and `voucherState` (latest signed voucher proof).
 type BatchSettlementPaymentRequirementsExtra struct {
-	ReceiverAuthorizer  string                    `json:"receiverAuthorizer"`
-	WithdrawDelay       int                       `json:"withdrawDelay"`
-	Name                string                    `json:"name"`
-	Version             string                    `json:"version"`
-	AssetTransferMethod string                    `json:"assetTransferMethod,omitempty"` // "eip3009" or "permit2"
+	ReceiverAuthorizer  string                            `json:"receiverAuthorizer"`
+	WithdrawDelay       int                               `json:"withdrawDelay"`
+	Name                string                            `json:"name"`
+	Version             string                            `json:"version"`
+	AssetTransferMethod string                            `json:"assetTransferMethod,omitempty"` // "eip3009" or "permit2"
 	ChannelState        *BatchSettlementChannelStateExtra `json:"channelState,omitempty"`
 	VoucherState        *BatchSettlementVoucherStateExtra `json:"voucherState,omitempty"`
 }
@@ -198,9 +198,9 @@ type FileChannelStorageOptions struct {
 // ClaimAuthorizerSignature is optional — when absent, the facilitator auto-signs
 // using its AuthorizerSigner.
 type BatchSettlementClaimPayload struct {
-	Type                     string                `json:"type"` // "claim"
+	Type                     string                        `json:"type"` // "claim"
 	Claims                   []BatchSettlementVoucherClaim `json:"claims"`
-	ClaimAuthorizerSignature string                `json:"claimAuthorizerSignature,omitempty"`
+	ClaimAuthorizerSignature string                        `json:"claimAuthorizerSignature,omitempty"`
 }
 
 // BatchSettlementSettlePayload transfers claimed funds to receiver.
@@ -216,14 +216,14 @@ type BatchSettlementSettlePayload struct {
 // ClaimAuthorizerSignature are optional — when absent, the facilitator
 // auto-signs via its AuthorizerSigner.
 type BatchSettlementEnrichedRefundPayload struct {
-	Type                      string                `json:"type"` // "refund"
-	ChannelConfig             ChannelConfig         `json:"channelConfig"`
+	Type                      string                        `json:"type"` // "refund"
+	ChannelConfig             ChannelConfig                 `json:"channelConfig"`
 	Voucher                   BatchSettlementVoucherFields  `json:"voucher"`
-	Amount                    string                `json:"amount"`
-	RefundNonce               string                `json:"refundNonce"`
+	Amount                    string                        `json:"amount"`
+	RefundNonce               string                        `json:"refundNonce"`
 	Claims                    []BatchSettlementVoucherClaim `json:"claims"`
-	RefundAuthorizerSignature string                `json:"refundAuthorizerSignature,omitempty"`
-	ClaimAuthorizerSignature  string                `json:"claimAuthorizerSignature,omitempty"`
+	RefundAuthorizerSignature string                        `json:"refundAuthorizerSignature,omitempty"`
+	ClaimAuthorizerSignature  string                        `json:"claimAuthorizerSignature,omitempty"`
 }
 
 // ============================================================================

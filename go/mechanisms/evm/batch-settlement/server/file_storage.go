@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 )
 
 // FileChannelStorage is a file-backed SessionStorage. Each session is stored

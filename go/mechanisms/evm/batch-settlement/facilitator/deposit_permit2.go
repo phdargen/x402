@@ -10,7 +10,7 @@ import (
 	"github.com/x402-foundation/x402/go/extensions/eip2612gassponsor"
 	"github.com/x402-foundation/x402/go/extensions/erc20approvalgassponsor"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 )
 
 // permit2DepositBranchKind enumerates the three Permit2 deposit settlement
@@ -18,9 +18,9 @@ import (
 type permit2DepositBranchKind string
 
 const (
-	permit2BranchStandard       permit2DepositBranchKind = "standard"
-	permit2BranchEip2612        permit2DepositBranchKind = "eip2612"
-	permit2BranchErc20Approval  permit2DepositBranchKind = "erc20Approval"
+	permit2BranchStandard      permit2DepositBranchKind = "standard"
+	permit2BranchEip2612       permit2DepositBranchKind = "eip2612"
+	permit2BranchErc20Approval permit2DepositBranchKind = "erc20Approval"
 )
 
 // permit2DepositBranch captures the resolved gas-sponsorship branch for a

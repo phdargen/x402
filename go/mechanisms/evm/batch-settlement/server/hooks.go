@@ -12,7 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	x402 "github.com/x402-foundation/x402/go"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement/facilitator"
 	"github.com/x402-foundation/x402/go/types"
 )
@@ -546,6 +546,16 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 	}
 }
 
+// OnVerifyFailureHook releases a reservation when facilitator verification fails.
+func (s *BatchSettlementEvmScheme) OnVerifyFailureHook() x402.OnVerifyFailureHook {
+	return func(ctx x402.VerifyFailureContext) (*x402.VerifyFailureHookResult, error) {
+		if ctx.Requirements.GetScheme() != batchsettlement.SchemeBatched {
+			return nil, nil
+		}
+		return nil, s.ClearPendingRequest(ctx.Payload)
+	}
+}
+
 // BeforeSettleHook returns a hook that implements the core batched settlement
 // logic.  For voucher payloads it:
 //   - Increments chargedCumulativeAmount locally via UpdateChannel
@@ -699,6 +709,16 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 				Extra:       skipExtra.ToMap(),
 			},
 		}, nil
+	}
+}
+
+// OnSettleFailureHook releases a reservation when facilitator settlement fails.
+func (s *BatchSettlementEvmScheme) OnSettleFailureHook() x402.OnSettleFailureHook {
+	return func(ctx x402.SettleFailureContext) (*x402.SettleFailureHookResult, error) {
+		if ctx.Requirements.GetScheme() != batchsettlement.SchemeBatched {
+			return nil, nil
+		}
+		return nil, s.ClearPendingRequest(ctx.Payload)
 	}
 }
 
@@ -943,13 +963,16 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				return nil
 			}
 			now := time.Now().UnixMilli()
+			outcome := ""
 
 			_, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
 				if current == nil {
+					outcome = "missing"
 					return current
 				}
 				if pendingId == "" || current.PendingRequest == nil ||
 					current.PendingRequest.PendingId != pendingId {
+					outcome = "pending_mismatch"
 					return current
 				}
 				postBalance, _ := new(big.Int).SetString(snapshot.Balance, 10)
@@ -962,6 +985,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				}
 				if postBalance.Cmp(curCharged) <= 0 {
 					// Full refund: delete the channel session.
+					outcome = "deleted"
 					return nil
 				}
 				next := *current
@@ -982,10 +1006,14 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				next.OnchainSyncedAt = now
 				next.LastRequestTimestamp = now
 				next.PendingRequest = nil
+				outcome = "updated"
 				return &next
 			})
 			if updateErr != nil {
 				return updateErr
+			}
+			if outcome == "pending_mismatch" {
+				return errors.New(batchsettlement.ErrChannelBusy)
 			}
 			return nil
 		}

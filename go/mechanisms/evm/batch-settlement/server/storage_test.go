@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 )
 
 func sampleSession(id, charged string) *ChannelSession {

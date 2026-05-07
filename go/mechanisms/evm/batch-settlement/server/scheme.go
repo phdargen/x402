@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -12,7 +11,7 @@ import (
 
 	x402 "github.com/x402-foundation/x402/go"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
-	"github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
+	batchsettlement "github.com/x402-foundation/x402/go/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/types"
 )
 
@@ -65,59 +64,69 @@ type BatchSettlementEvmScheme struct {
 	onchainStateTtlMs        int64
 	moneyParsers             []x402.MoneyParser
 
-	// requestContexts maps a per-request key to its state (channel id, pending
-	// reservation id, snapshot). Mirrors the TS WeakMap<PaymentPayload, ...>
-	// used to thread reservation id from BeforeVerify through AfterVerify and
-	// BeforeSettle.
-	//
-	// Go's sync.Map can't key on types.PaymentPayload directly because the
-	// struct contains a `map[string]interface{}` (unhashable). Instead we key
-	// on a stable string identity derived from the payload — the
-	// JSON-serialized PayloadBytes when available, or a fingerprint computed
-	// from interface methods otherwise. The same payload produces the same
-	// key across verify → settle phases.
-	//
-	// Lifecycle: entries are cleared on the normal happy path via
-	// TakeRequestContext / TakeChannelSnapshot in BeforeSettleHook,
-	// EnrichPaymentRequiredResponse, and ClearPendingRequest (failure paths).
-	// Unlike a JS WeakMap, Go has no GC notification, so a payload verified
-	// successfully but never reaching Settle (and never firing the cancellation
-	// hook) would leak an entry. Resource server lifecycles always fire one of
-	// those terminal hooks today.
+	// requestContexts maps a per-payment key to state carried across verify and
+	// settle hooks.
 	requestContextsMu sync.Mutex
 	requestContexts   map[string]*BatchSettlementRequestContext
 }
 
-// requestContextKey returns a stable identity for the given payload, used as
-// the map key for per-request state. Prefers an explicit fingerprint string
-// when the caller wraps the payload in a (key, view) pair (test usage), then
-// the payload's JSON-marshal output, and finally interface fields.
+// requestContextKey returns a payment identity that stays stable when server
+// enrichment adds settlement-only fields to the payload.
 func requestContextKey(payload any) string {
 	if payload == nil {
 		return ""
 	}
-	if k, ok := payload.(interface{ RequestKey() string }); ok {
-		if rk := k.RequestKey(); rk != "" {
-			return rk
-		}
-	}
-	if v, ok := payload.(types.PaymentPayload); ok {
-		if data, err := json.Marshal(v); err == nil {
-			return string(data)
-		}
-	}
-	if v, ok := payload.(*types.PaymentPayload); ok && v != nil {
-		if data, err := json.Marshal(*v); err == nil {
-			return string(data)
-		}
-	}
 	if view, ok := payload.(x402.PaymentPayloadView); ok {
-		// Fallback for arbitrary view implementations (e.g. test stubs that
-		// embed a non-marshalable payload). Use pointer identity if available.
-		return fmt.Sprintf("%p|%d|%s|%s",
-			view, view.GetVersion(), view.GetScheme(), view.GetNetwork())
+		payloadMap := view.GetPayload()
+		payloadType, _ := payloadMap["type"].(string)
+		voucher, _ := payloadMap["voucher"].(map[string]interface{})
+		channelId, _ := voucher["channelId"].(string)
+		maxClaimable, _ := voucher["maxClaimableAmount"].(string)
+		signature, _ := voucher["signature"].(string)
+		return strings.Join([]string{
+			strconv.Itoa(view.GetVersion()),
+			view.GetScheme(),
+			view.GetNetwork(),
+			payloadType,
+			batchsettlement.NormalizeChannelId(channelId),
+			maxClaimable,
+			signature,
+			channelConfigKey(payloadMap["channelConfig"]),
+		}, "\x00")
 	}
 	return fmt.Sprintf("%p", payload)
+}
+
+func channelConfigKey(raw any) string {
+	switch cfg := raw.(type) {
+	case batchsettlement.ChannelConfig:
+		return formatChannelConfigKey(cfg)
+	case *batchsettlement.ChannelConfig:
+		if cfg == nil {
+			return ""
+		}
+		return formatChannelConfigKey(*cfg)
+	case map[string]interface{}:
+		parsed, err := batchsettlement.ChannelConfigFromMap(cfg)
+		if err != nil {
+			return ""
+		}
+		return formatChannelConfigKey(parsed)
+	default:
+		return ""
+	}
+}
+
+func formatChannelConfigKey(cfg batchsettlement.ChannelConfig) string {
+	return strings.Join([]string{
+		strings.ToLower(cfg.Payer),
+		strings.ToLower(cfg.PayerAuthorizer),
+		strings.ToLower(cfg.Receiver),
+		strings.ToLower(cfg.ReceiverAuthorizer),
+		strings.ToLower(cfg.Token),
+		strconv.Itoa(cfg.WithdrawDelay),
+		cfg.Salt,
+	}, "\x00")
 }
 
 // NewBatchSettlementEvmScheme creates a new batched server scheme.

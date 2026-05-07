@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	extTestNetwork  = "eip155:8453"
-	extTestAsset    = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" // USDC Base
-	extTestPayTo    = "0x3333333333333333333333333333333333333333"
-	extTestSigner   = "0x4444444444444444444444444444444444444444"
+	extTestNetwork = "eip155:8453"
+	extTestAsset   = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" // USDC Base
+	extTestPayTo   = "0x3333333333333333333333333333333333333333"
+	extTestSigner  = "0x4444444444444444444444444444444444444444"
 )
 
 // extReadSigner combines mockSigner with read-contract + tx-signing capabilities
@@ -24,17 +24,17 @@ const (
 // type assertions.
 type extReadSigner struct {
 	*mockSigner
-	allowance     *big.Int
-	allowanceErr  error
-	noncesResult  *big.Int
-	noncesErr     error
-	signTxResult  []byte
-	signTxErr     error
-	feesPriority  *big.Int
-	feesMax       *big.Int
-	feesErr       error
-	txCount       uint64
-	txCountErr    error
+	allowance    *big.Int
+	allowanceErr error
+	noncesResult *big.Int
+	noncesErr    error
+	signTxResult []byte
+	signTxErr    error
+	feesPriority *big.Int
+	feesMax      *big.Int
+	feesErr      error
+	txCount      uint64
+	txCountErr   error
 }
 
 // ReadContract dispatches based on the function name so we can stub both the
@@ -114,7 +114,7 @@ func eip2612OnlyDeclared() map[string]interface{} {
 
 func bothExtensionsDeclared() map[string]interface{} {
 	return map[string]interface{}{
-		eip2612gassponsor.EIP2612GasSponsoring.Key():            map[string]interface{}{},
+		eip2612gassponsor.EIP2612GasSponsoring.Key():             map[string]interface{}{},
 		erc20approvalgassponsor.ERC20ApprovalGasSponsoring.Key(): map[string]interface{}{},
 	}
 }
