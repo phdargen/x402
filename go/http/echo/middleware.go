@@ -427,7 +427,7 @@ func handlePaymentVerified(c echo.Context, next echo.HandlerFunc, server *x402ht
 		return nil
 	}
 
-	settleResult := server.ProcessSettlementWithExtensions(
+	settleResult := server.ProcessSettlement(
 		ctx,
 		*result.PaymentPayload,
 		*result.PaymentRequirements,
