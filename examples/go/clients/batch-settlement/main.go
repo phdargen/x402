@@ -65,7 +65,7 @@ func main() {
 		Salt:              channelSalt,
 	}
 
-	// Optional dedicated voucher-signing key (matches TS EVM_VOUCHER_SIGNER_PRIVATE_KEY).
+	// Optional dedicated voucher-signing key.
 	if voucherKey := os.Getenv("EVM_VOUCHER_SIGNER_PRIVATE_KEY"); voucherKey != "" {
 		voucherSigner, err := evmsigners.NewClientSignerFromPrivateKey(voucherKey)
 		if err != nil {

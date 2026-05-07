@@ -449,8 +449,7 @@ func reserveRefundPending(t *testing.T, s *BatchSettlementEvmScheme, id, pending
 // TestEnrichSettlementPayload_RefundReturnsAdditiveFields pins the new
 // EnrichSettlementPayload behavior for refund payloads: returns additive
 // `{amount, refundNonce, claims}` (plus signatures when an authorizer signer
-// is configured) — never mutates the input payload. Mirrors TS
-// `handleEnrichSettlementPayload`.
+// is configured) and never mutates the input payload.
 func TestEnrichSettlementPayload_RefundReturnsAdditiveFields(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")

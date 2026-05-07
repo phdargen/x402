@@ -187,7 +187,7 @@ type HTTPProcessResult struct {
 	// `paymentRequiredResponse.extensions` flowing into both calls.
 	DeclaredExtensions map[string]interface{}
 	// SkipHandler is set when an AfterVerifyHook signals that the resource handler
-	// should be bypassed and settlement performed inline (e.g. cooperative refund).
+	// should be bypassed and settlement performed inline.
 	SkipHandler *x402.SkipHandlerDirective
 	// CancellationDispatcher fires onVerifiedPaymentCanceled hooks if the resource
 	// handler errors or returns a non-2xx status before settlement runs. Set when
@@ -616,7 +616,7 @@ func (s *x402HTTPResourceServer) ProcessHTTPRequest(ctx context.Context, reqCtx 
 
 	// Verify payment (type-safe). Pass `extensions` so per-extension hooks
 	// (registered via ResourceServerExtensionHookProvider) gate on declared
-	// extension keys — mirrors TS `verifyPayment(..., declaredExtensions)`.
+	// extension keys.
 	verifyResp, verifyErr := s.VerifyPaymentWithExtensions(ctx, *typedPayload, *matchingReqs, extensions)
 	if verifyErr != nil {
 		err = verifyErr

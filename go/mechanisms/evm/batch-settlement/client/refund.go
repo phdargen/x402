@@ -256,9 +256,9 @@ func executeRefund(
 			return nil, fmt.Errorf("refund: decode PAYMENT-RESPONSE: %w", err)
 		}
 
-		// Mirror TS: the caller knows it just initiated a refund, so reconcile
-		// directly via UpdateSessionAfterRefund (deletes on full drain). The
-		// channelId is read from the canonical nested `channelState` shape.
+		// The caller knows it just initiated a refund, so reconcile directly via
+		// UpdateSessionAfterRefund (deletes on full drain). The channelId is read
+		// from the nested `channelState` shape.
 		if settle != nil && settle.Extra != nil {
 			if cs, ok := settle.Extra["channelState"].(map[string]interface{}); ok {
 				if channelId, ok := cs["channelId"].(string); ok && channelId != "" {

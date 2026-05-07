@@ -16,8 +16,6 @@ import (
 // `PermitWitnessTransferFrom` authorization. The witness binds the transfer to
 // the derived channelId so the Permit2DepositCollector can verify which
 // channel the funds belong to.
-//
-// Mirrors TS `createBatchSettlementPermit2DepositPayload`.
 func CreateBatchedPermit2DepositPayload(
 	ctx context.Context,
 	signer evm.ClientEvmSigner,

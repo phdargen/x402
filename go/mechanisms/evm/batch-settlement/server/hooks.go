@@ -96,10 +96,9 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 				prevCharged, _ = new(big.Int).SetString(current.ChargedCumulativeAmount, 10)
 			}
 			if prevCharged == nil {
-				// Mirror TS `inferMissingLocalChargedAmount`: when storage has
-				// no row yet, derive a sensible charged base so the mismatch
-				// check still works for the first request on a brand-new
-				// channel.
+				// When storage has no row yet, derive a sensible charged base so
+				// the mismatch check still works for the first request on a
+				// brand-new channel.
 				switch {
 				case !isPaid:
 					prevCharged = new(big.Int).Set(signedMax)
@@ -206,9 +205,8 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 // payerAuthorizer. Returns nil on any check that requires falling back to the
 // facilitator, and an explicit invalid VerifyResponse when a local check fails.
 //
-// Mirrors TS `verifyVoucherLocally`. The smart-wallet (ERC-1271) path is
-// intentionally not supported — vouchers signed by a non-zero EOA payerAuthorizer
-// are the only candidates.
+// The smart-wallet (ERC-1271) path is intentionally not supported — vouchers
+// signed by a non-zero EOA payerAuthorizer are the only candidates.
 func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 	requirements x402.PaymentRequirementsView,
 	payload map[string]interface{},
@@ -566,8 +564,7 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 
 		// Deposit and refund payloads pass through to the facilitator. Server-
 		// owned enrichment for refunds (claims + authorizer signatures) lives
-		// in EnrichSettlementPayload below — mirrors TS
-		// `handleEnrichSettlementPayload`.
+		// in EnrichSettlementPayload below.
 		if !batchsettlement.IsVoucherPayload(payload) {
 			return nil, nil
 		}
@@ -677,7 +674,7 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 		}
 
 		s.TakeRequestContext(ctx.Payload)
-		// Emit nested wire shape: chargedAmount + channelState. Mirrors TS.
+		// Emit the nested response shape: chargedAmount + channelState.
 		skipExtra := &batchsettlement.BatchSettlementPaymentResponseExtra{
 			ChargedAmount: ctx.Requirements.GetAmount(),
 			ChannelState: &batchsettlement.BatchSettlementChannelStateExtra{
@@ -721,7 +718,7 @@ func (s *BatchSettlementEvmScheme) OnSettleFailureHook() x402.OnSettleFailureHoo
 //
 // Returns nil for non-refund payloads. Returns a structured error on
 // validation failure; the framework converts it into a settle abort with
-// the error string as the reason. Mirrors TS `handleEnrichSettlementPayload`.
+// the error string as the reason.
 func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContext) (map[string]interface{}, error) {
 	if ctx.Requirements.GetScheme() != batchsettlement.SchemeBatched {
 		return nil, nil
@@ -807,7 +804,7 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 	}
 	if !hasRequestedAmount {
 		// Only fill `amount` when the client omitted it; otherwise the additive
-		// policy would reject the overwrite. Mirrors TS spread guard.
+		// policy would reject the overwrite.
 		enrichment["amount"] = refundAmount.String()
 	}
 
@@ -826,8 +823,7 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 	}
 
 	// Snapshot the pre-refund channel state for EnrichSettlementResponse, which
-	// adds chargedCumulativeAmount onto the post-facilitator response. Mirrors
-	// TS `scheme.rememberChannelSnapshot(paymentPayload, channel)`.
+	// adds chargedCumulativeAmount onto the post-facilitator response.
 	s.RememberChannelSnapshot(ctx.Payload, session)
 
 	return enrichment, nil
@@ -841,8 +837,7 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 // For deposits: read the facilitator's channelState snapshot, compute
 // chargedCumulativeAmount = current + requirements.amount, store the new
 // session state, and remember the channel snapshot so EnrichSettlementResponse
-// can echo chargedCumulativeAmount back to the client. Mirrors TS
-// `handleAfterSettle`.
+// can echo chargedCumulativeAmount back to the client.
 //
 // For refunds: read the facilitator's post-refund channelState, store the
 // updated session (or delete on full-refund when balance <= chargedCumulative).
@@ -1018,7 +1013,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 // `{channelState: {chargedCumulativeAmount}, chargedAmount?}` map so the
 // framework can deep-merge it into result.extra without overwriting the
 // channelState.{balance,totalClaimed,...} fields the facilitator already
-// populated. Mirrors TS `handleEnrichSettlementResponse`.
+// populated.
 //
 // The snapshot is set by EnrichSettlementPayload (refund) or by
 // AfterSettleHook (deposit) via RememberChannelSnapshot.
@@ -1046,8 +1041,7 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementResponse(ctx x402.SettleResul
 }
 
 // readChannelStateFromExtra extracts the nested channelState map from a
-// settle-response extra. Returns nil when absent or wrong-typed. Mirrors
-// TS `readChannelStateExtra`.
+// settle-response extra. Returns nil when absent or wrong-typed.
 func readChannelStateFromExtra(extra map[string]interface{}) *batchsettlement.BatchSettlementChannelStateExtra {
 	if extra == nil {
 		return nil

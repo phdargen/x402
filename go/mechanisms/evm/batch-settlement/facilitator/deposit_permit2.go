@@ -14,7 +14,7 @@ import (
 )
 
 // permit2DepositBranchKind enumerates the three Permit2 deposit settlement
-// strategies, mirroring TS `resolvePermit2DepositBranch`.
+// strategies.
 type permit2DepositBranchKind string
 
 const (
@@ -46,9 +46,7 @@ type permit2DepositBranch struct {
 }
 
 // resolvePermit2DepositBranch parses the payment payload's `extensions`
-// envelope and decides which gas-sponsorship branch to take. Mirrors
-// TS `resolvePermit2DepositBranch` in
-// `typescript/.../batch-settlement/facilitator/deposit-permit2.ts`.
+// envelope and decides which gas-sponsorship branch to take.
 //
 // On a well-formed but rejected extension (e.g. payer/asset/amount mismatch)
 // returns ("invalidReason", nil); on a successful branch resolution returns
@@ -65,15 +63,13 @@ func resolvePermit2DepositBranch(
 	tokenAddress := evm.NormalizeAddress(requirements.Token)
 	payer := requirements.Payer
 
-	// EIP-2612 takes priority over ERC-20 approval, matching TS
-	// `trySignEip2612PermitExtension` ordering on the client side and
-	// `resolvePermit2DepositBranch` on the facilitator side.
+	// EIP-2612 takes priority over ERC-20 approval because it keeps settlement
+	// to a single deposit() transaction.
 	eip2612Info, _ := eip2612gassponsor.ExtractEip2612GasSponsoringInfo(extensions)
 	if eip2612Info != nil {
 		// Wrap the shared evm validator with the batch-specific rule that
 		// `info.amount == deposit.amount`, then translate the shared reason
-		// strings into the batched error codes (mirrors TS
-		// `validateBatchEip2612Permit`).
+		// strings into the batched error codes.
 		if sharedReason := evm.ValidateEip2612PermitForPayment(eip2612Info, payer, tokenAddress); sharedReason != "" {
 			var batchedReason string
 			switch sharedReason {

@@ -685,8 +685,7 @@ func (s *x402ResourceServer) VerifyPayment(ctx context.Context, payload types.Pa
 // VerifyPaymentWithExtensions verifies a V2 payment, gating extension hooks
 // on the supplied `declaredExtensions` map (keys must be present for the
 // extension's hook to fire). Hook execution order: manual → matched scheme →
-// declared extensions. Mirrors TS `verifyPayment(payload, requirements,
-// declaredExtensions)`.
+// declared extensions.
 func (s *x402ResourceServer) VerifyPaymentWithExtensions(
 	ctx context.Context,
 	payload types.PaymentPayload,

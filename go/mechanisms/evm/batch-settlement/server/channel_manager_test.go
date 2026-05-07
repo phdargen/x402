@@ -117,7 +117,7 @@ func TestClaim_SingleBatch(t *testing.T) {
 // Regression: a successful claim must advance session.TotalClaimed in storage so
 // that GetClaimableVouchers no longer returns the same channel until a fresh
 // voucher pushes ChargedCumulativeAmount higher. Without this fix, every tick
-// re-submits the same claim transaction. Mirrors TS updateClaimedSessions.
+// re-submits the same claim transaction.
 func TestClaim_AdvancesTotalClaimedInStorageAfterSuccess(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	// Use a real ChannelConfig so the manager's post-claim storage lookup
@@ -242,7 +242,7 @@ func TestSettle_FacilitatorError(t *testing.T) {
 }
 
 func TestRefund_EmptyChannelIdsRefundsAll(t *testing.T) {
-	// Per upstream parity: passing nil/empty refunds every stored channel.
+	// Passing nil/empty refunds every stored channel.
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	f := &fakeFacilitator{}
 	m := newManager(s, f)

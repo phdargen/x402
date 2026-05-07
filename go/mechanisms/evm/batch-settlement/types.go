@@ -38,8 +38,7 @@ type ChannelState struct {
 // either an ERC-3009 ReceiveWithAuthorization (default) or a Permit2
 // channel-bound PermitWitnessTransferFrom. Servers opt into a non-default
 // method by setting `accepts.extra.assetTransferMethod` on payment
-// requirements; clients dispatch on the same field. Mirrors the TS
-// `BatchSettlementAssetTransferMethod` union.
+// requirements; clients dispatch on the same field.
 type AssetTransferMethod string
 
 const (
@@ -76,7 +75,7 @@ type BatchSettlementPermit2Witness struct {
 
 // BatchSettlementPermit2Authorization is the Permit2 PermitWitnessTransferFrom
 // authorization signed by the payer when the deposit uses the permit2 transfer
-// method. Mirrors the TS `BatchSettlementPermit2Authorization` shape.
+// method.
 type BatchSettlementPermit2Authorization struct {
 	From      string                                 `json:"from"`
 	Permitted BatchSettlementPermit2TokenPermissions `json:"permitted"`
@@ -94,9 +93,8 @@ type BatchSettlementVoucherFields struct {
 	Signature          string `json:"signature"`
 }
 
-// BatchSettlementDepositAuthorization wraps asset-transfer authorization data. Exactly
-// one of the fields is populated per deposit, matching the TS
-// `BatchSettlementDepositAuthorization` discriminated union (`erc3009Authorization`
+// BatchSettlementDepositAuthorization wraps asset-transfer authorization data.
+// Exactly one of the fields is populated per deposit (`erc3009Authorization`
 // XOR `permit2Authorization`).
 type BatchSettlementDepositAuthorization struct {
 	Erc3009Authorization *BatchSettlementErc3009Authorization `json:"erc3009Authorization,omitempty"`
@@ -144,7 +142,7 @@ type BatchSettlementVoucherClaim struct {
 }
 
 // BatchSettlementChannelStateExtra is the public per-channel state snapshot embedded in
-// settle/verify response extras. Mirrors TS `BatchSettlementChannelStateExtra`.
+// settle/verify response extras.
 type BatchSettlementChannelStateExtra struct {
 	ChannelId               string `json:"channelId"`
 	Balance                 string `json:"balance"`
@@ -155,14 +153,13 @@ type BatchSettlementChannelStateExtra struct {
 }
 
 // BatchSettlementVoucherStateExtra is the public latest-voucher snapshot embedded in
-// settle/verify response extras. Mirrors TS `BatchSettlementVoucherStateExtra`.
+// settle/verify response extras.
 type BatchSettlementVoucherStateExtra struct {
 	SignedMaxClaimable string `json:"signedMaxClaimable,omitempty"`
 	Signature          string `json:"signature,omitempty"`
 }
 
 // BatchSettlementPaymentResponseExtra carries channel state in settle/verify responses.
-// Mirrors TS `BatchSettlementPaymentResponseExtra`.
 type BatchSettlementPaymentResponseExtra struct {
 	ChargedAmount string                            `json:"chargedAmount,omitempty"`
 	ChannelState  *BatchSettlementChannelStateExtra `json:"channelState,omitempty"`
@@ -170,10 +167,10 @@ type BatchSettlementPaymentResponseExtra struct {
 }
 
 // BatchSettlementPaymentRequirementsExtra is the typed shape of the `extra`
-// field on PaymentRequirements for the batch-settlement scheme. Mirrors the TS
-// `BatchSettlementPaymentRequirementsExtra` type — the corrective-402 recovery
-// payload is split across two camelCase keys: `channelState` (channel snapshot)
-// and `voucherState` (latest signed voucher proof).
+// field on PaymentRequirements for the batch-settlement scheme. The
+// corrective-402 recovery payload is split across two camelCase keys:
+// `channelState` (channel snapshot) and `voucherState` (latest signed voucher
+// proof).
 type BatchSettlementPaymentRequirementsExtra struct {
 	ReceiverAuthorizer  string                            `json:"receiverAuthorizer"`
 	WithdrawDelay       int                               `json:"withdrawDelay"`
@@ -191,8 +188,8 @@ type FileChannelStorageOptions struct {
 }
 
 // --- Settle Action Payloads (server -> facilitator) ---
-// All settle-action payloads use the `type` discriminator (same field as
-// client-side payloads), matching TS BatchSettlementFacilitatorSettlePayload.
+// All settle-action payloads use the `type` discriminator, the same field as
+// client-side payloads.
 
 // BatchSettlementClaimPayload batches claims with receiverAuthorizer signature.
 // ClaimAuthorizerSignature is optional — when absent, the facilitator auto-signs

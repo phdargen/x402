@@ -256,7 +256,7 @@ func TestEnhancePaymentRequirements_DecimalAmountNormalized(t *testing.T) {
 	}
 }
 
-// Mirrors TS test "throws when neither server nor facilitator provides receiverAuthorizer".
+// Rejects requirements when neither the server nor facilitator provides receiverAuthorizer.
 func TestEnhancePaymentRequirements_RejectsMissingReceiverAuthorizer(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	req := types.PaymentRequirements{

@@ -7,9 +7,9 @@ import (
 )
 
 // PendingRequest reserves a channel against concurrent same-channel requests.
-// Mirrors TS `PendingRequest`: a request is allowed when no live (unexpired)
-// pending entry exists. Cleanup hooks clear the reservation; the bounded TTL
-// guarantees release if cleanup never runs.
+// A request is allowed when no live (unexpired) pending entry exists. Cleanup
+// hooks clear the reservation; the bounded TTL guarantees release if cleanup
+// never runs.
 type PendingRequest struct {
 	PendingId          string `json:"pendingId"`
 	SignedMaxClaimable string `json:"signedMaxClaimable"`
