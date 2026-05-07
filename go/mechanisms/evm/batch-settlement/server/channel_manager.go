@@ -135,8 +135,6 @@ type BatchSettlementChannelManager struct {
 	pendingSettle    bool
 	pendingJobs      map[autoJob]struct{}
 	pendingJobsCh    chan struct{}
-	drainingJobsDone chan struct{}
-	currentDrainCtx  context.Context
 }
 
 // NewBatchSettlementChannelManager creates a new channel manager.
@@ -209,7 +207,7 @@ func (m *BatchSettlementChannelManager) GetWithdrawalPendingSessions() ([]*Chann
 // Claim collects claimable vouchers and submits them in batches.
 func (m *BatchSettlementChannelManager) Claim(ctx context.Context, opts *ClaimOptions) ([]ClaimResult, error) {
 	resolved := normalizeClaimOptions(opts)
-	channels, err := m.selectClaimTargets(ctx, resolved.SelectClaimChannels)
+	channels, err := m.selectClaimTargets(resolved.SelectClaimChannels)
 	if err != nil {
 		return nil, err
 	}
@@ -572,7 +570,7 @@ func normalizeClaimOptions(opts *ClaimOptions) resolvedClaimOptions {
 	return out
 }
 
-func (m *BatchSettlementChannelManager) selectClaimTargets(ctx context.Context, selector ClaimChannelSelector) ([]*ChannelSession, error) {
+func (m *BatchSettlementChannelManager) selectClaimTargets(selector ClaimChannelSelector) ([]*ChannelSession, error) {
 	channels, err := m.scheme.storage.List()
 	if err != nil {
 		return nil, err

@@ -526,7 +526,7 @@ func readChannelStateFromExtra(ex map[string]interface{}) (charged, signed, sig 
 	c, hasC := cs["chargedCumulativeAmount"]
 	s, hasS := vs["signedMaxClaimable"]
 	g, hasG := vs["signature"]
-	if !(hasC && hasS && hasG) {
+	if !hasC || !hasS || !hasG {
 		return "", "", "", false
 	}
 	return fmt.Sprintf("%v", c), fmt.Sprintf("%v", s), fmt.Sprintf("%v", g), true

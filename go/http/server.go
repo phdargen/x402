@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log"
@@ -622,7 +623,8 @@ func (s *x402HTTPResourceServer) ProcessHTTPRequest(ctx context.Context, reqCtx 
 		// Prefer InvalidReason (the protocol error code) over the free-form
 		// message so enrichers can match on a stable identifier.
 		errorMsg := err.Error()
-		if ve, ok := verifyErr.(*x402.VerifyError); ok && ve.InvalidReason != "" {
+		var ve *x402.VerifyError
+		if errors.As(verifyErr, &ve) && ve.InvalidReason != "" {
 			errorMsg = ve.InvalidReason
 		}
 

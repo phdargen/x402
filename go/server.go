@@ -904,7 +904,7 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 	// framework merges into payload.Payload after the additive policy has
 	// rejected any attempt to overwrite existing keys.
 	s.mu.RLock()
-	matchedSchemeServer, _ := s.schemes[network][scheme]
+	matchedSchemeServer := s.schemes[network][scheme]
 	s.mu.RUnlock()
 	if enricher, ok := matchedSchemeServer.(EnrichSettlementPayloadProvider); ok {
 		enrichment, err := enricher.EnrichSettlementPayload(hookCtx)

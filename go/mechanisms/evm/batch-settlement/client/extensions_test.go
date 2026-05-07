@@ -56,12 +56,6 @@ func (r *extReadSigner) ReadContract(_ context.Context, _ string, _ []byte, func
 	return nil, nil
 }
 
-// signTx-related stubs so the signer satisfies ClientEvmSignerWithTxSigning.
-// The ERC-20 approval branch wires through `exactclient.SignErc20ApprovalTransaction`,
-// which in turn calls these methods to assemble the signed approve tx.
-
-type stubTx struct{}
-
 // SignTransaction satisfies ClientEvmSignerWithSignTransaction. The exact
 // content doesn't matter — we only assert that the extension info ends up
 // attached to the payload, not the binary correctness of the signed tx.

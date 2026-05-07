@@ -248,7 +248,8 @@ func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 	}
 	if cfgErr := facilitator.ValidateChannelConfig(vp.ChannelConfig, vp.Voucher.ChannelId, reqs); cfgErr != nil {
 		reason := facilitator.ErrChannelIdMismatch
-		if ve, ok := cfgErr.(*x402.VerifyError); ok && ve.InvalidReason != "" {
+		var ve *x402.VerifyError
+		if errors.As(cfgErr, &ve) && ve.InvalidReason != "" {
 			reason = ve.InvalidReason
 		}
 		return invalidLocalVerifyResponse(payer, reason)

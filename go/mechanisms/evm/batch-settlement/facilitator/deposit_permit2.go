@@ -95,8 +95,8 @@ func resolvePermit2DepositBranch(
 		if eip2612Info.Amount != depositAmount {
 			return nil, ErrEip2612AmountMismatch, nil
 		}
-		v, r, s, splitErr := evm.SplitEip2612Signature(eip2612Info.Signature)
-		if splitErr != nil {
+		v, r, s, signatureOK := splitEip2612Signature(eip2612Info.Signature)
+		if !signatureOK {
 			return nil, ErrEip2612InvalidSignature, nil
 		}
 		eip2612Bytes, encodeErr := batchsettlement.BuildEip2612PermitData(batchsettlement.Eip2612PermitInput{
@@ -180,6 +180,11 @@ func resolvePermit2DepositBranch(
 type payerAssetView struct {
 	Payer string
 	Token string
+}
+
+func splitEip2612Signature(signature string) (uint8, [32]byte, [32]byte, bool) {
+	v, r, s, err := evm.SplitEip2612Signature(signature)
+	return v, r, s, err == nil
 }
 
 // bytes32Hex converts a [32]byte to a 0x-prefixed hex string suitable for

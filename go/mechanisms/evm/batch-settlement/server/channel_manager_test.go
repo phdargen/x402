@@ -627,32 +627,6 @@ func TestRunRefundJob_NoOpWithoutSelectRefundChannels(t *testing.T) {
 	}
 }
 
-// slowFacilitator sleeps inside Settle so concurrent tick() invocations contend.
-type slowFacilitator struct {
-	mu    sync.Mutex
-	calls int
-	delay time.Duration
-}
-
-func (s *slowFacilitator) Verify(_ context.Context, _ []byte, _ []byte) (*x402.VerifyResponse, error) {
-	return &x402.VerifyResponse{IsValid: true}, nil
-}
-func (s *slowFacilitator) Settle(_ context.Context, _ []byte, _ []byte) (*x402.SettleResponse, error) {
-	time.Sleep(s.delay)
-	s.mu.Lock()
-	s.calls++
-	s.mu.Unlock()
-	return &x402.SettleResponse{Success: true, Transaction: "0xtx"}, nil
-}
-func (s *slowFacilitator) GetSupported(_ context.Context) (x402.SupportedResponse, error) {
-	return x402.SupportedResponse{}, nil
-}
-func (s *slowFacilitator) settleCalls() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
-}
-
 func TestGetClaimableVouchers_NoSessions(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	m := newManager(s, &fakeFacilitator{})
