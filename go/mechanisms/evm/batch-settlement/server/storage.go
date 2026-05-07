@@ -20,7 +20,6 @@ type PendingRequest struct {
 type ChannelSession struct {
 	ChannelId               string                        `json:"channelId"`
 	ChannelConfig           batchsettlement.ChannelConfig `json:"channelConfig"`
-	Payer                   string                        `json:"payer"`
 	ChargedCumulativeAmount string                        `json:"chargedCumulativeAmount"`
 	SignedMaxClaimable      string                        `json:"signedMaxClaimable"`
 	Signature               string                        `json:"signature"`

@@ -353,7 +353,6 @@ func buildProvisionalChannelFromPayload(
 	return &ChannelSession{
 		ChannelId:               channelId,
 		ChannelConfig:           cfg,
-		Payer:                   strings.ToLower(cfg.Payer),
 		ChargedCumulativeAmount: chargedCumulativeAmount,
 		SignedMaxClaimable:      signedMax,
 		Signature:               signature,
@@ -385,7 +384,7 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 
 		payload := ctx.Payload.GetPayload()
 
-		var channelId, signedMaxClaimable, signature, payer string
+		var channelId, signedMaxClaimable, signature string
 		var channelConfig *batchsettlement.ChannelConfig
 		isRefundVoucher := false
 
@@ -400,7 +399,6 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			signature = dp.Voucher.Signature
 			cfg := dp.ChannelConfig
 			channelConfig = &cfg
-			payer = cfg.Payer
 		case batchsettlement.IsVoucherPayload(payload):
 			vp, parseErr := batchsettlement.VoucherPayloadFromMap(payload)
 			if parseErr != nil {
@@ -411,7 +409,6 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			signature = vp.Voucher.Signature
 			cfg := vp.ChannelConfig
 			channelConfig = &cfg
-			payer = cfg.Payer
 		case batchsettlement.IsRefundPayload(payload):
 			rp, parseErr := batchsettlement.RefundPayloadFromMap(payload)
 			if parseErr != nil {
@@ -422,14 +419,9 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			signature = rp.Voucher.Signature
 			cfg := rp.ChannelConfig
 			channelConfig = &cfg
-			payer = cfg.Payer
 			isRefundVoucher = true
 		default:
 			return nil, nil
-		}
-
-		if payer == "" {
-			payer = ctx.Result.Payer
 		}
 
 		ex := ctx.Result.Extra
@@ -462,7 +454,6 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			session := &ChannelSession{
 				ChannelId:               normalizedId,
 				ChannelConfig:           *resolvedConfig,
-				Payer:                   strings.ToLower(payer),
 				ChargedCumulativeAmount: prevCharged,
 				SignedMaxClaimable:      signedMaxClaimable,
 				Signature:               signature,
@@ -505,7 +496,6 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			}
 			next := &ChannelSession{
 				ChannelId:               normalizedId,
-				Payer:                   strings.ToLower(payer),
 				ChargedCumulativeAmount: current.ChargedCumulativeAmount,
 				SignedMaxClaimable:      signedMaxClaimable,
 				Signature:               signature,
@@ -705,7 +695,7 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 				Success:     true,
 				Transaction: "",
 				Network:     x402.Network(ctx.Requirements.GetNetwork()),
-				Payer:       committedPrev.Payer,
+				Payer:       committedPrev.ChannelConfig.Payer,
 				Amount:      "",
 				Extra:       skipExtra.ToMap(),
 			},
