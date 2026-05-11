@@ -1,5 +1,6 @@
 import { x402Client, x402ClientConfig, x402HTTPClient } from "@x402/core/client";
 import { type PaymentRequired } from "@x402/core/types";
+import { wrapSseResponseWithPaymentControls } from "./sse";
 
 /**
  * Enables the payment of APIs using the x402 payment protocol v2.
@@ -50,7 +51,7 @@ export function wrapFetchWithPayment(
     const response = await fetch(request);
 
     if (response.status !== 402) {
-      return response;
+      return wrapSseResponseWithPaymentControls(response, fetch, input, init, httpClient);
     }
 
     // Parse payment requirements from response
@@ -86,7 +87,13 @@ export function wrapFetchWithPayment(
       }
       const hookResponse = await fetch(hookRequest);
       if (hookResponse.status !== 402) {
-        return hookResponse; // Hook succeeded
+        return wrapSseResponseWithPaymentControls(
+          hookResponse,
+          fetch,
+          input,
+          init,
+          httpClient,
+        );
       }
       // Hook's retry got 402, fall through to payment
     }
@@ -147,10 +154,16 @@ export function wrapFetchWithPayment(
         name => retryResponse.headers.get(name),
         retryResponse.status,
       );
-      return retryResponse;
+      return wrapSseResponseWithPaymentControls(
+        retryResponse,
+        fetch,
+        input,
+        init,
+        httpClient,
+      );
     }
 
-    return secondResponse;
+    return wrapSseResponseWithPaymentControls(secondResponse, fetch, input, init, httpClient);
   };
 }
 
@@ -179,6 +192,7 @@ export type {
   x402ClientConfig,
 } from "@x402/core/client";
 export { decodePaymentResponseHeader } from "@x402/core/http";
+export type { SseControlEvent } from "./sse";
 export type {
   Network,
   PaymentPayload,

@@ -6,6 +6,7 @@ import {
 import { SettleResponse } from "../types";
 import { PaymentPayload, PaymentRequired } from "../types/payments";
 import { x402Client, type PaymentResponseContext } from "../client/x402Client";
+import type { PaymentPayloadContext, SseControlPaymentPayloadContext } from "../types/mechanisms";
 
 /**
  * Context provided to onPaymentRequired hooks.
@@ -150,8 +151,23 @@ export class x402HTTPClient {
    * @param paymentRequired - The payment required response from the server
    * @returns Promise resolving to the payment payload
    */
-  async createPaymentPayload(paymentRequired: PaymentRequired): Promise<PaymentPayload> {
-    return this.client.createPaymentPayload(paymentRequired);
+  async createPaymentPayload(
+    paymentRequired: PaymentRequired,
+    context?: PaymentPayloadContext,
+  ): Promise<PaymentPayload> {
+    return this.client.createPaymentPayload(paymentRequired, context);
+  }
+
+  /**
+   * Creates a payment payload for an SSE control event.
+   *
+   * @param context - SSE control context carrying a payment-required value.
+   * @returns Promise resolving to the payment payload.
+   */
+  async createSseControlPaymentPayload(
+    context: Omit<SseControlPaymentPayloadContext, "extensions">,
+  ): Promise<PaymentPayload> {
+    return this.client.createSseControlPaymentPayload(context);
   }
 
   /**

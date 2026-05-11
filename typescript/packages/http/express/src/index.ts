@@ -8,13 +8,15 @@ import {
   FacilitatorClient,
   FacilitatorResponseError,
   getFacilitatorResponseError,
-  SETTLEMENT_OVERRIDES_HEADER,
   SettlementOverrides,
   checkIfBazaarNeeded,
 } from "@x402/core/server";
 import { SchemeNetworkServer, Network } from "@x402/core/types";
 import { NextFunction, Request, Response } from "express";
 import { ExpressAdapter } from "./adapter";
+import { setExpressSettlementOverrides } from "./settlementOverrides";
+export { paymentStreamingMiddleware, paymentStreamingMiddlewareFromHTTPServer } from "./streaming";
+export type { X402SseSendOptions, X402SseStream } from "./streaming";
 
 /**
  * Set settlement overrides on the response for partial settlement.
@@ -24,7 +26,7 @@ import { ExpressAdapter } from "./adapter";
  * @param overrides - Settlement overrides (e.g., { amount: "500" } for partial settlement)
  */
 export function setSettlementOverrides(res: Response, overrides: SettlementOverrides): void {
-  res.setHeader(SETTLEMENT_OVERRIDES_HEADER, JSON.stringify(overrides));
+  setExpressSettlementOverrides(res, overrides);
 }
 
 /**

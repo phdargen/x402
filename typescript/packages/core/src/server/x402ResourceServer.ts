@@ -11,7 +11,14 @@ import {
   PaymentRequired,
   ResourceInfo,
 } from "../types/payments";
-import { SchemeNetworkServer, SchemePaymentRequiredContext } from "../types/mechanisms";
+import {
+  SchemeNetworkServer,
+  SchemePaymentRequiredContext,
+  StreamMeterContext,
+  StreamMeterResult,
+  StreamRenewalContext,
+  StreamRenewalResult,
+} from "../types/mechanisms";
 import { Price, Network, ResourceServerExtension, ResourceServerExtensionHooks } from "../types";
 import type { DeepReadonly } from "../types/readonly";
 import { deepEqual, findByNetworkAndScheme } from "../utils";
@@ -237,6 +244,10 @@ type HookAdapterHandles = {
 
 type ExtensionAdapterHandles = HookAdapterHandles;
 type SchemeAdapterHandles = HookAdapterHandles;
+type SchemeStreamAdapterHandles = {
+  onStreamMeter?: (ctx: StreamMeterContext) => Promise<StreamMeterResult>;
+  onStreamRenewalRequest?: (ctx: StreamRenewalContext) => Promise<StreamRenewalResult>;
+};
 
 /** Keys shared by adapter handles and manual `*Hooks` arrays on the server. */
 type ResourceServerHookPhase = keyof HookAdapterHandles;
@@ -251,6 +262,7 @@ export class x402ResourceServer {
   private facilitatorClients: FacilitatorClient[];
   private registeredServerSchemes: Map<string, Map<string, SchemeNetworkServer>> = new Map();
   private schemeHookAdapters: Map<string, Map<string, SchemeAdapterHandles>> = new Map();
+  private schemeStreamAdapters: Map<string, Map<string, SchemeStreamAdapterHandles>> = new Map();
   private supportedResponsesMap: Map<number, Map<string, Map<string, SupportedResponse>>> =
     new Map();
   private facilitatorClientsMap: Map<number, Map<string, Map<string, FacilitatorClient>>> =
@@ -304,29 +316,43 @@ export class x402ResourceServer {
     if (!this.schemeHookAdapters.has(network)) {
       this.schemeHookAdapters.set(network, new Map());
     }
-
-    const hooksByScheme = this.schemeHookAdapters.get(network)!;
-    const hooks = server.schemeHooks;
-    if (!hooks) {
-      hooksByScheme.delete(server.scheme);
-      return this;
+    if (!this.schemeStreamAdapters.has(network)) {
+      this.schemeStreamAdapters.set(network, new Map());
     }
 
+    const hooksByScheme = this.schemeHookAdapters.get(network)!;
+    const streamHooksByScheme = this.schemeStreamAdapters.get(network)!;
+    const hooks = server.schemeHooks;
+    const streamHooks = server.streamHooks;
+
     const handles: SchemeAdapterHandles = {};
-    if (hooks.onBeforeVerify) handles.beforeVerify = hooks.onBeforeVerify;
-    if (hooks.onAfterVerify) handles.afterVerify = hooks.onAfterVerify;
-    if (hooks.onVerifyFailure) handles.onVerifyFailure = hooks.onVerifyFailure;
-    if (hooks.onBeforeSettle) handles.beforeSettle = hooks.onBeforeSettle;
-    if (hooks.onAfterSettle) handles.afterSettle = hooks.onAfterSettle;
-    if (hooks.onSettleFailure) handles.onSettleFailure = hooks.onSettleFailure;
-    if (hooks.onVerifiedPaymentCanceled) {
-      handles.onVerifiedPaymentCanceled = hooks.onVerifiedPaymentCanceled;
+    if (hooks) {
+      if (hooks.onBeforeVerify) handles.beforeVerify = hooks.onBeforeVerify;
+      if (hooks.onAfterVerify) handles.afterVerify = hooks.onAfterVerify;
+      if (hooks.onVerifyFailure) handles.onVerifyFailure = hooks.onVerifyFailure;
+      if (hooks.onBeforeSettle) handles.beforeSettle = hooks.onBeforeSettle;
+      if (hooks.onAfterSettle) handles.afterSettle = hooks.onAfterSettle;
+      if (hooks.onSettleFailure) handles.onSettleFailure = hooks.onSettleFailure;
+      if (hooks.onVerifiedPaymentCanceled) {
+        handles.onVerifiedPaymentCanceled = hooks.onVerifiedPaymentCanceled;
+      }
     }
 
     if (Object.keys(handles).length > 0) {
       hooksByScheme.set(server.scheme, handles);
     } else {
       hooksByScheme.delete(server.scheme);
+    }
+
+    const streamHandles: SchemeStreamAdapterHandles = {};
+    if (streamHooks?.onStreamMeter) streamHandles.onStreamMeter = streamHooks.onStreamMeter;
+    if (streamHooks?.onStreamRenewalRequest) {
+      streamHandles.onStreamRenewalRequest = streamHooks.onStreamRenewalRequest;
+    }
+    if (Object.keys(streamHandles).length > 0) {
+      streamHooksByScheme.set(server.scheme, streamHandles);
+    } else {
+      streamHooksByScheme.delete(server.scheme);
     }
 
     return this;
@@ -1241,6 +1267,46 @@ export class x402ResourceServer {
 
       throw error;
     }
+  }
+
+  /**
+   * Runs optional scheme metering for a streaming SSE event.
+   *
+   * @param ctx - Stream metering context for the selected payment.
+   * @returns Metering result, or an immediate ok for schemes without stream hooks.
+   */
+  async meterStreamEvent(ctx: StreamMeterContext): Promise<StreamMeterResult> {
+    const hook = findByNetworkAndScheme(
+      this.schemeStreamAdapters,
+      ctx.paymentRequirements.scheme,
+      ctx.paymentRequirements.network as Network,
+    )?.onStreamMeter;
+
+    if (!hook) {
+      return { type: "ok" };
+    }
+
+    return hook(ctx);
+  }
+
+  /**
+   * Lets a scheme consume an in-band streaming renewal request.
+   *
+   * @param ctx - Renewal context for the verified payment.
+   * @returns Whether the scheme handled the request.
+   */
+  async processStreamRenewal(ctx: StreamRenewalContext): Promise<StreamRenewalResult> {
+    const hook = findByNetworkAndScheme(
+      this.schemeStreamAdapters,
+      ctx.paymentRequirements.scheme,
+      ctx.paymentRequirements.network as Network,
+    )?.onStreamRenewalRequest;
+
+    if (!hook) {
+      return { handled: false };
+    }
+
+    return hook(ctx);
   }
 
   /**

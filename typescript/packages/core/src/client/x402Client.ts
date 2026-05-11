@@ -1,5 +1,9 @@
 import { x402Version } from "..";
-import { SchemeNetworkClient } from "../types/mechanisms";
+import {
+  PaymentPayloadContext,
+  SchemeNetworkClient,
+  SseControlPaymentPayloadContext,
+} from "../types/mechanisms";
 import { PaymentPayload, PaymentRequirements } from "../types/payments";
 import { Network, PaymentRequired, SettleResponse } from "../types";
 import { findByNetworkAndScheme, findSchemesByNetwork } from "../utils";
@@ -348,6 +352,26 @@ export class x402Client {
    */
   async createPaymentPayload(
     paymentRequired: PaymentRequired,
+    paymentContext?: PaymentPayloadContext,
+  ): Promise<PaymentPayload> {
+    return this.createPaymentPayloadWith(paymentRequired, paymentContext);
+  }
+
+  /**
+   * Creates a payment payload in response to an SSE control event.
+   *
+   * @param context - SSE control event and payment-required payload.
+   * @returns Promise resolving to the complete payment payload.
+   */
+  async createSseControlPaymentPayload(
+    context: Omit<SseControlPaymentPayloadContext, "extensions">,
+  ): Promise<PaymentPayload> {
+    return this.createPaymentPayloadWith(context.paymentRequired, context);
+  }
+
+  private async createPaymentPayloadWith(
+    paymentRequired: PaymentRequired,
+    paymentContext?: PaymentPayloadContext | Omit<SseControlPaymentPayloadContext, "extensions">,
   ): Promise<PaymentPayload> {
     const clientSchemesByNetwork = this.registeredClientSchemes.get(paymentRequired.x402Version);
     if (!clientSchemesByNetwork) {
@@ -378,11 +402,19 @@ export class x402Client {
         throw new Error(`No client registered for scheme: ${requirements.scheme} and network: ${requirements.network}`);
       }
 
-      const partialPayload = await schemeNetworkClient.createPaymentPayload(
-        paymentRequired.x402Version,
-        requirements,
-        { extensions: paymentRequired.extensions },
-      );
+      const payloadContext = { ...paymentContext, extensions: paymentRequired.extensions };
+      const partialPayload =
+        "header" in payloadContext && schemeNetworkClient.createPaymentPayloadFromSseControl
+          ? await schemeNetworkClient.createPaymentPayloadFromSseControl(
+              paymentRequired.x402Version,
+              requirements,
+              payloadContext,
+            )
+          : await schemeNetworkClient.createPaymentPayload(
+              paymentRequired.x402Version,
+              requirements,
+              payloadContext,
+            );
 
       let paymentPayload: PaymentPayload;
       if (partialPayload.x402Version == 1) {

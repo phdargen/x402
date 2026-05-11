@@ -18,6 +18,10 @@ import {
   Price,
   Network,
   PaymentRequirements,
+  StreamMeterContext,
+  StreamMeterResult,
+  StreamRenewalContext,
+  StreamRenewalResult,
 } from "../types";
 import { x402Version } from "..";
 
@@ -266,6 +270,8 @@ export type HTTPProcessResult =
       paymentPayload: PaymentPayload;
       paymentRequirements: PaymentRequirements;
       declaredExtensions?: Record<string, unknown>;
+      routeConfig: RouteConfig;
+      routePattern: string;
     }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
@@ -596,6 +602,8 @@ export class x402HTTPResourceServer {
         paymentPayload,
         paymentRequirements: matchingRequirements,
         declaredExtensions: extensions ?? {},
+        routeConfig,
+        routePattern,
       };
     } catch (error) {
       if (error instanceof FacilitatorResponseError) {
@@ -736,6 +744,44 @@ export class x402HTTPResourceServer {
   requiresPayment(context: HTTPRequestContext): boolean {
     const method = context.method || context.adapter.getMethod();
     return this.getRouteConfig(context.path, method) !== undefined;
+  }
+
+  /**
+   * Returns matched route metadata for framework adapters.
+   *
+   * @param context - HTTP request context.
+   * @returns Matched route metadata, if the request is protected.
+   */
+  getMatchedRoute(
+    context: HTTPRequestContext,
+  ): { config: RouteConfig; pattern: string; isSse: boolean } | undefined {
+    const method = context.method || context.adapter.getMethod();
+    const match = this.getRouteConfig(context.path, method);
+    if (!match) return undefined;
+    return {
+      ...match,
+      isSse: match.config.mimeType === "text/event-stream",
+    };
+  }
+
+  /**
+   * Runs scheme-specific stream metering, if the selected scheme supports it.
+   *
+   * @param ctx - Stream metering context.
+   * @returns Metering result.
+   */
+  async processStreamMeter(ctx: StreamMeterContext): Promise<StreamMeterResult> {
+    return this.ResourceServer.meterStreamEvent(ctx);
+  }
+
+  /**
+   * Lets a scheme consume a verified streaming renewal request.
+   *
+   * @param ctx - Stream renewal context.
+   * @returns Renewal handling result.
+   */
+  async processStreamRenewal(ctx: StreamRenewalContext): Promise<StreamRenewalResult> {
+    return this.ResourceServer.processStreamRenewal(ctx);
   }
 
   /**

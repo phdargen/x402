@@ -52,6 +52,12 @@ export interface PaymentPayloadContext {
   extensions?: Record<string, unknown>;
 }
 
+export interface SseControlPaymentPayloadContext extends PaymentPayloadContext {
+  header: string;
+  value: unknown;
+  paymentRequired: PaymentRequired;
+}
+
 export interface SchemeClientHooks {
   onBeforePaymentCreation?: BeforePaymentCreationHook;
   onAfterPaymentCreation?: AfterPaymentCreationHook;
@@ -67,6 +73,12 @@ export interface SchemeNetworkClient {
     x402Version: number,
     paymentRequirements: PaymentRequirements,
     context?: PaymentPayloadContext,
+  ): Promise<PaymentPayloadResult>;
+
+  createPaymentPayloadFromSseControl?(
+    x402Version: number,
+    paymentRequirements: PaymentRequirements,
+    context: SseControlPaymentPayloadContext,
   ): Promise<PaymentPayloadResult>;
 }
 
@@ -163,6 +175,40 @@ export interface SchemeServerHooks {
   onVerifiedPaymentCanceled?: OnVerifiedPaymentCanceledHook;
 }
 
+export type SseControlEvent = {
+  header: string;
+  value: unknown;
+};
+
+export interface StreamMeterContext {
+  paymentPayload: DeepReadonly<PaymentPayload>;
+  paymentRequirements: DeepReadonly<PaymentRequirements>;
+  declaredExtensions: DeepReadonly<Record<string, unknown>>;
+  transportContext?: unknown;
+  event?: string;
+  data: unknown;
+}
+
+export type StreamMeterResult =
+  | { type: "ok"; commit?: () => Promise<void> }
+  | { type: "control"; event: SseControlEvent; wait: () => Promise<StreamMeterResult> };
+
+export interface StreamRenewalContext {
+  paymentPayload: DeepReadonly<PaymentPayload>;
+  paymentRequirements: DeepReadonly<PaymentRequirements>;
+  declaredExtensions: DeepReadonly<Record<string, unknown>>;
+  transportContext?: unknown;
+}
+
+export type StreamRenewalResult =
+  | { handled: true; status?: number; body?: unknown }
+  | { handled: false };
+
+export interface SchemeStreamMeteringHooks {
+  onStreamMeter?: (ctx: StreamMeterContext) => Promise<StreamMeterResult>;
+  onStreamRenewalRequest?: (ctx: StreamRenewalContext) => Promise<StreamRenewalResult>;
+}
+
 export type SchemeEnrichSettlementPayloadHook = (
   ctx: SettleContext,
 ) => Promise<Record<string, unknown> | void>;
@@ -187,6 +233,7 @@ export type SchemeEnrichPaymentRequiredResponseHook = (
 export interface SchemeNetworkServer {
   readonly scheme: string;
   readonly schemeHooks?: SchemeServerHooks;
+  readonly streamHooks?: SchemeStreamMeteringHooks;
   enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
   enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;

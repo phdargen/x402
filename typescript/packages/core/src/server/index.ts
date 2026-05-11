@@ -28,6 +28,12 @@ export type {
   SchemePaymentRequiredContext,
   SchemeEnrichSettlementPayloadHook,
   SchemeEnrichSettlementResponseHook,
+  SchemeStreamMeteringHooks,
+  SseControlEvent,
+  StreamMeterContext,
+  StreamMeterResult,
+  StreamRenewalContext,
+  StreamRenewalResult,
 } from "../types/mechanisms";
 
 export {
