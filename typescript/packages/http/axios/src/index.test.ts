@@ -329,13 +329,27 @@ describe("wrapAxiosWithPayment()", () => {
   });
 
   it("should clone retry headers into a serializable record", async () => {
+    /**
+     * Minimal axios-like headers object with a Map-backed set and JSON serialization.
+     */
     class CallerAxiosHeaders {
       private readonly values = new Map<string, string>();
 
+      /**
+       * Stores a header name/value pair.
+       *
+       * @param key - Header name
+       * @param value - Header value
+       */
       set(key: string, value: string): void {
         this.values.set(key, value);
       }
 
+      /**
+       * Returns headers as a plain object for JSON-style cloning.
+       *
+       * @returns Header entries as a string record
+       */
       toJSON(): Record<string, string> {
         return Object.fromEntries(this.values);
       }
@@ -360,7 +374,9 @@ describe("wrapAxiosWithPayment()", () => {
         "PAYMENT-SIGNATURE": "encoded-payment-header",
       }),
     );
-    expect(Object.values(retryConfig.headers).some(value => typeof value === "function")).toBe(false);
+    expect(Object.values(retryConfig.headers).some(value => typeof value === "function")).toBe(
+      false,
+    );
   });
 
   it("should recover from a corrective 402 paid retry with one fresh payload retry", async () => {
