@@ -1,6 +1,10 @@
 name: Package Lock
 on: [pull_request]
 
+permissions:
+  contents: read
+  id-token: none
+
 jobs:
   check-package-lock-typescript:
     runs-on: ubuntu-latest
@@ -21,7 +25,7 @@ jobs:
       - name: Check if pnpm-lock.yaml changed
         working-directory: ./typescript
         run: |
-          pnpm install
+          pnpm install --ignore-scripts
           if [ -n "$(git diff pnpm-lock.yaml)" ]; then
             echo "Error: pnpm-lock.yaml was modified after running pnpm install. Please commit the updated pnpm-lock.yaml file."
             git diff pnpm-lock.yaml
@@ -47,7 +51,7 @@ jobs:
       - name: Check if pnpm-lock.yaml changed
         working-directory: ./examples/typescript
         run: |
-          pnpm install
+          pnpm install --ignore-scripts
           if [ -n "$(git diff pnpm-lock.yaml)" ]; then
             echo "Error: pnpm-lock.yaml was modified after running pnpm install. Please commit the updated pnpm-lock.yaml file."
             git diff pnpm-lock.yaml

@@ -94,6 +94,7 @@ on:
 
 permissions:
   contents: read
+  id-token: none
   pull-requests: write
 
 jobs:
@@ -169,12 +170,12 @@ jobs:
       - name: Install and build TypeScript SDK
         working-directory: ./typescript
         run: |
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-scripts
           pnpm build
 
       - name: Install E2E dependencies
         working-directory: ./e2e
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       # --- Build & Setup E2E Components ---
       # setup.sh runs install.sh and build.sh for all servers, clients, and

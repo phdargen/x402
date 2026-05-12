@@ -9,6 +9,10 @@ on:
       - 'java/**'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  id-token: none
+
 jobs:
   test:
     runs-on: ubuntu-latest

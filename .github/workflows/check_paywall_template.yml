@@ -12,6 +12,10 @@ on:
       - "go/http/avm_paywall_template.go"
       - ".github/workflows/check_paywall_template.yml"
 
+permissions:
+  contents: read
+  id-token: none
+
 jobs:
   check-paywall-template:
     runs-on: ubuntu-latest
@@ -31,7 +35,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./typescript
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build workspace dependencies
         working-directory: ./typescript
