@@ -114,6 +114,8 @@ include = [
     "*.py",
     "**/*.py",
     "py.typed",
+    "mcp/CHANGELOG.md",
+    "mcp/README.md",
 ]
 exclude = [
     "tests/",
