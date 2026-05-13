@@ -11,6 +11,7 @@
   "main": "index.js",
   "scripts": {
     "build": "turbo run build",
+    "build:paywall-deps": "turbo run build --filter='@x402/paywall^...'",
     "lint": "turbo run lint",
     "format": "turbo run format",
     "lint:check": "turbo run lint:check",
@@ -23,6 +24,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "tsx": "^4.21.0",
     "tsup": "^8.4.0",
     "turbo": "^2.5.0",
     "typescript": "^5.7.3",
