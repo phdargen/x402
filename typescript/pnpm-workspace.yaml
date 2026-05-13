@@ -9,6 +9,8 @@ packages:
   - site
 overrides:
   cssstyle: 5.3.6
+minimumReleaseAge: 4320 # Only install package versions that have been published for at least 3 days.
+minimumReleaseAgeStrict: true
 allowBuilds:
   bigint-buffer: true
   bufferutil: true
