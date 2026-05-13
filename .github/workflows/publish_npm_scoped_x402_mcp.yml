@@ -5,8 +5,9 @@ on:
 
 jobs:
   publish-npm-x402-mcp:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/main' && 'npm' || '' }}
+    environment: npm
     permissions:
       contents: read
       id-token: write
@@ -22,8 +23,6 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
-          cache-dependency-path: ./typescript
       
       - name: Update npm for OIDC trusted publishing
         run: npm install -g npm@11.14.1 --ignore-scripts
@@ -46,25 +45,19 @@ jobs:
           
           echo "Package: $PACKAGE_NAME@$PACKAGE_VERSION"
           
-          # Check if running on main branch
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "Publishing to NPM (main branch)"
-            
-            # Check if version is a prerelease (contains -alpha, -beta, -rc, etc.)
-            if [[ "$PACKAGE_VERSION" =~ -[a-zA-Z] ]]; then
-              # Extract prerelease tag (e.g., "alpha" from "2.3.0-alpha")
-              PRERELEASE_TAG=$(echo "$PACKAGE_VERSION" | sed -n 's/.*-\([a-zA-Z][a-zA-Z0-9]*\).*/\1/p')
-              if [ -z "$PRERELEASE_TAG" ]; then
-                # Fallback: use "pre" if we can't extract a tag
-                PRERELEASE_TAG="pre"
-              fi
-              echo "Detected prerelease version, publishing with tag: $PRERELEASE_TAG"
-              pnpm publish --provenance --access public --tag "$PRERELEASE_TAG"
-            else
-              echo "Publishing stable version"
-              pnpm publish --provenance --access public
+          echo "Publishing to NPM (main branch)"
+          
+          # Check if version is a prerelease (contains -alpha, -beta, -rc, etc.)
+          if [[ "$PACKAGE_VERSION" =~ -[a-zA-Z] ]]; then
+            # Extract prerelease tag (e.g., "alpha" from "2.3.0-alpha")
+            PRERELEASE_TAG=$(echo "$PACKAGE_VERSION" | sed -n 's/.*-\([a-zA-Z][a-zA-Z0-9]*\).*/\1/p')
+            if [ -z "$PRERELEASE_TAG" ]; then
+              # Fallback: use "pre" if we can't extract a tag
+              PRERELEASE_TAG="pre"
             fi
+            echo "Detected prerelease version, publishing with tag: $PRERELEASE_TAG"
+            pnpm publish --provenance --access public --tag "$PRERELEASE_TAG"
           else
-            echo "Dry run only (non-main branch: ${{ github.ref }})"
-            pnpm publish --dry-run --no-git-checks
+            echo "Publishing stable version"
+            pnpm publish --provenance --access public
           fi

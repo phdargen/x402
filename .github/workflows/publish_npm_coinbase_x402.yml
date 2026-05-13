@@ -5,8 +5,9 @@ on:
 
 jobs:
   publish-npm-coinbase-x402:
+    if: github.ref == 'refs/heads/@coinbase/x402'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/@coinbase/x402' && 'npm' || '' }}
+    environment: npm
     permissions:
       contents: read
       id-token: write
@@ -22,8 +23,6 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-          cache: "pnpm"
-          cache-dependency-path: ./typescript
 
       - name: Install and build
         working-directory: ./typescript
@@ -40,13 +39,7 @@ jobs:
           
           echo "Package: $PACKAGE_NAME@$PACKAGE_VERSION"
           
-          # Check if running on @coinbase/x402 branch
-          if [[ "${{ github.ref }}" == "refs/heads/@coinbase/x402" ]]; then
-            echo "Publishing to NPM (@coinbase/x402 branch)"
-            pnpm publish --provenance --access public --publish-branch "@coinbase/x402"
-          else
-            echo "Dry run only (non-release branch: ${{ github.ref }})"
-            pnpm publish --dry-run --no-git-checks
-          fi
+          echo "Publishing to NPM (@coinbase/x402 branch)"
+          pnpm publish --provenance --access public --publish-branch "@coinbase/x402"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} 
