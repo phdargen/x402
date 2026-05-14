@@ -13,27 +13,24 @@ The Sign-In-With-X extension implements [CAIP-122](https://chainagnostic.org/CAI
 
 ## Server Usage
 
-### Recommended: Hooks (Automatic)
+### Recommended: Extension Factories
 
 ```typescript
 import {
   declareSIWxExtension,
-  siwxResourceServerExtension,
-  createSIWxSettleHook,
-  createSIWxRequestHook,
+  createSIWxResourceServerExtension,
   InMemorySIWxStorage,
 } from '@x402/extensions/sign-in-with-x';
 
 // Storage for tracking paid addresses
 const storage = new InMemorySIWxStorage();
 
-// 1. Register extension for time-based field refreshment
+// Register extension
 const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, new ExactEvmScheme())
-  .registerExtension(siwxResourceServerExtension)  // Refreshes nonce/timestamps per request
-  .onAfterSettle(createSIWxSettleHook({ storage }));  // Records payments
+  .registerExtension(createSIWxResourceServerExtension({ storage }));
 
-// 2. Declare SIWX support in routes
+// Declare SIWX support in routes
 const routes = {
   "GET /data": {
     accepts: [{scheme: "exact", price: "$0.01", network: "eip155:8453", payTo}],
@@ -51,26 +48,20 @@ const routes = {
   },
 };
 
-// 3. Verify incoming SIWX proofs
-const httpServer = new x402HTTPResourceServer(resourceServer, routes)
-  .onProtectedRequest(createSIWxRequestHook({ storage }));  // Grants access when SIWX auth is sufficient
-
 // Optional: Enable smart wallet support (EIP-1271/EIP-6492)
 import { createPublicClient, http } from 'viem';
 import { base } from 'viem/chains';
 
 const publicClient = createPublicClient({ chain: base, transport: http() });
-const httpServerWithSmartWallets = new x402HTTPResourceServer(resourceServer, routes)
-  .onProtectedRequest(createSIWxRequestHook({
+const resourceServerWithSmartWallets = new x402ResourceServer(facilitatorClient)
+  .register(NETWORK, new ExactEvmScheme())
+  .registerExtension(createSIWxResourceServerExtension({
     storage,
     verifyOptions: { evmVerifier: publicClient.verifyMessage },
   }));
 ```
 
-The hooks automatically:
-- **siwxResourceServerExtension**: Derives `network` from `accepts`, `domain`/`uri` from request URL, refreshes `nonce`/`issuedAt`/`expirationTime` per request
-- **createSIWxSettleHook**: Records payment when settlement succeeds
-- **createSIWxRequestHook**: Validates and verifies SIWX proofs, grants access for auth-only routes or when the wallet has paid
+The server extension derives challenge fields from request context, records successful payments, and validates SIWX proofs for declared HTTP routes.
 
 ### Manual Usage (Advanced)
 
@@ -122,21 +113,20 @@ async function handleRequest(request: Request) {
 
 ## Client Usage
 
-### Recommended: Client Hook (Automatic)
+### Recommended: Client Extension
 
 ```typescript
-import { createSIWxClientHook } from '@x402/extensions/sign-in-with-x';
+import { createSIWxClientExtension } from '@x402/extensions/sign-in-with-x';
 import { x402HTTPClient } from '@x402/fetch';
 
-// Configure client with SIWX hook - automatically tries SIWX auth before payment
-const httpClient = new x402HTTPClient(client)
-  .onPaymentRequired(createSIWxClientHook(signer));
+client.registerExtension(createSIWxClientExtension({ signers: [signer] }));
+const httpClient = new x402HTTPClient(client);
 
 // Requests automatically use SIWX auth when server supports it
 const response = await httpClient.fetch(url);
 ```
 
-The client hook automatically:
+The client extension automatically:
 - Detects SIWX support in 402 responses
 - Matches your wallet's chain with server's `supportedChains`
 - Signs and sends the authentication proof
@@ -186,7 +176,7 @@ const response = await fetch(url, {
 
 ### `declareSIWxExtension(options?)`
 
-Creates the extension object for servers to include in PaymentRequired. Most fields are derived automatically from request context when using `siwxResourceServerExtension`.
+Creates the extension declaration for servers to include in PaymentRequired. Most fields are derived automatically from request context when using `createSIWxResourceServerExtension`.
 
 ```typescript
 declareSIWxExtension({
@@ -200,7 +190,7 @@ declareSIWxExtension({
 })
 ```
 
-**Automatic derivation:** When using `siwxResourceServerExtension`, omitted fields are derived:
+**Automatic derivation:** When using `createSIWxResourceServerExtension`, omitted fields are derived:
 - `network` → from `accepts[].network` in route config
 - `resourceUri` → from request URL
 - `domain` → parsed from resourceUri
@@ -208,6 +198,14 @@ declareSIWxExtension({
 For auth-only routes declared with `accepts: []`, `network` cannot be inferred from payment requirements and should be provided explicitly.
 
 **Multi-chain support:** When `network` is an array (or multiple networks in `accepts`), `supportedChains` will contain one entry per network.
+
+### `createSIWxResourceServerExtension(options)`
+
+Creates the server extension that enriches SIWX challenges, records successful payments, and verifies HTTP SIWX proofs for declared routes.
+
+### `createSIWxClientExtension({ signers })`
+
+Creates the client extension that signs compatible SIWX challenges before falling back to payment.
 
 ### `parseSIWxHeader(header)`
 
