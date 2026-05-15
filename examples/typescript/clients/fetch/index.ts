@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   const rpcOptions = evmRpcUrl ? { rpcUrl: evmRpcUrl } : undefined;
 
   const client = new x402Client();
-  //client.register("eip155:*", new ExactEvmScheme(evmSigner, rpcOptions));
+  client.register("eip155:*", new ExactEvmScheme(evmSigner, rpcOptions));
   client.register("eip155:*", new UptoEvmScheme(evmSigner, rpcOptions));
   client.register("solana:*", new ExactSvmScheme(svmSigner));
 
