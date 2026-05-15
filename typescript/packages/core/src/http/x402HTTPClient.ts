@@ -49,7 +49,7 @@ export class x402HTTPClient {
    *
    * @param client - The underlying x402Client for payment logic
    */
-  constructor(private readonly client: x402Client) { }
+  constructor(private readonly client: x402Client) {}
 
   /**
    * Register a hook to handle 402 responses before payment.
