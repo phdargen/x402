@@ -31,6 +31,9 @@ e2e/legacy/servers/gin/gin
 
 # Example build artifacts
 examples/go/servers/upto/upto
+examples/go/servers/builder-codes/builder-codes
+examples/go/facilitator/builder-codes/builder-codes
+examples/go/clients/builder-codes/builder-codes
 
 # Agent artifacts
 TASK.md

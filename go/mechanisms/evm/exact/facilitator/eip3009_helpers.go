@@ -345,6 +345,56 @@ func ExecuteTransferWithAuthorization(
 	)
 }
 
+// ExecuteTransferWithAuthorizationWithSuffix is identical to
+// ExecuteTransferWithAuthorization but appends an arbitrary byte suffix to the
+// transferWithAuthorization calldata. Used by ERC-8021 builder-code attribution.
+//
+// When suffix is empty, this is equivalent to ExecuteTransferWithAuthorization.
+func ExecuteTransferWithAuthorizationWithSuffix(
+	ctx context.Context,
+	signer evm.FacilitatorEvmSigner,
+	tokenAddress string,
+	parsed *ParsedEIP3009Authorization,
+	sigData *evm.ERC6492SignatureData,
+	suffix []byte,
+) (string, error) {
+	if len(suffix) == 0 {
+		return ExecuteTransferWithAuthorization(ctx, signer, tokenAddress, parsed, sigData)
+	}
+	if sigData == nil {
+		return "", fmt.Errorf("missing signature data")
+	}
+
+	var (
+		calldata []byte
+		err      error
+	)
+	if len(sigData.InnerSignature) == 65 {
+		v, r, s := splitSignatureParts(sigData.InnerSignature)
+		calldata, err = packCallData(
+			evm.TransferWithAuthorizationVRSABI,
+			evm.FunctionTransferWithAuthorization,
+			parsed.From,
+			parsed.To,
+			parsed.Value,
+			parsed.ValidAfter,
+			parsed.ValidBefore,
+			parsed.Nonce,
+			v,
+			r,
+			s,
+		)
+	} else {
+		calldata, err = buildTransferWithAuthorizationBytesCalldata(parsed, sigData.InnerSignature)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	calldata = append(calldata, suffix...)
+	return signer.SendTransaction(ctx, tokenAddress, calldata)
+}
+
 // DeploySmartWallet sends the ERC-6492 factory deployment transaction when enabled.
 func DeploySmartWallet(
 	ctx context.Context,

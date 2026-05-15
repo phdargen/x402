@@ -108,5 +108,5 @@ func (f *ExactEvmScheme) Settle(
 		})
 	}
 
-	return f.settleEIP3009(ctx, payload, requirements)
+	return f.settleEIP3009(ctx, payload, requirements, fctx)
 }

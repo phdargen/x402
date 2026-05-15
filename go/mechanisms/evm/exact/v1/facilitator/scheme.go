@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	x402 "github.com/x402-foundation/x402/go"
+	"github.com/x402-foundation/x402/go/extensions/buildercode"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
 	exactfacilitator "github.com/x402-foundation/x402/go/mechanisms/evm/exact/facilitator"
 	evmv1 "github.com/x402-foundation/x402/go/mechanisms/evm/v1"
@@ -305,7 +306,18 @@ func (f *ExactEvmSchemeV1) Settle(
 		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
 	}
 
-	txHash, err := exactfacilitator.ExecuteTransferWithAuthorization(ctx, f.signer, tokenAddress, parsedAuthorization, sigData)
+	// V1 payloads carry no Extensions field, so the facilitator can only contribute
+	// its own "w" code; "a"/"s" remain empty.
+	var suffix []byte
+	if fctx != nil {
+		if ext, ok := fctx.GetExtension(buildercode.Key).(*buildercode.FacilitatorExtension); ok && ext != nil {
+			if s, err := ext.BuildCalldataSuffix(nil); err == nil {
+				suffix = s
+			}
+		}
+	}
+
+	txHash, err := exactfacilitator.ExecuteTransferWithAuthorizationWithSuffix(ctx, f.signer, tokenAddress, parsedAuthorization, sigData, suffix)
 	if err != nil {
 		return nil, x402.NewSettleError(ErrTransactionFailed, verifyResp.Payer, network, "", err.Error())
 	}

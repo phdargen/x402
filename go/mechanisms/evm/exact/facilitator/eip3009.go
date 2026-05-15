@@ -9,6 +9,7 @@ import (
 	"time"
 
 	x402 "github.com/x402-foundation/x402/go"
+	"github.com/x402-foundation/x402/go/extensions/buildercode"
 	"github.com/x402-foundation/x402/go/mechanisms/evm"
 	"github.com/x402-foundation/x402/go/types"
 )
@@ -135,11 +136,31 @@ func (f *ExactEvmScheme) verifyEIP3009(
 	}, nil
 }
 
+// buildBuilderCodeSuffix returns the ERC-8021 calldata suffix to append to the
+// transferWithAuthorization call when a builder-code facilitator extension is
+// registered. Returns nil when the extension is absent or suffix construction
+// fails (a logging hook would go here in production).
+func buildBuilderCodeSuffix(fctx *x402.FacilitatorContext, payloadExtensions map[string]interface{}) []byte {
+	if fctx == nil {
+		return nil
+	}
+	ext, ok := fctx.GetExtension(buildercode.Key).(*buildercode.FacilitatorExtension)
+	if !ok || ext == nil {
+		return nil
+	}
+	suffix, err := ext.BuildCalldataSuffix(payloadExtensions)
+	if err != nil {
+		return nil
+	}
+	return suffix
+}
+
 // settleEIP3009 settles an EIP-3009 payment on-chain.
 func (f *ExactEvmScheme) settleEIP3009(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(payload.Accepted.Network)
 
@@ -191,7 +212,9 @@ func (f *ExactEvmScheme) settleEIP3009(
 		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
 	}
 
-	txHash, err := ExecuteTransferWithAuthorization(ctx, f.signer, tokenAddress, parsedAuthorization, sigData)
+	suffix := buildBuilderCodeSuffix(fctx, payload.Extensions)
+
+	txHash, err := ExecuteTransferWithAuthorizationWithSuffix(ctx, f.signer, tokenAddress, parsedAuthorization, sigData, suffix)
 	if err != nil {
 		return nil, x402.NewSettleError(ErrFailedToExecuteTransfer, verifyResp.Payer, network, "", err.Error())
 	}
