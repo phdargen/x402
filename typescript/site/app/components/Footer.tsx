@@ -52,7 +52,7 @@ export function Footer() {
                 Ecosystem
               </Link>
               <Link
-                href="/writing/x402-v2-launch"
+                href="/writing"
                 className="text-white hover:text-gray-300 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black"
               >
                 Writing
@@ -64,6 +64,14 @@ export function Footer() {
                 className="text-white hover:text-gray-300 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black"
               >
                 Whitepaper
+              </Link>
+              <Link
+                href="https://docs.google.com/forms/d/e/1FAIpQLSc2rlaeH31rZpJ_RFNL7egxi9fYTEUjW9r2kwkhd2pMae2dog/viewform"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-white hover:text-gray-300 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+              >
+                Contact
               </Link>
             </div>
           </nav>
@@ -97,24 +105,16 @@ export function Footer() {
         {/* Copyright row */}
         <div className="flex justify-between items-center">
           <p className="text-white/40 text-sm">
-            While x402 is an open and neutral standard, this website is maintained by
-            {" "}Coinbase Developer Platform. By using this site, you agree to be bound by the{" "}
+            Copyright © x402 a Series of LF Projects, LLC
+            <br />
+            For web site terms of use, trademark policy and other project policies please see{" "}
             <Link
-              href="https://www.coinbase.com/legal/developer-platform/terms-of-service"
+              href="https://lfprojects.org"
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-500 hover:text-blue-400"
             >
-              CDP Terms of Service
-            </Link>{" "}
-            and{" "}
-            <Link
-              href="https://www.coinbase.com/legal/privacy"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-500 hover:text-blue-400"
-            >
-              Global Privacy Policy
+              https://lfprojects.org
             </Link>
             .
           </p>
@@ -128,7 +128,7 @@ export function Footer() {
           alt=""
           aria-hidden="true"
           className="w-full h-auto"
-          style={{ filter: 'brightness(0.75)' }}
+          style={{ filter: "brightness(0.75)" }}
         />
       </div>
     </footer>

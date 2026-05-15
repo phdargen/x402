@@ -1,3 +1,18 @@
+## v2.11.0 - 2026-05-11
+### Added
+- Add Radius Network (chain ID 723487) and Radius Testnet (chain ID 72344) support with SBC as the default stablecoin
+- Log the EXTENSION-RESPONSES header from facilitator verify/settle responses; the HTTP facilitator client decodes the header and logs allowlisted fields (status, rejectedReason, reason, code) without attaching data to VerifyResponse or SettleResponse
+- Bazaar service metadata fields (`serviceName`, `tags`, `iconUrl`) on `types.ResourceInfo`, plus `isValidServiceName` / `sanitizeTags` / `isValidIconUrl` / `sanitizeResourceServiceMetadata` helpers in `extensions/bazaar` that facilitator extraction now applies with soft-drop semantics.
+- Added batch-settlement evm mechanism
+
+## v2.10.0 - 2026-04-27
+### Fixed
+- MCP payload extraction failing with no method set
+
+## v2.9.0 - 2026-04-13
+### Added
+- Add optional `extra.memo` support to SVM exact scheme for seller-defined payment references
+
 ## v2.8.0 - 2026-04-02
 ### Added
 - Add Arbitrum One (chain ID 42161) and Arbitrum Sepolid (chain ID 421614) support with USDC as the default stablecoin

@@ -105,6 +105,10 @@ import axios from "axios";
 import { x402Client, wrapAxiosWithPayment } from "@x402/axios";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { ExactSvmScheme } from "@x402/svm/exact/client";
+import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
+import { toClientEvmSigner } from "@x402/evm";
+import { createPublicClient, http } from "viem";
+import { baseSepolia } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { base58 } from "@scure/base";
@@ -129,8 +133,16 @@ async function createClient() {
 
   // Register EVM scheme if private key is provided
   if (evmPrivateKey) {
-    const evmSigner = privateKeyToAccount(evmPrivateKey);
-    client.register("eip155:*", new ExactEvmScheme(evmSigner));
+    const account = privateKeyToAccount(evmPrivateKey);
+    client.register("eip155:*", new ExactEvmScheme(account));
+    const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+    const batchSigner = toClientEvmSigner(account, publicClient);
+    client.register(
+      "eip155:*",
+      new BatchSettlementEvmScheme(batchSigner, {
+        depositPolicy: { depositMultiplier: 5 },
+      }),
+    );
   }
 
   // Register SVM scheme if private key is provided
@@ -168,7 +180,7 @@ async function main() {
   await server.connect(transport);
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
@@ -196,11 +208,25 @@ The example supports both EVM (Base, Ethereum) and Solana networks. The x402 cli
 import { x402Client, wrapAxiosWithPayment } from "@x402/axios";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { ExactSvmScheme } from "@x402/svm/exact/client";
+import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
+import { toClientEvmSigner } from "@x402/evm";
+import { createPublicClient, http } from "viem";
+import { baseSepolia } from "viem/chains";
+import { privateKeyToAccount } from "viem/accounts";
 
 const client = new x402Client();
 
-// Register EVM scheme for Base/Ethereum payments
-client.register("eip155:*", new ExactEvmScheme(evmSigner));
+const account = privateKeyToAccount(evmPrivateKey);
+const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+
+// Register EVM schemes for Base/Ethereum payments (exact + batch-settlement)
+client.register("eip155:*", new ExactEvmScheme(account));
+client.register(
+  "eip155:*",
+  new BatchSettlementEvmScheme(toClientEvmSigner(account, publicClient), {
+    depositPolicy: { depositMultiplier: 5 },
+  }),
+);
 
 // Register SVM scheme for Solana payments
 client.register("solana:*", new ExactSvmScheme(svmSigner));
@@ -210,8 +236,10 @@ const httpClient = wrapAxiosWithPayment(axios.create({ baseURL }), client);
 ```
 
 When the server returns a 402 response, the client checks the `network` field in the payment requirements:
-- `eip155:*` networks use the EVM scheme
+- `eip155:*` networks use the registered EVM schemes (`exact`, `upto`, **`batch-settlement`**, etc.)
 - `solana:*` networks use the SVM scheme
+
+**Batch settlement:** Paid APIs that advertise **`scheme: "batch-settlement"`** require **`BatchSettlementEvmScheme`** on **`eip155:*`** (in addition to `ExactEvmScheme`). The **Implementation** section and the snippet above register both so tools work against **`exact`** servers and **batch-settlement** APIs. See **[Batch settlement](/schemes/batch-settlement)**.
 
 ***
 
@@ -304,9 +332,52 @@ The example uses these x402 v2 packages:
 
 ***
 
+***
+
+### Making Your MCP Tools Discoverable via Bazaar
+
+If you are building an MCP **server** (not just a client bridge), you can make your paid tools visible in the [x402 Bazaar](/extensions/bazaar) so AI agents and other buyers can discover them without prior knowledge of your server.
+
+Pass `extensions` in the payment wrapper config with the Bazaar discovery metadata:
+
+```typescript
+import { createPaymentWrapper } from "@x402/mcp";
+import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
+
+const paid = createPaymentWrapper(resourceServer, {
+  accepts,
+  resource: {
+    url: "mcp://tool/get_weather",
+    description: "Get current weather for a city",
+  },
+  // Bazaar discovery metadata — facilitators will catalog this tool
+  extensions: declareDiscoveryExtension({
+    toolName: "get_weather",
+    description: "Get current weather for a city",
+    transport: "sse",
+    inputSchema: {
+      properties: { city: { type: "string", description: "City name" } },
+      required: ["city"],
+    },
+    example: { city: "San Francisco" },
+  }),
+});
+```
+
+When a client pays for the tool, the facilitator extracts the Bazaar extension from the payment payload and indexes the tool in `/discovery/resources` with `type: "mcp"`. Buyers can then discover it by querying a Bazaar-enabled facilitator:
+
+```typescript
+const mcpTools = await client.extensions.bazaar.listResources({ type: "mcp" });
+```
+
+See the full [Bazaar documentation](/extensions/bazaar) for details on buyers querying and calling discovered MCP tools.
+
+***
+
 ### Next Steps
 
 * [See the full example in the repo](https://github.com/x402-foundation/x402/tree/main/examples/typescript/clients/mcp)
 * Try integrating with your own x402-compatible APIs
 * Extend the MCP server with more tools or custom logic as needed
 * [Learn about building x402 servers](/getting-started/quickstart-for-sellers)
+* [Explore the Bazaar discovery layer](/extensions/bazaar)

@@ -1,19 +1,36 @@
 # @x402/fastify
 
-## 2.9.0
+## 2.12.0
 
 ### Minor Changes
 
-- bd42498: Added Fastify framework adapter for x402 payment middleware
-- 2250cae: Migrated project from coinbase/x402 to x402-foundation/x402 organization
+- 45d7d19: Added cancellationDispatcher for failed route handlers
+- Updated dependencies [608034f]
+- Updated dependencies [d235050]
+- Updated dependencies [45d7d19]
+- Updated dependencies [ee7c156]
+  - @x402/core@2.12.0
+  - @x402/extensions@2.12.0
+  - @x402/paywall@2.12.0
+
+## 2.11.0
+
+### Minor Changes
+
+- Updated dependencies [a051f48]
+- Updated dependencies [032295b]
+- Updated dependencies [dc04108]
+- Updated dependencies [484030b]
+  - @x402/core@2.11.0
+  - @x402/paywall@2.11.0
+  - @x402/extensions@2.11.0
+
+## 2.10.1
 
 ### Patch Changes
 
-- a0ec8e6: Applied monkey-patch on reply.raw write operations and buffered response to prevent content leak from direct raw writes bypassing Fastify's onSend lifecycle
-- Updated dependencies [8cf3fca]
-- Updated dependencies [c0e3969]
-- Updated dependencies [2250cae]
-- Updated dependencies [d352574]
-  - @x402/core@2.9.0
-  - @x402/paywall@2.9.0
-  - @x402/extensions@2.9.0
+- Fix `@x402/core` workspace resolution.
+
+## 2.10.0
+
+- Implements Fastify middleware
