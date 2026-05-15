@@ -170,9 +170,10 @@ describe("Network Handlers", () => {
         expect(stablecoinKeys.has(network)).toBe(true);
         const info = DEFAULT_STABLECOINS[network];
         expect(NETWORK_DECIMALS[network]).toBe(info!.decimals);
-        expect(info!.decimals, `${network} should be omitted when decimals are ${fallbackDecimals}`).not.toBe(
-          fallbackDecimals,
-        );
+        expect(
+          info!.decimals,
+          `${network} should be omitted when decimals are ${fallbackDecimals}`,
+        ).not.toBe(fallbackDecimals);
       }
     });
   });
