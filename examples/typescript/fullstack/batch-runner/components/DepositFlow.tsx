@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount, useWalletClient } from "wagmi";
+import { useConnection, useWalletClient } from "wagmi";
 import type { Account, WalletClient } from "viem";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
@@ -63,7 +63,7 @@ type DepositFlowProps = {
 };
 
 export function DepositFlow({ onSessionReady }: DepositFlowProps) {
-  const { address } = useAccount();
+  const { address } = useConnection();
   const { data: walletClient } = useWalletClient();
   const [status, setStatus] = useState<"idle" | "signing" | "depositing" | "ready">("idle");
   const [error, setError] = useState<string | null>(null);

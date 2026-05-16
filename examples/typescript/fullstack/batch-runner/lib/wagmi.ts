@@ -1,19 +1,20 @@
 import { http, createConfig, createStorage, cookieStorage } from "wagmi";
-import { baseSepolia } from "wagmi/chains";
-import { baseAccount, injected } from "wagmi/connectors";
+import { base, baseSepolia } from "wagmi/chains";
+import { baseAccount } from "wagmi/connectors";
 
 export const config = createConfig({
-  chains: [baseSepolia],
+  chains: [base, baseSepolia],
+  multiInjectedProviderDiscovery: false,
   connectors: [
     baseAccount({
       appName: "Batch Runner",
     }),
-    injected(),
   ],
   storage: createStorage({ storage: cookieStorage }),
   ssr: true,
   transports: {
-    [baseSepolia.id]: http("https://sepolia.base.org"),
+    [base.id]: http(),
+    [baseSepolia.id]: http(),
   },
 });
 

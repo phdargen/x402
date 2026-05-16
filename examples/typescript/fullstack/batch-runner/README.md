@@ -6,7 +6,7 @@ A Chrome-dino-style browser game showcasing x402 batch-settlement. Players depos
 
 ## How It Works
 
-1. **Connect** -- Player connects wallet via wagmi (Coinbase Smart Wallet / MetaMask / etc.)
+1. **Connect** -- Player connects via wagmi with the Base Account connector (`@base-org/account`).
 2. **Derive session key** -- Wallet signs a delegation message (one popup). A deterministic session key is derived via `keccak256(signature + channelSalt)`.
 3. **Play** -- Auto-running blue robot dino. Each jump signs a cumulative voucher (~0.1ms, no wallet popup). Avoid obstacles:
    - **Gas pumps** -- freeze you for 2.5 seconds (demonstrates on-chain transaction latency)
@@ -55,7 +55,7 @@ Open [http://localhost:3000](http://localhost:3000).
 - **Framework**: Next.js 16, App Router
 - **Styling**: Tailwind CSS v4
 - **Game**: HTML5 Canvas + `requestAnimationFrame`
-- **Wallet**: wagmi v2 + viem (Coinbase Smart Wallet + injected)
+- **Wallet**: wagmi v3 + viem (Base Account only; see `lib/wagmi.ts`)
 - **x402**: `@x402/evm` (`signVoucher`, `computeChannelId`, EIP-712 verification)
 - **Leaderboard**: Upstash Redis (optional, falls back to in-memory)
 - **Network**: Base Sepolia (testnet)

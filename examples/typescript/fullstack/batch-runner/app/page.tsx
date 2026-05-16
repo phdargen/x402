@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { useConnection } from "wagmi";
 import { WalletConnect } from "@/components/WalletConnect";
 import { DepositFlow, type SessionInfo } from "@/components/DepositFlow";
 import { Game } from "@/components/Game";
 import { Leaderboard } from "@/components/Leaderboard";
 
 export default function Home() {
-  const { isConnected } = useAccount();
+  const { isConnected } = useConnection();
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [gameKey, setGameKey] = useState(0);
 

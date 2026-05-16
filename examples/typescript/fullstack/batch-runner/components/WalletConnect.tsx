@@ -1,11 +1,12 @@
 "use client";
 
-import { useAccount, useConnect, useDisconnect } from "wagmi";
+import { useConnection, useConnect, useConnectors, useDisconnect } from "wagmi";
 
 export function WalletConnect() {
-  const { address, isConnected, isConnecting, isReconnecting } = useAccount();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
+  const { address, isConnected, isConnecting, isReconnecting } = useConnection();
+  const connect = useConnect();
+  const connectors = useConnectors();
+  const disconnect = useDisconnect();
 
   if (isReconnecting) {
     return (
@@ -20,7 +21,7 @@ export function WalletConnect() {
           {address.slice(0, 6)}...{address.slice(-4)}
         </span>
         <button
-          onClick={() => disconnect()}
+          onClick={() => disconnect.mutate()}
           className="px-3 py-1.5 text-xs border border-[var(--color-text-secondary)] rounded-lg
                      hover:border-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]
                      transition-colors cursor-pointer"
@@ -36,7 +37,7 @@ export function WalletConnect() {
       {connectors.map((connector) => (
         <button
           key={connector.uid}
-          onClick={() => connect({ connector })}
+          onClick={() => connect.mutate({ connector })}
           disabled={isConnecting}
           className="px-6 py-3 bg-[var(--color-base-blue)] text-white rounded-xl font-bold
                      hover:bg-[var(--color-base-blue-dark)] transition-colors

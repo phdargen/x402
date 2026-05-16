@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import { Geist_Mono } from "next/font/google";
+import { headers } from "next/headers";
+import { cookieToInitialState } from "wagmi";
+import { config } from "@/lib/wagmi";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -14,11 +17,12 @@ export const metadata: Metadata = {
     "Chrome-dino-style browser game showcasing x402 batch-settlement. Deposit $1 USDC, each jump costs $0.001 via a signed voucher.",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const initialState = cookieToInitialState(config, (await headers()).get("cookie"));
   return (
     <html lang="en">
       <body className={`${geistMono.variable} antialiased`}>
-        <Providers>{children}</Providers>
+        <Providers initialState={initialState}>{children}</Providers>
       </body>
     </html>
   );
