@@ -1,20 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { useConnection } from "wagmi";
-import { WalletConnect } from "@/components/WalletConnect";
+import { WalletConnect, type BaseAuthSession } from "@/components/WalletConnect";
 import { DepositFlow, type SessionInfo } from "@/components/DepositFlow";
 import { Game } from "@/components/Game";
 import { Leaderboard } from "@/components/Leaderboard";
 
 export default function Home() {
-  const { isConnected } = useConnection();
+  const [authSession, setAuthSession] = useState<BaseAuthSession | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [gameKey, setGameKey] = useState(0);
 
   const handlePlayAgain = () => {
     setSession(null);
-    setGameKey((k) => k + 1);
+    setGameKey(k => k + 1);
+  };
+
+  const handleSignOut = () => {
+    setAuthSession(null);
+    setSession(null);
   };
 
   return (
@@ -29,15 +33,15 @@ export default function Home() {
             1,000 jumps. $1. Zero gas.
           </p>
         </div>
-        <WalletConnect />
+        <WalletConnect session={authSession} onSignIn={setAuthSession} onSignOut={handleSignOut} />
       </header>
 
       {/* Game area */}
       <div className="w-full max-w-2xl">
-        {!isConnected ? (
+        {!authSession ? (
           <Landing />
         ) : !session ? (
-          <DepositFlow onSessionReady={setSession} />
+          <DepositFlow authSession={authSession} onSessionReady={setSession} />
         ) : (
           <Game key={gameKey} session={session} onPlayAgain={handlePlayAgain} />
         )}
@@ -68,9 +72,8 @@ function Landing() {
         <span className="text-[var(--color-base-blue)]">Batch</span> Runner
       </h2>
       <p className="text-sm text-[var(--color-text-secondary)] text-center max-w-sm leading-relaxed">
-        A Chrome-dino-style game powered by x402 batch-settlement.
-        Deposit $1 USDC, each jump costs $0.001 via a signed voucher.
-        No gas fees, no wallet popups during gameplay.
+        A Chrome-dino-style game powered by x402 batch-settlement. Deposit $0.01 per play, each jump
+        costs $0.001 via a signed voucher. No gas fees, no wallet popups during gameplay.
       </p>
       <div className="grid grid-cols-3 gap-6 text-center text-xs mt-2">
         <div>
@@ -87,7 +90,7 @@ function Landing() {
         </div>
       </div>
       <p className="text-xs text-[var(--color-text-secondary)] mt-4">
-        Connect your wallet to start playing
+        Sign in with Base to start playing
       </p>
     </div>
   );

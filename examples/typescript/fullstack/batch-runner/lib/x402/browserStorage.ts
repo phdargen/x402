@@ -34,3 +34,21 @@ export class LocalStorageChannelStorage {
     localStorage.removeItem(STORAGE_PREFIX + key);
   }
 }
+
+export class TopUpChannelStorage extends LocalStorageChannelStorage {
+  async get(key: string): Promise<BatchSettlementClientContext | undefined> {
+    const context = await super.get(key);
+    if (!context) return context;
+
+    const charged = context.chargedCumulativeAmount ?? context.totalClaimed ?? "0";
+    return { ...context, balance: charged };
+  }
+}
+
+export function availableChannelBalance(context: BatchSettlementClientContext | undefined): bigint {
+  if (!context?.balance) return 0n;
+
+  const charged = BigInt(context.chargedCumulativeAmount ?? context.totalClaimed ?? "0");
+  const balance = BigInt(context.balance);
+  return balance > charged ? balance - charged : 0n;
+}

@@ -8,6 +8,7 @@ import type { GameState } from "@/lib/game/types";
 import {
   BANK_PENALTY_MULTIPLIER,
   JUMP_COST_UNITS,
+  PLAY_PRICE_UNITS,
   RECEIVER_ADDRESS,
   SKIP_DEPOSIT,
 } from "@/lib/x402/config";
@@ -27,8 +28,11 @@ export function Game({ session, onPlayAgain }: GameProps) {
   const animRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
 
-  const balanceRef = useRef(session.depositedBalance);
-  const cumulativeRef = useRef(0n);
+  const balanceRef = useRef(
+    session.roundBudget < PLAY_PRICE_UNITS ? session.roundBudget : PLAY_PRICE_UNITS,
+  );
+  const cumulativeRef = useRef(session.chargedCumulativeAmount);
+  const roundSpentRef = useRef(0n);
   const jumpCountRef = useRef(0);
   const bankPenaltyRef = useRef(0);
   const channelIdRef = useRef<`0x${string}` | null>(session.channelId);
@@ -39,7 +43,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
   } | null>(null);
 
   const [hudState, setHudState] = useState({
-    balance: Number(session.depositedBalance),
+    balance: Number(balanceRef.current),
     distance: 0,
     voucherCount: 0,
     bankPenaltyJumpsLeft: 0,
@@ -62,6 +66,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
 
     balanceRef.current -= cost;
     cumulativeRef.current += cost;
+    roundSpentRef.current += cost;
     jumpCountRef.current++;
 
     if (bankPenaltyRef.current > 0) {
@@ -72,6 +77,12 @@ export function Game({ session, onPlayAgain }: GameProps) {
     if (cid) {
       signGameVoucher(session.voucherSigner, cid, cumulativeRef.current).then(voucher => {
         lastVoucherRef.current = voucher;
+        session.storage.set(cid, {
+          balance: session.channelBalance.toString(),
+          chargedCumulativeAmount: cumulativeRef.current.toString(),
+          signedMaxClaimable: cumulativeRef.current.toString(),
+          signature: voucher.signature,
+        });
       });
     }
 
@@ -281,7 +292,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
         <GameOver
           distance={stateRef.current.distance}
           voucherCount={jumpCountRef.current}
-          totalSpent={Number(cumulativeRef.current)}
+          totalSpent={Number(roundSpentRef.current)}
           rank={rank}
           onPlayAgain={onPlayAgain}
           onSubmitScore={handleSubmitScore}

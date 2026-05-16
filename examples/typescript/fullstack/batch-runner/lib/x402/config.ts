@@ -6,20 +6,20 @@ export const CHAIN_ID = 84532;
 export const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
 export const USDC_DECIMALS = 6;
 
-export const DEPOSIT_AMOUNT = "$0.01";
+export const PLAY_PRICE = "$0.01";
 export const JUMP_PRICE = "$0.001";
+export const MIN_PLAY_CREDITS = 1;
+export const MAX_PLAY_CREDITS = 10;
 export const BANK_PENALTY_MULTIPLIER = 2;
 
-export const DEPOSIT_AMOUNT_UNITS = BigInt(
-  convertToTokenAmount(DEPOSIT_AMOUNT.slice(1), USDC_DECIMALS),
-);
+export const PLAY_PRICE_UNITS = BigInt(convertToTokenAmount(PLAY_PRICE.slice(1), USDC_DECIMALS));
 export const JUMP_COST_UNITS = BigInt(convertToTokenAmount(JUMP_PRICE.slice(1), USDC_DECIMALS));
 
-if (DEPOSIT_AMOUNT_UNITS % JUMP_COST_UNITS !== 0n) {
-  throw new Error("Deposit amount must be a whole multiple of the jump price");
+if (PLAY_PRICE_UNITS % JUMP_COST_UNITS !== 0n) {
+  throw new Error("Play price must be a whole multiple of the jump price");
 }
 
-export const DEPOSIT_MULTIPLIER = Number(DEPOSIT_AMOUNT_UNITS / JUMP_COST_UNITS);
+export const JUMPS_PER_PLAY = Number(PLAY_PRICE_UNITS / JUMP_COST_UNITS);
 
 export const WITHDRAW_DELAY = 900; // 15 minutes (minimum)
 

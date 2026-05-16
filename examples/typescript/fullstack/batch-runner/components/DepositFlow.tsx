@@ -1,25 +1,59 @@
 "use client";
 
-import { useState } from "react";
-import { useConnection, useWalletClient } from "wagmi";
+import { useEffect, useMemo, useState } from "react";
+import { decodePaymentRequiredHeader, decodePaymentResponseHeader } from "@x402/core/http";
+import type { PaymentRequirements } from "@x402/core/types";
 import type { Account, WalletClient } from "viem";
-import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/client";
-import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
+import { createPublicClient, http } from "viem";
+import { baseSepolia } from "viem/chains";
+import { BATCH_SETTLEMENT_ADDRESS } from "@x402/evm";
+import { BatchSettlementEvmScheme, computeChannelId } from "@x402/evm/batch-settlement/client";
+import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import {
-  DEPOSIT_AMOUNT,
-  DEPOSIT_AMOUNT_UNITS,
-  DEPOSIT_MULTIPLIER,
   JUMP_PRICE,
+  MAX_PLAY_CREDITS,
+  MIN_PLAY_CREDITS,
   NETWORK,
+  PLAY_PRICE,
+  PLAY_PRICE_UNITS,
   SKIP_DEPOSIT,
 } from "@/lib/x402/config";
 import {
-  generateChannelSalt,
-  deriveSessionKey,
-  buildDelegationMessage,
+  createStoredSessionKey,
+  loadStoredSessionKey,
+  signerFromStoredSession,
+  type StoredSessionKey,
 } from "@/lib/x402/sessionKey";
-import { LocalStorageChannelStorage } from "@/lib/x402/browserStorage";
+import {
+  availableChannelBalance,
+  LocalStorageChannelStorage,
+  TopUpChannelStorage,
+  type BatchSettlementClientContext,
+} from "@/lib/x402/browserStorage";
 import type { ClientEvmSigner } from "@x402/evm";
+import type { BaseAuthSession } from "./WalletConnect";
+
+const publicClient = createPublicClient({
+  chain: baseSepolia,
+  transport: http(),
+});
+
+const channelsAbi = [
+  {
+    type: "function",
+    name: "channels",
+    stateMutability: "view",
+    inputs: [{ name: "channelId", type: "bytes32" }],
+    outputs: [
+      { name: "balance", type: "uint256" },
+      { name: "totalClaimed", type: "uint256" },
+    ],
+  },
+] as const;
+
+const readContract = publicClient.readContract as (
+  args: Record<string, unknown>,
+) => Promise<unknown>;
 
 function readChannelId(settleExtra: Record<string, unknown> | undefined): `0x${string}` | null {
   const channelState = settleExtra?.channelState;
@@ -40,12 +74,13 @@ function wagmiToClientSigner(walletClient: WalletClient): ClientEvmSigner {
     address: walletClient.account.address,
     signTypedData: message =>
       walletClient.signTypedData({
-        account: walletClient.account as Account,
+        account: walletClient.account as Account | `0x${string}`,
         domain: message.domain,
         types: message.types,
         primaryType: message.primaryType,
         message: message.message,
       }),
+    readContract: args => readContract(args as unknown as Record<string, unknown>),
   };
 }
 
@@ -55,77 +90,85 @@ export type SessionInfo = {
   voucherSigner: ClientEvmSigner;
   playerAddress: `0x${string}`;
   channelId: `0x${string}` | null;
-  depositedBalance: bigint;
+  channelBalance: bigint;
+  chargedCumulativeAmount: bigint;
+  roundBudget: bigint;
+  storage: LocalStorageChannelStorage;
 };
 
 type DepositFlowProps = {
+  authSession: BaseAuthSession;
   onSessionReady: (session: SessionInfo) => void;
 };
 
-export function DepositFlow({ onSessionReady }: DepositFlowProps) {
-  const { address } = useConnection();
-  const { data: walletClient } = useWalletClient();
-  const [status, setStatus] = useState<"idle" | "signing" | "depositing" | "ready">("idle");
+type ChannelSnapshot = {
+  channelId: `0x${string}` | null;
+  balance: bigint;
+  chargedCumulativeAmount: bigint;
+  availableBalance: bigint;
+};
+
+export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
+  const [storedSession, setStoredSession] = useState<StoredSessionKey | null>(null);
+  const [snapshot, setSnapshot] = useState<ChannelSnapshot | null>(null);
+  const [selectedCredits, setSelectedCredits] = useState(MIN_PLAY_CREDITS);
+  const [status, setStatus] = useState<"loading" | "idle" | "depositing" | "refunding">("loading");
   const [error, setError] = useState<string | null>(null);
 
-  const startSession = async () => {
-    if (!walletClient || !address) return;
+  const storage = useMemo(() => new LocalStorageChannelStorage(), []);
+  const topUpStorage = useMemo(() => new TopUpChannelStorage(), []);
 
-    setStatus("signing");
+  const selectedDeposit = BigInt(selectedCredits) * PLAY_PRICE_UNITS;
+  const canStart = SKIP_DEPOSIT || (snapshot?.availableBalance ?? 0n) >= PLAY_PRICE_UNITS;
+  const { voucherSigner } = storedSession
+    ? signerFromStoredSession(storedSession)
+    : { voucherSigner: null };
+
+  useEffect(() => {
+    const existing = loadStoredSessionKey(authSession.address);
+    const next = existing ?? createStoredSessionKey(authSession.address, authSession.signature);
+    setStoredSession(next);
+  }, [authSession.address, authSession.signature]);
+
+  useEffect(() => {
+    if (!storedSession) return;
+
+    refreshChannel(storedSession)
+      .catch(err => setError(err instanceof Error ? err.message : "Failed to load channel"))
+      .finally(() => setStatus("idle"));
+  }, [storedSession]);
+
+  const startSession = () => {
+    if (!storedSession || !voucherSigner) return;
+
+    onSessionReady({
+      channelSalt: storedSession.channelSalt,
+      sessionAddress: storedSession.sessionAddress,
+      voucherSigner,
+      playerAddress: authSession.address,
+      channelId: snapshot?.channelId ?? null,
+      channelBalance: snapshot?.balance ?? PLAY_PRICE_UNITS,
+      chargedCumulativeAmount: snapshot?.chargedCumulativeAmount ?? 0n,
+      roundBudget: PLAY_PRICE_UNITS,
+      storage,
+    });
+  };
+
+  const fundChannel = async () => {
+    if (!storedSession || !voucherSigner) return;
+
+    setStatus("depositing");
     setError(null);
 
     try {
-      // 1. Derive session key from wallet delegation signature (one popup)
-      const channelSalt = generateChannelSalt();
-      const message = buildDelegationMessage(channelSalt);
-
-      const delegationSig = await walletClient.signMessage({
-        account: address,
-        message,
-      });
-
-      const { sessionAccount, voucherSigner } = deriveSessionKey(
-        delegationSig as `0x${string}`,
-        channelSalt,
-      );
-
-      // Skip-deposit mode: fake balance, no on-chain interaction
-      if (SKIP_DEPOSIT) {
-        console.log("[batch-runner] SKIP_DEPOSIT=true — skipping on-chain deposit");
-        onSessionReady({
-          channelSalt,
-          sessionAddress: sessionAccount.address,
-          voucherSigner,
-          playerAddress: address,
-          channelId: null,
-          depositedBalance: DEPOSIT_AMOUNT_UNITS,
-        });
-        setStatus("ready");
-        return;
-      }
-
-      // 2. Create the wallet signer for the BatchSettlementEvmScheme
-      setStatus("depositing");
-
-      const walletSigner = wagmiToClientSigner(walletClient);
-
-      // 3. Create BatchSettlementEvmScheme with session-key voucherSigner
-      const storage = new LocalStorageChannelStorage();
-      const batchedScheme = new BatchSettlementEvmScheme(walletSigner, {
-        voucherSigner,
-        salt: channelSalt,
-        depositPolicy: { depositMultiplier: DEPOSIT_MULTIPLIER },
-        storage,
-      });
-
-      // 4. Register the scheme and create payment-enabled fetch
+      const currentAvailable = snapshot?.availableBalance ?? 0n;
+      const fundingStorage = currentAvailable > 0n ? topUpStorage : storage;
+      const batchedScheme = createBatchedScheme(storedSession, fundingStorage, selectedDeposit);
       const client = new x402Client();
       client.register(NETWORK, batchedScheme);
 
       const fetchWithPayment = wrapFetchWithPayment(fetch, client);
-      const httpClient = new x402HTTPClient(client);
 
-      // 5. Hit the game start endpoint — triggers 402 → deposit flow
       const response = await fetchWithPayment(`${window.location.origin}/api/game/start`, {
         method: "GET",
       });
@@ -135,29 +178,119 @@ export function DepositFlow({ onSessionReady }: DepositFlowProps) {
         throw new Error(`Deposit failed (${response.status}): ${text}`);
       }
 
-      // 6. Process the payment response to update local channel state
-      const paymentResult = await httpClient.processResponse(response);
-      const channelId =
-        paymentResult.kind === "success"
-          ? readChannelId(paymentResult.settleResponse.extra)
-          : null;
-
-      onSessionReady({
-        channelSalt,
-        sessionAddress: sessionAccount.address,
-        voucherSigner,
-        playerAddress: address,
-        channelId,
-        depositedBalance: DEPOSIT_AMOUNT_UNITS,
-      });
-
-      setStatus("ready");
+      await refreshChannel(storedSession, readSettledChannelId(response));
     } catch (err) {
       console.error("[batch-runner] Deposit error:", err);
       setError(err instanceof Error ? err.message : "Failed to deposit");
+    } finally {
       setStatus("idle");
     }
   };
+
+  const requestRefund = async () => {
+    if (!storedSession) return;
+
+    setStatus("refunding");
+    setError(null);
+
+    try {
+      const batchedScheme = createBatchedScheme(storedSession, storage, selectedDeposit);
+      await batchedScheme.refund(`${window.location.origin}/api/game/start`);
+      await refreshChannel(storedSession);
+    } catch (err) {
+      console.error("[batch-runner] Refund error:", err);
+      setError(err instanceof Error ? err.message : "Failed to request refund");
+    } finally {
+      setStatus("idle");
+    }
+  };
+
+  async function refreshChannel(
+    session: StoredSessionKey,
+    knownChannelId?: `0x${string}` | null,
+  ): Promise<void> {
+    if (SKIP_DEPOSIT) {
+      setSnapshot({
+        channelId: null,
+        balance: PLAY_PRICE_UNITS,
+        chargedCumulativeAmount: 0n,
+        availableBalance: PLAY_PRICE_UNITS,
+      });
+      return;
+    }
+
+    const channelId = knownChannelId ?? (await getChannelId(session));
+    if (!channelId) {
+      setSnapshot({
+        channelId: null,
+        balance: 0n,
+        chargedCumulativeAmount: 0n,
+        availableBalance: 0n,
+      });
+      return;
+    }
+
+    let context = await storage.get(channelId);
+    context = await recoverChannelContext(channelId, context);
+
+    setSnapshot({
+      channelId,
+      balance: BigInt(context?.balance ?? "0"),
+      chargedCumulativeAmount: BigInt(context?.chargedCumulativeAmount ?? "0"),
+      availableBalance: availableChannelBalance(context),
+    });
+  }
+
+  async function getChannelId(session: StoredSessionKey): Promise<`0x${string}` | null> {
+    const requirements = await getGamePaymentRequirements();
+    if (!requirements) return null;
+
+    const batchedScheme = createBatchedScheme(session, storage, selectedDeposit);
+    const channelConfig = batchedScheme.buildChannelConfig(requirements);
+    return computeChannelId(channelConfig, requirements.network);
+  }
+
+  async function recoverChannelContext(
+    channelId: `0x${string}`,
+    context: BatchSettlementClientContext | undefined,
+  ): Promise<BatchSettlementClientContext | undefined> {
+    const [balance, totalClaimed] = (await readContract({
+      address: BATCH_SETTLEMENT_ADDRESS,
+      abi: channelsAbi,
+      functionName: "channels",
+      args: [channelId],
+    })) as [bigint, bigint];
+
+    if (balance === 0n && totalClaimed === 0n) return context;
+
+    const next = {
+      ...(context ?? {}),
+      balance: balance.toString(),
+      chargedCumulativeAmount: totalClaimed.toString(),
+      totalClaimed: totalClaimed.toString(),
+    };
+    await storage.set(channelId, next);
+    return next;
+  }
+
+  function createBatchedScheme(
+    session: StoredSessionKey,
+    channelStorage: LocalStorageChannelStorage,
+    depositAmount: bigint,
+  ): BatchSettlementEvmScheme {
+    const walletSigner = wagmiToClientSigner(authSession.walletClient);
+    const { voucherSigner: sessionVoucherSigner } = signerFromStoredSession(session);
+
+    return new BatchSettlementEvmScheme(walletSigner, {
+      voucherSigner: sessionVoucherSigner,
+      salt: session.channelSalt,
+      storage: channelStorage,
+      depositStrategy: () => depositAmount.toString(),
+    });
+  }
+
+  const balanceFormatted = formatUsdc(snapshot?.availableBalance ?? 0n);
+  const selectedDepositFormatted = formatUsdc(selectedDeposit);
 
   return (
     <div
@@ -168,49 +301,109 @@ export function DepositFlow({ onSessionReady }: DepositFlowProps) {
         <h2 className="text-xl font-bold mb-2">Start a Game Session</h2>
         <p className="text-sm text-[var(--color-text-secondary)] max-w-xs leading-relaxed">
           {SKIP_DEPOSIT
-            ? "Debug mode: deposit skipped. Sign to derive your session key."
-            : `Sign a delegation message, then deposit ${DEPOSIT_AMOUNT} USDC into your game channel. Each jump costs ${JUMP_PRICE} via a signed voucher.`}
+            ? "Debug mode: deposit skipped. Base Account sign-in creates your session key."
+            : `Deposit ${PLAY_PRICE} per play into your game channel. Each jump costs ${JUMP_PRICE} via a signed voucher.`}
         </p>
       </div>
 
       <div className="grid grid-cols-3 gap-4 text-center text-xs">
         <div className="p-3 rounded-lg bg-[var(--color-surface)]">
-          <div className="text-[var(--color-base-blue)] font-bold text-lg">{DEPOSIT_AMOUNT}</div>
-          <div className="text-[var(--color-text-secondary)] mt-1">Budget</div>
+          <div className="text-[var(--color-base-blue)] font-bold text-lg">${balanceFormatted}</div>
+          <div className="text-[var(--color-text-secondary)] mt-1">Balance</div>
         </div>
         <div className="p-3 rounded-lg bg-[var(--color-surface)]">
-          <div className="text-[var(--color-accent-green)] font-bold text-lg">{JUMP_PRICE}</div>
+          <div className="text-[var(--color-accent-green)] font-bold text-lg">{PLAY_PRICE}</div>
+          <div className="text-[var(--color-text-secondary)] mt-1">Per play</div>
+        </div>
+        <div className="p-3 rounded-lg bg-[var(--color-surface)]">
+          <div className="text-[var(--color-accent-orange)] font-bold text-lg">{JUMP_PRICE}</div>
           <div className="text-[var(--color-text-secondary)] mt-1">Per jump</div>
-        </div>
-        <div className="p-3 rounded-lg bg-[var(--color-surface)]">
-          <div className="text-[var(--color-accent-orange)] font-bold text-lg">0</div>
-          <div className="text-[var(--color-text-secondary)] mt-1">Gas fees</div>
         </div>
       </div>
 
+      <label className="w-full max-w-xs text-xs text-[var(--color-text-secondary)]">
+        Plays to deposit:{" "}
+        <span className="font-bold text-white">
+          {selectedCredits} (${selectedDepositFormatted})
+        </span>
+        <input
+          type="range"
+          min={MIN_PLAY_CREDITS}
+          max={MAX_PLAY_CREDITS}
+          value={selectedCredits}
+          onChange={event => setSelectedCredits(Number(event.target.value))}
+          className="mt-3 w-full accent-[var(--color-base-blue)]"
+        />
+      </label>
+
+      <div className="flex flex-col sm:flex-row gap-3">
+        <button
+          onClick={fundChannel}
+          disabled={
+            SKIP_DEPOSIT ||
+            status === "loading" ||
+            status === "depositing" ||
+            status === "refunding"
+          }
+          className="px-6 py-3 border border-[var(--color-base-blue)] text-[var(--color-base-blue)]
+                     rounded-xl font-bold text-sm hover:bg-[var(--color-base-blue)]/10 transition-colors
+                     disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {status === "depositing"
+            ? "Depositing..."
+            : `Deposit ${selectedCredits} Play${selectedCredits === 1 ? "" : "s"}`}
+        </button>
+
+        <button
+          onClick={startSession}
+          disabled={!canStart || status !== "idle"}
+          className="px-6 py-3 bg-[var(--color-base-blue)] text-white rounded-xl font-bold text-sm
+                     hover:bg-[var(--color-base-blue-dark)] transition-colors
+                     disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          Start Game
+        </button>
+      </div>
+
       <button
-        onClick={startSession}
-        disabled={status === "signing" || status === "depositing"}
-        className="px-8 py-3 bg-[var(--color-base-blue)] text-white rounded-xl font-bold text-sm
-                   hover:bg-[var(--color-base-blue-dark)] transition-colors
+        onClick={requestRefund}
+        disabled={(snapshot?.availableBalance ?? 0n) === 0n || status !== "idle"}
+        className="px-4 py-2 text-xs border border-[var(--color-text-secondary)] rounded-lg
+                   hover:border-[var(--color-accent-red)] hover:text-[var(--color-accent-red)]
+                   transition-colors
                    disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
       >
-        {status === "signing"
-          ? "Sign with wallet..."
-          : status === "depositing"
-            ? `Depositing ${DEPOSIT_AMOUNT} USDC...`
-            : SKIP_DEPOSIT
-              ? "Sign & Start (debug)"
-              : `Sign & Deposit ${DEPOSIT_AMOUNT} USDC`}
+        {status === "refunding" ? "Requesting refund..." : "Request Refund"}
       </button>
 
       <p className="text-xs text-[var(--color-text-secondary)] text-center max-w-xs">
         {SKIP_DEPOSIT
           ? "NEXT_PUBLIC_SKIP_DEPOSIT=true — no on-chain deposit."
-          : "One wallet popup for delegation + one for the ERC-3009 deposit authorization. No more popups during gameplay."}
+          : "Deposits use one ERC-3009 authorization. Gameplay signs vouchers with a browser-only session key."}
       </p>
 
       {error && <p className="text-xs text-[var(--color-accent-red)]">{error}</p>}
     </div>
   );
+}
+
+async function getGamePaymentRequirements(): Promise<PaymentRequirements | null> {
+  const response = await fetch(`${window.location.origin}/api/game/start`, { method: "GET" });
+  const header = response.headers.get("PAYMENT-REQUIRED");
+  if (!header) return null;
+
+  const paymentRequired = decodePaymentRequiredHeader(header);
+  return paymentRequired.accepts.find(accept => accept.scheme === "batch-settlement") ?? null;
+}
+
+function readSettledChannelId(response: Response): `0x${string}` | null {
+  const header =
+    response.headers.get("PAYMENT-RESPONSE") ?? response.headers.get("X-PAYMENT-RESPONSE");
+  if (!header) return null;
+
+  return readChannelId(decodePaymentResponseHeader(header).extra);
+}
+
+function formatUsdc(amount: bigint): string {
+  return (Number(amount) / 1e6).toFixed(3);
 }

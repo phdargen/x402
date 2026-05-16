@@ -1843,6 +1843,9 @@ importers:
       '@base-org/account':
         specifier: 2.5.6
         version: 2.5.6(@types/react@19.2.1)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react@19.2.6)(typescript@5.9.3)(use-sync-external-store@1.4.0(react@19.2.6))(utf-8-validate@5.0.10)(zod@3.25.76)
+      '@base-org/account-ui':
+        specifier: ^1.0.1
+        version: 1.0.1(@base-org/account@2.5.6(@types/react@19.2.1)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react@19.2.6)(typescript@5.9.3)(use-sync-external-store@1.4.0(react@19.2.6))(utf-8-validate@5.0.10)(zod@3.25.76))(clsx@2.1.1)(preact@10.27.1)(react@19.2.6)
       '@tanstack/react-query':
         specifier: ^5.90.11
         version: 5.90.11(react@19.2.6)
@@ -3122,6 +3125,23 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@base-org/account-ui@1.0.1':
+    resolution: {integrity: sha512-wWu1PtWies+B5P1v2GoQ9SteaIpXY6AOmWawHSYJZY0hYJA1aqN78u8g0l5A9WJsAe9VXnAkOz/khlbsr/oEIQ==}
+    peerDependencies:
+      '@base-org/account': '*'
+      clsx: '*'
+      preact: '*'
+      react: '*'
+      svelte: '*'
+      vue: '*'
+    peerDependenciesMeta:
+      react:
+        optional: true
+      svelte:
+        optional: true
+      vue:
+        optional: true
 
   '@base-org/account@1.1.1':
     resolution: {integrity: sha512-IfVJPrDPhHfqXRDb89472hXkpvJuQQR7FDI9isLPHEqSYt/45whIoBxSPgZ0ssTt379VhQo4+87PWI1DoLSfAQ==}
@@ -11757,6 +11777,14 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@base-org/account-ui@1.0.1(@base-org/account@2.5.6(@types/react@19.2.1)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react@19.2.6)(typescript@5.9.3)(use-sync-external-store@1.4.0(react@19.2.6))(utf-8-validate@5.0.10)(zod@3.25.76))(clsx@2.1.1)(preact@10.27.1)(react@19.2.6)':
+    dependencies:
+      '@base-org/account': 2.5.6(@types/react@19.2.1)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(react@19.2.6)(typescript@5.9.3)(use-sync-external-store@1.4.0(react@19.2.6))(utf-8-validate@5.0.10)(zod@3.25.76)
+      clsx: 2.1.1
+      preact: 10.27.1
+    optionalDependencies:
+      react: 19.2.6
 
   '@base-org/account@1.1.1(@types/react@19.1.10)(bufferutil@4.0.9)(react@19.1.1)(typescript@5.9.2)(use-sync-external-store@1.4.0(react@19.1.1))(utf-8-validate@5.0.10)(zod@3.25.76)':
     dependencies:
