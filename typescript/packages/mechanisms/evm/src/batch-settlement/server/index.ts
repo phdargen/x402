@@ -3,8 +3,6 @@ export type { BatchSettlementEvmSchemeServerConfig, BatchSettlementRequestContex
 export type { AuthorizerSigner } from "../types";
 export { InMemoryChannelStorage } from "./storage";
 export type { Channel, ChannelStorage, ChannelUpdateResult, PendingRequest } from "./storage";
-export type { FileChannelStorageOptions } from "./fileStorage";
-export { FileChannelStorage } from "./fileStorage";
 export { RedisChannelStorage } from "./redisStorage";
 export type {
   RedisChannelStorageClient,
