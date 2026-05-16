@@ -2,9 +2,11 @@ import { convertToTokenAmount } from "@x402/core/utils";
 
 export const NETWORK = "eip155:84532";
 export const CHAIN_ID = 84532;
+export const NEXT_DEV = process.env.NEXT_DEV === "true";
 
 export const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
 export const USDC_DECIMALS = 6;
+const DEV_RECEIVER_ADDRESS = "0x0000000000000000000000000000000000000001";
 
 export const PLAY_PRICE = "$0.01";
 export const JUMP_PRICE = "$0.001";
@@ -32,6 +34,5 @@ export const FACILITATOR_URL =
 
 export const RECEIVER_ADDRESS = (process.env.EVM_ADDRESS ||
   process.env.NEXT_PUBLIC_RECEIVER_ADDRESS ||
+  (NEXT_DEV ? DEV_RECEIVER_ADDRESS : "") ||
   "") as `0x${string}`;
-
-export const SKIP_DEPOSIT = process.env.NEXT_PUBLIC_SKIP_DEPOSIT === "true";

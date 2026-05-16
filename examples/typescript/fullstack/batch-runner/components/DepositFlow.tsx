@@ -15,10 +15,10 @@ import {
   MAX_PLAY_CREDITS,
   MIN_PLAY_CREDITS,
   NETWORK,
+  NEXT_DEV,
   PLAY_PRICE,
   PLAY_PRICE_UNITS,
   RECEIVER_ADDRESS,
-  SKIP_DEPOSIT,
 } from "@/lib/x402/config";
 import { buildGameChannelConfig } from "@/lib/x402/channel";
 import {
@@ -125,7 +125,7 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
 
   const selectedDeposit = BigInt(selectedCredits) * PLAY_PRICE_UNITS;
   const hasChannel = Boolean(snapshot?.channelId && snapshot.channelConfig);
-  const canStart = hasChannel && (SKIP_DEPOSIT || (snapshot?.availableBalance ?? 0n) >= PLAY_PRICE_UNITS);
+  const canStart = hasChannel && (NEXT_DEV || (snapshot?.availableBalance ?? 0n) >= PLAY_PRICE_UNITS);
   const { voucherSigner } = storedSession
     ? signerFromStoredSession(storedSession)
     : { voucherSigner: null };
@@ -216,7 +216,7 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
     session: StoredSessionKey,
     knownChannelId?: `0x${string}` | null,
   ): Promise<void> {
-    if (SKIP_DEPOSIT) {
+    if (NEXT_DEV) {
       const debugChannel = getDebugChannel(session);
       setSnapshot({
         channelId: debugChannel?.channelId ?? null,
@@ -322,8 +322,8 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       <div className="text-center">
         <h2 className="text-xl font-bold mb-2">Start a Game Session</h2>
         <p className="text-sm text-[var(--color-text-secondary)] max-w-xs leading-relaxed">
-          {SKIP_DEPOSIT
-            ? "Debug mode: deposit skipped. Base Account sign-in creates your session key."
+          {NEXT_DEV
+            ? "Dev mode: deposit skipped. Base Account sign-in creates your session key."
             : `Deposit ${PLAY_PRICE} per play into your game channel. Each jump costs ${JUMP_PRICE} via a signed voucher.`}
         </p>
       </div>
@@ -362,7 +362,7 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
         <button
           onClick={fundChannel}
           disabled={
-            SKIP_DEPOSIT ||
+            NEXT_DEV ||
             status === "loading" ||
             status === "depositing" ||
             status === "refunding"
@@ -399,8 +399,8 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       </button>
 
       <p className="text-xs text-[var(--color-text-secondary)] text-center max-w-xs">
-        {SKIP_DEPOSIT
-          ? "NEXT_PUBLIC_SKIP_DEPOSIT=true — no on-chain deposit."
+        {NEXT_DEV
+          ? "NEXT_DEV=true — no login or on-chain deposit needed for gameplay testing."
           : "Deposits use one ERC-3009 authorization. Gameplay signs vouchers with a browser-only session key."}
       </p>
 

@@ -1,17 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { WalletConnect, type BaseAuthSession } from "@/components/WalletConnect";
 import { DepositFlow, type SessionInfo } from "@/components/DepositFlow";
 import { Game } from "@/components/Game";
 import { Leaderboard } from "@/components/Leaderboard";
+import { buildGameChannelConfig } from "@/lib/x402/channel";
+import { NEXT_DEV, PLAY_PRICE_UNITS, RECEIVER_ADDRESS } from "@/lib/x402/config";
+import { LocalStorageChannelStorage } from "@/lib/x402/browserStorage";
+import {
+  createStoredSessionKey,
+  loadStoredSessionKey,
+  signerFromStoredSession,
+} from "@/lib/x402/sessionKey";
+
+const DEV_PLAYER_ADDRESS = "0x000000000000000000000000000000000000dead" as const;
+const DEV_DELEGATION_SIGNATURE = "0x11" as const;
 
 export default function Home() {
   const [authSession, setAuthSession] = useState<BaseAuthSession | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [gameKey, setGameKey] = useState(0);
 
+  useEffect(() => {
+    if (!NEXT_DEV) return;
+
+    setSession(createDevSession());
+  }, []);
+
   const handlePlayAgain = () => {
+    if (NEXT_DEV) {
+      setSession(createDevSession());
+      setGameKey(k => k + 1);
+      return;
+    }
+
     setSession(null);
     setGameKey(k => k + 1);
   };
@@ -20,6 +43,8 @@ export default function Home() {
     setAuthSession(null);
     setSession(null);
   };
+
+  const showWallet = !NEXT_DEV;
 
   return (
     <main className="min-h-screen flex flex-col items-center px-4 py-8 gap-8">
@@ -33,12 +58,22 @@ export default function Home() {
             1,000 jumps. $1. Zero gas.
           </p>
         </div>
-        <WalletConnect session={authSession} onSignIn={setAuthSession} onSignOut={handleSignOut} />
+        {showWallet ? (
+          <WalletConnect session={authSession} onSignIn={setAuthSession} onSignOut={handleSignOut} />
+        ) : (
+          <span className="px-3 py-1.5 text-xs border border-[var(--color-base-blue)] rounded-lg text-[var(--color-base-blue)]">
+            NEXT_DEV
+          </span>
+        )}
       </header>
 
       {/* Game area */}
       <div className="w-full max-w-2xl">
-        {!authSession ? (
+        {NEXT_DEV && session ? (
+          <Game key={gameKey} session={session} onPlayAgain={handlePlayAgain} />
+        ) : NEXT_DEV ? (
+          <DevLoading />
+        ) : !authSession ? (
           <Landing />
         ) : !session ? (
           <DepositFlow authSession={authSession} onSessionReady={setSession} />
@@ -61,6 +96,41 @@ export default function Home() {
         batch-settlement on Base Sepolia
       </footer>
     </main>
+  );
+}
+
+function createDevSession(): SessionInfo {
+  const stored =
+    loadStoredSessionKey(DEV_PLAYER_ADDRESS) ??
+    createStoredSessionKey(DEV_PLAYER_ADDRESS, DEV_DELEGATION_SIGNATURE);
+  const { voucherSigner } = signerFromStoredSession(stored);
+  const { config, channelId } = buildGameChannelConfig(
+    stored.playerAddress,
+    stored.sessionAddress,
+    RECEIVER_ADDRESS,
+    RECEIVER_ADDRESS,
+    stored.channelSalt,
+  );
+
+  return {
+    channelSalt: stored.channelSalt,
+    sessionAddress: stored.sessionAddress,
+    voucherSigner,
+    playerAddress: stored.playerAddress,
+    channelId,
+    channelConfig: config,
+    channelBalance: PLAY_PRICE_UNITS,
+    chargedCumulativeAmount: 0n,
+    roundBudget: PLAY_PRICE_UNITS,
+    storage: new LocalStorageChannelStorage(),
+  };
+}
+
+function DevLoading() {
+  return (
+    <div className="animate-slide-up flex flex-col items-center gap-3 py-16 text-sm text-[var(--color-text-secondary)]">
+      Starting local gameplay session...
+    </div>
   );
 }
 

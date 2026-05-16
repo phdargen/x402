@@ -1,4 +1,4 @@
-export type ObstacleType = "gas-pump" | "bank";
+export type ObstacleType = "gas-pump" | "bank" | "gap";
 
 export type Obstacle = {
   type: ObstacleType;
@@ -28,7 +28,7 @@ export type Cloud = {
   speed: number;
 };
 
-export type GamePhase = "idle" | "running" | "frozen" | "game-over";
+export type GamePhase = "idle" | "running" | "game-over";
 
 export type VisualZone = "calm" | "dusk" | "night" | "overdrive";
 
@@ -44,7 +44,8 @@ export type GameState = {
   clouds: Cloud[];
   groundOffset: number;
   frameCount: number;
-  freezeTimer: number;
+  jumpCooldownMs: number;
+  jumpLockoutMs: number;
   bankPenaltyJumpsLeft: number;
   screenShake: number;
   lastObstacleDistance: number;
@@ -61,5 +62,6 @@ export const BASE_SPEED = 4;
 export const MAX_SPEED = 12;
 export const SPEED_INCREMENT = 0.0003;
 export const OBSTACLE_MIN_GAP = 300;
-export const FREEZE_DURATION_MS = 2500;
+export const JUMP_COOLDOWN_MS = 320;
+export const GAS_LOCKOUT_DURATION_MS = 2200;
 export const BANK_PENALTY_JUMPS = 5;

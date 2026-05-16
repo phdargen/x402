@@ -12,15 +12,15 @@ export function drawDino(
   x: number,
   y: number,
   frame: number,
-  frozen: boolean,
+  jumpDisabled: boolean,
 ) {
   const p = 3; // pixel size
   ctx.save();
   ctx.translate(x, y);
 
-  const bodyColor = frozen ? "#8888aa" : BASE_BLUE;
-  const accentColor = frozen ? "#666688" : BASE_BLUE_DARK;
-  const eyeGlow = frozen ? "#ff4757" : "#00d68f";
+  const bodyColor = jumpDisabled ? "#8888aa" : BASE_BLUE;
+  const accentColor = jumpDisabled ? "#666688" : BASE_BLUE_DARK;
+  const eyeGlow = jumpDisabled ? "#ff4757" : "#00d68f";
 
   // Body
   ctx.fillStyle = bodyColor;

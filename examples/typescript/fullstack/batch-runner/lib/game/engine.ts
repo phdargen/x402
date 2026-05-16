@@ -9,7 +9,8 @@ import {
   MAX_SPEED,
   SPEED_INCREMENT,
   OBSTACLE_MIN_GAP,
-  FREEZE_DURATION_MS,
+  JUMP_COOLDOWN_MS,
+  GAS_LOCKOUT_DURATION_MS,
   BANK_PENALTY_JUMPS,
 } from "./types";
 
@@ -26,7 +27,8 @@ export function createInitialState(): GameState {
     clouds: initClouds(),
     groundOffset: 0,
     frameCount: 0,
-    freezeTimer: 0,
+    jumpCooldownMs: 0,
+    jumpLockoutMs: 0,
     bankPenaltyJumpsLeft: 0,
     screenShake: 0,
     lastObstacleDistance: 0,
@@ -55,11 +57,12 @@ export type EngineCallbacks = {
 };
 
 /**
- * Attempts a jump. Returns true if the jump succeeded (dino was on ground and had balance).
+ * Attempts a paid jump. Airborne jumps are allowed once the fast recharge is ready.
  */
 export async function tryJump(state: GameState, callbacks: EngineCallbacks): Promise<boolean> {
-  if (state.phase === "frozen" || state.phase === "game-over") return false;
-  if (state.isJumping) return false;
+  if (state.phase === "game-over") return false;
+  if (state.jumpCooldownMs > 0) return false;
+  if (state.jumpLockoutMs > 0 && state.isJumping) return false;
 
   const canPay = await callbacks.onJumpCost();
   if (!canPay) return false;
@@ -70,8 +73,9 @@ export async function tryJump(state: GameState, callbacks: EngineCallbacks): Pro
 
   state.dinoVelocity = JUMP_VELOCITY;
   state.isJumping = true;
+  state.jumpCooldownMs = JUMP_COOLDOWN_MS;
 
-  spawnJumpParticles(state, 80 + DINO_WIDTH / 2, callbacks.canvasHeight * GROUND_Y);
+  spawnJumpParticles(state, 80 + DINO_WIDTH / 2, callbacks.canvasHeight * GROUND_Y + state.dinoY);
   return true;
 }
 
@@ -82,24 +86,15 @@ export function tick(state: GameState, dt: number, callbacks: EngineCallbacks): 
     return state;
   }
 
-  // Freeze handling
-  if (state.phase === "frozen") {
-    state.freezeTimer -= dt;
-    if (state.freezeTimer <= 0) {
-      state.phase = "running";
-      state.freezeTimer = 0;
-    }
-    updateParticles(state);
-    state.frameCount++;
-    return state;
-  }
-
   // Speed ramp
   state.speed = Math.min(MAX_SPEED, state.speed + SPEED_INCREMENT * dt);
 
   // Distance
   state.distance += state.speed * (dt / 16);
   state.groundOffset += state.speed;
+
+  state.jumpCooldownMs = Math.max(0, state.jumpCooldownMs - dt);
+  state.jumpLockoutMs = Math.max(0, state.jumpLockoutMs - dt);
 
   // Dino physics
   if (state.isJumping) {
@@ -153,18 +148,36 @@ function maybeSpawnObstacle(state: GameState, callbacks: EngineCallbacks) {
   const gap = getObstacleGap(state.distance);
   if (state.distance - state.lastObstacleDistance < gap) return;
 
-  const type: ObstacleType = Math.random() < 0.55 ? "gas-pump" : "bank";
+  const type = chooseObstacleType(state.distance);
   const obs: Obstacle = {
     type,
     x: callbacks.canvasWidth + 20,
     y: 0,
-    width: type === "gas-pump" ? 36 : 42,
-    height: type === "gas-pump" ? 48 : 48,
+    width: getObstacleWidth(type, state.distance),
+    height: type === "gap" ? 0 : 48,
     passed: false,
   };
 
   state.obstacles.push(obs);
   state.lastObstacleDistance = state.distance;
+}
+
+function chooseObstacleType(distance: number): ObstacleType {
+  const roll = Math.random();
+  if (distance < 700) {
+    return roll < 0.6 ? "gas-pump" : "bank";
+  }
+  if (roll < 0.35) return "gap";
+  if (roll < 0.7) return "gas-pump";
+  return "bank";
+}
+
+function getObstacleWidth(type: ObstacleType, distance: number): number {
+  if (type === "gas-pump") return 36;
+  if (type === "bank") return 42;
+
+  const difficultyBonus = Math.min(50, distance / 180);
+  return 70 + Math.random() * 35 + difficultyBonus;
 }
 
 function getObstacleGap(distance: number): number {
@@ -188,6 +201,17 @@ function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
   for (const obs of state.obstacles) {
     if (obs.passed) continue;
 
+    if (obs.type === "gap") {
+      if (!dinoFellIntoGap(dinoRect, obs, groundY)) continue;
+
+      obs.passed = true;
+      state.phase = "game-over";
+      state.screenShake = Math.max(state.screenShake, 8);
+      spawnHitParticles(state, dinoX + DINO_WIDTH / 2, groundY, "#ff4757");
+      callbacks.onGameOver();
+      return;
+    }
+
     const obsRect = {
       x: obs.x + 4,
       y: groundY - obs.height + 4,
@@ -200,8 +224,8 @@ function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
     obs.passed = true;
 
     if (obs.type === "gas-pump") {
-      state.phase = "frozen";
-      state.freezeTimer = FREEZE_DURATION_MS;
+      state.jumpLockoutMs = GAS_LOCKOUT_DURATION_MS;
+      state.screenShake = Math.max(state.screenShake, 6);
       callbacks.onHitGasPump();
       spawnHitParticles(state, obs.x, groundY - obs.height / 2, "#ff6b35");
     } else {
@@ -210,6 +234,16 @@ function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
       spawnHitParticles(state, obs.x, groundY - obs.height / 2, "#00d68f");
     }
   }
+}
+
+function dinoFellIntoGap(
+  dinoRect: { x: number; y: number; w: number; h: number },
+  gap: Obstacle,
+  groundY: number,
+): boolean {
+  const feetY = dinoRect.y + dinoRect.h;
+  const horizontallyOverGap = dinoRect.x + dinoRect.w > gap.x + 8 && dinoRect.x < gap.x + gap.width - 8;
+  return horizontallyOverGap && feetY > groundY - 10;
 }
 
 function rectsOverlap(

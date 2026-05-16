@@ -4,10 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createInitialState, tick, tryJump } from "@/lib/game/engine";
 import type { EngineCallbacks } from "@/lib/game/engine";
 import { render } from "@/lib/game/renderer";
+import { JUMP_COOLDOWN_MS } from "@/lib/game/types";
 import type { GameState } from "@/lib/game/types";
 import {
   BANK_PENALTY_MULTIPLIER,
   JUMP_COST_UNITS,
+  NEXT_DEV,
   PLAY_PRICE_UNITS,
   VOUCHER_CHECKPOINT_JUMPS,
 } from "@/lib/x402/config";
@@ -37,6 +39,8 @@ export function Game({ session, onPlayAgain }: GameProps) {
   const channelIdRef = useRef<`0x${string}` | null>(session.channelId);
   const checkpointInFlightRef = useRef<Promise<void> | null>(null);
   const jumpPaymentInFlightRef = useRef(false);
+  const jumpSigningRef = useRef(false);
+  const jumpQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastVoucherRef = useRef<{
     channelId: `0x${string}`;
     maxClaimableAmount: string;
@@ -49,7 +53,9 @@ export function Game({ session, onPlayAgain }: GameProps) {
     voucherCount: 0,
     bankPenaltyJumpsLeft: 0,
     jumpCost: Number(JUMP_COST_UNITS),
-    isFrozen: false,
+    jumpRecharge: 1,
+    jumpStatus: "ready" as "ready" | "charging" | "signing" | "batch-disabled",
+    gasLockoutMs: 0,
   });
   const [gameOver, setGameOver] = useState(false);
   const [rank, setRank] = useState<number | null>(null);
@@ -63,6 +69,8 @@ export function Game({ session, onPlayAgain }: GameProps) {
 
   const flushVoucherCheckpoint = useCallback(
     (keepalive = false): Promise<void> => {
+      if (NEXT_DEV) return Promise.resolve();
+
       const cid = channelIdRef.current;
       const voucher = lastVoucherRef.current;
       if (!cid || !voucher || !session.channelConfig) return Promise.resolve();
@@ -119,6 +127,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
     };
     const nextCumulative = cumulativeRef.current + cost;
     try {
+      jumpSigningRef.current = true;
       voucher = await signGameVoucher(session.voucherSigner, cid, nextCumulative);
       const validVoucher = await verifyGameVoucher(session.sessionAddress, voucher);
       if (!validVoucher) return false;
@@ -127,6 +136,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
       return false;
     } finally {
       jumpPaymentInFlightRef.current = false;
+      jumpSigningRef.current = false;
     }
 
     balanceRef.current -= cost;
@@ -168,6 +178,34 @@ export function Game({ session, onPlayAgain }: GameProps) {
     cancelAnimationFrame(animRef.current);
     void flushVoucherCheckpoint(true);
   }, [flushVoucherCheckpoint]);
+
+  const waitForJumpCooldown = useCallback((): Promise<void> => {
+    return new Promise(resolve => {
+      const wait = () => {
+        const state = stateRef.current;
+        if (state.phase === "game-over" || state.jumpCooldownMs <= 0) {
+          resolve();
+          return;
+        }
+        requestAnimationFrame(wait);
+      };
+      wait();
+    });
+  }, []);
+
+  const requestJump = useCallback(() => {
+    if (!started) setStarted(true);
+
+    const queuedJump = jumpQueueRef.current
+      .catch(() => {})
+      .then(async () => {
+        await waitForJumpCooldown();
+        await tryJump(stateRef.current, callbacks.current);
+      });
+
+    jumpQueueRef.current = queuedJump.then(() => undefined);
+    void jumpQueueRef.current;
+  }, [started, waitForJumpCooldown]);
 
   const callbacks = useRef<EngineCallbacks>({
     onJumpCost: () => false,
@@ -219,35 +257,28 @@ export function Game({ session, onPlayAgain }: GameProps) {
       if (state.phase !== "game-over") {
         tick(state, dt, callbacks.current);
 
-        if (
-          balanceRef.current < currentJumpCost() &&
-          state.phase === "running" &&
-          !state.isJumping
-        ) {
-          const groundY = canvas.height * 0.78;
-          const dinoX = 80;
-          for (const obs of state.obstacles) {
-            if (obs.passed) continue;
-            if (obs.x < dinoX + 30 && obs.x + obs.width > dinoX) {
-              const obsTop = groundY - obs.height;
-              if (groundY - 48 < obsTop + obs.height) {
-                endGame();
-                break;
-              }
-            }
-          }
-        }
-
         render(ctx, state);
 
         if (state.frameCount % 10 === 0) {
+          const jumpRecharge = 1 - Math.min(1, state.jumpCooldownMs / JUMP_COOLDOWN_MS);
+          const jumpStatus =
+            state.jumpLockoutMs > 0 && state.isJumping
+              ? "batch-disabled"
+              : jumpSigningRef.current
+                ? "signing"
+                : state.jumpCooldownMs > 0
+                  ? "charging"
+                  : "ready";
+
           setHudState({
             balance: Number(balanceRef.current),
             distance: state.distance,
             voucherCount: jumpCountRef.current,
             bankPenaltyJumpsLeft: bankPenaltyRef.current,
             jumpCost: Number(currentJumpCost()),
-            isFrozen: state.phase === "frozen",
+            jumpRecharge,
+            jumpStatus,
+            gasLockoutMs: state.jumpLockoutMs,
           });
         }
       }
@@ -269,15 +300,13 @@ export function Game({ session, onPlayAgain }: GameProps) {
     const handleKey = (e: KeyboardEvent) => {
       if (e.code === "Space" || e.code === "ArrowUp") {
         e.preventDefault();
-        if (!started) setStarted(true);
-        void tryJump(stateRef.current, callbacks.current);
+        requestJump();
       }
     };
 
     const handleTouch = (e: TouchEvent) => {
       e.preventDefault();
-      if (!started) setStarted(true);
-      void tryJump(stateRef.current, callbacks.current);
+      requestJump();
     };
 
     const handlePageHide = () => {
@@ -294,7 +323,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
       window.removeEventListener("pagehide", handlePageHide);
       canvas?.removeEventListener("touchstart", handleTouch);
     };
-  }, [flushVoucherCheckpoint, started]);
+  }, [flushVoucherCheckpoint, requestJump]);
 
   const handleSubmitScore = async () => {
     const state = stateRef.current;
@@ -324,7 +353,9 @@ export function Game({ session, onPlayAgain }: GameProps) {
         voucherCount={hudState.voucherCount}
         bankPenaltyJumpsLeft={hudState.bankPenaltyJumpsLeft}
         jumpCost={hudState.jumpCost}
-        isFrozen={hudState.isFrozen}
+        jumpRecharge={hudState.jumpRecharge}
+        jumpStatus={hudState.jumpStatus}
+        gasLockoutMs={hudState.gasLockoutMs}
       />
 
       <canvas ref={canvasRef} className="w-full h-full block" />
@@ -334,7 +365,8 @@ export function Game({ session, onPlayAgain }: GameProps) {
           <div className="text-center animate-slide-up">
             <p className="text-lg font-bold text-white mb-2">Press SPACE or tap to start</p>
             <p className="text-xs text-[var(--color-text-secondary)]">
-              Avoid gas pumps (freeze) and banks ({BANK_PENALTY_MULTIPLIER}x cost)
+              Chain paid jumps over gaps. Gas disables in-flight chains; banks make{" "}
+              {BANK_PENALTY_MULTIPLIER}x jumps.
             </p>
           </div>
         </div>

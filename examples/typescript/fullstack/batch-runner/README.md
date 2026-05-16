@@ -2,16 +2,17 @@
 
 **1,000 jumps. $1. Zero gas.**
 
-A Chrome-dino-style browser game showcasing x402 batch-settlement. Players deposit $1 USDC into a payment channel, and each jump costs $0.001 via a locally-signed voucher. Gas pumps freeze you, banks double your jump cost. Game ends when you run out of money.
+A Chrome-dino-style browser game showcasing x402 batch-settlement. Players deposit $1 USDC into a payment channel, and each jump costs $0.001 via a locally-signed voucher. Chain paid jumps over gaps, avoid gas pumps that disable jumping, and watch out for banks that double your jump cost.
 
 ## How It Works
 
 1. **Connect** -- Player connects via wagmi with the Base Account connector (`@base-org/account`).
 2. **Derive session key** -- Wallet signs a delegation message (one popup). A deterministic session key is derived via `keccak256(signature + channelSalt)`.
 3. **Play** -- Auto-running blue robot dino. Each jump signs a cumulative voucher (~0.1ms, no wallet popup). Avoid obstacles:
-   - **Gas pumps** -- freeze you for 2.5 seconds (demonstrates on-chain transaction latency)
+   - **Gaps** -- instant game over unless you jump over them
+   - **Gas pumps** -- temporarily disable jump signing
    - **Banks** -- next 5 jumps cost 2x ($0.002 each, demonstrates fee inflation)
-4. **Game over** -- when balance hits $0 and an obstacle hits you
+4. **Game over** -- when you fall into a gap
 5. **Submit** -- score + latest voucher submitted to leaderboard with EIP-712 signature verification
 
 ## Prerequisites
@@ -37,6 +38,8 @@ Copy `.env.example` to `.env` and optionally set:
 
 Without Redis, the leaderboard uses in-memory storage (resets on restart).
 
+Set `NEXT_DEV=true` to skip login and deposits entirely and jump straight into a local gameplay session.
+
 ```bash
 pnpm dev
 ```
@@ -47,8 +50,8 @@ Open [http://localhost:3000](http://localhost:3000).
 
 - **Speed** increases with distance (classic dino runner scaling)
 - **Visual zones** progress from calm (0-2km) through dusk, night, and overdrive (7km+)
-- **HUD** shows balance, distance, voucher count, and active penalties
-- **Cascade effect** -- hit gas pump while frozen, bank rolls into you, jump cost doubles, budget drains faster
+- **HUD** shows balance, distance, voucher count, jump recharge, and active penalties
+- **Chained jumps** -- queued jump requests are serialized through voucher signing and can be fired in mid-air as soon as the recharge is ready
 
 ## Tech Stack
 

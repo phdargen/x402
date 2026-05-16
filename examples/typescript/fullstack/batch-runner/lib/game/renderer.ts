@@ -117,8 +117,10 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
   for (const obs of state.obstacles) {
     if (obs.type === "gas-pump") {
       drawGasPump(ctx, obs.x, groundY - obs.height);
-    } else {
+    } else if (obs.type === "bank") {
       drawBank(ctx, obs.x, groundY - obs.height);
+    } else {
+      drawGap(ctx, obs.x, groundY, obs.width);
     }
   }
 
@@ -130,11 +132,11 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     dinoX,
     dinoScreenY,
     state.runFrame,
-    state.phase === "frozen",
+    state.jumpLockoutMs > 0,
   );
 
-  // Freeze overlay
-  if (state.phase === "frozen") {
+  // Gas pumps disable chained in-flight jumps without pausing the runner.
+  if (state.jumpLockoutMs > 0) {
     ctx.save();
     ctx.fillStyle = "rgba(255, 71, 87, 0.08)";
     ctx.fillRect(0, 0, width, height);
@@ -143,7 +145,7 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.fillStyle = "#ff4757";
     ctx.textAlign = "center";
     ctx.globalAlpha = 0.6 + Math.sin(state.frameCount * 0.15) * 0.4;
-    ctx.fillText("GAS FEE FREEZE", width / 2, height * 0.35);
+    ctx.fillText("AIR JUMPS DISABLED", width / 2, height * 0.35);
     ctx.restore();
   }
 
@@ -155,6 +157,32 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
     ctx.restore();
   }
+
+  ctx.restore();
+}
+
+function drawGap(ctx: CanvasRenderingContext2D, x: number, groundY: number, width: number) {
+  ctx.save();
+
+  const depth = 85;
+  const gradient = ctx.createLinearGradient(0, groundY, 0, groundY + depth);
+  gradient.addColorStop(0, "rgba(255, 71, 87, 0.55)");
+  gradient.addColorStop(0.15, "rgba(255, 71, 87, 0.2)");
+  gradient.addColorStop(1, "rgba(0, 0, 0, 0.9)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(x, groundY - 2, width, depth);
+
+  ctx.strokeStyle = "#ff4757";
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, groundY);
+  ctx.lineTo(x + 10, groundY + 8);
+  ctx.lineTo(x + 18, groundY);
+  ctx.moveTo(x + width, groundY);
+  ctx.lineTo(x + width - 10, groundY + 8);
+  ctx.lineTo(x + width - 18, groundY);
+  ctx.stroke();
 
   ctx.restore();
 }
