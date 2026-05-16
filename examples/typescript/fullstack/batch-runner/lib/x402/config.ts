@@ -20,8 +20,10 @@ if (PLAY_PRICE_UNITS % JUMP_COST_UNITS !== 0n) {
 }
 
 export const JUMPS_PER_PLAY = Number(PLAY_PRICE_UNITS / JUMP_COST_UNITS);
+export const VOUCHER_CHECKPOINT_JUMPS = 5;
 
 export const WITHDRAW_DELAY = 900; // 15 minutes (minimum)
+export const STORAGE_DIR = process.env.STORAGE_DIR || "/tmp/x402-batch-runner-channels";
 
 export const FACILITATOR_URL =
   process.env.FACILITATOR_URL ||

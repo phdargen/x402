@@ -46,7 +46,7 @@ function initClouds(): Cloud[] {
 }
 
 export type EngineCallbacks = {
-  onJumpCost: () => boolean; // returns false if insufficient balance
+  onJumpCost: () => boolean | Promise<boolean>; // returns false if insufficient balance
   onHitGasPump: () => void;
   onHitBank: () => void;
   onGameOver: () => void;
@@ -57,11 +57,11 @@ export type EngineCallbacks = {
 /**
  * Attempts a jump. Returns true if the jump succeeded (dino was on ground and had balance).
  */
-export function tryJump(state: GameState, callbacks: EngineCallbacks): boolean {
+export async function tryJump(state: GameState, callbacks: EngineCallbacks): Promise<boolean> {
   if (state.phase === "frozen" || state.phase === "game-over") return false;
   if (state.isJumping) return false;
 
-  const canPay = callbacks.onJumpCost();
+  const canPay = await callbacks.onJumpCost();
   if (!canPay) return false;
 
   if (state.phase === "idle") {

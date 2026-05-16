@@ -6,6 +6,7 @@ import type { PaymentRequirements } from "@x402/core/types";
 import type { Account, WalletClient } from "viem";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
+import type { ChannelConfig } from "@x402/evm";
 import { BATCH_SETTLEMENT_ADDRESS } from "@x402/evm";
 import { BatchSettlementEvmScheme, computeChannelId } from "@x402/evm/batch-settlement/client";
 import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
@@ -16,8 +17,10 @@ import {
   NETWORK,
   PLAY_PRICE,
   PLAY_PRICE_UNITS,
+  RECEIVER_ADDRESS,
   SKIP_DEPOSIT,
 } from "@/lib/x402/config";
+import { buildGameChannelConfig } from "@/lib/x402/channel";
 import {
   createStoredSessionKey,
   loadStoredSessionKey,
@@ -90,6 +93,7 @@ export type SessionInfo = {
   voucherSigner: ClientEvmSigner;
   playerAddress: `0x${string}`;
   channelId: `0x${string}` | null;
+  channelConfig: ChannelConfig | null;
   channelBalance: bigint;
   chargedCumulativeAmount: bigint;
   roundBudget: bigint;
@@ -103,6 +107,7 @@ type DepositFlowProps = {
 
 type ChannelSnapshot = {
   channelId: `0x${string}` | null;
+  channelConfig: ChannelConfig | null;
   balance: bigint;
   chargedCumulativeAmount: bigint;
   availableBalance: bigint;
@@ -119,7 +124,8 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
   const topUpStorage = useMemo(() => new TopUpChannelStorage(), []);
 
   const selectedDeposit = BigInt(selectedCredits) * PLAY_PRICE_UNITS;
-  const canStart = SKIP_DEPOSIT || (snapshot?.availableBalance ?? 0n) >= PLAY_PRICE_UNITS;
+  const hasChannel = Boolean(snapshot?.channelId && snapshot.channelConfig);
+  const canStart = hasChannel && (SKIP_DEPOSIT || (snapshot?.availableBalance ?? 0n) >= PLAY_PRICE_UNITS);
   const { voucherSigner } = storedSession
     ? signerFromStoredSession(storedSession)
     : { voucherSigner: null };
@@ -147,6 +153,7 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       voucherSigner,
       playerAddress: authSession.address,
       channelId: snapshot?.channelId ?? null,
+      channelConfig: snapshot?.channelConfig ?? null,
       channelBalance: snapshot?.balance ?? PLAY_PRICE_UNITS,
       chargedCumulativeAmount: snapshot?.chargedCumulativeAmount ?? 0n,
       roundBudget: PLAY_PRICE_UNITS,
@@ -210,8 +217,10 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
     knownChannelId?: `0x${string}` | null,
   ): Promise<void> {
     if (SKIP_DEPOSIT) {
+      const debugChannel = getDebugChannel(session);
       setSnapshot({
-        channelId: null,
+        channelId: debugChannel?.channelId ?? null,
+        channelConfig: debugChannel?.config ?? null,
         balance: PLAY_PRICE_UNITS,
         chargedCumulativeAmount: 0n,
         availableBalance: PLAY_PRICE_UNITS,
@@ -219,10 +228,15 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       return;
     }
 
-    const channelId = knownChannelId ?? (await getChannelId(session));
-    if (!channelId) {
+    const derivedChannel = await getChannelInfo(session);
+    const channel = {
+      channelId: knownChannelId ?? derivedChannel.channelId,
+      channelConfig: derivedChannel.channelConfig,
+    };
+    if (!channel.channelId) {
       setSnapshot({
         channelId: null,
+        channelConfig: null,
         balance: 0n,
         chargedCumulativeAmount: 0n,
         availableBalance: 0n,
@@ -230,24 +244,27 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       return;
     }
 
-    let context = await storage.get(channelId);
-    context = await recoverChannelContext(channelId, context);
+    let context = await storage.get(channel.channelId);
+    context = await recoverChannelContext(channel.channelId, context);
 
     setSnapshot({
-      channelId,
+      channelId: channel.channelId,
+      channelConfig: channel.channelConfig,
       balance: BigInt(context?.balance ?? "0"),
       chargedCumulativeAmount: BigInt(context?.chargedCumulativeAmount ?? "0"),
       availableBalance: availableChannelBalance(context),
     });
   }
 
-  async function getChannelId(session: StoredSessionKey): Promise<`0x${string}` | null> {
+  async function getChannelInfo(
+    session: StoredSessionKey,
+  ): Promise<{ channelId: `0x${string}` | null; channelConfig: ChannelConfig | null }> {
     const requirements = await getGamePaymentRequirements();
-    if (!requirements) return null;
+    if (!requirements) return { channelId: null, channelConfig: null };
 
     const batchedScheme = createBatchedScheme(session, storage, selectedDeposit);
     const channelConfig = batchedScheme.buildChannelConfig(requirements);
-    return computeChannelId(channelConfig, requirements.network);
+    return { channelId: computeChannelId(channelConfig, requirements.network), channelConfig };
   }
 
   async function recoverChannelContext(
@@ -263,10 +280,14 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
 
     if (balance === 0n && totalClaimed === 0n) return context;
 
+    const recoveredCharged =
+      BigInt(context?.chargedCumulativeAmount ?? "0") > totalClaimed
+        ? context?.chargedCumulativeAmount
+        : totalClaimed.toString();
     const next = {
       ...(context ?? {}),
       balance: balance.toString(),
-      chargedCumulativeAmount: totalClaimed.toString(),
+      chargedCumulativeAmount: recoveredCharged,
       totalClaimed: totalClaimed.toString(),
     };
     await storage.set(channelId, next);
@@ -290,6 +311,7 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
   }
 
   const balanceFormatted = formatUsdc(snapshot?.availableBalance ?? 0n);
+  const spentFormatted = formatUsdc(snapshot?.chargedCumulativeAmount ?? 0n);
   const selectedDepositFormatted = formatUsdc(selectedDeposit);
 
   return (
@@ -309,11 +331,11 @@ export function DepositFlow({ authSession, onSessionReady }: DepositFlowProps) {
       <div className="grid grid-cols-3 gap-4 text-center text-xs">
         <div className="p-3 rounded-lg bg-[var(--color-surface)]">
           <div className="text-[var(--color-base-blue)] font-bold text-lg">${balanceFormatted}</div>
-          <div className="text-[var(--color-text-secondary)] mt-1">Balance</div>
+          <div className="text-[var(--color-text-secondary)] mt-1">Remaining</div>
         </div>
         <div className="p-3 rounded-lg bg-[var(--color-surface)]">
-          <div className="text-[var(--color-accent-green)] font-bold text-lg">{PLAY_PRICE}</div>
-          <div className="text-[var(--color-text-secondary)] mt-1">Per play</div>
+          <div className="text-[var(--color-accent-green)] font-bold text-lg">${spentFormatted}</div>
+          <div className="text-[var(--color-text-secondary)] mt-1">Spent</div>
         </div>
         <div className="p-3 rounded-lg bg-[var(--color-surface)]">
           <div className="text-[var(--color-accent-orange)] font-bold text-lg">{JUMP_PRICE}</div>
@@ -402,6 +424,19 @@ function readSettledChannelId(response: Response): `0x${string}` | null {
   if (!header) return null;
 
   return readChannelId(decodePaymentResponseHeader(header).extra);
+}
+
+function getDebugChannel(
+  session: StoredSessionKey,
+): { config: ChannelConfig; channelId: `0x${string}` } | null {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(RECEIVER_ADDRESS)) return null;
+  return buildGameChannelConfig(
+    session.playerAddress,
+    session.sessionAddress,
+    RECEIVER_ADDRESS,
+    RECEIVER_ADDRESS,
+    session.channelSalt,
+  );
 }
 
 function formatUsdc(amount: bigint): string {

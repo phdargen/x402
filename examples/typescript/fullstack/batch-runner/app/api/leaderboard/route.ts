@@ -85,8 +85,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "Invalid voucher signature" }, { status: 403 });
       }
     } catch {
-      // Signature verification failed -- accept the score anyway for the demo
-      // In production, this would reject.
+      return NextResponse.json({ error: "Invalid voucher signature" }, { status: 403 });
     }
   }
 

@@ -9,10 +9,9 @@ import {
   BANK_PENALTY_MULTIPLIER,
   JUMP_COST_UNITS,
   PLAY_PRICE_UNITS,
-  RECEIVER_ADDRESS,
-  SKIP_DEPOSIT,
+  VOUCHER_CHECKPOINT_JUMPS,
 } from "@/lib/x402/config";
-import { signGameVoucher, buildGameChannelConfig } from "@/lib/x402/channel";
+import { signGameVoucher, verifyGameVoucher } from "@/lib/x402/channel";
 import type { SessionInfo } from "./DepositFlow";
 import { GameHUD } from "./GameHUD";
 import { GameOver } from "./GameOver";
@@ -36,6 +35,8 @@ export function Game({ session, onPlayAgain }: GameProps) {
   const jumpCountRef = useRef(0);
   const bankPenaltyRef = useRef(0);
   const channelIdRef = useRef<`0x${string}` | null>(session.channelId);
+  const checkpointInFlightRef = useRef<Promise<void> | null>(null);
+  const jumpPaymentInFlightRef = useRef(false);
   const lastVoucherRef = useRef<{
     channelId: `0x${string}`;
     maxClaimableAmount: string;
@@ -60,12 +61,76 @@ export function Game({ session, onPlayAgain }: GameProps) {
       : JUMP_COST_UNITS;
   }, []);
 
-  const handleJumpCost = useCallback((): boolean => {
+  const flushVoucherCheckpoint = useCallback(
+    (keepalive = false): Promise<void> => {
+      const cid = channelIdRef.current;
+      const voucher = lastVoucherRef.current;
+      if (!cid || !voucher || !session.channelConfig) return Promise.resolve();
+
+      const body = JSON.stringify({
+        channelConfig: session.channelConfig,
+        voucher,
+        jumpCount: jumpCountRef.current,
+        distance: Math.floor(stateRef.current.distance),
+        roundSpent: roundSpentRef.current.toString(),
+      });
+
+      const checkpoint = fetch("/api/game/voucher", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive,
+      }).then(response => {
+        if (!response.ok) {
+          throw new Error(`Voucher checkpoint failed (${response.status})`);
+        }
+      });
+
+      const tracked = checkpoint
+        .catch(err => {
+          console.error("[batch-runner] Voucher checkpoint error:", err);
+        })
+        .finally(() => {
+          if (checkpointInFlightRef.current === tracked) {
+            checkpointInFlightRef.current = null;
+          }
+        });
+      checkpointInFlightRef.current = tracked;
+
+      return checkpointInFlightRef.current;
+    },
+    [session.channelConfig],
+  );
+
+  const handleJumpCost = useCallback(async (): Promise<boolean> => {
+    if (jumpPaymentInFlightRef.current) return false;
+
     const cost = currentJumpCost();
     if (balanceRef.current < cost) return false;
 
+    const cid = channelIdRef.current;
+    if (!cid || !session.channelConfig) return false;
+
+    jumpPaymentInFlightRef.current = true;
+    let voucher: {
+      channelId: `0x${string}`;
+      maxClaimableAmount: string;
+      signature: `0x${string}`;
+    };
+    const nextCumulative = cumulativeRef.current + cost;
+    try {
+      voucher = await signGameVoucher(session.voucherSigner, cid, nextCumulative);
+      const validVoucher = await verifyGameVoucher(session.sessionAddress, voucher);
+      if (!validVoucher) return false;
+    } catch (err) {
+      console.error("[batch-runner] Voucher signing error:", err);
+      return false;
+    } finally {
+      jumpPaymentInFlightRef.current = false;
+    }
+
     balanceRef.current -= cost;
-    cumulativeRef.current += cost;
+    cumulativeRef.current = nextCumulative;
     roundSpentRef.current += cost;
     jumpCountRef.current++;
 
@@ -73,28 +138,36 @@ export function Game({ session, onPlayAgain }: GameProps) {
       bankPenaltyRef.current--;
     }
 
-    const cid = channelIdRef.current;
-    if (cid) {
-      signGameVoucher(session.voucherSigner, cid, cumulativeRef.current).then(voucher => {
-        lastVoucherRef.current = voucher;
-        session.storage.set(cid, {
-          balance: session.channelBalance.toString(),
-          chargedCumulativeAmount: cumulativeRef.current.toString(),
-          signedMaxClaimable: cumulativeRef.current.toString(),
-          signature: voucher.signature,
-        });
-      });
+    lastVoucherRef.current = voucher;
+    void session.storage.set(cid, {
+      balance: session.channelBalance.toString(),
+      chargedCumulativeAmount: cumulativeRef.current.toString(),
+      signedMaxClaimable: cumulativeRef.current.toString(),
+      signature: voucher.signature,
+    });
+
+    if (jumpCountRef.current % VOUCHER_CHECKPOINT_JUMPS === 0) {
+      void flushVoucherCheckpoint();
     }
 
     return true;
-  }, [session.voucherSigner, currentJumpCost]);
+  }, [
+    currentJumpCost,
+    flushVoucherCheckpoint,
+    session.channelBalance,
+    session.channelConfig,
+    session.sessionAddress,
+    session.storage,
+    session.voucherSigner,
+  ]);
 
   const endGame = useCallback(() => {
     stateRef.current.phase = "game-over";
     setGameOver(true);
     setHudState(prev => ({ ...prev, balance: Number(balanceRef.current) }));
     cancelAnimationFrame(animRef.current);
-  }, []);
+    void flushVoucherCheckpoint(true);
+  }, [flushVoucherCheckpoint]);
 
   const callbacks = useRef<EngineCallbacks>({
     onJumpCost: () => false,
@@ -187,8 +260,9 @@ export function Game({ session, onPlayAgain }: GameProps) {
     return () => {
       cancelAnimationFrame(animRef.current);
       window.removeEventListener("resize", resizeCanvas);
+      void flushVoucherCheckpoint(true);
     };
-  }, [currentJumpCost, endGame]);
+  }, [currentJumpCost, endGame, flushVoucherCheckpoint]);
 
   // Input handling
   useEffect(() => {
@@ -196,57 +270,35 @@ export function Game({ session, onPlayAgain }: GameProps) {
       if (e.code === "Space" || e.code === "ArrowUp") {
         e.preventDefault();
         if (!started) setStarted(true);
-        tryJump(stateRef.current, callbacks.current);
+        void tryJump(stateRef.current, callbacks.current);
       }
     };
 
     const handleTouch = (e: TouchEvent) => {
       e.preventDefault();
       if (!started) setStarted(true);
-      tryJump(stateRef.current, callbacks.current);
+      void tryJump(stateRef.current, callbacks.current);
+    };
+
+    const handlePageHide = () => {
+      void flushVoucherCheckpoint(true);
     };
 
     window.addEventListener("keydown", handleKey);
+    window.addEventListener("pagehide", handlePageHide);
     const canvas = canvasRef.current;
     canvas?.addEventListener("touchstart", handleTouch, { passive: false });
 
     return () => {
       window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("pagehide", handlePageHide);
       canvas?.removeEventListener("touchstart", handleTouch);
     };
-  }, [started]);
-
-  // Compute channelId from session + real receiver address
-  useEffect(() => {
-    if (session.channelId) {
-      channelIdRef.current = session.channelId;
-      return;
-    }
-    if (!SKIP_DEPOSIT) {
-      console.error("[batch-runner] Missing channelId from deposit response");
-      return;
-    }
-
-    if (!/^0x[0-9a-fA-F]{40}$/.test(RECEIVER_ADDRESS)) {
-      console.error("[batch-runner] Missing NEXT_PUBLIC_RECEIVER_ADDRESS for skip-deposit mode");
-      return;
-    }
-
-    const receiver = RECEIVER_ADDRESS;
-    const receiverAuthorizer = receiver;
-
-    const { channelId } = buildGameChannelConfig(
-      session.playerAddress,
-      session.sessionAddress,
-      receiver,
-      receiverAuthorizer,
-      session.channelSalt,
-    );
-    channelIdRef.current = channelId;
-  }, [session]);
+  }, [flushVoucherCheckpoint, started]);
 
   const handleSubmitScore = async () => {
     const state = stateRef.current;
+    await flushVoucherCheckpoint();
     const res = await fetch("/api/leaderboard", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

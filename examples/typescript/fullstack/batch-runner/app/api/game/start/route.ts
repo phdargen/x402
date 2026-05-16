@@ -3,6 +3,8 @@ import { withX402 } from "@x402/next";
 import { server, receiverAddress } from "@/lib/server/x402";
 import { NETWORK, JUMP_PRICE } from "@/lib/x402/config";
 
+export const runtime = "nodejs";
+
 const handler = async (_: NextRequest) => {
   return NextResponse.json({ ok: true, message: "Channel funded — game on!" }, { status: 200 });
 };

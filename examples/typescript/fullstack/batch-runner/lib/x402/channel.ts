@@ -1,4 +1,4 @@
-import { hashTypedData, getAddress } from "viem";
+import { hashTypedData, getAddress, verifyTypedData } from "viem";
 import type { ClientEvmSigner, ChannelConfig } from "@x402/evm";
 import {
   BATCH_SETTLEMENT_ADDRESS,
@@ -98,4 +98,29 @@ export async function signGameVoucher(
     maxClaimableAmount: cumulativeAmount.toString(),
     signature,
   };
+}
+
+export async function verifyGameVoucher(
+  signerAddress: `0x${string}`,
+  voucher: {
+    channelId: `0x${string}`;
+    maxClaimableAmount: string;
+    signature: `0x${string}`;
+  },
+): Promise<boolean> {
+  try {
+    return await verifyTypedData({
+      address: getAddress(signerAddress),
+      domain: getBatchSettlementEip712Domain(CHAIN_ID),
+      types: voucherTypes,
+      primaryType: "Voucher",
+      message: {
+        channelId: voucher.channelId,
+        maxClaimableAmount: BigInt(voucher.maxClaimableAmount),
+      },
+      signature: voucher.signature,
+    });
+  } catch {
+    return false;
+  }
 }
