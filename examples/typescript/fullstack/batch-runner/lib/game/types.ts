@@ -28,9 +28,11 @@ export type Cloud = {
   speed: number;
 };
 
-export type GamePhase = "idle" | "running" | "game-over";
+export type GamePhase = "idle" | "running" | "falling" | "game-over";
 
 export type VisualZone = "calm" | "dusk" | "night" | "overdrive";
+
+export type DinoReaction = "none" | "obstacle-hit" | "gap-fall";
 
 export type GameState = {
   phase: GamePhase;
@@ -51,13 +53,15 @@ export type GameState = {
   lastObstacleDistance: number;
   runFrame: number;
   runFrameTimer: number;
+  dinoReaction: DinoReaction;
+  dinoReactionTimerMs: number;
 };
 
 export const GROUND_Y = 0.78;
 export const DINO_WIDTH = 40;
 export const DINO_HEIGHT = 48;
 export const GRAVITY = 0.65;
-export const JUMP_VELOCITY = -13;
+export const JUMP_VELOCITY = -14.53;
 export const BASE_SPEED = 4;
 export const MAX_SPEED = 12;
 export const SPEED_INCREMENT = 0.0003;

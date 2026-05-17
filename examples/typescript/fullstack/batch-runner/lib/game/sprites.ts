@@ -1,3 +1,5 @@
+import { DINO_HEIGHT, DINO_WIDTH } from "./types";
+
 /**
  * Pixel art rendering functions for game entities.
  * All sprites use a consistent retro pixel style with Base blue (#0052FF) as the primary color.
@@ -6,60 +8,150 @@
 const BASE_BLUE = "#0052FF";
 const BASE_BLUE_LIGHT = "#457EFF";
 const BASE_BLUE_DARK = "#003ECF";
+const DINO_SPRITE_COLUMNS = 4;
+const DINO_SPRITE_FRAME_COUNT = 8;
+const DINO_SPRITE_CELL_WIDTH = 444;
+const DINO_SPRITE_CELL_HEIGHT = 444;
+const DINO_SPRITE_SRC = "/dino.png";
+const DINO_SPRITE_DRAW_HEIGHT = 56;
+const NY_BACKGROUND_SRC = "/ny.png";
+const FLOOR_NY_SRC = "/floor_ny.png";
+const FLOOR_NY_SOURCE_X = 0;
+const FLOOR_NY_SOURCE_Y = 346;
+const FLOOR_NY_SOURCE_WIDTH = 2508;
+const FLOOR_NY_SOURCE_HEIGHT = 182;
+const BANK_SPRITE_SRC = "/bank.png";
+const BANK_SOURCE_X = 193;
+const BANK_SOURCE_Y = 286;
+const BANK_SOURCE_WIDTH = 868;
+const BANK_SOURCE_HEIGHT = 673;
+const NY_BACKGROUND_PARALLAX = 0.22;
+
+export const BANK_DRAW_WIDTH = 108;
+export const BANK_DRAW_HEIGHT = Math.round(BANK_DRAW_WIDTH * (BANK_SOURCE_HEIGHT / BANK_SOURCE_WIDTH));
+
+type DinoFrameBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+const DINO_FRAME_BOUNDS: DinoFrameBounds[] = [
+  { x: 59, y: 101, width: 328, height: 248 },
+  { x: 47, y: 98, width: 298, height: 251 },
+  { x: 17, y: 101, width: 315, height: 251 },
+  { x: 43, y: 79, width: 291, height: 252 },
+  { x: 125, y: 30, width: 241, height: 248 },
+  { x: 53, y: 31, width: 295, height: 258 },
+  { x: 73, y: 0, width: 262, height: 302 },
+  { x: 50, y: 32, width: 247, height: 267 },
+];
+
+const spriteCache = new Map<string, HTMLImageElement>();
+
+function getSprite(src: string): HTMLImageElement | null {
+  if (typeof window === "undefined") return null;
+
+  let sprite = spriteCache.get(src);
+  if (!sprite) {
+    sprite = new window.Image();
+    sprite.src = src;
+    spriteCache.set(src, sprite);
+  }
+
+  if (!sprite.complete || sprite.naturalWidth === 0) return null;
+  return sprite;
+}
+
+function getDinoSprite(): HTMLImageElement | null {
+  return getSprite(DINO_SPRITE_SRC);
+}
+
+function tilePixelImage(
+  ctx: CanvasRenderingContext2D,
+  sprite: HTMLImageElement,
+  scrollOffset: number,
+  canvasWidth: number,
+  x: number,
+  y: number,
+  tileWidth: number,
+  tileHeight: number,
+) {
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  let drawX = x - (scrollOffset % tileWidth);
+  while (drawX < canvasWidth) {
+    ctx.drawImage(sprite, drawX, y, tileWidth, tileHeight);
+    drawX += tileWidth;
+  }
+  ctx.restore();
+}
+
+function tilePixelImageSource(
+  ctx: CanvasRenderingContext2D,
+  sprite: HTMLImageElement,
+  sourceX: number,
+  sourceY: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  scrollOffset: number,
+  canvasWidth: number,
+  x: number,
+  y: number,
+  tileWidth: number,
+  tileHeight: number,
+) {
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  let drawX = x - (scrollOffset % tileWidth);
+  while (drawX < canvasWidth) {
+    ctx.drawImage(
+      sprite,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      drawX,
+      y,
+      tileWidth,
+      tileHeight,
+    );
+    drawX += tileWidth;
+  }
+  ctx.restore();
+}
 
 export function drawDino(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   frame: number,
-  jumpDisabled: boolean,
 ) {
-  const p = 3; // pixel size
+  const sprite = getDinoSprite();
+  if (!sprite) return;
+
+  const safeFrame = ((frame % DINO_SPRITE_FRAME_COUNT) + DINO_SPRITE_FRAME_COUNT) % DINO_SPRITE_FRAME_COUNT;
+  const frameBounds = DINO_FRAME_BOUNDS[safeFrame];
+  const sourceX = (safeFrame % DINO_SPRITE_COLUMNS) * DINO_SPRITE_CELL_WIDTH + frameBounds.x;
+  const sourceY = Math.floor(safeFrame / DINO_SPRITE_COLUMNS) * DINO_SPRITE_CELL_HEIGHT + frameBounds.y;
+  const drawWidth = DINO_SPRITE_DRAW_HEIGHT * (frameBounds.width / frameBounds.height);
+  const drawX = x + DINO_WIDTH / 2 - drawWidth / 2;
+  const drawY = y + DINO_HEIGHT - DINO_SPRITE_DRAW_HEIGHT;
+
   ctx.save();
-  ctx.translate(x, y);
-
-  const bodyColor = jumpDisabled ? "#8888aa" : BASE_BLUE;
-  const accentColor = jumpDisabled ? "#666688" : BASE_BLUE_DARK;
-  const eyeGlow = jumpDisabled ? "#ff4757" : "#00d68f";
-
-  // Body
-  ctx.fillStyle = bodyColor;
-  ctx.fillRect(4 * p, 0, 6 * p, 4 * p); // head
-  ctx.fillRect(2 * p, 4 * p, 8 * p, 6 * p); // torso
-  ctx.fillRect(6 * p, 10 * p, 4 * p, 3 * p); // tail connector
-  ctx.fillRect(9 * p, 8 * p, 3 * p, 3 * p); // tail
-
-  // Visor / eye
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(4 * p, 1 * p, 6 * p, 2 * p);
-  ctx.fillStyle = eyeGlow;
-  ctx.fillRect(8 * p, 1 * p, 2 * p, 1 * p);
-
-  // Arm
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(1 * p, 5 * p, 2 * p, 3 * p);
-
-  // Legs (animated)
-  ctx.fillStyle = bodyColor;
-  const legPhase = frame % 4;
-  if (legPhase < 2) {
-    ctx.fillRect(3 * p, 10 * p, 2 * p, 4 * p); // left leg forward
-    ctx.fillRect(7 * p, 10 * p, 2 * p, 3 * p); // right leg back
-  } else {
-    ctx.fillRect(3 * p, 10 * p, 2 * p, 3 * p); // left leg back
-    ctx.fillRect(7 * p, 10 * p, 2 * p, 4 * p); // right leg forward
-  }
-
-  // Feet
-  ctx.fillStyle = accentColor;
-  if (legPhase < 2) {
-    ctx.fillRect(2 * p, 14 * p, 3 * p, 1 * p);
-    ctx.fillRect(6 * p, 13 * p, 3 * p, 1 * p);
-  } else {
-    ctx.fillRect(2 * p, 13 * p, 3 * p, 1 * p);
-    ctx.fillRect(6 * p, 14 * p, 3 * p, 1 * p);
-  }
-
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(
+    sprite,
+    sourceX,
+    sourceY,
+    frameBounds.width,
+    frameBounds.height,
+    drawX,
+    drawY,
+    drawWidth,
+    DINO_SPRITE_DRAW_HEIGHT,
+  );
   ctx.restore();
 }
 
@@ -99,39 +191,76 @@ export function drawGasPump(ctx: CanvasRenderingContext2D, x: number, y: number)
   ctx.restore();
 }
 
+export function drawNyBackground(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  canvasHeight: number,
+  scrollOffset: number,
+): boolean {
+  const sprite = getSprite(NY_BACKGROUND_SRC);
+  if (!sprite) return false;
+
+  const drawHeight = canvasHeight;
+  const drawWidth = (sprite.naturalWidth / sprite.naturalHeight) * drawHeight;
+  tilePixelImage(
+    ctx,
+    sprite,
+    scrollOffset * NY_BACKGROUND_PARALLAX,
+    canvasWidth,
+    0,
+    0,
+    drawWidth,
+    drawHeight,
+  );
+  return true;
+}
+
+export function drawNyFloor(
+  ctx: CanvasRenderingContext2D,
+  canvasWidth: number,
+  groundY: number,
+  canvasHeight: number,
+  scrollOffset: number,
+): boolean {
+  const sprite = getSprite(FLOOR_NY_SRC);
+  if (!sprite) return false;
+
+  const drawHeight = canvasHeight - groundY;
+  const tileWidth = (FLOOR_NY_SOURCE_WIDTH / FLOOR_NY_SOURCE_HEIGHT) * drawHeight;
+  tilePixelImageSource(
+    ctx,
+    sprite,
+    FLOOR_NY_SOURCE_X,
+    FLOOR_NY_SOURCE_Y,
+    FLOOR_NY_SOURCE_WIDTH,
+    FLOOR_NY_SOURCE_HEIGHT,
+    scrollOffset,
+    canvasWidth,
+    0,
+    groundY,
+    tileWidth,
+    drawHeight,
+  );
+  return true;
+}
+
 export function drawBank(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  const p = 3;
+  const sprite = getSprite(BANK_SPRITE_SRC);
+  if (!sprite) return;
+
   ctx.save();
-  ctx.translate(x, y);
-
-  // Roof / pediment (triangle-ish)
-  ctx.fillStyle = "#ddcc88";
-  ctx.fillRect(0, 2 * p, 14 * p, 2 * p);
-  ctx.fillRect(2 * p, 0, 10 * p, 2 * p);
-
-  // Body
-  ctx.fillStyle = "#ccbb77";
-  ctx.fillRect(0, 4 * p, 14 * p, 10 * p);
-
-  // Columns
-  ctx.fillStyle = "#eeddaa";
-  ctx.fillRect(1 * p, 4 * p, 2 * p, 10 * p);
-  ctx.fillRect(6 * p, 4 * p, 2 * p, 10 * p);
-  ctx.fillRect(11 * p, 4 * p, 2 * p, 10 * p);
-
-  // Door
-  ctx.fillStyle = "#886633";
-  ctx.fillRect(4 * p, 8 * p, 3 * p, 6 * p);
-
-  // Dollar sign
-  ctx.fillStyle = "#00d68f";
-  ctx.font = `bold ${p * 4}px monospace`;
-  ctx.fillText("$", 8.5 * p, 8 * p);
-
-  // Steps
-  ctx.fillStyle = "#bbaa66";
-  ctx.fillRect(0, 14 * p, 14 * p, 2 * p);
-
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(
+    sprite,
+    BANK_SOURCE_X,
+    BANK_SOURCE_Y,
+    BANK_SOURCE_WIDTH,
+    BANK_SOURCE_HEIGHT,
+    x,
+    y,
+    BANK_DRAW_WIDTH,
+    BANK_DRAW_HEIGHT,
+  );
   ctx.restore();
 }
 

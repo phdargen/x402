@@ -183,7 +183,7 @@ export function Game({ session, onPlayAgain }: GameProps) {
     return new Promise(resolve => {
       const wait = () => {
         const state = stateRef.current;
-        if (state.phase === "game-over" || state.jumpCooldownMs <= 0) {
+        if (state.phase === "game-over" || state.phase === "falling" || state.jumpCooldownMs <= 0) {
           resolve();
           return;
         }

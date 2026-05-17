@@ -1,4 +1,5 @@
 import type { GameState, Obstacle, Cloud, ObstacleType } from "./types";
+import { BANK_DRAW_WIDTH, BANK_DRAW_HEIGHT } from "./sprites";
 import {
   GROUND_Y,
   DINO_WIDTH,
@@ -34,6 +35,8 @@ export function createInitialState(): GameState {
     lastObstacleDistance: 0,
     runFrame: 0,
     runFrameTimer: 0,
+    dinoReaction: "none",
+    dinoReactionTimerMs: 0,
   };
 }
 
@@ -61,14 +64,20 @@ export type EngineCallbacks = {
  */
 export async function tryJump(state: GameState, callbacks: EngineCallbacks): Promise<boolean> {
   if (state.phase === "game-over") return false;
-  if (state.jumpCooldownMs > 0) return false;
-  if (state.jumpLockoutMs > 0 && state.isJumping) return false;
+
+  const rescueFromPit = state.phase === "falling";
+  if (!rescueFromPit && state.jumpCooldownMs > 0) return false;
+  if (!rescueFromPit && state.jumpLockoutMs > 0 && state.isJumping) return false;
 
   const canPay = await callbacks.onJumpCost();
   if (!canPay) return false;
 
   if (state.phase === "idle") {
     state.phase = "running";
+  } else if (rescueFromPit) {
+    state.phase = "running";
+    state.dinoReaction = "none";
+    state.dinoReactionTimerMs = 0;
   }
 
   state.dinoVelocity = JUMP_VELOCITY;
@@ -86,44 +95,57 @@ export function tick(state: GameState, dt: number, callbacks: EngineCallbacks): 
     return state;
   }
 
-  // Speed ramp
-  state.speed = Math.min(MAX_SPEED, state.speed + SPEED_INCREMENT * dt);
-
-  // Distance
-  state.distance += state.speed * (dt / 16);
-  state.groundOffset += state.speed;
+  // Speed ramp & score only while actually running (not during pit fall)
+  if (state.phase === "running") {
+    state.speed = Math.min(MAX_SPEED, state.speed + SPEED_INCREMENT * dt);
+    state.distance += state.speed * (dt / 16);
+    maybeSpawnObstacle(state, callbacks);
+    state.groundOffset += state.speed;
+  }
 
   state.jumpCooldownMs = Math.max(0, state.jumpCooldownMs - dt);
   state.jumpLockoutMs = Math.max(0, state.jumpLockoutMs - dt);
+  state.dinoReactionTimerMs = Math.max(0, state.dinoReactionTimerMs - dt);
+  if (state.dinoReactionTimerMs === 0 && state.dinoReaction !== "gap-fall") {
+    state.dinoReaction = "none";
+  }
 
-  // Dino physics
-  if (state.isJumping) {
+  // Dino physics (jump arc or falling through a gap — allow dinoY > 0 when falling)
+  if (state.isJumping || state.phase === "falling") {
     state.dinoVelocity += GRAVITY;
     state.dinoY += state.dinoVelocity;
-    if (state.dinoY >= 0) {
+    const descendingOrGrounded = state.dinoVelocity >= 0;
+    const landed =
+      state.phase !== "falling" && state.dinoY >= 0 && descendingOrGrounded;
+    if (landed) {
       state.dinoY = 0;
       state.dinoVelocity = 0;
       state.isJumping = false;
     }
   }
 
-  // Run animation
-  state.runFrameTimer += dt;
-  if (state.runFrameTimer > 120) {
-    state.runFrame = (state.runFrame + 1) % 4;
-    state.runFrameTimer = 0;
+  // Run animation (frozen while falling — sprite uses gap-fall frame)
+  if (state.phase !== "falling") {
+    state.runFrameTimer += dt;
+    if (state.runFrameTimer > 120) {
+      state.runFrame = (state.runFrame + 1) % 3;
+      state.runFrameTimer = 0;
+    }
   }
 
-  // Spawn obstacles
-  maybeSpawnObstacle(state, callbacks);
-
-  // Move obstacles
-  for (const obs of state.obstacles) {
-    obs.x -= state.speed;
+  // Move obstacles (frozen horizontally while falling straight down)
+  if (state.phase === "running") {
+    for (const obs of state.obstacles) {
+      obs.x -= state.speed;
+    }
   }
 
   // Collision detection
   checkCollisions(state, callbacks);
+
+  if (state.phase === "falling") {
+    finalizeGapFallIfOffScreen(state, callbacks);
+  }
 
   // Cull offscreen obstacles
   state.obstacles = state.obstacles.filter((o) => o.x + o.width > -50);
@@ -154,7 +176,7 @@ function maybeSpawnObstacle(state: GameState, callbacks: EngineCallbacks) {
     x: callbacks.canvasWidth + 20,
     y: 0,
     width: getObstacleWidth(type, state.distance),
-    height: type === "gap" ? 0 : 48,
+    height: type === "gap" ? 0 : type === "bank" ? BANK_DRAW_HEIGHT : 48,
     passed: false,
   };
 
@@ -174,7 +196,7 @@ function chooseObstacleType(distance: number): ObstacleType {
 
 function getObstacleWidth(type: ObstacleType, distance: number): number {
   if (type === "gas-pump") return 36;
-  if (type === "bank") return 42;
+  if (type === "bank") return BANK_DRAW_WIDTH;
 
   const difficultyBonus = Math.min(50, distance / 180);
   return 70 + Math.random() * 35 + difficultyBonus;
@@ -188,6 +210,8 @@ function getObstacleGap(distance: number): number {
 }
 
 function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
+  if (state.phase === "falling") return;
+
   const dinoX = 80;
   const groundY = callbacks.canvasHeight * GROUND_Y;
   const dinoScreenY = groundY - DINO_HEIGHT + state.dinoY;
@@ -205,10 +229,12 @@ function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
       if (!dinoFellIntoGap(dinoRect, obs, groundY)) continue;
 
       obs.passed = true;
-      state.phase = "game-over";
-      state.screenShake = Math.max(state.screenShake, 8);
-      spawnHitParticles(state, dinoX + DINO_WIDTH / 2, groundY, "#ff4757");
-      callbacks.onGameOver();
+      state.phase = "falling";
+      state.dinoReaction = "gap-fall";
+      state.dinoReactionTimerMs = 0;
+      state.isJumping = true;
+      state.dinoVelocity = 0;
+      state.screenShake = Math.max(state.screenShake, 5);
       return;
     }
 
@@ -230,20 +256,39 @@ function checkCollisions(state: GameState, callbacks: EngineCallbacks) {
       spawnHitParticles(state, obs.x, groundY - obs.height / 2, "#ff6b35");
     } else {
       state.bankPenaltyJumpsLeft = BANK_PENALTY_JUMPS;
+      state.dinoReaction = "obstacle-hit";
+      state.dinoReactionTimerMs = 450;
       callbacks.onHitBank();
       spawnHitParticles(state, obs.x, groundY - obs.height / 2, "#00d68f");
     }
   }
 }
 
+/** Right edge past pit entry line (left + 75% hitbox width), only if feet still overlap the pit. */
 function dinoFellIntoGap(
   dinoRect: { x: number; y: number; w: number; h: number },
   gap: Obstacle,
   groundY: number,
 ): boolean {
   const feetY = dinoRect.y + dinoRect.h;
-  const horizontallyOverGap = dinoRect.x + dinoRect.w > gap.x + 8 && dinoRect.x < gap.x + gap.width - 8;
-  return horizontallyOverGap && feetY > groundY - 10;
+  const dinoRight = dinoRect.x + dinoRect.w;
+  const pitLeft = gap.x;
+  const pitRight = gap.x + gap.width;
+  const overlapsPit = dinoRect.x < pitRight && dinoRight > pitLeft;
+  const fallPastX = pitLeft + dinoRect.w * 0.75;
+  const pastFallLine = dinoRight > fallPastX;
+  return overlapsPit && pastFallLine && feetY > groundY - 10;
+}
+
+function finalizeGapFallIfOffScreen(state: GameState, callbacks: EngineCallbacks) {
+  const groundY = callbacks.canvasHeight * GROUND_Y;
+  const dinoTop = groundY - DINO_HEIGHT + state.dinoY;
+  const margin = 24;
+  if (dinoTop > callbacks.canvasHeight + margin) {
+    state.phase = "game-over";
+    state.isJumping = false;
+    callbacks.onGameOver();
+  }
 }
 
 function rectsOverlap(

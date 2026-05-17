@@ -1,6 +1,6 @@
 import type { GameState, VisualZone } from "./types";
 import { GROUND_Y, DINO_WIDTH, DINO_HEIGHT } from "./types";
-import { drawDino, drawGasPump, drawBank, drawCloud } from "./sprites";
+import { drawDino, drawGasPump, drawBank, drawNyBackground, drawNyFloor } from "./sprites";
 
 function getVisualZone(distance: number): VisualZone {
   if (distance < 2000) return "calm";
@@ -63,9 +63,29 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.translate(shakeX, shakeY);
   }
 
-  // Background gradient
-  ctx.fillStyle = getBackgroundGradient(ctx, zone, height);
-  ctx.fillRect(0, 0, width, height);
+  const hasNyBackground = drawNyBackground(ctx, width, height, state.groundOffset);
+  if (!hasNyBackground) {
+    ctx.fillStyle = getBackgroundGradient(ctx, zone, height);
+    ctx.fillRect(0, 0, width, height);
+  }
+
+  // Zone tint over pixel-art background
+  if (hasNyBackground && zone !== "calm") {
+    ctx.save();
+    switch (zone) {
+      case "dusk":
+        ctx.fillStyle = "rgba(10, 10, 30, 0.25)";
+        break;
+      case "night":
+        ctx.fillStyle = "rgba(5, 5, 20, 0.45)";
+        break;
+      case "overdrive":
+        ctx.fillStyle = "rgba(2, 2, 12, 0.55)";
+        break;
+    }
+    ctx.fillRect(0, 0, width, height);
+    ctx.restore();
+  }
 
   // Speed lines (night + overdrive)
   if (zone === "night" || zone === "overdrive") {
@@ -83,35 +103,37 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.restore();
   }
 
-  // Clouds
-  for (const cloud of state.clouds) {
-    drawCloud(ctx, cloud.x, cloud.y, cloud.width, cloud.opacity);
-  }
+  const floorGaps = state.obstacles
+    .filter((obs) => obs.type === "gap")
+    .map((obs) => ({ x: obs.x, width: obs.width }));
 
-  // Ground line
-  const glow = getGroundGlow(zone);
-  ctx.save();
-  ctx.strokeStyle = glow.color;
-  ctx.globalAlpha = glow.alpha;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, groundY);
-  ctx.lineTo(width, groundY);
-  ctx.stroke();
+  drawFloorWithGaps(ctx, width, groundY, height, floorGaps, () => {
+    const hasNyFloor = drawNyFloor(ctx, width, groundY, height, state.groundOffset);
+    if (!hasNyFloor) {
+      const glow = getGroundGlow(zone);
+      ctx.save();
+      ctx.strokeStyle = glow.color;
+      ctx.globalAlpha = glow.alpha;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, groundY);
+      ctx.lineTo(width, groundY);
+      ctx.stroke();
 
-  // Ground dashes
-  ctx.globalAlpha = glow.alpha * 0.5;
-  ctx.lineWidth = 1;
-  const dashLen = 20;
-  const gapLen = 30;
-  const offset = state.groundOffset % (dashLen + gapLen);
-  for (let x = -offset; x < width; x += dashLen + gapLen) {
-    ctx.beginPath();
-    ctx.moveTo(x, groundY + 8);
-    ctx.lineTo(x + dashLen, groundY + 8);
-    ctx.stroke();
-  }
-  ctx.restore();
+      ctx.globalAlpha = glow.alpha * 0.5;
+      ctx.lineWidth = 1;
+      const dashLen = 20;
+      const gapLen = 30;
+      const offset = state.groundOffset % (dashLen + gapLen);
+      for (let x = -offset; x < width; x += dashLen + gapLen) {
+        ctx.beginPath();
+        ctx.moveTo(x, groundY + 8);
+        ctx.lineTo(x + dashLen, groundY + 8);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+  });
 
   // Obstacles
   for (const obs of state.obstacles) {
@@ -119,8 +141,6 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
       drawGasPump(ctx, obs.x, groundY - obs.height);
     } else if (obs.type === "bank") {
       drawBank(ctx, obs.x, groundY - obs.height);
-    } else {
-      drawGap(ctx, obs.x, groundY, obs.width);
     }
   }
 
@@ -131,8 +151,7 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx,
     dinoX,
     dinoScreenY,
-    state.runFrame,
-    state.jumpLockoutMs > 0,
+    getDinoSpriteFrame(state),
   );
 
   // Gas pumps disable chained in-flight jumps without pausing the runner.
@@ -161,28 +180,35 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
   ctx.restore();
 }
 
-function drawGap(ctx: CanvasRenderingContext2D, x: number, groundY: number, width: number) {
+function getDinoSpriteFrame(state: GameState): number {
+  if (state.dinoReaction === "gap-fall") return 7;
+  if (state.dinoReaction === "obstacle-hit") return 6;
+  if (!state.isJumping) return state.runFrame;
+  if (state.jumpLockoutMs > 0) return 5;
+  if (state.jumpCooldownMs <= 0) return 4;
+  return 3;
+}
+
+function drawFloorWithGaps(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  groundY: number,
+  height: number,
+  gaps: Array<{ x: number; width: number }>,
+  drawFloor: () => void,
+) {
+  if (gaps.length === 0) {
+    drawFloor();
+    return;
+  }
+
   ctx.save();
-
-  const depth = 85;
-  const gradient = ctx.createLinearGradient(0, groundY, 0, groundY + depth);
-  gradient.addColorStop(0, "rgba(255, 71, 87, 0.55)");
-  gradient.addColorStop(0.15, "rgba(255, 71, 87, 0.2)");
-  gradient.addColorStop(1, "rgba(0, 0, 0, 0.9)");
-  ctx.fillStyle = gradient;
-  ctx.fillRect(x, groundY - 2, width, depth);
-
-  ctx.strokeStyle = "#ff4757";
-  ctx.globalAlpha = 0.8;
-  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(x, groundY);
-  ctx.lineTo(x + 10, groundY + 8);
-  ctx.lineTo(x + 18, groundY);
-  ctx.moveTo(x + width, groundY);
-  ctx.lineTo(x + width - 10, groundY + 8);
-  ctx.lineTo(x + width - 18, groundY);
-  ctx.stroke();
-
+  ctx.rect(0, groundY, width, height - groundY);
+  for (const gap of gaps) {
+    ctx.rect(gap.x, groundY, gap.width, height - groundY);
+  }
+  ctx.clip("evenodd");
+  drawFloor();
   ctx.restore();
 }
