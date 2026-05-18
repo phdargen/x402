@@ -3,10 +3,11 @@ import { createPublicClient, formatUnits, http, publicActions, type Chain } from
 import * as allChains from "viem/chains";
 import { useAccount, useSwitchChain, useWalletClient, useConnect, useDisconnect } from "wagmi";
 
-import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { x402Client } from "@x402/core/client";
 import { encodePaymentSignatureHeader } from "@x402/core/http";
 import type { PaymentRequired } from "@x402/core/types";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { UptoEvmScheme } from "@x402/evm/upto/client";
 import { getTokenBalance, getTokenDecimals } from "./utils";
 
 import { Spinner } from "./Spinner";
@@ -152,9 +153,15 @@ export function EvmPaywall({ paymentRequired, onSuccessfulResponse }: EvmPaywall
 
       setStatus("Creating payment signature...");
 
-      const signer = wagmiToClientSigner(walletClient);
+      const signer = wagmiToClientSigner(walletClient, publicClient);
       const client = new x402Client();
-      client.register("eip155:*", new ExactEvmScheme(signer));
+      if (firstRequirement.scheme === "upto") {
+        client.register("eip155:*", new UptoEvmScheme(signer));
+      } else if (firstRequirement.scheme === "exact") {
+        client.register("eip155:*", new ExactEvmScheme(signer));
+      } else {
+        throw new Error(`Unsupported EVM payment scheme: ${firstRequirement.scheme}`);
+      }
 
       // Create payment payload - client automatically handles version
       const paymentPayload = await client.createPaymentPayload(paymentRequired);
@@ -172,6 +179,12 @@ export function EvmPaywall({ paymentRequired, onSuccessfulResponse }: EvmPaywall
 
       if (response.ok) {
         await onSuccessfulResponse(response);
+      } else if (response.status === 431) {
+        throw new Error(
+          "Payment signature is too large for HTTP headers. Smart wallets (e.g. Base Account) " +
+            "produce very large signatures, especially with gas-sponsored EIP-2612. Try pre-approving " +
+            "USDC to Permit2, using an EOA wallet, or a programmatic x402 client.",
+        );
       } else {
         throw new Error(`Request failed: ${response.status} ${response.statusText}`);
       }
@@ -184,9 +197,12 @@ export function EvmPaywall({ paymentRequired, onSuccessfulResponse }: EvmPaywall
     address,
     x402,
     paymentRequired,
+    firstRequirement.scheme,
     handleSwitchChain,
     wagmiWalletClient,
     publicClient,
+    tokenAddress,
+    tokenName,
     chainName,
     onSuccessfulResponse,
   ]);

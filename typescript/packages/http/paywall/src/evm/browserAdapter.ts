@@ -1,13 +1,17 @@
 import type { ClientEvmSigner } from "@x402/evm";
-import type { Account, WalletClient } from "viem";
+import type { Account, PublicClient, WalletClient } from "viem";
 
 /**
  * Converts a wagmi/viem WalletClient to a ClientEvmSigner for x402Client
  *
  * @param walletClient - The wagmi wallet client from useWalletClient()
- * @returns ClientEvmSigner compatible with ExactEvmClient
+ * @param publicClient - Optional public client for readContract (EIP-2612 gas sponsoring)
+ * @returns ClientEvmSigner compatible with ExactEvmClient / UptoEvmScheme
  */
-export function wagmiToClientSigner(walletClient: WalletClient): ClientEvmSigner {
+export function wagmiToClientSigner(
+  walletClient: WalletClient,
+  publicClient?: Pick<PublicClient, "readContract">,
+): ClientEvmSigner {
   if (!walletClient.account) {
     throw new Error("Wallet client must have an account");
   }
@@ -24,5 +28,8 @@ export function wagmiToClientSigner(walletClient: WalletClient): ClientEvmSigner
       });
       return signature;
     },
+    readContract: publicClient
+      ? args => publicClient.readContract(args as never) as Promise<unknown>
+      : undefined,
   };
 }
