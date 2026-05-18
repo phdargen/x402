@@ -459,7 +459,9 @@ def _build_permit2_settle_args(
 
     Returns (permit_tuple, owner_addr, witness_tuple, sig_bytes).
     """
-    sig_bytes = parse_erc6492_signature(hex_to_bytes(permit2_payload.signature or "")).inner_signature
+    sig_bytes = parse_erc6492_signature(
+        hex_to_bytes(permit2_payload.signature or "")
+    ).inner_signature
     permit_tuple = (
         (
             to_checksum_address(permit2_payload.permit2_authorization.permitted.token),
