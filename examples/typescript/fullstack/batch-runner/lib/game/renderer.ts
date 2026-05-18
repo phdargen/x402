@@ -154,20 +154,6 @@ export function render(ctx: CanvasRenderingContext2D, state: GameState) {
     getDinoSpriteFrame(state),
   );
 
-  // Gas pumps disable chained in-flight jumps without pausing the runner.
-  if (state.jumpLockoutMs > 0) {
-    ctx.save();
-    ctx.fillStyle = "rgba(255, 71, 87, 0.08)";
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.font = "bold 14px monospace";
-    ctx.fillStyle = "#ff4757";
-    ctx.textAlign = "center";
-    ctx.globalAlpha = 0.6 + Math.sin(state.frameCount * 0.15) * 0.4;
-    ctx.fillText("AIR JUMPS DISABLED", width / 2, height * 0.35);
-    ctx.restore();
-  }
-
   // Particles
   for (const p of state.particles) {
     ctx.save();

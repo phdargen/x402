@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createInitialState, tick, tryJump } from "@/lib/game/engine";
 import type { EngineCallbacks } from "@/lib/game/engine";
 import { render } from "@/lib/game/renderer";
-import { JUMP_COOLDOWN_MS } from "@/lib/game/types";
 import type { GameState } from "@/lib/game/types";
 import {
   BANK_PENALTY_MULTIPLIER,
@@ -39,7 +38,6 @@ export function Game({ session, onPlayAgain }: GameProps) {
   const channelIdRef = useRef<`0x${string}` | null>(session.channelId);
   const checkpointInFlightRef = useRef<Promise<void> | null>(null);
   const jumpPaymentInFlightRef = useRef(false);
-  const jumpSigningRef = useRef(false);
   const jumpQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastVoucherRef = useRef<{
     channelId: `0x${string}`;
@@ -52,9 +50,6 @@ export function Game({ session, onPlayAgain }: GameProps) {
     distance: 0,
     voucherCount: 0,
     bankPenaltyJumpsLeft: 0,
-    jumpCost: Number(JUMP_COST_UNITS),
-    jumpRecharge: 1,
-    jumpStatus: "ready" as "ready" | "charging" | "signing" | "batch-disabled",
     gasLockoutMs: 0,
   });
   const [gameOver, setGameOver] = useState(false);
@@ -127,7 +122,6 @@ export function Game({ session, onPlayAgain }: GameProps) {
     };
     const nextCumulative = cumulativeRef.current + cost;
     try {
-      jumpSigningRef.current = true;
       voucher = await signGameVoucher(session.voucherSigner, cid, nextCumulative);
       const validVoucher = await verifyGameVoucher(session.sessionAddress, voucher);
       if (!validVoucher) return false;
@@ -136,7 +130,6 @@ export function Game({ session, onPlayAgain }: GameProps) {
       return false;
     } finally {
       jumpPaymentInFlightRef.current = false;
-      jumpSigningRef.current = false;
     }
 
     balanceRef.current -= cost;
@@ -260,24 +253,11 @@ export function Game({ session, onPlayAgain }: GameProps) {
         render(ctx, state);
 
         if (state.frameCount % 10 === 0) {
-          const jumpRecharge = 1 - Math.min(1, state.jumpCooldownMs / JUMP_COOLDOWN_MS);
-          const jumpStatus =
-            state.jumpLockoutMs > 0 && state.isJumping
-              ? "batch-disabled"
-              : jumpSigningRef.current
-                ? "signing"
-                : state.jumpCooldownMs > 0
-                  ? "charging"
-                  : "ready";
-
           setHudState({
             balance: Number(balanceRef.current),
             distance: state.distance,
             voucherCount: jumpCountRef.current,
             bankPenaltyJumpsLeft: bankPenaltyRef.current,
-            jumpCost: Number(currentJumpCost()),
-            jumpRecharge,
-            jumpStatus,
             gasLockoutMs: state.jumpLockoutMs,
           });
         }
@@ -352,9 +332,6 @@ export function Game({ session, onPlayAgain }: GameProps) {
         distance={hudState.distance}
         voucherCount={hudState.voucherCount}
         bankPenaltyJumpsLeft={hudState.bankPenaltyJumpsLeft}
-        jumpCost={hudState.jumpCost}
-        jumpRecharge={hudState.jumpRecharge}
-        jumpStatus={hudState.jumpStatus}
         gasLockoutMs={hudState.gasLockoutMs}
       />
 
