@@ -150,6 +150,7 @@ export function paymentProxyFromHTTPServer(
           result.declaredExtensions,
           result.cancellationDispatcher,
           context,
+          result.paymentRequiredExtensions,
         );
       }
     }
@@ -336,6 +337,7 @@ export function withX402FromHTTPServer<T = unknown>(
           result.declaredExtensions,
           result.cancellationDispatcher,
           context,
+          result.paymentRequiredExtensions,
         ) as Promise<NextResponse<T>>;
       }
     }

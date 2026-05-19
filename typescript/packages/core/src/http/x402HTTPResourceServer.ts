@@ -278,6 +278,7 @@ export type HTTPProcessResult =
       paymentPayload: PaymentPayload;
       paymentRequirements: PaymentRequirements;
       declaredExtensions?: Record<string, unknown>;
+      paymentRequiredExtensions?: Record<string, unknown>;
     }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
@@ -566,6 +567,7 @@ export class x402HTTPResourceServer {
         matchingRequirements,
         extensions,
         transportContext,
+        paymentRequired.extensions,
       );
 
       if (!verifyResult.isValid) {
@@ -591,6 +593,7 @@ export class x402HTTPResourceServer {
           extensions,
           transportContext,
           verifyResult.skipHandler,
+          paymentRequired.extensions,
         );
       }
 
@@ -608,6 +611,7 @@ export class x402HTTPResourceServer {
         paymentPayload,
         paymentRequirements: matchingRequirements,
         declaredExtensions: extensions,
+        paymentRequiredExtensions: paymentRequired.extensions,
       };
     } catch (error) {
       if (error instanceof FacilitatorResponseError) {
@@ -635,6 +639,7 @@ export class x402HTTPResourceServer {
    * @param declaredExtensions - Optional declared extensions (for per-key enrichment)
    * @param transportContext - Optional HTTP transport context
    * @param settlementOverrides - Optional settlement overrides (e.g., partial settlement amount)
+   * @param paymentRequiredExtensions - Server-declared extensions from PaymentRequired
    * @returns ProcessSettleResultResponse - SettleResponse with headers if success or errorReason if failure
    */
   async processSettlement(
@@ -643,6 +648,7 @@ export class x402HTTPResourceServer {
     declaredExtensions?: Record<string, unknown>,
     transportContext?: HTTPTransportContext,
     settlementOverrides?: SettlementOverrides,
+    paymentRequiredExtensions?: Record<string, unknown>,
   ): Promise<ProcessSettleResultResponse> {
     if (transportContext?.request && !transportContext.request.method) {
       transportContext = {
@@ -676,6 +682,7 @@ export class x402HTTPResourceServer {
         declaredExtensions,
         transportContext,
         resolvedOverrides,
+        paymentRequiredExtensions,
       );
 
       if (!settleResponse.success) {
@@ -763,6 +770,7 @@ export class x402HTTPResourceServer {
    * @param declaredExtensions - Optional declared extensions for the route.
    * @param transportContext - Optional HTTP transport context.
    * @param skipHandlerResponse - Optional content type + body to return on success.
+   * @param paymentRequiredExtensions - Server-declared extensions from PaymentRequired
    * @returns A `payment-error` HTTPProcessResult carrying the final response.
    */
   private async processSkipHandlerSettlement(
@@ -771,12 +779,15 @@ export class x402HTTPResourceServer {
     declaredExtensions: Record<string, unknown> | undefined,
     transportContext: HTTPTransportContext,
     skipHandlerResponse: SkipHandlerDirective | undefined,
+    paymentRequiredExtensions?: Record<string, unknown>,
   ): Promise<HTTPProcessResult> {
     const settleResult = await this.processSettlement(
       paymentPayload,
       requirements,
       declaredExtensions,
       transportContext,
+      undefined,
+      paymentRequiredExtensions,
     );
 
     if (!settleResult.success) {
