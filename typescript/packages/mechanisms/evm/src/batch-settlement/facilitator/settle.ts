@@ -15,12 +15,14 @@ import * as Errors from "../errors";
  * @param signer - Facilitator signer used to submit the settlement transaction.
  * @param payload - Settle payload containing the receiver address and token address.
  * @param requirements - Payment requirements for network identification.
+ * @param calldataSuffix - Optional hex suffix appended to the settlement transaction.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeSettle(
   signer: FacilitatorEvmSigner,
   payload: BatchSettlementSettlePayload,
   requirements: PaymentRequirements,
+  calldataSuffix?: `0x${string}`,
 ): Promise<SettleResponse> {
   const network = requirements.network;
   const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
@@ -79,6 +81,7 @@ export async function executeSettle(
       abi: batchSettlementABI,
       functionName: "settle",
       args: [receiver, token],
+      ...(calldataSuffix ? { dataSuffix: calldataSuffix } : {}),
     });
 
     const receipt = await signer.waitForTransactionReceipt({ hash: tx });
