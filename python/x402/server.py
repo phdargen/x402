@@ -20,6 +20,7 @@ from .schemas import (
     ResourceConfig,
     ResourceVerifyResponse,
     SettleResponse,
+    VerifiedPaymentCancelOptions,
 )
 from .server_base import (
     AfterSettleHook,
@@ -29,12 +30,14 @@ from .server_base import (
     FacilitatorClient,
     FacilitatorClientSync,
     OnSettleFailureHook,
+    OnVerifiedPaymentCanceledHook,
     OnVerifyFailureHook,
     SyncAfterSettleHook,
     SyncAfterVerifyHook,
     SyncBeforeSettleHook,
     SyncBeforeVerifyHook,
     SyncOnSettleFailureHook,
+    SyncOnVerifiedPaymentCanceledHook,
     SyncOnVerifyFailureHook,
     x402ResourceServerBase,
 )
@@ -103,6 +106,7 @@ class x402ResourceServer(x402ResourceServerBase):
         self._before_settle_hooks: list[BeforeSettleHook] = []
         self._after_settle_hooks: list[AfterSettleHook] = []
         self._on_settle_failure_hooks: list[OnSettleFailureHook] = []
+        self._on_verified_payment_canceled_hooks: list[OnVerifiedPaymentCanceledHook] = []
 
     # ========================================================================
     # Hook Registration
@@ -136,6 +140,11 @@ class x402ResourceServer(x402ResourceServerBase):
     def on_settle_failure(self, hook: OnSettleFailureHook) -> Self:
         """Register hook on settlement failure. Return RecoveredSettleResult to recover."""
         self._on_settle_failure_hooks.append(hook)
+        return self
+
+    def on_verified_payment_canceled(self, hook: OnVerifiedPaymentCanceledHook) -> Self:
+        """Register hook when a verified payment is canceled before settlement."""
+        self._on_verified_payment_canceled_hooks.append(hook)
         return self
 
     # ========================================================================
@@ -250,6 +259,31 @@ class x402ResourceServer(x402ResourceServerBase):
         except StopIteration as e:
             return e.value
 
+    async def _dispatch_verified_payment_canceled(
+        self,
+        payload: PaymentPayload | PaymentPayloadV1,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+        declared_extensions: dict[str, Any] | None,
+        options: VerifiedPaymentCancelOptions,
+        transport_context: Any,
+    ) -> None:
+        context = self._build_verified_payment_canceled_context(
+            payload,
+            requirements,
+            declared_extensions,
+            options,
+            transport_context,
+        )
+        for index, hook in enumerate(self._on_verified_payment_canceled_hooks):
+            try:
+                await self._execute_hook(hook, context)
+            except Exception as error:
+                self._warn_resource_server_hook_failure(
+                    "onVerifiedPaymentCanceled",
+                    f"manual onVerifiedPaymentCanceled hook #{index}",
+                    error,
+                )
+
     async def _execute_hook(self, hook: Any, context: Any) -> Any:
         """Execute hook, auto-detecting sync/async."""
         result = hook(context)
@@ -306,6 +340,7 @@ class x402ResourceServerSync(x402ResourceServerBase):
         self._before_settle_hooks: list[SyncBeforeSettleHook] = []
         self._after_settle_hooks: list[SyncAfterSettleHook] = []
         self._on_settle_failure_hooks: list[SyncOnSettleFailureHook] = []
+        self._on_verified_payment_canceled_hooks: list[SyncOnVerifiedPaymentCanceledHook] = []
 
     @staticmethod
     def _validate_sync_facilitator_clients(
@@ -363,6 +398,11 @@ class x402ResourceServerSync(x402ResourceServerBase):
     def on_settle_failure(self, hook: SyncOnSettleFailureHook) -> Self:
         """Register hook on settlement failure. Return RecoveredSettleResult to recover."""
         self._on_settle_failure_hooks.append(hook)
+        return self
+
+    def on_verified_payment_canceled(self, hook: SyncOnVerifiedPaymentCanceledHook) -> Self:
+        """Register hook when a verified payment is canceled before settlement."""
+        self._on_verified_payment_canceled_hooks.append(hook)
         return self
 
     # ========================================================================
@@ -476,6 +516,31 @@ class x402ResourceServerSync(x402ResourceServerBase):
                     result = self._execute_hook_sync(target, ctx)
         except StopIteration as e:
             return e.value
+
+    def _dispatch_verified_payment_canceled_sync(
+        self,
+        payload: PaymentPayload | PaymentPayloadV1,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+        declared_extensions: dict[str, Any] | None,
+        options: VerifiedPaymentCancelOptions,
+        transport_context: Any,
+    ) -> None:
+        context = self._build_verified_payment_canceled_context(
+            payload,
+            requirements,
+            declared_extensions,
+            options,
+            transport_context,
+        )
+        for index, hook in enumerate(self._on_verified_payment_canceled_hooks):
+            try:
+                self._execute_hook_sync(hook, context)
+            except Exception as error:
+                self._warn_resource_server_hook_failure(
+                    "onVerifiedPaymentCanceled",
+                    f"manual onVerifiedPaymentCanceled hook #{index}",
+                    error,
+                )
 
     def _execute_hook_sync(self, hook: Any, context: Any) -> Any:
         """Execute hook synchronously. Raises if async hook detected."""

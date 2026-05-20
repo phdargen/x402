@@ -118,7 +118,21 @@ Register hooks for HTTP-specific request handling before payment processing. Use
     ```
   </Tab>
   <Tab title="Python">
-    *Coming soon.*
+    ```python
+    from x402 import x402ResourceServer
+    from x402.http import x402HTTPResourceServer
+    from x402.schemas.hooks import GrantAccessResult
+
+    server = x402ResourceServer(facilitator_client)
+    http_server = x402HTTPResourceServer(server, routes)
+
+    async def allow_subscribers(context, route_config):
+        api_key = context.adapter.get_header("X-API-Key")
+        if api_key and await is_valid_api_key(api_key):
+            return GrantAccessResult()
+
+    http_server.on_protected_request(allow_subscribers)
+    ```
   </Tab>
   <Tab title="Go">
     ```go

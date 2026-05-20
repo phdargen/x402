@@ -19,8 +19,10 @@ from ..schemas import (
     PaymentRequirements,
     ResourceInfo,
     SettleResponse,
+    SkipHandlerDirective,
 )
 from ..schemas.errors import SettleError
+from ..schemas.hooks import AbortProtectedRequestResult, GrantAccessResult
 from ..schemas.v1 import PaymentPayloadV1
 from .constants import (
     PAYMENT_REQUIRED_HEADER,
@@ -37,9 +39,11 @@ from .types import (
     HTTPProcessResult,
     HTTPRequestContext,
     HTTPResponseInstructions,
+    HTTPTransportContext,
     PaymentOption,
     PaywallConfig,
     ProcessSettleResult,
+    ProtectedRequestHook,
     RouteConfig,
     RouteConfigurationError,
     RoutesConfig,
@@ -88,7 +92,12 @@ class PaywallProvider(Protocol):
 # ============================================================================
 
 # Phase for generator yields
-ProcessPhase = Literal["resolve_options", "verify_payment", "build_requirements"]
+ProcessPhase = Literal[
+    "protected_request",
+    "resolve_options",
+    "verify_payment",
+    "skip_handler_settlement",
+]
 ProcessCommand = tuple[ProcessPhase, Any, Any]  # (phase, target, context)
 
 
@@ -119,6 +128,7 @@ class x402HTTPServerBase:
         self._routes_config = routes
         self._compiled_routes: list[CompiledRoute] = []
         self._paywall_provider: PaywallProvider | None = None
+        self._protected_request_hooks: list[ProtectedRequestHook] = []
 
         # Compile routes
         self._compile_routes(routes)
@@ -230,6 +240,11 @@ class x402HTTPServerBase:
         self._paywall_provider = provider
         return self
 
+    def on_protected_request(self, hook: ProtectedRequestHook) -> x402HTTPServerBase:
+        """Register hook before payment processing on protected routes."""
+        self._protected_request_hooks.append(hook)
+        return self
+
     # =========================================================================
     # Route Matching
     # =========================================================================
@@ -286,6 +301,21 @@ class x402HTTPServerBase:
             return HTTPProcessResult(type=RESULT_NO_PAYMENT_REQUIRED)
         route_config, route_pattern = route_match
         context = dataclasses.replace(context, route_pattern=route_pattern)
+        transport_context = HTTPTransportContext(request=context)
+
+        for hook in self._protected_request_hooks:
+            hook_result = yield ("protected_request", hook, (context, route_config))
+            if isinstance(hook_result, GrantAccessResult):
+                return HTTPProcessResult(type=RESULT_NO_PAYMENT_REQUIRED)
+            if isinstance(hook_result, AbortProtectedRequestResult):
+                return HTTPProcessResult(
+                    type=RESULT_PAYMENT_ERROR,
+                    response=HTTPResponseInstructions(
+                        status=403,
+                        headers={"Content-Type": "application/json"},
+                        body={"error": hook_result.reason},
+                    ),
+                )
 
         # Extract payment from headers
         payment_payload = self._extract_payment(context.adapter)
@@ -378,7 +408,7 @@ class x402HTTPServerBase:
         try:
             verify_result = yield (
                 "verify_payment",
-                (payment_payload, matching_reqs),
+                (payment_payload, matching_reqs, extensions, transport_context),
                 None,
             )
 
@@ -397,11 +427,33 @@ class x402HTTPServerBase:
                     ),
                 )
 
-            # Payment valid
+            if verify_result.skip_handler is not None:
+                skip_result = yield (
+                    "skip_handler_settlement",
+                    (
+                        payment_payload,
+                        matching_reqs,
+                        extensions,
+                        transport_context,
+                        verify_result.skip_handler,
+                    ),
+                    None,
+                )
+                return skip_result
+
+            cancellation_dispatcher = self._server.create_payment_cancellation_dispatcher(
+                payment_payload,
+                matching_reqs,
+                extensions,
+                transport_context,
+            )
+
             return HTTPProcessResult(
                 type=RESULT_PAYMENT_VERIFIED,
                 payment_payload=payment_payload,
                 payment_requirements=matching_reqs,
+                declared_extensions=extensions,
+                cancellation_dispatcher=cancellation_dispatcher,
             )
 
         except Exception as e:
@@ -469,12 +521,42 @@ class x402HTTPServerBase:
             return requirements
         return requirements.model_copy(update={"amount": str(overrides["amount"])})
 
+    def _process_skip_handler_settlement(
+        self,
+        settle_result: ProcessSettleResult,
+        skip_handler: SkipHandlerDirective,
+    ) -> HTTPProcessResult:
+        """Return skip-handler response after settlement, without invoking the route handler."""
+        if not settle_result.success:
+            return HTTPProcessResult(
+                type=RESULT_PAYMENT_ERROR,
+                response=settle_result.response,
+            )
+
+        content_type = skip_handler.content_type or "application/json"
+        body = skip_handler.body if skip_handler.body is not None else {}
+
+        return HTTPProcessResult(
+            type=RESULT_PAYMENT_ERROR,
+            response=HTTPResponseInstructions(
+                status=200,
+                headers={
+                    "Content-Type": content_type,
+                    **settle_result.headers,
+                },
+                body=body,
+                is_html="text/html" in content_type,
+            ),
+        )
+
     def process_settlement(
         self,
         payment_payload: PaymentPayload | PaymentPayloadV1,
         requirements: PaymentRequirements,
         context: HTTPRequestContext | None = None,
         settlement_overrides: dict[str, Any] | None = None,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: HTTPTransportContext | None = None,
     ) -> ProcessSettleResult:
         """Process settlement after successful response.
 
@@ -497,6 +579,8 @@ class x402HTTPServerBase:
             settle_response = self._server.settle_payment(
                 payment_payload,
                 effective_requirements,
+                declared_extensions=declared_extensions,
+                transport_context=transport_context,
             )
 
             if not settle_response.success:

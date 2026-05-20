@@ -4,7 +4,7 @@ Shared hook types used by x402Client, x402ResourceServer, and x402Facilitator.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .payments import PaymentPayload, PaymentRequired, PaymentRequirements
@@ -101,6 +101,81 @@ class SkipHandlerResult:
     """Return from after-verify hook to skip the resource handler."""
 
     response: SkipHandlerDirective | None = None
+
+
+VerifiedPaymentCancellationReason = Literal["handler_threw", "handler_failed"]
+
+
+@dataclass
+class VerifiedPaymentCancelOptions:
+    """Options passed when canceling a verified payment attempt."""
+
+    reason: VerifiedPaymentCancellationReason
+    error: Any = None
+    response_status: int | None = None
+
+
+@dataclass
+class GrantAccessResult:
+    """Return from on_protected_request to bypass payment."""
+
+    grant_access: Literal[True] = True
+
+
+@dataclass
+class AbortProtectedRequestResult:
+    """Return from on_protected_request to deny the request."""
+
+    abort: Literal[True] = True
+    reason: str = ""
+
+
+ProtectedRequestHookResult = GrantAccessResult | AbortProtectedRequestResult
+
+
+class PaymentCancellationDispatcher:
+    """Cancels a verified payment when the protected handler fails."""
+
+    def __init__(
+        self,
+        server: Any,
+        payment_payload: "PaymentPayload | PaymentPayloadV1",
+        requirements: "PaymentRequirements | PaymentRequirementsV1",
+        declared_extensions: dict[str, Any] | None,
+        transport_context: Any,
+    ) -> None:
+        self._server = server
+        self._payment_payload = payment_payload
+        self._requirements = requirements
+        self._declared_extensions = declared_extensions or {}
+        self._transport_context = transport_context
+        self._done = False
+
+    async def cancel(self, options: VerifiedPaymentCancelOptions) -> None:
+        """Dispatch cancellation hooks (async server)."""
+        if self._done:
+            return
+        self._done = True
+        await self._server._dispatch_verified_payment_canceled(
+            self._payment_payload,
+            self._requirements,
+            self._declared_extensions,
+            options,
+            self._transport_context,
+        )
+
+    def cancel_sync(self, options: VerifiedPaymentCancelOptions) -> None:
+        """Dispatch cancellation hooks (sync server)."""
+        if self._done:
+            return
+        self._done = True
+        self._server._dispatch_verified_payment_canceled_sync(
+            self._payment_payload,
+            self._requirements,
+            self._declared_extensions,
+            options,
+            self._transport_context,
+        )
 
 
 class ResourceVerifyResponse:
@@ -240,6 +315,19 @@ class SettleFailureContext(SettleContext):
     def __post_init__(self) -> None:
         if self.error is None:
             raise ValueError("error is required for SettleFailureContext")
+
+
+@dataclass
+class VerifiedPaymentCanceledContext(SettleContext):
+    """Context for verified-payment cancellation hooks."""
+
+    reason: VerifiedPaymentCancellationReason = "handler_failed"  # type: ignore[assignment]
+    error: Any = None
+    response_status: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason is None:
+            raise ValueError("reason is required for VerifiedPaymentCanceledContext")
 
 
 # ============================================================================

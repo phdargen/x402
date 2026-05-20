@@ -5,6 +5,7 @@ Contains shared logic for server implementations.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Generator
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -14,6 +15,7 @@ from .interfaces import SchemeNetworkServer
 from .schemas import (
     AbortResult,
     Network,
+    PaymentCancellationDispatcher,
     PaymentPayload,
     PaymentPayloadV1,
     PaymentRequired,
@@ -35,12 +37,16 @@ from .schemas import (
     SkipVerifyResult,
     SupportedKind,
     SupportedResponse,
+    VerifiedPaymentCanceledContext,
+    VerifiedPaymentCancelOptions,
     VerifyContext,
     VerifyFailureContext,
     VerifyResponse,
     VerifyResultContext,
     find_schemes_by_network,
 )
+
+logger = logging.getLogger("x402")
 
 if TYPE_CHECKING:
     pass
@@ -124,6 +130,10 @@ OnSettleFailureHook = Callable[
     [SettleFailureContext],
     Awaitable[RecoveredSettleResult | None] | RecoveredSettleResult | None,
 ]
+OnVerifiedPaymentCanceledHook = Callable[
+    [VerifiedPaymentCanceledContext],
+    Awaitable[None] | None,
+]
 
 # Sync-only hook types (for sync class)
 SyncBeforeVerifyHook = Callable[[VerifyContext], AbortResult | SkipVerifyResult | None]
@@ -133,6 +143,7 @@ SyncOnVerifyFailureHook = Callable[[VerifyFailureContext], RecoveredVerifyResult
 SyncBeforeSettleHook = Callable[[SettleContext], AbortResult | SkipSettleResult | None]
 SyncAfterSettleHook = Callable[[SettleResultContext], None]
 SyncOnSettleFailureHook = Callable[[SettleFailureContext], RecoveredSettleResult | None]
+SyncOnVerifiedPaymentCanceledHook = Callable[[VerifiedPaymentCanceledContext], None]
 
 # Hook command type for generator-based implementation
 HookPhase = Literal["before", "after", "failure"]
@@ -187,6 +198,7 @@ class x402ResourceServerBase:
         self._before_settle_hooks: list[Any] = []
         self._after_settle_hooks: list[Any] = []
         self._on_settle_failure_hooks: list[Any] = []
+        self._on_verified_payment_canceled_hooks: list[Any] = []
 
         self._initialized = False
 
@@ -412,6 +424,49 @@ class x402ResourceServerBase:
                 )
 
         return result
+
+    def create_payment_cancellation_dispatcher(
+        self,
+        payload: PaymentPayload | PaymentPayloadV1,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
+    ) -> PaymentCancellationDispatcher:
+        """Create cancellation controls for a verified payment attempt."""
+        return PaymentCancellationDispatcher(
+            self,
+            payload,
+            requirements,
+            declared_extensions,
+            transport_context,
+        )
+
+    @staticmethod
+    def _warn_resource_server_hook_failure(phase: str, label: str, error: Exception) -> None:
+        logger.warning(
+            "[x402] Resource server %s hook threw (%s): %s",
+            phase,
+            label,
+            error,
+        )
+
+    def _build_verified_payment_canceled_context(
+        self,
+        payload: PaymentPayload | PaymentPayloadV1,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+        declared_extensions: dict[str, Any] | None,
+        options: VerifiedPaymentCancelOptions,
+        transport_context: Any,
+    ) -> VerifiedPaymentCanceledContext:
+        return VerifiedPaymentCanceledContext(
+            payment_payload=payload,
+            requirements=requirements,
+            declared_extensions=declared_extensions or {},
+            transport_context=transport_context,
+            reason=options.reason,
+            error=options.error,
+            response_status=options.response_status,
+        )
 
     # ========================================================================
     # Core Logic Generators (shared between async/sync)

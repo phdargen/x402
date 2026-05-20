@@ -83,8 +83,8 @@ This page tracks which features are implemented in each SDK (TypeScript, Go, Pyt
 | onBeforeSettle | ✅ | ✅ | ✅ |
 | onAfterSettle | ✅ | ✅ | ✅ |
 | onSettleFailure | ✅ | ✅ | ✅ |
-| onVerifiedPaymentCanceled | ✅ | ✅ | ❌ |
-| onProtectedRequest (HTTP) | ✅ | ✅ | ❌ |
+| onVerifiedPaymentCanceled | ✅ | ✅ | ✅ |
+| onProtectedRequest (HTTP) | ✅ | ✅ | ✅ |
 
 ## Facilitator Hooks
 
