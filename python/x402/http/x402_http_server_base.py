@@ -273,7 +273,11 @@ class x402HTTPServerBase:
                 _declaration: Any = declaration,
                 _hook: Any = ext_hook,
             ) -> Any:
-                return _hook(_declaration, HTTPTransportContext(request=context))
+                return _hook(
+                    _declaration,
+                    HTTPTransportContext(request=context),
+                    route_cfg,
+                )
 
             hooks.append(extension_hook)
         return hooks
