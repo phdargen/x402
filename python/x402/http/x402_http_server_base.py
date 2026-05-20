@@ -245,6 +245,39 @@ class x402HTTPServerBase:
         self._protected_request_hooks.append(hook)
         return self
 
+    def _collect_protected_request_hooks(
+        self,
+        route_config: RouteConfig,
+    ) -> list[ProtectedRequestHook]:
+        hooks = list(self._protected_request_hooks)
+        declared = route_config.extensions
+        if not declared:
+            return hooks
+
+        for extension in self._server.get_extensions():
+            transport_hooks = getattr(extension, "transport_hooks", None)
+            if transport_hooks is None:
+                continue
+            http_hooks = getattr(transport_hooks, "http", None)
+            if http_hooks is None:
+                continue
+            ext_hook = getattr(http_hooks, "on_protected_request", None)
+            if ext_hook is None or extension.key not in declared:
+                continue
+            declaration = declared[extension.key]
+
+            def extension_hook(
+                context: HTTPRequestContext,
+                route_cfg: RouteConfig,
+                *,
+                _declaration: Any = declaration,
+                _hook: Any = ext_hook,
+            ) -> Any:
+                return _hook(_declaration, HTTPTransportContext(request=context))
+
+            hooks.append(extension_hook)
+        return hooks
+
     # =========================================================================
     # Route Matching
     # =========================================================================
@@ -303,7 +336,7 @@ class x402HTTPServerBase:
         context = dataclasses.replace(context, route_pattern=route_pattern)
         transport_context = HTTPTransportContext(request=context)
 
-        for hook in self._protected_request_hooks:
+        for hook in self._collect_protected_request_hooks(route_config):
             hook_result = yield ("protected_request", hook, (context, route_config))
             if isinstance(hook_result, GrantAccessResult):
                 return HTTPProcessResult(type=RESULT_NO_PAYMENT_REQUIRED)

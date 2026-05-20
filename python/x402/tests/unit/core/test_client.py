@@ -7,7 +7,7 @@ from x402 import (
     x402Client,
     x402ClientSync,
 )
-from x402.schemas import PaymentPayload, PaymentRequirements, SettleResponse
+from x402.schemas import PaymentPayload, PaymentRequired, PaymentRequirements, SettleResponse
 from x402.schemas.hooks import PaymentResponseContext, RecoveredResponseResult
 
 # =============================================================================
@@ -347,6 +347,31 @@ class TestHandlePaymentResponse:
 
         assert isinstance(result, RecoveredResponseResult)
         assert order == [1]
+
+
+class TestRegisterExtension:
+    @pytest.mark.asyncio
+    async def test_register_extension_enrich_payment_payload(self):
+        class Ext:
+            key = "test-ext"
+
+            def enrich_payment_payload(self, payload, payment_required):
+                payload.extensions = {**(payload.extensions or {}), "test-ext": {"enriched": True}}
+                return payload
+
+        client = x402Client()
+        client.register("eip155:8453", MockSchemeClient("exact"))
+        client.register_extension(Ext())
+
+        requirements = _make_payment_requirements()
+        payment_required = PaymentRequired(
+            x402_version=2,
+            accepts=[requirements],
+            extensions={"test-ext": {"declared": True}},
+        )
+        payload = await client.create_payment_payload(payment_required)
+        assert payload.extensions is not None
+        assert payload.extensions["test-ext"]["enriched"] is True
 
 
 # =============================================================================

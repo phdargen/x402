@@ -59,6 +59,39 @@ class x402HTTPClientBase:
 
     def __init__(self) -> None:
         self._payment_required_hooks: list[Any] = []
+        self._client: Any = None
+
+    def _collect_payment_required_hooks(
+        self,
+        payment_required: PaymentRequired | PaymentRequiredV1,
+    ) -> list[Any]:
+        hooks = list(self._payment_required_hooks)
+        declared = getattr(payment_required, "extensions", None)
+        if not declared or self._client is None:
+            return hooks
+
+        for extension in self._client.get_extensions():
+            transport_hooks = getattr(extension, "transport_hooks", None)
+            if transport_hooks is None:
+                continue
+            http_hooks = getattr(transport_hooks, "http", None)
+            if http_hooks is None:
+                continue
+            ext_hook = getattr(http_hooks, "on_payment_required", None)
+            if ext_hook is None or extension.key not in declared:
+                continue
+            declaration = declared[extension.key]
+
+            def extension_hook(
+                ctx: PaymentRequiredContext,
+                *,
+                _declaration: Any = declaration,
+                _hook: Any = ext_hook,
+            ) -> Any:
+                return _hook(_declaration, ctx)
+
+            hooks.append(extension_hook)
+        return hooks
 
     def encode_payment_signature_header(
         self,

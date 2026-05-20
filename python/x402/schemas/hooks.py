@@ -391,6 +391,7 @@ class PaymentResponseContext:
     requirements: "PaymentRequirements | PaymentRequirementsV1"
     settle_response: "SettleResponse | None" = None
     payment_required: "PaymentRequired | PaymentRequiredV1 | None" = None
+    error: Any = None
 
 
 @dataclass

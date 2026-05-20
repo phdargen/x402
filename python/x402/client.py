@@ -11,7 +11,6 @@ from typing import Any
 
 from typing_extensions import Self
 
-# Re-export from client_base for external use
 from .client_base import (
     AfterPaymentCreationHook,
     BeforePaymentCreationHook,
@@ -30,6 +29,9 @@ from .client_base import (
     x402ClientBase,
     x402ClientConfig,
 )
+
+# Re-export from client_base for external use
+from .hook_adapters import get_labeled_client_hooks
 from .schemas import (
     PaymentPayload,
     PaymentPayloadV1,
@@ -135,7 +137,18 @@ class x402Client(x402ClientBase):
         self, ctx: PaymentResponseContext
     ) -> RecoveredResponseResult | None:
         """Run payment response hooks; first recovery result wins."""
-        for hook in self._payment_response_hooks:
+        declared = (
+            ctx.payment_required.extensions
+            if ctx.payment_required and ctx.payment_required.extensions
+            else {}
+        )
+        for _label, hook in get_labeled_client_hooks(
+            "on_payment_response",
+            self,
+            ctx.payment_payload.x402_version,
+            ctx.requirements,
+            declared,
+        ):
             result = await self._execute_hook(hook, ctx)
             if result is not None:
                 return result
@@ -193,7 +206,10 @@ class x402Client(x402ClientBase):
                 _, hook, ctx = gen.send(result)
                 result = await self._execute_hook(hook, ctx)
         except StopIteration as e:
-            return e.value
+            return await self._enrich_payment_payload_with_extensions_async(
+                e.value,
+                payment_required,
+            )
 
     async def _create_payment_payload_v1(
         self,
@@ -297,7 +313,18 @@ class x402ClientSync(x402ClientBase):
         self, ctx: PaymentResponseContext
     ) -> RecoveredResponseResult | None:
         """Run payment response hooks; first recovery result wins."""
-        for hook in self._payment_response_hooks:
+        declared = (
+            ctx.payment_required.extensions
+            if ctx.payment_required and ctx.payment_required.extensions
+            else {}
+        )
+        for _label, hook in get_labeled_client_hooks(
+            "on_payment_response",
+            self,
+            ctx.payment_payload.x402_version,
+            ctx.requirements,
+            declared,
+        ):
             result = self._execute_hook_sync(hook, ctx)
             if result is not None:
                 return result
@@ -355,7 +382,7 @@ class x402ClientSync(x402ClientBase):
                 _, hook, ctx = gen.send(result)
                 result = self._execute_hook_sync(hook, ctx)
         except StopIteration as e:
-            return e.value
+            return self._enrich_payment_payload_with_extensions(e.value, payment_required)
 
     def _create_payment_payload_v1(
         self,

@@ -66,7 +66,7 @@ class x402HTTPClient(x402HTTPClientBase):
     ) -> dict[str, str] | None:
         """Run hooks; return headers for a pre-payment retry, or None to pay."""
         ctx = PaymentRequiredContext(payment_required=payment_required)
-        for hook in self._payment_required_hooks:
+        for hook in self._collect_payment_required_hooks(payment_required):
             result = await self._execute_hook(hook, ctx)
             if isinstance(result, PaymentRequiredHeadersResult):
                 return result.headers
@@ -201,7 +201,7 @@ class x402HTTPClientSync(x402HTTPClientBase):
     ) -> dict[str, str] | None:
         """Run hooks; return headers for a pre-payment retry, or None to pay."""
         ctx = PaymentRequiredContext(payment_required=payment_required)
-        for hook in self._payment_required_hooks:
+        for hook in self._collect_payment_required_hooks(payment_required):
             result = hook(ctx)
             if asyncio.iscoroutine(result):
                 result.close()

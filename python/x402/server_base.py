@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from typing_extensions import Self
 
+from .hook_adapters import (
+    build_extension_server_hook_handles,
+    collect_scheme_server_hook_handles,
+    get_labeled_server_hooks,
+)
 from .hook_policy import (
     assert_accepts_additive_extra_after_scheme_enrich,
     assert_accepts_allowlisted_after_extension_enrich,
@@ -199,6 +204,8 @@ class x402ResourceServerBase:
 
         # Extensions
         self._extensions: dict[str, ResourceServerExtension] = {}
+        self._scheme_hook_adapters: dict[Network, dict[str, Any]] = {}
+        self._extension_hook_adapters: dict[str, Any] = {}
 
         # Hooks (typed in subclasses)
         self._before_verify_hooks: list[Any] = []
@@ -221,12 +228,38 @@ class x402ResourceServerBase:
         if network not in self._schemes:
             self._schemes[network] = {}
         self._schemes[network][server.scheme] = server
+
+        handles = collect_scheme_server_hook_handles(server)
+        if handles.is_empty():
+            by_scheme = self._scheme_hook_adapters.get(network)
+            if by_scheme is not None:
+                by_scheme.pop(server.scheme, None)
+                if not by_scheme:
+                    self._scheme_hook_adapters.pop(network, None)
+        else:
+            if network not in self._scheme_hook_adapters:
+                self._scheme_hook_adapters[network] = {}
+            self._scheme_hook_adapters[network][server.scheme] = handles
         return self
 
     def register_extension(self, extension: ResourceServerExtension) -> Self:
         """Register a resource server extension."""
         self._extensions[extension.key] = extension
+        extension_hooks = getattr(extension, "hooks", None)
+        if extension_hooks is None:
+            self._extension_hook_adapters.pop(extension.key, None)
+            return self
+
+        handles = build_extension_server_hook_handles(extension.key, extension_hooks)
+        if handles.is_empty():
+            self._extension_hook_adapters.pop(extension.key, None)
+        else:
+            self._extension_hook_adapters[extension.key] = handles
         return self
+
+    def get_extensions(self) -> list[ResourceServerExtension]:
+        """Return all registered resource server extensions."""
+        return list(self._extensions.values())
 
     def has_registered_scheme(self, network: Network, scheme: str) -> bool:
         """Check if a scheme is registered for a network."""
@@ -868,6 +901,19 @@ class x402ResourceServerBase:
             error,
         )
 
+    def _verified_payment_canceled_hooks(
+        self,
+        declared_extensions: dict[str, Any] | None,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+    ) -> list[tuple[str, Any]]:
+        declared = declared_extensions or {}
+        return get_labeled_server_hooks(
+            "on_verified_payment_canceled",
+            self,
+            list(declared.keys()),
+            {"network": requirements.network, "scheme": requirements.scheme},
+        )
+
     def _build_verified_payment_canceled_context(
         self,
         payload: PaymentPayload | PaymentPayloadV1,
@@ -907,17 +953,28 @@ class x402ResourceServerBase:
         if not self._initialized:
             raise RuntimeError("Server not initialized. Call initialize() first.")
 
+        declared = declared_extensions or {}
         context = VerifyContext(
             payment_payload=payload,
             requirements=requirements,
             payload_bytes=payload_bytes,
             requirements_bytes=requirements_bytes,
-            declared_extensions=declared_extensions or {},
+            declared_extensions=declared,
             transport_context=transport_context,
         )
+        matched_scheme = {
+            "network": requirements.network,
+            "scheme": requirements.scheme,
+        }
+        extension_keys = list(declared.keys())
 
         # Execute before hooks
-        for hook in self._before_verify_hooks:
+        for _label, hook in get_labeled_server_hooks(
+            "before_verify",
+            self,
+            extension_keys,
+            matched_scheme,
+        ):
             result = yield ("before", hook, context)
             if isinstance(result, AbortResult):
                 from .schemas import PaymentAbortedError
@@ -932,6 +989,8 @@ class x402ResourceServerBase:
                     declared_extensions,
                     transport_context,
                     result.result,
+                    matched_scheme,
+                    extension_keys,
                 )
                 return verify_response
 
@@ -963,7 +1022,12 @@ class x402ResourceServerBase:
                     transport_context=transport_context,
                     error=Exception(verify_result.invalid_reason or "Verification failed"),
                 )
-                for hook in self._on_verify_failure_hooks:
+                for _label, hook in get_labeled_server_hooks(
+                    "on_verify_failure",
+                    self,
+                    extension_keys,
+                    matched_scheme,
+                ):
                     result = yield ("failure", hook, failure_context)
                     if isinstance(result, RecoveredVerifyResult):
                         verify_response = yield from self._run_after_verify_hooks(
@@ -974,6 +1038,8 @@ class x402ResourceServerBase:
                             declared_extensions,
                             transport_context,
                             result.result,
+                            matched_scheme,
+                            extension_keys,
                         )
                         return verify_response
 
@@ -987,6 +1053,8 @@ class x402ResourceServerBase:
                 declared_extensions,
                 transport_context,
                 verify_result,
+                matched_scheme,
+                extension_keys,
             )
             return verify_response
 
@@ -996,11 +1064,16 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
-                declared_extensions=declared_extensions or {},
+                declared_extensions=declared,
                 transport_context=transport_context,
                 error=e,
             )
-            for hook in self._on_verify_failure_hooks:
+            for _label, hook in get_labeled_server_hooks(
+                "on_verify_failure",
+                self,
+                extension_keys,
+                matched_scheme,
+            ):
                 result = yield ("failure", hook, failure_context)
                 if isinstance(result, RecoveredVerifyResult):
                     return ResourceVerifyResponse(verify=result.result)
@@ -1016,19 +1089,32 @@ class x402ResourceServerBase:
         declared_extensions: dict[str, Any] | None,
         transport_context: Any,
         verify_result: VerifyResponse,
+        matched_scheme: dict[str, str] | None = None,
+        extension_keys: list[str] | None = None,
     ) -> Generator[HookCommand, Any, ResourceVerifyResponse]:
         """Run after-verify hooks and attach any skip-handler directive."""
         skip_handler: SkipHandlerDirective | None = None
+        declared = declared_extensions or {}
         result_context = VerifyResultContext(
             payment_payload=payload,
             requirements=requirements,
             payload_bytes=payload_bytes,
             requirements_bytes=requirements_bytes,
-            declared_extensions=declared_extensions or {},
+            declared_extensions=declared,
             transport_context=transport_context,
             result=verify_result,
         )
-        for hook in self._after_verify_hooks:
+        scheme = matched_scheme or {
+            "network": requirements.network,
+            "scheme": requirements.scheme,
+        }
+        keys = extension_keys if extension_keys is not None else list(declared.keys())
+        for _label, hook in get_labeled_server_hooks(
+            "after_verify",
+            self,
+            keys,
+            scheme,
+        ):
             hook_result = yield ("after", hook, result_context)
             if isinstance(hook_result, SkipHandlerResult):
                 skip_handler = hook_result.response or SkipHandlerDirective()
@@ -1052,17 +1138,28 @@ class x402ResourceServerBase:
         if not self._initialized:
             raise RuntimeError("Server not initialized. Call initialize() first.")
 
+        declared = declared_extensions or {}
         context = SettleContext(
             payment_payload=payload,
             requirements=requirements,
             payload_bytes=payload_bytes,
             requirements_bytes=requirements_bytes,
-            declared_extensions=declared_extensions or {},
+            declared_extensions=declared,
             transport_context=transport_context,
         )
+        matched_scheme = {
+            "network": requirements.network,
+            "scheme": requirements.scheme,
+        }
+        extension_keys = list(declared.keys())
 
         # Execute before hooks
-        for hook in self._before_settle_hooks:
+        for _label, hook in get_labeled_server_hooks(
+            "before_settle",
+            self,
+            extension_keys,
+            matched_scheme,
+        ):
             result = yield ("before", hook, context)
             if isinstance(result, AbortResult):
                 from .schemas import PaymentAbortedError
@@ -1078,7 +1175,12 @@ class x402ResourceServerBase:
                     transport_context=transport_context,
                     result=result.result,
                 )
-                for after_hook in self._after_settle_hooks:
+                for _label, after_hook in get_labeled_server_hooks(
+                    "after_settle",
+                    self,
+                    extension_keys,
+                    matched_scheme,
+                ):
                     yield ("after", after_hook, result_context)
                 return result.result
 
@@ -1110,7 +1212,12 @@ class x402ResourceServerBase:
                     transport_context=transport_context,
                     error=Exception(settle_result.error_reason or "Settlement failed"),
                 )
-                for hook in self._on_settle_failure_hooks:
+                for _label, hook in get_labeled_server_hooks(
+                    "on_settle_failure",
+                    self,
+                    extension_keys,
+                    matched_scheme,
+                ):
                     result = yield ("failure", hook, failure_context)
                     if isinstance(result, RecoveredSettleResult):
                         result_context = SettleResultContext(
@@ -1118,11 +1225,16 @@ class x402ResourceServerBase:
                             requirements=requirements,
                             payload_bytes=payload_bytes,
                             requirements_bytes=requirements_bytes,
-                            declared_extensions=declared_extensions or {},
+                            declared_extensions=declared,
                             transport_context=transport_context,
                             result=result.result,
                         )
-                        for after_hook in self._after_settle_hooks:
+                        for _after_label, after_hook in get_labeled_server_hooks(
+                            "after_settle",
+                            self,
+                            extension_keys,
+                            matched_scheme,
+                        ):
                             yield ("after", after_hook, result_context)
                         return result.result
 
@@ -1134,11 +1246,16 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
-                declared_extensions=declared_extensions or {},
+                declared_extensions=declared,
                 transport_context=transport_context,
                 result=settle_result,
             )
-            for hook in self._after_settle_hooks:
+            for _label, hook in get_labeled_server_hooks(
+                "after_settle",
+                self,
+                extension_keys,
+                matched_scheme,
+            ):
                 yield ("after", hook, result_context)
 
             return settle_result
@@ -1149,11 +1266,16 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
-                declared_extensions=declared_extensions or {},
+                declared_extensions=declared,
                 transport_context=transport_context,
                 error=e,
             )
-            for hook in self._on_settle_failure_hooks:
+            for _label, hook in get_labeled_server_hooks(
+                "on_settle_failure",
+                self,
+                extension_keys,
+                matched_scheme,
+            ):
                 result = yield ("failure", hook, failure_context)
                 if isinstance(result, RecoveredSettleResult):
                     return result.result

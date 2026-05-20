@@ -303,13 +303,16 @@ class x402ResourceServer(x402ResourceServerBase):
             options,
             transport_context,
         )
-        for index, hook in enumerate(self._on_verified_payment_canceled_hooks):
+        for label, hook in self._verified_payment_canceled_hooks(
+            declared_extensions,
+            requirements,
+        ):
             try:
                 await self._execute_hook(hook, context)
             except Exception as error:
                 self._warn_resource_server_hook_failure(
                     "onVerifiedPaymentCanceled",
-                    f"manual onVerifiedPaymentCanceled hook #{index}",
+                    label,
                     error,
                 )
 
@@ -570,13 +573,16 @@ class x402ResourceServerSync(x402ResourceServerBase):
             options,
             transport_context,
         )
-        for index, hook in enumerate(self._on_verified_payment_canceled_hooks):
+        for label, hook in self._verified_payment_canceled_hooks(
+            declared_extensions,
+            requirements,
+        ):
             try:
                 self._execute_hook_sync(hook, context)
             except Exception as error:
                 self._warn_resource_server_hook_failure(
                     "onVerifiedPaymentCanceled",
-                    f"manual onVerifiedPaymentCanceled hook #{index}",
+                    label,
                     error,
                 )
 
