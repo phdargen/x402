@@ -23,11 +23,16 @@ from .schemas import (
     RecoveredVerifyResult,
     ResourceInfo,
     ResourceServerExtension,
+    ResourceVerifyResponse,
     SchemeNotFoundError,
     SettleContext,
     SettleFailureContext,
     SettleResponse,
     SettleResultContext,
+    SkipHandlerDirective,
+    SkipHandlerResult,
+    SkipSettleResult,
+    SkipVerifyResult,
     SupportedKind,
     SupportedResponse,
     VerifyContext,
@@ -97,14 +102,23 @@ class FacilitatorClientSync(Protocol):
 # Type Aliases - Support both sync and async hooks
 # ============================================================================
 
-BeforeVerifyHook = Callable[[VerifyContext], Awaitable[AbortResult | None] | AbortResult | None]
-AfterVerifyHook = Callable[[VerifyResultContext], Awaitable[None] | None]
+BeforeVerifyHook = Callable[
+    [VerifyContext],
+    Awaitable[AbortResult | SkipVerifyResult | None] | AbortResult | SkipVerifyResult | None,
+]
+AfterVerifyHook = Callable[
+    [VerifyResultContext],
+    Awaitable[SkipHandlerResult | None] | SkipHandlerResult | None,
+]
 OnVerifyFailureHook = Callable[
     [VerifyFailureContext],
     Awaitable[RecoveredVerifyResult | None] | RecoveredVerifyResult | None,
 ]
 
-BeforeSettleHook = Callable[[SettleContext], Awaitable[AbortResult | None] | AbortResult | None]
+BeforeSettleHook = Callable[
+    [SettleContext],
+    Awaitable[AbortResult | SkipSettleResult | None] | AbortResult | SkipSettleResult | None,
+]
 AfterSettleHook = Callable[[SettleResultContext], Awaitable[None] | None]
 OnSettleFailureHook = Callable[
     [SettleFailureContext],
@@ -112,11 +126,11 @@ OnSettleFailureHook = Callable[
 ]
 
 # Sync-only hook types (for sync class)
-SyncBeforeVerifyHook = Callable[[VerifyContext], AbortResult | None]
-SyncAfterVerifyHook = Callable[[VerifyResultContext], None]
+SyncBeforeVerifyHook = Callable[[VerifyContext], AbortResult | SkipVerifyResult | None]
+SyncAfterVerifyHook = Callable[[VerifyResultContext], SkipHandlerResult | None]
 SyncOnVerifyFailureHook = Callable[[VerifyFailureContext], RecoveredVerifyResult | None]
 
-SyncBeforeSettleHook = Callable[[SettleContext], AbortResult | None]
+SyncBeforeSettleHook = Callable[[SettleContext], AbortResult | SkipSettleResult | None]
 SyncAfterSettleHook = Callable[[SettleResultContext], None]
 SyncOnSettleFailureHook = Callable[[SettleFailureContext], RecoveredSettleResult | None]
 
@@ -409,7 +423,9 @@ class x402ResourceServerBase:
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None,
         requirements_bytes: bytes | None,
-    ) -> Generator[HookCommand, Any, VerifyResponse]:
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
+    ) -> Generator[HookCommand, Any, ResourceVerifyResponse]:
         """Core verify logic as generator.
 
         Yields (phase, hook, context) tuples for hook execution.
@@ -423,6 +439,8 @@ class x402ResourceServerBase:
             requirements=requirements,
             payload_bytes=payload_bytes,
             requirements_bytes=requirements_bytes,
+            declared_extensions=declared_extensions or {},
+            transport_context=transport_context,
         )
 
         # Execute before hooks
@@ -432,6 +450,17 @@ class x402ResourceServerBase:
                 from .schemas import PaymentAbortedError
 
                 raise PaymentAbortedError(result.reason)
+            if isinstance(result, SkipVerifyResult):
+                verify_response = yield from self._run_after_verify_hooks(
+                    payload,
+                    requirements,
+                    payload_bytes,
+                    requirements_bytes,
+                    declared_extensions,
+                    transport_context,
+                    result.result,
+                )
+                return verify_response
 
         try:
             # Get scheme and network
@@ -457,36 +486,36 @@ class x402ResourceServerBase:
                     requirements=requirements,
                     payload_bytes=payload_bytes,
                     requirements_bytes=requirements_bytes,
+                    declared_extensions=declared_extensions or {},
+                    transport_context=transport_context,
                     error=Exception(verify_result.invalid_reason or "Verification failed"),
                 )
                 for hook in self._on_verify_failure_hooks:
                     result = yield ("failure", hook, failure_context)
                     if isinstance(result, RecoveredVerifyResult):
-                        result_context = VerifyResultContext(
-                            payment_payload=payload,
-                            requirements=requirements,
-                            payload_bytes=payload_bytes,
-                            requirements_bytes=requirements_bytes,
-                            result=result.result,
+                        verify_response = yield from self._run_after_verify_hooks(
+                            payload,
+                            requirements,
+                            payload_bytes,
+                            requirements_bytes,
+                            declared_extensions,
+                            transport_context,
+                            result.result,
                         )
-                        for after_hook in self._after_verify_hooks:
-                            yield ("after", after_hook, result_context)
-                        return result.result
+                        return verify_response
 
-                return verify_result
+                return ResourceVerifyResponse(verify=verify_result)
 
-            # Execute after hooks for success
-            result_context = VerifyResultContext(
-                payment_payload=payload,
-                requirements=requirements,
-                payload_bytes=payload_bytes,
-                requirements_bytes=requirements_bytes,
-                result=verify_result,
+            verify_response = yield from self._run_after_verify_hooks(
+                payload,
+                requirements,
+                payload_bytes,
+                requirements_bytes,
+                declared_extensions,
+                transport_context,
+                verify_result,
             )
-            for hook in self._after_verify_hooks:
-                yield ("after", hook, result_context)
-
-            return verify_result
+            return verify_response
 
         except Exception as e:
             failure_context = VerifyFailureContext(
@@ -494,14 +523,44 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
+                declared_extensions=declared_extensions or {},
+                transport_context=transport_context,
                 error=e,
             )
             for hook in self._on_verify_failure_hooks:
                 result = yield ("failure", hook, failure_context)
                 if isinstance(result, RecoveredVerifyResult):
-                    return result.result
+                    return ResourceVerifyResponse(verify=result.result)
 
             raise
+
+    def _run_after_verify_hooks(
+        self,
+        payload: PaymentPayload | PaymentPayloadV1,
+        requirements: PaymentRequirements | PaymentRequirementsV1,
+        payload_bytes: bytes | None,
+        requirements_bytes: bytes | None,
+        declared_extensions: dict[str, Any] | None,
+        transport_context: Any,
+        verify_result: VerifyResponse,
+    ) -> Generator[HookCommand, Any, ResourceVerifyResponse]:
+        """Run after-verify hooks and attach any skip-handler directive."""
+        skip_handler: SkipHandlerDirective | None = None
+        result_context = VerifyResultContext(
+            payment_payload=payload,
+            requirements=requirements,
+            payload_bytes=payload_bytes,
+            requirements_bytes=requirements_bytes,
+            declared_extensions=declared_extensions or {},
+            transport_context=transport_context,
+            result=verify_result,
+        )
+        for hook in self._after_verify_hooks:
+            hook_result = yield ("after", hook, result_context)
+            if isinstance(hook_result, SkipHandlerResult):
+                skip_handler = hook_result.response or SkipHandlerDirective()
+
+        return ResourceVerifyResponse(verify=verify_result, skip_handler=skip_handler)
 
     def _settle_payment_core(
         self,
@@ -509,6 +568,8 @@ class x402ResourceServerBase:
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None,
         requirements_bytes: bytes | None,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
     ) -> Generator[HookCommand, Any, SettleResponse]:
         """Core settle logic as generator.
 
@@ -523,6 +584,8 @@ class x402ResourceServerBase:
             requirements=requirements,
             payload_bytes=payload_bytes,
             requirements_bytes=requirements_bytes,
+            declared_extensions=declared_extensions or {},
+            transport_context=transport_context,
         )
 
         # Execute before hooks
@@ -532,6 +595,19 @@ class x402ResourceServerBase:
                 from .schemas import PaymentAbortedError
 
                 raise PaymentAbortedError(result.reason)
+            if isinstance(result, SkipSettleResult):
+                result_context = SettleResultContext(
+                    payment_payload=payload,
+                    requirements=requirements,
+                    payload_bytes=payload_bytes,
+                    requirements_bytes=requirements_bytes,
+                    declared_extensions=declared_extensions or {},
+                    transport_context=transport_context,
+                    result=result.result,
+                )
+                for after_hook in self._after_settle_hooks:
+                    yield ("after", after_hook, result_context)
+                return result.result
 
         try:
             # Get scheme and network
@@ -557,6 +633,8 @@ class x402ResourceServerBase:
                     requirements=requirements,
                     payload_bytes=payload_bytes,
                     requirements_bytes=requirements_bytes,
+                    declared_extensions=declared_extensions or {},
+                    transport_context=transport_context,
                     error=Exception(settle_result.error_reason or "Settlement failed"),
                 )
                 for hook in self._on_settle_failure_hooks:
@@ -567,6 +645,8 @@ class x402ResourceServerBase:
                             requirements=requirements,
                             payload_bytes=payload_bytes,
                             requirements_bytes=requirements_bytes,
+                            declared_extensions=declared_extensions or {},
+                            transport_context=transport_context,
                             result=result.result,
                         )
                         for after_hook in self._after_settle_hooks:
@@ -581,6 +661,8 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
+                declared_extensions=declared_extensions or {},
+                transport_context=transport_context,
                 result=settle_result,
             )
             for hook in self._after_settle_hooks:
@@ -594,6 +676,8 @@ class x402ResourceServerBase:
                 requirements=requirements,
                 payload_bytes=payload_bytes,
                 requirements_bytes=requirements_bytes,
+                declared_extensions=declared_extensions or {},
+                transport_context=transport_context,
                 error=e,
             )
             for hook in self._on_settle_failure_hooks:

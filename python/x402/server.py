@@ -18,8 +18,8 @@ from .schemas import (
     PaymentRequirements,
     PaymentRequirementsV1,
     ResourceConfig,
+    ResourceVerifyResponse,
     SettleResponse,
-    VerifyResponse,
 )
 from .server_base import (
     AfterSettleHook,
@@ -148,7 +148,10 @@ class x402ResourceServer(x402ResourceServerBase):
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None = None,
         requirements_bytes: bytes | None = None,
-    ) -> VerifyResponse:
+        *,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
+    ) -> ResourceVerifyResponse:
         """Verify a payment via facilitator.
 
         Args:
@@ -156,16 +159,25 @@ class x402ResourceServer(x402ResourceServerBase):
             requirements: Requirements to verify against.
             payload_bytes: Raw payload bytes (escape hatch).
             requirements_bytes: Raw requirements bytes (escape hatch).
+            declared_extensions: Optional per-extension declarations for the request.
+            transport_context: Optional transport-specific context (e.g. HTTP, MCP).
 
         Returns:
-            VerifyResponse with is_valid=True or is_valid=False.
+            ResourceVerifyResponse with verify outcome and optional skip-handler directive.
 
         Raises:
             SchemeNotFoundError: If no facilitator for scheme/network.
             PaymentAbortedError: If a before hook aborts.
             RuntimeError: If not initialized.
         """
-        gen = self._verify_payment_core(payload, requirements, payload_bytes, requirements_bytes)
+        gen = self._verify_payment_core(
+            payload,
+            requirements,
+            payload_bytes,
+            requirements_bytes,
+            declared_extensions,
+            transport_context,
+        )
         result = None
         try:
             while True:
@@ -192,6 +204,9 @@ class x402ResourceServer(x402ResourceServerBase):
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None = None,
         requirements_bytes: bytes | None = None,
+        *,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
     ) -> SettleResponse:
         """Settle a payment via facilitator.
 
@@ -200,6 +215,8 @@ class x402ResourceServer(x402ResourceServerBase):
             requirements: Requirements for settlement.
             payload_bytes: Raw payload bytes (escape hatch).
             requirements_bytes: Raw requirements bytes (escape hatch).
+            declared_extensions: Optional per-extension declarations for the request.
+            transport_context: Optional transport-specific context (e.g. HTTP, MCP).
 
         Returns:
             SettleResponse with success=True or success=False.
@@ -209,7 +226,14 @@ class x402ResourceServer(x402ResourceServerBase):
             PaymentAbortedError: If a before hook aborts.
             RuntimeError: If not initialized.
         """
-        gen = self._settle_payment_core(payload, requirements, payload_bytes, requirements_bytes)
+        gen = self._settle_payment_core(
+            payload,
+            requirements,
+            payload_bytes,
+            requirements_bytes,
+            declared_extensions,
+            transport_context,
+        )
         result = None
         try:
             while True:
@@ -351,7 +375,10 @@ class x402ResourceServerSync(x402ResourceServerBase):
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None = None,
         requirements_bytes: bytes | None = None,
-    ) -> VerifyResponse:
+        *,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
+    ) -> ResourceVerifyResponse:
         """Verify a payment via facilitator.
 
         Args:
@@ -359,16 +386,25 @@ class x402ResourceServerSync(x402ResourceServerBase):
             requirements: Requirements to verify against.
             payload_bytes: Raw payload bytes (escape hatch).
             requirements_bytes: Raw requirements bytes (escape hatch).
+            declared_extensions: Optional per-extension declarations for the request.
+            transport_context: Optional transport-specific context (e.g. HTTP, MCP).
 
         Returns:
-            VerifyResponse with is_valid=True or is_valid=False.
+            ResourceVerifyResponse with verify outcome and optional skip-handler directive.
 
         Raises:
             SchemeNotFoundError: If no facilitator for scheme/network.
             PaymentAbortedError: If a before hook aborts.
             RuntimeError: If not initialized.
         """
-        gen = self._verify_payment_core(payload, requirements, payload_bytes, requirements_bytes)
+        gen = self._verify_payment_core(
+            payload,
+            requirements,
+            payload_bytes,
+            requirements_bytes,
+            declared_extensions,
+            transport_context,
+        )
         result = None
         try:
             while True:
@@ -395,6 +431,9 @@ class x402ResourceServerSync(x402ResourceServerBase):
         requirements: PaymentRequirements | PaymentRequirementsV1,
         payload_bytes: bytes | None = None,
         requirements_bytes: bytes | None = None,
+        *,
+        declared_extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
     ) -> SettleResponse:
         """Settle a payment via facilitator.
 
@@ -403,6 +442,8 @@ class x402ResourceServerSync(x402ResourceServerBase):
             requirements: Requirements for settlement.
             payload_bytes: Raw payload bytes (escape hatch).
             requirements_bytes: Raw requirements bytes (escape hatch).
+            declared_extensions: Optional per-extension declarations for the request.
+            transport_context: Optional transport-specific context (e.g. HTTP, MCP).
 
         Returns:
             SettleResponse with success=True or success=False.
@@ -412,7 +453,14 @@ class x402ResourceServerSync(x402ResourceServerBase):
             PaymentAbortedError: If a before hook aborts.
             RuntimeError: If not initialized.
         """
-        gen = self._settle_payment_core(payload, requirements, payload_bytes, requirements_bytes)
+        gen = self._settle_payment_core(
+            payload,
+            requirements,
+            payload_bytes,
+            requirements_bytes,
+            declared_extensions,
+            transport_context,
+        )
         result = None
         try:
             while True:

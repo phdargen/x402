@@ -4,7 +4,7 @@ Shared hook types used by x402Client, x402ResourceServer, and x402Facilitator.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .payments import PaymentPayload, PaymentRequired, PaymentRequirements
@@ -61,6 +61,79 @@ class RecoveredSettleResult:
     result: "SettleResponse"
 
 
+@dataclass
+class SkipVerifyResult:
+    """Return from before-verify hook to skip facilitator verification.
+
+    Attributes:
+        result: Verify response to use instead of calling the facilitator.
+    """
+
+    result: "VerifyResponse"
+
+
+@dataclass
+class SkipSettleResult:
+    """Return from before-settle hook to skip facilitator settlement.
+
+    Attributes:
+        result: Settle response to use instead of calling the facilitator.
+    """
+
+    result: "SettleResponse"
+
+
+@dataclass
+class SkipHandlerDirective:
+    """In-process response when an after-verify hook skips the resource handler.
+
+    Attributes:
+        content_type: Optional Content-Type for the handler response.
+        body: Optional response body.
+    """
+
+    content_type: str | None = None
+    body: Any = None
+
+
+@dataclass
+class SkipHandlerResult:
+    """Return from after-verify hook to skip the resource handler."""
+
+    response: SkipHandlerDirective | None = None
+
+
+class ResourceVerifyResponse:
+    """Verify outcome with optional in-process skip-handler directive."""
+
+    def __init__(
+        self,
+        verify: "VerifyResponse",
+        skip_handler: SkipHandlerDirective | None = None,
+    ) -> None:
+        self.verify = verify
+        self.skip_handler = skip_handler
+
+    @property
+    def is_valid(self) -> bool:
+        return self.verify.is_valid
+
+    @property
+    def invalid_reason(self) -> str | None:
+        return self.verify.invalid_reason
+
+    @property
+    def invalid_message(self) -> str | None:
+        return self.verify.invalid_message
+
+    @property
+    def payer(self) -> str | None:
+        return self.verify.payer
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.verify, name)
+
+
 # ============================================================================
 # Verify Hook Contexts
 # ============================================================================
@@ -81,6 +154,8 @@ class VerifyContext:
     requirements: "PaymentRequirements | PaymentRequirementsV1"
     payload_bytes: bytes | None = None
     requirements_bytes: bytes | None = None
+    declared_extensions: dict[str, Any] | None = None
+    transport_context: Any = None
 
 
 @dataclass
@@ -133,6 +208,8 @@ class SettleContext:
     requirements: "PaymentRequirements | PaymentRequirementsV1"
     payload_bytes: bytes | None = None
     requirements_bytes: bytes | None = None
+    declared_extensions: dict[str, Any] | None = None
+    transport_context: Any = None
 
 
 @dataclass
