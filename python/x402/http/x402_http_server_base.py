@@ -358,12 +358,17 @@ class x402HTTPServerBase:
         if extensions:
             extensions = self._server.enrich_extensions(extensions, context)
 
-        # Create PaymentRequired response
-        payment_required = self._server.create_payment_required_response(
-            requirements,
-            resource_info,
-            None if payment_payload else "Payment required",
-            extensions,
+        # Create PaymentRequired response (async/sync via generator phase)
+        payment_required = yield (
+            "create_payment_required",
+            (
+                requirements,
+                resource_info,
+                None if payment_payload else "Payment required",
+                extensions,
+                transport_context,
+            ),
+            None,
         )
 
         # No payment provided
@@ -390,15 +395,21 @@ class x402HTTPServerBase:
         )
 
         if matching_reqs is None:
+            mismatch_required = yield (
+                "create_payment_required",
+                (
+                    requirements,
+                    resource_info,
+                    "No matching payment requirements",
+                    extensions,
+                    transport_context,
+                ),
+                None,
+            )
             return HTTPProcessResult(
                 type=RESULT_PAYMENT_ERROR,
                 response=self._create_http_response(
-                    self._server.create_payment_required_response(
-                        requirements,
-                        resource_info,
-                        "No matching payment requirements",
-                        extensions,
-                    ),
+                    mismatch_required,
                     is_web_browser=False,
                     paywall_config=paywall_config,
                 ),
@@ -413,15 +424,21 @@ class x402HTTPServerBase:
             )
 
             if not verify_result.is_valid:
+                invalid_required = yield (
+                    "create_payment_required",
+                    (
+                        requirements,
+                        resource_info,
+                        verify_result.invalid_reason,
+                        extensions,
+                        transport_context,
+                    ),
+                    None,
+                )
                 return HTTPProcessResult(
                     type=RESULT_PAYMENT_ERROR,
                     response=self._create_http_response(
-                        self._server.create_payment_required_response(
-                            requirements,
-                            resource_info,
-                            verify_result.invalid_reason,
-                            extensions,
-                        ),
+                        invalid_required,
                         is_web_browser=False,
                         paywall_config=paywall_config,
                     ),
@@ -457,15 +474,21 @@ class x402HTTPServerBase:
             )
 
         except Exception as e:
+            error_required = yield (
+                "create_payment_required",
+                (
+                    requirements,
+                    resource_info,
+                    str(e),
+                    extensions,
+                    transport_context,
+                ),
+                None,
+            )
             return HTTPProcessResult(
                 type=RESULT_PAYMENT_ERROR,
                 response=self._create_http_response(
-                    self._server.create_payment_required_response(
-                        requirements,
-                        resource_info,
-                        str(e),
-                        extensions,
-                    ),
+                    error_required,
                     is_web_browser=False,
                     paywall_config=paywall_config,
                 ),

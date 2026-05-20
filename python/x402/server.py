@@ -15,9 +15,11 @@ from typing_extensions import Self
 from .schemas import (
     PaymentPayload,
     PaymentPayloadV1,
+    PaymentRequired,
     PaymentRequirements,
     PaymentRequirementsV1,
     ResourceConfig,
+    ResourceInfo,
     ResourceVerifyResponse,
     SettleResponse,
     VerifiedPaymentCancelOptions,
@@ -147,6 +149,25 @@ class x402ResourceServer(x402ResourceServerBase):
         self._on_verified_payment_canceled_hooks.append(hook)
         return self
 
+    async def create_payment_required_response(
+        self,
+        requirements: list[PaymentRequirements],
+        resource: ResourceInfo | None = None,
+        error: str | None = None,
+        extensions: dict[str, Any] | None = None,
+        transport_context: Any = None,
+        payment_payload: PaymentPayload | None = None,
+    ) -> PaymentRequired:
+        """Create a 402 Payment Required response with scheme/extension enrichment."""
+        return await self._build_payment_required_response_async(
+            requirements,
+            resource,
+            error,
+            extensions,
+            transport_context,
+            payment_payload,
+        )
+
     # ========================================================================
     # Verify Payment (Async)
     # ========================================================================
@@ -257,7 +278,15 @@ class x402ResourceServer(x402ResourceServerBase):
                 else:
                     result = await self._execute_hook(target, ctx)
         except StopIteration as e:
-            return e.value
+            return await self._finalize_settle_result_async(
+                e.value,
+                payload,
+                requirements,
+                payload_bytes,
+                requirements_bytes,
+                declared_extensions,
+                transport_context,
+            )
 
     async def _dispatch_verified_payment_canceled(
         self,
@@ -515,7 +544,16 @@ class x402ResourceServerSync(x402ResourceServerBase):
                 else:
                     result = self._execute_hook_sync(target, ctx)
         except StopIteration as e:
-            return e.value
+            return self._finalize_settle_result(
+                e.value,
+                payload,
+                requirements,
+                payload_bytes,
+                requirements_bytes,
+                declared_extensions,
+                transport_context,
+                self._run_enrich_hook_sync,
+            )
 
     def _dispatch_verified_payment_canceled_sync(
         self,

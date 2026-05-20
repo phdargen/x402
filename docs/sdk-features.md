@@ -102,8 +102,8 @@ This page tracks which features are implemented in each SDK (TypeScript, Go, Pyt
 | Hook | TypeScript | Go | Python |
 |------|------------|-----|--------|
 | enrichDeclaration | ✅ | ✅ | ✅ |
-| enrichPaymentRequiredResponse | ✅ | ❌ | ❌ |
-| enrichSettlementResponse | ✅ | ❌ | ❌ |
+| enrichPaymentRequiredResponse | ✅ | ❌ | ✅ |
+| enrichSettlementResponse | ✅ | ❌ | ✅ |
 
 ## Hook Adapter Features
 

@@ -123,12 +123,18 @@ class TestOnProtectedRequest:
         server = MagicMock()
         server.enrich_extensions.side_effect = lambda declared, _ctx: declared
         requirements = [make_requirements()]
-        server.create_payment_required_response.side_effect = (
-            lambda _requirements, _resource, error, _extensions: PaymentRequired(
+
+        async def mock_create_payment_required(
+            _requirements, _resource, error, _extensions, **_kwargs
+        ):
+            return PaymentRequired(
                 x402_version=2,
                 error=error,
                 accepts=requirements,
             )
+
+        server.create_payment_required_response = AsyncMock(
+            side_effect=mock_create_payment_required
         )
         http_server = x402HTTPResourceServer(server, protected_routes)
         http_server.on_protected_request(lambda _ctx, _cfg: None)

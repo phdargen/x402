@@ -75,6 +75,7 @@ from .hooks import (
     RecoveredSettleResult,
     RecoveredVerifyResult,
     ResourceVerifyResponse,
+    ServerPaymentRequiredContext,
     SettleContext,
     SettleFailureContext,
     SettleResultContext,
@@ -195,6 +196,7 @@ __all__ = [
     "RecoveredResponseResult",
     "PaymentRequiredContext",
     "PaymentRequiredHeadersResult",
+    "ServerPaymentRequiredContext",
     # Errors
     "PaymentError",
     "VerifyError",

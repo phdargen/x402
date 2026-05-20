@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from .payments import PaymentPayload, PaymentRequired, PaymentRequirements
+    from .payments import PaymentPayload, PaymentRequired, PaymentRequirements, ResourceInfo
     from .responses import SettleResponse, VerifyResponse
     from .v1 import PaymentPayloadV1, PaymentRequiredV1, PaymentRequirementsV1
 
@@ -398,6 +398,23 @@ class RecoveredResponseResult:
     """Return from on_payment_response to signal transport recovery."""
 
     recovered: Literal[True] = True
+
+
+# ============================================================================
+# Server Payment Required Enrichment Context
+# ============================================================================
+
+
+@dataclass
+class ServerPaymentRequiredContext:
+    """Context for server enrich_payment_required_response hooks."""
+
+    requirements: list["PaymentRequirements"]
+    resource_info: "ResourceInfo | None"
+    error: str | None
+    payment_required_response: "PaymentRequired"
+    transport_context: Any = None
+    payment_payload: "PaymentPayload | None" = None
 
 
 # ============================================================================
