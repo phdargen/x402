@@ -16,11 +16,13 @@ from .client_base import (
     AfterPaymentCreationHook,
     BeforePaymentCreationHook,
     OnPaymentCreationFailureHook,
+    OnPaymentResponseHook,
     PaymentRequirementsSelector,
     SchemeRegistration,
     SyncAfterPaymentCreationHook,
     SyncBeforePaymentCreationHook,
     SyncOnPaymentCreationFailureHook,
+    SyncOnPaymentResponseHook,
     default_payment_selector,
     max_amount,
     prefer_network,
@@ -33,6 +35,8 @@ from .schemas import (
     PaymentPayloadV1,
     PaymentRequired,
     PaymentRequiredV1,
+    PaymentResponseContext,
+    RecoveredResponseResult,
     ResourceInfo,
 )
 
@@ -83,6 +87,7 @@ class x402Client(x402ClientBase):
         self._before_payment_creation_hooks: list[BeforePaymentCreationHook] = []
         self._after_payment_creation_hooks: list[AfterPaymentCreationHook] = []
         self._on_payment_creation_failure_hooks: list[OnPaymentCreationFailureHook] = []
+        self._payment_response_hooks: list[OnPaymentResponseHook] = []
 
     # ========================================================================
     # Factory Methods
@@ -120,6 +125,21 @@ class x402Client(x402ClientBase):
         """Register hook on failure. Return RecoveredPayloadResult to recover."""
         self._on_payment_creation_failure_hooks.append(hook)
         return self
+
+    def on_payment_response(self, hook: OnPaymentResponseHook) -> Self:
+        """Register hook after a paid request. Return RecoveredResponseResult to recover."""
+        self._payment_response_hooks.append(hook)
+        return self
+
+    async def handle_payment_response(
+        self, ctx: PaymentResponseContext
+    ) -> RecoveredResponseResult | None:
+        """Run payment response hooks; first recovery result wins."""
+        for hook in self._payment_response_hooks:
+            result = await self._execute_hook(hook, ctx)
+            if result is not None:
+                return result
+        return None
 
     # ========================================================================
     # Payment Creation (Async)
@@ -230,6 +250,7 @@ class x402ClientSync(x402ClientBase):
         self._before_payment_creation_hooks: list[SyncBeforePaymentCreationHook] = []
         self._after_payment_creation_hooks: list[SyncAfterPaymentCreationHook] = []
         self._on_payment_creation_failure_hooks: list[SyncOnPaymentCreationFailureHook] = []
+        self._payment_response_hooks: list[SyncOnPaymentResponseHook] = []
 
     # ========================================================================
     # Factory Methods
@@ -266,6 +287,21 @@ class x402ClientSync(x402ClientBase):
         """Register hook on failure. Return RecoveredPayloadResult to recover."""
         self._on_payment_creation_failure_hooks.append(hook)
         return self
+
+    def on_payment_response(self, hook: SyncOnPaymentResponseHook) -> Self:
+        """Register hook after a paid request. Return RecoveredResponseResult to recover."""
+        self._payment_response_hooks.append(hook)
+        return self
+
+    def handle_payment_response(
+        self, ctx: PaymentResponseContext
+    ) -> RecoveredResponseResult | None:
+        """Run payment response hooks; first recovery result wins."""
+        for hook in self._payment_response_hooks:
+            result = self._execute_hook_sync(hook, ctx)
+            if result is not None:
+                return result
+        return None
 
     # ========================================================================
     # Payment Creation (Sync)

@@ -26,7 +26,9 @@ from .schemas import (
     PaymentRequiredV1,
     PaymentRequirements,
     PaymentRequirementsV1,
+    PaymentResponseContext,
     RecoveredPayloadResult,
+    RecoveredResponseResult,
     ResourceInfo,
     SchemeNotFoundError,
     find_schemes_by_network,
@@ -86,6 +88,12 @@ SyncAfterPaymentCreationHook = Callable[[PaymentCreatedContext], None]
 SyncOnPaymentCreationFailureHook = Callable[
     [PaymentCreationFailureContext], RecoveredPayloadResult | None
 ]
+
+OnPaymentResponseHook = Callable[
+    [PaymentResponseContext],
+    Awaitable[RecoveredResponseResult | None] | RecoveredResponseResult | None,
+]
+SyncOnPaymentResponseHook = Callable[[PaymentResponseContext], RecoveredResponseResult | None]
 
 # Hook command type for generator-based implementation
 HookPhase = Literal["before", "after", "failure"]
@@ -167,6 +175,7 @@ class x402ClientBase:
         self._before_payment_creation_hooks: list[Any] = []
         self._after_payment_creation_hooks: list[Any] = []
         self._on_payment_creation_failure_hooks: list[Any] = []
+        self._payment_response_hooks: list[Any] = []
 
     # ========================================================================
     # Registration

@@ -276,7 +276,25 @@ Register hooks for HTTP-specific payment required handling. Use cases include tr
     ```
   </Tab>
   <Tab title="Python">
-    *Coming soon.*
+    ```python
+    import os
+
+    from x402 import x402Client
+    from x402.http import x402HTTPClient
+    from x402.schemas.hooks import PaymentRequiredHeadersResult
+
+    client = x402Client()
+    http_client = x402HTTPClient(client)
+
+    async def try_api_key(context):
+        api_key = os.environ.get("API_KEY")
+        if api_key:
+            return PaymentRequiredHeadersResult(
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+
+    http_client.on_payment_required(try_api_key)
+    ```
   </Tab>
   <Tab title="Go">
     *Coming soon.*

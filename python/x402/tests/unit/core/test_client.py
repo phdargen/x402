@@ -1,10 +1,14 @@
 """Unit tests for x402Client and x402ClientSync - manual registration and policies."""
 
+import pytest
+
 from x402 import (
     prefer_network,
     x402Client,
     x402ClientSync,
 )
+from x402.schemas import PaymentPayload, PaymentRequirements, SettleResponse
+from x402.schemas.hooks import PaymentResponseContext, RecoveredResponseResult
 
 # =============================================================================
 # Mock Scheme Clients
@@ -251,6 +255,98 @@ class TestX402ClientSyncHooks:
         assert len(client._before_payment_creation_hooks) == 1
         assert len(client._after_payment_creation_hooks) == 1
         assert len(client._on_payment_creation_failure_hooks) == 1
+
+
+def _make_payment_requirements() -> PaymentRequirements:
+    return PaymentRequirements(
+        scheme="exact",
+        network="eip155:8453",
+        asset="0x0000000000000000000000000000000000000000",
+        amount="1000000",
+        pay_to="0x1234567890123456789012345678901234567890",
+        max_timeout_seconds=300,
+    )
+
+
+def _make_payment_payload() -> PaymentPayload:
+    return PaymentPayload(
+        x402_version=2,
+        payload={"signature": "0xmock"},
+        accepted=_make_payment_requirements(),
+    )
+
+
+def _make_payment_response_context(**kwargs) -> PaymentResponseContext:
+    return PaymentResponseContext(
+        payment_payload=kwargs.get("payment_payload", _make_payment_payload()),
+        requirements=kwargs.get("requirements", _make_payment_requirements()),
+        settle_response=kwargs.get("settle_response"),
+        payment_required=kwargs.get("payment_required"),
+    )
+
+
+class TestOnPaymentResponseRegistration:
+    def test_chaining(self):
+        client = x402Client()
+        result = client.on_payment_response(lambda ctx: None).on_payment_response(lambda ctx: None)
+        assert result is client
+        assert len(client._payment_response_hooks) == 2
+
+    def test_sync_chaining(self):
+        client = x402ClientSync()
+        client.on_payment_response(lambda ctx: None)
+        assert len(client._payment_response_hooks) == 1
+
+
+class TestHandlePaymentResponse:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_hooks(self):
+        client = x402Client()
+        assert await client.handle_payment_response(_make_payment_response_context()) is None
+
+    @pytest.mark.asyncio
+    async def test_passes_context_fields(self):
+        client = x402Client()
+        settle = SettleResponse(
+            success=True,
+            transaction="0xabc",
+            network="eip155:8453",
+        )
+        ctx = _make_payment_response_context(settle_response=settle)
+        received: list[PaymentResponseContext] = []
+
+        client.on_payment_response(lambda c: received.append(c) or None)
+
+        await client.handle_payment_response(ctx)
+
+        assert len(received) == 1
+        assert received[0].settle_response == settle
+        assert received[0].payment_payload.x402_version == 2
+
+    @pytest.mark.asyncio
+    async def test_early_return_on_first_recovery(self):
+        client = x402Client()
+        order: list[int] = []
+
+        client.on_payment_response(lambda ctx: order.append(1) or RecoveredResponseResult())
+        client.on_payment_response(lambda ctx: order.append(2) or None)
+
+        result = await client.handle_payment_response(_make_payment_response_context())
+
+        assert isinstance(result, RecoveredResponseResult)
+        assert order == [1]
+
+    def test_sync_early_return_on_recovery(self):
+        client = x402ClientSync()
+        order: list[int] = []
+
+        client.on_payment_response(lambda ctx: order.append(1) or RecoveredResponseResult())
+        client.on_payment_response(lambda ctx: order.append(2) or None)
+
+        result = client.handle_payment_response(_make_payment_response_context())
+
+        assert isinstance(result, RecoveredResponseResult)
+        assert order == [1]
 
 
 # =============================================================================

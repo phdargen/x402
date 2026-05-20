@@ -376,3 +376,44 @@ class PaymentCreationFailureContext(PaymentCreationContext):
     def __post_init__(self) -> None:
         if self.error is None:
             raise ValueError("error is required for PaymentCreationFailureContext")
+
+
+# ============================================================================
+# Payment Response Hook Contexts (for x402Client)
+# ============================================================================
+
+
+@dataclass
+class PaymentResponseContext:
+    """Context for payment response hooks after a paid HTTP request."""
+
+    payment_payload: "PaymentPayload | PaymentPayloadV1"
+    requirements: "PaymentRequirements | PaymentRequirementsV1"
+    settle_response: "SettleResponse | None" = None
+    payment_required: "PaymentRequired | PaymentRequiredV1 | None" = None
+
+
+@dataclass
+class RecoveredResponseResult:
+    """Return from on_payment_response to signal transport recovery."""
+
+    recovered: Literal[True] = True
+
+
+# ============================================================================
+# HTTP Payment Required Hook Contexts (for x402HTTPClient)
+# ============================================================================
+
+
+@dataclass
+class PaymentRequiredContext:
+    """Context for HTTP on_payment_required hooks."""
+
+    payment_required: "PaymentRequired | PaymentRequiredV1"
+
+
+@dataclass
+class PaymentRequiredHeadersResult:
+    """Return from on_payment_required to retry before paying."""
+
+    headers: dict[str, str]
