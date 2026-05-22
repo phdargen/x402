@@ -121,6 +121,14 @@ class BatchSettlementEvmScheme:
         self._money_parsers.append(parser)
         return self
 
+    def get_asset_decimals(self, asset: str, network: Network) -> int:
+        try:
+            asset_info = get_asset_info(str(network), asset)
+            return asset_info["decimals"]
+        except ValueError:
+            pass
+        return 6
+
     def merge_request_context(
         self,
         payload: PaymentPayload,

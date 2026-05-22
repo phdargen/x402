@@ -34,7 +34,7 @@ from eth_account import Account
 import httpx
 
 from x402 import x402Client
-from x402.http import decode_payment_response_header
+from x402.http import x402HTTPClient
 from x402.http.clients import x402_httpx_transport
 from x402.mechanisms.evm import EthAccountSignerWithRPC
 from x402.mechanisms.evm.batch_settlement.client import (
@@ -50,7 +50,7 @@ from x402.mechanisms.evm.signers import EthAccountSigner
 
 load_dotenv()
 
-RESOURCE_SERVER_URL = os.getenv("RESOURCE_SERVER_URL")
+RESOURCE_SERVER_URL = os.getenv("RESOURCE_SERVER_URL") or "http://localhost:4021"
 ENDPOINT_PATH = os.getenv("ENDPOINT_PATH", "/weather")
 EVM_PRIVATE_KEY = os.getenv("EVM_PRIVATE_KEY")
 EVM_VOUCHER_SIGNER_PRIVATE_KEY = os.getenv("EVM_VOUCHER_SIGNER_PRIVATE_KEY", "").strip() or None
@@ -66,7 +66,7 @@ REFUND_AFTER_REQUESTS = os.getenv("REFUND_AFTER_REQUESTS", "").lower() == "true"
 REFUND_AMOUNT = os.getenv("REFUND_AMOUNT", "").strip() or None
 
 if not (RESOURCE_SERVER_URL and EVM_PRIVATE_KEY):
-    print("Missing required RESOURCE_SERVER_URL or EVM_PRIVATE_KEY")
+    print("Missing required EVM_PRIVATE_KEY")
     sys.exit(1)
 
 
@@ -94,6 +94,7 @@ async def main() -> None:
         ),
     )
     client = x402Client().register("eip155:*", batch_scheme)
+    http_client = x402HTTPClient(client)
 
     url = f"{RESOURCE_SERVER_URL}{ENDPOINT_PATH}"
 
@@ -112,16 +113,19 @@ async def main() -> None:
             response = await http.get(url)
             elapsed = time.perf_counter() - t0
 
-            payment_header = response.headers.get(
-                "PAYMENT-RESPONSE"
-            ) or response.headers.get("X-PAYMENT-RESPONSE")
             label = "deposit" if i == 0 else "voucher"
             print(f"Request {i + 1} — RESPONSE ({label})")
-            print(f"  status: {response.status_code}")
-            print(f"  body: {response.text}")
-            if payment_header:
-                settle = decode_payment_response_header(payment_header)
-                print(f"  tx: {settle.transaction}  success={settle.success}")
+            try:
+                print(response.json())
+            except ValueError:
+                print(response.text)
+            try:
+                settle = http_client.get_payment_settle_response(
+                    lambda name: response.headers.get(name)
+                )
+                print(settle.model_dump_json(indent=2))
+            except ValueError:
+                pass
             print(f"Request {i + 1} — completed in {elapsed:.3f}s\n")
 
     if REFUND_AFTER_REQUESTS:
@@ -135,7 +139,7 @@ async def main() -> None:
             batch_scheme.refund, url, RefundOptions(amount=REFUND_AMOUNT)
         )
         elapsed = time.perf_counter() - t0
-        print(f"  success={refund.success}  tx={refund.transaction}")
+        print(refund.model_dump_json(indent=2))
         print(f"Refund completed in {elapsed:.3f}s")
 
 

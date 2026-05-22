@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 try:
+    from x402.http.x402_http_server_base import x402HTTPServerBase
     from x402.mechanisms.evm.batch_settlement.constants import SCHEME_BATCH_SETTLEMENT
     from x402.mechanisms.evm.batch_settlement.errors import (
         ERR_CHANNEL_BUSY,
@@ -13,6 +14,7 @@ try:
     from x402.mechanisms.evm.batch_settlement.server.scheme import (
         BatchSettlementEvmScheme,
     )
+    from x402.mechanisms.evm.batch_settlement.server.settle import handle_before_settle
     from x402.mechanisms.evm.batch_settlement.server.storage import (
         Channel,
         PendingRequest,
@@ -26,7 +28,13 @@ try:
     )
     from x402.mechanisms.evm.batch_settlement.types import ChannelConfig
     from x402.schemas import PaymentPayload, PaymentRequirements, VerifyResponse
-    from x402.schemas.hooks import AbortResult, VerifyContext, VerifyResultContext
+    from x402.schemas.hooks import (
+        AbortResult,
+        SettleContext,
+        SkipSettleResult,
+        VerifyContext,
+        VerifyResultContext,
+    )
 except ImportError:
     pytest.skip("batch_settlement requires evm extras", allow_module_level=True)
 
@@ -290,3 +298,28 @@ class TestEnrichPaymentRequiredResponse:
         assert extra["channelState"]["chargedCumulativeAmount"] == "500"
         assert "voucherState" in extra
         assert extra["voucherState"]["signedMaxClaimable"] == "500"
+
+
+class TestHandleBeforeSettle:
+    def test_resolved_percent_override_increments_charged_total(self):
+        scheme = _scheme()
+        _seed_channel(scheme, charged_cumulative_amount="0", signed_max_claimable="10000")
+        payload = _voucher_payload(max_claimable="10000")
+        base_requirements = _requirements(amount="10000")
+        resolved_amount = x402HTTPServerBase.resolve_settlement_override_amount(
+            "7%", base_requirements
+        )
+        assert resolved_amount == "700"
+
+        ctx_before = VerifyContext(payment_payload=payload, requirements=base_requirements)
+        handle_before_verify(scheme, ctx_before)
+
+        ctx = SettleContext(
+            payment_payload=payload,
+            requirements=base_requirements.model_copy(update={"amount": resolved_amount}),
+        )
+        out = handle_before_settle(scheme, ctx)
+        assert isinstance(out, SkipSettleResult)
+        ch = scheme.get_storage().get(CHANNEL_ID)
+        assert ch is not None
+        assert ch.charged_cumulative_amount == "700"
