@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import os
 import random
-import signal
 import sys
+from contextlib import asynccontextmanager
 from typing import Any
 
 from dotenv import load_dotenv
@@ -75,28 +75,36 @@ server = x402ResourceServer(facilitator)
 server.register(EVM_NETWORK, scheme)
 
 manager = scheme.create_channel_manager(facilitator, EVM_NETWORK)
-manager.start(
-    AutoSettlementConfig(
-        claim_interval_secs=60,
-        settle_interval_secs=120,
-        refund_interval_secs=180,
-        max_claims_per_batch=100,
-        # Refund channels idle for > 3 minutes.
-        select_refund_channels=lambda channels, ctx: [
-            c
-            for c in channels
-            if c.balance not in ("", "0")
-            and (c.pending_request is None or c.pending_request.expires_at <= ctx.now)
-            and ctx.now - c.last_request_timestamp >= 180_000
-        ],
-        on_claim=lambda r: print(f"Claimed {r.vouchers} vouchers (tx: {r.transaction})"),
-        on_settle=lambda r: print(f"Settled to {EVM_ADDRESS} (tx: {r.transaction})"),
-        on_refund=lambda r: print(f"Refunded channel {r.channel} (tx: {r.transaction})"),
-        on_error=lambda err: print(f"Settlement error: {err}"),
-    )
+
+_auto_settle_config = AutoSettlementConfig(
+    claim_interval_secs=60,
+    settle_interval_secs=120,
+    refund_interval_secs=180,
+    max_claims_per_batch=100,
+    # Refund channels idle for > 3 minutes.
+    select_refund_channels=lambda channels, ctx: [
+        c
+        for c in channels
+        if c.balance not in ("", "0")
+        and (c.pending_request is None or c.pending_request.expires_at <= ctx.now)
+        and ctx.now - c.last_request_timestamp >= 180_000
+    ],
+    on_claim=lambda r: print(f"Claimed {r.vouchers} vouchers (tx: {r.transaction})"),
+    on_settle=lambda r: print(f"Settled to {EVM_ADDRESS} (tx: {r.transaction})"),
+    on_refund=lambda r: print(f"Refunded channel {r.channel} (tx: {r.transaction})"),
+    on_error=lambda err: print(f"Settlement error: {err}"),
 )
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    manager.start(_auto_settle_config)
+    yield
+    print("Shutting down — flushing pending claims…")
+    await manager.stop(flush=True)
+
+
+app = FastAPI(lifespan=lifespan)
 
 routes = {
     "GET /weather": {
@@ -126,16 +134,6 @@ async def weather(response: FastAPIResponse) -> dict[str, Any]:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-def _shutdown(signum, frame):
-    print("Shutting down — flushing pending claims…")
-    manager.stop(flush=True)
-    sys.exit(0)
-
-
-signal.signal(signal.SIGINT, _shutdown)
-signal.signal(signal.SIGTERM, _shutdown)
 
 
 if __name__ == "__main__":
