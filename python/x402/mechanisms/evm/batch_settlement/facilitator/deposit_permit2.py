@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 try:
     from eth_utils import to_checksum_address
@@ -17,20 +17,6 @@ except ImportError as e:
         "EVM mechanism requires ethereum packages. Install with: pip install x402[evm]"
     ) from e
 
-from .....extensions.eip2612_gas_sponsoring import (
-    extract_eip2612_gas_sponsoring_info,
-    validate_eip2612_permit_for_payment,
-)
-from .....extensions.eip2612_gas_sponsoring.types import Eip2612GasSponsoringInfo
-from .....extensions.erc20_approval_gas_sponsoring import (
-    extract_erc20_approval_gas_sponsoring_info,
-    validate_erc20_approval_for_payment,
-)
-from .....extensions.erc20_approval_gas_sponsoring.types import (
-    ERC20_APPROVAL_GAS_SPONSORING_KEY,
-    Erc20ApprovalFacilitatorExtension,
-    Erc20ApprovalGasSponsoringSigner,
-)
 from .....interfaces import FacilitatorContext
 from .....schemas import PaymentPayload, PaymentRequirements, VerifyResponse
 from ...constants import PERMIT2_ADDRESS, PERMIT2_DEADLINE_BUFFER
@@ -55,6 +41,12 @@ from ..errors import (
     ERR_TOKEN_MISMATCH,
 )
 from ..types import DepositPayload
+
+if TYPE_CHECKING:
+    from .....extensions.eip2612_gas_sponsoring.types import Eip2612GasSponsoringInfo
+    from .....extensions.erc20_approval_gas_sponsoring.types import (
+        Erc20ApprovalGasSponsoringSigner,
+    )
 
 ERC20_ALLOWANCE_ABI: list[dict[str, Any]] = [
     {
@@ -128,6 +120,16 @@ def resolve_permit2_deposit_branch(
     context: FacilitatorContext | None = None,
 ) -> Permit2DepositBranch | VerifyResponse:
     """Choose the Permit2 setup path (eip2612 / erc20Approval / standard)."""
+    from .....extensions.eip2612_gas_sponsoring import (
+        extract_eip2612_gas_sponsoring_info,
+    )
+    from .....extensions.erc20_approval_gas_sponsoring import (
+        ERC20_APPROVAL_GAS_SPONSORING_KEY,
+        Erc20ApprovalFacilitatorExtension,
+        extract_erc20_approval_gas_sponsoring_info,
+        validate_erc20_approval_for_payment,
+    )
+
     assert payload.channel_config is not None and payload.deposit is not None
     payer = payload.channel_config.payer
     token_address = to_checksum_address(requirements.asset)
@@ -295,6 +297,8 @@ def _validate_batch_eip2612_permit(
     deposit_amount: str,
 ) -> str | None:
     """Apply batch-specific check on top of shared Permit2 validation."""
+    from .....extensions.eip2612_gas_sponsoring import validate_eip2612_permit_for_payment
+
     baseline = validate_eip2612_permit_for_payment(info, payer, token_address)
     if baseline:
         return baseline or ERR_INVALID_PAYLOAD_TYPE

@@ -576,14 +576,50 @@ class x402HTTPServerBase:
             return None
 
     @staticmethod
+    def resolve_settlement_override_amount(
+        raw_amount: str,
+        requirements: PaymentRequirements,
+        decimals: int = 6,
+    ) -> str:
+        """Resolve a settlement override amount to atomic units."""
+        percent_match = re.match(r"^(\d+(?:\.\d{0,2})?)%$", raw_amount)
+        if percent_match:
+            parts = percent_match.group(1).split(".")
+            int_part = parts[0]
+            dec_part = (parts[1] if len(parts) > 1 else "").ljust(2, "0")[:2]
+            scaled_percent = int(int_part) * 100 + int(dec_part)
+            base = int(requirements.amount)
+            return str(base * scaled_percent // 10000)
+
+        dollar_match = re.match(r"^\$(\d+(?:\.\d+)?)$", raw_amount)
+        if dollar_match:
+            dollars = float(dollar_match.group(1))
+            return str(round(dollars * (10**decimals)))
+
+        return raw_amount
+
     def _apply_settlement_overrides(
+        self,
         requirements: PaymentRequirements,
         overrides: dict[str, Any] | None,
     ) -> PaymentRequirements:
         """Return *requirements* with the amount replaced by the override, if any."""
         if overrides is None or "amount" not in overrides:
             return requirements
-        return requirements.model_copy(update={"amount": str(overrides["amount"])})
+
+        scheme = self._server._find_registered_scheme(requirements.scheme, requirements.network)
+        decimals = 6
+        if scheme is not None:
+            get_decimals = getattr(scheme, "get_asset_decimals", None)
+            if callable(get_decimals):
+                decimals = get_decimals(requirements.asset or "", requirements.network)
+
+        resolved = self.resolve_settlement_override_amount(
+            str(overrides["amount"]),
+            requirements,
+            decimals,
+        )
+        return requirements.model_copy(update={"amount": resolved})
 
     def _process_skip_handler_settlement(
         self,

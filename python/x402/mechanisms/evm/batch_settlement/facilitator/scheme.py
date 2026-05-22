@@ -30,11 +30,6 @@ from ..types import (
     is_settle_payload,
     is_voucher_payload,
 )
-from .claim import execute_claim_with_signature
-from .deposit import settle_deposit, verify_deposit
-from .refund import execute_refund_with_signature
-from .settle import execute_settle
-from .voucher import verify_voucher
 
 
 class BatchSettlementEvmFacilitator:
@@ -75,14 +70,20 @@ class BatchSettlementEvmFacilitator:
             return VerifyResponse(is_valid=False, invalid_reason=ERR_NETWORK_MISMATCH)
 
         if is_deposit_payload(raw):
+            from .deposit import verify_deposit
+
             deposit = DepositPayload.from_dict(raw)
             return verify_deposit(self._signer, payload, deposit, requirements, context)
 
         if is_voucher_payload(raw):
+            from .voucher import verify_voucher
+
             channel_config = ChannelConfig.from_dict(raw["channelConfig"])
             return verify_voucher(self._signer, raw, requirements, channel_config)
 
         if is_refund_payload(raw):
+            from .voucher import verify_voucher
+
             channel_config = ChannelConfig.from_dict(raw["channelConfig"])
             return verify_voucher(self._signer, raw, requirements, channel_config)
 
@@ -98,22 +99,30 @@ class BatchSettlementEvmFacilitator:
         network = str(requirements.network)
 
         if is_deposit_payload(raw):
+            from .deposit import settle_deposit
+
             deposit = DepositPayload.from_dict(raw)
             return settle_deposit(self._signer, payload, deposit, requirements, context)
 
         if is_claim_payload(raw):
+            from .claim import execute_claim_with_signature
+
             claim = ClaimPayload.from_dict(raw)
             return execute_claim_with_signature(
                 self._signer, claim, requirements, self._authorizer_signer
             )
 
         if is_enriched_refund_payload(raw):
+            from .refund import execute_refund_with_signature
+
             refund = EnrichedRefundPayload.from_dict(raw)
             return execute_refund_with_signature(
                 self._signer, refund, requirements, self._authorizer_signer
             )
 
         if is_settle_payload(raw):
+            from .settle import execute_settle
+
             settle = SettlePayload.from_dict(raw)
             return execute_settle(self._signer, settle, requirements)
 
