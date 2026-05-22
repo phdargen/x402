@@ -1,6 +1,6 @@
 """Server-side batch-settlement scheme.
 
-Re-exports the scheme, storage backends, and channel manager.
+Re-exports the scheme, storage backends, and channel managers.
 """
 
 from .channel_manager import (
@@ -11,9 +11,12 @@ from .channel_manager import (
     ClaimChannelSelector,
     ClaimOptions,
     ClaimResult,
+    RefundChannelSelector,
     RefundResult,
     SettleResult,
 )
+from .channel_manager_common import ChannelManagerConfigSync
+from .channel_manager_sync import BatchSettlementChannelManagerSync
 from .file_storage import FileChannelStorage
 from .scheme import (
     BatchSettlementEvmScheme,
@@ -39,12 +42,15 @@ __all__ = [
     "PendingRequest",
     "FileChannelStorage",
     "BatchSettlementChannelManager",
+    "BatchSettlementChannelManagerSync",
     "ChannelManagerConfig",
+    "ChannelManagerConfigSync",
     "ClaimChannelSelector",
     "ClaimOptions",
     "ClaimResult",
     "SettleResult",
     "RefundResult",
+    "RefundChannelSelector",
     "AutoSettlementConfig",
     "AutoSettlementContext",
 ]

@@ -305,12 +305,48 @@ class TestClearPendingRequest:
 
 
 class TestCreateChannelManager:
-    def test_returns_manager(self):
+    def test_async_returns_manager(self):
+        class _AsyncFac:
+            async def settle(self, _p, _r):
+                return None
+
         s = BatchSettlementEvmScheme(RECEIVER)
-        cm = s.create_channel_manager(facilitator=object(), network="eip155:8453")
+        cm = s.create_channel_manager(facilitator=_AsyncFac(), network="eip155:8453")
         assert cm is not None
+
+    def test_sync_returns_manager(self):
+        class _SyncFac:
+            def settle(self, _p, _r):
+                return None
+
+        s = BatchSettlementEvmScheme(RECEIVER)
+        cm = s.create_channel_manager_sync(facilitator=_SyncFac(), network="eip155:8453")
+        assert cm is not None
+
+    def test_async_rejects_sync_facilitator(self):
+        class _SyncFac:
+            def settle(self, _p, _r):
+                return None
+
+        s = BatchSettlementEvmScheme(RECEIVER)
+        with pytest.raises(TypeError, match="async facilitator"):
+            s.create_channel_manager(facilitator=_SyncFac(), network="eip155:8453")
+
+    def test_sync_rejects_async_facilitator(self):
+        class _AsyncFac:
+            async def settle(self, _p, _r):
+                return None
+
+        s = BatchSettlementEvmScheme(RECEIVER)
+        with pytest.raises(TypeError, match="sync facilitator"):
+            s.create_channel_manager_sync(facilitator=_AsyncFac(), network="eip155:8453")
 
     def test_unknown_network_raises(self):
         s = BatchSettlementEvmScheme(RECEIVER)
+
+        class _AsyncFac:
+            async def settle(self, _p, _r):
+                return None
+
         with pytest.raises(ValueError):
-            s.create_channel_manager(facilitator=object(), network="eip155:99999999")
+            s.create_channel_manager(facilitator=_AsyncFac(), network="eip155:99999999")

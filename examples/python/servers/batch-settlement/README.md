@@ -4,9 +4,13 @@ A FastAPI server that exposes a single usage-based-priced `/weather` endpoint
 protected by the **batch-settlement** EVM scheme on Base Sepolia.
 
 Clients first open an on-chain payment channel via a USDC deposit. Subsequent
-requests are billed off-chain by signed vouchers, which the server's
+requests are billed off-chain by signed vouchers, which the server's async
 `BatchSettlementChannelManager` periodically claims/settles on-chain in
 batches. Idle channels are cooperatively refunded after 3 minutes.
+
+This FastAPI example uses `HTTPFacilitatorClient` with `create_channel_manager`.
+For Flask or other sync servers, use `HTTPFacilitatorClientSync` with
+`create_channel_manager_sync` (`BatchSettlementChannelManagerSync`).
 
 ## Setup
 

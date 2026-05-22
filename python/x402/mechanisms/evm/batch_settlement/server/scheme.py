@@ -338,15 +338,19 @@ class BatchSettlementEvmScheme:
         facilitator: Any,
         network: Network,
     ) -> Any:
-        """Create a `BatchSettlementChannelManager` for this scheme.
+        """Create an async `BatchSettlementChannelManager` for this scheme."""
+        import inspect
 
-        Imported lazily to avoid a circular import between scheme and channel
-        manager modules.
-        """
-        from .channel_manager import (
-            BatchSettlementChannelManager,
-            ChannelManagerConfig,
-        )
+        from .channel_manager import BatchSettlementChannelManager
+        from .channel_manager_common import ChannelManagerConfig
+
+        settle_method = getattr(facilitator, "settle", None)
+        if settle_method is not None and not inspect.iscoroutinefunction(settle_method):
+            raise TypeError(
+                "create_channel_manager requires an async facilitator client "
+                f"(got {type(facilitator).__name__} with sync settle). "
+                "Use create_channel_manager_sync with a sync facilitator client."
+            )
 
         config = get_network_config(str(network))
         default_asset = config.get("default_asset") or {}
@@ -355,6 +359,40 @@ class BatchSettlementEvmScheme:
             raise ValueError(f"No default asset configured for network {network}")
         return BatchSettlementChannelManager(
             ChannelManagerConfig(
+                scheme=self,
+                facilitator=facilitator,  # type: ignore[arg-type]
+                receiver=self._receiver_address,
+                token=token,
+                network=str(network),
+            )
+        )
+
+    def create_channel_manager_sync(
+        self,
+        facilitator: Any,
+        network: Network,
+    ) -> Any:
+        """Create a sync `BatchSettlementChannelManagerSync` for this scheme."""
+        import inspect
+
+        from .channel_manager_common import ChannelManagerConfigSync
+        from .channel_manager_sync import BatchSettlementChannelManagerSync
+
+        settle_method = getattr(facilitator, "settle", None)
+        if settle_method is not None and inspect.iscoroutinefunction(settle_method):
+            raise TypeError(
+                "create_channel_manager_sync requires a sync facilitator client "
+                f"(got {type(facilitator).__name__} with async settle). "
+                "Use create_channel_manager with an async facilitator client."
+            )
+
+        config = get_network_config(str(network))
+        default_asset = config.get("default_asset") or {}
+        token = default_asset.get("address")
+        if not token:
+            raise ValueError(f"No default asset configured for network {network}")
+        return BatchSettlementChannelManagerSync(
+            ChannelManagerConfigSync(
                 scheme=self,
                 facilitator=facilitator,
                 receiver=self._receiver_address,

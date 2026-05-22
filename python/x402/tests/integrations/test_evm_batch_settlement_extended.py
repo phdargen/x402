@@ -424,7 +424,7 @@ class TestBatchSettlementMultiVoucherClaimSettle:
         for _ in range(3):
             pipe.direct_pay("500")
 
-        manager = pipe.server_scheme.create_channel_manager(pipe.facilitator_client, NETWORK)
+        manager = pipe.server_scheme.create_channel_manager_sync(pipe.facilitator_client, NETWORK)
         claimable = manager.get_claimable_vouchers()
         assert len(claimable) == 1, f"expected 1 claimable entry, got {len(claimable)}"
 
@@ -531,7 +531,9 @@ class TestBatchSettlementAutoClaimTick:
             _wait_for_balance(pipe.w3, channel_id)
             _wait_for_pending_transactions(pipe.facilitator_address)
 
-            manager = pipe.server_scheme.create_channel_manager(pipe.facilitator_client, NETWORK)
+            manager = pipe.server_scheme.create_channel_manager_sync(
+                pipe.facilitator_client, NETWORK
+            )
             claim_events: list[ClaimResult] = []
             error_events: list[BaseException] = []
             claim_signal = threading.Event()
@@ -581,7 +583,9 @@ class TestBatchSettlementAutoClaimAndSettleTick:
             _wait_for_balance(pipe.w3, channel_id)
             _wait_for_pending_transactions(pipe.facilitator_address)
 
-            manager = pipe.server_scheme.create_channel_manager(pipe.facilitator_client, NETWORK)
+            manager = pipe.server_scheme.create_channel_manager_sync(
+                pipe.facilitator_client, NETWORK
+            )
             claim_events: list[ClaimResult] = []
             settle_events: list[SettleResult] = []
             error_events: list[BaseException] = []
@@ -651,7 +655,9 @@ class TestBatchSettlementWithdrawalPendingRefund:
 
             storage.update_channel(channel_id, mark_withdraw)
 
-            manager = pipe.server_scheme.create_channel_manager(pipe.facilitator_client, NETWORK)
+            manager = pipe.server_scheme.create_channel_manager_sync(
+                pipe.facilitator_client, NETWORK
+            )
             pending = manager.get_withdrawal_pending_sessions()
             assert len(pending) == 1
             assert pending[0].channel_id.lower() == channel_id
