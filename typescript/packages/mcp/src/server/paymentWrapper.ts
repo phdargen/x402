@@ -246,6 +246,21 @@ export function createPaymentWrapper(
         );
       }
 
+      const extensionResult = resourceServer.validateExtensions(
+        paymentRequiredForMatch,
+        paymentPayload,
+      );
+      if (!extensionResult.valid) {
+        return createPaymentRequiredResult(
+          resourceServer,
+          toolName,
+          config,
+          extensionResult.invalidReason,
+          transportContext,
+          paymentPayload,
+        );
+      }
+
       const extMap = config.extensions ?? {};
       const verifyResult = await resourceServer.verifyPayment(
         paymentPayload,
