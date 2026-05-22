@@ -1,5 +1,14 @@
 # @x402/core Changelog
 
+## 2.13.0
+
+### Minor Changes
+
+- 49ea054: Add extension hook adapters for client and HTTP flows
+- ad08a9a: Preserve %2F/%5C in normalizePath so encoded path separators can no longer hide segment boundaries from :param route regexes, closing a paywall bypass on requests like /api/report/a%2Fb.
+- 5fca9f3: Allow paymentPayload.accepted.extra to include additive client fields, while all server-declared fields still have to match
+- 95f2094: Replace the dynamic fallback paywall HTML (used when @x402/paywall is not installed) with a static template, eliminating reflected XSS surface from interpolated request URLs and config values.
+
 ## 2.12.0
 
 ### Minor Changes

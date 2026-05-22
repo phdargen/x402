@@ -1,5 +1,16 @@
 # @x402/mcp Changelog
 
+## 2.13.0
+
+### Minor Changes
+
+- 5fca9f3: Implemented missing hook primitives needed for batch-settlement aligning with http transport
+- Updated dependencies [ad08a9a]
+- Updated dependencies [5fca9f3]
+- Updated dependencies [95f2094]
+- Updated dependencies [49ea054]
+  - @x402/core@2.13.0
+
 ## 2.12.0
 
 ### Minor Changes

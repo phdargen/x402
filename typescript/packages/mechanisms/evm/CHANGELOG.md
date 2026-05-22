@@ -1,5 +1,20 @@
 # @x402/evm Changelog
 
+## 2.13.0
+
+### Minor Changes
+
+- 114b6b1: Add HPP mainnet (chain ID 190415) and HPP Sepolia (chain ID 181228) support with USDC.e (Bridged USDC) as the default stablecoin
+- 581e55e: Add ADI Chain (chain ID 36900) support with USDC.e as the default stablecoin
+- 3ba5d2e: add optional batch-settlement client/file-storage and server/file-storage (and server/redis-storage) exports to avoid pulling Node-fs/Redis helpers into default bundles
+- a242149: unwrap ERC-6492 signatures for exact/upto permit2 flows and batch-settlement
+- abbd40e: Added checks for 0 amount to settle/refund for batch-settlement
+- Updated dependencies [ad08a9a]
+- Updated dependencies [5fca9f3]
+- Updated dependencies [95f2094]
+- Updated dependencies [49ea054]
+  - @x402/core@2.13.0
+
 ## 2.12.0
 
 ### Minor Changes
