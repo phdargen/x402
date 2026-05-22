@@ -244,7 +244,6 @@ export async function verifyEIP3009(
  * @param eip3009Payload - The EIP-3009 specific payload
  * @param config - Facilitator configuration
  * @param context - Optional facilitator context for extension capabilities
- * @param paymentRequiredExtensions - Server-declared extensions from PaymentRequired
  * @returns Promise resolving to settlement response
  */
 export async function settleEIP3009(
@@ -254,7 +253,6 @@ export async function settleEIP3009(
   eip3009Payload: ExactEIP3009Payload,
   config: EIP3009FacilitatorConfig,
   context?: FacilitatorContext,
-  paymentRequiredExtensions?: Record<string, unknown>,
 ): Promise<SettleResponse> {
   const payer = eip3009Payload.authorization.from;
 
@@ -300,17 +298,16 @@ export async function settleEIP3009(
       }
     }
 
-    const calldataSuffix = await resolveDataSuffix(context, {
+    const dataSuffix = await resolveDataSuffix(context, {
       paymentPayload: payload,
       paymentRequirements: requirements,
-      paymentRequiredExtensions,
     });
 
     const tx = await executeTransferWithAuthorization(
       signer,
       getAddress(requirements.asset),
       eip3009Payload,
-      calldataSuffix,
+      dataSuffix,
     );
 
     // Wait for transaction confirmation
