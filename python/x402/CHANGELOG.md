@@ -2,6 +2,22 @@
 
 <!-- towncrier release notes start -->
 
+## [2.11.0] - 2026-05-22
+
+### Fixed
+
+- unwrap ERC-6492 signatures for permit2 flows ([#2352](https://github.com/x402-foundation/x402/pull/2352))
+
+### Added
+
+- Add HPP mainnet (chain ID 190415) and HPP Sepolia (chain ID 181228) support with USDC.e (Bridged USDC) as the default stablecoin ([#add-hpp-chains-default-stablecoin](https://github.com/x402-foundation/x402/pull/add-hpp-chains-default-stablecoin))
+- Add ADI Chain (chain ID 36900) support with USDC.e as the default stablecoin ([#adi-chain](https://github.com/x402-foundation/x402/pull/adi-chain))
+- Added `batch-settlement-evm` scheme: an EVM payment-channel mechanism that batches multiple requests off-chain using cumulative vouchers and submits a single on-chain claim instead of one transaction per payment. Includes `BatchSettlementEvmScheme` for client and server, `BatchSettlementEvmFacilitator` for on-chain deposit, claim, and cooperative refund execution, and `BatchSettlementChannelManager` with auto-claim/settle scheduling and `FileChannelStorage` for persistent server-side channel state. ([#batch-settlement-evm](https://github.com/x402-foundation/x402/pull/batch-settlement-evm))
+- Added a curated testnet faucet map to the paywall plus `PaywallConfig.faucet_urls` (per-chain override keyed by CAIP-2). Unmapped chains render "No faucet configured." instead of a fallback link. Available via `PaywallBuilder.with_config(faucet_urls=...)`. ([#2160](https://github.com/x402-foundation/x402/pull/2160))
+- Added missing lifecycle hooks and extension/scheme-level adapter pattern ([#2388](https://github.com/x402-foundation/x402/pull/2388))
+- Added siwx extension ([#2393](https://github.com/x402-foundation/x402/pull/2393))
+
+
 ## [2.10.0] - 2026-05-13
 
 ### Added
