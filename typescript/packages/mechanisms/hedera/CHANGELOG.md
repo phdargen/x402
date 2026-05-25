@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.13.1
+
+### Patch Changes
+
+- Fix `@x402/core` workspace resolution.
+
 ## 2.13.0
 
 ### Minor Changes
