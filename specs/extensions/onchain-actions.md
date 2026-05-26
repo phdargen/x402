@@ -6,7 +6,6 @@ The `onchain-actions` extension enables **noncustodial onchain execution** throu
 
 This standardizes the response format so any x402-compatible client can parse, verify, simulate and execute onchain actions from any compliant server, without bespoke integrations. Example use cases include token swaps, cross-chain bridges, portfolio rebalancing, LP management, multisend or dust cleanup.
 
-
 ---
 
 ## `PaymentRequired`
@@ -52,16 +51,24 @@ The `info` field describes server capabilities. The `schema` field validates the
           },
           "supportedNetworks": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,64}$"
+            },
             "description": "CAIP-2 networks the server can return transaction data for."
           },
           "executor": {
             "type": "string",
-            "description": "Address that will execute the returned transactions. Appended by client."
+            "description": "Address that will execute the returned transactions. Appended by client. Format depends on the CAIP-2 namespace of `executionNetwork`: `eip155:*` requires a 0x-prefixed 20-byte hex address (EIP-55 checksum recommended); `solana:*` requires a base58-encoded 32-byte public key.",
+            "oneOf": [
+              { "pattern": "^0x[a-fA-F0-9]{40}$" },
+              { "pattern": "^[1-9A-HJ-NP-Za-km-z]{32,44}$" }
+            ]
           },
           "executionNetwork": {
             "type": "string",
-            "description": "CAIP-2 network where the client intends to execute. Appended by client. Defaults to the payment network if omitted."
+            "description": "CAIP-2 network where the client intends to execute. Appended by client. Defaults to the payment network if omitted. MUST be a member of `supportedNetworks`.",
+            "pattern": "^[a-z0-9]{3,8}:[-_a-zA-Z0-9]{1,64}$"
           }
         },
         "required": ["version", "supportedNetworks"]
@@ -126,7 +133,6 @@ The server returns prepared transaction data in the **resource response body**. 
           "to": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "data": "0x095ea7b3000000000000000000000000...",
           "value": "0",
-          "gasLimit": "50000",
           "decodedFunctionData": {
             "abi": [{"type": "function", "name": "approve", "inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}], "outputs": [{"name": "", "type": "bool"}], "stateMutability": "nonpayable"}],
             "functionName": "approve",
@@ -141,7 +147,6 @@ The server returns prepared transaction data in the **resource response body**. 
           "to": "0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD",
           "data": "0x3593564c000000000000000000000000...",
           "value": "0",
-          "gasLimit": "200000",
           "decodedFunctionData": {
             "abi": [{"type": "function", "name": "execute", "inputs": [{"name": "commands", "type": "bytes"}, {"name": "inputs", "type": "bytes[]"}, {"name": "deadline", "type": "uint256"}], "outputs": [], "stateMutability": "payable"}],
             "functionName": "execute",
@@ -159,9 +164,8 @@ The server returns prepared transaction data in the **resource response body**. 
 
 | Field          | Type     | Required | Description                                              |
 | -------------- | -------- | -------- | -------------------------------------------------------- |
-| `version`      | `string` | Yes      | Extension schema version (currently `"1"`)               |
+| `version`      | `string` | Yes      | Extension schema version. MUST equal the `info.version` advertised by the server in the corresponding `PaymentRequired` response. |
 | `transactions` | `array`  | Yes      | Ordered array of Transaction objects to execute sequentially |
-
 
 ---
 
@@ -176,9 +180,9 @@ All transactions share these fields regardless of chain.
 
 | Field         | Type     | Required | Description                                                                                                                      |
 | ------------- | -------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `network`     | `string` | Yes      | CAIP-2 network identifier (e.g., `"eip155:8453"`, `"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"`)                                  |
+| `network`     | `string` | No       | CAIP-2 network identifier (e.g., `"eip155:8453"`, `"solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"`). When omitted, defaults to the negotiated `executionNetwork` from `PaymentPayload`. MUST be a member of the server's advertised `supportedNetworks` when present. |
 | `type`        | `string` | Yes      | Transaction category (see Type Values below)                                                                                     |
-| `description` | `string` | Yes      | Human-readable summary                                                                                                           |
+| `description` | `string` | Yes      | Human-readable summary, intended **for UI display only**. MUST be a non-empty string of printable text (Unicode categories L, N, P, S, Zs; no control characters in category Cc), with a maximum length of 280 characters. Clients MUST treat `description` as informational only and MUST NOT use it to make any normative decision (routing, signing, allowlisting). Clients SHOULD truncate or sanitize before display and MAY reject transactions whose `description` violates these constraints. |
 | `validUntil`  | `number` | No       | Unix timestamp after which this transaction is stale. If absent, the transaction does not expire. SHOULD reflect the earliest internal deadline (swap deadline, bridge timeout, oracle staleness). |
 
 
@@ -192,8 +196,7 @@ Additional fields for transactions on EVM chains.
 | `to`       | `string` | Yes      | 20-byte `0x`-prefixed hex address                                                                   |
 | `data`     | `string` | Yes      | ABI-encoded transaction data as `0x`-prefixed hex                                                   |
 | `value`    | `string` | Yes      | Native token value in wei as decimal string. Use `"0"` for non-payable calls.                       |
-| `gasLimit` | `string` | No       | Suggested gas limit (decimal string, gas units)                                                     |
-| `decodedFunctionData`  | `object` | Yes      | Decoded transaction data following viem's `encodeFunctionData` convention: `abi` (ABI items array), `functionName`, and `args` (positional array) |
+| `decodedFunctionData`  | `object` | Yes      | Decoded contract call data: `abi` (ABI items array), `functionName`, and `args` (positional array matching the function signature) |
 
 
 ### SVM Fields (`solana:*`)
@@ -232,17 +235,13 @@ Additional fields for transactions on SVM chains.
 | Type           | Description                                                                                 |
 | -------------- | ------------------------------------------------------------------------------------------- |
 | `approval`     | Token approval. Amount MUST be bounded; verify spender matches the next transaction's `to`. |
-| `swap`         | Token swap via DEX router. Verify slippage, deadline, recipient.                            |
-| `transfer`     | Token or native transfer. Verify recipient and amount.                                      |
-| `bridge`       | Cross-chain bridge deposit. Verify destination chain, recipient.                            |
-| `lpDeposit`    | Add liquidity to a pool.                                                                    |
-| `lpWithdraw`   | Remove liquidity from a pool.                                                               |
-| `wrapNative`   | Wrap native token (e.g., ETH → WETH).                                                       |
-| `unwrapNative` | Unwrap native token (e.g., WETH → ETH).                                                     |
-| `custom`       | Catch-all. Client MUST carefully inspect decoded params / instruction data.                 |
+| `swap`         | Token swap via DEX router.                                                                  |
+| `transfer`     | Token or native transfer.                                                                   |
+| `bridge`       | Cross-chain bridge deposit.                                                                 |
+| `deposit`      | Deposit assets into a liquidity pool, vault or lending protocol.                            |
+| `withdraw`     | Withdraw assets from a liquidity pool, vault or lending protocol.                           |
 
-
-Servers MAY use additional type values but SHOULD prefer standard types. Clients that encounter an unknown type MUST treat it as `custom`.
+Servers MAY use additional type values but SHOULD prefer standard types. 
 
 ---
 
@@ -263,8 +262,6 @@ When the server cannot prepare valid transaction data, it MUST NOT call `/settle
 | `unsupported_execution_network` | Requested execution network not supported |
 | `executor_invalid`              | Executor address invalid or unusable      |
 | `preparation_failed`            | Internal error building transaction data  |
-| `price_expired`                 | Quote expired before settlement           |
-
 
 ---
 
@@ -282,12 +279,35 @@ Clients MUST verify that calling `encodeFunctionData(decodedFunctionData)` (usin
 
 ---
 
-## Responsibilities
+## Client Security Recommendations
 
-- **Resource server**: Advertises `onchain-actions` capabilities in `PaymentRequired`. MUST return the response body with `mimeType` `application/json` and `extensions["onchain-actions"]` conforming to the schema defined above. MUST return bounded approvals and `decodedFunctionData` objects. When a transaction has a deadline, MUST set `validUntil` no later than the earliest internal deadline. All transactions MUST be prepared for the `executor` address from `PaymentPayload`. Servers SHOULD register the `onchain-actions` `ResourceServerExtension` for runtime response validation before settlement.
-- **Client**: Provides `executor` (and optionally `executionNetwork`) in `PaymentPayload`. MUST validate the response body against the `onchain-actions` schema. For EVM transactions, MUST verify `encodeFunctionData(decodedFunctionData)` matches `data` and reject unlimited approvals. MUST check `validUntil` when present. MUST execute transactions in order. SHOULD simulate locally before executing.
-- **Facilitator**: Standard verify/settle flow. No extension-specific facilitator behavior.
+The server is **untrusted**. Clients MUST NOT execute returned transactions on the basis of server-provided metadata or `description` alone — `description` is normatively informational only (see Common Fields). Independent verification is required and the decision to execute any transaction lies ultimately with the client.
 
+The checks below are organized as MUST (required for spec compliance), SHOULD (strongly recommended for production clients) and MAY (additional defenses for high-value or autonomous flows).
+
+### Required (MUST)
+
+- **Schema conformance**: Validate the response body against the `onchain-actions` schema and reject malformed transactions.
+- **Calldata integrity**: Verify decoded data round-trips to the raw payload. On EVM, `encodeFunctionData(decodedFunctionData)` MUST equal `data`. On SVM, the decoded instructions MUST re-encode to the same raw bytes. Reject on any mismatch.
+- **Approval bounds**: Reject unlimited or unreasonably large approvals. Verify the approved `spender` matches the `to` of the subsequent transaction that consumes the allowance.
+- **Network consistency**: Confirm each transaction's `network` matches the negotiated `executionNetwork` from `PaymentPayload`.
+- **Executor consistency**: Confirm the signer/caller of every transaction is the `executor` from `PaymentPayload`. For SVM, verify required signer accounts.
+- **Expiry**: Reject any transaction whose `validUntil` is in the past at execution time, allowing for reasonable clock skew.
+
+### Recommended (SHOULD)
+
+- **Spending limits**: Enforce per-call, per-session, and per-period caps on token outflows and native value. Block when predicted outflows exceed the configured budget.
+- **Local simulation**: Simulate the full transaction batch before signing (e.g. by using `eth_simulateV1` on EVM). Inspect predicted asset changes, balance deltas and emitted events.
+- **Address allowlist**: Maintain an allowlist of known router, bridge, vault, and pool addresses per chain; warn or block unknown `to` addresses. For transfers, confirm the recipient (in `decodedFunctionData.args` or as `to`) is the executor or a user-designated address, not an arbitrary third party.
+- **User confirmation**: For non-automated flows, present decoded `description`, decoded args, and predicted asset changes for explicit user approval before signing.
+
+### Optional (MAY)
+
+- **Full simulation with asset traces**: Use a third-party simulation service or a self-hosted fork to produce detailed asset-change diffs, call traces, event logs and dollar-value impact summaries before execution.
+- **LLM / model-based review**: Submit decoded calldata, destination contract source or bytecode, and the stated intent to an LLM or analysis pipeline to detect anomalous patterns, hidden behaviors or mismatches with the requested action.
+- **Bytecode and source verification**: Pin known-good bytecode hashes (and proxy implementation addresses) for trusted contracts; reject deviations.
+- **Reputation lookups**: Query allow/deny lists (chain-specific scam databases, blocklists, sanctions lists) for destination, spender and recipient addresses.
+- **MEV protection**: Submit via private mempools or MEV-protected RPCs (e.g., MEV-Share, Flashbots Protect) for sensitive flows.
 ---
 
 ## Version History
