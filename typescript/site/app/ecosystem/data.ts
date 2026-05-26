@@ -233,6 +233,8 @@ export const highlightedIntegrationSlugs = [
   "world",
 ];
 
+export const discoveryDirectorySlugs = ["x402scan", "agentic-market", "pay-sh", "ampersend"];
+
 export const implementationPaths: ImplementationPath[] = [
   {
     title: "Use a facilitator",

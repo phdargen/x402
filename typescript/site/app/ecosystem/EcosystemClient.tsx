@@ -5,7 +5,7 @@ import Image from "next/image";
 
 import { AnimatedGrid, AnimatedCard } from "@/lib/animations";
 import { EcosystemCard } from "../components/EcosystemCard";
-import { foundationMembers, highlightedIntegrationSlugs } from "./data";
+import { discoveryDirectorySlugs, foundationMembers, highlightedIntegrationSlugs } from "./data";
 import type { Partner, FoundationMember } from "./data";
 
 const highlightedLogoOverrides: Record<string, string> = {
@@ -228,6 +228,14 @@ export default function EcosystemClient({
       .filter((partner): partner is Partner => partner !== null);
   }, [initialPartners]);
 
+  const discoveryDirectories = useMemo(() => {
+    const bySlug = new Map(initialPartners.map(partner => [partner.slug, partner]));
+
+    return discoveryDirectorySlugs
+      .map(slug => bySlug.get(slug) ?? null)
+      .filter((partner): partner is Partner => partner !== null);
+  }, [initialPartners]);
+
   return (
     <div className="mx-auto max-w-container px-6 py-16 sm:px-10">
       <section className="relative mb-20">
@@ -310,6 +318,36 @@ export default function EcosystemClient({
               <AnimatedCard
                 key={partner.slug ?? partner.name}
                 layoutId={`highlighted-${partner.slug ?? partner.name}`}
+                className="h-full"
+              >
+                <EcosystemCard partner={partner} />
+              </AnimatedCard>
+            ))}
+          </AnimatedGrid>
+        </section>
+      )}
+
+      {discoveryDirectories.length > 0 && (
+        <section className="mb-20 space-y-6" aria-labelledby="project-discovery-heading">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-3">
+              <h2
+                id="project-discovery-heading"
+                className="font-display text-4xl tracking-tight sm:text-5xl"
+              >
+                Explore x402 services.
+              </h2>
+            </div>
+            <p className="max-w-[440px] text-sm leading-relaxed text-gray-60 sm:text-base">
+              Community-maintained x402 directories.
+            </p>
+          </div>
+
+          <AnimatedGrid className="grid grid-cols-1 gap-[10px] sm:grid-cols-2">
+            {discoveryDirectories.map(partner => (
+              <AnimatedCard
+                key={partner.slug ?? partner.name}
+                layoutId={`discovery-${partner.slug ?? partner.name}`}
                 className="h-full"
               >
                 <EcosystemCard partner={partner} />
