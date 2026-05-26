@@ -82,14 +82,7 @@ go get github.com/x402-foundation/x402/go
 
 ## Ecosystem
 
-The x402 ecosystem is growing! Check out our [ecosystem page](https://x402.org/ecosystem) to see projects building with x402, including:
-
-- Client-side integrations
-- Services and endpoints
-- Ecosystem infrastructure and tooling
-- Learning and community resources
-
-Want to add your project to the ecosystem? See our [demo site README](https://github.com/x402-foundation/x402/tree/main/typescript/site#adding-your-project-to-the-ecosystem) for detailed instructions on how to submit your project.
+Curated third-party SDKs, extensions, and facilitators are listed in the [Developer Tools docs](https://docs.x402.org/dev-tools/overview). For broader discovery of x402 services and integrations, see community-maintained directories such as [x402scan.com](https://x402scan.com), [Agentic.Market](https://agentic.market), [Pay.sh](https://pay.sh), and [app.ampersend.ai/discover](https://app.ampersend.ai/discover).
 
 **Roadmap:** see [ROADMAP.md](https://github.com/x402-foundation/x402/blob/main/ROADMAP.md)
 
