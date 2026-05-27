@@ -435,7 +435,6 @@ func (w *responseCapture) Write(data []byte) (int, error) {
 	}
 	return w.body.Write(data)
 }
-
 // validateBazaarExtensions validates all bazaar extensions declared on routes using
 // the bazaar package's JSON-schema validator. Emits warnings but does not block startup.
 func validateBazaarExtensions(routes x402http.RoutesConfig) {
@@ -483,3 +482,4 @@ func validateSingleBazaarExtension(pattern string, extensions map[string]interfa
 			pattern, strings.Join(result.Errors, ", "))
 	}
 }
+

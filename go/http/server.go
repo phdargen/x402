@@ -116,6 +116,9 @@ type RouteConfig struct {
 	Resource          string                 `json:"resource,omitempty"`
 	Description       string                 `json:"description,omitempty"`
 	MimeType          string                 `json:"mimeType,omitempty"`
+	ServiceName       string                 `json:"serviceName,omitempty"`
+	Tags              []string               `json:"tags,omitempty"`
+	IconUrl           string                 `json:"iconUrl,omitempty"`
 	CustomPaywallHTML string                 `json:"customPaywallHtml,omitempty"`
 	Extensions        map[string]interface{} `json:"extensions,omitempty"`
 
@@ -539,6 +542,15 @@ func (s *x402HTTPResourceServer) ProcessHTTPRequest(ctx context.Context, reqCtx 
 		URL:         resourceURL,
 		Description: routeConfig.Description,
 		MimeType:    routeConfig.MimeType,
+	}
+	if routeConfig.ServiceName != "" {
+		resourceInfo.ServiceName = routeConfig.ServiceName
+	}
+	if len(routeConfig.Tags) > 0 {
+		resourceInfo.Tags = routeConfig.Tags
+	}
+	if routeConfig.IconUrl != "" {
+		resourceInfo.IconUrl = routeConfig.IconUrl
 	}
 
 	for i := range requirements {

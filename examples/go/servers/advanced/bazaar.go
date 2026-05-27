@@ -101,8 +101,10 @@ func main() {
 			},
 			Description: "Get weather data for a city",
 			MimeType:    "application/json",
+			ServiceName: "Weather API",
+			Tags:        []string{"weather", "api"},
 			Extensions: map[string]interface{}{
-				types.BAZAAR: discoveryExtension,
+				bazaar.BAZAAR.Key(): discoveryExtension,
 			},
 		},
 	}

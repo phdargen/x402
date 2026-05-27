@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
+	x402 "github.com/x402-foundation/x402/go"
+	"github.com/x402-foundation/x402/go/extensions/types"
 	x402http "github.com/x402-foundation/x402/go/http"
 )
 
@@ -81,8 +84,106 @@ type DiscoveryResource struct {
 	// LastUpdated is an ISO 8601 timestamp of when the resource was last updated.
 	LastUpdated string `json:"lastUpdated"`
 
+	// Description is a human-readable description of the resource.
+	Description string `json:"description,omitempty"`
+
+	// MimeType is the MIME type of the resource response.
+	MimeType string `json:"mimeType,omitempty"`
+
+	// ServiceName is a human-readable name for the service hosting the resource.
+	ServiceName string `json:"serviceName,omitempty"`
+
+	// Tags are short topical tags for discovery search.
+	Tags []string `json:"tags,omitempty"`
+
+	// IconUrl is an absolute http(s) URL to a service icon.
+	IconUrl string `json:"iconUrl,omitempty"`
+
+	// DiscoveryInfo is the bazaar discovery extension info (input/output specs).
+	DiscoveryInfo *types.DiscoveryInfo `json:"discoveryInfo,omitempty"`
+
 	// Extensions contains additional extension payloads for this discovered resource.
 	Extensions map[string]any `json:"extensions,omitempty"`
+}
+
+// ToDiscoveryResourceOptions configures optional fields for ToDiscoveryResource.
+type ToDiscoveryResourceOptions struct {
+	// LastUpdated is an ISO 8601 timestamp for when this resource was cataloged.
+	// Defaults to the current time when empty.
+	LastUpdated string
+
+	// Extensions are additional extension payloads to attach to the catalog entry.
+	Extensions map[string]any
+}
+
+// ToDiscoveryResource converts facilitator extraction output into a DiscoveryResource
+// catalog entry suitable for GET /discovery/resources and GET /discovery/search responses.
+func ToDiscoveryResource(
+	discovered DiscoveredResource,
+	accepts []x402.PaymentRequirements,
+	opts *ToDiscoveryResourceOptions,
+) (DiscoveryResource, error) {
+	acceptsJSON := make([]json.RawMessage, len(accepts))
+	for i, req := range accepts {
+		data, err := json.Marshal(req)
+		if err != nil {
+			return DiscoveryResource{}, fmt.Errorf("failed to marshal payment requirements: %w", err)
+		}
+		acceptsJSON[i] = data
+	}
+
+	lastUpdated := time.Now().UTC().Format(time.RFC3339)
+	var extensions map[string]any
+	if opts != nil {
+		if opts.LastUpdated != "" {
+			lastUpdated = opts.LastUpdated
+		}
+		extensions = opts.Extensions
+	}
+
+	entry := DiscoveryResource{
+		Resource:      discovered.ResourceURL,
+		Type:          discoveryInputType(discovered.DiscoveryInfo),
+		X402Version:   discovered.X402Version,
+		Accepts:       acceptsJSON,
+		LastUpdated:   lastUpdated,
+		DiscoveryInfo: discovered.DiscoveryInfo,
+	}
+	if discovered.Description != "" {
+		entry.Description = discovered.Description
+	}
+	if discovered.MimeType != "" {
+		entry.MimeType = discovered.MimeType
+	}
+	if discovered.ServiceName != "" {
+		entry.ServiceName = discovered.ServiceName
+	}
+	if len(discovered.Tags) > 0 {
+		entry.Tags = discovered.Tags
+	}
+	if discovered.IconUrl != "" {
+		entry.IconUrl = discovered.IconUrl
+	}
+	if extensions != nil {
+		entry.Extensions = extensions
+	}
+	return entry, nil
+}
+
+func discoveryInputType(info *types.DiscoveryInfo) string {
+	if info == nil {
+		return ""
+	}
+	switch input := info.Input.(type) {
+	case types.QueryInput:
+		return input.Type
+	case types.BodyInput:
+		return input.Type
+	case types.McpInput:
+		return input.Type
+	default:
+		return ""
+	}
 }
 
 // Pagination contains pagination information for a discovery resources response.

@@ -105,12 +105,16 @@ func main() {
 			Accepts:     paymentOptions,
 			Description: "Weather data for a city",
 			MimeType:    "application/json",
+			ServiceName: "Weather API",
+			Tags:        []string{"weather", "api"},
 			Extensions:  map[string]interface{}{bazaar.BAZAAR.Key(): weatherByCityExt},
 		},
 		"GET /weather/:country/:city": {
 			Accepts:     paymentOptions,
 			Description: "Weather data for a city in a specific country",
 			MimeType:    "application/json",
+			ServiceName: "Weather API",
+			Tags:        []string{"weather", "api"},
 			Extensions:  map[string]interface{}{bazaar.BAZAAR.Key(): weatherByCountryCityExt},
 		},
 	}
