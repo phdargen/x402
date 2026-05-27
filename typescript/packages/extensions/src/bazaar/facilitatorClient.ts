@@ -4,6 +4,8 @@
 
 import { HTTPFacilitatorClient } from "@x402/core/http";
 import type { PaymentRequirements } from "@x402/core/types";
+import type { DiscoveryInfo } from "./types";
+import type { DiscoveredResource } from "./facilitator";
 import { WithExtensions } from "../types";
 
 /**
@@ -106,8 +108,66 @@ export interface DiscoveryResource {
   accepts: PaymentRequirements[];
   /** ISO 8601 timestamp of when the resource was last updated */
   lastUpdated: string;
+  /** Human-readable description of the resource */
+  description?: string;
+  /** MIME type of the resource response */
+  mimeType?: string;
+  /** Human-readable name for the service hosting the resource */
+  serviceName?: string;
+  /** Short topical tags for discovery search */
+  tags?: string[];
+  /** Absolute http(s) URL to a service icon */
+  iconUrl?: string;
+  /** Bazaar discovery extension info (input/output specs) */
+  discoveryInfo?: DiscoveryInfo;
   /** Additional extension payloads attached to this discovered resource */
   extensions?: Record<string, unknown>;
+}
+
+/**
+ * Converts facilitator extraction output into a {@link DiscoveryResource} catalog entry
+ * suitable for `GET /discovery/resources` and `GET /discovery/search` responses.
+ *
+ * @param discovered - Output from {@link extractDiscoveryInfo}
+ * @param accepts - Payment requirements accepted for this resource
+ * @param options - Optional catalog metadata overrides
+ * @returns A discovery catalog resource entry
+ */
+export function toDiscoveryResource(
+  discovered: DiscoveredResource,
+  accepts: PaymentRequirements[],
+  options?: {
+    lastUpdated?: string;
+    extensions?: Record<string, unknown>;
+  },
+): DiscoveryResource {
+  const entry: DiscoveryResource = {
+    resource: discovered.resourceUrl,
+    type: discovered.discoveryInfo.input.type,
+    x402Version: discovered.x402Version,
+    accepts,
+    lastUpdated: options?.lastUpdated ?? new Date().toISOString(),
+    discoveryInfo: discovered.discoveryInfo,
+  };
+  if (discovered.description !== undefined) {
+    entry.description = discovered.description;
+  }
+  if (discovered.mimeType !== undefined) {
+    entry.mimeType = discovered.mimeType;
+  }
+  if (discovered.serviceName !== undefined) {
+    entry.serviceName = discovered.serviceName;
+  }
+  if (discovered.tags !== undefined) {
+    entry.tags = discovered.tags;
+  }
+  if (discovered.iconUrl !== undefined) {
+    entry.iconUrl = discovered.iconUrl;
+  }
+  if (options?.extensions !== undefined) {
+    entry.extensions = options.extensions;
+  }
+  return entry;
 }
 
 /**

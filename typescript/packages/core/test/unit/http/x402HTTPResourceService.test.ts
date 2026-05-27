@@ -775,6 +775,43 @@ describe("x402HTTPResourceServer", () => {
       }
     });
 
+    it("should include bazaar service metadata on PaymentRequired.resource", async () => {
+      const routes = {
+        "/api/weather": {
+          accepts: {
+            scheme: "exact",
+            payTo: "0xabc",
+            price: "$1.00" as Price,
+            network: "eip155:8453" as Network,
+          },
+          description: "Weather data",
+          mimeType: "application/json",
+          serviceName: "Weather API",
+          tags: ["weather", "api"],
+        },
+      };
+
+      const httpServer = new x402HTTPResourceServer(ResourceServer, routes);
+      const adapter = new MockHTTPAdapter();
+      const result = await httpServer.processHTTPRequest({
+        adapter,
+        path: "/api/weather",
+        method: "GET",
+      });
+
+      expect(result.type).toBe("payment-error");
+      if (result.type !== "payment-error") {
+        throw new Error("Expected payment-error");
+      }
+
+      const { decodePaymentRequiredHeader } = await import("../../../src/http");
+      const paymentRequired = decodePaymentRequiredHeader(
+        result.response.headers["PAYMENT-REQUIRED"],
+      );
+      expect(paymentRequired.resource.serviceName).toBe("Weather API");
+      expect(paymentRequired.resource.tags).toEqual(["weather", "api"]);
+    });
+
     it("should return 412 Precondition Failed for permit2_allowance_required error", async () => {
       // Override mock to simulate permit2 allowance required error
       mockFacilitator.setVerifyResponse({

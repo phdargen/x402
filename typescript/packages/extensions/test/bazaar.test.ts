@@ -20,6 +20,7 @@ import {
   bazaarResourceServerExtension,
   checkIfBazaarNeeded,
   validateBazaarRouteExtensions,
+  toDiscoveryResource,
 } from "../src/bazaar/index";
 import type { BodyDiscoveryInfo, McpDiscoveryInfo, DiscoveryExtension } from "../src/bazaar/types";
 import type { DiscoveredMCPResource } from "../src/bazaar/facilitator";
@@ -2229,6 +2230,54 @@ describe("Bazaar Discovery Extension", () => {
     it("returns empty object for missing or non-object input", () => {
       expect(sanitizeResourceServiceMetadata(undefined)).toEqual({});
       expect(sanitizeResourceServiceMetadata(null)).toEqual({});
+    });
+  });
+
+  describe("toDiscoveryResource", () => {
+    it("maps extracted discovery info into a catalog entry with service metadata", () => {
+      const declared = declareDiscoveryExtension({
+        method: "GET",
+        input: { city: "NYC" },
+        inputSchema: { properties: { city: { type: "string" } } },
+      });
+      const discovered = extractDiscoveryInfo(
+        {
+          x402Version: 2,
+          scheme: "exact",
+          network: "eip155:8453" as unknown,
+          payload: {},
+          accepted: {} as unknown,
+          resource: {
+            url: "https://api.example.com/weather",
+            serviceName: "Weather API",
+            tags: ["weather", "api"],
+          },
+          extensions: { [BAZAAR.key]: declared.bazaar },
+        },
+        {} as unknown,
+      );
+      expect(discovered).not.toBeNull();
+
+      const accepts = [
+        {
+          scheme: "exact",
+          network: "eip155:8453",
+          asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          amount: "1000",
+          payTo: "0x1234567890123456789012345678901234567890",
+          maxTimeoutSeconds: 300,
+          extra: {},
+        },
+      ];
+      const entry = toDiscoveryResource(discovered!, accepts, {
+        lastUpdated: "2024-01-01T00:00:00.000Z",
+      });
+
+      expect(entry.resource).toBe("https://api.example.com/weather");
+      expect(entry.serviceName).toBe("Weather API");
+      expect(entry.tags).toEqual(["weather", "api"]);
+      expect(entry.discoveryInfo).toBeDefined();
+      expect(entry.lastUpdated).toBe("2024-01-01T00:00:00.000Z");
     });
   });
 

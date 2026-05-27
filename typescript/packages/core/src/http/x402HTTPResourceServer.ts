@@ -146,6 +146,9 @@ export interface RouteConfig {
   resource?: string;
   description?: string;
   mimeType?: string;
+  serviceName?: string;
+  tags?: string[];
+  iconUrl?: string;
   customPaywallHtml?: string;
 
   /**
@@ -273,12 +276,12 @@ export interface HTTPResponseInstructions {
 export type HTTPProcessResult =
   | { type: "no-payment-required" }
   | {
-      type: "payment-verified";
-      cancellationDispatcher: PaymentCancellationDispatcher;
-      paymentPayload: PaymentPayload;
-      paymentRequirements: PaymentRequirements;
-      declaredExtensions?: Record<string, unknown>;
-    }
+    type: "payment-verified";
+    cancellationDispatcher: PaymentCancellationDispatcher;
+    paymentPayload: PaymentPayload;
+    paymentRequirements: PaymentRequirements;
+    declaredExtensions?: Record<string, unknown>;
+  }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
 /**
@@ -523,6 +526,9 @@ export class x402HTTPResourceServer {
       url: routeConfig.resource || enrichedContext.adapter.getUrl(),
       description: routeConfig.description || "",
       mimeType: routeConfig.mimeType || "",
+      ...(routeConfig.serviceName !== undefined && { serviceName: routeConfig.serviceName }),
+      ...(routeConfig.tags !== undefined && { tags: routeConfig.tags }),
+      ...(routeConfig.iconUrl !== undefined && { iconUrl: routeConfig.iconUrl }),
     };
 
     // Build requirements from all payment options
@@ -921,8 +927,8 @@ export class x402HTTPResourceServer {
       ) {
         console.warn(
           `[x402] Route "${pattern}": Wildcard (*) patterns with bazaar discovery extensions ` +
-            `will auto-generate parameter names (var1, var2, ...). ` +
-            `Consider using named parameters instead (e.g. /weather/:city) for better discovery metadata.`,
+          `will auto-generate parameter names (var1, var2, ...). ` +
+          `Consider using named parameters instead (e.g. /weather/:city) for better discovery metadata.`,
         );
       }
 
@@ -1106,14 +1112,13 @@ export class x402HTTPResourceServer {
     const [verb, path] = pattern.includes(" ") ? pattern.split(/\s+/) : ["*", pattern];
 
     const regex = new RegExp(
-      `^${
-        path
-          .replace(/\\/g, "\\\\") // Escape backslashes first
-          .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
-          .replace(/\*/g, ".*?") // Wildcards
-          .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters (Next.js style [param])
-          .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, "[^/]+") // Parameters (Express style :param)
-          .replace(/\//g, "\\/") // Escape slashes
+      `^${path
+        .replace(/\\/g, "\\\\") // Escape backslashes first
+        .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
+        .replace(/\*/g, ".*?") // Wildcards
+        .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters (Next.js style [param])
+        .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, "[^/]+") // Parameters (Express style :param)
+        .replace(/\//g, "\\/") // Escape slashes
       }$`,
       "i",
     );
