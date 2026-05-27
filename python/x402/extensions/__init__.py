@@ -26,6 +26,7 @@ from .bazaar import (
     declare_discovery_extension,
     extract_discovery_info,
     extract_discovery_info_from_extension,
+    to_discovery_resource,
     validate_and_extract,
     validate_discovery_extension,
 )
@@ -150,6 +151,7 @@ __all__ = [
     "validate_discovery_extension",
     "extract_discovery_info",
     "extract_discovery_info_from_extension",
+    "to_discovery_resource",
     "validate_and_extract",
     # Payment Identifier constants
     "PAYMENT_IDENTIFIER",

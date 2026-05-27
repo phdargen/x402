@@ -131,6 +131,8 @@ export interface DiscoveryResource {
  * @param discovered - Output from {@link extractDiscoveryInfo}
  * @param accepts - Payment requirements accepted for this resource
  * @param options - Optional catalog metadata overrides
+ * @param options.lastUpdated - ISO 8601 timestamp for when this resource was cataloged; defaults to now
+ * @param options.extensions - Additional extension payloads to attach to the catalog entry
  * @returns A discovery catalog resource entry
  */
 export function toDiscoveryResource(

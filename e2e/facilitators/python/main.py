@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from solders.keypair import Keypair
 
 from x402 import x402Facilitator
-from x402.extensions.bazaar import extract_discovery_info
+from x402.extensions.bazaar import extract_discovery_info, to_discovery_resource
 from x402.extensions.eip2612_gas_sponsoring import EIP2612_GAS_SPONSORING
 from x402.extensions.erc20_approval_gas_sponsoring import (
     Erc20ApprovalFacilitatorExtension,
@@ -211,26 +211,21 @@ def _handle_after_verify(ctx: Any) -> None:
             print(f"   📝 Discovered resource: {discovered.resource_url}")
             print(f"   📝 Method: {discovered.method}")
             print(f"   📝 X402Version: {discovered.x402_version}")
+            if discovered.service_name is not None:
+                print(f"   📝 Service: {discovered.service_name}")
+            if discovered.tags is not None:
+                print(f"   📝 Tags: {', '.join(discovered.tags)}")
 
-            # Convert discovery_info to dict for serialization
-            discovery_info_dict = None
-            if discovered.discovery_info:
-                if hasattr(discovered.discovery_info, "model_dump"):
-                    discovery_info_dict = discovered.discovery_info.model_dump(
-                        by_alias=True, exclude_none=True
-                    )
-                else:
-                    discovery_info_dict = discovered.discovery_info
-
-            bazaar_catalog.catalog_resource(
-                resource_url=discovered.resource_url,
-                method=discovered.method,
-                x402_version=discovered.x402_version,
-                discovery_info=discovery_info_dict,
-                payment_requirements=ctx.requirements.model_dump(by_alias=True)
-                if hasattr(ctx.requirements, "model_dump")
-                else ctx.requirements,
-                route_template=getattr(discovered, "route_template", None),
+            bazaar_catalog.add(
+                to_discovery_resource(
+                    discovered,
+                    [
+                        ctx.requirements.model_dump(by_alias=True)
+                        if hasattr(ctx.requirements, "model_dump")
+                        else ctx.requirements
+                    ],
+                    extensions={},
+                )
             )
             print("   ✅ Added to bazaar catalog")
     except Exception as err:

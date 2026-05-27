@@ -7,10 +7,13 @@ client with discovery query functionality.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from x402.http.facilitator_client import HTTPFacilitatorClient
+
+    from .facilitator import DiscoveredResource
 
 
 @dataclass
@@ -90,8 +93,56 @@ class DiscoveryResource:
     last_updated: str | None = None
     """ISO 8601 timestamp of when the resource was last updated."""
 
+    description: str | None = None
+    """Human-readable description of the resource."""
+
+    mime_type: str | None = None
+    """MIME type of the resource response."""
+
+    service_name: str | None = None
+    """Human-readable name for the service hosting the resource."""
+
+    tags: list[str] | None = None
+    """Short topical tags for discovery search."""
+
+    icon_url: str | None = None
+    """Absolute http(s) URL to a service icon."""
+
+    discovery_info: Any | None = None
+    """Bazaar discovery extension info (input/output specs)."""
+
     extensions: dict[str, Any] | None = None
     """Additional extension payloads attached to this discovered resource."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to the bazaar discovery API wire format (camelCase keys)."""
+        result: dict[str, Any] = {
+            "resource": self.resource,
+            "type": self.type,
+            "x402Version": self.x402_version,
+            "accepts": self.accepts or [],
+            "lastUpdated": self.last_updated or "",
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.mime_type is not None:
+            result["mimeType"] = self.mime_type
+        if self.service_name is not None:
+            result["serviceName"] = self.service_name
+        if self.tags is not None:
+            result["tags"] = self.tags
+        if self.icon_url is not None:
+            result["iconUrl"] = self.icon_url
+        if self.discovery_info is not None:
+            if hasattr(self.discovery_info, "model_dump"):
+                result["discoveryInfo"] = self.discovery_info.model_dump(
+                    by_alias=True, exclude_none=True
+                )
+            else:
+                result["discoveryInfo"] = self.discovery_info
+        if self.extensions is not None:
+            result["extensions"] = self.extensions
+        return result
 
 
 @dataclass
@@ -376,22 +427,72 @@ def with_bazaar(client: HTTPFacilitatorClient) -> BazaarExtendedClient:
     return BazaarExtendedClient(client)
 
 
+def to_discovery_resource(
+    discovered: DiscoveredResource,
+    accepts: list[Any],
+    *,
+    last_updated: str | None = None,
+    extensions: dict[str, Any] | None = None,
+) -> DiscoveryResource:
+    """Convert facilitator extraction output into a catalog entry.
+
+    Suitable for ``GET /discovery/resources`` and ``GET /discovery/search`` responses.
+
+    Args:
+        discovered: Output from :func:`extract_discovery_info`.
+        accepts: Payment requirements accepted for this resource.
+        last_updated: Optional ISO 8601 timestamp override.
+        extensions: Optional additional extension payloads for the catalog entry.
+
+    Returns:
+        A discovery catalog resource entry.
+    """
+    entry = DiscoveryResource(
+        resource=discovered.resource_url,
+        type=discovered.discovery_info.input.type,
+        x402_version=discovered.x402_version,
+        accepts=accepts,
+        last_updated=last_updated or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        discovery_info=discovered.discovery_info,
+    )
+    if discovered.description is not None:
+        entry.description = discovered.description
+    if discovered.mime_type is not None:
+        entry.mime_type = discovered.mime_type
+    if discovered.service_name is not None:
+        entry.service_name = discovered.service_name
+    if discovered.tags is not None:
+        entry.tags = discovered.tags
+    if discovered.icon_url is not None:
+        entry.icon_url = discovered.icon_url
+    if extensions is not None:
+        entry.extensions = extensions
+    return entry
+
+
+def _parse_discovery_resource_item(item: dict[str, Any]) -> DiscoveryResource:
+    """Parse a single discovery resource from facilitator JSON."""
+    return DiscoveryResource(
+        resource=item.get("resource", ""),
+        type=item.get("type", ""),
+        x402_version=item.get("x402Version", 0),
+        accepts=item.get("accepts"),
+        last_updated=item.get("lastUpdated"),
+        description=item.get("description"),
+        mime_type=item.get("mimeType"),
+        service_name=item.get("serviceName"),
+        tags=item.get("tags"),
+        icon_url=item.get("iconUrl"),
+        discovery_info=item.get("discoveryInfo"),
+        extensions=item.get("extensions"),
+    )
+
+
 def _parse_list_response(
     data: dict[str, Any],
 ) -> DiscoveryResourcesResponse:
     """Parse a list discovery resources response from JSON data."""
-    items = []
-    for item in data.get("items", []):
-        items.append(
-            DiscoveryResource(
-                resource=item.get("resource", ""),
-                type=item.get("type", ""),
-                x402_version=item.get("x402Version", 0),
-                accepts=item.get("accepts"),
-                last_updated=item.get("lastUpdated"),
-                extensions=item.get("extensions"),
-            )
-        )
+    items = [_parse_discovery_resource_item(item) for item in data.get("items", [])]
 
     raw_pagination = data.get("pagination", {})
     pagination = Pagination(
@@ -411,18 +512,7 @@ def _parse_search_response(
     data: dict[str, Any],
 ) -> SearchDiscoveryResourcesResponse:
     """Parse a search discovery resources response from JSON data."""
-    items = []
-    for item in data.get("resources", []):
-        items.append(
-            DiscoveryResource(
-                resource=item.get("resource", ""),
-                type=item.get("type", ""),
-                x402_version=item.get("x402Version", 0),
-                accepts=item.get("accepts"),
-                last_updated=item.get("lastUpdated"),
-                extensions=item.get("extensions"),
-            )
-        )
+    items = [_parse_discovery_resource_item(item) for item in data.get("resources", [])]
 
     raw_pagination = data.get("pagination")
     pagination = (
