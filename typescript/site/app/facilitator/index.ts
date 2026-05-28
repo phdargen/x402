@@ -125,7 +125,10 @@ async function createFacilitator(): Promise<x402Facilitator> {
     )
     .register("eip155:84532", new UptoEvmScheme(evmSigner))
     .register("eip155:84532", new BatchSettlementEvmScheme(evmSigner, receiverAuthorizerSigner))
-    .register("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", new ExactSvmScheme(svmSigner))
+    .register(
+      "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      new ExactSvmScheme(svmSigner, undefined, { enableSmartWalletVerification: true }),
+    )
     .registerV1("solana-devnet" as Network, new ExactSvmSchemeV1(svmSigner));
 
   // Optionally register Algorand if configured
