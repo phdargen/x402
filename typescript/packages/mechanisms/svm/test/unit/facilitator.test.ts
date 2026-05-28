@@ -379,9 +379,16 @@ describe("ExactSvmScheme", () => {
     };
 
     function setupSettleMocks(facilitator: ExactSvmScheme) {
-      vi.spyOn(facilitator, "verify").mockResolvedValue({
-        isValid: true,
-        payer: "PayerAddress",
+      // settle() calls the internal _verify (which also reports the path), so we
+      // mock that to isolate the duplicate-cache logic from real verification.
+      vi.spyOn(
+        facilitator as unknown as {
+          _verify: (...args: unknown[]) => Promise<unknown>;
+        },
+        "_verify",
+      ).mockResolvedValue({
+        response: { isValid: true, payer: "PayerAddress" },
+        verificationPath: "static",
       });
       (mockSigner as Record<string, unknown>).signTransaction = vi
         .fn()
@@ -446,9 +453,12 @@ describe("ExactSvmScheme", () => {
       const v1 = new ExactSvmSchemeV1(mockSigner, sharedCache);
 
       // Mock V2 settle flow
-      vi.spyOn(v2, "verify").mockResolvedValue({
-        isValid: true,
-        payer: "PayerAddress",
+      vi.spyOn(
+        v2 as unknown as { _verify: (...args: unknown[]) => Promise<unknown> },
+        "_verify",
+      ).mockResolvedValue({
+        response: { isValid: true, payer: "PayerAddress" },
+        verificationPath: "static",
       });
       (mockSigner as Record<string, unknown>).signTransaction = vi
         .fn()
