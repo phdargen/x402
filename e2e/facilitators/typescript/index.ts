@@ -423,7 +423,12 @@ facilitator
     new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
   )
   .registerV1(EVM_V1_NETWORKS as Network[], new ExactEvmSchemeV1(evmSigner))
-  .register(SVM_NETWORK as Network, new ExactSvmScheme(svmSigner))
+  .register(
+    SVM_NETWORK as Network,
+    new ExactSvmScheme(svmSigner, undefined, {
+      enableSmartWalletVerification: true,
+    }),
+  )
   .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
 if (avmSigner) {
   facilitator.register(AVM_NETWORK as Network, new ExactAvmScheme(avmSigner));

@@ -132,6 +132,80 @@ async function revokePermit2Approval(tokenAddress?: string): Promise<boolean> {
 }
 
 /**
+ * Prepare Swig smart-wallet state for svm-smart-wallet e2e client tests.
+ * Called before each endpoint; creates/funds via scripts/swig-setup.ts when balance is low.
+ */
+async function setupSwigWallet(svmRpcUrl: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    verboseLog('  🔧 Running Swig wallet setup...');
+
+    const child = spawn('tsx', ['scripts/swig-setup.ts'], {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+      shell: true,
+      env: {
+        ...process.env,
+        SVM_RPC_URL: svmRpcUrl,
+      },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => {
+      const text = data.toString();
+      stdout += text;
+      verboseLog(text.trim());
+    });
+
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString();
+      verboseLog(data.toString().trim());
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        errorLog(`  ❌ Swig setup failed (exit code ${code})`);
+        if (stderr) {
+          errorLog(`  Error: ${stderr}`);
+        }
+        resolve(false);
+        return;
+      }
+
+      const lines = stdout.trim().split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(lines[i]!) as { ok?: boolean; swigAccountAddress?: string };
+          if (parsed.ok && parsed.swigAccountAddress) {
+            process.env.SWIG_ACCOUNT_ADDRESS = parsed.swigAccountAddress;
+            verboseLog(`  ✅ Swig setup complete: ${parsed.swigAccountAddress}`);
+            resolve(true);
+            return;
+          }
+        } catch {
+          // not JSON — keep scanning
+        }
+      }
+
+      if (process.env.SWIG_ACCOUNT_ADDRESS) {
+        verboseLog(`  ✅ Swig setup complete (using SWIG_ACCOUNT_ADDRESS=${process.env.SWIG_ACCOUNT_ADDRESS})`);
+        resolve(true);
+        return;
+      }
+
+      errorLog('  ❌ Swig setup succeeded but no swigAccountAddress in output');
+      resolve(false);
+    });
+
+    child.on('error', (error) => {
+      errorLog(`  ❌ Failed to run Swig setup: ${error.message}`);
+      resolve(false);
+    });
+  });
+}
+
+/**
  * Shared EVM clients for the ETH sandwich helpers.
  * Lazily initialised on first use so that missing env vars don't blow up
  * non-EVM test runs.
@@ -782,6 +856,15 @@ async function runTest() {
     }
   }
 
+  const hasSwigSmartWalletScenarios = filteredScenarios.some(
+    s => s.client.name === 'svm-smart-wallet',
+  );
+
+  if (hasSwigSmartWalletScenarios) {
+    log('🔧 Swig smart-wallet scenarios detected — swig-setup runs before each endpoint when balance is low');
+    log('');
+  }
+
   // Collect unique facilitators and servers
   const uniqueFacilitators = new Map<string, any>();
   const uniqueServers = new Map<string, any>();
@@ -815,6 +898,7 @@ async function runTest() {
     'TVM_NETWORK',
     'EVM_RPC_URL',
     'SVM_RPC_URL',
+    'SWIG_ACCOUNT_ADDRESS',
     'APTOS_RPC_URL',
     'HEDERA_NODE_URL',
     'STELLAR_RPC_URL',
@@ -1036,6 +1120,8 @@ async function runTest() {
       endpointPath: scenario.endpoint.path,
       evmNetwork: networks.evm.caip2,
       evmRpcUrl: networks.evm.rpcUrl,
+      svmNetwork: networks.svm.caip2,
+      svmRpcUrl: networks.svm.rpcUrl,
       hederaNetwork: networks.hedera.caip2,
       hederaNodeUrl: networks.hedera.rpcUrl,
       tvmNetwork: networks.tvm.caip2,
@@ -1326,6 +1412,10 @@ async function runTest() {
       for (const scenario of scenarios) {
         const tn = nextTestNumber();
         const isEvm = scenario.protocolFamily === 'evm';
+
+        if (scenario.client.name === 'svm-smart-wallet') {
+          await setupSwigWallet(networks.svm.rpcUrl);
+        }
 
         if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
           await approvePermit2Approval(evmPermit2Asset);
