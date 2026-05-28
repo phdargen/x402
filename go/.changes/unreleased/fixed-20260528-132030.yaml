@@ -1,0 +1,3 @@
+kind: fixed
+body: Thread Bazaar service metadata from HTTP `RouteConfig` and MCP `PaymentWrapperConfig` into `PaymentRequired.resource`, and extend bazaar facilitator discovery
+time: 2026-05-28T13:20:30.173193+02:00
