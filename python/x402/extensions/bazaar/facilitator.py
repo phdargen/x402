@@ -667,9 +667,7 @@ def extract_discovery_info(
             extensions = raw_extensions
     elif discovery_info is not None:
         payload_extensions = payload_dict.get("extensions")
-        existing_extensions = (
-            payload_extensions if isinstance(payload_extensions, dict) else None
-        )
+        existing_extensions = payload_extensions if isinstance(payload_extensions, dict) else None
         extensions = build_v1_catalog_extensions(existing_extensions, discovery_info)
 
     return DiscoveredResource(

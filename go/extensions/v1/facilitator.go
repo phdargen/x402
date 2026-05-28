@@ -356,10 +356,8 @@ func BuildV1CatalogExtensions(
 	}
 
 	extensions := map[string]any{}
-	if existingExtensions != nil {
-		for k, v := range existingExtensions {
-			extensions[k] = v
-		}
+	for k, v := range existingExtensions {
+		extensions[k] = v
 	}
 	delete(extensions, "outputSchema")
 	extensions[types.BAZAAR.Key()] = BuildBazaarExtensionFromDiscoveryInfo(discoveryInfo)

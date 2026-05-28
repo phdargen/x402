@@ -1,5 +1,6 @@
 """Tests for V1 Bazaar facilitator functions."""
 
+from x402.extensions.bazaar import validate_discovery_extension
 from x402.extensions.bazaar.types import BAZAAR, BodyDiscoveryInfo, QueryDiscoveryInfo
 from x402.extensions.bazaar.v1 import (
     build_v1_catalog_extensions,
@@ -7,7 +8,6 @@ from x402.extensions.bazaar.v1 import (
     extract_resource_metadata_v1,
     is_discoverable_v1,
 )
-from x402.extensions.bazaar import validate_discovery_extension
 
 
 class TestExtractDiscoveryInfoV1:
