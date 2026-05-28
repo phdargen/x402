@@ -20,7 +20,7 @@ import type { McpDiscoveryInfo } from "./mcp/types";
 import type { DiscoveredHTTPResource } from "./http/types";
 import type { DiscoveredMCPResource } from "./mcp/types";
 import { BAZAAR } from "./types";
-import { extractDiscoveryInfoV1 } from "./v1/facilitator";
+import { buildV1CatalogExtensions, extractDiscoveryInfoV1 } from "./v1/facilitator";
 
 /**
  * Valid routeTemplate pattern: must start with "/", contain only safe URL path characters
@@ -469,8 +469,8 @@ export type DiscoveredResource = DiscoveredHTTPResource | DiscoveredMCPResource;
  * @param paymentRequirements - The payment requirements to validate against
  * @param validate - Whether to validate the discovery info against the schema (default: true)
  * @returns Discovered resource info with URL, method, version, discovery data, and catalog
- *   extensions echo (v2: `paymentPayload.extensions`; v1: `{ outputSchema }` from requirements
- *   or payload), or null if not found
+ *   extensions echo (v2: `paymentPayload.extensions`; v1: synthesized `extensions.bazaar`
+ *   from requirements outputSchema), or null if not found
  */
 export function extractDiscoveryInfo(
   paymentPayload: PaymentPayload,
@@ -557,12 +557,7 @@ export function extractDiscoveryInfo(
   if (paymentPayload.x402Version === 2) {
     extensions = paymentPayload.extensions;
   } else if (paymentPayload.x402Version === 1) {
-    const requirementsV1 = paymentRequirements as PaymentRequirementsV1;
-    if (paymentPayload.extensions) {
-      extensions = paymentPayload.extensions;
-    } else if (requirementsV1.outputSchema && Object.keys(requirementsV1.outputSchema).length > 0) {
-      extensions = { outputSchema: requirementsV1.outputSchema };
-    }
+    extensions = buildV1CatalogExtensions(paymentPayload.extensions, discoveryInfo);
   }
 
   const base = {

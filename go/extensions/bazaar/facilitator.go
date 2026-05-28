@@ -335,7 +335,7 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 			return nil, fmt.Errorf("v1 discovery extraction failed: %w", err)
 		}
 		discoveryInfo = infoV1
-		extensions = discoveryExtensionsFromPaymentPayload(payloadBytes, requirementsV1)
+		extensions = buildV1CatalogExtensionsFromPayload(payloadBytes, *discoveryInfo)
 	default:
 		return nil, fmt.Errorf("unsupported version: %d", version)
 	}
@@ -815,12 +815,7 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 			return nil, fmt.Errorf("v1 discovery extraction failed: %w", err)
 		}
 		discoveryInfo = infoV1
-		if paymentRequiredV1.Accepts[0].OutputSchema != nil && len(*paymentRequiredV1.Accepts[0].OutputSchema) > 0 {
-			var outputSchema any
-			if err := json.Unmarshal(*paymentRequiredV1.Accepts[0].OutputSchema, &outputSchema); err == nil {
-				extensions = map[string]any{"outputSchema": outputSchema}
-			}
-		}
+		extensions = v1.BuildV1CatalogExtensions(nil, *discoveryInfo)
 	default:
 		return nil, fmt.Errorf("unsupported version: %d", version)
 	}
@@ -856,23 +851,18 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 	}, nil
 }
 
-func discoveryExtensionsFromPaymentPayload(
+func buildV1CatalogExtensionsFromPayload(
 	payloadBytes []byte,
-	requirementsV1 x402types.PaymentRequirementsV1,
+	discoveryInfo types.DiscoveryInfo,
 ) map[string]any {
 	var payload struct {
 		Extensions map[string]any `json:"extensions"`
 	}
+	var existingExtensions map[string]any
 	if err := json.Unmarshal(payloadBytes, &payload); err == nil && len(payload.Extensions) > 0 {
-		return payload.Extensions
+		existingExtensions = payload.Extensions
 	}
-	if requirementsV1.OutputSchema != nil && len(*requirementsV1.OutputSchema) > 0 {
-		var outputSchema any
-		if err := json.Unmarshal(*requirementsV1.OutputSchema, &outputSchema); err == nil {
-			return map[string]any{"outputSchema": outputSchema}
-		}
-	}
-	return nil
+	return v1.BuildV1CatalogExtensions(existingExtensions, discoveryInfo)
 }
 
 func extractMethodAndToolName(

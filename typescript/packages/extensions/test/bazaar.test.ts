@@ -1094,12 +1094,22 @@ describe("Bazaar Discovery Extension", () => {
       expect((discovered!.discoveryInfo as BodyDiscoveryInfo).input.body).toHaveProperty(
         "type_hint",
       );
-      expect(discovered!.extensions).toEqual({
-        outputSchema: v1Requirements.outputSchema,
+      expect(discovered!.extensions?.[BAZAAR.key]).toBeDefined();
+      expect(discovered!.extensions?.outputSchema).toBeUndefined();
+      expect(discovered!.extensions?.[BAZAAR.key]).toEqual({
+        info: discovered!.discoveryInfo,
+        schema: expect.objectContaining({
+          type: "object",
+          required: ["input"],
+        }),
       });
+      expect(
+        validateDiscoveryExtension(discovered!.extensions?.[BAZAAR.key] as DiscoveryExtension)
+          .valid,
+      ).toBe(true);
     });
 
-    it("should echo v1 outputSchema extensions from payment payload when present", () => {
+    it("should map v1 outputSchema payload extensions to bazaar format", () => {
       const v1Requirements = {
         scheme: "exact",
         network: "eip155:8453" as unknown,
@@ -1134,7 +1144,14 @@ describe("Bazaar Discovery Extension", () => {
       const discovered = extractDiscoveryInfo(v1Payload as unknown, v1Requirements as unknown);
 
       expect(discovered).not.toBeNull();
-      expect(discovered!.extensions).toBe(payloadExtensions);
+      expect(discovered!.extensions?.outputSchema).toBeUndefined();
+      expect(discovered!.extensions?.[BAZAAR.key]).toEqual({
+        info: discovered!.discoveryInfo,
+        schema: expect.objectContaining({
+          type: "object",
+          required: ["input"],
+        }),
+      });
     });
 
     it("should handle unified extraction for both v1 and v2", () => {

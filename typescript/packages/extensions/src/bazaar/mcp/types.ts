@@ -90,7 +90,7 @@ export interface DiscoveredMCPResource {
   toolName: string;
   x402Version: number;
   discoveryInfo: DiscoveryInfo;
-  /** Extension payloads for catalog echo (v2: payload.extensions; v1: { outputSchema }) */
+  /** Extension payloads for catalog echo (v2: payload.extensions; v1: synthesized extensions.bazaar) */
   extensions?: Record<string, unknown>;
 }
 

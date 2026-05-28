@@ -1217,6 +1217,15 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		assert.Equal(t, "Find tokens by address, ticker/symbol, or token name", info.Description)
 		assert.Equal(t, "application/json", info.MimeType)
 		assert.Equal(t, 1, info.X402Version)
+		require.NotNil(t, info.Extensions)
+		assert.NotContains(t, info.Extensions, "outputSchema")
+		bazaarExtRaw, ok := info.Extensions[bazaar.BAZAAR.Key()]
+		require.True(t, ok)
+		bazaarExtJSON, _ := json.Marshal(bazaarExtRaw)
+		var bazaarExt bazaar.DiscoveryExtension
+		require.NoError(t, json.Unmarshal(bazaarExtJSON, &bazaarExt))
+		validation := bazaar.ValidateDiscoveryExtension(bazaarExt)
+		assert.True(t, validation.Valid)
 	})
 
 	t.Run("should handle unified extraction for both v1 and v2", func(t *testing.T) {
@@ -1631,6 +1640,10 @@ func TestExtractDiscoveredResourceFromPaymentRequired(t *testing.T) {
 		queryInput, ok := info.DiscoveryInfo.Input.(bazaar.QueryInput)
 		require.True(t, ok)
 		assert.Equal(t, bazaar.MethodGET, queryInput.Method)
+		require.NotNil(t, info.Extensions)
+		assert.NotContains(t, info.Extensions, "outputSchema")
+		_, ok = info.Extensions[bazaar.BAZAAR.Key()]
+		assert.True(t, ok)
 	})
 
 	t.Run("v1: should return nil when accepts array is empty", func(t *testing.T) {

@@ -615,7 +615,7 @@ def extract_discovery_info(
 
     elif version == 1:
         # V1: Extract from requirements.output_schema
-        from .v1 import extract_discovery_info_v1
+        from .v1 import build_v1_catalog_extensions, extract_discovery_info_v1
 
         resource_url = requirements_dict.get("resource", "")
         discovery_info = extract_discovery_info_v1(requirements_dict)
@@ -665,16 +665,12 @@ def extract_discovery_info(
         raw_extensions = payload_dict.get("extensions")
         if isinstance(raw_extensions, dict):
             extensions = raw_extensions
-    else:
+    elif discovery_info is not None:
         payload_extensions = payload_dict.get("extensions")
-        if isinstance(payload_extensions, dict) and payload_extensions:
-            extensions = payload_extensions
-        else:
-            output_schema = requirements_dict.get("outputSchema")
-            if output_schema is None:
-                output_schema = requirements_dict.get("output_schema")
-            if isinstance(output_schema, dict) and output_schema:
-                extensions = {"outputSchema": output_schema}
+        existing_extensions = (
+            payload_extensions if isinstance(payload_extensions, dict) else None
+        )
+        extensions = build_v1_catalog_extensions(existing_extensions, discovery_info)
 
     return DiscoveredResource(
         resource_url=normalized_url,
