@@ -7,13 +7,10 @@ client with discovery query functionality.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from x402.http.facilitator_client import HTTPFacilitatorClient
-
-    from .facilitator import DiscoveredResource
 
 
 @dataclass
@@ -108,11 +105,8 @@ class DiscoveryResource:
     icon_url: str | None = None
     """Absolute http(s) URL to a service icon."""
 
-    discovery_info: Any | None = None
-    """Bazaar discovery extension info (input/output specs)."""
-
     extensions: dict[str, Any] | None = None
-    """Additional extension payloads attached to this discovered resource."""
+    """Extension payloads echoed from discovery (e.g. bazaar info/schema)."""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the bazaar discovery API wire format (camelCase keys)."""
@@ -133,13 +127,6 @@ class DiscoveryResource:
             result["tags"] = self.tags
         if self.icon_url is not None:
             result["iconUrl"] = self.icon_url
-        if self.discovery_info is not None:
-            if hasattr(self.discovery_info, "model_dump"):
-                result["discoveryInfo"] = self.discovery_info.model_dump(
-                    by_alias=True, exclude_none=True
-                )
-            else:
-                result["discoveryInfo"] = self.discovery_info
         if self.extensions is not None:
             result["extensions"] = self.extensions
         return result
@@ -427,49 +414,6 @@ def with_bazaar(client: HTTPFacilitatorClient) -> BazaarExtendedClient:
     return BazaarExtendedClient(client)
 
 
-def to_discovery_resource(
-    discovered: DiscoveredResource,
-    accepts: list[Any],
-    *,
-    last_updated: str | None = None,
-    extensions: dict[str, Any] | None = None,
-) -> DiscoveryResource:
-    """Convert facilitator extraction output into a catalog entry.
-
-    Suitable for ``GET /discovery/resources`` and ``GET /discovery/search`` responses.
-
-    Args:
-        discovered: Output from :func:`extract_discovery_info`.
-        accepts: Payment requirements accepted for this resource.
-        last_updated: Optional ISO 8601 timestamp override.
-        extensions: Optional additional extension payloads for the catalog entry.
-
-    Returns:
-        A discovery catalog resource entry.
-    """
-    entry = DiscoveryResource(
-        resource=discovered.resource_url,
-        type=discovered.discovery_info.input.type,
-        x402_version=discovered.x402_version,
-        accepts=accepts,
-        last_updated=last_updated or datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        discovery_info=discovered.discovery_info,
-    )
-    if discovered.description is not None:
-        entry.description = discovered.description
-    if discovered.mime_type is not None:
-        entry.mime_type = discovered.mime_type
-    if discovered.service_name is not None:
-        entry.service_name = discovered.service_name
-    if discovered.tags is not None:
-        entry.tags = discovered.tags
-    if discovered.icon_url is not None:
-        entry.icon_url = discovered.icon_url
-    if extensions is not None:
-        entry.extensions = extensions
-    return entry
-
-
 def _parse_discovery_resource_item(item: dict[str, Any]) -> DiscoveryResource:
     """Parse a single discovery resource from facilitator JSON."""
     return DiscoveryResource(
@@ -483,7 +427,6 @@ def _parse_discovery_resource_item(item: dict[str, Any]) -> DiscoveryResource:
         service_name=item.get("serviceName"),
         tags=item.get("tags"),
         icon_url=item.get("iconUrl"),
-        discovery_info=item.get("discoveryInfo"),
         extensions=item.get("extensions"),
     )
 

@@ -335,6 +335,7 @@ class DiscoveredResource:
     service_name: str | None = None
     tags: list[str] | None = None
     icon_url: str | None = None
+    extensions: dict[str, Any] | None = None
 
 
 @dataclass
@@ -659,6 +660,22 @@ def extract_discovery_info(
         description = requirements_dict.get("description") or None
         mime_type = requirements_dict.get("mimeType") or requirements_dict.get("mime_type") or None
 
+    extensions: dict[str, Any] | None = None
+    if version == 2:
+        raw_extensions = payload_dict.get("extensions")
+        if isinstance(raw_extensions, dict):
+            extensions = raw_extensions
+    else:
+        payload_extensions = payload_dict.get("extensions")
+        if isinstance(payload_extensions, dict) and payload_extensions:
+            extensions = payload_extensions
+        else:
+            output_schema = requirements_dict.get("outputSchema")
+            if output_schema is None:
+                output_schema = requirements_dict.get("output_schema")
+            if isinstance(output_schema, dict) and output_schema:
+                extensions = {"outputSchema": output_schema}
+
     return DiscoveredResource(
         resource_url=normalized_url,
         x402_version=version,
@@ -671,6 +688,7 @@ def extract_discovery_info(
         service_name=service_metadata.service_name,
         tags=service_metadata.tags,
         icon_url=service_metadata.icon_url,
+        extensions=extensions,
     )
 
 

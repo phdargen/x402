@@ -180,11 +180,21 @@ func runBazaarExample(evmPrivateKey, svmPrivateKey string) error {
 
 			var requirements x402.PaymentRequirements
 			if err := json.Unmarshal(ctx.RequirementsBytes, &requirements); err == nil {
-				entry, err := bazaar.ToDiscoveryResource(*discovered, []x402.PaymentRequirements{requirements}, &bazaar.ToDiscoveryResourceOptions{
-					Extensions: map[string]any{},
-				})
-				if err == nil {
-					catalog.Add(entry)
+				reqJSON, marshalErr := json.Marshal(requirements)
+				if marshalErr == nil {
+					catalog.Add(bazaar.DiscoveryResource{
+						Resource:    discovered.ResourceURL,
+						Type:        discovered.InputType(),
+						X402Version: discovered.X402Version,
+						Accepts:     []json.RawMessage{reqJSON},
+						LastUpdated: time.Now().UTC().Format(time.RFC3339),
+						Description: discovered.Description,
+						MimeType:    discovered.MimeType,
+						ServiceName: discovered.ServiceName,
+						Tags:        discovered.Tags,
+						IconUrl:     discovered.IconUrl,
+						Extensions:  discovered.Extensions,
+					})
 					fmt.Printf("   ✅ Added to bazaar catalog\n")
 				}
 			}

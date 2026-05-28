@@ -188,6 +188,24 @@ type DiscoveredResource struct {
 	ServiceName string
 	Tags        []string
 	IconUrl     string
+	Extensions  map[string]any
+}
+
+// InputType returns the protocol type from discovery info (e.g. "http", "mcp").
+func (d DiscoveredResource) InputType() string {
+	if d.DiscoveryInfo == nil {
+		return ""
+	}
+	switch input := d.DiscoveryInfo.Input.(type) {
+	case types.QueryInput:
+		return input.Type
+	case types.BodyInput:
+		return input.Type
+	case types.McpInput:
+		return input.Type
+	default:
+		return ""
+	}
 }
 
 // ExtractDiscoveredResourceFromPaymentPayload extracts a discovered resource from a client's payment payload and requirements.
@@ -240,6 +258,7 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 	var routeTemplate string
 	var rawInput map[string]interface{}
 	var serviceMetadata SanitizedResourceServiceMetadata
+	var extensions map[string]any
 	version := versionCheck.X402Version
 
 	switch version {
@@ -249,6 +268,7 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 		if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal v2 payload: %w", err)
 		}
+		extensions = payload.Extensions
 
 		// Extract resource URL
 		if payload.Resource != nil {
@@ -315,6 +335,7 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 			return nil, fmt.Errorf("v1 discovery extraction failed: %w", err)
 		}
 		discoveryInfo = infoV1
+		extensions = discoveryExtensionsFromPaymentPayload(payloadBytes, requirementsV1)
 	default:
 		return nil, fmt.Errorf("unsupported version: %d", version)
 	}
@@ -346,6 +367,7 @@ func ExtractDiscoveredResourceFromPaymentPayload(
 		ServiceName:   serviceMetadata.ServiceName,
 		Tags:          serviceMetadata.Tags,
 		IconUrl:       serviceMetadata.IconUrl,
+		Extensions:    extensions,
 	}, nil
 }
 
@@ -710,6 +732,7 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 	var routeTemplate string
 	var rawInput map[string]interface{}
 	var serviceMetadata SanitizedResourceServiceMetadata
+	var extensions map[string]any
 	version := versionCheck.X402Version
 
 	switch version {
@@ -719,6 +742,7 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 		if err := json.Unmarshal(paymentRequiredBytes, &paymentRequired); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal v2 payment required: %w", err)
 		}
+		extensions = paymentRequired.Extensions
 
 		// Extract resource URL
 		if paymentRequired.Resource != nil {
@@ -791,6 +815,12 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 			return nil, fmt.Errorf("v1 discovery extraction failed: %w", err)
 		}
 		discoveryInfo = infoV1
+		if paymentRequiredV1.Accepts[0].OutputSchema != nil && len(*paymentRequiredV1.Accepts[0].OutputSchema) > 0 {
+			var outputSchema any
+			if err := json.Unmarshal(*paymentRequiredV1.Accepts[0].OutputSchema, &outputSchema); err == nil {
+				extensions = map[string]any{"outputSchema": outputSchema}
+			}
+		}
 	default:
 		return nil, fmt.Errorf("unsupported version: %d", version)
 	}
@@ -822,7 +852,27 @@ func ExtractDiscoveredResourceFromPaymentRequired(
 		ServiceName:   serviceMetadata.ServiceName,
 		Tags:          serviceMetadata.Tags,
 		IconUrl:       serviceMetadata.IconUrl,
+		Extensions:    extensions,
 	}, nil
+}
+
+func discoveryExtensionsFromPaymentPayload(
+	payloadBytes []byte,
+	requirementsV1 x402types.PaymentRequirementsV1,
+) map[string]any {
+	var payload struct {
+		Extensions map[string]any `json:"extensions"`
+	}
+	if err := json.Unmarshal(payloadBytes, &payload); err == nil && len(payload.Extensions) > 0 {
+		return payload.Extensions
+	}
+	if requirementsV1.OutputSchema != nil && len(*requirementsV1.OutputSchema) > 0 {
+		var outputSchema any
+		if err := json.Unmarshal(*requirementsV1.OutputSchema, &outputSchema); err == nil {
+			return map[string]any{"outputSchema": outputSchema}
+		}
+	}
+	return nil
 }
 
 func extractMethodAndToolName(

@@ -535,6 +535,7 @@ func (w *responseCapture) WriteString(s string) (int, error) {
 
 // Flush is a no-op to prevent premature flushing to the wire before settlement.
 func (w *responseCapture) Flush() {}
+
 // validateBazaarExtensions validates all bazaar extensions declared on routes using
 // the bazaar package's JSON-schema validator. Emits warnings but does not block startup.
 func validateBazaarExtensions(routes x402http.RoutesConfig) {
@@ -582,4 +583,3 @@ func validateSingleBazaarExtension(pattern string, extensions map[string]interfa
 			pattern, strings.Join(result.Errors, ", "))
 	}
 }
-

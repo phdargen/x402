@@ -468,7 +468,9 @@ export type DiscoveredResource = DiscoveredHTTPResource | DiscoveredMCPResource;
  * @param paymentPayload - The payment payload containing extensions and resource info
  * @param paymentRequirements - The payment requirements to validate against
  * @param validate - Whether to validate the discovery info against the schema (default: true)
- * @returns Discovered resource info with URL, method, version and discovery data, or null if not found
+ * @returns Discovered resource info with URL, method, version, discovery data, and catalog
+ *   extensions echo (v2: `paymentPayload.extensions`; v1: `{ outputSchema }` from requirements
+ *   or payload), or null if not found
  */
 export function extractDiscoveryInfo(
   paymentPayload: PaymentPayload,
@@ -551,6 +553,18 @@ export function extractDiscoveryInfo(
     mimeType = requirementsV1.mimeType;
   }
 
+  let extensions: Record<string, unknown> | undefined;
+  if (paymentPayload.x402Version === 2) {
+    extensions = paymentPayload.extensions;
+  } else if (paymentPayload.x402Version === 1) {
+    const requirementsV1 = paymentRequirements as PaymentRequirementsV1;
+    if (paymentPayload.extensions) {
+      extensions = paymentPayload.extensions;
+    } else if (requirementsV1.outputSchema && Object.keys(requirementsV1.outputSchema).length > 0) {
+      extensions = { outputSchema: requirementsV1.outputSchema };
+    }
+  }
+
   const base = {
     resourceUrl: canonicalUrl,
     description,
@@ -558,6 +572,7 @@ export function extractDiscoveryInfo(
     ...serviceMetadata,
     x402Version: paymentPayload.x402Version,
     discoveryInfo,
+    extensions,
   };
 
   if (discoveryInfo.input.type === "mcp") {

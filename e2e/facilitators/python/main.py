@@ -31,7 +31,9 @@ from pydantic import BaseModel
 from solders.keypair import Keypair
 
 from x402 import x402Facilitator
-from x402.extensions.bazaar import extract_discovery_info, to_discovery_resource
+from datetime import UTC, datetime
+
+from x402.extensions.bazaar import DiscoveryResource, extract_discovery_info
 from x402.extensions.eip2612_gas_sponsoring import EIP2612_GAS_SPONSORING
 from x402.extensions.erc20_approval_gas_sponsoring import (
     Erc20ApprovalFacilitatorExtension,
@@ -217,14 +219,22 @@ def _handle_after_verify(ctx: Any) -> None:
                 print(f"   📝 Tags: {', '.join(discovered.tags)}")
 
             bazaar_catalog.add(
-                to_discovery_resource(
-                    discovered,
-                    [
+                DiscoveryResource(
+                    resource=discovered.resource_url,
+                    type=discovered.discovery_info.input.type,
+                    x402_version=discovered.x402_version,
+                    accepts=[
                         ctx.requirements.model_dump(by_alias=True)
                         if hasattr(ctx.requirements, "model_dump")
                         else ctx.requirements
                     ],
-                    extensions={},
+                    last_updated=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    description=discovered.description,
+                    mime_type=discovered.mime_type,
+                    service_name=discovered.service_name,
+                    tags=discovered.tags,
+                    icon_url=discovered.icon_url,
+                    extensions=discovered.extensions,
                 )
             )
             print("   ✅ Added to bazaar catalog")

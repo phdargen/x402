@@ -945,11 +945,21 @@ func main() {
 					if version == 2 {
 						var requirements x402.PaymentRequirements
 						if err := json.Unmarshal(ctx.RequirementsBytes, &requirements); err == nil {
-							entry, err := bazaar.ToDiscoveryResource(*discovered, []x402.PaymentRequirements{requirements}, &bazaar.ToDiscoveryResourceOptions{
-								Extensions: map[string]any{},
-							})
-							if err == nil {
-								bazaarCatalog.Add(entry)
+							reqJSON, marshalErr := json.Marshal(requirements)
+							if marshalErr == nil {
+								bazaarCatalog.Add(bazaar.DiscoveryResource{
+									Resource:    discovered.ResourceURL,
+									Type:        discovered.InputType(),
+									X402Version: version,
+									Accepts:     []json.RawMessage{reqJSON},
+									LastUpdated: time.Now().UTC().Format(time.RFC3339),
+									Description: discovered.Description,
+									MimeType:    discovered.MimeType,
+									ServiceName: discovered.ServiceName,
+									Tags:        discovered.Tags,
+									IconUrl:     discovered.IconUrl,
+									Extensions:  discovered.Extensions,
+								})
 							}
 						}
 					} else if version == 1 {
@@ -965,11 +975,21 @@ func main() {
 								PayTo:             requirementsV1.PayTo,
 								MaxTimeoutSeconds: requirementsV1.MaxTimeoutSeconds,
 							}
-							entry, err := bazaar.ToDiscoveryResource(*discovered, []x402.PaymentRequirements{requirements}, &bazaar.ToDiscoveryResourceOptions{
-								Extensions: map[string]any{},
-							})
-							if err == nil {
-								bazaarCatalog.Add(entry)
+							reqJSON, marshalErr := json.Marshal(requirements)
+							if marshalErr == nil {
+								bazaarCatalog.Add(bazaar.DiscoveryResource{
+									Resource:    discovered.ResourceURL,
+									Type:        discovered.InputType(),
+									X402Version: version,
+									Accepts:     []json.RawMessage{reqJSON},
+									LastUpdated: time.Now().UTC().Format(time.RFC3339),
+									Description: discovered.Description,
+									MimeType:    discovered.MimeType,
+									ServiceName: discovered.ServiceName,
+									Tags:        discovered.Tags,
+									IconUrl:     discovered.IconUrl,
+									Extensions:  discovered.Extensions,
+								})
 							}
 						}
 					}

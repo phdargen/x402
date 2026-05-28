@@ -70,7 +70,6 @@ from .facilitator_client import (
     SearchDiscoveryResourcesParams,
     SearchDiscoveryResourcesResponse,
     SearchPagination,
-    to_discovery_resource,
     with_bazaar,
 )
 from .resource_service import (
@@ -154,6 +153,5 @@ __all__ = [
     "extract_discovery_info",
     "extract_discovery_info_from_extension",
     "validate_and_extract",
-    "to_discovery_resource",
     "with_bazaar",
 ]

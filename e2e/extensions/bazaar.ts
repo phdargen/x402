@@ -24,7 +24,6 @@ interface DiscoveryResourcesResponse {
     type: string;
     x402Version: number;
     accepts: any[];
-    discoveryInfo?: any;
     lastUpdated: string;
     extensions?: Record<string, unknown>;
   }>;
@@ -310,17 +309,20 @@ async function validateFacilitatorDiscovery(
       discoveredEndpoints.push(expectedResourceUrl);
       verboseLog(`  ✅ Discovered: ${expected.method} ${expectedResourceUrl}`);
 
-      // For MCP resources, additionally verify type and toolName in discoveryInfo
+      // For MCP resources, additionally verify type and toolName in extensions.bazaar
       if (expected.transport === "mcp" && expected.toolName) {
-        const inputType = discoveredItem.discoveryInfo?.input?.type;
-        const inputToolName = discoveredItem.discoveryInfo?.input?.toolName;
-        const inputTransport = discoveredItem.discoveryInfo?.input?.transport;
+        const bazaarExt = discoveredItem.extensions?.bazaar as
+          | { info?: { input?: { type?: string; toolName?: string; transport?: string } } }
+          | undefined;
+        const inputType = bazaarExt?.info?.input?.type;
+        const inputToolName = bazaarExt?.info?.input?.toolName;
+        const inputTransport = bazaarExt?.info?.input?.transport;
         let hasMetadataMismatch = false;
 
         if (inputType !== "mcp") {
           hasMetadataMismatch = true;
           verboseLog(
-            `  ⚠️  MCP resource ${expectedResourceUrl}: expected discoveryInfo.input.type "mcp", got "${inputType}"`,
+            `  ⚠️  MCP resource ${expectedResourceUrl}: expected extensions.bazaar.info.input.type "mcp", got "${inputType}"`,
           );
         }
         if (inputToolName !== expected.toolName) {

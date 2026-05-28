@@ -534,8 +534,12 @@ class TestParseDiscoveryResourceItem:
             "serviceName": "Weather API",
             "tags": ["weather", "api"],
             "iconUrl": "https://api.example.com/icon.png",
-            "discoveryInfo": {"input": {"type": "http", "method": "GET"}},
-            "extensions": {"bazaar": {"category": "weather"}},
+            "extensions": {
+                "bazaar": {
+                    "info": {"input": {"type": "http", "method": "GET"}},
+                    "schema": {},
+                }
+            },
         }
 
         resource = _parse_discovery_resource_item(item)
@@ -545,7 +549,7 @@ class TestParseDiscoveryResourceItem:
         assert resource.service_name == "Weather API"
         assert resource.tags == ["weather", "api"]
         assert resource.icon_url == "https://api.example.com/icon.png"
-        assert resource.discovery_info == item["discoveryInfo"]
+        assert resource.extensions == item["extensions"]
 
 
 class TestDiscoveryResourceSerialization:

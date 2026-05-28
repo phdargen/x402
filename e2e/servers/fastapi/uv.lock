@@ -7,6 +7,10 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[options]
+exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer-span = "P3D"
+
 [[package]]
 name = "abnf"
 version = "2.5.0"
@@ -3111,7 +3115,7 @@ wheels = [
 
 [[package]]
 name = "x402"
-version = "2.10.0"
+version = "2.11.0"
 source = { editable = "../../../python/x402" }
 dependencies = [
     { name = "nest-asyncio" },

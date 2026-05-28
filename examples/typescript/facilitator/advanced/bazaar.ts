@@ -19,11 +19,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
-import {
-  extractDiscoveryInfo,
-  toDiscoveryResource,
-  type DiscoveryResource,
-} from "@x402/extensions/bazaar";
+import { extractDiscoveryInfo, type DiscoveryResource } from "@x402/extensions/bazaar";
 import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, http, publicActions } from "viem";
@@ -163,11 +159,19 @@ const facilitator = new x402Facilitator()
           console.log(`   📝 Tags: ${discovered.tags.join(", ")}`);
         }
 
-        bazaarCatalog.add(
-          toDiscoveryResource(discovered, [context.requirements], {
-            extensions: {},
-          }),
-        );
+        bazaarCatalog.add({
+          resource: discovered.resourceUrl,
+          type: discovered.discoveryInfo.input.type,
+          x402Version: discovered.x402Version,
+          accepts: [context.requirements],
+          lastUpdated: new Date().toISOString(),
+          description: discovered.description,
+          mimeType: discovered.mimeType,
+          serviceName: discovered.serviceName,
+          tags: discovered.tags,
+          iconUrl: discovered.iconUrl,
+          extensions: discovered.extensions,
+        });
         console.log("   ✅ Added to bazaar catalog");
       }
     } catch (err) {
