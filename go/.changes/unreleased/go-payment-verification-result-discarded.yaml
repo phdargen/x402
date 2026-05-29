@@ -1,2 +1,0 @@
-kind: fixed
-body: Fix security bug where a facilitator HTTP-200 response with `isValid:false` was not treated as a hard gate failure — `VerifyPaymentWithExtensions` now returns a `*VerifyError` when the facilitator explicitly rejects a payment, preventing any structurally well-formed payment header from bypassing the protected handler

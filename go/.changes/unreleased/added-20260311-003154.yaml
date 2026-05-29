@@ -1,3 +1,0 @@
-kind: added
-body: Added startup-time bazaar extension validation in Gin, Echo, and net/http middleware using JSON-schema validation from the bazaar extension package
-time: 2026-03-11T00:31:54.000000+00:00
