@@ -32,6 +32,9 @@ export { isPermit2Payload, isEIP3009Payload } from "./types";
 // Upto scheme client
 export { UptoEvmScheme } from "./upto";
 
+// Upfront scheme client
+export { UpfrontEvmScheme } from "./upfront";
+
 // Upto types
 export type { UptoPermit2Payload, UptoPermit2Witness, UptoPermit2Authorization } from "./types";
 export { isUptoPermit2Payload } from "./types";

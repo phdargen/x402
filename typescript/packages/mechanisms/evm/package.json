@@ -150,6 +150,36 @@
         "default": "./dist/cjs/upto/facilitator/index.js"
       }
     },
+    "./upfront/client": {
+      "import": {
+        "types": "./dist/esm/upfront/client/index.d.mts",
+        "default": "./dist/esm/upfront/client/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/upfront/client/index.d.ts",
+        "default": "./dist/cjs/upfront/client/index.js"
+      }
+    },
+    "./upfront/server": {
+      "import": {
+        "types": "./dist/esm/upfront/server/index.d.mts",
+        "default": "./dist/esm/upfront/server/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/upfront/server/index.d.ts",
+        "default": "./dist/cjs/upfront/server/index.js"
+      }
+    },
+    "./upfront/facilitator": {
+      "import": {
+        "types": "./dist/esm/upfront/facilitator/index.d.mts",
+        "default": "./dist/esm/upfront/facilitator/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/upfront/facilitator/index.d.ts",
+        "default": "./dist/cjs/upfront/facilitator/index.js"
+      }
+    },
     "./batch-settlement/client": {
       "import": {
         "types": "./dist/esm/batch-settlement/client/index.d.mts",
