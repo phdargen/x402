@@ -9,7 +9,7 @@ replace github.com/x402-foundation/x402/go/v2 => ../../../../go
 require (
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/joho/godotenv v1.5.1
-	github.com/x402-foundation/x402/go/v2 v2.9.0
+	github.com/x402-foundation/x402/go/v2 v2.14.0
 )
 
 require (

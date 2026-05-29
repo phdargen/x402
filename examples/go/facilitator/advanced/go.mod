@@ -11,7 +11,7 @@ require (
 	github.com/gagliardetto/solana-go v1.14.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/joho/godotenv v1.5.1
-	github.com/x402-foundation/x402/go/v2 v2.9.0
+	github.com/x402-foundation/x402/go/v2 v2.14.0
 )
 
 require (

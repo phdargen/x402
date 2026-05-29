@@ -1,3 +1,7 @@
+## v2.14.0 - 2026-05-29
+### Fixed
+- Update module path to `github.com/x402-foundation/x402/go/v2` so consumers can resolve tagged releases (e.g. `go get github.com/x402-foundation/x402/go/v2@latest`) instead of pseudo-versions.
+
 ## v2.13.0 - 2026-05-29
 ### Added
 - Added startup-time bazaar extension validation in Gin, Echo, and net/http middleware using JSON-schema validation from the bazaar extension package
