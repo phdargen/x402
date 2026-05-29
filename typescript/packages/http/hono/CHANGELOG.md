@@ -1,5 +1,16 @@
 # @x402/hono Changelog
 
+## 2.14.0
+
+### Minor Changes
+
+- 0af31dd: Added startup-time JSON-schema validation for bazaar discovery extensions in middleware packages; Removed shallow bazaar validation from core in favor of full schema validation using the extensions package validator
+- Updated dependencies [be788e0]
+- Updated dependencies [0af31dd]
+  - @x402/extensions@2.14.0
+  - @x402/core@2.14.0
+  - @x402/paywall@2.14.0
+
 ## 2.13.0
 
 ### Minor Changes

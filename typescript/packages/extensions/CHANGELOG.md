@@ -1,5 +1,14 @@
 # @x402/extensions Changelog
 
+## 2.14.0
+
+### Minor Changes
+
+- be788e0: Thread Bazaar service metadata from HTTP `RouteConfig` and MCP `PaymentWrapperConfig` into `PaymentRequired.resource`, and extend bazaar facilitator discovery/catalog types so verified payments persist description, MIME type, service metadata, and echoed extension payloads.
+- Updated dependencies [be788e0]
+- Updated dependencies [0af31dd]
+  - @x402/core@2.14.0
+
 ## 2.13.0
 
 ### Minor Changes

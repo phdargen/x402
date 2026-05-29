@@ -1,5 +1,12 @@
 # @x402/core Changelog
 
+## 2.14.0
+
+### Minor Changes
+
+- be788e0: Thread Bazaar service metadata from HTTP `RouteConfig` and MCP `PaymentWrapperConfig` into `PaymentRequired.resource`, and extend bazaar facilitator discovery/catalog types so verified payments persist description, MIME type, service metadata, and echoed extension payloads.
+- 0af31dd: Added startup-time JSON-schema validation for bazaar discovery extensions in middleware packages; Removed shallow bazaar validation from core in favor of full schema validation using the extensions package validator
+
 ## 2.13.0
 
 ### Minor Changes
