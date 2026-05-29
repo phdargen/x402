@@ -35,6 +35,7 @@ export function setSettlementOverrides(reply: FastifyReply, overrides: Settlemen
 }
 
 interface X402PaymentContext {
+  settlementHeaders?: Record<string, string>;
   cancellationDispatcher: PaymentCancellationDispatcher;
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
@@ -380,6 +381,19 @@ export function paymentMiddlewareFromHTTPServer(
         request.x402RawGuard = guardReplyRaw(reply);
         return;
       }
+
+      case "payment-settled": {
+        request.x402Context = {
+          settlementHeaders: result.settlementHeaders,
+          cancellationDispatcher: result.cancellationDispatcher,
+          paymentPayload: result.paymentPayload,
+          paymentRequirements: result.paymentRequirements,
+          declaredExtensions: result.declaredExtensions,
+          requestContext: context,
+        };
+        request.x402RawGuard = guardReplyRaw(reply);
+        return;
+      }
     }
   });
 
@@ -419,6 +433,13 @@ export function paymentMiddlewareFromHTTPServer(
       if (bodyChunks.length > 0) {
         effectivePayload = Buffer.concat(bodyChunks);
       }
+    }
+
+    if (x402Context.settlementHeaders) {
+      for (const [key, value] of Object.entries(x402Context.settlementHeaders)) {
+        reply.header(key, value);
+      }
+      return effectivePayload;
     }
 
     if (reply.statusCode >= 400) {
@@ -476,9 +497,15 @@ export function paymentMiddlewareFromHTTPServer(
     }
   });
 
-  app.addHook("onError", async (request: FastifyRequest, _reply: FastifyReply, error: Error) => {
+  app.addHook("onError", async (request: FastifyRequest, reply: FastifyReply, error: Error) => {
     const x402Context = request.x402Context;
     if (!x402Context) {
+      return;
+    }
+    if (x402Context.settlementHeaders) {
+      for (const [key, value] of Object.entries(x402Context.settlementHeaders)) {
+        reply.header(key, value);
+      }
       return;
     }
     await x402Context.cancellationDispatcher.cancel({

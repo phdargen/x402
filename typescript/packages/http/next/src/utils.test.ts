@@ -303,6 +303,26 @@ describe("handleSettlement", () => {
     expect(mockHttpServer.processSettlement).not.toHaveBeenCalled();
   });
 
+  it("attaches pre-settled headers on failed responses", async () => {
+    const response = new NextResponse("Error", { status: 500 });
+
+    const result = await handleSettlement(
+      mockHttpServer,
+      response,
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      mockPaymentCancellationDispatcher,
+      undefined,
+      { "PAYMENT-RESPONSE": "pre-settled" },
+    );
+
+    expect(result.status).toBe(500);
+    expect(result.headers.get("PAYMENT-RESPONSE")).toBe("pre-settled");
+    expect(mockHttpServer.processSettlement).not.toHaveBeenCalled();
+    expect(mockPaymentCancellationDispatcher.cancel).not.toHaveBeenCalled();
+  });
+
   it("adds settlement headers on successful settlement", async () => {
     const response = new NextResponse("OK", { status: 200 });
 

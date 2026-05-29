@@ -11,7 +11,11 @@ import {
   PaymentRequired,
   ResourceInfo,
 } from "../types/payments";
-import { SchemeNetworkServer, SchemePaymentRequiredContext } from "../types/mechanisms";
+import {
+  SchemeNetworkServer,
+  SchemePaymentRequiredContext,
+  SettlementTiming,
+} from "../types/mechanisms";
 import { Price, Network, ResourceServerExtension, ResourceServerExtensionHooks } from "../types";
 import type { DeepReadonly } from "../types/readonly";
 import { deepEqual, findByNetworkAndScheme } from "../utils";
@@ -361,6 +365,22 @@ export class x402ResourceServer {
     return (
       scheme?.getAssetDecimals?.(requirements.asset ?? "", requirements.network as Network) ?? 6
     );
+  }
+
+  /**
+   * Returns when the HTTP transport should settle relative to the protected handler.
+   * Schemes may set `settlementTiming: "preExecute"` (e.g. upfront); default is post-execute.
+   *
+   * @param requirements - Matched payment requirements for the incoming payment
+   * @returns `"preExecute"` or `"postExecute"`
+   */
+  getSettlementTiming(requirements: PaymentRequirements): SettlementTiming {
+    const scheme = findByNetworkAndScheme(
+      this.registeredServerSchemes,
+      requirements.scheme,
+      requirements.network as Network,
+    );
+    return scheme?.settlementTiming ?? "postExecute";
   }
 
   /**

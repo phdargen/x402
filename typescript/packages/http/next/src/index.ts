@@ -144,7 +144,8 @@ export function paymentProxyFromHTTPServer(
       case "payment-error":
         return handlePaymentError(result.response);
 
-      case "payment-verified": {
+      case "payment-verified":
+      case "payment-settled": {
         // Payment is valid, need to wrap response for settlement
         // Proceed to the next proxy or route handler
         const nextResponse = NextResponse.next();
@@ -156,6 +157,7 @@ export function paymentProxyFromHTTPServer(
           result.declaredExtensions,
           result.cancellationDispatcher,
           context,
+          result.type === "payment-settled" ? result.settlementHeaders : undefined,
         );
       }
     }
@@ -328,12 +330,23 @@ export function withX402FromHTTPServer<T = unknown>(
       case "payment-error":
         return handlePaymentError(result.response) as NextResponse<T>;
 
-      case "payment-verified": {
+      case "payment-verified":
+      case "payment-settled": {
         // Payment is valid, need to wrap response for settlement
         let handlerResponse: NextResponse<T>;
         try {
           handlerResponse = await routeHandler(request);
         } catch (error) {
+          if (result.type === "payment-settled") {
+            console.error(error);
+            return new NextResponse(JSON.stringify({}), {
+              status: 500,
+              headers: {
+                "Content-Type": "application/json",
+                ...result.settlementHeaders,
+              },
+            }) as NextResponse<T>;
+          }
           await result.cancellationDispatcher.cancel({
             reason: "handler_threw",
             error,
@@ -348,6 +361,7 @@ export function withX402FromHTTPServer<T = unknown>(
           result.declaredExtensions,
           result.cancellationDispatcher,
           context,
+          result.type === "payment-settled" ? result.settlementHeaders : undefined,
         ) as Promise<NextResponse<T>>;
       }
     }

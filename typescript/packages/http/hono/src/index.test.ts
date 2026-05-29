@@ -40,7 +40,9 @@ let mockProcessSettlement: ReturnType<typeof vi.fn>;
 let mockRegisterPaywallProvider: ReturnType<typeof vi.fn>;
 let mockRequiresPayment: ReturnType<typeof vi.fn>;
 
-type PaymentVerifiedResult = Extract<HTTPProcessResult, { type: "payment-verified" }>;
+type PaymentVerifiedResult =
+  | Extract<HTTPProcessResult, { type: "payment-verified" }>
+  | Extract<HTTPProcessResult, { type: "payment-settled" }>;
 type MockHTTPProcessResult =
   | Exclude<HTTPProcessResult, PaymentVerifiedResult>
   | (Omit<PaymentVerifiedResult, "cancellationDispatcher"> & {
@@ -411,6 +413,38 @@ describe("paymentMiddleware", () => {
 
     expect(next).toHaveBeenCalled();
     expect(mockProcessSettlement).not.toHaveBeenCalled();
+  });
+
+  it("attaches pre-settled headers when handler returns >= 400", async () => {
+    const cancellationDispatcher = createMockPaymentCancellationDispatcher();
+    setupMockHttpServer(
+      {
+        type: "payment-settled",
+        settlementHeaders: { "PAYMENT-RESPONSE": "pre-settled" },
+        paymentPayload: mockPaymentPayload,
+        paymentRequirements: mockPaymentRequirements,
+        cancellationDispatcher,
+      },
+      { success: true, headers: { "PAYMENT-RESPONSE": "settled" } },
+    );
+
+    const middleware = paymentMiddleware(
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    const context = createMockContext();
+    const next = vi.fn().mockImplementation(async () => {
+      context.res = new Response("Error", { status: 500 });
+    });
+
+    await middleware(context, next);
+
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(context.res.headers.get("PAYMENT-RESPONSE")).toBe("pre-settled");
+    expect(cancellationDispatcher.cancel).not.toHaveBeenCalled();
   });
 
   it("returns 402 when settlement throws error", async () => {

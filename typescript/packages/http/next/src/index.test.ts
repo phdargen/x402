@@ -92,7 +92,9 @@ const mockPaymentRequirements = {
   payTo: "0x123",
 } as unknown as PaymentRequirements;
 
-type PaymentVerifiedResult = Extract<HTTPProcessResult, { type: "payment-verified" }>;
+type PaymentVerifiedResult =
+  | Extract<HTTPProcessResult, { type: "payment-verified" }>
+  | Extract<HTTPProcessResult, { type: "payment-settled" }>;
 type MockHTTPProcessResult =
   | Exclude<HTTPProcessResult, PaymentVerifiedResult>
   | (Omit<PaymentVerifiedResult, "cancellationDispatcher"> & {

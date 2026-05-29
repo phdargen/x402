@@ -197,6 +197,7 @@ export function paymentMiddlewareFromHTTPServer(
         }
 
       case "payment-verified":
+      case "payment-settled":
         // Payment is valid, need to wrap response for settlement
         const { cancellationDispatcher, paymentPayload, paymentRequirements, declaredExtensions } =
           result;
@@ -205,6 +206,17 @@ export function paymentMiddlewareFromHTTPServer(
         try {
           await next();
         } catch (error) {
+          if (result.type === "payment-settled") {
+            console.error(error);
+            c.res = new Response(JSON.stringify({}), {
+              status: 500,
+              headers: {
+                "Content-Type": "application/json",
+                ...result.settlementHeaders,
+              },
+            });
+            return;
+          }
           await cancellationDispatcher.cancel({
             reason: "handler_threw",
             error,
@@ -217,10 +229,25 @@ export function paymentMiddlewareFromHTTPServer(
 
         // If the response from the protected route is >= 400, do not settle payment
         if (res.status >= 400) {
+          if (result.type === "payment-settled") {
+            Object.entries(result.settlementHeaders).forEach(([key, value]) => {
+              res.headers.set(key, value);
+            });
+            c.res = res;
+            return;
+          }
           await cancellationDispatcher.cancel({
             reason: "handler_failed",
             responseStatus: res.status,
           });
+          return;
+        }
+
+        if (result.type === "payment-settled") {
+          Object.entries(result.settlementHeaders).forEach(([key, value]) => {
+            res.headers.set(key, value);
+          });
+          c.res = res;
           return;
         }
 

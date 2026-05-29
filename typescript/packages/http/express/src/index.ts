@@ -200,9 +200,15 @@ export function paymentMiddlewareFromHTTPServer(
         return;
 
       case "payment-verified":
+      case "payment-settled":
         // Payment is valid, need to wrap response for settlement
         const { cancellationDispatcher, paymentPayload, paymentRequirements, declaredExtensions } =
           result;
+        const attachSettlementHeaders = (headers: Record<string, string>) => {
+          Object.entries(headers).forEach(([key, value]) => {
+            res.setHeader(key, value);
+          });
+        };
 
         // Intercept and buffer all core methods that can commit response to client
         const originalWriteHead = res.writeHead.bind(res);
@@ -270,6 +276,12 @@ export function paymentMiddlewareFromHTTPServer(
         try {
           await Promise.resolve(next());
         } catch (error) {
+          if (result.type === "payment-settled") {
+            attachSettlementHeaders(result.settlementHeaders);
+            bufferedCalls = [];
+            restoreResponseMethods();
+            return next(error);
+          }
           await cancellationDispatcher.cancel({
             reason: "handler_threw",
             error,
@@ -284,6 +296,20 @@ export function paymentMiddlewareFromHTTPServer(
 
         // If the response from the protected route is >= 400, do not settle payment
         if (res.statusCode >= 400) {
+          if (result.type === "payment-settled") {
+            attachSettlementHeaders(result.settlementHeaders);
+            restoreResponseMethods();
+            for (const [method, args] of bufferedCalls) {
+              if (method === "writeHead")
+                originalWriteHead(...(args as Parameters<typeof originalWriteHead>));
+              else if (method === "write")
+                originalWrite(...(args as Parameters<typeof originalWrite>));
+              else if (method === "end") originalEnd(...(args as Parameters<typeof originalEnd>));
+              else if (method === "flushHeaders") originalFlushHeaders();
+            }
+            bufferedCalls = [];
+            return;
+          }
           await cancellationDispatcher.cancel({
             reason: "handler_failed",
             responseStatus: res.statusCode,
@@ -303,6 +329,11 @@ export function paymentMiddlewareFromHTTPServer(
         }
 
         try {
+          if (result.type === "payment-settled") {
+            attachSettlementHeaders(result.settlementHeaders);
+            return;
+          }
+
           // Build response body buffer from buffered write/end calls
           const responseBody = Buffer.concat(
             bufferedCalls.flatMap(([m, args]) =>

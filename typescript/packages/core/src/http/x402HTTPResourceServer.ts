@@ -282,6 +282,14 @@ export type HTTPProcessResult =
       paymentRequirements: PaymentRequirements;
       declaredExtensions?: Record<string, unknown>;
     }
+  | {
+      type: "payment-settled";
+      settlementHeaders: Record<string, string>;
+      cancellationDispatcher: PaymentCancellationDispatcher;
+      paymentPayload: PaymentPayload;
+      paymentRequirements: PaymentRequirements;
+      declaredExtensions?: Record<string, unknown>;
+    }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
 /**
@@ -593,6 +601,29 @@ export class x402HTTPResourceServer {
         };
       }
 
+      const settlementTiming = this.ResourceServer.getSettlementTiming(matchingRequirements);
+
+      if (settlementTiming === "preExecute") {
+        const settleResult = await this.processSettlement(
+          paymentPayload,
+          matchingRequirements,
+          extensions,
+          transportContext,
+        );
+        if (!settleResult.success) {
+          return { type: "payment-error", response: settleResult.response };
+        }
+
+        return {
+          type: "payment-settled",
+          settlementHeaders: settleResult.headers,
+          cancellationDispatcher: { cancel: async () => {} },
+          paymentPayload,
+          paymentRequirements: matchingRequirements,
+          declaredExtensions: extensions,
+        };
+      }
+
       const verifyResult = await this.ResourceServer.verifyPayment(
         paymentPayload,
         matchingRequirements,
@@ -685,6 +716,7 @@ export class x402HTTPResourceServer {
         },
       };
     }
+
     try {
       // Resolve overrides: explicit param takes precedence, fall back to response header
       let resolvedOverrides = settlementOverrides;

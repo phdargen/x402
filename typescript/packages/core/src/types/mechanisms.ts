@@ -184,8 +184,11 @@ export type SchemeEnrichPaymentRequiredResponseHook = (
   ctx: SchemePaymentRequiredContext,
 ) => Promise<PaymentRequirements[] | void>;
 
+export type SettlementTiming = "postExecute" | "preExecute";
+
 export interface SchemeNetworkServer {
   readonly scheme: string;
+  readonly settlementTiming?: SettlementTiming;
   readonly schemeHooks?: SchemeServerHooks;
   enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;

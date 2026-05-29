@@ -812,6 +812,78 @@ describe("x402HTTPResourceServer", () => {
       expect(paymentRequired.resource.tags).toEqual(["weather", "api"]);
     });
 
+    it("pre-settles upfront schemes and returns settlement headers", async () => {
+      const upfrontScheme = new MockSchemeNetworkServer(
+        "upfront",
+        {
+          amount: "1000000",
+          asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          extra: {},
+        },
+        undefined,
+        "preExecute",
+      );
+      const upfrontServer = new x402ResourceServer(
+        new MockFacilitatorClient(
+          buildSupportedResponse({
+            kinds: [{ x402Version: 2, scheme: "upfront", network: "eip155:8453" as Network }],
+          }),
+          buildVerifyResponse({ isValid: true }),
+        ),
+      );
+      upfrontServer.register("eip155:8453" as Network, upfrontScheme);
+      await upfrontServer.initialize();
+
+      const routes = {
+        "/api/test": {
+          accepts: {
+            scheme: "upfront",
+            payTo: "0xabc",
+            price: "$1.00" as Price,
+            network: "eip155:8453" as Network,
+          },
+        },
+      };
+      const httpServer = new x402HTTPResourceServer(upfrontServer, routes);
+
+      const unpaidContext: HTTPRequestContext = {
+        adapter: new MockHTTPAdapter(),
+        path: "/api/test",
+        method: "GET",
+      };
+      const unpaidResult = await httpServer.processHTTPRequest(unpaidContext);
+      expect(unpaidResult.type).toBe("payment-error");
+      const { decodePaymentRequiredHeader, encodePaymentSignatureHeader } = await import(
+        "../../../src/http"
+      );
+      if (unpaidResult.type !== "payment-error") {
+        throw new Error("Expected payment-error");
+      }
+      const paymentRequired = decodePaymentRequiredHeader(
+        unpaidResult.response.headers["PAYMENT-REQUIRED"],
+      );
+      const accepted = paymentRequired.accepts[0];
+      const payload = buildPaymentPayload({ accepted });
+      const adapter = new MockHTTPAdapter({
+        "payment-signature": encodePaymentSignatureHeader(payload),
+      });
+      const context: HTTPRequestContext = {
+        adapter,
+        path: "/api/test",
+        method: "GET",
+      };
+
+      const facilitator = upfrontServer["facilitatorClients"][0] as MockFacilitatorClient;
+      const result = await httpServer.processHTTPRequest(context);
+
+      expect(result.type).toBe("payment-settled");
+      if (result.type === "payment-settled") {
+        expect(facilitator.verifyCalls.length).toBe(0);
+        expect(facilitator.settleCalls.length).toBe(1);
+        expect(result.settlementHeaders["PAYMENT-RESPONSE"]).toBeDefined();
+      }
+    });
+
     it("should return 412 Precondition Failed for permit2_allowance_required error", async () => {
       // Override mock to simulate permit2 allowance required error
       mockFacilitator.setVerifyResponse({
