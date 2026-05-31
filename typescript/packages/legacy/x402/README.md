@@ -40,7 +40,7 @@ If you're not using one of our server middleware packages, you can implement the
 3. Use the facilitator to settle payments
 4. Return the appropriate response header to the caller
 
-For a complete example implementation, see our [advanced server example](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/advanced) which demonstrates both synchronous and asynchronous payment processing patterns.
+For a complete example implementation, see our [advanced server example](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/advanced) which demonstrates both synchronous and asynchronous payment processing patterns.
 
 ## Manual Client Integration
 

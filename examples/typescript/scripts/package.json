@@ -1,0 +1,52 @@
+{
+  "name": "@x402/examples-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "prettier -c .prettierrc --write \"**/*.{ts,js,cjs,json,md}\"",
+    "format:check": "prettier -c .prettierrc --check \"**/*.{ts,js,cjs,json,md}\"",
+    "lint": "eslint . --ext .ts --fix",
+    "lint:check": "eslint . --ext .ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.1",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@scure/base": "^1.2.6",
+    "@solana/kit": "^6.1.0",
+    "@x402/avm": "workspace:*",
+    "@x402/axios": "workspace:*",
+    "@x402/core": "workspace:*",
+    "@x402/evm": "workspace:*",
+    "@x402/express": "workspace:*",
+    "@x402/extensions": "workspace:*",
+    "@x402/fastify": "workspace:*",
+    "@x402/fetch": "workspace:*",
+    "@x402/hedera": "workspace:*",
+    "@x402/hono": "workspace:*",
+    "@x402/mcp": "workspace:*",
+    "@x402/stellar": "workspace:*",
+    "@x402/svm": "workspace:*",
+    "axios": "^1.8.4",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "fastify": "^5.2.2",
+    "hono": "^4.7.5",
+    "openai": "^4.91.1",
+    "viem": "^2.48.11",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.4",
+    "@typescript-eslint/eslint-plugin": "^8.29.1",
+    "@typescript-eslint/parser": "^8.29.1",
+    "eslint": "^9.24.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-jsdoc": "^50.6.9",
+    "eslint-plugin-prettier": "^5.2.6",
+    "prettier": "3.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3"
+  }
+}

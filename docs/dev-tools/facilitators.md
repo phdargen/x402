@@ -4,7 +4,7 @@ description: "Production facilitator services for x402 payments."
 ---
 
 [Facilitators](/core-concepts/facilitator) verify and settle x402 payments on behalf of resource servers. 
-Anyone can run a facilitator. You can [run your own](/core-concepts/network-and-token-support#running-your-own-facilitator) or [self-facilitate](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/self-facilitation). 
+Anyone can run a facilitator. You can [run your own](/core-concepts/network-and-token-support#running-your-own-facilitator) or [self-facilitate](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/self-facilitation.ts). 
 The table below lists selected production options; it is not an exhaustive catalog. 
 
 | Name | Description |

@@ -1,0 +1,12 @@
+#RESOURCE_SERVER_URL=http://localhost:3000
+#RESOURCE_SERVER_URL=https://inference-api.nousresearch.com/v1
+#ENDPOINT_PATH="/api/weather"
+#ENDPOINT_PATH=/protected
+
+#RESOURCE_SERVER_URL=https://d3gvmcmb2qtcma.cloudfront.net
+#ENDPOINT_PATH=/api/content
+
+
+#EVM_PRIVATE_KEY=0x927ca4c09c980c462c00313226c42c1835e225179cfdf3c7530f883426e3cd15
+SVM_PRIVATE_KEY=5hvJ1UFkD6q3S3obPQmaPRjuNCVUkH3Lja2xhXqz2cJ4Suz5vbUooUSUDqhTmTtiqpFnoor6Ky1EwhRvxZDdBXbh
+

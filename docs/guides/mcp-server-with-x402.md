@@ -19,7 +19,7 @@ This lets you (or your agent) access paid APIs programmatically, with no manual 
 
 * Node.js v20+ (install via [nvm](https://github.com/nvm-sh/nvm))
 * pnpm v10 (install via [pnpm.io/installation](https://pnpm.io/installation))
-* An x402-compatible server to connect to (for this demo, we'll use the [sample express server with weather data](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/express) from the x402 repo, or any external x402 API)
+* An x402-compatible server to connect to (for this demo, we'll use the [sample express server with weather data](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/express.ts) from the x402 repo, or any external x402 API)
 * An Ethereum wallet with USDC (on Base Sepolia or Base Mainnet) and/or a Solana wallet with USDC (on Devnet or Mainnet)
 * [Claude Desktop with MCP support](https://claude.ai/download)
 
@@ -53,7 +53,7 @@ Add the MCP server to your Claude Desktop configuration:
       "args": [
         "--silent",
         "-C",
-        "<absolute path to this repo>/examples/typescript/clients/mcp",
+        "<absolute path to this repo>/examples/typescript/scripts/clients/mcp",
         "dev"
       ],
       "env": {
@@ -73,7 +73,7 @@ Make sure your x402-compatible server is running at the URL specified in `RESOUR
 
 ```bash
 # In another terminal, from the examples/typescript directory
-cd servers/express
+cd scripts/servers/http/express.ts
 pnpm dev
 ```
 
@@ -412,7 +412,7 @@ See the full [Bazaar documentation](/extensions/bazaar) for details on buyers qu
 
 ### Next Steps
 
-* [See the full example in the repo](https://github.com/x402-foundation/x402/tree/main/examples/typescript/clients/mcp)
+* [See the full example in the repo](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/clients/mcp)
 * Try integrating with your own x402-compatible APIs
 * Extend the MCP server with more tools or custom logic as needed
 * [Learn about building x402 servers](/getting-started/quickstart-for-sellers)

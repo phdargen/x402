@@ -4,7 +4,7 @@
  * One-shot client that connects to an MCP server via SSE, calls a paid tool,
  * and outputs a structured JSON result for the e2e test framework to parse.
  *
- * Adapted from examples/typescript/clients/mcp/simple.ts for e2e.
+ * Adapted from examples/typescript/scripts/clients/mcp/simple.ts for e2e.
  */
 
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";

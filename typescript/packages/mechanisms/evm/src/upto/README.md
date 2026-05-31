@@ -180,7 +180,7 @@ When both extensions are advertised, EIP-2612 takes priority. The client tries E
 
 ## Examples
 
-- [Express upto server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/upto)
+- [Express upto server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/schemes/upto.ts)
 
 ## See Also
 

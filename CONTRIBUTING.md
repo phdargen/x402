@@ -246,7 +246,7 @@ After spec approval, implement in a **single SDK** (TypeScript, Python OR Go).
 
 **Examples:**
 - Keep existing user-facing examples minimal
-- Add your chain (in alphabetic order by network prefix) to `examples/<sdk>/*/advanced/all_networks` for server, client and facilitator
+- Add your chain (in alphabetic order by network prefix) to `examples/typescript/scripts/lib/networks.ts`
 
 **Further steps:**
 - Add package publishing workflow in [`.github/workflows/`](.github/workflows/) following existing patterns

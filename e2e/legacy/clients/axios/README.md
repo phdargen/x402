@@ -6,7 +6,7 @@ This is an example client that demonstrates how to use the `x402-axios` package 
 
 - Node.js v20+ (install via [nvm](https://github.com/nvm-sh/nvm))
 - pnpm v10 (install via [pnpm.io/installation](https://pnpm.io/installation))
-- A running x402 server (you can use the example express server at `examples/typescript/servers/express`)
+- A running x402 server (you can use the example express server at `examples/typescript/scripts/servers/http/express.ts`)
 - A valid Ethereum private key for making payments
 
 ## Setup

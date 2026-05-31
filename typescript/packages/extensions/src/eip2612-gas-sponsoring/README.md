@@ -16,7 +16,7 @@ For tokens **without** EIP-2612, use [ERC-20 approval gas sponsoring](../erc20-a
 
 Declare the extension on routes that use Permit2 and an EIP-2612–capable token. Realistic shape (parsed `price`, Permit2, optional Bazaar, etc.) matches the repo example:
 
-- [examples/typescript/servers/advanced/eip2612-gas-sponsoring.ts](../../../../../examples/typescript/servers/advanced/eip2612-gas-sponsoring.ts)
+- [examples/typescript/scripts/servers/http/extensions/eip2612-gas-sponsoring.ts](../../../../../examples/typescript/scripts/servers/http/extensions/eip2612-gas-sponsoring.ts)
 
 Example route config (shape matches `@x402/express` / `@x402/next` resource maps: each route has `accepts` plus optional `extensions` at the route level):
 
@@ -72,7 +72,7 @@ You do **not** need to call `extractEip2612GasSponsoringInfo` yourself when usin
 
 Do register the extension on **`x402Facilitator`** so capability discovery (e.g. `/supported`) lists EIP-2612 gas sponsoring—mirroring the advanced example:
 
-- [examples/typescript/facilitator/advanced/gas_extensions.ts](../../../../../examples/typescript/facilitator/advanced/gas_extensions.ts)
+- [examples/typescript/scripts/facilitator/http/extensions/gas-extensions.ts](../../../../../examples/typescript/scripts/facilitator/http/extensions/gas-extensions.ts)
 
 ```typescript
 import { x402Facilitator } from "@x402/core/facilitator";

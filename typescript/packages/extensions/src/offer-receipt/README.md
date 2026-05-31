@@ -148,7 +148,7 @@ const receipt = extractReceiptFromResponse(response);
 
 ### Raw Flow
 
-For full control over offer selection, use the raw flow. See the [Offer/Receipt Example](../../../../../examples/typescript/clients/offer-receipt/) for a complete working implementation.
+For full control over offer selection, use the raw flow. See the [Offer/Receipt Example](../../../../../examples/typescript/scripts/clients/http/extensions/offer-receipt.ts) for a complete working implementation.
 
 The example demonstrates:
 1. Making a request and receiving a 402 with signed offers
@@ -211,7 +211,7 @@ For production deployments:
 
 ## Examples
 
-- [Offer/Receipt Client Example](../../../../../examples/typescript/clients/offer-receipt/) - Complete example showing offer/receipt extraction
+- [Offer/Receipt Client Example](../../../../../examples/typescript/scripts/clients/http/extensions/offer-receipt.ts) - Complete example showing offer/receipt extraction
 
 ## Related
 

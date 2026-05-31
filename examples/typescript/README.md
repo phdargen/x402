@@ -1,92 +1,74 @@
 # X402 TypeScript Examples
 
-This directory contains a collection of TypeScript examples demonstrating how to use the X402 protocol in various contexts. These examples are designed to work with the X402 npm packages and share a workspace with the main X402 packages.
+Two layouts for two audiences:
+
+| Audience | Directory | How to use |
+|----------|-----------|------------|
+| **Learn the API** | [`scripts/`](scripts/) | Single shared project — run any example with `pnpm tsx scripts/...` |
+| **Bootstrap a project** | [`templates/`](templates/) | Copy a folder and customize |
 
 ## Setup
 
-Before running any examples, you need to install dependencies and build the packages:
-
 ```bash
-# From the examples/typescript directory
+# From examples/typescript
 pnpm install
 pnpm build
 ```
 
-## Example Structure
+Copy `scripts/.env.example` to `scripts/.env` and fill in keys for the networks you need.
 
-The examples are organized into several categories:
+## Scripts (API learning)
 
-### Clients
+Organized by role, integration, scheme, and extension:
 
-Examples of different client implementations for interacting with X402 services:
+```text
+scripts/
+├── lib/                     # Shared env, signers, multi-chain registration
+├── clients/http/            # fetch.ts, axios.ts, advanced/, extensions/, schemes/
+├── servers/http/            # express.ts, hono.ts, fastify.ts, …
+├── facilitator/http/        # basic.ts, extensions/, schemes/
+├── clients/mcp/
+└── servers/mcp/
+```
 
-- `clients/axios/` - Axios client with x402 payment interceptor from `x402-axios`.
-- `clients/fetch/` - Client using the `x402-fetch` wrapper around the native fetch API.
-- `clients/cdp-sdk/` - Client that uses CDP Server Wallets as the signer with `x402-axios`.
-- `clients/chainlink-vrf-nft/` - Example using [Chainlink](docs.chain.link) to mint a randomized NFT (see them on [Opensea](https://testnets.opensea.io/collection/vrfnft-1)). Demonstrates verify/settle flow with `x402-axios`.
+Run examples from the `examples/typescript` directory:
 
-### Agents
+```bash
+# Client (exact scheme + @x402/fetch)
+pnpm --filter @x402/examples-scripts exec tsx clients/http/fetch.ts
 
-- `agent/` - Anthropic agent that pays via a Go proxy using `x402-fetch`.
-- `dynamic_agent/` - Agent that discovers tools dynamically and pays per-request using x402.
+# Server
+pnpm --filter @x402/examples-scripts exec tsx servers/http/express.ts
 
-### Discovery
+# Facilitator
+pnpm --filter @x402/examples-scripts exec tsx facilitator/http/basic.ts
 
-- `discovery/` - Uses the facilitator to list available x402-protected resources (Bazaar).
+# Batch settlement (3-role flow)
+pnpm --filter @x402/examples-scripts exec tsx facilitator/http/schemes/batch-settlement.ts
+pnpm --filter @x402/examples-scripts exec tsx servers/http/schemes/batch-settlement.ts
+pnpm --filter @x402/examples-scripts exec tsx clients/http/schemes/batch-settlement.ts
+```
 
-### MCP
+Or `cd scripts` and run `pnpm exec tsx clients/http/fetch.ts`.
 
-- `mcp/` - MCP server that makes paid API requests via `x402-axios` (Claude Desktop compatible).
-- `mcp-embedded-wallet/` - Electron-based MCP server with an embedded wallet that signs requests via IPC.
+**Multi-chain registration:** configure optional network keys in `.env`; default entry points register every chain whose keys are present. Add new chains in one place: [`scripts/lib/networks.ts`](scripts/lib/networks.ts).
 
-### Facilitator
+## Templates (copy-paste starters)
 
-- `facilitator/` - Example implementation of an x402 payment facilitator exposing `/verify` and `/settle`.
+- [`templates/next/`](templates/next/) — Next.js route protection
+- [`templates/miniapp/`](templates/miniapp/) — Farcaster Mini App
+- [`templates/next-batch-settlement-redis/`](templates/next-batch-settlement-redis/) — Batch settlement with Redis
+- [`templates/cloudfront-lambda-edge/`](templates/cloudfront-lambda-edge/) — CloudFront + Lambda@Edge
+- [`templates/mcp-chatbot/`](templates/mcp-chatbot/) — MCP chatbot client
 
-### Fullstack
-
-- `fullstack/next/` - Next.js app demonstrating route protection with `x402-next` middleware.
-- `fullstack/mainnet/` - Next.js app configured for Base mainnet using the Coinbase hosted facilitator.
-- `fullstack/next-advanced/` - [WIP] Deep Next.js integration using a paywall + session cookie after verify/settle.
-- `fullstack/browser-wallet-example/` - Browser wallet template: Hono server + React client with session and one-time payments.
-- `fullstack/farcaster-miniapp/` - Farcaster Mini App template with x402-protected APIs using [MiniKit](https://www.base.org/build/mini-apps).
-- `fullstack/auth_based_pricing/` - SIWE + JWT with conditional pricing ($0.01 with JWT vs $0.10 without) using x402.
-
-### Servers
-
-Examples of different server implementations:
-
-- `servers/express/` - Express.js server using `x402-express` middleware.
-- `servers/hono/` - Hono server using `x402-hono` middleware.
-- `servers/advanced/` - Express server without middleware: delayed settlement, dynamic pricing, multiple requirements.
-- `servers/mainnet/` - Server example for accepting real USDC on Base mainnet using the Coinbase hosted facilitator.
-
-## Running Examples
-
-Each example directory contains its own README with specific instructions for running that example. Navigate to the desired example directory and follow its instructions.
+Each template has its own README with setup instructions.
 
 ## Development
 
-This workspace uses:
+- pnpm workspace shared with `@x402/*` packages (must be built first)
+- Turborepo for template builds
+- TypeScript + tsx for scripts
 
-- pnpm for package management
-- Turborepo for monorepo management
-- TypeScript for type safety
+## Private keys
 
-The examples are designed to work with the main X402 packages, so they must be built before running any examples.
-
-## A note on private keys
-
-The examples in this folder commonly use private keys to sign messages. **Never put a private key with mainnet funds in a `.env` file**. This can result in keys getting checked into codebases and being drained.
-
-There are many ways to generate a keypair to use exclusively for development, one way is via foundry:
-
-```
-# install foundry
-curl -L https://foundry.paradigm.xyz | bash
-
-# generate a new wallet
-cast w new
-```
-
-You can fund your new wallet on most networks via the testnet [CDP Faucet](https://portal.cdp.coinbase.com/products/faucet), simply provide the address generated by cast.
+**Never put a mainnet-funded private key in a `.env` file.** Generate a dev-only keypair (e.g. `cast w new`) and fund via the [CDP Faucet](https://portal.cdp.coinbase.com/products/faucet).

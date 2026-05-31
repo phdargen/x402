@@ -79,7 +79,7 @@ const signer = toFacilitatorAvmSigner(process.env.AVM_PRIVATE_KEY!, {
 });
 ```
 
-See [facilitator example](../../examples/typescript/facilitator/) for a full implementation.
+See [facilitator example](../../examples/typescript/scripts/facilitator/http/) for a full implementation.
 
 ## Environment Variables
 

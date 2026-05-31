@@ -165,9 +165,9 @@ When **both** extensions are advertised, EIP-2612 takes priority. The client tri
 
 ## Examples
 
-- [Express server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/express)
-- [Fetch client](https://github.com/x402-foundation/x402/tree/main/examples/typescript/clients/fetch)
-- [EIP-2612 gas sponsoring server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/advanced/eip2612-gas-sponsoring.ts)
+- [Express server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/express.ts)
+- [Fetch client](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/clients/http/fetch.ts)
+- [EIP-2612 gas sponsoring server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/scripts/servers/http/extensions/eip2612-gas-sponsoring.ts)
 
 ## See Also
 

@@ -156,5 +156,5 @@ HTTP transport maps x402 errors to standard HTTP status codes:
 - [Core x402 Specification](../x402-specification-v1.md)
 - [HTTP/1.1 Specification (RFC 7231)](https://tools.ietf.org/html/rfc7231)
 - [HTTP 402 Status Code](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402)
-- [Express.js x402 Integration](../../examples/typescript/legacy/servers/express)
+- [Express.js x402 Integration](../../examples/typescript/legacy/scripts/servers/http/express.ts)
 - [Fetch API x402 Client](../../examples/typescript/legacy/clients/fetch)

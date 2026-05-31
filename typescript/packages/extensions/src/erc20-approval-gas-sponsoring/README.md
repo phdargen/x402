@@ -39,7 +39,7 @@ The exact/upto **Permit2 facilitator** already reads `erc20ApprovalGasSponsoring
 
 Register **`createErc20ApprovalGasSponsoringExtension`** with a facilitator EVM signer extended to **`sendTransactions`** (raw and/or unsigned calldata), as in:
 
-- [examples/typescript/facilitator/advanced/gas_extensions.ts](../../../../../examples/typescript/facilitator/advanced/gas_extensions.ts)
+- [examples/typescript/scripts/facilitator/http/extensions/gas-extensions.ts](../../../../../examples/typescript/scripts/facilitator/http/extensions/gas-extensions.ts)
 
 ```typescript
 import { x402Facilitator } from "@x402/core/facilitator";

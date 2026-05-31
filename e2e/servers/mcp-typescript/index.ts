@@ -2,7 +2,7 @@
  * MCP E2E Test Server with x402 Payment-Wrapped Tools
  *
  * This server exposes paid MCP tools over SSE transport for e2e testing.
- * Adapted from examples/typescript/servers/mcp/simple.ts for the e2e framework.
+ * Adapted from examples/typescript/scripts/servers/mcp/simple.ts for the e2e framework.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

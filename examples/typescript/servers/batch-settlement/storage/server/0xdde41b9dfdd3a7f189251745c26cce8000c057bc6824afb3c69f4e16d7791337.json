@@ -1,0 +1,21 @@
+{
+  "channelId": "0xdde41b9dfdd3a7f189251745c26cce8000c057bc6824afb3c69f4e16d7791337",
+  "channelConfig": {
+    "payer": "0xE33A295AF5C90A0649DFBECfDf9D604789B892e2",
+    "payerAuthorizer": "0x583F7fbe385B7fe2B5B5a51aB5e0077249B973bE",
+    "receiver": "0x1c47E9C085c2B7458F5b6C16cCBD65A65255a9f6",
+    "receiverAuthorizer": "0xa1aD2CD47DB081d2E72507D64df0B85e4fe646e5",
+    "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "withdrawDelay": 86400,
+    "salt": "0x0000000000000000000000000000000000000000000000000000000000000002"
+  },
+  "chargedCumulativeAmount": "18000",
+  "signedMaxClaimable": "22500",
+  "signature": "0x22437eb6845d1dd604a074e2b261917703077c16a0ffc006c4deb02d0cbf898a60c39552714a3cc500f41ab107f6069e2a12aaeb50cc9335fe3a96a5e66399e51c",
+  "balance": "50900",
+  "totalClaimed": "18000",
+  "withdrawRequestedAt": 0,
+  "refundNonce": 1,
+  "onchainSyncedAt": 1778698321024,
+  "lastRequestTimestamp": 1778698321084
+}

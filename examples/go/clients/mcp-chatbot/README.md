@@ -126,7 +126,7 @@ This chatbot uses exactly **4 MCP client methods**:
 This Go chatbot can connect to **any** x402 MCP server:
 
 - **Go server**: `examples/go/servers/mcp/`
-- **TypeScript server**: `examples/typescript/servers/mcp/`
+- **TypeScript server**: `examples/typescript/scripts/servers/mcp/`
 - **Python server**: `examples/python/servers/mcp/`
 
 All servers expose the same tools and x402 payment protocol, enabling full interoperability.
