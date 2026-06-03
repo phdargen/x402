@@ -1,5 +1,6 @@
 import { config } from "dotenv";
 import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
+import { decodePaymentSignatureHeader } from "@x402/core/http";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import { ExactSvmScheme } from "@x402/svm/exact/client";
@@ -38,7 +39,18 @@ async function main(): Promise<void> {
   client.register("eip155:*", new UptoEvmScheme(evmSigner, rpcOptions));
   client.register("solana:*", new ExactSvmScheme(svmSigner));
 
-  const fetchWithPayment = wrapFetchWithPayment(fetch, client);
+  const httpClient = new x402HTTPClient(client);
+  client.onAfterPaymentCreation(async ({ paymentPayload }) => {
+    const paymentHeaders = httpClient.encodePaymentSignatureHeader(paymentPayload);
+    const paymentSignature =
+      paymentHeaders["PAYMENT-SIGNATURE"] ?? paymentHeaders["X-PAYMENT"];
+    const decoded = decodePaymentSignatureHeader(paymentSignature);
+    console.log("\nPAYMENT-SIGNATURE header sent to server (decoded):");
+    console.log(JSON.stringify(decoded, null, 2));
+    console.log();
+  });
+
+  const fetchWithPayment = wrapFetchWithPayment(fetch, httpClient);
 
   console.log(`Making request to: ${url}\n`);
   const response = await fetchWithPayment(url, { method: "GET" });
@@ -48,7 +60,7 @@ async function main(): Promise<void> {
     : await response.text();
   console.log("Response body:", body);
 
-  const paymentResponse = new x402HTTPClient(client).getPaymentSettleResponse(name =>
+  const paymentResponse = httpClient.getPaymentSettleResponse(name =>
     response.headers.get(name),
   );
   console.log("\nPayment response:", JSON.stringify(paymentResponse, null, 2));

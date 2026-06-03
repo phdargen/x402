@@ -697,6 +697,7 @@ describe("Permit2 Approval Flow", () => {
       expect(info.spender).toBeDefined();
       expect(info.signature).toBeDefined();
       expect(info.version).toBe("1");
+      expect(info.description).toBe("test");
     });
 
     it("should not return extensions for EIP-3009 asset transfer method", async () => {

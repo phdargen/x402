@@ -49,6 +49,7 @@ vi.mock("@x402/core/server", () => {
     x402HTTPResourceServer: MockHTTPResourceServer,
     x402ResourceServer: vi.fn(),
     checkIfBazaarNeeded: vi.fn().mockReturnValue(false),
+    SETTLEMENT_OVERRIDES_HEADER: "Settlement-Overrides",
   };
 });
 
@@ -242,6 +243,7 @@ describe("handlePaymentError", () => {
 });
 
 describe("handleSettlement", () => {
+  const SETTLEMENT_OVERRIDES_HEADER = "Settlement-Overrides";
   let mockHttpServer: x402HTTPResourceServer;
   const mockPaymentPayload = {
     scheme: "exact",
@@ -321,7 +323,42 @@ describe("handleSettlement", () => {
       mockPaymentPayload,
       mockRequirements,
       mockDeclaredExtensions,
-      undefined,
+      expect.objectContaining({
+        responseBody: expect.any(Buffer),
+        responseHeaders: expect.objectContaining({
+          "content-type": "text/plain;charset=UTF-8",
+        }),
+      }),
+    );
+  });
+
+  it("forwards settlement overrides from response headers", async () => {
+    const overrides = { amount: "50000" };
+    const response = new NextResponse("OK", {
+      status: 200,
+      headers: { [SETTLEMENT_OVERRIDES_HEADER]: JSON.stringify(overrides) },
+    });
+
+    const result = await handleSettlement(
+      mockHttpServer,
+      response,
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      mockPaymentCancellationDispatcher,
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.headers.get(SETTLEMENT_OVERRIDES_HEADER)).toBeNull();
+    expect(mockHttpServer.processSettlement).toHaveBeenCalledWith(
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      expect.objectContaining({
+        responseHeaders: expect.objectContaining({
+          "settlement-overrides": JSON.stringify(overrides),
+        }),
+      }),
     );
   });
 

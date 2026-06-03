@@ -65,6 +65,7 @@ vi.mock("@x402/core/server", () => ({
     },
   })),
   checkIfBazaarNeeded: vi.fn().mockReturnValue(false),
+  SETTLEMENT_OVERRIDES_HEADER: "Settlement-Overrides",
 }));
 
 // --- Test Fixtures ---
@@ -284,6 +285,7 @@ describe("paymentProxy", () => {
           method: "GET",
         }),
         responseBody: expect.any(Buffer),
+        responseHeaders: expect.any(Object),
       }),
     );
   });

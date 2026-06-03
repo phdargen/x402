@@ -33,6 +33,12 @@ export default function Home() {
               >
                 Protected API
               </Link>
+              <Link
+                href="/api/upto"
+                className="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-mono transition-colors text-white"
+              >
+                Upto API
+              </Link>
             </div>
           </div>
         </section>

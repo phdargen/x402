@@ -1,6 +1,7 @@
 import { paymentProxy } from "@x402/next";
 import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { UptoEvmScheme } from "@x402/evm/upto/server";
 import { ExactSvmScheme } from "@x402/svm/exact/server";
 import { createPaywall } from "@x402/paywall";
 import { evmPaywall } from "@x402/paywall/evm";
@@ -29,6 +30,7 @@ export const server = new x402ResourceServer(facilitatorClient);
 
 // Register schemes
 server.register("eip155:*", new ExactEvmScheme());
+server.register("eip155:*", new UptoEvmScheme());
 server.register("solana:*", new ExactSvmScheme());
 
 // Build paywall
