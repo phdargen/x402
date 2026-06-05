@@ -484,35 +484,66 @@ export class x402Client {
 
 
   /**
-   * Merges server-declared extensions with scheme-provided extensions.
-   * Scheme extensions overlay on top of server extensions at each key,
-   * preserving server-provided schema while overlaying scheme-provided info.
+   * Merges server-declared extensions with client extension echoes.
+   * Client extension data may add fields, but server-declared fields remain intact.
    *
    * @param serverExtensions - Extensions declared by the server in the 402 response
-   * @param schemeExtensions - Extensions provided by the scheme client (e.g. EIP-2612)
+   * @param clientExtensions - Extensions provided by the client or scheme
    * @returns The merged extensions object, or undefined if both inputs are undefined
    */
   private mergeExtensions(
     serverExtensions?: Record<string, unknown>,
-    schemeExtensions?: Record<string, unknown>,
+    clientExtensions?: Record<string, unknown>,
   ): Record<string, unknown> | undefined {
-    if (!schemeExtensions) return serverExtensions;
-    if (!serverExtensions) return schemeExtensions;
+    if (!clientExtensions) return serverExtensions;
+    if (!serverExtensions) return clientExtensions;
 
     const merged = { ...serverExtensions };
-    for (const [key, schemeValue] of Object.entries(schemeExtensions)) {
+    for (const [key, clientValue] of Object.entries(clientExtensions)) {
       const serverValue = merged[key];
       if (
-        serverValue &&
-        typeof serverValue === "object" &&
-        schemeValue &&
-        typeof schemeValue === "object"
+        serverValue === null ||
+        typeof serverValue !== "object" ||
+        Array.isArray(serverValue) ||
+        clientValue === null ||
+        typeof clientValue !== "object" ||
+        Array.isArray(clientValue)
       ) {
-        // Deep merge: scheme info overlays server info, schema preserved
-        merged[key] = { ...serverValue as Record<string, unknown>, ...schemeValue as Record<string, unknown> };
-      } else {
-        merged[key] = schemeValue;
+        merged[key] = clientValue;
+        continue;
       }
+
+      const serverRecord = serverValue as Record<string, unknown>;
+      const clientRecord = clientValue as Record<string, unknown>;
+      const extensionValue = { ...serverRecord };
+      const pending = [{ target: extensionValue, source: clientRecord }];
+      for (const item of pending) {
+        for (const [fieldKey, clientFieldValue] of Object.entries(item.source)) {
+          const serverFieldValue = item.target[fieldKey];
+          if (
+            serverFieldValue !== null &&
+            typeof serverFieldValue === "object" &&
+            !Array.isArray(serverFieldValue) &&
+            clientFieldValue !== null &&
+            typeof clientFieldValue === "object" &&
+            !Array.isArray(clientFieldValue)
+          ) {
+            const nestedValue = { ...(serverFieldValue as Record<string, unknown>) };
+            item.target[fieldKey] = nestedValue;
+            pending.push({
+              target: nestedValue,
+              source: clientFieldValue as Record<string, unknown>,
+            });
+            continue;
+          }
+
+          if (!Object.prototype.hasOwnProperty.call(item.target, fieldKey)) {
+            item.target[fieldKey] = clientFieldValue;
+          }
+        }
+      }
+
+      merged[key] = extensionValue;
     }
     return merged;
   }
@@ -541,7 +572,10 @@ export class x402Client {
       }
     }
 
-    return enriched;
+    return {
+      ...enriched,
+      extensions: this.mergeExtensions(paymentRequired.extensions, enriched.extensions),
+    };
   }
 
   /**

@@ -335,6 +335,76 @@ describe("x402Client", () => {
         expect(result.accepted).toBeDefined();
       });
 
+      it("deep merges server extension data when scheme extensions add fields", async () => {
+        const client = new x402Client();
+        const mockClient = new MockSchemeNetworkClient("exact", {
+          x402Version: 2,
+          payload: { signature: "mock_signature" },
+          extensions: {
+            gas: {
+              info: {
+                permit: { signature: "0xpermit" },
+                nested: { clientField: "client" },
+              },
+              schema: {
+                properties: {
+                  permit: { type: "object" },
+                },
+              },
+              metadata: {
+                nested: { clientField: "client" },
+              },
+            },
+          },
+        } as any);
+        client.register("eip155:8453" as Network, mockClient);
+
+        const result = await client.createPaymentPayload(
+          buildPaymentRequired({
+            accepts: [
+              buildPaymentRequirements({ scheme: "exact", network: "eip155:8453" as Network }),
+            ],
+            extensions: {
+              gas: {
+                info: {
+                  description: "Gas sponsoring",
+                  version: 1,
+                  nested: { serverField: "server" },
+                },
+                schema: {
+                  type: "object",
+                  properties: {
+                    description: { type: "string" },
+                  },
+                },
+                metadata: {
+                  nested: { serverField: "server" },
+                },
+              },
+            },
+          }),
+        );
+
+        expect(result.extensions?.gas).toEqual({
+          info: {
+            description: "Gas sponsoring",
+            version: 1,
+            nested: { serverField: "server", clientField: "client" },
+            permit: { signature: "0xpermit" },
+          },
+          schema: {
+            type: "object",
+            properties: {
+              description: { type: "string" },
+              permit: { type: "object" },
+            },
+          },
+          metadata: {
+            nested: { serverField: "server", clientField: "client" },
+          },
+        });
+      });
+
       it("should call scheme client's createPaymentPayload", async () => {
         const client = new x402Client();
         const mockClient = new MockSchemeNetworkClient("exact");
@@ -693,7 +763,8 @@ describe("x402Client", () => {
 
       expect(enrichCalled).toBe(true);
       expect((result.extensions as Record<string, unknown>)?.testExtension).toEqual({
-        info: { enriched: true },
+        info: { description: "test", enriched: true },
+        schema: {},
       });
     });
 

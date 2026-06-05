@@ -60,7 +60,10 @@ describe("Builder Code Integration Tests", () => {
 
     const paymentPayload = await client.createPaymentPayload(paymentRequired);
 
-    expect(paymentPayload.extensions?.[BUILDER_CODE]).toEqual({ a: APP, s: SERVICE });
+    expect(paymentPayload.extensions?.[BUILDER_CODE]).toEqual({
+      info: { a: APP, s: SERVICE },
+      schema: expect.any(Object),
+    });
   });
 
   it("does not enrich when builder-code is absent from payment required", async () => {

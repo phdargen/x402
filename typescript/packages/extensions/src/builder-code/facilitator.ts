@@ -26,9 +26,9 @@ import {
 function extractClientExtension(
   extensions?: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const raw = extensions?.[BUILDER_CODE];
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
-  return raw as Record<string, unknown>;
+  const info = (extensions?.[BUILDER_CODE] as { info?: unknown } | undefined)?.info;
+  if (typeof info !== "object" || info === null || Array.isArray(info)) return undefined;
+  return info as Record<string, unknown>;
 }
 
 /**

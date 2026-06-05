@@ -110,17 +110,20 @@ describe("Builder Code Extension", () => {
         paymentRequiredWithApp(APP),
       );
 
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ a: APP, s: SERVICE });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
+        info: { a: APP, s: SERVICE },
+        schema: expect.any(Object),
+      });
     });
 
     it("attaches only service code when server omits builder-code", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const enriched = await client.enrichPaymentPayload!(basePayload(), paymentRequiredWithApp());
 
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ s: SERVICE });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
     });
 
-    it("does not echo non-string app codes from server info", async () => {
+    it("preserves server info fields while attaching service code", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const paymentRequired: PaymentRequired = {
         x402Version: 2,
@@ -131,7 +134,10 @@ describe("Builder Code Extension", () => {
       };
 
       const enriched = await client.enrichPaymentPayload!(basePayload(), paymentRequired);
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ s: SERVICE });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
+        info: { a: 123, s: SERVICE },
+        schema: {},
+      });
     });
 
     it("preserves unrelated payload extensions", async () => {
@@ -144,7 +150,10 @@ describe("Builder Code Extension", () => {
       const enriched = await client.enrichPaymentPayload!(payload, paymentRequiredWithApp(APP));
 
       expect(enriched.extensions?.other).toEqual({ kept: true });
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ a: APP, s: SERVICE });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
+        info: { a: APP, s: SERVICE },
+        schema: expect.any(Object),
+      });
     });
   });
 
@@ -160,23 +169,11 @@ describe("Builder Code Extension", () => {
       expect(parsed).toEqual({ w: WALLET });
     });
 
-    it("uses client app code and service code", () => {
+    it("uses spec-shaped client app code and service code", () => {
       const parsed = parsedFromFacilitator(
         suffixContext({
           paymentPayloadExtensions: {
-            [BUILDER_CODE]: { a: APP, s: SERVICE },
-          },
-        }),
-      );
-
-      expect(parsed).toEqual({ w: WALLET, a: APP, s: SERVICE });
-    });
-
-    it("accepts client app code when present in the payload", () => {
-      const parsed = parsedFromFacilitator(
-        suffixContext({
-          paymentPayloadExtensions: {
-            [BUILDER_CODE]: { a: APP, s: SERVICE },
+            [BUILDER_CODE]: { info: { a: APP, s: SERVICE }, schema: {} },
           },
         }),
       );
@@ -188,7 +185,7 @@ describe("Builder Code Extension", () => {
       const parsed = parsedFromFacilitator(
         suffixContext({
           paymentPayloadExtensions: {
-            [BUILDER_CODE]: { s: ["INVALID", SERVICE, "bc_other"] },
+            [BUILDER_CODE]: { info: { s: ["INVALID", SERVICE, "bc_other"] }, schema: {} },
           },
         }),
       );
@@ -200,7 +197,7 @@ describe("Builder Code Extension", () => {
       const parsed = parsedFromFacilitator(
         suffixContext({
           paymentPayloadExtensions: {
-            [BUILDER_CODE]: { s: "Also_Invalid" },
+            [BUILDER_CODE]: { info: { s: "Also_Invalid" }, schema: {} },
           },
         }),
       );
@@ -212,7 +209,7 @@ describe("Builder Code Extension", () => {
       const parsed = parsedFromFacilitator(
         suffixContext({
           paymentPayloadExtensions: {
-            [BUILDER_CODE]: { a: APP },
+            [BUILDER_CODE]: { info: { a: APP }, schema: {} },
           },
         }),
       );

@@ -50,17 +50,22 @@ export class BuilderCodeClientExtension implements ClientExtension {
     payload: PaymentPayload,
     paymentRequired: PaymentRequired,
   ): Promise<PaymentPayload> {
-    const serverExt = paymentRequired.extensions?.[BUILDER_CODE] as
-      | Record<string, unknown>
-      | undefined;
-    const info = serverExt?.info as Record<string, unknown> | undefined;
-    const a = typeof info?.a === "string" ? info.a : undefined;
+    const serverExt = paymentRequired.extensions?.[BUILDER_CODE];
+    const extension =
+      typeof serverExt === "object" && serverExt !== null && !Array.isArray(serverExt)
+        ? { ...(serverExt as Record<string, unknown>) }
+        : {};
+    const serverInfo = extension.info;
+    const info =
+      typeof serverInfo === "object" && serverInfo !== null && !Array.isArray(serverInfo)
+        ? { ...(serverInfo as Record<string, unknown>), s: this.serviceCode }
+        : { s: this.serviceCode };
 
     return {
       ...payload,
       extensions: {
         ...payload.extensions,
-        [BUILDER_CODE]: { ...(a && { a }), s: this.serviceCode },
+        [BUILDER_CODE]: { ...extension, info },
       },
     };
   }
