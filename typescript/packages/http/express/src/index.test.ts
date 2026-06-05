@@ -395,6 +395,37 @@ describe("paymentMiddleware", () => {
     expect(res.setHeader).toHaveBeenCalledWith("PAYMENT-RESPONSE", "settled");
   });
 
+  it("strips settlement override header from client response", async () => {
+    setupMockHttpServer(
+      {
+        type: "payment-verified",
+        paymentPayload: mockPaymentPayload,
+        paymentRequirements: mockPaymentRequirements,
+      },
+      { success: true, headers: { "PAYMENT-RESPONSE": "settled" } },
+    );
+
+    const middleware = paymentMiddleware(
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    const req = createMockRequest();
+    const res = createMockResponse();
+    const next = vi.fn(() => {
+      res.setHeader("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
+      res.statusCode = 200;
+      res.end();
+    });
+
+    await middleware(req, res, next);
+
+    expect(res.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
+    expect(res._headers["Settlement-Overrides"]).toBeUndefined();
+  });
+
   it("skips settlement when handler returns >= 400", async () => {
     setupMockHttpServer(
       {

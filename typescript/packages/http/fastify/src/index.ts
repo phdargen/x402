@@ -462,6 +462,7 @@ export function paymentMiddlewareFromHTTPServer(
       for (const [key, value] of Object.entries(settleResult.headers)) {
         reply.header(key, value);
       }
+      reply.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
       return effectivePayload;
     } catch (error) {
       if (error instanceof FacilitatorResponseError) {

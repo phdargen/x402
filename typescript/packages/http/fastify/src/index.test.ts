@@ -472,6 +472,37 @@ describe("paymentMiddleware", () => {
     expect(result).toBe(payload);
   });
 
+  it("strips settlement override header from client response", async () => {
+    setupMockHttpServer(
+      {
+        type: "payment-verified",
+        paymentPayload: mockPaymentPayload,
+        paymentRequirements: mockPaymentRequirements,
+      },
+      { success: true, headers: { "PAYMENT-RESPONSE": "settled" } },
+    );
+
+    const { app, hooks } = createMockApp();
+    paymentMiddleware(
+      app,
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+
+    const request = createMockRequest();
+    const reply = createMockReply();
+    reply._headers["Settlement-Overrides"] = JSON.stringify({ amount: "32%" });
+
+    await hooks.onRequest[0](request, reply);
+    await hooks.onSend[0](request, reply, JSON.stringify({ data: "premium content" }));
+
+    expect(reply.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
+    expect(reply._headers["Settlement-Overrides"]).toBeUndefined();
+  });
+
   it("passes Buffer payload bytes to settlement without JSON stringifying them", async () => {
     setupMockHttpServer(
       {

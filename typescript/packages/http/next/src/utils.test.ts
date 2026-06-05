@@ -46,6 +46,7 @@ vi.mock("@x402/core/server", () => {
       }
       return null;
     },
+    SETTLEMENT_OVERRIDES_HEADER: "Settlement-Overrides",
     x402HTTPResourceServer: MockHTTPResourceServer,
     x402ResourceServer: vi.fn(),
     checkIfBazaarNeeded: vi.fn().mockReturnValue(false),
@@ -323,6 +324,52 @@ describe("handleSettlement", () => {
       mockDeclaredExtensions,
       undefined,
     );
+  });
+
+  it("forwards response headers to processSettlement for settlement overrides", async () => {
+    const response = new NextResponse("OK", { status: 200 });
+    response.headers.set("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
+    const httpContext = createRequestContext(createMockRequest());
+
+    await handleSettlement(
+      mockHttpServer,
+      response,
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      mockPaymentCancellationDispatcher,
+      httpContext,
+    );
+
+    expect(mockHttpServer.processSettlement).toHaveBeenCalledWith(
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      expect.objectContaining({
+        request: httpContext,
+        responseBody: expect.any(Buffer),
+        responseHeaders: expect.objectContaining({
+          "settlement-overrides": JSON.stringify({ amount: "32%" }),
+        }),
+      }),
+    );
+  });
+
+  it("strips settlement override header from client response", async () => {
+    const response = new NextResponse("OK", { status: 200 });
+    response.headers.set("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
+
+    const result = await handleSettlement(
+      mockHttpServer,
+      response,
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      mockPaymentCancellationDispatcher,
+    );
+
+    expect(result.headers.has("Settlement-Overrides")).toBe(false);
+    expect(result.headers.get("PAYMENT-RESPONSE")).toBe("settled");
   });
 
   it("returns 402 error response when settlement returns failure", async () => {

@@ -9,6 +9,7 @@ import {
   FacilitatorResponseError,
   getFacilitatorResponseError as getCoreFacilitatorResponseError,
   PaymentCancellationDispatcher,
+  SETTLEMENT_OVERRIDES_HEADER,
 } from "@x402/core/server";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { NextAdapter } from "./adapter";
@@ -179,11 +180,16 @@ export async function handleSettlement(
     // Get response body for extensions
     const responseBody = Buffer.from(await response.clone().arrayBuffer());
 
+    const responseHeaders: Record<string, string> = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+
     const result = await httpServer.processSettlement(
       paymentPayload,
       paymentRequirements,
       declaredExtensions,
-      httpContext ? { request: httpContext, responseBody } : undefined,
+      httpContext ? { request: httpContext, responseBody, responseHeaders } : undefined,
     );
 
     if (!result.success) {
@@ -200,6 +206,9 @@ export async function handleSettlement(
     Object.entries(result.headers).forEach(([key, value]) => {
       response.headers.set(key, value);
     });
+
+    // Strip internal settlement override header before sending to client.
+    response.headers.delete(SETTLEMENT_OVERRIDES_HEADER);
 
     return response;
   } catch (error) {

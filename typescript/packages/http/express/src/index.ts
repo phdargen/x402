@@ -343,6 +343,7 @@ export function paymentMiddlewareFromHTTPServer(
           Object.entries(settleResult.headers).forEach(([key, value]) => {
             res.setHeader(key, value);
           });
+          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
         } catch (error) {
           if (error instanceof FacilitatorResponseError) {
             bufferedCalls = [];

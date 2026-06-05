@@ -258,6 +258,7 @@ export function paymentMiddlewareFromHTTPServer(
             Object.entries(settleResult.headers).forEach(([key, value]) => {
               res.headers.set(key, value);
             });
+            res.headers.delete(SETTLEMENT_OVERRIDES_HEADER);
           }
         } catch (error) {
           if (error instanceof FacilitatorResponseError) {
