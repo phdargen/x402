@@ -1,9 +1,9 @@
 /**
  * Facilitator-side extension for the Builder Code Extension.
  *
- * At settlement time, the facilitator always encodes its wallet code into the
- * ERC-8021 suffix. App code (`a`) and service code (`s`) are read from the
- * client payment payload extensions.
+ * At settlement time, the facilitator encodes its wallet code into the ERC-8021
+ * suffix when configured. App code (`a`) and service code (`s`) are read from
+ * the client payment payload extensions.
  */
 
 import type { FacilitatorExtension } from "@x402/core/types";
@@ -57,7 +57,7 @@ function resolveServiceCode(raw: unknown): string | undefined {
  *
  * const facilitator = new x402Facilitator();
  * facilitator.registerExtension(new BuilderCodeFacilitatorExtension({
- *   builderCode: "bc_my_facilitator",
+ *   builderCode: "bc_my_facilitator", // optional
  * }));
  * ```
  */
@@ -66,12 +66,12 @@ export class BuilderCodeFacilitatorExtension implements FacilitatorExtension {
   private readonly config: BuilderCodeFacilitatorConfig;
 
   /**
-   * Creates a facilitator extension that encodes the facilitator wallet code at settlement.
+   * Creates a facilitator extension that encodes builder-code attribution at settlement.
    *
-   * @param config - Facilitator builder-code configuration (wallet code `w`)
+   * @param config - Optional facilitator builder-code configuration (wallet code `w`)
    */
-  constructor(config: BuilderCodeFacilitatorConfig) {
-    if (!BUILDER_CODE_PATTERN.test(config.builderCode)) {
+  constructor(config: BuilderCodeFacilitatorConfig = {}) {
+    if (config.builderCode && !BUILDER_CODE_PATTERN.test(config.builderCode)) {
       throw new Error(
         `Invalid builder code: "${config.builderCode}". ` +
           `Must be 1-32 characters, lowercase alphanumeric and underscores only.`,
@@ -84,12 +84,12 @@ export class BuilderCodeFacilitatorExtension implements FacilitatorExtension {
    * Builds the ERC-8021 Schema 2 calldata suffix for a settlement transaction.
    *
    * - `a` and `s` are read from the client's payment payload extensions.
-   * - `w` is always the facilitator's own code.
+   * - `w` is the facilitator's own code when configured.
    *
    * @param ctx - Settlement context with payment-payload extensions
-   * @returns Hex-encoded ERC-8021 builder-code calldata suffix
+   * @returns Hex-encoded ERC-8021 builder-code calldata suffix, or undefined when no attribution is present
    */
-  buildDataSuffix(ctx: DataSuffixContext): Hex {
+  buildDataSuffix(ctx: DataSuffixContext): Hex | undefined {
     const clientExt = extractClientExtension(ctx.paymentPayload.extensions);
 
     const a =
@@ -99,10 +99,14 @@ export class BuilderCodeFacilitatorExtension implements FacilitatorExtension {
     const s = resolveServiceCode(clientExt?.s);
 
     const data: BuilderCodeExtensionData = {
-      w: this.config.builderCode,
+      ...(this.config.builderCode && { w: this.config.builderCode }),
       ...(a && { a }),
       ...(s && { s }),
     };
+
+    if (!data.a && !data.w && !data.s) {
+      return undefined;
+    }
 
     return encodeBuilderCodeSuffix(data);
   }

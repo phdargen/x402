@@ -19,7 +19,7 @@ import {
   BuilderCodeFacilitatorExtension,
   declareBuilderCodeExtension,
   parseBuilderCodeSuffixFromCalldata,
-  type BuilderCodeFacilitatorExtension,
+  type BuilderCodeFacilitatorExtension as BuilderCodeFacilitatorExtensionType,
 } from "../../src/builder-code";
 
 const APP = "bc_weather_svc";
@@ -93,12 +93,15 @@ describe("Builder Code Integration Tests", () => {
     };
 
     const paymentPayload = await client.createPaymentPayload(paymentRequired);
-    const builderExt = facilitator.getExtension<BuilderCodeFacilitatorExtension>(BUILDER_CODE)!;
+    const builderExt = facilitator.getExtension<BuilderCodeFacilitatorExtensionType>(BUILDER_CODE)!;
 
     const suffix = builderExt.buildDataSuffix!({
       paymentPayload,
       paymentRequirements: paymentPayload.accepted,
     });
+    if (!suffix) {
+      throw new Error("Expected builder-code suffix");
+    }
 
     const parsed = parseBuilderCodeSuffixFromCalldata(`0x${"00".repeat(4)}${suffix.slice(2)}`);
     expect(parsed).toEqual({ w: WALLET, a: APP, s: SERVICE });
@@ -116,11 +119,14 @@ describe("Builder Code Integration Tests", () => {
     const paymentPayload = await client.createPaymentPayload(paymentRequired);
     expect(paymentPayload.extensions?.[BUILDER_CODE]).toBeUndefined();
 
-    const builderExt = facilitator.getExtension<BuilderCodeFacilitatorExtension>(BUILDER_CODE)!;
+    const builderExt = facilitator.getExtension<BuilderCodeFacilitatorExtensionType>(BUILDER_CODE)!;
     const suffix = builderExt.buildDataSuffix!({
       paymentPayload,
       paymentRequirements: paymentPayload.accepted,
     });
+    if (!suffix) {
+      throw new Error("Expected builder-code suffix");
+    }
 
     const parsed = parseBuilderCodeSuffixFromCalldata(`0x${"00".repeat(4)}${suffix.slice(2)}`);
     expect(parsed).toEqual({ w: WALLET });

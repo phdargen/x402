@@ -62,9 +62,9 @@ export interface BuilderCodeExtensionData {
  */
 export interface BuilderCodeFacilitatorConfig {
   /**
-   * The facilitator's own builder code, set as the "w" field at settlement.
+   * The facilitator's own builder code, set as the "w" field at settlement when provided.
    */
-  builderCode: string;
+  builderCode?: string;
 }
 
 export interface DataSuffixContext {

@@ -27,6 +27,7 @@ const WALLET = "bc_my_facilitator";
 function paymentRequiredWithApp(appCode?: string): PaymentRequired {
   return {
     x402Version: 2,
+    resource: { url: "https://example.com/resource" },
     accepts: [],
     extensions: appCode ? { [BUILDER_CODE]: declareBuilderCodeExtension(appCode) } : undefined,
   };
@@ -47,6 +48,8 @@ function basePayload(): PaymentPayload {
       amount: "1000",
       asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       payTo: "0x0000000000000000000000000000000000000001",
+      maxTimeoutSeconds: 300,
+      extra: {},
     },
     payload: {},
   };
@@ -73,6 +76,8 @@ function suffixContext(overrides: {
       amount: "1000",
       asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       payTo: "0x0000000000000000000000000000000000000001",
+      maxTimeoutSeconds: 300,
+      extra: {},
     },
   };
 }
@@ -88,6 +93,9 @@ function parsedFromFacilitator(
 ): ReturnType<typeof parseBuilderCodeSuffixFromCalldata> {
   const ext = new BuilderCodeFacilitatorExtension({ builderCode: WALLET });
   const suffix = ext.buildDataSuffix(ctx);
+  if (!suffix) {
+    throw new Error("Expected builder-code suffix");
+  }
   return parseBuilderCodeSuffixFromCalldata(`0xdeadbeef${suffix.slice(2)}` as `0x${string}`);
 }
 
@@ -103,17 +111,14 @@ describe("Builder Code Extension", () => {
       expect(() => new BuilderCodeClientExtension("Bad-Code")).toThrow(/Invalid builder code/);
     });
 
-    it("echoes server app code and attaches service code", async () => {
+    it("attaches service code for core extension merging", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const enriched = await client.enrichPaymentPayload!(
         basePayload(),
         paymentRequiredWithApp(APP),
       );
 
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
-        info: { a: APP, s: SERVICE },
-        schema: expect.any(Object),
-      });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
     });
 
     it("attaches only service code when server omits builder-code", async () => {
@@ -123,10 +128,11 @@ describe("Builder Code Extension", () => {
       expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
     });
 
-    it("preserves server info fields while attaching service code", async () => {
+    it("leaves server info preservation to core extension merging", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const paymentRequired: PaymentRequired = {
         x402Version: 2,
+        resource: { url: "https://example.com/resource" },
         accepts: [],
         extensions: {
           [BUILDER_CODE]: { info: { a: 123 }, schema: {} },
@@ -134,10 +140,7 @@ describe("Builder Code Extension", () => {
       };
 
       const enriched = await client.enrichPaymentPayload!(basePayload(), paymentRequired);
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
-        info: { a: 123, s: SERVICE },
-        schema: {},
-      });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
     });
 
     it("preserves unrelated payload extensions", async () => {
@@ -150,10 +153,7 @@ describe("Builder Code Extension", () => {
       const enriched = await client.enrichPaymentPayload!(payload, paymentRequiredWithApp(APP));
 
       expect(enriched.extensions?.other).toEqual({ kept: true });
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({
-        info: { a: APP, s: SERVICE },
-        schema: expect.any(Object),
-      });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
     });
   });
 
@@ -164,9 +164,33 @@ describe("Builder Code Extension", () => {
       );
     });
 
-    it("always encodes the facilitator wallet code", () => {
+    it("encodes the facilitator wallet code when configured", () => {
       const parsed = parsedFromFacilitator(suffixContext({}));
       expect(parsed).toEqual({ w: WALLET });
+    });
+
+    it("allows the facilitator wallet code to be omitted", () => {
+      const ext = new BuilderCodeFacilitatorExtension();
+      const suffix = ext.buildDataSuffix(
+        suffixContext({
+          paymentPayloadExtensions: {
+            [BUILDER_CODE]: { info: { a: APP, s: SERVICE }, schema: {} },
+          },
+        }),
+      );
+      if (!suffix) {
+        throw new Error("Expected builder-code suffix");
+      }
+
+      const parsed = parseBuilderCodeSuffixFromCalldata(
+        `0xdeadbeef${suffix.slice(2)}` as `0x${string}`,
+      );
+      expect(parsed).toEqual({ a: APP, s: SERVICE });
+    });
+
+    it("omits the settlement suffix when no attribution is present", () => {
+      const ext = new BuilderCodeFacilitatorExtension();
+      expect(ext.buildDataSuffix(suffixContext({}))).toBeUndefined();
     });
 
     it("uses spec-shaped client app code and service code", () => {

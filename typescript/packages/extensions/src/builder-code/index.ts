@@ -7,7 +7,7 @@
  * Three parties attach their builder code:
  * - Server: Declares `a` (app) in 402 response via declareBuilderCodeExtension()
  * - Client: Echoes `a` and adds `s` (service) via BuilderCodeClientExtension
- * - Facilitator: Adds `w` (wallet) at settlement via BuilderCodeFacilitatorExtension
+ * - Facilitator: Optionally adds `w` (wallet) at settlement via BuilderCodeFacilitatorExtension
  *
  * ## Usage
  *
@@ -35,7 +35,7 @@
  * import { BuilderCodeFacilitatorExtension } from '@x402/extensions/builder-code';
  *
  * facilitator.registerExtension(new BuilderCodeFacilitatorExtension({
- *   builderCode: "bc_my_facilitator",
+ *   builderCode: "bc_my_facilitator", // optional
  * }));
  * ```
  */

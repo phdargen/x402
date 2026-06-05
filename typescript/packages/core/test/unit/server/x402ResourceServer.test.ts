@@ -1623,7 +1623,7 @@ describe("x402ResourceServer", () => {
       });
     });
 
-    it("passes when client omits a server info field", () => {
+    it("fails when client deletes a server info field", () => {
       const server = new x402ResourceServer();
       const paymentRequired = buildPaymentRequired({ extensions: serverExtensions });
       const payload = buildPaymentPayload({
@@ -1632,7 +1632,11 @@ describe("x402ResourceServer", () => {
         },
       });
 
-      expect(server.validateExtensions(paymentRequired, payload)).toEqual({ valid: true });
+      expect(server.validateExtensions(paymentRequired, payload)).toEqual({
+        valid: false,
+        invalidReason: "extension_echo_mismatch",
+        extensionKey: "bazaar",
+      });
     });
 
     it("passes for v1 payloads", () => {
