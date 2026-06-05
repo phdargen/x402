@@ -4,8 +4,7 @@ import { x402ResourceServer, HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 
 // Defaults allow `next build` without a .env; set both vars before running the app.
-const facilitatorUrl =
-  process.env.FACILITATOR_URL ?? "https://x402.org/facilitator";
+const facilitatorUrl = process.env.FACILITATOR_URL ?? "https://x402.org/facilitator";
 export const evmAddress = (process.env.EVM_ADDRESS ??
   "0x0000000000000000000000000000000000000000") as `0x${string}`;
 
