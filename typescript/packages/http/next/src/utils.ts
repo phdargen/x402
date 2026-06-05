@@ -173,6 +173,7 @@ export async function handleSettlement(
       reason: "handler_failed",
       responseStatus: response.status,
     });
+    response.headers.delete(SETTLEMENT_OVERRIDES_HEADER);
     return response;
   }
 

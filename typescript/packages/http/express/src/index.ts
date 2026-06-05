@@ -288,6 +288,7 @@ export function paymentMiddlewareFromHTTPServer(
             reason: "handler_failed",
             responseStatus: res.statusCode,
           });
+          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
           restoreResponseMethods();
           // Replay all buffered calls in order
           for (const [method, args] of bufferedCalls) {
@@ -328,6 +329,7 @@ export function paymentMiddlewareFromHTTPServer(
           if (!settleResult.success) {
             bufferedCalls = [];
             const { response } = settleResult;
+            res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
             Object.entries(response.headers).forEach(([key, value]) => {
               res.setHeader(key, value);
             });
@@ -343,20 +345,23 @@ export function paymentMiddlewareFromHTTPServer(
           Object.entries(settleResult.headers).forEach(([key, value]) => {
             res.setHeader(key, value);
           });
-          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
         } catch (error) {
           if (error instanceof FacilitatorResponseError) {
             bufferedCalls = [];
+            res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
             sendFacilitatorError(res, error);
             return;
           }
           console.error(error);
           // If settlement fails, don't send the buffered response
           bufferedCalls = [];
+          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
           res.status(402).json({});
           return;
         } finally {
           restoreResponseMethods();
+
+          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
 
           // Replay all buffered calls in order
           for (const [method, args] of bufferedCalls) {

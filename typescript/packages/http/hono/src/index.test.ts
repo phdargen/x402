@@ -442,14 +442,17 @@ describe("paymentMiddleware", () => {
     );
     const context = createMockContext();
 
+    const responseHeaders = new Headers();
+    responseHeaders.set("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
     const next = vi.fn().mockImplementation(async () => {
-      context.res = new Response("Error", { status: 500 });
+      context.res = new Response("Error", { status: 500, headers: responseHeaders });
     });
 
     await middleware(context, next);
 
     expect(next).toHaveBeenCalled();
     expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(context.res?.headers.has("Settlement-Overrides")).toBe(false);
   });
 
   it("returns 402 when settlement throws error", async () => {

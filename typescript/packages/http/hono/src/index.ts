@@ -221,6 +221,10 @@ export function paymentMiddlewareFromHTTPServer(
             reason: "handler_failed",
             responseStatus: res.status,
           });
+          const headers = new Headers(res.headers);
+          headers.delete(SETTLEMENT_OVERRIDES_HEADER);
+          const body = await res.clone().arrayBuffer();
+          c.res = new Response(body, { status: res.status, headers });
           return;
         }
 

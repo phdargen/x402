@@ -447,6 +447,7 @@ describe("paymentMiddleware", () => {
     const res = createMockResponse();
     const next = vi.fn(() => {
       // Simulate handler returning error
+      res.setHeader("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
       res.statusCode = 500;
       res.end();
     });
@@ -455,6 +456,8 @@ describe("paymentMiddleware", () => {
 
     expect(next).toHaveBeenCalled();
     expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(res.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
+    expect(res._headers["Settlement-Overrides"]).toBeUndefined();
     const cancellationDispatcher = (await mockProcessHTTPRequest.mock.results[0].value)
       .cancellationDispatcher;
     expect(cancellationDispatcher.cancel).toHaveBeenCalledWith(
@@ -522,12 +525,14 @@ describe("paymentMiddleware", () => {
     const req = createMockRequest();
     const res = createMockResponse();
     const next = vi.fn(() => {
+      res.setHeader("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
       res.statusCode = 200;
       res.end();
     });
 
     await middleware(req, res, next);
 
+    expect(res.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
     expect(res.status).toHaveBeenCalledWith(402);
     expect(res.json).toHaveBeenCalledWith({});
   });
@@ -703,12 +708,14 @@ describe("paymentMiddleware", () => {
     const req = createMockRequest();
     const res = createMockResponse();
     const next = vi.fn(() => {
+      res.setHeader("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
       res.statusCode = 200;
       res.end();
     });
 
     await middleware(req, res, next);
 
+    expect(res.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
     expect(res.setHeader).toHaveBeenCalledWith("PAYMENT-RESPONSE", "settlement-failed-encoded");
     expect(res.status).toHaveBeenCalledWith(402);
     expect(res.json).toHaveBeenCalledWith({});

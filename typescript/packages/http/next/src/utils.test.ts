@@ -372,6 +372,24 @@ describe("handleSettlement", () => {
     expect(result.headers.get("PAYMENT-RESPONSE")).toBe("settled");
   });
 
+  it("strips settlement override header when handler returns >= 400", async () => {
+    const response = new NextResponse("Error", { status: 500 });
+    response.headers.set("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
+
+    const result = await handleSettlement(
+      mockHttpServer,
+      response,
+      mockPaymentPayload,
+      mockRequirements,
+      mockDeclaredExtensions,
+      mockPaymentCancellationDispatcher,
+    );
+
+    expect(result.status).toBe(500);
+    expect(result.headers.has("Settlement-Overrides")).toBe(false);
+    expect(mockHttpServer.processSettlement).not.toHaveBeenCalled();
+  });
+
   it("returns 402 error response when settlement returns failure", async () => {
     vi.mocked(mockHttpServer.processSettlement).mockResolvedValue({
       success: false,
