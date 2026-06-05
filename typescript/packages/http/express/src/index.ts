@@ -329,7 +329,6 @@ export function paymentMiddlewareFromHTTPServer(
           if (!settleResult.success) {
             bufferedCalls = [];
             const { response } = settleResult;
-            res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
             Object.entries(response.headers).forEach(([key, value]) => {
               res.setHeader(key, value);
             });
@@ -348,14 +347,12 @@ export function paymentMiddlewareFromHTTPServer(
         } catch (error) {
           if (error instanceof FacilitatorResponseError) {
             bufferedCalls = [];
-            res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
             sendFacilitatorError(res, error);
             return;
           }
           console.error(error);
           // If settlement fails, don't send the buffered response
           bufferedCalls = [];
-          res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
           res.status(402).json({});
           return;
         } finally {

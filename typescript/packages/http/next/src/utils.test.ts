@@ -244,6 +244,7 @@ describe("handlePaymentError", () => {
 
 describe("handleSettlement", () => {
   let mockHttpServer: x402HTTPResourceServer;
+  let mockHttpContext: ReturnType<typeof createRequestContext>;
   const mockPaymentPayload = {
     scheme: "exact",
     network: "eip155:84532",
@@ -256,6 +257,7 @@ describe("handleSettlement", () => {
   let mockPaymentCancellationDispatcher: PaymentCancellationDispatcher;
 
   beforeEach(() => {
+    mockHttpContext = createRequestContext(createMockRequest());
     mockPaymentCancellationDispatcher = {
       cancel: vi.fn().mockResolvedValue(undefined),
     } as unknown as PaymentCancellationDispatcher;
@@ -276,6 +278,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(500);
@@ -298,6 +301,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(400);
@@ -314,6 +318,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(200);
@@ -322,7 +327,11 @@ describe("handleSettlement", () => {
       mockPaymentPayload,
       mockRequirements,
       mockDeclaredExtensions,
-      undefined,
+      expect.objectContaining({
+        request: mockHttpContext,
+        responseBody: expect.any(Buffer),
+        responseHeaders: expect.any(Object),
+      }),
     );
   });
 
@@ -366,6 +375,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.headers.has("Settlement-Overrides")).toBe(false);
@@ -383,6 +393,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(500);
@@ -415,6 +426,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(402);
@@ -434,6 +446,7 @@ describe("handleSettlement", () => {
       mockRequirements,
       mockDeclaredExtensions,
       mockPaymentCancellationDispatcher,
+      mockHttpContext,
     );
 
     expect(result.status).toBe(402);

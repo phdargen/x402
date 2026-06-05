@@ -4,6 +4,7 @@ node_modules/
 dist/
 .turbo/
 .next/
+next-env.d.ts
 proxy
 .env
 __pycache__/
