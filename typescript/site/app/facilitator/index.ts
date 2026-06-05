@@ -14,6 +14,7 @@ import {
   EIP2612_GAS_SPONSORING,
   createErc20ApprovalGasSponsoringExtension,
 } from "@x402/extensions";
+import { BuilderCodeFacilitatorExtension } from "@x402/extensions/builder-code";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
@@ -194,8 +195,13 @@ async function createFacilitator(): Promise<x402Facilitator> {
     },
   };
 
-  // Register gas sponsorship extensions for Permit2 support
+  // Register facilitator extensions for builder attribution and Permit2 support
   facilitator
+    .registerExtension(
+      new BuilderCodeFacilitatorExtension({
+        builderCode: process.env.FACILITATOR_BUILDER_CODE,
+      }),
+    )
     .registerExtension(EIP2612_GAS_SPONSORING)
     .registerExtension(createErc20ApprovalGasSponsoringExtension(erc20ApprovalSigner));
 

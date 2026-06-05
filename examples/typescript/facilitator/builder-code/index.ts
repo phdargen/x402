@@ -24,11 +24,6 @@ if (!process.env.EVM_PRIVATE_KEY) {
   process.exit(1);
 }
 
-const facilitatorBuilderCode = process.env.BUILDER_CODE;
-const facilitatorBuilderCodeConfig = facilitatorBuilderCode
-  ? { builderCode: facilitatorBuilderCode }
-  : {};
-
 const evmAccount = privateKeyToAccount(
   process.env.EVM_PRIVATE_KEY as `0x${string}`,
 );
@@ -100,7 +95,9 @@ const facilitator = new x402Facilitator()
     console.log("Settle failure", context);
   })
   .registerExtension(
-    new BuilderCodeFacilitatorExtension(facilitatorBuilderCodeConfig),
+    new BuilderCodeFacilitatorExtension({
+      builderCode: process.env.FACILITATOR_BUILDER_CODE,
+    }),
   );
 
 facilitator.register(
