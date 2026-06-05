@@ -42,13 +42,10 @@ export class BuilderCodeClientExtension implements ClientExtension {
    * Attaches this client's service code (`s`).
    *
    * @param payload - Payment payload to enrich
-   * @param _paymentRequired - Server payment requirements; core merges server extension data
+   * @param _ - Server payment requirements; core merges server extension data
    * @returns Payment payload with builder-code extension data
    */
-  async enrichPaymentPayload(
-    payload: PaymentPayload,
-    _paymentRequired: PaymentRequired,
-  ): Promise<PaymentPayload> {
+  async enrichPaymentPayload(payload: PaymentPayload, _: PaymentRequired): Promise<PaymentPayload> {
     return {
       ...payload,
       extensions: {

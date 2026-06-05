@@ -612,14 +612,14 @@ export class x402ResourceServer {
     if (this.supportedResponsesMap.size === 0) {
       throw lastError
         ? new Error(
-          "Failed to initialize: no supported payment kinds loaded from any facilitator.",
-          {
-            cause: lastError,
-          },
-        )
+            "Failed to initialize: no supported payment kinds loaded from any facilitator.",
+            {
+              cause: lastError,
+            },
+          )
         : new Error(
-          "Failed to initialize: no supported payment kinds loaded from any facilitator.",
-        );
+            "Failed to initialize: no supported payment kinds loaded from any facilitator.",
+          );
     }
   }
 
@@ -701,7 +701,7 @@ export class x402ResourceServer {
     if (!supportedKind) {
       throw new Error(
         `Facilitator does not support ${SchemeNetworkServer.scheme} on ${resourceConfig.network}. ` +
-        `Make sure to call initialize() to fetch supported kinds from facilitators.`,
+          `Make sure to call initialize() to fetch supported kinds from facilitators.`,
       );
     }
 
