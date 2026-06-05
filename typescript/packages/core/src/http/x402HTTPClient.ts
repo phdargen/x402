@@ -223,8 +223,8 @@ export class x402HTTPClient {
    * Parses HTTP status, headers, and body into an `HTTPResourceResponse`.
    *
    * Decodes the x402 payment header into `header`: the `PAYMENT-RESPONSE`
-   * settlement if present, otherwise the `PAYMENT-REQUIRED` declaration
-   * (whose `error` field carries the server's failure reason).
+   * settlement if present, otherwise the `PAYMENT-REQUIRED` declaration on
+   * 402 responses (whose `error` field carries the server's failure reason).
    *
    * @param args - Normalized response inputs from any HTTP transport
    * @param args.status - HTTP response status code
@@ -243,14 +243,24 @@ export class x402HTTPClient {
     try {
       header = this.getPaymentSettleResponse(getHeader);
     } catch {
-      try {
-        header = this.getPaymentRequiredResponse(getHeader, body);
-      } catch {
-        /* no payment header */
+      if (status === 402) {
+        try {
+          header = this.getPaymentRequiredResponse(getHeader, body);
+        } catch {
+          /* no payment header */
+        }
       }
     }
 
-    return { status, body, header };
+    let paymentStatus: HTTPPaymentStatus = "none";
+    if (header && !("success" in header)) {
+      paymentStatus = "payment_required";
+    }
+    if (header && "success" in header) {
+      paymentStatus = header.success ? "settled" : "settle_failed";
+    }
+
+    return { status, paymentStatus, body, header };
   }
 
   /**
@@ -298,6 +308,8 @@ export class x402HTTPClient {
 export type HTTPResourceResponse = {
   /** HTTP status code. */
   status: number;
+  /** x402 payment outcome. */
+  paymentStatus: HTTPPaymentStatus;
   /** Parsed response body. */
   body: unknown;
   /**
@@ -307,3 +319,5 @@ export type HTTPResourceResponse = {
    */
   header?: SettleResponse | PaymentRequired;
 };
+
+export type HTTPPaymentStatus = "settled" | "settle_failed" | "payment_required" | "none";

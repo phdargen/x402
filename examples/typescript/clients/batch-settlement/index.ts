@@ -70,7 +70,7 @@ async function main(): Promise<void> {
     const response = await fetchWithPayment(url, { method: "GET" });
     const result = await httpClient.processResponse(response);
 
-    if (result.status === 200) {
+    if (result.paymentStatus === "settled") {
       console.log(`Request ${i + 1} — RESPONSE`);
       console.log(result.body);
       console.log(JSON.stringify(result.header, null, 2));

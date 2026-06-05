@@ -117,4 +117,5 @@ export {
   PaymentRequiredHook,
   HTTPClientExtensionHooks,
   HTTPResourceResponse,
+  HTTPPaymentStatus,
 } from "./x402HTTPClient";
