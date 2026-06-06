@@ -59,6 +59,7 @@ jobs:
         id: prep
         working-directory: ./python/x402
         env:
+          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
           INPUT_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'minor' }}
         run: |

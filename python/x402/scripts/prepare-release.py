@@ -4,15 +4,44 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 PYPROJECT_VERSION_RE = re.compile(r'^version = "([^"]+)"$', re.MULTILINE)
 INIT_VERSION_RE = re.compile(r'^__version__ = "([^"]+)"$', re.MULTILINE)
+DEFAULT_REPOSITORY = "x402-foundation/x402"
+REPOSITORY_URL = f"https://github.com/{DEFAULT_REPOSITORY}"
+
+PR_COMMIT_AUTHORS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          commit {
+            authors(first: 100) {
+              nodes {
+                user {
+                  login
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
 
 
 class ReleasePrepError(RuntimeError):
@@ -100,6 +129,164 @@ def replace_single(path: Path, pattern: re.Pattern[str], replacement: str, label
     path.write_text(updated)
 
 
+def git_output(sdk_dir: Path, command: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *command],
+            cwd=sdk_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    return completed.stdout.strip()
+
+
+def gh_output(sdk_dir: Path, command: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["gh", *command],
+            cwd=sdk_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    return completed.stdout.strip()
+
+
+def fragment_issue(fragment: Path) -> str:
+    return fragment.name.split(".", 1)[0]
+
+
+def fragment_text(fragment: Path) -> str:
+    return " ".join(fragment.read_text().split())
+
+
+def repository_name() -> str:
+    repository = os.environ.get("GITHUB_REPOSITORY", DEFAULT_REPOSITORY)
+    if "/" not in repository:
+        return DEFAULT_REPOSITORY
+
+    return repository
+
+
+def fragment_commit_sha(sdk_dir: Path, fragment: Path) -> str | None:
+    relative_fragment = fragment.relative_to(sdk_dir)
+    output = git_output(
+        sdk_dir,
+        ["log", "-1", "--format=%H", "--", str(relative_fragment)],
+    )
+    if not output:
+        return None
+
+    return output
+
+
+def add_unique(items: list[str], item: str | None) -> None:
+    if item is not None and item not in items:
+        items.append(item)
+
+
+def pr_commit_author_logins(sdk_dir: Path, issue: str) -> list[str]:
+    owner, name = repository_name().split("/", 1)
+    logins: list[str] = []
+    cursor = None
+
+    while True:
+        command = [
+            "api",
+            "graphql",
+            "-f",
+            f"query={PR_COMMIT_AUTHORS_QUERY}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"number={issue}",
+        ]
+        if cursor is not None:
+            command.extend(["-f", f"after={cursor}"])
+
+        output = gh_output(sdk_dir, command)
+        if not output:
+            return logins
+
+        try:
+            data = json.loads(output)
+            commits = data["data"]["repository"]["pullRequest"]["commits"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return logins
+
+        for node in commits["nodes"]:
+            for author in node["commit"]["authors"]["nodes"]:
+                user = author.get("user")
+                if user is not None:
+                    add_unique(logins, user.get("login"))
+
+        if not commits["pageInfo"]["hasNextPage"]:
+            return logins
+
+        cursor = commits["pageInfo"]["endCursor"]
+
+
+def thanks_text(logins: list[str]) -> str | None:
+    if not logins:
+        return None
+
+    links = [f"[@{login}](https://github.com/{login})" for login in logins]
+    if len(links) == 1:
+        return f"Thanks {links[0]}!"
+
+    if len(links) == 2:
+        return f"Thanks {links[0]} and {links[1]}!"
+
+    return f"Thanks {', '.join(links[:-1])}, and {links[-1]}!"
+
+
+def fragment_preview_line(sdk_dir: Path, fragment: Path) -> str | None:
+    issue = fragment_issue(fragment)
+    text = fragment_text(fragment)
+    if not issue.isdecimal() or not text:
+        return None
+
+    commit_sha = fragment_commit_sha(sdk_dir, fragment)
+    logins = pr_commit_author_logins(sdk_dir, issue)
+    parts = [f"- [#{issue}]({REPOSITORY_URL}/pull/{issue})"]
+
+    if commit_sha is not None:
+        short_sha = commit_sha[:7]
+        parts.append(f"[`{short_sha}`]({REPOSITORY_URL}/commit/{commit_sha})")
+
+    if (thanks := thanks_text(logins)) is not None:
+        parts.append(thanks)
+
+    return f"{' '.join(parts)} - {text}"
+
+
+def changelog_fragment_preview(sdk_dir: Path, fragments: list[Path]) -> list[str]:
+    return [
+        line
+        for fragment in fragments
+        if (line := fragment_preview_line(sdk_dir, fragment)) is not None
+    ]
+
+
+def print_changelog_fragment_preview(lines: list[str]) -> None:
+    if not lines:
+        return
+
+    print("Changelog fragment preview:")
+    for line in lines:
+        print(line)
+    print()
+
+
 def run_towncrier(sdk_dir: Path, version: str) -> None:
     try:
         subprocess.run(
@@ -139,6 +326,9 @@ def main() -> int:
     target_version = args.version if args.version is not None else bump_version(current_version, args.bump)
     validate_version(target_version)
     assert_version_increases(current_version, target_version)
+
+    preview_lines = changelog_fragment_preview(sdk_dir, fragments)
+    print_changelog_fragment_preview(preview_lines)
 
     if args.dry_run:
         print(f"Current Python SDK version: {current_version}")
