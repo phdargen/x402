@@ -101,7 +101,7 @@ jobs:
           )
 
           git status --short -- "${paths[@]}"
-          if git diff --quiet -- "${paths[@]}"; then
+          if git diff --quiet HEAD -- "${paths[@]}"; then
             echo "committed=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi

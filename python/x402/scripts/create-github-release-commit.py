@@ -64,7 +64,7 @@ def github_repository() -> str:
 
 
 def changed_paths(paths: list[str]) -> list[str]:
-    output = run(["git", "diff", "--name-only", "--", *paths])
+    output = run(["git", "diff", "--name-only", "HEAD", "--", *paths])
     return output.splitlines()
 
 
