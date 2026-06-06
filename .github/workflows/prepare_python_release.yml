@@ -95,6 +95,7 @@ jobs:
 
           paths=(
             python/x402/pyproject.toml
+            python/x402/uv.lock
             python/x402/__init__.py
             python/x402/CHANGELOG.md
             python/x402/changelog.d
