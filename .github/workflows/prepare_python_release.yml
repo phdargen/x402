@@ -1,0 +1,154 @@
+name: Prepare Python Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Python SDK release version in X.Y.Z format. Leave blank to use bump."
+        required: false
+        type: string
+      bump:
+        description: "Version bump to use when version is blank. Scheduled releases always use minor."
+        required: false
+        default: minor
+        type: choice
+        options:
+          - minor
+          - patch
+  schedule:
+    - cron: "0 10 * * 5"
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: none
+
+jobs:
+  prepare-python-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "python/x402/uv.lock"
+
+      - name: Set up Python
+        working-directory: ./python/x402
+        run: uv python install
+
+      - name: Install dependencies
+        working-directory: ./python/x402
+        run: uv sync --all-extras --dev
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare release branch
+        id: branch
+        run: |
+          set -euo pipefail
+
+          branch="release/python-$(date -u +%F)"
+          git fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
+          git checkout -B "${branch}"
+
+          echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare Python release files
+        id: prep
+        working-directory: ./python/x402
+        env:
+          INPUT_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+          INPUT_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'minor' }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            uv run python scripts/prepare-release.py --version "${INPUT_VERSION}"
+          else
+            uv run python scripts/prepare-release.py --bump "${INPUT_BUMP}"
+          fi
+
+          version="$(
+            uv run python - <<'PY'
+          from pathlib import Path
+          import re
+
+          pyproject = Path("pyproject.toml")
+          match = re.search(r'^version = "([^"]+)"$', pyproject.read_text(), re.MULTILINE)
+          if match is None:
+              raise SystemExit("Could not read Python SDK version from pyproject.toml")
+          print(match.group(1))
+          PY
+          )"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit release prep
+        id: commit
+        run: |
+          set -euo pipefail
+
+          git status --short
+          if git diff --quiet; then
+            echo "committed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git add python/x402/pyproject.toml \
+            python/x402/__init__.py \
+            python/x402/CHANGELOG.md \
+            python/x402/changelog.d
+          git commit -m "chore: version python package"
+
+          echo "committed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Push release branch
+        if: steps.commit.outputs.committed == 'true'
+        run: git push --force-with-lease --set-upstream origin "${{ steps.branch.outputs.branch }}"
+
+      - name: Create or update release PR
+        if: steps.commit.outputs.committed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          VERSION: ${{ steps.prep.outputs.version }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          title="chore: prepare Python SDK release ${VERSION}"
+          body="$(
+            cat <<EOF
+          ## Summary
+          - Bumps the Python SDK package version to ${VERSION}.
+          - Rebuilds the Python SDK changelog with Towncrier.
+
+          ## Test plan
+          - GitHub Actions will run the Python package checks on this PR.
+          - After merge, manually run "Publish x402 to PyPI" and create the signed pypi tag.
+          EOF
+          )"
+
+          if gh pr view "${BRANCH}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh pr edit "${BRANCH}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${title}" \
+              --body "${body}"
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${BASE_BRANCH}" \
+              --head "${BRANCH}" \
+              --title "${title}" \
+              --body "${body}"
+          fi
