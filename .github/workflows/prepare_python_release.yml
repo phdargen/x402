@@ -47,20 +47,12 @@ jobs:
         working-directory: ./python/x402
         run: uv sync --all-extras --dev
 
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
       - name: Prepare release branch
         id: branch
         run: |
           set -euo pipefail
 
           branch="release/python-$(date -u +%F)"
-          git fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
-          git checkout -B "${branch}"
-
           echo "branch=${branch}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare Python release files
@@ -93,28 +85,81 @@ jobs:
 
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Commit release prep
+      - name: Create GitHub-signed release commit
         id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
         run: |
           set -euo pipefail
 
-          git status --short
-          if git diff --quiet; then
+          paths=(
+            python/x402/pyproject.toml
+            python/x402/__init__.py
+            python/x402/CHANGELOG.md
+            python/x402/changelog.d
+          )
+
+          git status --short -- "${paths[@]}"
+          if git diff --quiet -- "${paths[@]}"; then
             echo "committed=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
-          git add python/x402/pyproject.toml \
-            python/x402/__init__.py \
-            python/x402/CHANGELOG.md \
-            python/x402/changelog.d
-          git commit -m "chore: version python package"
+          changed_paths="$(mktemp)"
+          tree_entries="$(mktemp)"
+          jq -n '[]' > "${tree_entries}"
+
+          git diff --name-only -- "${paths[@]}" > "${changed_paths}"
+          while IFS= read -r path; do
+            if [[ -f "${path}" ]]; then
+              blob_sha="$(
+                jq -n --rawfile content "${path}" '{content: $content, encoding: "utf-8"}' |
+                  gh api "repos/${GITHUB_REPOSITORY}/git/blobs" --input - --jq '.sha'
+              )"
+              entry="$(jq -n \
+                --arg path "${path}" \
+                --arg sha "${blob_sha}" \
+                '{path: $path, mode: "100644", type: "blob", sha: $sha}')"
+            else
+              entry="$(jq -n \
+                --arg path "${path}" \
+                '{path: $path, mode: "100644", type: "blob", sha: null}')"
+            fi
+
+            jq --argjson entry "${entry}" '. + [$entry]' "${tree_entries}" > "${tree_entries}.tmp"
+            mv "${tree_entries}.tmp" "${tree_entries}"
+          done < "${changed_paths}"
+
+          base_sha="$(git rev-parse HEAD)"
+          base_tree_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/git/commits/${base_sha}" --jq '.tree.sha'
+          )"
+          tree_sha="$(
+            jq -n \
+              --arg base_tree "${base_tree_sha}" \
+              --slurpfile tree "${tree_entries}" \
+              '{base_tree: $base_tree, tree: $tree[0]}' |
+              gh api "repos/${GITHUB_REPOSITORY}/git/trees" --input - --jq '.sha'
+          )"
+          commit_sha="$(
+            jq -n \
+              --arg message "chore: version python package" \
+              --arg tree "${tree_sha}" \
+              --arg parent "${base_sha}" \
+              '{message: $message, tree: $tree, parents: [$parent]}' |
+              gh api "repos/${GITHUB_REPOSITORY}/git/commits" --input - --jq '.sha'
+          )"
+
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" >/dev/null 2>&1; then
+            jq -n --arg sha "${commit_sha}" '{sha: $sha, force: true}' |
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/${BRANCH}" --input -
+          else
+            jq -n --arg ref "refs/heads/${BRANCH}" --arg sha "${commit_sha}" '{ref: $ref, sha: $sha}' |
+              gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" --input -
+          fi
 
           echo "committed=true" >> "${GITHUB_OUTPUT}"
-
-      - name: Push release branch
-        if: steps.commit.outputs.committed == 'true'
-        run: git push --force-with-lease --set-upstream origin "${{ steps.branch.outputs.branch }}"
 
       - name: Create or update release PR
         if: steps.commit.outputs.committed == 'true'
