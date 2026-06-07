@@ -13,8 +13,6 @@ app.use(
 // That's it! See examples/ for full details
 ```
 
-## Installation
-
 <details>
 <summary><b>Typescript</b></summary>
 
