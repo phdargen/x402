@@ -240,13 +240,7 @@ def thanks_text(logins: list[str]) -> str | None:
         return None
 
     links = [f"[@{login}](https://github.com/{login})" for login in logins]
-    if len(links) == 1:
-        return f"Thanks {links[0]}!"
-
-    if len(links) == 2:
-        return f"Thanks {links[0]} and {links[1]}!"
-
-    return f"Thanks {', '.join(links[:-1])}, and {links[-1]}!"
+    return f"Thanks {' '.join(links)}!"
 
 
 def fragment_preview_line(sdk_dir: Path, fragment: Path) -> str | None:
