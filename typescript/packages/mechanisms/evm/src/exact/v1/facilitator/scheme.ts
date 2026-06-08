@@ -180,6 +180,9 @@ export class ExactEvmSchemeV1 implements SchemeNetworkFacilitator {
         }
       }
 
+      // V1 payloads carry no extensions, so the builder-code suffix can only contain the
+      // facilitator's own wallet code (`w`); client app (`a`) and service (`s`) codes are
+      // always absent.
       const dataSuffix = await resolveDataSuffix(context, {
         paymentPayload: payload,
         paymentRequirements: requirements,

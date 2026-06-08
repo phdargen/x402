@@ -305,6 +305,9 @@ func (f *ExactEvmSchemeV1) Settle(
 		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
 	}
 
+	// V1 payloads carry no extensions, so the builder-code suffix can only contain the
+	// facilitator's own wallet code (`w`); client app (`a`) and service (`s`) codes are
+	// always absent. Empty context is intentional: PaymentPayloadV1 is not a v2 PaymentPayload.
 	dataSuffix, err := evm.ResolveDataSuffix(fctx, evm.DataSuffixContext{})
 	if err != nil {
 		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
