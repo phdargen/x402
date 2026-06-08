@@ -13,7 +13,7 @@ config();
 
 const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
 const evmRpcUrl = process.env.EVM_RPC_URL ?? "https://sepolia.base.org";
-const clientBuilderCode = process.env.CLIENT_BUILDER_CODE || "bc_example_client";
+const clientBuilderCode = process.env.CLIENT_BUILDER_CODE;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
@@ -26,7 +26,7 @@ const url = `${baseURL}${endpointPath}`;
  *
  * Optional environment variables:
  * - EVM_RPC_URL: JSON-RPC endpoint for onchain verification (defaults to Base Sepolia)
- * - CLIENT_BUILDER_CODE: Builder code for client attribution (defaults to "bc_example_client")
+ * - CLIENT_BUILDER_CODE: Optional builder code for client attribution (`s`)
  * - RESOURCE_SERVER_URL: Resource server base URL
  * - ENDPOINT_PATH: Paid endpoint path
  */
@@ -36,7 +36,9 @@ async function main(): Promise<void> {
 
   const client = new x402Client();
   client.register("eip155:*", new ExactEvmScheme(evmSigner, rpcOptions));
-  client.registerExtension(new BuilderCodeClientExtension(clientBuilderCode));
+  if (clientBuilderCode) {
+    client.registerExtension(new BuilderCodeClientExtension(clientBuilderCode));
+  }
 
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
 
