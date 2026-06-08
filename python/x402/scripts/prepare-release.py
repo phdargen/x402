@@ -96,9 +96,7 @@ def require_directory(path: Path) -> None:
 
 def changelog_fragments(changelog_dir: Path) -> list[Path]:
     return sorted(
-        path
-        for path in changelog_dir.iterdir()
-        if path.is_file() and not path.name.startswith(".")
+        path for path in changelog_dir.iterdir() if path.is_file() and not path.name.startswith(".")
     )
 
 
@@ -113,7 +111,9 @@ def extract_single_version(path: Path, pattern: re.Pattern[str], label: str) -> 
     content = path.read_text()
     matches = pattern.findall(content)
     if len(matches) != 1:
-        raise ReleasePrepError(f"Expected exactly one {label} version in {path}, found {len(matches)}")
+        raise ReleasePrepError(
+            f"Expected exactly one {label} version in {path}, found {len(matches)}"
+        )
     validate_version(matches[0])
     return matches[0]
 
@@ -138,7 +138,9 @@ def replace_single(path: Path, pattern: re.Pattern[str], replacement: str, label
     content = path.read_text()
     updated, count = pattern.subn(replacement, content)
     if count != 1:
-        raise ReleasePrepError(f"Expected to update exactly one {label} version in {path}, updated {count}")
+        raise ReleasePrepError(
+            f"Expected to update exactly one {label} version in {path}, updated {count}"
+        )
     path.write_text(updated)
 
 
@@ -397,7 +399,9 @@ def main() -> int:
             f"Version mismatch: pyproject.toml has {current_version}, __init__.py has {init_version}"
         )
 
-    target_version = args.version if args.version is not None else bump_version(current_version, args.bump)
+    target_version = (
+        args.version if args.version is not None else bump_version(current_version, args.bump)
+    )
     validate_version(target_version)
     assert_version_increases(current_version, target_version)
 
