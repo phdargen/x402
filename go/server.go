@@ -705,7 +705,7 @@ func (s *x402ResourceServer) ValidateExtensions(
 	// add fields; arrays/primitives must match exactly via DeepEqual).
 	type pair struct{ advertised, echoed interface{} }
 
-	// normalize converts a server-declared value (which may be a typed struct) 
+	// normalize converts a server-declared value (which may be a typed struct)
 	// into the generic JSON shape the echoed payload already uses.
 	// Falls back to the original value when it is not JSON-encodable.
 	normalize := func(v interface{}) interface{} {
