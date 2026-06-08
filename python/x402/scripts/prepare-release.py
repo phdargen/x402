@@ -169,10 +169,6 @@ def gh_output(sdk_dir: Path, command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
-def fragment_issue(fragment: Path) -> str:
-    return fragment.name.split(".", 1)[0]
-
-
 def fragment_text(fragment: Path) -> str:
     return " ".join(fragment.read_text().split())
 
@@ -253,15 +249,55 @@ def thanks_text(logins: list[str]) -> str | None:
     return f"Thanks {' '.join(links)}!"
 
 
-def fragment_preview_line(sdk_dir: Path, fragment: Path) -> str | None:
-    issue = fragment_issue(fragment)
+def commit_author_login(sdk_dir: Path, commit_sha: str) -> str | None:
+    output = gh_output(
+        sdk_dir,
+        ["api", f"repos/{repository_name()}/commits/{commit_sha}", "--jq", ".author.login"],
+    )
+    if not output or output == "null":
+        return None
+
+    return output
+
+
+def commit_pr_number(sdk_dir: Path, commit_sha: str) -> str | None:
+    output = gh_output(
+        sdk_dir,
+        ["api", f"repos/{repository_name()}/commits/{commit_sha}/pulls", "--jq", ".[0].number"],
+    )
+    if not output or output == "null":
+        return None
+
+    return output
+
+
+def fragment_author_logins(
+    sdk_dir: Path, pr_number: str | None, commit_sha: str | None
+) -> list[str]:
+    if pr_number is not None:
+        logins = pr_commit_author_logins(sdk_dir, pr_number)
+        if logins:
+            return logins
+
+    if commit_sha is None:
+        return []
+
+    login = commit_author_login(sdk_dir, commit_sha)
+    return [login] if login is not None else []
+
+
+def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
     text = fragment_text(fragment)
-    if not issue.isdecimal() or not text:
+    if not text:
         return None
 
     commit_sha = fragment_commit_sha(sdk_dir, fragment)
-    logins = pr_commit_author_logins(sdk_dir, issue)
-    parts = [f"- [#{issue}]({REPOSITORY_URL}/pull/{issue})"]
+    pr_number = commit_pr_number(sdk_dir, commit_sha) if commit_sha is not None else None
+    logins = fragment_author_logins(sdk_dir, pr_number, commit_sha)
+
+    parts: list[str] = []
+    if pr_number is not None:
+        parts.append(f"[#{pr_number}]({REPOSITORY_URL}/pull/{pr_number})")
 
     if commit_sha is not None:
         short_sha = commit_sha[:7]
@@ -270,25 +306,41 @@ def fragment_preview_line(sdk_dir: Path, fragment: Path) -> str | None:
     if (thanks := thanks_text(logins)) is not None:
         parts.append(thanks)
 
-    return f"{' '.join(parts)} - {text}"
+    prefix = " ".join(parts)
+    return f"{prefix} - {text}" if prefix else text
 
 
-def changelog_fragment_preview(sdk_dir: Path, fragments: list[Path]) -> list[str]:
+def changelog_fragment_bodies(sdk_dir: Path, fragments: list[Path]) -> list[tuple[Path, str]]:
     return [
-        line
+        (fragment, body)
         for fragment in fragments
-        if (line := fragment_preview_line(sdk_dir, fragment)) is not None
+        if (body := fragment_changelog_body(sdk_dir, fragment)) is not None
     ]
 
 
-def print_changelog_fragment_preview(lines: list[str]) -> None:
-    if not lines:
+def print_changelog_fragment_preview(bodies: list[tuple[Path, str]]) -> None:
+    if not bodies:
         return
 
     print("Changelog fragment preview:")
-    for line in lines:
-        print(line)
+    for _, body in bodies:
+        print(f"- {body}")
     print()
+
+
+def rewrite_fragments_as_orphans(sdk_dir: Path, bodies: list[tuple[Path, str]]) -> None:
+    """Replace each fragment with an orphan fragment whose body is the rendered
+    changelog line. Towncrier renders orphan fragments (filenames prefixed with
+    ``+``) verbatim without appending its own issue link, so the PR link, commit
+    hash, and author attribution from the preview land in CHANGELOG.md.
+
+    The orphan files are staged so Towncrier's git-based cleanup can remove them;
+    otherwise it invokes ``git rm`` with no paths and prints a spurious error."""
+    for fragment, body in bodies:
+        orphan = fragment.with_name(f"+{fragment.name}")
+        orphan.write_text(f"{body}\n")
+        fragment.unlink()
+        git_output(sdk_dir, ["add", "--", str(orphan.relative_to(sdk_dir))])
 
 
 def run_towncrier(sdk_dir: Path, version: str) -> None:
@@ -331,8 +383,8 @@ def main() -> int:
     validate_version(target_version)
     assert_version_increases(current_version, target_version)
 
-    preview_lines = changelog_fragment_preview(sdk_dir, fragments)
-    print_changelog_fragment_preview(preview_lines)
+    fragment_bodies = changelog_fragment_bodies(sdk_dir, fragments)
+    print_changelog_fragment_preview(fragment_bodies)
 
     if args.dry_run:
         print(f"Current Python SDK version: {current_version}")
@@ -352,6 +404,7 @@ def main() -> int:
         f'__version__ = "{target_version}"',
         "__init__.py",
     )
+    rewrite_fragments_as_orphans(sdk_dir, fragment_bodies)
     run_towncrier(sdk_dir, target_version)
 
     print(f"Prepared Python SDK release {target_version}")
