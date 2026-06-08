@@ -21,6 +21,7 @@ func ExecuteClaimWithSignature(
 	payload *batchsettlement.BatchSettlementClaimPayload,
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
+	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -81,6 +82,7 @@ func ExecuteClaimWithSignature(
 		batchsettlement.BatchSettlementAddress,
 		batchsettlement.BatchSettlementClaimWithSignatureABI,
 		"claimWithSignature",
+		dataSuffix,
 		claimArgs,
 		sigBytes,
 	)

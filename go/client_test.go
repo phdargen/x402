@@ -449,3 +449,59 @@ func TestPaymentHooksOrder_V1_vs_V2(t *testing.T) {
 		require.Equal(t, v1, v2)
 	})
 }
+
+// mergeExtensions must preserve server-declared fields while letting clients add
+// their own fields, mirroring the TS client deep merge.
+func TestMergeExtensions(t *testing.T) {
+	t.Run("returns client when server is nil", func(t *testing.T) {
+		client := map[string]interface{}{"ext": map[string]interface{}{}}
+		if got := mergeExtensions(nil, client); got["ext"] == nil {
+			t.Fatalf("expected client value preserved, got %+v", got)
+		}
+	})
+
+	t.Run("returns server when client is nil", func(t *testing.T) {
+		server := map[string]interface{}{"ext": map[string]interface{}{}}
+		if got := mergeExtensions(server, nil); got["ext"] == nil {
+			t.Fatalf("expected server value preserved, got %+v", got)
+		}
+	})
+
+	t.Run("preserves server fields and adds client fields", func(t *testing.T) {
+		server := map[string]interface{}{
+			"ext": map[string]interface{}{
+				"info":   map[string]interface{}{"a": "servervalue"},
+				"schema": map[string]interface{}{"type": "object"},
+			},
+		}
+		client := map[string]interface{}{
+			"ext": map[string]interface{}{
+				"info": map[string]interface{}{"a": "client-clobber", "b": "clientvalue"},
+			},
+		}
+
+		merged := mergeExtensions(server, client)
+		ext := merged["ext"].(map[string]interface{})
+		info := ext["info"].(map[string]interface{})
+
+		if info["a"] != "servervalue" {
+			t.Fatalf("server field a should win, got %v", info["a"])
+		}
+		if info["b"] != "clientvalue" {
+			t.Fatalf("client field b should be added, got %v", info["b"])
+		}
+		if ext["schema"] == nil {
+			t.Fatalf("server schema should be preserved")
+		}
+	})
+
+	t.Run("uses client value when types differ", func(t *testing.T) {
+		server := map[string]interface{}{"k": "string-value"}
+		client := map[string]interface{}{"k": map[string]interface{}{"nested": true}}
+
+		merged := mergeExtensions(server, client)
+		if _, ok := merged["k"].(map[string]interface{}); !ok {
+			t.Fatalf("client object should replace non-object server value, got %T", merged["k"])
+		}
+	})
+}

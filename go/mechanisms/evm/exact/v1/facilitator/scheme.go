@@ -305,7 +305,12 @@ func (f *ExactEvmSchemeV1) Settle(
 		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
 	}
 
-	txHash, err := exactfacilitator.ExecuteTransferWithAuthorization(ctx, f.signer, tokenAddress, parsedAuthorization, sigData)
+	dataSuffix, err := evm.ResolveDataSuffix(fctx, evm.DataSuffixContext{})
+	if err != nil {
+		return nil, x402.NewSettleError(ErrInvalidPayload, verifyResp.Payer, network, "", err.Error())
+	}
+
+	txHash, err := exactfacilitator.ExecuteTransferWithAuthorization(ctx, f.signer, tokenAddress, parsedAuthorization, sigData, dataSuffix)
 	if err != nil {
 		return nil, x402.NewSettleError(ErrTransactionFailed, verifyResp.Payer, network, "", err.Error())
 	}

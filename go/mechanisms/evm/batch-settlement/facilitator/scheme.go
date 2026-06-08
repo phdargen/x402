@@ -109,6 +109,11 @@ func (f *BatchSettlementEvmScheme) Settle(
 	data := payload.Payload
 	network := x402.Network(requirements.Network)
 
+	dataSuffix, err := evm.ResolveDataSuffix(fctx, evm.DataSuffixContext{Payload: payload, Requirements: requirements})
+	if err != nil {
+		return nil, x402.NewSettleError(ErrInvalidPayload, "", network, "", err.Error())
+	}
+
 	// Check for deposit payload (type="deposit")
 	if batchsettlement.IsDepositPayload(data) {
 		depositPayload, err := batchsettlement.DepositPayloadFromMap(data)
@@ -116,7 +121,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidDepositPayload, "", network, "",
 				fmt.Sprintf("failed to parse deposit payload: %s", err))
 		}
-		return SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx)
+		return SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix)
 	}
 
 	// Enriched refund settle-action (must be checked BEFORE plain claim, since both
@@ -127,7 +132,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", network, "",
 				fmt.Sprintf("failed to parse refund payload: %s", err))
 		}
-		return ExecuteRefundWithSignature(ctx, f.signer, refundPayload, requirements, f.authorizerSigner)
+		return ExecuteRefundWithSignature(ctx, f.signer, refundPayload, requirements, f.authorizerSigner, dataSuffix)
 	}
 
 	if batchsettlement.IsClaimPayload(data) {
@@ -136,7 +141,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidClaimPayload, "", network, "",
 				fmt.Sprintf("failed to parse claim payload: %s", err))
 		}
-		return ExecuteClaimWithSignature(ctx, f.signer, claimPayload, requirements, f.authorizerSigner)
+		return ExecuteClaimWithSignature(ctx, f.signer, claimPayload, requirements, f.authorizerSigner, dataSuffix)
 	}
 
 	if batchsettlement.IsSettlePayload(data) {
@@ -145,7 +150,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidSettlePayload, "", network, "",
 				fmt.Sprintf("failed to parse settle payload: %s", err))
 		}
-		return ExecuteSettle(ctx, f.signer, settlePayload, requirements)
+		return ExecuteSettle(ctx, f.signer, settlePayload, requirements, dataSuffix)
 	}
 
 	return nil, x402.NewSettleError(ErrUnknownSettleAction, "", network, "",

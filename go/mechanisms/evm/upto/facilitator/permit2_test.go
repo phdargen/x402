@@ -58,7 +58,7 @@ func (m *mockFacilitatorSigner) VerifyTypedData(ctx context.Context, address str
 	return m.verifyResult, m.verifyError
 }
 
-func (m *mockFacilitatorSigner) WriteContract(ctx context.Context, address string, abi []byte, functionName string, args ...interface{}) (string, error) {
+func (m *mockFacilitatorSigner) WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
 	if m.writeContractError != nil {
 		return "", m.writeContractError
 	}

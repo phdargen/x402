@@ -248,6 +248,11 @@ func SettleUptoPermit2(
 	permitStruct := args.permitStruct()
 	witnessStruct := args.witnessStruct()
 
+	dataSuffix, err := evm.ResolveDataSuffix(facilCtx, evm.DataSuffixContext{Payload: payload, Requirements: requirements})
+	if err != nil {
+		return nil, x402.NewSettleError(ErrUptoInvalidPayload, payer, network, "", err.Error())
+	}
+
 	eip2612Info, _ := eip2612gassponsor.ExtractEip2612GasSponsoringInfo(payload.Extensions)
 	erc20Info, _ := erc20approvalgassponsor.ExtractInfo(payload.Extensions)
 
@@ -282,6 +287,7 @@ func SettleUptoPermit2(
 			evm.X402UptoPermit2ProxyAddress,
 			evm.X402UptoPermit2ProxySettleWithPermitABI,
 			evm.FunctionSettleWithPermit,
+			dataSuffix,
 			permit2612Struct,
 			permitStruct,
 			args.SettlementAmount,
@@ -298,10 +304,11 @@ func SettleUptoPermit2(
 		}
 		if extensionSigner != nil {
 			settle := erc20approvalgassponsor.WriteContractCall{
-				Address:  evm.X402UptoPermit2ProxyAddress,
-				ABI:      evm.X402UptoPermit2ProxySettleABI,
-				Function: evm.FunctionSettle,
-				Args:     []interface{}{permitStruct, args.SettlementAmount, args.Owner, witnessStruct, args.Signature},
+				Address:    evm.X402UptoPermit2ProxyAddress,
+				ABI:        evm.X402UptoPermit2ProxySettleABI,
+				Function:   evm.FunctionSettle,
+				Args:       []interface{}{permitStruct, args.SettlementAmount, args.Owner, witnessStruct, args.Signature},
+				DataSuffix: dataSuffix,
 			}
 			txHashes, sendErr := extensionSigner.SendTransactions(ctx, []erc20approvalgassponsor.TransactionRequest{
 				{Serialized: erc20Info.SignedTransaction},
@@ -318,6 +325,7 @@ func SettleUptoPermit2(
 				evm.X402UptoPermit2ProxyAddress,
 				evm.X402UptoPermit2ProxySettleABI,
 				evm.FunctionSettle,
+				dataSuffix,
 				permitStruct,
 				args.SettlementAmount,
 				args.Owner,
@@ -332,6 +340,7 @@ func SettleUptoPermit2(
 			evm.X402UptoPermit2ProxyAddress,
 			evm.X402UptoPermit2ProxySettleABI,
 			evm.FunctionSettle,
+			dataSuffix,
 			permitStruct,
 			args.SettlementAmount,
 			args.Owner,

@@ -676,6 +676,92 @@ func (s *x402ResourceServer) FindMatchingRequirements(available []types.PaymentR
 	return nil
 }
 
+// ExtensionValidationResult is returned by ValidateExtensions. Valid is true
+// when the client either omitted extensions or echoed every server-advertised
+// field; otherwise InvalidReason/ExtensionKey describe the mismatch.
+type ExtensionValidationResult struct {
+	Valid         bool
+	InvalidReason string
+	ExtensionKey  string
+}
+
+// ValidateExtensions checks that the client-echoed extension info preserves the
+// server-advertised subset for every key the server declared. Clients may add
+// fields and may omit extension keys entirely, but may not drop or change a
+// server-advertised value.
+func (s *x402ResourceServer) ValidateExtensions(
+	serverExtensions map[string]interface{},
+	payload types.PaymentPayload,
+) ExtensionValidationResult {
+	if payload.X402Version != 2 {
+		return ExtensionValidationResult{Valid: true}
+	}
+	if len(serverExtensions) == 0 || len(payload.Extensions) == 0 {
+		return ExtensionValidationResult{Valid: true}
+	}
+
+	// pair carries an advertised value and its client echo while a worklist walks
+	// nested objects: the echo must contain every advertised field (objects may
+	// add fields; arrays/primitives must match exactly via DeepEqual).
+	type pair struct{ advertised, echoed interface{} }
+
+	for key, echoedValue := range payload.Extensions {
+		serverValue, declared := serverExtensions[key]
+		if !declared {
+			continue
+		}
+
+		// Compare the `info` envelope when present, otherwise the flat value.
+		advertised := serverValue
+		if m, ok := serverValue.(map[string]interface{}); ok {
+			if info, has := m["info"]; has {
+				advertised = info
+			}
+		}
+		echoed := echoedValue
+		if m, ok := echoedValue.(map[string]interface{}); ok {
+			if info, has := m["info"]; has {
+				echoed = info
+			}
+		}
+
+		mismatch := false
+		pending := []pair{{advertised, echoed}}
+		for i := 0; i < len(pending) && !mismatch; i++ {
+			advertisedMap, isObject := pending[i].advertised.(map[string]interface{})
+			if !isObject {
+				mismatch = !DeepEqual(pending[i].advertised, pending[i].echoed)
+				continue
+			}
+			echoedMap, ok := pending[i].echoed.(map[string]interface{})
+			if !ok {
+				mismatch = true
+				continue
+			}
+			for field, advValue := range advertisedMap {
+				echoValue, exists := echoedMap[field]
+				if !exists && advValue != nil {
+					mismatch = true
+					break
+				}
+				if exists {
+					pending = append(pending, pair{advValue, echoValue})
+				}
+			}
+		}
+
+		if mismatch {
+			return ExtensionValidationResult{
+				Valid:         false,
+				InvalidReason: "extension_echo_mismatch",
+				ExtensionKey:  key,
+			}
+		}
+	}
+
+	return ExtensionValidationResult{Valid: true}
+}
+
 // VerifyPayment verifies a V2 payment with no declared extensions.
 // Equivalent to VerifyPaymentWithExtensions(ctx, payload, requirements, nil).
 func (s *x402ResourceServer) VerifyPayment(ctx context.Context, payload types.PaymentPayload, requirements types.PaymentRequirements) (*VerifyResponse, error) {
@@ -692,6 +778,13 @@ func (s *x402ResourceServer) VerifyPaymentWithExtensions(
 	requirements types.PaymentRequirements,
 	declaredExtensions map[string]interface{},
 ) (*VerifyResponse, error) {
+	// Reject client extension echoes that drop or alter server-advertised
+	// extension info before doing any verification work.
+	if result := s.ValidateExtensions(declaredExtensions, payload); !result.Valid {
+		return &VerifyResponse{IsValid: false, InvalidReason: result.InvalidReason},
+			NewVerifyError(result.InvalidReason, "", fmt.Sprintf("extension %q echo does not preserve server-advertised info", result.ExtensionKey))
+	}
+
 	// Marshal to bytes early for hooks (escape hatch for extensions)
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

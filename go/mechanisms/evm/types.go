@@ -254,7 +254,7 @@ type FacilitatorEvmSigner interface {
 	VerifyTypedData(ctx context.Context, address string, domain TypedDataDomain, types map[string][]TypedDataField, primaryType string, message map[string]interface{}, signature []byte) (bool, error)
 
 	// WriteContract executes a smart contract transaction
-	WriteContract(ctx context.Context, address string, abi []byte, functionName string, args ...interface{}) (string, error)
+	WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error)
 
 	// SendTransaction sends a raw transaction with arbitrary calldata
 	// Used for smart wallet deployment where calldata is pre-encoded

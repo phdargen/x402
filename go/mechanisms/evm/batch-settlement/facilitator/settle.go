@@ -20,6 +20,7 @@ func ExecuteSettle(
 	signer evm.FacilitatorEvmSigner,
 	payload *batchsettlement.BatchSettlementSettlePayload,
 	requirements types.PaymentRequirements,
+	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 	receiver := common.HexToAddress(payload.Receiver)
@@ -68,6 +69,7 @@ func ExecuteSettle(
 		batchsettlement.BatchSettlementAddress,
 		batchsettlement.BatchSettlementSettleABI,
 		"settle",
+		dataSuffix,
 		receiver,
 		token,
 	)

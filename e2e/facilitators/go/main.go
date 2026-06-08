@@ -274,6 +274,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiJSON []byte,
 	method string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	// Parse ABI
@@ -287,6 +288,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("failed to pack method call: %w", err)
 	}
+	data = evmmech.AppendDataSuffix(data, dataSuffix)
 
 	// Get nonce
 	nonce, err := s.client.PendingNonceAt(ctx, s.address)
@@ -508,7 +510,7 @@ func (s *realFacilitatorEvmSigner) SendTransactions(ctx context.Context, transac
 			}
 			hash, err = s.sendRawTransaction(ctx, decodedTx)
 		} else if tx.Call != nil {
-			hash, err = s.WriteContract(ctx, tx.Call.Address, tx.Call.ABI, tx.Call.Function, tx.Call.Args...)
+			hash, err = s.WriteContract(ctx, tx.Call.Address, tx.Call.ABI, tx.Call.Function, tx.Call.DataSuffix, tx.Call.Args...)
 		} else {
 			return hashes, fmt.Errorf("transaction_failed: empty transaction request")
 		}

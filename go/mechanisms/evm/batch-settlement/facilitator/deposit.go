@@ -275,6 +275,7 @@ func SettleDeposit(
 	requirements types.PaymentRequirements,
 	extensions map[string]interface{},
 	fctx *x402.FacilitatorContext,
+	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	config := payload.ChannelConfig
 	network := x402.Network(requirements.Network)
@@ -330,10 +331,11 @@ func SettleDeposit(
 	var txHash string
 	if permit2Branch != nil && permit2Branch.kind == permit2BranchErc20Approval {
 		settleCall := erc20approvalgassponsor.WriteContractCall{
-			Address:  batchsettlement.BatchSettlementAddress,
-			ABI:      batchsettlement.BatchSettlementDepositABI,
-			Function: "deposit",
-			Args:     []interface{}{configTuple, depositAmount, collectorAddr, collectorData},
+			Address:    batchsettlement.BatchSettlementAddress,
+			ABI:        batchsettlement.BatchSettlementDepositABI,
+			Function:   "deposit",
+			Args:       []interface{}{configTuple, depositAmount, collectorAddr, collectorData},
+			DataSuffix: dataSuffix,
 		}
 		txHashes, sendErr := permit2Branch.extensionSigner.SendTransactions(ctx, []erc20approvalgassponsor.TransactionRequest{
 			{Serialized: permit2Branch.erc20Info.SignedTransaction},
@@ -356,6 +358,7 @@ func SettleDeposit(
 			batchsettlement.BatchSettlementAddress,
 			batchsettlement.BatchSettlementDepositABI,
 			"deposit",
+			dataSuffix,
 			configTuple,
 			depositAmount,
 			collectorAddr,

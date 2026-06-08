@@ -188,6 +188,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiBytes []byte,
 	functionName string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	contractABI, err := abi.JSON(strings.NewReader(string(abiBytes)))
@@ -199,6 +200,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("failed to pack method call: %w", err)
 	}
+	data = evm.AppendDataSuffix(data, dataSuffix)
 
 	to := common.HexToAddress(contractAddress)
 	return s.sendTxWithRetry(ctx, to, data, 300000)
@@ -883,6 +885,7 @@ func (s *permit2FacilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiBytes []byte,
 	functionName string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	contractABI, err := abi.JSON(strings.NewReader(string(abiBytes)))
@@ -894,6 +897,7 @@ func (s *permit2FacilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("failed to pack method call: %w", err)
 	}
+	data = evm.AppendDataSuffix(data, dataSuffix)
 
 	to := common.HexToAddress(contractAddress)
 	return s.sendTxWithRetry(ctx, to, data, 300000)

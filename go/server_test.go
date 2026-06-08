@@ -860,3 +860,95 @@ func TestResolveSettlementOverrideAmount(t *testing.T) {
 		}
 	})
 }
+
+// ValidateExtensions must reject client echoes that drop or alter server fields
+// while allowing additive fields, omitted keys, and client-only keys.
+func TestValidateExtensions(t *testing.T) {
+	serverExtensions := map[string]interface{}{
+		"bazaar":  map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 1}},
+		"builder": map[string]interface{}{"info": map[string]interface{}{"code": "abc"}},
+	}
+	server := Newx402ResourceServer()
+
+	payloadWith := func(extensions map[string]interface{}) types.PaymentPayload {
+		return types.PaymentPayload{X402Version: 2, Extensions: extensions}
+	}
+
+	t.Run("passes when server has no extensions", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "wrong"}}})
+		if r := server.ValidateExtensions(nil, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("passes when client omits extensions", func(t *testing.T) {
+		if r := server.ValidateExtensions(serverExtensions, payloadWith(nil)); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("passes with additive info fields", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 1, "extraField": "ok"}},
+		})
+		if r := server.ValidateExtensions(serverExtensions, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("passes when client echoes subset of keys", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 1}},
+		})
+		if r := server.ValidateExtensions(serverExtensions, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("passes with client-only extension key", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"clientOnly": map[string]interface{}{"info": map[string]interface{}{"anything": true}},
+		})
+		if r := server.ValidateExtensions(serverExtensions, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("passes with flat extension values", func(t *testing.T) {
+		flat := map[string]interface{}{"bazaar": map[string]interface{}{"tool": "search", "version": 1}}
+		p := payloadWith(map[string]interface{}{"bazaar": map[string]interface{}{"tool": "search", "version": 1, "extra": "ok"}})
+		if r := server.ValidateExtensions(flat, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("fails when client changes a server field", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 2}},
+		})
+		r := server.ValidateExtensions(serverExtensions, p)
+		if r.Valid || r.InvalidReason != "extension_echo_mismatch" || r.ExtensionKey != "bazaar" {
+			t.Fatalf("expected echo mismatch on bazaar, got %+v", r)
+		}
+	})
+
+	t.Run("fails when client deletes a server field", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search"}},
+		})
+		r := server.ValidateExtensions(serverExtensions, p)
+		if r.Valid || r.InvalidReason != "extension_echo_mismatch" || r.ExtensionKey != "bazaar" {
+			t.Fatalf("expected echo mismatch on bazaar, got %+v", r)
+		}
+	})
+
+	t.Run("passes for v1 payloads", func(t *testing.T) {
+		p := types.PaymentPayload{
+			X402Version: 1,
+			Extensions:  map[string]interface{}{"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "wrong"}}},
+		}
+		if r := server.ValidateExtensions(serverExtensions, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+}

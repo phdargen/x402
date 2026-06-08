@@ -154,6 +154,7 @@ func (m *mockFacilitatorSigner) WriteContract(
 	contractAddress string,
 	abi []byte,
 	functionName string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	m.lastWriteFunctionName = functionName

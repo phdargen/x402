@@ -306,6 +306,7 @@ func ExecuteTransferWithAuthorization(
 	tokenAddress string,
 	parsed *ParsedEIP3009Authorization,
 	sigData *evm.ERC6492SignatureData,
+	dataSuffix []byte,
 ) (string, error) {
 	if sigData == nil {
 		return "", fmt.Errorf("missing signature data")
@@ -318,6 +319,7 @@ func ExecuteTransferWithAuthorization(
 			tokenAddress,
 			evm.TransferWithAuthorizationVRSABI,
 			evm.FunctionTransferWithAuthorization,
+			dataSuffix,
 			parsed.From,
 			parsed.To,
 			parsed.Value,
@@ -335,6 +337,7 @@ func ExecuteTransferWithAuthorization(
 		tokenAddress,
 		evm.TransferWithAuthorizationBytesABI,
 		evm.FunctionTransferWithAuthorization,
+		dataSuffix,
 		parsed.From,
 		parsed.To,
 		parsed.Value,

@@ -73,6 +73,7 @@ func ExecuteRefundWithSignature(
 	payload *batchsettlement.BatchSettlementEnrichedRefundPayload,
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
+	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -209,6 +210,7 @@ func ExecuteRefundWithSignature(
 			batchsettlement.BatchSettlementAddress,
 			batchsettlement.BatchSettlementMulticallABI,
 			"multicall",
+			dataSuffix,
 			[][]byte{claimCalldata, refundCalldata},
 		)
 		if err != nil {
@@ -258,6 +260,7 @@ func ExecuteRefundWithSignature(
 		batchsettlement.BatchSettlementAddress,
 		batchsettlement.BatchSettlementRefundWithSignatureABI,
 		"refundWithSignature",
+		dataSuffix,
 		configTuple,
 		refundAmount,
 		nonce,

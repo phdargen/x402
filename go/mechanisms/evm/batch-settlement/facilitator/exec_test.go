@@ -40,6 +40,7 @@ func TestExecuteClaimWithSignature_NoClaims(t *testing.T) {
 		&batchsettlement.BatchSettlementClaimPayload{Claims: nil},
 		reqsFor(testNetwork),
 		scheme.authorizerSigner,
+		nil,
 	)
 	if resp != nil {
 		t.Fatalf("expected nil resp, got %+v", resp)
@@ -56,7 +57,7 @@ func TestExecuteClaimWithSignature_BadProvidedSignature(t *testing.T) {
 		Claims:                   []batchsettlement.BatchSettlementVoucherClaim{sampleClaim()},
 		ClaimAuthorizerSignature: "not-hex",
 	}
-	_, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidClaimPayload {
 		t.Fatalf("got err = %v", err)
@@ -68,7 +69,7 @@ func TestExecuteClaimWithSignature_AuthorizerAddressMismatch(t *testing.T) {
 	claim := sampleClaim()
 	claim.Voucher.Channel.ReceiverAuthorizer = "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed"
 	payload := &batchsettlement.BatchSettlementClaimPayload{Claims: []batchsettlement.BatchSettlementVoucherClaim{claim}}
-	_, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrAuthorizerAddressMismatch {
 		t.Fatalf("got err = %v", err)
@@ -80,7 +81,7 @@ func TestExecuteClaimWithSignature_SimulationFailed(t *testing.T) {
 	claim := sampleClaim()
 	claim.Voucher.Channel.ReceiverAuthorizer = "0xauthorizer"
 	payload := &batchsettlement.BatchSettlementClaimPayload{Claims: []batchsettlement.BatchSettlementVoucherClaim{claim}}
-	resp, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	resp, err := ExecuteClaimWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestExecuteRefundWithSignature_BadAmount(t *testing.T) {
 		Amount:        "not-a-number",
 		RefundNonce:   "1",
 	}
-	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidRefundPayload {
 		t.Fatalf("got err = %v", err)
@@ -114,7 +115,7 @@ func TestExecuteRefundWithSignature_BadNonce(t *testing.T) {
 		Amount:        "100",
 		RefundNonce:   "not-a-number",
 	}
-	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidRefundPayload {
 		t.Fatalf("got err = %v", err)
@@ -130,7 +131,7 @@ func TestExecuteRefundWithSignature_BadProvidedRefundSig(t *testing.T) {
 		RefundNonce:               "1",
 		RefundAuthorizerSignature: "not-hex",
 	}
-	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidRefundPayload {
 		t.Fatalf("got err = %v", err)
@@ -147,7 +148,7 @@ func TestExecuteRefundWithSignature_AuthorizerAddressMismatch(t *testing.T) {
 		Amount:        "100",
 		RefundNonce:   "1",
 	}
-	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrAuthorizerAddressMismatch {
 		t.Fatalf("got err = %v", err)
@@ -164,7 +165,7 @@ func TestExecuteRefundWithSignature_SimulationFailed_DirectPath(t *testing.T) {
 		Amount:        "100",
 		RefundNonce:   "1",
 	}
-	resp, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	resp, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestExecuteRefundWithSignature_NoBalance(t *testing.T) {
 		RefundNonce:   "0",
 	}
 
-	resp, err := ExecuteRefundWithSignature(context.Background(), signer, payload, reqsFor(testNetwork), &fakeAuthorizerSigner{addr: "0xauthorizer"})
+	resp, err := ExecuteRefundWithSignature(context.Background(), signer, payload, reqsFor(testNetwork), &fakeAuthorizerSigner{addr: "0xauthorizer"}, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestExecuteRefundWithSignature_BadProvidedClaimSig(t *testing.T) {
 		ClaimAuthorizerSignature:  "not-hex",
 		RefundAuthorizerSignature: "0xdead",
 	}
-	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner)
+	_, err := ExecuteRefundWithSignature(context.Background(), scheme.signer, payload, reqsFor(testNetwork), scheme.authorizerSigner, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidRefundPayload {
 		t.Fatalf("got err = %v", err)
@@ -241,7 +242,7 @@ func TestExecuteSettle_SimulationFailed(t *testing.T) {
 		Receiver: "0x3333333333333333333333333333333333333333",
 		Token:    "0x5555555555555555555555555555555555555555",
 	}
-	resp, err := ExecuteSettle(context.Background(), signer, payload, reqsFor(testNetwork))
+	resp, err := ExecuteSettle(context.Background(), signer, payload, reqsFor(testNetwork), nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -266,7 +267,7 @@ func TestExecuteSettle_NothingToSettle(t *testing.T) {
 		Token:    "0x5555555555555555555555555555555555555555",
 	}
 
-	resp, err := ExecuteSettle(context.Background(), signer, payload, reqsFor(testNetwork))
+	resp, err := ExecuteSettle(context.Background(), signer, payload, reqsFor(testNetwork), nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestSettleDeposit_BadAmount(t *testing.T) {
 			Amount: "not-a-number",
 		},
 	}
-	_, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil)
+	_, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidDepositPayload {
 		t.Fatalf("got err = %v", err)
@@ -307,7 +308,7 @@ func TestSettleDeposit_MissingAuthorization(t *testing.T) {
 			Amount: "100",
 		},
 	}
-	_, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil)
+	_, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidDepositPayload {
 		t.Fatalf("got err = %v", err)

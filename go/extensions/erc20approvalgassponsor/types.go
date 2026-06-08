@@ -57,6 +57,8 @@ type WriteContractCall struct {
 	ABI      []byte
 	Function string
 	Args     []interface{}
+	// DataSuffix is appended to the ABI-encoded calldata when non-empty
+	DataSuffix []byte
 }
 
 // TransactionRequest represents a single transaction to be executed by the signer.
