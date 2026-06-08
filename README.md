@@ -1,8 +1,5 @@
-# x402
-
 x402 is an open standard for internet native payments. It aims to support all networks (both crypto & fiat) and forms of value (stablecoins, tokens, fiat).
 
-```typescript
 app.use(
   paymentMiddleware(
     {
@@ -15,8 +12,6 @@ app.use(
 );
 // That's it! See examples/ for full details
 ```
-
-## Installation
 
 <details>
 <summary><b>Typescript</b></summary>
