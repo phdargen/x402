@@ -318,19 +318,14 @@ def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
     commit_sha = fragment_commit_sha(sdk_dir, fragment)
     pr_number = commit_pr_number(sdk_dir, commit_sha) if commit_sha is not None else None
 
-    parts: list[str] = []
+    body = text
     if pr_number is not None:
-        parts.append(f"[#{pr_number}]({REPOSITORY_URL}/pull/{pr_number})")
-
-    if commit_sha is not None:
-        short_sha = commit_sha[:7]
-        parts.append(f"[`{short_sha}`]({REPOSITORY_URL}/commit/{commit_sha})")
+        body += f" ([#{pr_number}]({REPOSITORY_URL}/pull/{pr_number}))"
 
     if (thanks := fragment_thanks(sdk_dir, pr_number, commit_sha)) is not None:
-        parts.append(thanks)
+        body += f" - {thanks}"
 
-    prefix = " ".join(parts)
-    return f"{prefix} - {text}" if prefix else text
+    return body
 
 
 def changelog_fragment_bodies(sdk_dir: Path, fragments: list[Path]) -> list[tuple[Path, str]]:
