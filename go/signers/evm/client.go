@@ -248,6 +248,13 @@ func (s *ClientSigner) SignTransaction(ctx context.Context, tx *types.Transactio
 	return rlpBytes, nil
 }
 
+// HasRPCClient reports whether the signer is backed by an ethclient. When false, its
+// RPC-dependent methods (ReadContract, GetTransactionCount) are non-functional, so callers
+// such as evm.ResolveReadSigner fall back to a scheme-configured RPC URL.
+func (s *ClientSigner) HasRPCClient() bool {
+	return s.ethClient != nil
+}
+
 // ReadContract reads data from a smart contract.
 // Requires an ethclient to be provided via NewClientSignerFromPrivateKeyWithClient.
 func (s *ClientSigner) ReadContract(

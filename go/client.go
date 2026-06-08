@@ -2,6 +2,7 @@ package x402
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -532,6 +533,29 @@ func (c *x402Client) enrichPaymentPayloadWithExtensions(
 	return enriched, nil
 }
 
+// asStringMap returns v as a map[string]interface{} so it can participate in the
+// extension deep-merge. Values that are already maps are returned directly; typed
+// structs/pointers attached by scheme clients (e.g. gas-sponsoring info structs) are
+// coerced via a JSON round-trip, mirroring the payload's eventual serialization. Non-object
+// values (strings, numbers, slices, nil) return ok=false so the caller treats them atomically.
+func asStringMap(v interface{}) (map[string]interface{}, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if m, ok := v.(map[string]interface{}); ok {
+		return m, true
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil || m == nil {
+		return nil, false
+	}
+	return m, true
+}
+
 // mergeExtensions merges server-declared extensions with client/scheme-provided
 // extensions, always preserving server-declared fields. For keys present on both
 // sides whose values are objects, server fields win and only client fields the
@@ -551,8 +575,8 @@ func mergeExtensions(server, client map[string]interface{}) map[string]interface
 	}
 
 	for key, clientVal := range client {
-		serverMap, sOk := merged[key].(map[string]interface{})
-		clientMap, cOk := clientVal.(map[string]interface{})
+		serverMap, sOk := asStringMap(merged[key])
+		clientMap, cOk := asStringMap(clientVal)
 		if !sOk || !cOk {
 			merged[key] = clientVal
 			continue
@@ -569,8 +593,8 @@ func mergeExtensions(server, client map[string]interface{}) map[string]interface
 		for i := 0; i < len(pending); i++ {
 			target, source := pending[i].target, pending[i].source
 			for fieldKey, clientFieldVal := range source {
-				serverFieldMap, sfOk := target[fieldKey].(map[string]interface{})
-				clientFieldMap, cfOk := clientFieldVal.(map[string]interface{})
+				serverFieldMap, sfOk := asStringMap(target[fieldKey])
+				clientFieldMap, cfOk := asStringMap(clientFieldVal)
 				if sfOk && cfOk {
 					nested := make(map[string]interface{}, len(serverFieldMap))
 					for k, v := range serverFieldMap {

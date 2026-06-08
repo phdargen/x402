@@ -202,10 +202,12 @@ func (s *facilitatorEvmSigner) ReadContract(
 		return nil, fmt.Errorf("failed to pack method call: %w", err)
 	}
 
-	// Make the call
+	// Make the call. Set From to the facilitator address — required by the upto/exact
+	// proxies which enforce msg.sender == witness.facilitator in settle().
 	to := common.HexToAddress(contractAddress)
 
 	msg := ethereum.CallMsg{
+		From: s.address,
 		To:   &to,
 		Data: data,
 	}
