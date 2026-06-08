@@ -31,6 +31,9 @@ PR_COMMIT_AUTHORS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
+      author {
+        login
+      }
       commits(first: 100, after: $after) {
         pageInfo {
           hasNextPage
@@ -198,9 +201,15 @@ def add_unique(items: list[str], item: str | None) -> None:
         items.append(item)
 
 
-def pr_commit_author_logins(sdk_dir: Path, issue: str) -> list[str]:
+def pr_authors(sdk_dir: Path, issue: str) -> tuple[str | None, list[str]]:
+    """Return ``(pr_author, contributors)`` for a pull request.
+
+    ``pr_author`` is the login of the user who opened the PR. ``contributors`` are
+    the distinct commit-author logins on the PR, with ``pr_author`` removed so it
+    is never listed twice."""
     owner, name = repository_name().split("/", 1)
-    logins: list[str] = []
+    pr_author: str | None = None
+    commit_authors: list[str] = []
     cursor = None
 
     while True:
@@ -221,32 +230,49 @@ def pr_commit_author_logins(sdk_dir: Path, issue: str) -> list[str]:
 
         output = gh_output(sdk_dir, command)
         if not output:
-            return logins
+            break
 
         try:
             data = json.loads(output)
-            commits = data["data"]["repository"]["pullRequest"]["commits"]
+            pull_request = data["data"]["repository"]["pullRequest"]
+            commits = pull_request["commits"]
         except (KeyError, TypeError, json.JSONDecodeError):
-            return logins
+            break
+
+        if (author := pull_request.get("author")) is not None:
+            pr_author = author.get("login")
 
         for node in commits["nodes"]:
-            for author in node["commit"]["authors"]["nodes"]:
-                user = author.get("user")
+            for commit_author in node["commit"]["authors"]["nodes"]:
+                user = commit_author.get("user")
                 if user is not None:
-                    add_unique(logins, user.get("login"))
+                    add_unique(commit_authors, user.get("login"))
 
         if not commits["pageInfo"]["hasNextPage"]:
-            return logins
+            break
 
         cursor = commits["pageInfo"]["endCursor"]
 
+    if pr_author is None and commit_authors:
+        pr_author = commit_authors[0]
 
-def thanks_text(logins: list[str]) -> str | None:
-    if not logins:
+    contributors = [login for login in commit_authors if login != pr_author]
+    return pr_author, contributors
+
+
+def author_link(login: str) -> str:
+    return f"[@{login}](https://github.com/{login})"
+
+
+def thanks_text(pr_author: str | None, contributors: list[str]) -> str | None:
+    if pr_author is None:
         return None
 
-    links = [f"[@{login}](https://github.com/{login})" for login in logins]
-    return f"Thanks {' '.join(links)}!"
+    text = author_link(pr_author)
+    if contributors:
+        text += " and " + ", ".join(author_link(login) for login in contributors)
+
+    return f"Thanks {text}!"
 
 
 def commit_author_login(sdk_dir: Path, commit_sha: str) -> str | None:
@@ -271,19 +297,17 @@ def commit_pr_number(sdk_dir: Path, commit_sha: str) -> str | None:
     return output
 
 
-def fragment_author_logins(
-    sdk_dir: Path, pr_number: str | None, commit_sha: str | None
-) -> list[str]:
+def fragment_thanks(sdk_dir: Path, pr_number: str | None, commit_sha: str | None) -> str | None:
+    pr_author: str | None = None
+    contributors: list[str] = []
+
     if pr_number is not None:
-        logins = pr_commit_author_logins(sdk_dir, pr_number)
-        if logins:
-            return logins
+        pr_author, contributors = pr_authors(sdk_dir, pr_number)
 
-    if commit_sha is None:
-        return []
+    if pr_author is None and commit_sha is not None:
+        pr_author = commit_author_login(sdk_dir, commit_sha)
 
-    login = commit_author_login(sdk_dir, commit_sha)
-    return [login] if login is not None else []
+    return thanks_text(pr_author, contributors)
 
 
 def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
@@ -293,7 +317,6 @@ def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
 
     commit_sha = fragment_commit_sha(sdk_dir, fragment)
     pr_number = commit_pr_number(sdk_dir, commit_sha) if commit_sha is not None else None
-    logins = fragment_author_logins(sdk_dir, pr_number, commit_sha)
 
     parts: list[str] = []
     if pr_number is not None:
@@ -303,7 +326,7 @@ def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
         short_sha = commit_sha[:7]
         parts.append(f"[`{short_sha}`]({REPOSITORY_URL}/commit/{commit_sha})")
 
-    if (thanks := thanks_text(logins)) is not None:
+    if (thanks := fragment_thanks(sdk_dir, pr_number, commit_sha)) is not None:
         parts.append(thanks)
 
     prefix = " ".join(parts)
