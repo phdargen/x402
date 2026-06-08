@@ -1,5 +1,7 @@
 .env
 .env.local
+.env~
+.env.local~
 node_modules/
 dist/
 .turbo/

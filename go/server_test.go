@@ -951,4 +951,63 @@ func TestValidateExtensions(t *testing.T) {
 			t.Fatalf("expected valid, got %+v", r)
 		}
 	})
+
+	// Extensions declared as typed Go structs (e.g. eip2612gassponsor.Extension)
+	// must validate the same way as map-declared extensions. Mirrors the gas
+	// extension shape inline to avoid an import cycle (eip2612gassponsor imports
+	// this package).
+	type srvInfo struct {
+		Description string `json:"description"`
+		Version     string `json:"version"`
+	}
+	type srvExt struct {
+		Info   interface{}            `json:"info"`
+		Schema map[string]interface{} `json:"schema"`
+	}
+	structExtensions := map[string]interface{}{
+		"eip2612GasSponsoring": srvExt{
+			Info:   srvInfo{Description: "gasless permit", Version: "1"},
+			Schema: map[string]interface{}{"type": "object"},
+		},
+	}
+
+	t.Run("passes with struct-declared extension and merged echo", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"eip2612GasSponsoring": map[string]interface{}{
+				"info": map[string]interface{}{
+					"description": "gasless permit",
+					"version":     "1",
+					"from":        "0xabc",
+					"asset":       "0xdef",
+				},
+			},
+		})
+		if r := server.ValidateExtensions(structExtensions, p); !r.Valid {
+			t.Fatalf("expected valid, got %+v", r)
+		}
+	})
+
+	t.Run("fails when struct-declared field is dropped", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"eip2612GasSponsoring": map[string]interface{}{
+				"info": map[string]interface{}{"version": "1", "from": "0xabc"},
+			},
+		})
+		r := server.ValidateExtensions(structExtensions, p)
+		if r.Valid || r.InvalidReason != "extension_echo_mismatch" || r.ExtensionKey != "eip2612GasSponsoring" {
+			t.Fatalf("expected echo mismatch on eip2612GasSponsoring, got %+v", r)
+		}
+	})
+
+	t.Run("fails when struct-declared field is changed", func(t *testing.T) {
+		p := payloadWith(map[string]interface{}{
+			"eip2612GasSponsoring": map[string]interface{}{
+				"info": map[string]interface{}{"description": "gasless permit", "version": "2"},
+			},
+		})
+		r := server.ValidateExtensions(structExtensions, p)
+		if r.Valid || r.InvalidReason != "extension_echo_mismatch" || r.ExtensionKey != "eip2612GasSponsoring" {
+			t.Fatalf("expected echo mismatch on eip2612GasSponsoring, got %+v", r)
+		}
+	})
 }

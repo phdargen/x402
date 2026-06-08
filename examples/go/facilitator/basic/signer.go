@@ -237,6 +237,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiJSON []byte,
 	method string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	// Parse ABI
@@ -250,6 +251,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("failed to pack method call: %w", err)
 	}
+	data = evmmech.AppendDataSuffix(data, dataSuffix)
 
 	// Get nonce
 	nonce, err := s.client.PendingNonceAt(ctx, s.address)

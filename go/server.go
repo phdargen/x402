@@ -705,6 +705,21 @@ func (s *x402ResourceServer) ValidateExtensions(
 	// add fields; arrays/primitives must match exactly via DeepEqual).
 	type pair struct{ advertised, echoed interface{} }
 
+	// normalize converts a server-declared value (which may be a typed struct) 
+	// into the generic JSON shape the echoed payload already uses.
+	// Falls back to the original value when it is not JSON-encodable.
+	normalize := func(v interface{}) interface{} {
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return v
+		}
+		var decoded interface{}
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return v
+		}
+		return decoded
+	}
+
 	for key, echoedValue := range payload.Extensions {
 		serverValue, declared := serverExtensions[key]
 		if !declared {
@@ -712,8 +727,8 @@ func (s *x402ResourceServer) ValidateExtensions(
 		}
 
 		// Compare the `info` envelope when present, otherwise the flat value.
-		advertised := serverValue
-		if m, ok := serverValue.(map[string]interface{}); ok {
+		advertised := normalize(serverValue)
+		if m, ok := advertised.(map[string]interface{}); ok {
 			if info, has := m["info"]; has {
 				advertised = info
 			}

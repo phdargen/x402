@@ -136,6 +136,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiJSON []byte,
 	method string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(string(abiJSON)))
@@ -146,6 +147,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("pack call: %w", err)
 	}
+	data = evmmech.AppendDataSuffix(data, dataSuffix)
 	return s.SendTransaction(ctx, contractAddress, data)
 }
 

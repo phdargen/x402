@@ -237,6 +237,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	contractAddress string,
 	abiJSON []byte,
 	method string,
+	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
 	// Parse ABI
@@ -250,6 +251,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	if err != nil {
 		return "", fmt.Errorf("failed to pack method call: %w", err)
 	}
+	data = evmmech.AppendDataSuffix(data, dataSuffix)
 
 	// Get nonce
 	nonce, err := s.client.PendingNonceAt(ctx, s.address)
@@ -412,7 +414,7 @@ func (s *erc20ApprovalGasSponsorSigner) SendTransactions(ctx context.Context, tx
 			}
 			txHash = tx.Hash().Hex()
 		case req.Call != nil:
-			h, err := s.WriteContract(ctx, req.Call.Address, req.Call.ABI, req.Call.Function, req.Call.Args...)
+			h, err := s.WriteContract(ctx, req.Call.Address, req.Call.ABI, req.Call.Function, req.Call.DataSuffix, req.Call.Args...)
 			if err != nil {
 				return nil, err
 			}
