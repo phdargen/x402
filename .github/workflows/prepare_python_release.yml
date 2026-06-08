@@ -16,7 +16,7 @@ on:
           - minor
           - patch
   schedule:
-    - cron: "0 16 * * 5"
+    - cron: "0 14 * * 5"
 
 permissions:
   contents: write
