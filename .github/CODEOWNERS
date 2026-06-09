@@ -30,9 +30,6 @@
 /.gitmodules                               @x402-foundation/core
 /.gitbook.yaml                             @x402-foundation/core
 /.vscode/                                  @x402-foundation/core
-/package.json                              @x402-foundation/core
-/package-lock.json                         @x402-foundation/core
-/pnpm-lock.yaml                            @x402-foundation/core
 /static/                                   @x402-foundation/core
 
 # ─────────────────────────────────────────────────────────────────────────────
