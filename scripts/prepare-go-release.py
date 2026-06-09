@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-CONSTANTS_VERSION_RE = re.compile(r'^\s*Version = "([^"]+)"$', re.MULTILINE)
+CONSTANTS_VERSION_RE = re.compile(r'^(\s*)Version = "([^"]+)"$', re.MULTILINE)
 KIND_RE = re.compile(r"^kind:\s*(\S+)\s*$", re.MULTILINE)
 BODY_RE = re.compile(r"^body:\s*(.+)$", re.MULTILINE | re.DOTALL)
 DEFAULT_REPOSITORY = "x402-foundation/x402"
@@ -147,7 +147,7 @@ def extract_constants_version(path: Path) -> str:
         raise ReleasePrepError(
             f"Expected exactly one Version constant in {path}, found {len(matches)}"
         )
-    return normalize_version(matches[0])
+    return normalize_version(matches[0][1])
 
 
 def bump_version(version: str, bump: str) -> str:
@@ -169,7 +169,7 @@ def assert_version_increases(current_version: str, target_version: str) -> None:
 def replace_constants_version(path: Path, target_version: str) -> None:
     content = path.read_text()
     updated, count = CONSTANTS_VERSION_RE.subn(
-        f'Version = "{normalize_version(target_version)}"',
+        rf'\1Version = "{normalize_version(target_version)}"',
         content,
     )
     if count != 1:
