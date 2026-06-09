@@ -7,9 +7,11 @@ Run from the repository root:
     python3 scripts/prepare-typescript-release.py --dry-run
 
 Pending changesets live in ``typescript/.changeset/*.md``. This script enriches
-their summaries with PR links and contributor attribution, then runs
-``pnpm changeset version`` to bump package versions and update changelogs.
-Use ``--dry-run`` to preview without modifying files.
+their summaries with PR links and contributor attribution, downgrades any major
+version bumps to minor (with a warning), then runs ``pnpm changeset version`` to
+bump package versions and update changelogs. After versioning, it warns if any
+non-legacy package version deviates from ``@x402/core``. Use ``--dry-run`` to
+preview without modifying files.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from pathlib import Path
 DEFAULT_REPOSITORY = "x402-foundation/x402"
 REPOSITORY_URL = f"https://github.com/{DEFAULT_REPOSITORY}"
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+MAJOR_BUMP_LINE_RE = re.compile(r"^(\s*['\"]?[^'\":\n]+['\"]?\s*:\s*)major\s*$")
 
 PUBLISH_WORKFLOWS = [
     ("@x402/core", "Publish @x402/core package to NPM"),
@@ -338,6 +341,78 @@ def rewrite_changesets(root: Path, bodies: list[tuple[Path, str, str]]) -> None:
         git_output(root, ["add", "--", str(changeset.relative_to(root))])
 
 
+def downgrade_major_bumps_in_frontmatter(frontmatter: str) -> tuple[str, list[str]]:
+    downgraded_lines: list[str] = []
+    new_lines: list[str] = []
+
+    for line in frontmatter.splitlines():
+        match = MAJOR_BUMP_LINE_RE.match(line)
+        if match is None:
+            new_lines.append(line)
+            continue
+
+        downgraded_lines.append(line.strip())
+        new_lines.append(f"{match.group(1)}minor")
+
+    return "\n".join(new_lines), downgraded_lines
+
+
+def sanitize_major_version_bumps(
+    root: Path, changesets: list[Path], *, dry_run: bool
+) -> None:
+    for changeset in changesets:
+        frontmatter, body = read_changeset(changeset)
+        new_frontmatter, downgraded_lines = downgrade_major_bumps_in_frontmatter(frontmatter)
+        if not downgraded_lines:
+            continue
+
+        print(
+            f"warning: Downgraded major version bump(s) to minor in {changeset.name}: "
+            + ", ".join(downgraded_lines)
+        )
+        if dry_run:
+            continue
+
+        write_changeset(changeset, new_frontmatter, body)
+        git_output(root, ["add", "--", str(changeset.relative_to(root))])
+
+
+def publishable_package_jsons(root: Path) -> list[Path]:
+    packages_dir = root / "packages"
+    return sorted(
+        path
+        for path in packages_dir.rglob("package.json")
+        if "legacy" not in path.parts
+    )
+
+
+def warn_if_package_versions_deviate_from_core(root: Path) -> None:
+    core_package_json = root / "packages" / "core" / "package.json"
+    core_version = read_core_version(root)
+    mismatches: list[tuple[str, str]] = []
+
+    for package_json in publishable_package_jsons(root):
+        if package_json == core_package_json:
+            continue
+
+        try:
+            data = json.loads(package_json.read_text())
+            name = data.get("name", str(package_json.parent))
+            version = data["version"]
+        except (KeyError, TypeError, json.JSONDecodeError):
+            continue
+
+        if version != core_version:
+            mismatches.append((name, version))
+
+    if not mismatches:
+        return
+
+    print(f"warning: Package version(s) deviate from @x402/core ({core_version}):")
+    for name, version in mismatches:
+        print(f"  - {name}: {version}")
+
+
 def read_core_version(root: Path) -> str:
     package_json = root / "packages" / "core" / "package.json"
     if not package_json.is_file():
@@ -362,21 +437,6 @@ def run_changeset_version(root: Path) -> None:
         raise ReleasePrepError(f"pnpm changeset version failed with exit code {exc.returncode}.") from exc
 
 
-def print_post_release_steps(version: str) -> None:
-    print("Post-release steps:")
-    print("1. Merge the release PR into main.")
-    print("2. In GitHub Actions, run each publish workflow in order:")
-    for entry in PUBLISH_WORKFLOWS:
-        if isinstance(entry[1], str):
-            print(f"   - {entry[1]}")
-            continue
-
-        print(f"   - {entry[0]}:")
-        for _, workflow in entry[1]:
-            print(f"     - {workflow}")
-    print(f"3. Confirm @x402/core and dependents published at version {version} on npm.")
-
-
 def main() -> int:
     args = parse_args()
     root = sdk_dir()
@@ -390,21 +450,23 @@ def main() -> int:
         return 0
 
     current_version = read_core_version(root)
+    sanitize_major_version_bumps(root, changesets, dry_run=args.dry_run)
     changeset_bodies_list = changeset_bodies(root, changesets)
     print_changeset_preview(changeset_bodies_list)
 
     if args.dry_run:
         print(f"Current @x402/core version: {current_version}")
         print(f"Pending changesets: {len(changesets)}")
+        warn_if_package_versions_deviate_from_core(root)
         print("Dry run complete; no files were changed.")
         return 0
 
     rewrite_changesets(root, changeset_bodies_list)
     run_changeset_version(root)
     target_version = read_core_version(root)
+    warn_if_package_versions_deviate_from_core(root)
 
     print(f"Prepared TypeScript SDK release (@x402/core {current_version} -> {target_version})")
-    print_post_release_steps(target_version)
     return 0
 
 

@@ -7,8 +7,8 @@ Run from the repository root:
     python3 scripts/prepare-go-release.py --bump minor
     python3 scripts/prepare-go-release.py --bump patch --dry-run
 
-Either ``--version X.Y.Z`` or ``--bump {minor,patch}`` is required. Use ``--dry-run``
-to validate without writing files.
+Either ``--version X.Y.Z`` or ``--bump {minor,patch}`` is required. Major version
+bumps are rejected. Use ``--dry-run`` to validate without writing files.
 """
 
 from __future__ import annotations
@@ -154,6 +154,15 @@ def assert_version_increases(current_version: str, target_version: str) -> None:
     if validate_version(target_version) <= validate_version(current_version):
         raise ReleasePrepError(
             f"Target version {target_version} must be greater than current version {current_version}"
+        )
+
+
+def assert_no_major_bump(current_version: str, target_version: str) -> None:
+    current_major = validate_version(current_version)[0]
+    target_major = validate_version(target_version)[0]
+    if target_major > current_major:
+        raise ReleasePrepError(
+            f"Major version bumps are not allowed: {current_version} -> {target_version}"
         )
 
 
@@ -502,6 +511,7 @@ def main() -> int:
     )
     validate_version(target_version)
     assert_version_increases(current_version, target_version)
+    assert_no_major_bump(current_version, target_version)
 
     version_tag = changie_version(target_version)
     version_file = changes_dir / f"{version_tag}.md"

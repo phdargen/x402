@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.14.0
+
+### Minor Changes
+
+- Align version with the monorepo fixed release group.
+
 ## 2.13.2
 
 ### Minor Changes
