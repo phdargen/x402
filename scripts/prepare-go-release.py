@@ -492,9 +492,6 @@ def run_changie(root: Path, *args: str) -> None:
         raise ReleasePrepError(f"changie failed with exit code {exc.returncode}.") from exc
 
 
-def print_post_release_steps(version: str) -> None:
-    tag_version = changie_version(version)
-
 def main() -> int:
     args = parse_args()
     root = sdk_dir()
@@ -542,7 +539,6 @@ def main() -> int:
     replace_constants_version(constants_file, target_version)
 
     print(f"Prepared Go SDK release {target_version}")
-    print_post_release_steps(target_version)
     return 0
 
 
