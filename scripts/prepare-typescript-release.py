@@ -821,8 +821,9 @@ def main() -> int:
         return 0
 
     rewrite_changesets(root, changeset_bodies_list)
+    core_in_changesets = changesets_include_core(changesets)
     run_changeset_version(root)
-    if not changesets_include_core(changesets) and fix_empty_core_changelog(root):
+    if not core_in_changesets and fix_empty_core_changelog(root):
         print("Added alignment-only entry to @x402/core CHANGELOG.")
     fixed_changelogs = fix_dependency_minor_changelogs(root)
     if fixed_changelogs:
