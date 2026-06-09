@@ -11,7 +11,7 @@ their summaries with PR links and contributor attribution, downgrades any major
 version bumps to minor (with a warning), then runs ``pnpm changeset version`` to
 bump package versions and update changelogs. After versioning, it warns if any
 non-legacy package version deviates from ``@x402/core``. Use ``--dry-run`` to
-preview without modifying files.
+preview changelog entries and version bumps without modifying files.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 DEFAULT_REPOSITORY = "x402-foundation/x402"
@@ -99,7 +100,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate inputs and preview changelog entries without modifying files.",
+        help="Validate inputs and preview changelog entries and version bumps without modifying files.",
     )
     return parser.parse_args()
 
@@ -386,7 +387,31 @@ def publishable_package_jsons(root: Path) -> list[Path]:
     )
 
 
-def warn_if_package_versions_deviate_from_core(root: Path) -> None:
+def publishable_package_names(root: Path) -> set[str]:
+    names: set[str] = set()
+
+    for package_json in publishable_package_jsons(root):
+        try:
+            data = json.loads(package_json.read_text())
+            names.add(data.get("name", str(package_json.parent)))
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+    return names
+
+
+def print_core_version_deviation_warnings(
+    mismatches: list[tuple[str, str]], core_version: str, *, label: str
+) -> None:
+    if not mismatches:
+        return
+
+    print(f"warning: [{label}] Package version(s) deviate from @x402/core ({core_version}):")
+    for name, version in mismatches:
+        print(f"  - {name}: {version}")
+
+
+def warn_if_package_versions_deviate_from_core(root: Path, *, label: str) -> None:
     core_package_json = root / "packages" / "core" / "package.json"
     core_version = read_core_version(root)
     mismatches: list[tuple[str, str]] = []
@@ -405,12 +430,117 @@ def warn_if_package_versions_deviate_from_core(root: Path) -> None:
         if version != core_version:
             mismatches.append((name, version))
 
-    if not mismatches:
+    print_core_version_deviation_warnings(mismatches, core_version, label=label)
+
+
+def warn_if_release_versions_deviate_from_core(
+    releases: list[dict], root: Path, *, label: str
+) -> None:
+    publishable_names = publishable_package_names(root)
+    core_release = next(
+        (release for release in releases if release.get("name") == "@x402/core"),
+        None,
+    )
+    if core_release is None:
         return
 
-    print(f"warning: Package version(s) deviate from @x402/core ({core_version}):")
-    for name, version in mismatches:
-        print(f"  - {name}: {version}")
+    core_version = core_release.get("newVersion")
+    if core_version is None:
+        return
+
+    mismatches: list[tuple[str, str]] = []
+    for release in releases:
+        name = release.get("name")
+        if name is None or name == "@x402/core" or name not in publishable_names:
+            continue
+
+        version = release.get("newVersion")
+        if version is None or version == core_version:
+            continue
+
+        mismatches.append((name, version))
+
+    print_core_version_deviation_warnings(mismatches, core_version, label=label)
+
+
+def changesets_have_major_bumps(changesets: list[Path]) -> bool:
+    for changeset in changesets:
+        frontmatter, _ = read_changeset(changeset)
+        _, downgraded_lines = downgrade_major_bumps_in_frontmatter(frontmatter)
+        if downgraded_lines:
+            return True
+
+    return False
+
+
+@contextmanager
+def temporarily_sanitized_major_bumps(root: Path, changesets: list[Path]):
+    backups: dict[Path, str] = {}
+
+    try:
+        for changeset in changesets:
+            frontmatter, body = read_changeset(changeset)
+            new_frontmatter, downgraded_lines = downgrade_major_bumps_in_frontmatter(frontmatter)
+            if not downgraded_lines:
+                continue
+
+            backups[changeset] = changeset.read_text()
+            write_changeset(changeset, new_frontmatter, body)
+
+        yield
+    finally:
+        for path, content in backups.items():
+            path.write_text(content)
+
+
+def run_changeset_status(root: Path) -> dict:
+    output_path = root / ".changeset-status-preview.json"
+
+    try:
+        subprocess.run(
+            ["pnpm", "exec", "changeset", "status", f"--output={output_path.name}"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise ReleasePrepError(
+            "pnpm is required to preview version bumps. Install pnpm and run: cd typescript && pnpm install"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        detail = f": {stderr}" if stderr else ""
+        raise ReleasePrepError(
+            f"pnpm changeset status failed with exit code {exc.returncode}{detail}."
+        ) from exc
+
+    try:
+        return json.loads(output_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ReleasePrepError(f"Could not parse changeset status output: {output_path}") from exc
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
+def print_version_bump_preview(releases: list[dict]) -> None:
+    bumps = [
+        release
+        for release in releases
+        if release.get("oldVersion") != release.get("newVersion")
+    ]
+    if not bumps:
+        print("Version bump preview: no package versions would change.")
+        print()
+        return
+
+    print("Version bump preview:")
+    for release in sorted(bumps, key=lambda item: item["name"]):
+        print(
+            f"- {release['name']}: {release['oldVersion']} -> {release['newVersion']} "
+            f"({release['type']})"
+        )
+    print()
 
 
 def read_core_version(root: Path) -> str:
@@ -453,18 +583,30 @@ def main() -> int:
     sanitize_major_version_bumps(root, changesets, dry_run=args.dry_run)
     changeset_bodies_list = changeset_bodies(root, changesets)
     print_changeset_preview(changeset_bodies_list)
+    warn_if_package_versions_deviate_from_core(root, label="pre-bump")
 
     if args.dry_run:
+        preview_context = (
+            temporarily_sanitized_major_bumps(root, changesets)
+            if changesets_have_major_bumps(changesets)
+            else nullcontext()
+        )
+        with preview_context:
+            status = run_changeset_status(root)
+            print_version_bump_preview(status.get("releases", []))
+            warn_if_release_versions_deviate_from_core(
+                status.get("releases", []), root, label="post-bump"
+            )
+
         print(f"Current @x402/core version: {current_version}")
         print(f"Pending changesets: {len(changesets)}")
-        warn_if_package_versions_deviate_from_core(root)
         print("Dry run complete; no files were changed.")
         return 0
 
     rewrite_changesets(root, changeset_bodies_list)
     run_changeset_version(root)
     target_version = read_core_version(root)
-    warn_if_package_versions_deviate_from_core(root)
+    warn_if_package_versions_deviate_from_core(root, label="post-bump")
 
     print(f"Prepared TypeScript SDK release (@x402/core {current_version} -> {target_version})")
     return 0
