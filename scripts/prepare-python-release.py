@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Prepare a Python SDK release by bumping versions and building the changelog.
 
-Run from the ``python/x402`` directory:
+Run from the repository root:
 
-    uv run python scripts/prepare-release.py --version 1.2.3
-    uv run python scripts/prepare-release.py --bump minor
-    uv run python scripts/prepare-release.py --bump patch --dry-run
+    python3 scripts/prepare-python-release.py --version 1.2.3
+    python3 scripts/prepare-python-release.py --bump minor
+    python3 scripts/prepare-python-release.py --bump patch --dry-run
 
 Either ``--version X.Y.Z`` or ``--bump {minor,patch}`` is required. Use ``--dry-run``
 to validate without writing files.
@@ -80,8 +80,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def package_dir() -> Path:
+def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def package_dir() -> Path:
+    return repo_root() / "python" / "x402"
 
 
 def require_file(path: Path) -> None:
@@ -144,11 +148,11 @@ def replace_single(path: Path, pattern: re.Pattern[str], replacement: str, label
     path.write_text(updated)
 
 
-def git_output(sdk_dir: Path, command: list[str]) -> str | None:
+def git_output(root: Path, command: list[str]) -> str | None:
     try:
         completed = subprocess.run(
             ["git", *command],
-            cwd=sdk_dir,
+            cwd=root,
             check=True,
             capture_output=True,
             text=True,
@@ -159,11 +163,11 @@ def git_output(sdk_dir: Path, command: list[str]) -> str | None:
     return completed.stdout.strip()
 
 
-def gh_output(sdk_dir: Path, command: list[str]) -> str | None:
+def gh_output(root: Path, command: list[str]) -> str | None:
     try:
         completed = subprocess.run(
             ["gh", *command],
-            cwd=sdk_dir,
+            cwd=root,
             check=True,
             capture_output=True,
             text=True,
@@ -186,10 +190,10 @@ def repository_name() -> str:
     return repository
 
 
-def fragment_commit_sha(sdk_dir: Path, fragment: Path) -> str | None:
-    relative_fragment = fragment.relative_to(sdk_dir)
+def fragment_commit_sha(root: Path, fragment: Path) -> str | None:
+    relative_fragment = fragment.relative_to(root)
     output = git_output(
-        sdk_dir,
+        root,
         ["log", "-1", "--format=%H", "--", str(relative_fragment)],
     )
     if not output:
@@ -203,7 +207,7 @@ def add_unique(items: list[str], item: str | None) -> None:
         items.append(item)
 
 
-def pr_authors(sdk_dir: Path, issue: str) -> tuple[str | None, list[str]]:
+def pr_authors(root: Path, issue: str) -> tuple[str | None, list[str]]:
     """Return ``(pr_author, contributors)`` for a pull request.
 
     ``pr_author`` is the login of the user who opened the PR. ``contributors`` are
@@ -230,7 +234,7 @@ def pr_authors(sdk_dir: Path, issue: str) -> tuple[str | None, list[str]]:
         if cursor is not None:
             command.extend(["-f", f"after={cursor}"])
 
-        output = gh_output(sdk_dir, command)
+        output = gh_output(root, command)
         if not output:
             break
 
@@ -277,9 +281,9 @@ def thanks_text(pr_author: str | None, contributors: list[str]) -> str | None:
     return f"Thanks {text}!"
 
 
-def commit_author_login(sdk_dir: Path, commit_sha: str) -> str | None:
+def commit_author_login(root: Path, commit_sha: str) -> str | None:
     output = gh_output(
-        sdk_dir,
+        root,
         ["api", f"repos/{repository_name()}/commits/{commit_sha}", "--jq", ".author.login"],
     )
     if not output or output == "null":
@@ -288,9 +292,9 @@ def commit_author_login(sdk_dir: Path, commit_sha: str) -> str | None:
     return output
 
 
-def commit_pr_number(sdk_dir: Path, commit_sha: str) -> str | None:
+def commit_pr_number(root: Path, commit_sha: str) -> str | None:
     output = gh_output(
-        sdk_dir,
+        root,
         ["api", f"repos/{repository_name()}/commits/{commit_sha}/pulls", "--jq", ".[0].number"],
     )
     if not output or output == "null":
@@ -299,42 +303,42 @@ def commit_pr_number(sdk_dir: Path, commit_sha: str) -> str | None:
     return output
 
 
-def fragment_thanks(sdk_dir: Path, pr_number: str | None, commit_sha: str | None) -> str | None:
+def fragment_thanks(root: Path, pr_number: str | None, commit_sha: str | None) -> str | None:
     pr_author: str | None = None
     contributors: list[str] = []
 
     if pr_number is not None:
-        pr_author, contributors = pr_authors(sdk_dir, pr_number)
+        pr_author, contributors = pr_authors(root, pr_number)
 
     if pr_author is None and commit_sha is not None:
-        pr_author = commit_author_login(sdk_dir, commit_sha)
+        pr_author = commit_author_login(root, commit_sha)
 
     return thanks_text(pr_author, contributors)
 
 
-def fragment_changelog_body(sdk_dir: Path, fragment: Path) -> str | None:
+def fragment_changelog_body(root: Path, fragment: Path) -> str | None:
     text = fragment_text(fragment)
     if not text:
         return None
 
-    commit_sha = fragment_commit_sha(sdk_dir, fragment)
-    pr_number = commit_pr_number(sdk_dir, commit_sha) if commit_sha is not None else None
+    commit_sha = fragment_commit_sha(root, fragment)
+    pr_number = commit_pr_number(root, commit_sha) if commit_sha is not None else None
 
     body = text
     if pr_number is not None:
         body += f" ([#{pr_number}]({REPOSITORY_URL}/pull/{pr_number}))"
 
-    if (thanks := fragment_thanks(sdk_dir, pr_number, commit_sha)) is not None:
+    if (thanks := fragment_thanks(root, pr_number, commit_sha)) is not None:
         body += f" - {thanks}"
 
     return body
 
 
-def changelog_fragment_bodies(sdk_dir: Path, fragments: list[Path]) -> list[tuple[Path, str]]:
+def changelog_fragment_bodies(root: Path, fragments: list[Path]) -> list[tuple[Path, str]]:
     return [
         (fragment, body)
         for fragment in fragments
-        if (body := fragment_changelog_body(sdk_dir, fragment)) is not None
+        if (body := fragment_changelog_body(root, fragment)) is not None
     ]
 
 
@@ -348,7 +352,7 @@ def print_changelog_fragment_preview(bodies: list[tuple[Path, str]]) -> None:
     print()
 
 
-def rewrite_fragments_as_orphans(sdk_dir: Path, bodies: list[tuple[Path, str]]) -> None:
+def rewrite_fragments_as_orphans(root: Path, bodies: list[tuple[Path, str]]) -> None:
     """Replace each fragment with an orphan fragment whose body is the rendered
     changelog line. Towncrier renders orphan fragments (filenames prefixed with
     ``+``) verbatim without appending its own issue link, so the PR link, commit
@@ -360,7 +364,7 @@ def rewrite_fragments_as_orphans(sdk_dir: Path, bodies: list[tuple[Path, str]]) 
         orphan = fragment.with_name(f"+{fragment.name}")
         orphan.write_text(f"{body}\n")
         fragment.unlink()
-        git_output(sdk_dir, ["add", "--", str(orphan.relative_to(sdk_dir))])
+        git_output(root, ["add", "--", str(orphan.relative_to(root))])
 
 
 def run_towncrier(sdk_dir: Path, version: str) -> None:
