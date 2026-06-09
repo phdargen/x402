@@ -338,6 +338,51 @@ def fragment_thanks(root: Path, pr_number: str | None, commit_sha: str | None) -
     return thanks_text(pr_author, contributors)
 
 
+def changie_kind_keys(root: Path) -> dict[str, str]:
+    """Map kind label or alias (case-insensitive) to the changie kind key."""
+    config_path = root / ".changie.yaml"
+    if not config_path.is_file():
+        raise ReleasePrepError(f"Required file does not exist: {config_path}")
+
+    aliases: dict[str, str] = {}
+    label: str | None = None
+    in_kinds = False
+    for line in config_path.read_text().splitlines():
+        if line.startswith("kinds:"):
+            in_kinds = True
+            continue
+        if not in_kinds:
+            continue
+        if line and not line[0].isspace():
+            break
+        if match := re.match(r"^\s+-\s+label:\s*(.+?)\s*$", line):
+            label = match.group(1).strip()
+            aliases.setdefault(label.lower(), label.lower())
+        elif label is not None and (
+            match := re.match(r"^\s+key:\s*(.+?)\s*$", line)
+        ):
+            key = match.group(1).strip()
+            aliases[label.lower()] = key
+            aliases[key.lower()] = key
+            label = None
+
+    if not aliases:
+        raise ReleasePrepError(f"No kinds configured in {config_path}")
+
+    return aliases
+
+
+def normalize_changie_kind(root: Path, kind: str) -> str:
+    aliases = changie_kind_keys(root)
+    normalized = aliases.get(kind.lower())
+    if normalized is None:
+        known = ", ".join(sorted({value for value in aliases.values()}))
+        raise ReleasePrepError(
+            f"Unknown changelog kind '{kind}'. Expected one of: {known}"
+        )
+    return normalized
+
+
 def read_changie_fragment(fragment: Path) -> tuple[str, str]:
     content = fragment.read_text()
     kind_match = KIND_RE.search(content)
@@ -376,6 +421,7 @@ def changelog_fragment_bodies(
     bodies: list[tuple[Path, str, str]] = []
     for fragment in fragments:
         kind, body = read_changie_fragment(fragment)
+        kind = normalize_changie_kind(root, kind)
         rendered = fragment_changelog_body(root, fragment, body)
         if rendered is not None:
             bodies.append((fragment, kind, rendered))
