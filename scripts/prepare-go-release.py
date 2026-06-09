@@ -9,15 +9,6 @@ Run from the repository root:
 
 Either ``--version X.Y.Z`` or ``--bump {minor,patch}`` is required. Use ``--dry-run``
 to validate without writing files.
-
-After running this script, commit the changes, push, and create the release tags:
-
-    git checkout -b release/go-$(date -u +%F)
-    git add . && git commit -m "chore(go): release vX.Y.Z" && git push
-
-    git tag -s -a "go-x402@vX.Y.Z" -m "Released x402 in go as version vX.Y.Z"
-    git tag go/vX.Y.Z
-    git push upstream "go-x402@vX.Y.Z" go/vX.Y.Z
 """
 
 from __future__ import annotations
@@ -487,13 +478,6 @@ def run_changie(root: Path, *args: str) -> None:
 
 def print_post_release_steps(version: str) -> None:
     tag_version = changie_version(version)
-    print("Next steps:")
-    print("  git checkout -b release/go-$(date -u +%F)")
-    print(f'  git add . && git commit -m "chore(go): release {tag_version}" && git push')
-    print(f'  git tag -s -a "go-x402@{tag_version}" -m "Released x402 in go as version {tag_version}"')
-    print(f"  git tag go/{tag_version}")
-    print(f'  git push upstream "go-x402@{tag_version}" go/{tag_version}')
-
 
 def main() -> int:
     args = parse_args()
