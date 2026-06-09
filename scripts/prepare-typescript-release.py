@@ -5,13 +5,6 @@ Run from the repository root:
 
     python3 scripts/prepare-typescript-release.py
     python3 scripts/prepare-typescript-release.py --dry-run
-
-Pending changesets live in ``typescript/.changeset/*.md``. This script enriches
-their summaries with PR links and contributor attribution, downgrades any major
-version bumps to minor (with a warning), then runs ``pnpm changeset version`` to
-bump package versions and update changelogs. After versioning, it warns if any
-non-legacy package version deviates from ``@x402/core``. Use ``--dry-run`` to
-preview changelog entries and version bumps without modifying files.
 """
 
 from __future__ import annotations
@@ -29,6 +22,26 @@ DEFAULT_REPOSITORY = "x402-foundation/x402"
 REPOSITORY_URL = f"https://github.com/{DEFAULT_REPOSITORY}"
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 MAJOR_BUMP_LINE_RE = re.compile(r"^(\s*['\"]?[^'\":\n]+['\"]?\s*:\s*)major\s*$")
+PACKAGE_BUMP_LINE_RE = re.compile(
+    r"^\s*['\"]?([^'\":\n]+)['\"]?\s*:\s*(?:major|minor|patch)\s*$"
+)
+EMPTY_CORE_CHANGELOG_SECTION_RE = re.compile(
+    r"^(# @x402/core Changelog\n\n)(## \d+\.\d+\.\d+\n)(\n)(## )",
+    re.MULTILINE,
+)
+CORE_CHANGELOG_ALIGNMENT_ENTRY = (
+    "\n### Minor Changes\n\n"
+    "- Bumped to align version with dependent packages\n"
+)
+VERSION_SECTION_RE = re.compile(
+    r"^(?P<header>#[^\n]+\n\n)(?P<section>## \d+\.\d+\.\d+\n.*?)(?=\n## |\Z)",
+    re.DOTALL,
+)
+MINOR_CHANGES_HEADING = "### Minor Changes"
+PATCH_CHANGES_HEADING = "### Patch Changes"
+STANDALONE_DEP_LINE_RE = re.compile(r"^- @x402/[\w-]+@\d+\.\d+\.\d+$")
+UPDATED_DEPS_LINE_RE = re.compile(r"^- Updated dependencies(?: \[[a-f0-9]+\])?$")
+INDENTED_DEP_LINE_RE = re.compile(r"^  - @x402/[\w-]+@\d+\.\d+\.\d+$")
 
 PUBLISH_WORKFLOWS = [
     ("@x402/core", "Publish @x402/core package to NPM"),
@@ -543,6 +556,204 @@ def print_version_bump_preview(releases: list[dict]) -> None:
     print()
 
 
+def changeset_packages(frontmatter: str) -> set[str]:
+    packages: set[str] = set()
+    for line in frontmatter.splitlines():
+        match = PACKAGE_BUMP_LINE_RE.match(line)
+        if match is not None:
+            packages.add(match.group(1).strip())
+    return packages
+
+
+def changesets_include_core(changesets: list[Path]) -> bool:
+    for changeset in changesets:
+        frontmatter, _ = read_changeset(changeset)
+        if "@x402/core" in changeset_packages(frontmatter):
+            return True
+    return False
+
+
+def core_would_get_alignment_entry(changesets: list[Path], releases: list[dict]) -> bool:
+    if changesets_include_core(changesets):
+        return False
+
+    core_release = next(
+        (release for release in releases if release.get("name") == "@x402/core"),
+        None,
+    )
+    if core_release is None:
+        return False
+
+    return core_release.get("oldVersion") != core_release.get("newVersion")
+
+
+def split_changelog_subsection(section: str, heading: str) -> tuple[str | None, str | None]:
+    marker = f"\n{heading}\n\n"
+    start = section.find(marker)
+    if start == -1:
+        return None, section
+
+    content_start = start + len(marker)
+    next_heading = re.search(r"\n### ", section[content_start:])
+    if next_heading is None:
+        body = section[content_start:].rstrip("\n")
+        remainder = section[:start]
+        return body, remainder
+
+    content_end = content_start + next_heading.start()
+    body = section[content_start:content_end].rstrip("\n")
+    remainder = section[:start] + section[content_end:]
+    return body, remainder
+
+
+def changelog_entry_blocks(body: str) -> list[list[str]]:
+    if not body.strip():
+        return []
+
+    blocks: list[list[str]] = []
+    current: list[str] = []
+
+    for line in body.splitlines():
+        if line.startswith("- ") and current:
+            blocks.append(current)
+            current = [line]
+            continue
+
+        current.append(line)
+
+    if current:
+        blocks.append(current)
+
+    return blocks
+
+
+def is_dependency_changelog_block(block: list[str]) -> bool:
+    if not block:
+        return False
+
+    first_line = block[0]
+    if STANDALONE_DEP_LINE_RE.match(first_line):
+        return True
+
+    if UPDATED_DEPS_LINE_RE.match(first_line):
+        return all(
+            UPDATED_DEPS_LINE_RE.match(line)
+            or INDENTED_DEP_LINE_RE.match(line)
+            or not line.strip()
+            for line in block
+        )
+
+    return False
+
+
+def format_dependency_block(block: list[str]) -> list[str]:
+    if block and STANDALONE_DEP_LINE_RE.match(block[0]):
+        return ["- Updated dependencies", f"  {block[0]}"]
+    return block
+
+
+def join_changelog_subsection(heading: str, body: str) -> str:
+    if not body.strip():
+        return ""
+
+    return f"\n{heading}\n\n{body.rstrip()}\n"
+
+
+def fix_dependency_minor_changelog_section(section: str) -> tuple[str, bool]:
+    minor_body, without_minor = split_changelog_subsection(section, MINOR_CHANGES_HEADING)
+    patch_body, without_patch = split_changelog_subsection(without_minor, PATCH_CHANGES_HEADING)
+    if patch_body is None:
+        return section, False
+
+    dependency_blocks = [
+        block
+        for block in changelog_entry_blocks(patch_body)
+        if is_dependency_changelog_block(block)
+    ]
+    if not dependency_blocks:
+        return section, False
+
+    non_dependency_blocks = [
+        block
+        for block in changelog_entry_blocks(patch_body)
+        if not is_dependency_changelog_block(block)
+    ]
+    formatted_dependency_blocks = [
+        format_dependency_block(block) for block in dependency_blocks
+    ]
+    dependency_lines = [
+        line
+        for block in formatted_dependency_blocks
+        for line in block
+    ]
+    new_minor_lines: list[str] = []
+
+    if minor_body is not None and minor_body.strip():
+        new_minor_lines.extend(minor_body.splitlines())
+
+    new_minor_lines.extend(dependency_lines)
+    new_minor_body = "\n".join(new_minor_lines)
+
+    if non_dependency_blocks:
+        new_patch_lines = [line for block in non_dependency_blocks for line in block]
+        new_patch_body = "\n".join(new_patch_lines)
+        rebuilt = (
+            without_patch
+            + join_changelog_subsection(MINOR_CHANGES_HEADING, new_minor_body)
+            + join_changelog_subsection(PATCH_CHANGES_HEADING, new_patch_body)
+        )
+        return rebuilt.rstrip() + "\n", True
+
+    rebuilt = without_patch + join_changelog_subsection(MINOR_CHANGES_HEADING, new_minor_body)
+    return rebuilt.rstrip() + "\n", True
+
+
+def fix_dependency_minor_changelogs(root: Path) -> int:
+    fixed_count = 0
+
+    for changelog_path in sorted(root.rglob("CHANGELOG.md")):
+        if "legacy" in changelog_path.parts:
+            continue
+
+        content = changelog_path.read_text()
+        match = VERSION_SECTION_RE.match(content)
+        if match is None:
+            continue
+
+        header = match.group("header")
+        section = match.group("section")
+        after = content[match.end() :]
+
+        fixed_section, changed = fix_dependency_minor_changelog_section(section)
+        if not changed:
+            continue
+
+        changelog_path.write_text(header + fixed_section + after)
+        fixed_count += 1
+
+    return fixed_count
+
+
+def fix_empty_core_changelog(root: Path) -> bool:
+    changelog_path = root / "packages" / "core" / "CHANGELOG.md"
+    content = changelog_path.read_text()
+
+    def insert_alignment(match: re.Match[str]) -> str:
+        return (
+            match.group(1)
+            + match.group(2)
+            + CORE_CHANGELOG_ALIGNMENT_ENTRY
+            + match.group(4)
+        )
+
+    new_content, count = EMPTY_CORE_CHANGELOG_SECTION_RE.subn(insert_alignment, content, count=1)
+    if count == 0:
+        return False
+
+    changelog_path.write_text(new_content)
+    return True
+
+
 def read_core_version(root: Path) -> str:
     package_json = root / "packages" / "core" / "package.json"
     if not package_json.is_file():
@@ -597,6 +808,12 @@ def main() -> int:
             warn_if_release_versions_deviate_from_core(
                 status.get("releases", []), root, label="post-bump"
             )
+            if core_would_get_alignment_entry(changesets, status.get("releases", [])):
+                print(
+                    "@x402/core changelog would receive an alignment-only entry "
+                    "(no changesets target @x402/core)."
+                )
+                print()
 
         print(f"Current @x402/core version: {current_version}")
         print(f"Pending changesets: {len(changesets)}")
@@ -605,6 +822,14 @@ def main() -> int:
 
     rewrite_changesets(root, changeset_bodies_list)
     run_changeset_version(root)
+    if not changesets_include_core(changesets) and fix_empty_core_changelog(root):
+        print("Added alignment-only entry to @x402/core CHANGELOG.")
+    fixed_changelogs = fix_dependency_minor_changelogs(root)
+    if fixed_changelogs:
+        print(
+            f"Moved dependency-only changelog entries from Patch Changes to Minor Changes "
+            f"in {fixed_changelogs} package(s)."
+        )
     target_version = read_core_version(root)
     warn_if_package_versions_deviate_from_core(root, label="post-bump")
 
