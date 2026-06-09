@@ -40,8 +40,14 @@ VERSION_SECTION_RE = re.compile(
 MINOR_CHANGES_HEADING = "### Minor Changes"
 PATCH_CHANGES_HEADING = "### Patch Changes"
 STANDALONE_DEP_LINE_RE = re.compile(r"^- @x402/[\w-]+@\d+\.\d+\.\d+$")
-UPDATED_DEPS_LINE_RE = re.compile(r"^- Updated dependencies(?: \[[a-f0-9]+\])?$")
+UPDATED_DEPS_LINE_RE = re.compile(
+    r"^- Updated dependencies(?: \[[a-f0-9]+\](?:\([^)]+\))?)?$"
+)
 INDENTED_DEP_LINE_RE = re.compile(r"^  - @x402/[\w-]+@\d+\.\d+\.\d+$")
+COMMIT_ENTRY_PREFIX_RE = re.compile(r"^(- )([a-f0-9]{7,40})(: )", re.MULTILINE)
+UPDATED_DEPS_SHA_RE = re.compile(
+    r"(Updated dependencies )\[([a-f0-9]{7,40})\](?!\()"
+)
 
 PUBLISH_WORKFLOWS = [
     ("@x402/core", "Publish @x402/core package to NPM"),
@@ -192,10 +198,17 @@ def repository_name() -> str:
 
 def fragment_commit_sha(root: Path, fragment: Path) -> str | None:
     relative_fragment = fragment.relative_to(root)
+    # Prefer the commit that added the fragment. Later release-prep edits to a
+    # changeset must not override attribution for the original contributing PR.
     output = git_output(
         root,
-        ["log", "-1", "--format=%H", "--", str(relative_fragment)],
+        ["log", "--diff-filter=A", "-1", "--format=%H", "--", str(relative_fragment)],
     )
+    if not output:
+        output = git_output(
+            root,
+            ["log", "-1", "--format=%H", "--", str(relative_fragment)],
+        )
     if not output:
         return None
 
@@ -263,6 +276,25 @@ def pr_authors(root: Path, issue: str) -> tuple[str | None, list[str]]:
 
 def author_link(login: str) -> str:
     return f"[@{login}](https://github.com/{login})"
+
+
+def commit_url(sha: str) -> str:
+    return f"https://github.com/{repository_name()}/commit/{sha}"
+
+
+def commit_sha_link(sha: str) -> str:
+    return f"[{sha}]({commit_url(sha)})"
+
+
+def link_commit_shas_in_text(text: str) -> str:
+    text = COMMIT_ENTRY_PREFIX_RE.sub(
+        lambda match: f"{match.group(1)}{commit_sha_link(match.group(2))}{match.group(3)}",
+        text,
+    )
+    return UPDATED_DEPS_SHA_RE.sub(
+        lambda match: f"{match.group(1)}{commit_sha_link(match.group(2))}",
+        text,
+    )
 
 
 def thanks_text(pr_author: str | None, contributors: list[str]) -> str | None:
@@ -708,6 +740,32 @@ def fix_dependency_minor_changelog_section(section: str) -> tuple[str, bool]:
     return rebuilt.rstrip() + "\n", True
 
 
+def link_changelog_commit_shas(root: Path) -> int:
+    linked_count = 0
+
+    for changelog_path in sorted(root.rglob("CHANGELOG.md")):
+        if "legacy" in changelog_path.parts:
+            continue
+
+        content = changelog_path.read_text()
+        match = VERSION_SECTION_RE.match(content)
+        if match is None:
+            continue
+
+        header = match.group("header")
+        section = match.group("section")
+        after = content[match.end() :]
+
+        linked_section = link_commit_shas_in_text(section)
+        if linked_section == section:
+            continue
+
+        changelog_path.write_text(header + linked_section + after)
+        linked_count += 1
+
+    return linked_count
+
+
 def fix_dependency_minor_changelogs(root: Path) -> int:
     fixed_count = 0
 
@@ -831,6 +889,9 @@ def main() -> int:
             f"Moved dependency-only changelog entries from Patch Changes to Minor Changes "
             f"in {fixed_changelogs} package(s)."
         )
+    linked_changelogs = link_changelog_commit_shas(root)
+    if linked_changelogs:
+        print(f"Linked commit SHAs in {linked_changelogs} changelog(s).")
     target_version = read_core_version(root)
     warn_if_package_versions_deviate_from_core(root, label="post-bump")
 

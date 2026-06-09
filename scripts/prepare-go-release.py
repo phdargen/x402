@@ -219,10 +219,17 @@ def repository_name() -> str:
 
 def fragment_commit_sha(root: Path, fragment: Path) -> str | None:
     relative_fragment = fragment.relative_to(root)
+    # Prefer the commit that added the fragment. Later release-prep edits must
+    # not override attribution for the original contributing PR.
     output = git_output(
         root,
-        ["log", "-1", "--format=%H", "--", str(relative_fragment)],
+        ["log", "--diff-filter=A", "-1", "--format=%H", "--", str(relative_fragment)],
     )
+    if not output:
+        output = git_output(
+            root,
+            ["log", "-1", "--format=%H", "--", str(relative_fragment)],
+        )
     if not output:
         return None
 
