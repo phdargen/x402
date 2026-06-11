@@ -210,7 +210,7 @@ def _create_upto_permit2_payload(
 
     now = int(time.time())
     nonce = create_permit2_nonce()
-    valid_after = str(now - 600)
+    valid_after = "0"
     deadline = str(now + (requirements.max_timeout_seconds or 3600))
     if int(deadline) <= int(valid_after):
         raise ValueError(

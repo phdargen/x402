@@ -47,7 +47,7 @@ def create_batch_settlement_eip3009_deposit_payload(
 
     salt = create_nonce()
     now = int(time.time())
-    valid_after = now - 600
+    valid_after = 0
     valid_before = now + int(requirements.max_timeout_seconds)
     chain_id = get_evm_chain_id(str(requirements.network))
     channel_id = compute_channel_id(channel_config, str(requirements.network))

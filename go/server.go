@@ -639,7 +639,7 @@ func (s *x402ResourceServer) BuildPaymentRequirements(
 	// Apply default timeout if not specified
 	maxTimeout := config.MaxTimeoutSeconds
 	if maxTimeout == 0 {
-		maxTimeout = 60 // Default to 60 seconds
+		maxTimeout = 300 // Default to 5 minutes
 	}
 
 	// Build base requirements

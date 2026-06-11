@@ -130,8 +130,8 @@ class TestCreateEip3009DepositPayload:
             max_claimable_amount="100",
         )
         auth = payload.deposit.authorization.erc3009_authorization
-        # valid_after ~= now - 600, valid_before ~= now + timeout
-        assert int(auth.valid_after) <= before
+        # valid_after is 0, valid_before ~= now + timeout
+        assert int(auth.valid_after) == 0
         assert int(auth.valid_before) >= before
 
         cid = compute_channel_id(cc, NETWORK)

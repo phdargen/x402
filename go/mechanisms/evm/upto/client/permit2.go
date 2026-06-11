@@ -39,7 +39,7 @@ func CreateUptoPermit2Payload(
 	}
 
 	now := time.Now().Unix()
-	validAfter := fmt.Sprintf("%d", now-600)
+	validAfter := "0"
 	deadline := fmt.Sprintf("%d", now+int64(requirements.MaxTimeoutSeconds))
 
 	tokenAddress := evm.NormalizeAddress(requirements.Asset)

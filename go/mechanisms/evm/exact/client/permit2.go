@@ -33,7 +33,7 @@ func CreatePermit2Payload(
 	}
 
 	now := time.Now().Unix()
-	validAfter := fmt.Sprintf("%d", now-600) // 10 minutes buffer for clock skew
+	validAfter := "0"
 	deadline := fmt.Sprintf("%d", now+int64(requirements.MaxTimeoutSeconds))
 
 	// Normalize addresses

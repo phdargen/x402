@@ -179,3 +179,32 @@ class TestLocalAccountAutoWrap:
         assert "signature" in payload
         assert payload["signature"].startswith("0x")
         assert len(payload["signature"]) > 2  # not just "0x"
+
+    def test_eip3009_payload_sets_valid_after_to_zero(self):
+        """EIP-3009 payload should use validAfter=0 and maxTimeout for validBefore."""
+        import time
+
+        account = Account.create()
+        client = ExactEvmClientScheme(signer=account)
+        network = "eip155:8453"
+        now = int(time.time())
+
+        requirements = PaymentRequirements(
+            scheme="exact",
+            network=network,
+            asset="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            amount="500000",
+            pay_to="0x0987654321098765432109876543210987654321",
+            max_timeout_seconds=600,
+            extra={
+                "name": "USD Coin",
+                "version": "2",
+            },
+        )
+
+        payload = client.create_payment_payload(requirements)
+        auth = payload["authorization"]
+
+        assert auth["validAfter"] == "0"
+        assert int(auth["validBefore"]) >= now + 600 - 2
+        assert int(auth["validBefore"]) <= now + 600 + 2
