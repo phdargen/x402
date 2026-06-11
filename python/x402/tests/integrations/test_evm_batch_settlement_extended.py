@@ -662,6 +662,7 @@ class TestBatchSettlementWithdrawalPendingRefund:
             assert len(pending) == 1
             assert pending[0].channel_id.lower() == channel_id
 
+            _wait_for_pending_transactions(pipe.facilitator_address)
             results = manager.refund([channel_id])
             assert len(results) == 1 and results[0].transaction, (
                 f"expected 1 refund result with tx hash, got {results}"

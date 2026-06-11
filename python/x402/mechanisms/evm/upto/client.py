@@ -208,10 +208,16 @@ def _create_upto_permit2_payload(
             "Ensure the server is configured with an upto facilitator that provides getExtra()."
         )
 
+    timeout = requirements.max_timeout_seconds
+    if timeout is not None and timeout <= 0:
+        raise ValueError(
+            f"Invalid time window: max_timeout_seconds ({timeout}) must be positive."
+        )
+
     now = int(time.time())
     nonce = create_permit2_nonce()
     valid_after = "0"
-    deadline = str(now + (requirements.max_timeout_seconds or 3600))
+    deadline = str(now + (timeout or 3600))
     if int(deadline) <= int(valid_after):
         raise ValueError(
             f"Invalid time window: deadline ({deadline}) must be after validAfter ({valid_after}). "
