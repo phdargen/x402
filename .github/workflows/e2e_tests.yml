@@ -7,8 +7,8 @@ name: E2E Tests
 
 on:
   schedule:
-    - cron: "0 6 * * 1-6"
-    - cron: "0 6 * * 0"
+    - cron: "0 10 * * 0-4,6" # daily except Friday — v2 only
+    - cron: "0 10 * * 5"     # Friday — v1 legacy + v2
   workflow_dispatch:
     inputs:
       include_legacy:
@@ -65,9 +65,9 @@ jobs:
           FACILITATOR_STELLAR_PRIVATE_KEY: ${{ secrets.FACILITATOR_STELLAR_PRIVATE_KEY }}
           FACILITATOR_TVM_PRIVATE_KEY: ${{ secrets.FACILITATOR_TVM_PRIVATE_KEY }}
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "0 6 * * 0" ]]; then
+          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "0 10 * * 5" ]]; then
             VERSIONS="1,2"
-            RUN_SCOPE="weekly v1 legacy + v2"
+            RUN_SCOPE="friday v1 legacy + v2"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.include_legacy }}" == "true" ]]; then
             VERSIONS="1,2"
             RUN_SCOPE="manual v1 legacy + v2"

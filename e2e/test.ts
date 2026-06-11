@@ -1,4 +1,4 @@
-import { config } from 'dotenv';
+import 'dotenv/config';
 import { spawn, execSync, ChildProcess } from 'child_process';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
@@ -398,9 +398,6 @@ async function drainClientETH(): Promise<boolean> {
     return false;
   }
 }
-
-// Load environment variables
-config();
 
 // Parse command line arguments
 const parsedArgs = parseArgs();
