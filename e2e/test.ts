@@ -15,7 +15,7 @@ import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/c
 import { minimizeScenarios } from './src/sampling';
 import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset } from './src/networks/networks';
 import { GenericServerProxy } from './src/servers/generic-server';
-import { Semaphore, FacilitatorLock } from './src/concurrency';
+import { Semaphore, ResourceLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
 import { waitForHealth } from './src/health';
 import { createPortAllocator } from './src/ports';
@@ -241,6 +241,47 @@ function getEvmClients() {
   });
 
   return { publicClient, facilitatorWallet, clientWallet, facilitatorAccount, clientAccount };
+}
+
+type EvmResourceKeyContext = {
+  evmCaip2: string;
+  evmPermit2Asset: string | undefined;
+  clientEvmAddress: string | undefined;
+  facilitatorEvmAddress: string | undefined;
+};
+
+/**
+ * Derive shared-resource lock keys for a scenario. Scenarios without shared
+ * mutable state return an empty list and stay fully parallel.
+ */
+function getScenarioResourceKeys(
+  scenario: TestScenario,
+  ctx: EvmResourceKeyContext,
+): string[] {
+  if (scenario.protocolFamily !== 'evm') {
+    return [];
+  }
+
+  const facilitatorAddress = ctx.facilitatorEvmAddress;
+  if (!facilitatorAddress) {
+    return [];
+  }
+
+  const keys: string[] = [
+    `evm:${ctx.evmCaip2}:facilitator:${facilitatorAddress.toLowerCase()}`,
+  ];
+
+  const touchesClientPermit2State =
+    scenario.endpoint.schemeOptions?.permit2Direct === true ||
+    scenario.endpoint.schemeOptions?.coldstart === true;
+
+  if (touchesClientPermit2State && ctx.clientEvmAddress && ctx.evmPermit2Asset) {
+    keys.push(
+      `evm:${ctx.evmCaip2}:client:${ctx.clientEvmAddress.toLowerCase()}:permit2:${ctx.evmPermit2Asset.toLowerCase()}`,
+    );
+  }
+
+  return keys;
 }
 
 const REVOKE_FUND_AMOUNT = parseEther('0.001');
@@ -1333,7 +1374,8 @@ async function runTest() {
   // ── Execute a single server+facilitator combo ─────────────────────────
   async function executeCombo(
     combo: ServerFacilitatorCombo,
-    evmLock: FacilitatorLock | null,
+    resourceLock: ResourceLock | null,
+    evmResourceKeyContext: EvmResourceKeyContext,
     nextTestNumber: () => number,
   ): Promise<DetailedTestResult[]> {
     const { serverName, facilitatorName, scenarios, port } = combo;
@@ -1420,50 +1462,45 @@ async function runTest() {
       for (const scenario of scenarios) {
         const tn = nextTestNumber();
         const isEvm = scenario.protocolFamily === 'evm';
-
-        if (scenario.client.name === 'svm-smart-wallet') {
-          await setupSwigWallet(networks.svm.rpcUrl);
-        }
-
-        if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
-          await approvePermit2Approval(evmPermit2Asset);
-        } else if (scenario.endpoint.schemeOptions?.coldstart === true) {
-          // Key on (client, path) so each client independently runs its own
-          // fund → revoke → drain cycle. Without the client name, the second
-          // client in a combo silently skips the coldstart and inherits
-          // whatever wallet state the first client left behind.
-          const endpointKey = `${scenario.client.name}::${scenario.endpoint.path}`;
-          if (!coldStartedEndpoints.has(endpointKey)) {
-            coldStartedEndpoints.add(endpointKey);
-            await fundClientForRevoke();
-            // Give fund tx 1s to propagate before submitting revoke (from client wallet)
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            await revokePermit2Approval(evmPermit2Asset);
-            // Give revoke tx 2s to propagate before drain reads pending nonce.
-            // Load-balanced RPCs can return a stale pending nonce if queried
-            // immediately after the revoke submission, causing the drain to
-            // collide with the revoke's nonce ("replacement transaction underpriced").
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            await drainClientETH();
-            // Wait for RPC nonce propagation across load-balanced nodes before the
-            // test client (which may use a separate RPC connection) queries the nonce.
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          }
-        }
-
         const isAvm = scenario.protocolFamily === 'avm';
+        const resourceKeys = getScenarioResourceKeys(scenario, evmResourceKeyContext);
 
-        if (isEvm && facilitatorName && evmLock) {
-          const releaseLock = await evmLock.acquire(facilitatorName);
-          try {
-            results.push(await runSingleTest(scenario, port, tn, cLog));
-            await new Promise(resolve => setTimeout(resolve, 1000));
-          } finally {
-            releaseLock();
+        const runScenario = async (): Promise<DetailedTestResult> => {
+          if (scenario.client.name === 'svm-smart-wallet') {
+            await setupSwigWallet(networks.svm.rpcUrl);
           }
-        } else {
-          results.push(await runSingleTest(scenario, port, tn, cLog));
-          if (isAvm) {
+
+          if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
+            await approvePermit2Approval(evmPermit2Asset);
+          } else if (scenario.endpoint.schemeOptions?.coldstart === true) {
+            // Key on (client, path) so each client independently runs its own
+            // fund → revoke → drain cycle. Without the client name, the second
+            // client in a combo silently skips the coldstart and inherits
+            // whatever wallet state the first client left behind.
+            const endpointKey = `${scenario.client.name}::${scenario.endpoint.path}`;
+            if (!coldStartedEndpoints.has(endpointKey)) {
+              coldStartedEndpoints.add(endpointKey);
+              await fundClientForRevoke();
+              // Give fund tx 1s to propagate before submitting revoke (from client wallet)
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              await revokePermit2Approval(evmPermit2Asset);
+              // Give revoke tx 2s to propagate before drain reads pending nonce.
+              // Load-balanced RPCs can return a stale pending nonce if queried
+              // immediately after the revoke submission, causing the drain to
+              // collide with the revoke's nonce ("replacement transaction underpriced").
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              await drainClientETH();
+              // Wait for RPC nonce propagation across load-balanced nodes before the
+              // test client (which may use a separate RPC connection) queries the nonce.
+              await new Promise(resolve => setTimeout(resolve, 1500));
+            }
+          }
+
+          const result = await runSingleTest(scenario, port, tn, cLog);
+
+          if (isEvm && resourceLock) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          } else if (isAvm) {
             // Pause between AVM tests to avoid 403 rate limiting on free public Algorand nodes
             await new Promise(resolve => setTimeout(resolve, 8000));
           } else if (isEvm) {
@@ -1473,6 +1510,19 @@ async function runTest() {
             // the two can collide on the same nonce on load-balanced RPCs.
             await new Promise(resolve => setTimeout(resolve, 1500));
           }
+
+          return result;
+        };
+
+        if (resourceKeys.length > 0 && resourceLock) {
+          const releaseLock = await resourceLock.acquireAll(resourceKeys);
+          try {
+            results.push(await runScenario());
+          } finally {
+            releaseLock();
+          }
+        } else {
+          results.push(await runScenario());
         }
       }
     } finally {
@@ -1485,7 +1535,19 @@ async function runTest() {
 
   // ── Unified execution: concurrency=1 for sequential, N for parallel ──
   const effectiveConcurrency = parsedArgs.parallel ? parsedArgs.concurrency : 1;
-  const evmLock = parsedArgs.parallel ? new FacilitatorLock() : null;
+  const resourceLock = parsedArgs.parallel ? new ResourceLock() : null;
+  const clientEvmAddress = clientEvmPrivateKey
+    ? privateKeyToAccount(clientEvmPrivateKey as `0x${string}`).address
+    : undefined;
+  const facilitatorEvmAddress = facilitatorEvmPrivateKey
+    ? privateKeyToAccount(facilitatorEvmPrivateKey as `0x${string}`).address
+    : undefined;
+  const evmResourceKeyContext: EvmResourceKeyContext = {
+    evmCaip2: networks.evm.caip2,
+    evmPermit2Asset,
+    clientEvmAddress,
+    facilitatorEvmAddress,
+  };
   const semaphore = new Semaphore(effectiveConcurrency);
 
   let globalTestNumber = 0;
@@ -1494,7 +1556,7 @@ async function runTest() {
   const comboPromises = serverFacilitatorCombos.map(async (combo) => {
     const release = await semaphore.acquire();
     try {
-      return await executeCombo(combo, evmLock, nextTestNumber);
+      return await executeCombo(combo, resourceLock, evmResourceKeyContext, nextTestNumber);
     } finally {
       release();
     }

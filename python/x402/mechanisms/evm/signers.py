@@ -7,6 +7,7 @@ libraries like eth_account and web3.py.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 logger = logging.getLogger("x402.signers")
@@ -282,6 +283,8 @@ class FacilitatorWeb3Signer:
 
         # Cache chain ID
         self._chain_id: int | None = None
+        self._nonce_lock = threading.Lock()
+        self._next_nonce: int | None = None
 
     @property
     def address(self) -> str:
@@ -305,6 +308,19 @@ class FacilitatorWeb3Signer:
         if self._chain_id is None:
             self._chain_id = self._w3.eth.chain_id
         return self._chain_id
+
+    def _reserve_nonce(self) -> int:
+        """Reserve the next pending nonce for this process."""
+        with self._nonce_lock:
+            pending = self._w3.eth.get_transaction_count(
+                self._account.address,
+                "pending",
+            )
+            if self._next_nonce is None or pending > self._next_nonce:
+                self._next_nonce = pending
+            nonce = self._next_nonce
+            self._next_nonce = nonce + 1
+            return nonce
 
     def read_contract(
         self,
@@ -475,7 +491,7 @@ class FacilitatorWeb3Signer:
         tx = func(*args).build_transaction(
             {
                 "from": self._account.address,
-                "nonce": self._w3.eth.get_transaction_count(self._account.address),
+                "nonce": self._reserve_nonce(),
                 "gas": 300000,
                 "gasPrice": self._w3.eth.gas_price,
             }
@@ -501,7 +517,7 @@ class FacilitatorWeb3Signer:
             "from": self._account.address,
             "to": Web3.to_checksum_address(to),
             "data": data,
-            "nonce": self._w3.eth.get_transaction_count(self._account.address),
+            "nonce": self._reserve_nonce(),
             "gas": 300000,
             "gasPrice": self._w3.eth.gas_price,
         }

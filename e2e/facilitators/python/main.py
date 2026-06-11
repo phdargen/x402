@@ -156,9 +156,7 @@ class Erc20ApprovalSigner:
                         "value": deficit,
                         "gas": 21000,
                         "gasPrice": w3.eth.gas_price,
-                        "nonce": w3.eth.get_transaction_count(
-                            self._signer._account.address
-                        ),
+                        "nonce": self._signer._reserve_nonce(),
                         "chainId": w3.eth.chain_id,
                     }
                     signed_fund = self._signer._account.sign_transaction(fund_tx)
