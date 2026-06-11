@@ -52,6 +52,7 @@ export async function validateSIWxMessage(
   if (message.domain !== expectedOrigin.host) {
     return {
       valid: false,
+      code: "domain_mismatch",
       error: `Domain mismatch: expected "${expectedOrigin.host}", got "${message.domain}"`,
     };
   }
@@ -70,6 +71,7 @@ export async function validateSIWxMessage(
   if (messageUri.origin !== expectedOrigin.origin) {
     return {
       valid: false,
+      code: "uri_mismatch",
       error: `URI mismatch: expected origin "${expectedOrigin.origin}", got "${messageUri.origin}"`,
     };
   }
@@ -79,6 +81,7 @@ export async function validateSIWxMessage(
   if (isNaN(issuedAt.getTime())) {
     return {
       valid: false,
+      code: "invalid_issued_at",
       error: "Invalid issuedAt timestamp",
     };
   }
@@ -87,12 +90,14 @@ export async function validateSIWxMessage(
   if (age > maxAge) {
     return {
       valid: false,
+      code: "too_old",
       error: `Message too old: ${Math.round(age / 1000)}s exceeds ${maxAge / 1000}s limit`,
     };
   }
   if (age < 0) {
     return {
       valid: false,
+      code: "issued_at_in_future",
       error: "issuedAt is in the future",
     };
   }
@@ -103,12 +108,14 @@ export async function validateSIWxMessage(
     if (isNaN(expiration.getTime())) {
       return {
         valid: false,
+        code: "invalid_expiration_time",
         error: "Invalid expirationTime timestamp",
       };
     }
     if (expiration < new Date()) {
       return {
         valid: false,
+        code: "expired",
         error: "Message expired",
       };
     }
@@ -120,12 +127,14 @@ export async function validateSIWxMessage(
     if (isNaN(notBefore.getTime())) {
       return {
         valid: false,
+        code: "invalid_not_before",
         error: "Invalid notBefore timestamp",
       };
     }
     if (new Date() < notBefore) {
       return {
         valid: false,
+        code: "not_yet_valid",
         error: "Message not yet valid (notBefore is in the future)",
       };
     }
@@ -137,6 +146,7 @@ export async function validateSIWxMessage(
     if (!nonceValid) {
       return {
         valid: false,
+        code: "nonce_invalid",
         error: "Nonce validation failed (possible replay attack)",
       };
     }

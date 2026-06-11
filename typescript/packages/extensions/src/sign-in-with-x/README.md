@@ -233,7 +233,19 @@ validateSIWxMessage(payload, new URL('https://api.example.com'), {
   maxAge?: number;                    // Max age for issuedAt (default: 5 min)
   checkNonce?: (nonce) => boolean;    // Custom nonce validation
 })
-// Returns: { valid: boolean; error?: string }
+// Returns: { valid: boolean; code?: SIWxValidationCode; error?: string }
+
+type SIWxValidationCode =
+  | "domain_mismatch"
+  | "uri_mismatch"
+  | "invalid_issued_at"
+  | "too_old"
+  | "issued_at_in_future"
+  | "invalid_expiration_time"
+  | "expired"
+  | "invalid_not_before"
+  | "not_yet_valid"
+  | "nonce_invalid";
 ```
 
 ### `verifySIWxSignature(payload, options?)`
@@ -244,7 +256,7 @@ Verifies the cryptographic signature and recovers the signer address.
 verifySIWxSignature(payload, {
   evmVerifier?: EVMMessageVerifier;  // For smart wallet support
 })
-// Returns: { valid: boolean; address?: string; error?: string }
+// Returns: { valid: boolean; address?: string; error?: string; cause?: unknown }
 ```
 
 **Smart Wallet Support (EIP-1271 / EIP-6492):**

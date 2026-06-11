@@ -163,10 +163,27 @@ export interface DeclareSIWxOptions {
 }
 
 /**
+ * Machine-readable code identifying which validation check failed
+ */
+export type SIWxValidationCode =
+  | "domain_mismatch"
+  | "uri_mismatch"
+  | "invalid_issued_at"
+  | "too_old"
+  | "issued_at_in_future"
+  | "invalid_expiration_time"
+  | "expired"
+  | "invalid_not_before"
+  | "not_yet_valid"
+  | "nonce_invalid";
+
+/**
  * Validation result from validateSIWxMessage
  */
 export interface SIWxValidationResult {
   valid: boolean;
+  /** Code for the failed check (present when valid is false) */
+  code?: SIWxValidationCode;
   error?: string;
 }
 
@@ -176,7 +193,12 @@ export interface SIWxValidationResult {
 export interface SIWxValidationOptions {
   /** Maximum age for issuedAt in milliseconds (default: 5 minutes) */
   maxAge?: number;
-  /** Custom nonce validation function */
+  /**
+   * Custom nonce validation function.
+   *
+   * Errors thrown here are not caught: they propagate to the
+   * validateSIWxMessage caller, so a failing nonce backend fails closed.
+   */
   checkNonce?: (nonce: string) => boolean | Promise<boolean>;
 }
 
@@ -188,6 +210,8 @@ export interface SIWxVerifyResult {
   /** Recovered/verified address (checksummed) */
   address?: string;
   error?: string;
+  /** Error thrown during verification (absent when a signature check simply failed) */
+  cause?: unknown;
 }
 
 /**
