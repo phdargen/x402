@@ -173,8 +173,12 @@ export function createSIWxRequestHook(options: CreateSIWxRequestHookOptions): Pr
     try {
       const payload = parseSIWxHeader(header);
       const validation = await validateSIWxMessage(payload, configuredOrigin);
-      if (!validation.valid) {
-        onEvent?.({ type: "validation_failed", resource: context.path, error: validation.error });
+      if (!validation.isValid) {
+        onEvent?.({
+          type: "validation_failed",
+          resource: context.path,
+          error: validation.invalidMessage,
+        });
         return;
       }
 
