@@ -16,6 +16,7 @@ import (
 	exactevm "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/client"
 	exactevmv1 "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/v1/client"
 	uptoevm "github.com/x402-foundation/x402/go/v2/mechanisms/evm/upto/client"
+	svmconfig "github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	svm "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/client"
 	svmv1 "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/v1/client"
 	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
@@ -96,6 +97,11 @@ func main() {
 		uptoConfig = &uptoevm.UptoEvmSchemeConfig{RPCURL: evmRpcURL}
 	}
 
+	var svmConfig *svmconfig.ClientConfig
+	if svmRpcURL := os.Getenv("SVM_RPC_URL"); svmRpcURL != "" {
+		svmConfig = &svmconfig.ClientConfig{RPCURL: svmRpcURL}
+	}
+
 	// Batch-settlement scheme uses a per-scenario salt (CHANNEL_SALT) so concurrent
 	// e2e runs don't collide on the same on-chain channel id. An optional voucher
 	// signer (EVM_VOUCHER_SIGNER_PRIVATE_KEY) exercises the alt-EOA voucher branch
@@ -118,11 +124,11 @@ func main() {
 		Register("eip155:*", exactevm.NewExactEvmScheme(evmSigner, evmConfig)).
 		Register("eip155:*", uptoevm.NewUptoEvmScheme(evmSigner, uptoConfig)).
 		Register("eip155:*", batchedScheme).
-		Register("solana:*", svm.NewExactSvmScheme(svmSigner)).
+		Register("solana:*", svm.NewExactSvmScheme(svmSigner, svmConfig)).
 		RegisterV1("base-sepolia", exactevmv1.NewExactEvmSchemeV1(evmSigner)).
 		RegisterV1("base", exactevmv1.NewExactEvmSchemeV1(evmSigner)).
-		RegisterV1("solana-devnet", svmv1.NewExactSvmSchemeV1(svmSigner)).
-		RegisterV1("solana", svmv1.NewExactSvmSchemeV1(svmSigner))
+		RegisterV1("solana-devnet", svmv1.NewExactSvmSchemeV1(svmSigner, svmConfig)).
+		RegisterV1("solana", svmv1.NewExactSvmSchemeV1(svmSigner, svmConfig))
 
 	httpClient := x402http.Newx402HTTPClient(x402Client)
 	client := x402http.WrapHTTPClientWithPayment(http.DefaultClient, httpClient)

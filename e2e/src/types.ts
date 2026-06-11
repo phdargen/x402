@@ -145,6 +145,7 @@ export interface TestEndpoint {
 export interface TestConfig {
   name: string;
   type: 'server' | 'client' | 'facilitator';
+  enabled?: boolean;
   transport?: Transport;
   language: string;
   protocolFamilies?: ProtocolFamily[];

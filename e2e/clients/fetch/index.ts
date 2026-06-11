@@ -53,6 +53,7 @@ const evmSchemeOptions: ExactEvmSchemeOptions | undefined = process.env.EVM_RPC_
 const uptoSchemeOptions: UptoEvmSchemeOptions | undefined = process.env.EVM_RPC_URL
   ? { rpcUrl: process.env.EVM_RPC_URL }
   : undefined;
+const svmSchemeOptions = process.env.SVM_RPC_URL ? { rpcUrl: process.env.SVM_RPC_URL } : undefined;
 
 // Batch-settlement scheme uses a per-scenario salt (CHANNEL_SALT) so concurrent
 // e2e runs don't collide on the same on-chain channel id. An optional voucher
@@ -113,9 +114,9 @@ const client = new x402Client()
   .register("eip155:*", batchSettlementScheme)
   .registerV1("base-sepolia", new ExactEvmSchemeV1(evmSigner))
   .registerV1("base", new ExactEvmSchemeV1(evmSigner))
-  .register("solana:*", new ExactSvmScheme(svmSigner))
-  .registerV1("solana-devnet", new ExactSvmSchemeV1(svmSigner))
-  .registerV1("solana", new ExactSvmSchemeV1(svmSigner));
+  .register("solana:*", new ExactSvmScheme(svmSigner, svmSchemeOptions))
+  .registerV1("solana-devnet", new ExactSvmSchemeV1(svmSigner, svmSchemeOptions))
+  .registerV1("solana", new ExactSvmSchemeV1(svmSigner, svmSchemeOptions));
 if (aptosAccount) {
   client.register("aptos:*", new ExactAptosScheme(aptosAccount));
 }

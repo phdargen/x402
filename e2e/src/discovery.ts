@@ -64,7 +64,7 @@ export class TestDiscovery {
           const configContent = readFileSync(configPath, 'utf-8');
           const config: TestConfig = JSON.parse(configContent);
 
-          if (config.type === 'server') {
+          if (config.type === 'server' && config.enabled !== false) {
             servers.push({
               name: namePrefix + serverName,
               directory: serverDir,
@@ -157,7 +157,7 @@ export class TestDiscovery {
           const configContent = readFileSync(configPath, 'utf-8');
           const config: TestConfig = JSON.parse(configContent);
 
-          if (config.type === 'facilitator') {
+          if (config.type === 'facilitator' && config.enabled !== false) {
             facilitators.push({
               name: namePrefix + facilitatorName,
               directory: facilitatorDir,
@@ -190,7 +190,7 @@ export class TestDiscovery {
           const configContent = readFileSync(configPath, 'utf-8');
           const config: TestConfig = JSON.parse(configContent);
 
-          if (config.type === 'client') {
+          if (config.type === 'client' && config.enabled !== false) {
             clients.push({
               name: namePrefix + clientName,
               directory: clientDir,

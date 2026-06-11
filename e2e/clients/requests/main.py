@@ -35,6 +35,7 @@ evm_private_key = os.getenv("EVM_PRIVATE_KEY")
 svm_private_key = os.getenv("SVM_PRIVATE_KEY")
 tvm_private_key = os.getenv("TVM_PRIVATE_KEY")
 evm_rpc_url = os.getenv("EVM_RPC_URL", "https://sepolia.base.org")
+svm_rpc_url = os.getenv("SVM_RPC_URL")
 tvm_provider = (os.getenv("TVM_PROVIDER") or "").strip().lower()
 toncenter_api_key = os.getenv("TONCENTER_API_KEY")
 toncenter_base_url = os.getenv("TONCENTER_BASE_URL")
@@ -90,7 +91,7 @@ def main():
     # Register SVM exact scheme if private key is available
     if svm_private_key:
         svm_signer = KeypairSigner.from_base58(svm_private_key)
-        register_exact_svm_client(client, svm_signer)
+        register_exact_svm_client(client, svm_signer, rpc_url=svm_rpc_url)
 
     if tvm_private_key:
         if tvm_network not in {TVM_TESTNET, TVM_MAINNET}:

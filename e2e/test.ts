@@ -1490,12 +1490,26 @@ async function runTest() {
         const resourceKeys = getScenarioResourceKeys(scenario, evmResourceKeyContext);
 
         const runScenario = async (): Promise<DetailedTestResult> => {
+          const setupFailure = (error: string): DetailedTestResult => ({
+            testNumber: tn,
+            client: scenario.client.name,
+            server: scenario.server.name,
+            endpoint: scenario.endpoint.path,
+            facilitator: scenario.facilitator?.name || 'none',
+            protocolFamily: scenario.protocolFamily,
+            passed: false,
+            error,
+          });
+
           if (scenario.client.name === 'svm-smart-wallet') {
             await setupSwigWallet(networks.svm.rpcUrl);
           }
 
           if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
-            await approvePermit2Approval(evmPermit2Asset);
+            const approved = await approvePermit2Approval(evmPermit2Asset);
+            if (!approved) {
+              return setupFailure('Permit2 approval setup failed');
+            }
           } else if (scenario.endpoint.schemeOptions?.coldstart === true) {
             // Key on (client, path) so each client independently runs its own
             // fund → revoke → drain cycle. Without the client name, the second
@@ -1503,17 +1517,26 @@ async function runTest() {
             // whatever wallet state the first client left behind.
             const endpointKey = `${scenario.client.name}::${scenario.endpoint.path}`;
             if (!coldStartedEndpoints.has(endpointKey)) {
-              coldStartedEndpoints.add(endpointKey);
-              await fundClientForRevoke();
+              const funded = await fundClientForRevoke();
+              if (!funded) {
+                return setupFailure('Client gas funding setup failed');
+              }
               // Give fund tx 1s to propagate before submitting revoke (from client wallet)
               await new Promise(resolve => setTimeout(resolve, 1000));
-              await revokePermit2Approval(evmPermit2Asset);
+              const revoked = await revokePermit2Approval(evmPermit2Asset);
+              if (!revoked) {
+                return setupFailure('Permit2 revoke setup failed');
+              }
               // Give revoke tx 2s to propagate before drain reads pending nonce.
               // Load-balanced RPCs can return a stale pending nonce if queried
               // immediately after the revoke submission, causing the drain to
               // collide with the revoke's nonce ("replacement transaction underpriced").
               await new Promise(resolve => setTimeout(resolve, 2000));
-              await drainClientETH();
+              const drained = await drainClientETH();
+              if (!drained) {
+                return setupFailure('Client ETH drain setup failed');
+              }
+              coldStartedEndpoints.add(endpointKey);
               // Wait for RPC nonce propagation across load-balanced nodes before the
               // test client (which may use a separate RPC connection) queries the nonce.
               await new Promise(resolve => setTimeout(resolve, 1500));
