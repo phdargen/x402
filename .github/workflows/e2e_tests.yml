@@ -2,13 +2,6 @@
 #
 # Runs the minimized end-to-end test suite on testnet. Protocol families are
 # included only when all required wallet secrets for that family are configured.
-#
-# Trigger: Daily v2-only runs (06:00 UTC Monday-Saturday), weekly full run
-# with legacy v1 coverage (06:00 UTC Sunday), or manual (workflow_dispatch).
-#
-# Secrets are written to e2e/.env before the test run. The harness loads that
-# file via dotenv (test.ts) and child servers/clients/facilitators also read
-# it from their working directories when spawned.
 
 name: E2E Tests
 

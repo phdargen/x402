@@ -313,31 +313,36 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	}
 	data = evmmech.AppendDataSuffix(data, dataSuffix)
 
+	// Get nonce
 	nonce, err := s.reserveNonce(ctx)
 	if err != nil {
 		return "", err
 	}
 
+	// Get gas price
 	gasPrice, err := s.client.SuggestGasPrice(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get gas price: %w", err)
 	}
 
+	// Create transaction
 	to := common.HexToAddress(contractAddress)
 	tx := types.NewTransaction(
 		nonce,
 		to,
-		big.NewInt(0),
-		300000,
+		big.NewInt(0), // value
+		300000,        // gas limit
 		gasPrice,
 		data,
 	)
 
+	// Sign transaction
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(s.chainID), s.privateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
+	// Send transaction
 	err = s.client.SendTransaction(ctx, signedTx)
 	if err != nil {
 		return "", fmt.Errorf("failed to send transaction: %w", err)
@@ -351,31 +356,36 @@ func (s *realFacilitatorEvmSigner) SendTransaction(
 	to string,
 	data []byte,
 ) (string, error) {
+	// Get nonce
 	nonce, err := s.reserveNonce(ctx)
 	if err != nil {
 		return "", err
 	}
 
+	// Get gas price
 	gasPrice, err := s.client.SuggestGasPrice(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get gas price: %w", err)
 	}
 
+	// Create transaction with raw data
 	toAddr := common.HexToAddress(to)
 	tx := types.NewTransaction(
 		nonce,
 		toAddr,
-		big.NewInt(0),
-		300000,
+		big.NewInt(0), // value
+		300000,        // gas limit
 		gasPrice,
 		data,
 	)
 
+	// Sign transaction
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(s.chainID), s.privateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
+	// Send transaction
 	err = s.client.SendTransaction(ctx, signedTx)
 	if err != nil {
 		return "", fmt.Errorf("failed to send transaction: %w", err)

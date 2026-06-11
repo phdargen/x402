@@ -436,6 +436,28 @@ function isOffchainSettleResponse(paymentResponse: any): boolean {
   return isBatchSettlement;
 }
 
+function maskSecret(value: string): string {
+  if (value.length <= 10) return '[redacted]';
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function maskPrivateKeys<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(maskPrivateKeys) as T;
+  }
+  if (value && typeof value === 'object') {
+    const masked: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      masked[key] =
+        /privateKey/i.test(key) && typeof entry === 'string' && entry.length > 0
+          ? maskSecret(entry)
+          : maskPrivateKeys(entry);
+    }
+    return masked as T;
+  }
+  return value;
+}
+
 async function runClientTest(
   client: any,
   callConfig: ClientConfig
@@ -447,7 +469,7 @@ async function runClientTest(
   };
 
   try {
-    bufferLog(`  📞 Running client: ${JSON.stringify(callConfig, null, 2)}`);
+    bufferLog(`  📞 Running client: ${JSON.stringify(maskPrivateKeys(callConfig), null, 2)}`);
     const result = await client.call(callConfig);
     bufferLog(`  📊 Client result: ${JSON.stringify(result, null, 2)}`);
     // Check if the client execution succeeded
@@ -598,6 +620,8 @@ async function runTest() {
 
   // Initialize logger
   loggerConfig({ logFile: parsedArgs.logFile, verbose: parsedArgs.verbose });
+
+  const startTime = Date.now();
 
   log('🚀 Starting X402 E2E Test Suite');
   log('===============================');
@@ -1640,6 +1664,7 @@ async function runTest() {
   log(`✅ Passed: ${passed}`);
   log(`❌ Failed: ${failed}`);
   log(`📈 Total: ${passed + failed}`);
+  log(`⏱️  Duration: ${((Date.now() - startTime) / 60_000).toFixed(2)} min`);
   log('');
 
   // Detailed results table
