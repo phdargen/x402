@@ -18,6 +18,7 @@ import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, FacilitatorLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
 import { waitForHealth } from './src/health';
+import { createPortAllocator } from './src/ports';
 
 /**
  * Generates a fresh 32-byte hex salt for a batch-settlement test scenario so
@@ -585,11 +586,6 @@ async function runTest() {
   const facilitatorStellarPrivateKey = process.env.FACILITATOR_STELLAR_PRIVATE_KEY;
   const facilitatorTvmPrivateKey = process.env.FACILITATOR_TVM_PRIVATE_KEY;
   const batchSettlementRecovery = envFlagDefaultTrue(process.env.BATCH_SETTLEMENT_RECOVERY);
-  if (!serverEvmAddress || !serverSvmAddress || !clientEvmPrivateKey || !clientSvmPrivateKey || !facilitatorEvmPrivateKey || !facilitatorSvmPrivateKey) {
-    errorLog('❌ Missing required environment variables:');
-    errorLog(' SERVER_EVM_ADDRESS, SERVER_SVM_ADDRESS, CLIENT_EVM_PRIVATE_KEY, CLIENT_SVM_PRIVATE_KEY, FACILITATOR_EVM_PRIVATE_KEY, and FACILITATOR_SVM_PRIVATE_KEY must be set');
-    process.exit(1);
-  }
 
   // Discover all servers, clients, and facilitators (always include legacy)
   const discovery = new TestDiscovery('.', true); // Always discover legacy
@@ -702,6 +698,18 @@ async function runTest() {
       ['SERVER_APTOS_ADDRESS', serverAptosAddress],
       ['CLIENT_APTOS_PRIVATE_KEY', clientAptosPrivateKey],
       ['FACILITATOR_APTOS_PRIVATE_KEY', facilitatorAptosPrivateKey],
+    ],
+    avm: [
+      ['SERVER_AVM_ADDRESS', serverAvmAddress],
+      ['CLIENT_AVM_PRIVATE_KEY', clientAvmPrivateKey],
+      ['FACILITATOR_AVM_PRIVATE_KEY', facilitatorAvmPrivateKey],
+    ],
+    hedera: [
+      ['SERVER_HEDERA_ADDRESS', serverHederaAddress],
+      ['CLIENT_HEDERA_ACCOUNT_ID', clientHederaAccountId],
+      ['CLIENT_HEDERA_PRIVATE_KEY', clientHederaPrivateKey],
+      ['FACILITATOR_HEDERA_ACCOUNT_ID', facilitatorHederaAccountId],
+      ['FACILITATOR_HEDERA_PRIVATE_KEY', facilitatorHederaPrivateKey],
     ],
     stellar: [
       ['SERVER_STELLAR_ADDRESS', serverStellarAddress],
@@ -965,7 +973,7 @@ async function runTest() {
   }
 
   let testResults: DetailedTestResult[] = [];
-  let currentPort = 4022;
+  const allocatePort = createPortAllocator(4022);
 
   // Assign ports and start all facilitators
   const facilitatorManagers = new Map<string, FacilitatorManager>();
@@ -1003,14 +1011,14 @@ async function runTest() {
       facilitatorName: firstScenario.facilitator?.name,
       scenarios,
       comboIndex,
-      port: currentPort++,
+      port: allocatePort(),
     });
     comboIndex++;
   }
 
   // Start all facilitators with unique ports
   for (const [facilitatorName, facilitator] of uniqueFacilitators) {
-    const port = currentPort++;
+    const port = allocatePort();
     log(`\n🏛️ Starting facilitator: ${facilitatorName} on port ${port}`);
 
     const manager = new FacilitatorManager(
@@ -1037,7 +1045,7 @@ async function runTest() {
 
   // Start mock facilitator (claims to support everything, used as fallback so
   // servers with routes unsupported by the real facilitator can still start)
-  const mockFacilitatorPort = currentPort++;
+  const mockFacilitatorPort = allocatePort();
   log(`\n🎭 Starting mock facilitator on port ${mockFacilitatorPort}...`);
   const mockFacilitatorProcess: ChildProcess = spawn(
     'npx', ['tsx', 'index.ts'],
