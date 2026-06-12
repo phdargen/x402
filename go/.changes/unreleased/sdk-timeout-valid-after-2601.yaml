@@ -1,2 +1,0 @@
-kind: changed
-body: Set EVM and batch-settlement authorization validAfter to 0, use maxTimeoutSeconds for validBefore/deadlines, and raise the default resource server maxTimeoutSeconds from 60 to 300 to reduce onchain timing failures when payloads are queued or block timestamps lag.
