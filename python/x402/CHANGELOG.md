@@ -2,6 +2,20 @@
 
 <!-- towncrier release notes start -->
 
+## [2.13.0] - 2026-06-12
+
+### Fixed
+
+- Fixed a bug where EVM facilitator verify accepted payments whose asset address was an EOA. Calling any function on an EOA via ``eth_call`` silently returns empty data without reverting, causing on-chain simulation to pass and the subsequent settlement to land as a no-op with no ``Transfer`` event emitted. The fix checks ``eth_getCode`` on the asset address early in the verify path for all EVM payment schemes (EIP-3009, Permit2 exact, Permit2 upto); any address with no bytecode is rejected with ``asset_not_deployed_contract``. ([#2554](https://github.com/x402-foundation/x402/pull/2554)) - Thanks [@CarsonRoscoe](https://github.com/CarsonRoscoe)!
+- Run Python payment creation failure hooks when after-payment hooks raise. ([#2540](https://github.com/x402-foundation/x402/pull/2540)) - Thanks [@skyc1e](https://github.com/skyc1e)!
+- Set EVM authorization ``validAfter`` to 0 to reduce onchain timing failures when payloads are queued or block timestamps lag behind client clocks. ([#2601](https://github.com/x402-foundation/x402/pull/2601)) - Thanks [@phdargen](https://github.com/phdargen)!
+
+### Added
+
+- Add Mezo mainnet (chain ID 31612) support with mUSD as the default stablecoin ([#2590](https://github.com/x402-foundation/x402/pull/2590)) - Thanks [@ryanRfox](https://github.com/ryanRfox)!
+- Add XDC Network mainnet (chain ID 50) and Apothem testnet (chain ID 51) support with USDC as the default stablecoin ([#2597](https://github.com/x402-foundation/x402/pull/2597)) - Thanks [@AnilChinchawale](https://github.com/AnilChinchawale)!
+
+
 ## [2.12.0] - 2026-05-29
 
 ### Fixed
