@@ -1,0 +1,2 @@
+kind: added
+body: builder-code extension now supports multiple service codes (`s`). NewBuilderCodeClientExtension accepts one or more codes (variadic), BuilderCodeExtensionData.S is now a []string, and the facilitator/CBOR encode and parse paths keep every valid entry so layered clients (e.g. an MCP middleware) can attribute multiple participants onchain.
