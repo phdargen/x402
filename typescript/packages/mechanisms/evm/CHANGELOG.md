@@ -1,5 +1,22 @@
 # @x402/evm Changelog
 
+## 2.15.0
+
+### Minor Changes
+
+- [238fac4](https://github.com/x402-foundation/x402/commit/238fac4): Add Mezo mainnet (chain ID 31612) support with mUSD as the default stablecoin ([#2590](https://github.com/x402-foundation/x402/pull/2590)) - Thanks [@ryanRfox](https://github.com/ryanRfox)!
+- [5304005](https://github.com/x402-foundation/x402/commit/5304005): Add XDC Network mainnet (chain ID 50) and Apothem testnet (chain ID 51) support with USDC as the default stablecoin ([#2597](https://github.com/x402-foundation/x402/pull/2597)) - Thanks [@AnilChinchawale](https://github.com/AnilChinchawale)!
+- [6acb8fc](https://github.com/x402-foundation/x402/commit/6acb8fc): Added calldataSuffix support for builder-code extension ([#2329](https://github.com/x402-foundation/x402/pull/2329)) - Thanks [@0xClouds](https://github.com/0xClouds) and [@pk-coinbase](https://github.com/pk-coinbase), [@phdargen](https://github.com/phdargen)!
+- Updated dependencies [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e)
+- Updated dependencies [3a60816](https://github.com/x402-foundation/x402/commit/3a60816)
+- Updated dependencies [7539e93](https://github.com/x402-foundation/x402/commit/7539e93)
+  - @x402/core@2.15.0
+
+### Patch Changes
+
+- [c4420b7](https://github.com/x402-foundation/x402/commit/c4420b7): Fixed a bug where EVM facilitator verify accepted payments whose asset address was an EOA. Calling any function on an EOA via `eth_call` silently returns empty data without reverting, causing on-chain simulation to pass and the subsequent settlement to land as a no-op with no `Transfer` event emitted. The fix checks `eth_getCode` on the asset address early in `verifyEIP3009`, `verifyPermit2`, and `verifyUptoPermit2`; any address with no bytecode is rejected with `asset_not_deployed_contract`. ([#2554](https://github.com/x402-foundation/x402/pull/2554)) - Thanks [@CarsonRoscoe](https://github.com/CarsonRoscoe)!
+- [f4c532e](https://github.com/x402-foundation/x402/commit/f4c532e): Set EVM authorization `validAfter` to 0 to reduce onchain timing failures when payloads are queued or block timestamps lag behind client clocks ([#2601](https://github.com/x402-foundation/x402/pull/2601)) - Thanks [@phdargen](https://github.com/phdargen)!
+
 ## 2.14.0
 
 ### Minor Changes

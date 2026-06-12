@@ -1,5 +1,0 @@
----
-"@x402/evm": patch
----
-
-Set EVM authorization `validAfter` to 0 to reduce onchain timing failures when payloads are queued or block timestamps lag behind client clocks

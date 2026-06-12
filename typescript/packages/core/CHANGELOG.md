@@ -1,5 +1,16 @@
 # @x402/core Changelog
 
+## 2.15.0
+
+### Minor Changes
+
+- [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e): Add transport-agnostic `parsePaymentResult` and simplify the parsed result to `HTTPResourceResponse` (`{ status, body, header }`), where `header` is the decoded `SettleResponse` (from `PAYMENT-RESPONSE`) or `PaymentRequired` (from `PAYMENT-REQUIRED`, whose `error` carries the server's failure reason). This lets clients surface server-delivered payment errors without branching. ([#2558](https://github.com/x402-foundation/x402/pull/2558)) - Thanks [@phdargen](https://github.com/phdargen)!
+
+### Patch Changes
+
+- [3a60816](https://github.com/x402-foundation/x402/commit/3a60816): Harden wildcard route and network pattern matching. ([#2541](https://github.com/x402-foundation/x402/pull/2541)) - Thanks [@skyc1e](https://github.com/skyc1e)!
+- [7539e93](https://github.com/x402-foundation/x402/commit/7539e93): Fixed client extension echo merging to preserve server-declared extension fields while adding client-provided extension data ([#2561](https://github.com/x402-foundation/x402/pull/2561)) - Thanks [@phdargen](https://github.com/phdargen)!
+
 ## 2.14.0
 
 ### Minor Changes

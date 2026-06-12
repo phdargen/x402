@@ -1,5 +1,14 @@
 # @x402/avm
 
+## 2.15.0
+
+### Minor Changes
+
+- Updated dependencies [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e)
+- Updated dependencies [3a60816](https://github.com/x402-foundation/x402/commit/3a60816)
+- Updated dependencies [7539e93](https://github.com/x402-foundation/x402/commit/7539e93)
+  - @x402/core@2.15.0
+
 ## 2.14.0
 
 ### Minor Changes

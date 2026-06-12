@@ -1,5 +1,15 @@
 # @x402/axios Changelog
 
+## 2.15.0
+
+### Minor Changes
+
+- [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e): Add transport-agnostic `parsePaymentResult` and simplify the parsed result to `HTTPResourceResponse` (`{ status, body, header }`), where `header` is the decoded `SettleResponse` (from `PAYMENT-RESPONSE`) or `PaymentRequired` (from `PAYMENT-REQUIRED`, whose `error` carries the server's failure reason). This lets clients surface server-delivered payment errors without branching. ([#2558](https://github.com/x402-foundation/x402/pull/2558)) - Thanks [@phdargen](https://github.com/phdargen)!
+- Updated dependencies [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e)
+- Updated dependencies [3a60816](https://github.com/x402-foundation/x402/commit/3a60816)
+- Updated dependencies [7539e93](https://github.com/x402-foundation/x402/commit/7539e93)
+  - @x402/core@2.15.0
+
 ## 2.14.0
 
 ### Minor Changes

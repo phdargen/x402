@@ -1,5 +1,18 @@
 # @x402/svm Changelog
 
+## 2.15.0
+
+### Minor Changes
+
+- Updated dependencies [bfa580e](https://github.com/x402-foundation/x402/commit/bfa580e)
+- Updated dependencies [3a60816](https://github.com/x402-foundation/x402/commit/3a60816)
+- Updated dependencies [7539e93](https://github.com/x402-foundation/x402/commit/7539e93)
+  - @x402/core@2.15.0
+
+### Patch Changes
+
+- [5a4b5f3](https://github.com/x402-foundation/x402/commit/5a4b5f3): Fix the default SVM smart wallet allowlist to use Swig's active program ID. ([#2509](https://github.com/x402-foundation/x402/pull/2509)) - Thanks [@edo-chan](https://github.com/edo-chan)!
+
 ## 2.14.0
 
 ### Minor Changes
