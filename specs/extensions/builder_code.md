@@ -31,7 +31,7 @@ Wire order: `[cborData][cborLength (2B)][schemaId (1B)][ercMarker (16B)]`
 | --- | --------------- | --------------------------------------------------------------- |
 | `a` | string          | App code — the application that exposed the paid endpoint       |
 | `w` | string          | Wallet code — the facilitator that settled the payment on-chain |
-| `s` | string          | Service code — client-provided attribution (wrapped in a single-element array on wire) |
+| `s` | string or array of strings | Service code(s) — client-provided attribution |
 
 All fields are optional.
 
@@ -92,7 +92,7 @@ The application declares its builder code per-route in the payment middleware co
 
 ## `PaymentPayload`
 
-The client echoes the server's app code (`a`) and attaches its own service code (`s`).
+The client echoes the server's app code (`a`) and attaches its own service code(s) (`s`).
 
 ```json
 {
@@ -100,6 +100,19 @@ The client echoes the server's app code (`a`) and attaches its own service code 
     "builder-code": {
       "a": "my_app",
       "s": "my_client"
+    }
+  }
+}
+```
+
+Layered clients (e.g. an MCP server acting as middleware) can attribute multiple participants by listing several codes as an array:
+
+```json
+{
+  "extensions": {
+    "builder-code": {
+      "a": "my_app",
+      "s": ["base_mcp", "demo_app"]
     }
   }
 }

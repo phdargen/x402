@@ -35,9 +35,9 @@ func (e *BuilderCodeFacilitatorExtension) BuildDataSuffix(ctx evm.DataSuffixCont
 	if a, ok := clientExt["a"].(string); ok && validateCode(a) {
 		data.A = a
 	}
-	data.S = resolveServiceCode(clientExt["s"])
+	data.S = resolveServiceCodes(clientExt["s"])
 
-	if data.A == "" && data.W == "" && data.S == "" {
+	if data.A == "" && data.W == "" && len(data.S) == 0 {
 		return nil, nil
 	}
 
@@ -58,18 +58,30 @@ func extractClientExtension(extensions map[string]interface{}) map[string]interf
 	return info
 }
 
-// resolveServiceCode normalizes the client-provided `s` value, accepting a valid
-// string or the first valid entry of an array. Returns "" when missing or invalid.
-func resolveServiceCode(raw interface{}) string {
-	if s, ok := raw.(string); ok && validateCode(s) {
-		return s
+// resolveServiceCodes normalizes the client-provided `s` value, accepting a
+// string, a []string, or a []interface{} (JSON-decoded) and keeping every valid
+// entry. Returns nil when missing or all entries are invalid.
+func resolveServiceCodes(raw interface{}) []string {
+	var codes []string
+	appendValid := func(s string) {
+		if validateCode(s) {
+			codes = append(codes, s)
+		}
 	}
-	if arr, ok := raw.([]interface{}); ok {
-		for _, v := range arr {
-			if s, ok := v.(string); ok && validateCode(s) {
-				return s
+
+	switch v := raw.(type) {
+	case string:
+		appendValid(v)
+	case []string:
+		for _, s := range v {
+			appendValid(s)
+		}
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				appendValid(s)
 			}
 		}
 	}
-	return ""
+	return codes
 }

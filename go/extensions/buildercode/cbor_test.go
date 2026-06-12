@@ -2,6 +2,7 @@ package buildercode
 
 import (
 	"encoding/hex"
+	"reflect"
 	"testing"
 )
 
@@ -44,7 +45,7 @@ func TestEncodeBuilderCodeSuffixSpecVectors(t *testing.T) {
 }
 
 func TestSuffixRoundTrip(t *testing.T) {
-	suffix, err := EncodeBuilderCodeSuffix(BuilderCodeExtensionData{A: appCode, W: walletCode, S: serviceCode})
+	suffix, err := EncodeBuilderCodeSuffix(BuilderCodeExtensionData{A: appCode, W: walletCode, S: []string{serviceCode}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +55,24 @@ func TestSuffixRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a valid suffix")
 	}
-	if parsed.A != appCode || parsed.W != walletCode || parsed.S != serviceCode {
+	if parsed.A != appCode || parsed.W != walletCode || !reflect.DeepEqual(parsed.S, []string{serviceCode}) {
+		t.Fatalf("round-trip mismatch: %+v", parsed)
+	}
+}
+
+func TestSuffixRoundTripMultipleServiceCodes(t *testing.T) {
+	want := []string{serviceCode, "bc_other"}
+	suffix, err := EncodeBuilderCodeSuffix(BuilderCodeExtensionData{A: appCode, W: walletCode, S: want})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calldata := "0xdeadbeef" + hex.EncodeToString(suffix)
+	parsed, ok := ParseBuilderCodeSuffixFromCalldata(calldata)
+	if !ok {
+		t.Fatal("expected a valid suffix")
+	}
+	if parsed.A != appCode || parsed.W != walletCode || !reflect.DeepEqual(parsed.S, want) {
 		t.Fatalf("round-trip mismatch: %+v", parsed)
 	}
 }
@@ -71,7 +89,7 @@ func TestParseSpecAppOnlyVector(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a valid suffix")
 	}
-	if parsed.A != "bc_myapp" || parsed.W != "" || parsed.S != "" {
+	if parsed.A != "bc_myapp" || parsed.W != "" || len(parsed.S) != 0 {
 		t.Fatalf("parse mismatch: %+v", parsed)
 	}
 }

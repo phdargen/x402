@@ -8,22 +8,25 @@ import (
 )
 
 // BuilderCodeClientExtension adds builder-code attribution to payment payloads
-// by attaching the client's service code (`s`). The core client merge preserves
-// the server-declared app code (`a`) and schema after enrichment.
+// by attaching the client's service code(s) (`s`). The core client merge
+// preserves the server-declared app code (`a`) and schema after enrichment.
 type BuilderCodeClientExtension struct {
-	serviceCode string
+	serviceCodes []string
 }
 
 // NewBuilderCodeClientExtension creates a client extension that attaches the
-// given service code to payments.
+// given service code(s) to payments. It accepts one or more codes so layered
+// clients (e.g. an MCP middleware) can attribute multiple participants.
 //
-// It panics when serviceCode is not a valid builder code (1-32 lowercase
+// It panics when any serviceCode is not a valid builder code (1-32 lowercase
 // alphanumeric and underscore characters)
-func NewBuilderCodeClientExtension(serviceCode string) *BuilderCodeClientExtension {
-	if !validateCode(serviceCode) {
-		panic(fmt.Sprintf("invalid builder code: %q. Must be 1-32 characters, lowercase alphanumeric and underscores only.", serviceCode))
+func NewBuilderCodeClientExtension(serviceCodes ...string) *BuilderCodeClientExtension {
+	for _, code := range serviceCodes {
+		if !validateCode(code) {
+			panic(fmt.Sprintf("invalid builder code: %q. Must be 1-32 characters, lowercase alphanumeric and underscores only.", code))
+		}
 	}
-	return &BuilderCodeClientExtension{serviceCode: serviceCode}
+	return &BuilderCodeClientExtension{serviceCodes: serviceCodes}
 }
 
 // Key returns the builder-code extension identifier.
@@ -31,8 +34,8 @@ func (e *BuilderCodeClientExtension) Key() string {
 	return BUILDER_CODE
 }
 
-// EnrichPaymentPayload attaches this client's service code (`s`). Core extension
-// merging re-applies the server's advertised `a`/`schema` afterwards.
+// EnrichPaymentPayload attaches this client's service code(s) (`s`). Core
+// extension merging re-applies the server's advertised `a`/`schema` afterwards.
 func (e *BuilderCodeClientExtension) EnrichPaymentPayload(
 	_ context.Context,
 	payload types.PaymentPayload,
@@ -43,7 +46,7 @@ func (e *BuilderCodeClientExtension) EnrichPaymentPayload(
 		extensions[k] = v
 	}
 	extensions[BUILDER_CODE] = map[string]interface{}{
-		"info": map[string]interface{}{"s": e.serviceCode},
+		"info": map[string]interface{}{"s": e.serviceCodes},
 	}
 	payload.Extensions = extensions
 	return payload, nil

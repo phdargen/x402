@@ -61,7 +61,7 @@ describe("Builder Code Integration Tests", () => {
     const paymentPayload = await client.createPaymentPayload(paymentRequired);
 
     expect(paymentPayload.extensions?.[BUILDER_CODE]).toEqual({
-      info: { a: APP, s: SERVICE },
+      info: { a: APP, s: [SERVICE] },
       schema: expect.any(Object),
     });
   });
@@ -104,7 +104,38 @@ describe("Builder Code Integration Tests", () => {
     }
 
     const parsed = parseBuilderCodeSuffixFromCalldata(`0x${"00".repeat(4)}${suffix.slice(2)}`);
-    expect(parsed).toEqual({ w: WALLET, a: APP, s: SERVICE });
+    expect(parsed).toEqual({ w: WALLET, a: APP, s: [SERVICE] });
+  });
+
+  it("attributes multiple service codes from a layered client end-to-end", async () => {
+    const layeredClient = new x402Client()
+      .register("x402:cash", new CashSchemeNetworkClient("payer"))
+      .registerExtension(new BuilderCodeClientExtension(["bc_base_mcp", "bc_demo_app"]));
+
+    const accepts = [buildCashPaymentRequirements("merchant@example.com", "USD", "1")];
+    const resource = {
+      url: "https://example.com/api/weather",
+      description: "Weather API",
+      mimeType: "application/json",
+    };
+    const paymentRequired = await server.createPaymentRequiredResponse(accepts, resource);
+    paymentRequired.extensions = {
+      [BUILDER_CODE]: declareBuilderCodeExtension(APP),
+    };
+
+    const paymentPayload = await layeredClient.createPaymentPayload(paymentRequired);
+    const builderExt = facilitator.getExtension<BuilderCodeFacilitatorExtensionType>(BUILDER_CODE)!;
+
+    const suffix = builderExt.buildDataSuffix!({
+      paymentPayload,
+      paymentRequirements: paymentPayload.accepted,
+    });
+    if (!suffix) {
+      throw new Error("Expected builder-code suffix");
+    }
+
+    const parsed = parseBuilderCodeSuffixFromCalldata(`0x${"00".repeat(4)}${suffix.slice(2)}`);
+    expect(parsed).toEqual({ w: WALLET, a: APP, s: ["bc_base_mcp", "bc_demo_app"] });
   });
 
   it("settlement suffix encodes only wallet code when server did not declare builder-code", async () => {

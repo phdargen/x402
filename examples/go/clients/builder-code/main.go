@@ -64,7 +64,7 @@ func main() {
 	client := x402.Newx402Client()
 	client.Register("eip155:*", exactevm.NewExactEvmScheme(evmSigner, rpcConfig))
 	if clientBuilderCode != "" {
-		client.RegisterExtension(buildercode.NewBuilderCodeClientExtension(clientBuilderCode))
+		client.RegisterExtension(buildercode.NewBuilderCodeClientExtension(clientBuilderCode))	
 	}
 
 	httpClient := x402http.WrapHTTPClientWithPayment(
@@ -131,7 +131,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("\nBuilder-code attribution verified onchain: %+v\n", attribution)
+	b, _ := json.MarshalIndent(attribution, "", "  ")
+	fmt.Printf("\nBuilder-code attribution verified onchain: %s\n", b)
 	fmt.Printf("Explorer: https://sepolia.basescan.org/tx/%s\n", settleResp.Transaction)
 }
 

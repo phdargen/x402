@@ -111,6 +111,12 @@ describe("Builder Code Extension", () => {
       expect(() => new BuilderCodeClientExtension("Bad-Code")).toThrow(/Invalid builder code/);
     });
 
+    it("rejects when any code in an array is invalid", () => {
+      expect(() => new BuilderCodeClientExtension([SERVICE, "Bad-Code"])).toThrow(
+        /Invalid builder code/,
+      );
+    });
+
     it("attaches service code for core extension merging", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const enriched = await client.enrichPaymentPayload!(
@@ -118,14 +124,24 @@ describe("Builder Code Extension", () => {
         paymentRequiredWithApp(APP),
       );
 
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: [SERVICE] } });
+    });
+
+    it("attaches multiple service codes when given an array", async () => {
+      const client = new BuilderCodeClientExtension([SERVICE, "bc_other"]);
+      const enriched = await client.enrichPaymentPayload!(
+        basePayload(),
+        paymentRequiredWithApp(APP),
+      );
+
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: [SERVICE, "bc_other"] } });
     });
 
     it("attaches only service code when server omits builder-code", async () => {
       const client = new BuilderCodeClientExtension(SERVICE);
       const enriched = await client.enrichPaymentPayload!(basePayload(), paymentRequiredWithApp());
 
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: [SERVICE] } });
     });
 
     it("leaves server info preservation to core extension merging", async () => {
@@ -140,7 +156,7 @@ describe("Builder Code Extension", () => {
       };
 
       const enriched = await client.enrichPaymentPayload!(basePayload(), paymentRequired);
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: [SERVICE] } });
     });
 
     it("preserves unrelated payload extensions", async () => {
@@ -153,7 +169,7 @@ describe("Builder Code Extension", () => {
       const enriched = await client.enrichPaymentPayload!(payload, paymentRequiredWithApp(APP));
 
       expect(enriched.extensions?.other).toEqual({ kept: true });
-      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: SERVICE } });
+      expect(enriched.extensions?.[BUILDER_CODE]).toEqual({ info: { s: [SERVICE] } });
     });
   });
 
@@ -185,7 +201,7 @@ describe("Builder Code Extension", () => {
       const parsed = parseBuilderCodeSuffixFromCalldata(
         `0xdeadbeef${suffix.slice(2)}` as `0x${string}`,
       );
-      expect(parsed).toEqual({ a: APP, s: SERVICE });
+      expect(parsed).toEqual({ a: APP, s: [SERVICE] });
     });
 
     it("omits the settlement suffix when no attribution is present", () => {
@@ -202,10 +218,10 @@ describe("Builder Code Extension", () => {
         }),
       );
 
-      expect(parsed).toEqual({ w: WALLET, a: APP, s: SERVICE });
+      expect(parsed).toEqual({ w: WALLET, a: APP, s: [SERVICE] });
     });
 
-    it("picks the first valid entry from a service code array", () => {
+    it("encodes all valid entries from a service code array and drops invalid ones", () => {
       const parsed = parsedFromFacilitator(
         suffixContext({
           paymentPayloadExtensions: {
@@ -214,7 +230,7 @@ describe("Builder Code Extension", () => {
         }),
       );
 
-      expect(parsed).toEqual({ w: WALLET, s: SERVICE });
+      expect(parsed).toEqual({ w: WALLET, s: [SERVICE, "bc_other"] });
     });
 
     it("ignores invalid client service codes", () => {
@@ -250,7 +266,18 @@ describe("Builder Code Extension", () => {
       expect(parseBuilderCodeSuffixFromCalldata(calldata)).toEqual({
         a: APP,
         w: WALLET,
-        s: SERVICE,
+        s: [SERVICE],
+      });
+    });
+
+    it("round-trips multiple service codes through calldata", () => {
+      const suffix = encodeBuilderCodeSuffix({ a: APP, w: WALLET, s: [SERVICE, "bc_other"] });
+      const calldata = `0xdeadbeef${suffix.slice(2)}` as `0x${string}`;
+
+      expect(parseBuilderCodeSuffixFromCalldata(calldata)).toEqual({
+        a: APP,
+        w: WALLET,
+        s: [SERVICE, "bc_other"],
       });
     });
 

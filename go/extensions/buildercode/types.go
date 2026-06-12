@@ -27,12 +27,12 @@ var BUILDER_CODE_PATTERN = regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
 // PaymentRequired/PaymentPayload extensions.
 //   - A: app builder code — the x402 service that exposed the paid endpoint.
 //   - W: wallet builder code — the facilitator that settled the payment on-chain.
-//   - S: service builder code — client-provided attribution code (wrapped in a
-//     single-element array on wire).
+//   - S: service builder codes — client-provided attribution codes (encoded as an
+//     array on wire).
 type BuilderCodeExtensionData struct {
-	A string `json:"a,omitempty"`
-	W string `json:"w,omitempty"`
-	S string `json:"s,omitempty"`
+	A string   `json:"a,omitempty"`
+	W string   `json:"w,omitempty"`
+	S []string `json:"s,omitempty"`
 }
 
 // validateCode reports whether code matches BUILDER_CODE_PATTERN.

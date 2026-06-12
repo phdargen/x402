@@ -86,13 +86,13 @@ func encodeCborMap(data BuilderCodeExtensionData) ([]byte, error) {
 		entries = append(entries, value...)
 	}
 
-	if data.S != "" {
+	if len(data.S) > 0 {
 		mapSize++
 		key, err := encodeCborString("s")
 		if err != nil {
 			return nil, err
 		}
-		value, err := encodeCborArray([]string{data.S})
+		value, err := encodeCborArray(data.S)
 		if err != nil {
 			return nil, err
 		}
@@ -216,12 +216,12 @@ func parseCborMap(bytes []byte) (*BuilderCodeExtensionData, bool) {
 			if !ok {
 				return nil, false
 			}
-			firstCode, ok := readServiceCodeArray(bytes, &o, arraySize)
+			codes, ok := readServiceCodeArray(bytes, &o, arraySize)
 			if !ok {
 				return nil, false
 			}
-			if firstCode != "" {
-				result.S = firstCode
+			if len(codes) > 0 {
+				result.S = codes
 			}
 		default:
 			return nil, false
@@ -253,22 +253,20 @@ func readCborLength(bytes []byte, o *int) (int, bool) {
 	return 0, false
 }
 
-// readServiceCodeArray reads arraySize CBOR text strings, returning the first
+// readServiceCodeArray reads arraySize CBOR text strings, returning every
 // decoded entry and advancing o past all of them.
-func readServiceCodeArray(bytes []byte, o *int, arraySize int) (string, bool) {
-	var firstCode string
+func readServiceCodeArray(bytes []byte, o *int, arraySize int) ([]string, bool) {
+	codes := make([]string, 0, arraySize)
 	for i := 0; i < arraySize; i++ {
 		if *o >= len(bytes) || bytes[*o]>>5 != 3 {
-			return "", false
+			return nil, false
 		}
 		itemLen, ok := readCborLength(bytes, o)
 		if !ok || *o+itemLen > len(bytes) {
-			return "", false
+			return nil, false
 		}
-		if i == 0 {
-			firstCode = string(bytes[*o : *o+itemLen])
-		}
+		codes = append(codes, string(bytes[*o:*o+itemLen]))
 		*o += itemLen
 	}
-	return firstCode, true
+	return codes, true
 }
