@@ -7,8 +7,8 @@ name: E2E Tests
 
 on:
   schedule:
-    - cron: "0 10 * * 0-4,6" # daily except Friday — v2 only
-    - cron: "0 10 * * 5"     # Friday — v1 legacy + v2
+    - cron: "0 5 * * 0-4,6" # daily except Friday — v2 only
+    - cron: "0 5 * * 5"     # Friday — v1 legacy + v2
   workflow_dispatch:
     inputs:
       include_legacy:
@@ -65,7 +65,7 @@ jobs:
           FACILITATOR_STELLAR_PRIVATE_KEY: ${{ secrets.FACILITATOR_STELLAR_PRIVATE_KEY }}
           FACILITATOR_TVM_PRIVATE_KEY: ${{ secrets.FACILITATOR_TVM_PRIVATE_KEY }}
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "0 10 * * 5" ]]; then
+          if [[ "${{ github.event_name }}" == "schedule" && "${{ github.event.schedule }}" == "0 5 * * 5" ]]; then
             VERSIONS="1,2"
             RUN_SCOPE="friday v1 legacy + v2"
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.include_legacy }}" == "true" ]]; then
@@ -177,7 +177,7 @@ jobs:
       - name: Run minimized e2e tests (testnet)
         if: steps.families.outputs.configured == 'true'
         run: |
-          pnpm test --testnet --min --parallel --log --output-json=e2e-results.json --families=${{ steps.families.outputs.families }} --versions=${{ steps.families.outputs.versions }}
+          pnpm test --testnet --min --parallel --log=e2e-run.log --output-json=e2e-results.json --families=${{ steps.families.outputs.families }} --versions=${{ steps.families.outputs.versions }}
 
       - name: Upload test results
         if: always() && steps.families.outputs.configured == 'true'
@@ -186,5 +186,6 @@ jobs:
           name: e2e-results
           path: |
             e2e/e2e-results.json
+            e2e/e2e-run.log
           retention-days: 7
           if-no-files-found: ignore
