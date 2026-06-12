@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   const client = new x402Client();
   client.register("eip155:*", new ExactEvmScheme(evmSigner, rpcOptions));
   if (clientBuilderCode) {
-    client.registerExtension(new BuilderCodeClientExtension([clientBuilderCode, "bc_my_client_2"]));
+    client.registerExtension(new BuilderCodeClientExtension(clientBuilderCode));
   }
 
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
