@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from solders.keypair import Keypair
 
 from x402 import x402Facilitator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from x402.extensions.bazaar import DiscoveryResource, extract_discovery_info
 from x402.extensions.eip2612_gas_sponsoring import EIP2612_GAS_SPONSORING
@@ -226,7 +226,7 @@ def _handle_after_verify(ctx: Any) -> None:
                         if hasattr(ctx.requirements, "model_dump")
                         else ctx.requirements
                     ],
-                    last_updated=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                    last_updated=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     description=discovered.description,
                     mime_type=discovered.mime_type,
                     service_name=discovered.service_name,
