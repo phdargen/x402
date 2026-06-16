@@ -13,7 +13,7 @@ Checklist for adding a new extension. Follow the [general contributing rules](..
 ## Scope
 
 - One language per PR. Never implement the extension in more than one SDK (TS, Python, Go) in a single PR.
-- Implement v2 only. Common v1 tells (see the [V1→V2 migration guide](https://docs.x402.org/guides/migration-v1-to-v2)): `maxAmount` in payment requirements, `X-PAYMENT`/`X-PAYMENT-RESPONSE` headers (v2 uses `PAYMENT-SIGNATURE`/`PAYMENT-RESPONSE`), string network names like `base-sepolia` (v2 uses CAIP-2 like `eip155:84532`) or `x402Version: 1`.
+- Implement v2 only. Common v1 tells (see the [V1→V2 migration guide](../../../../docs/guides/migration-v1-to-v2.mdx)): `maxAmount` in payment requirements, `X-PAYMENT`/`X-PAYMENT-RESPONSE` headers (v2 uses `PAYMENT-SIGNATURE`/`PAYMENT-RESPONSE`), string network names like `base-sepolia` (v2 uses CAIP-2 like `eip155:84532`) or `x402Version: 1`.
 
 ## Code patterns
 
@@ -53,7 +53,7 @@ uv run pytest tests/integrations/
 
 ## Examples
 
-Add server, client, and facilitator examples (as appropriate). Manually confirm a successful payment by running facilitator, server and client examples locally.
+Add server, client, and facilitator examples (as appropriate). Manually confirm a successful payment by running facilitator server and client examples locally.
 
 ## Docs
 

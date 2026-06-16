@@ -14,7 +14,7 @@ Checklist for adding a new payment mechanism / scheme. Follow the [general contr
 
 - One language per PR. Never implement the mechanism in more than one SDK (TypeScript, Python, Go) in a single PR.
 - If a reference implementation already exists in another SDK, cross-check against it; otherwise yours is the reference and the spec is the only source of truth.
-- Implement v2 only. Common v1 tells (see the [V1→V2 migration guide](https://docs.x402.org/guides/migration-v1-to-v2)): `maxAmount` in payment requirements, `X-PAYMENT`/`X-PAYMENT-RESPONSE` headers (v2 uses `PAYMENT-SIGNATURE`/`PAYMENT-RESPONSE`), string network names like `base-sepolia` (v2 uses CAIP-2 like `eip155:84532`) or `x402Version: 1`.
+- Implement v2 only. Common v1 tells (see the [V1→V2 migration guide](../../../../docs/guides/migration-v1-to-v2.mdx)): `maxAmount` in payment requirements, `X-PAYMENT`/`X-PAYMENT-RESPONSE` headers (v2 uses `PAYMENT-SIGNATURE`/`PAYMENT-RESPONSE`), string network names like `base-sepolia` (v2 uses CAIP-2 like `eip155:84532`) or `x402Version: 1`.
 
 ## Code patterns
 
@@ -61,7 +61,7 @@ uv run pytest tests/integrations/
 
 ```bash
 # from e2e/
-pnpm install:all && pnpm test --testnet --min --families=<family> --versions=2
+pnpm install:all && pnpm test --testnet --min --families=<chain> --versions=2
 ```
 
 ## Examples
