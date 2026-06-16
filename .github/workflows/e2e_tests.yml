@@ -177,7 +177,7 @@ jobs:
       - name: Run minimized e2e tests (testnet)
         if: steps.families.outputs.configured == 'true'
         run: |
-          pnpm test --testnet --min --parallel --log=e2e-run.log --output-json=e2e-results.json --families=${{ steps.families.outputs.families }} --versions=${{ steps.families.outputs.versions }}
+          pnpm test --testnet --min --parallel -v --log=e2e-run.log --output-json=e2e-results.json --families=${{ steps.families.outputs.families }} --versions=${{ steps.families.outputs.versions }}
 
       - name: Upload test results
         if: always() && steps.families.outputs.configured == 'true'
