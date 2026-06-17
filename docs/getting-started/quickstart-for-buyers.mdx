@@ -41,6 +41,9 @@ There are pre-configured [examples available in the x402 repo](https://github.co
 
     # For Keeta support, also add:
     npm install @x402/keeta
+
+    # For TON (TVM) support, also add:
+    npm install @x402/tvm
     ```
   </Tab>
   <Tab title="Go">
@@ -62,6 +65,9 @@ There are pre-configured [examples available in the x402 repo](https://github.co
 
     # For Solana support, also add:
     pip install "x402[svm]"
+
+    # For TON (TVM) support, also add:
+    pip install "x402[tvm]"
     ```
   </Tab>
 </Tabs>
@@ -183,6 +189,21 @@ const account = KeetaNet.lib.Account.fromSeed(
   0,
 );
 const keetaSigner = toClientKeetaSigner(account);
+```
+
+#### TON (TVM)
+
+Use `@x402/tvm` to instantiate a signer:
+
+```typescript
+import { toClientTvmSigner } from "@x402/tvm";
+import { mnemonicToPrivateKey } from "@ton/crypto";
+
+const keyPair = await mnemonicToPrivateKey(process.env.TVM_MNEMONIC!.split(" "));
+const tvmSigner = toClientTvmSigner(keyPair, {
+  network: "tvm:-3",
+  apiKey: process.env.TONCENTER_API_KEY,
+});
 ```
 
 ### 3. Make Paid Requests Automatically
@@ -468,6 +489,22 @@ You can register multiple payment schemes to handle different networks:
       0,
     );
     client.register("keeta:*", new ExactKeetaScheme(toClientKeetaSigner(keetaAccount)));
+
+    // For TON (TVM) support, also add:
+    import { ExactTvmScheme } from "@x402/tvm/exact/client";
+    import { toClientTvmSigner } from "@x402/tvm";
+    import { mnemonicToPrivateKey } from "@ton/crypto";
+
+    const tvmKeyPair = await mnemonicToPrivateKey(process.env.TVM_MNEMONIC!.split(" "));
+    client.register(
+      "tvm:*",
+      new ExactTvmScheme(
+        toClientTvmSigner(tvmKeyPair, {
+          network: "tvm:-3",
+          apiKey: process.env.TONCENTER_API_KEY,
+        }),
+      ),
+    );
     ```
   </Tab>
   <Tab title="Go">
@@ -512,6 +549,8 @@ You can register multiple payment schemes to handle different networks:
     from x402.mechanisms.evm.exact.register import register_exact_evm_client
     from x402.mechanisms.svm import KeypairSigner
     from x402.mechanisms.svm.exact.register import register_exact_svm_client
+    from x402.mechanisms.tvm import TVM_TESTNET, WalletV5R1Config, WalletV5R1MnemonicSigner
+    from x402.mechanisms.tvm.exact import ExactTvmClientScheme
 
 
     async def main() -> None:
@@ -524,6 +563,10 @@ You can register multiple payment schemes to handle different networks:
         # Register SVM scheme
         svm_signer = KeypairSigner.from_base58(os.getenv("SVM_PRIVATE_KEY"))
         register_exact_svm_client(client, svm_signer)
+
+        # Register TVM scheme
+        tvm_config = WalletV5R1Config.from_private_key(TVM_TESTNET, os.getenv("TVM_PRIVATE_KEY"))
+        client.register(TVM_TESTNET, ExactTvmClientScheme(WalletV5R1MnemonicSigner(tvm_config)))
 
         async with x402HttpxClient(client) as http:
             response = await http.get("https://api.example.com/paid-endpoint")
@@ -594,7 +637,7 @@ try {
 
 ### Summary
 
-* Install x402 client packages (`@x402/fetch` or `@x402/axios`) and mechanism packages (`@x402/evm`, `@x402/svm`, `@x402/aptos`, `@x402/keeta`)
+* Install x402 client packages (`@x402/fetch` or `@x402/axios`) and mechanism packages (`@x402/evm`, `@x402/svm`, `@x402/tvm`, `@x402/aptos`, `@x402/keeta`)
 * Create a wallet signer
 * Create an `x402Client` and register payment schemes (`exact` for fixed-price, `upto` for usage-based billing, `batch-settlement` for batched EVM micropayments when the server advertises it)
 * Use the provided wrapper/interceptor to make paid API requests
