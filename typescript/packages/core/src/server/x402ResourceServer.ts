@@ -1287,7 +1287,14 @@ export class x402ResourceServer {
 
       const advertisedInfo = getExtensionInfo(serverExtensions[key]);
       const echoedInfo = getExtensionInfo(echoedValue);
-      if (!extensionInfoMatchesAdvertised(advertisedInfo, echoedInfo)) {
+
+      const dynamicFields = this.registeredExtensions.get(key)?.dynamicInfoFields;
+      if (
+        !extensionInfoMatchesAdvertised(
+          omitFields(advertisedInfo, dynamicFields),
+          omitFields(echoedInfo, dynamicFields),
+        )
+      ) {
         return {
           valid: false,
           invalidReason: "extension_echo_mismatch",
@@ -1589,6 +1596,27 @@ function getExtensionInfo(value: unknown): unknown {
     return (value as Record<string, unknown>).info;
   }
   return value;
+}
+
+/**
+ * Returns a copy of an extension info object without the named dynamic fields.
+ *
+ * @param value - Extension info payload to filter.
+ * @param fields - Field names regenerated per response that must not be compared.
+ * @returns The value unchanged when no fields apply; otherwise a copy without them.
+ */
+function omitFields(value: unknown, fields?: string[]): unknown {
+  if (!fields || fields.length === 0) {
+    return value;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const copy = { ...(value as Record<string, unknown>) };
+  for (const field of fields) {
+    delete copy[field];
+  }
+  return copy;
 }
 
 /**

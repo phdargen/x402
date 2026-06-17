@@ -1649,6 +1649,51 @@ describe("x402ResourceServer", () => {
 
       expect(server.validateExtensions(paymentRequired, payload)).toEqual({ valid: true });
     });
+
+    it("passes when only a declared dynamic info field differs", () => {
+      const server = new x402ResourceServer();
+      server.registerExtension({ key: "siwx", dynamicInfoFields: ["nonce"] });
+      const paymentRequired = buildPaymentRequired({
+        extensions: { siwx: { info: { domain: "example.com", nonce: "fresh" } } },
+      });
+      const payload = buildPaymentPayload({
+        extensions: { siwx: { info: { domain: "example.com", nonce: "stale" } } },
+      });
+
+      expect(server.validateExtensions(paymentRequired, payload)).toEqual({ valid: true });
+    });
+
+    it("fails when a static info field differs despite a declared dynamic field", () => {
+      const server = new x402ResourceServer();
+      server.registerExtension({ key: "siwx", dynamicInfoFields: ["nonce"] });
+      const paymentRequired = buildPaymentRequired({
+        extensions: { siwx: { info: { domain: "example.com", nonce: "fresh" } } },
+      });
+      const payload = buildPaymentPayload({
+        extensions: { siwx: { info: { domain: "evil.com", nonce: "stale" } } },
+      });
+
+      expect(server.validateExtensions(paymentRequired, payload)).toEqual({
+        valid: false,
+        invalidReason: "extension_echo_mismatch",
+        extensionKey: "siwx",
+      });
+    });
+
+    it("keeps strict comparison when no dynamic fields are declared", () => {
+      const server = new x402ResourceServer();
+      server.registerExtension({ key: "builder" });
+      const paymentRequired = buildPaymentRequired({ extensions: serverExtensions });
+      const payload = buildPaymentPayload({
+        extensions: { builder: { info: { code: "tampered" } } },
+      });
+
+      expect(server.validateExtensions(paymentRequired, payload)).toEqual({
+        valid: false,
+        invalidReason: "extension_echo_mismatch",
+        extensionKey: "builder",
+      });
+    });
   });
 
   describe("findMatchingRequirements", () => {
