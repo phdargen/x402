@@ -251,7 +251,9 @@ if (stellarPrivateKey) {
 
 // Register TVM scheme if private key is provided
 if (tvmPrivateKey) {
-  const tvmProvider = (process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER).toLowerCase();
+  const tvmProvider = (
+    process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER
+  ).toLowerCase();
   const tvmConfig = HighloadV3Config.fromPrivateKey(tvmPrivateKey, {
     provider: tvmProvider,
     apiKey:
@@ -264,7 +266,9 @@ if (tvmPrivateKey) {
         : process.env.TONCENTER_BASE_URL,
   });
   const tvmSigner = toFacilitatorTvmSigner({ [TVM_NETWORK]: tvmConfig });
-  console.info(`TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`);
+  console.info(
+    `TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`,
+  );
 
   facilitator.register(TVM_NETWORK, new ExactTvmScheme(tvmSigner));
 }

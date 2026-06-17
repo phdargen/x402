@@ -356,9 +356,6 @@ type ResourceServerExtensionHookProvider interface {
 // names of fields under its `info` that are dynamic — regenerated on every
 // PaymentRequired response (e.g. nonces, timestamps) rather than static
 // committed terms. Dynamic fields are excluded from client echo validation.
-// Extensions that do not implement this interface have all info fields treated
-// as static (strict comparison). Mirrors TS
-// `ResourceServerExtension.dynamicInfoFields`.
 type ResourceServerExtensionDynamicInfoFieldsProvider interface {
 	DynamicInfoFields() []string
 }
