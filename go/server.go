@@ -740,6 +740,13 @@ func (s *x402ResourceServer) ValidateExtensions(
 			}
 		}
 
+		// Exclude fields the extension regenerates per response (e.g. nonces)
+		// so a fresh server value is not flagged against the client's echo.
+		if dynamicFields := s.dynamicInfoFields(key); len(dynamicFields) > 0 {
+			advertised = omitFields(advertised, dynamicFields)
+			echoed = omitFields(echoed, dynamicFields)
+		}
+
 		mismatch := false
 		pending := []pair{{advertised, echoed}}
 		for i := 0; i < len(pending) && !mismatch; i++ {
@@ -775,6 +782,44 @@ func (s *x402ResourceServer) ValidateExtensions(
 	}
 
 	return ExtensionValidationResult{Valid: true}
+}
+
+// dynamicInfoFields returns the dynamic `info` field names declared by the
+// registered extension for `key`, or nil when the extension is unknown or does
+// not opt into dynamic-field handling.
+func (s *x402ResourceServer) dynamicInfoFields(key string) []string {
+	s.mu.RLock()
+	ext, ok := s.registeredExtensions[key]
+	s.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	provider, ok := ext.(ResourceServerExtensionDynamicInfoFieldsProvider)
+	if !ok {
+		return nil
+	}
+	return provider.DynamicInfoFields()
+}
+
+// omitFields returns a copy of an extension info object without the named
+// dynamic fields. The value is returned unchanged when no fields apply or when
+// it is not a JSON object. Mirrors TS `omitFields`.
+func omitFields(value interface{}, fields []string) interface{} {
+	if len(fields) == 0 {
+		return value
+	}
+	original, ok := value.(map[string]interface{})
+	if !ok {
+		return value
+	}
+	copied := make(map[string]interface{}, len(original))
+	for k, v := range original {
+		copied[k] = v
+	}
+	for _, field := range fields {
+		delete(copied, field)
+	}
+	return copied
 }
 
 // VerifyPayment verifies a V2 payment with no declared extensions.
