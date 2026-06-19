@@ -16,7 +16,6 @@ import (
 	"github.com/x402-foundation/x402/go/v2/extensions/signinwithx"
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	exactevmclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/client"
-	uptoevmclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/upto/client"
 	exactsvmclient "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/client"
 	evmsigner "github.com/x402-foundation/x402/go/v2/signers/evm"
 	svmsigner "github.com/x402-foundation/x402/go/v2/signers/svm"
@@ -49,7 +48,8 @@ func main() {
 	}
 
 	client := x402.Newx402Client()
-	siwxSigners := make([]signinwithx.Signer, 0, 2)
+	var evmSIWXSigner signinwithx.Signer
+	var svmSIWXSigner signinwithx.Signer
 
 	if evmPrivateKey != "" {
 		evmSigner, err := evmsigner.NewClientSignerFromPrivateKey(evmPrivateKey)
@@ -60,9 +60,8 @@ func main() {
 		if !ok {
 			log.Fatal("EVM signer does not support SIWX message signing")
 		}
-		client.Register("eip155:*", exactevmclient.NewExactEvmScheme(evmSigner, nil)).
-			Register("eip155:*", uptoevmclient.NewUptoEvmScheme(evmSigner, nil))
-		siwxSigners = append(siwxSigners, signinwithx.NewEVMSIWXSigner(siwxSigner))
+		client.Register("eip155:*", exactevmclient.NewExactEvmScheme(evmSigner, nil))
+		evmSIWXSigner = signinwithx.NewEVMSIWXSigner(siwxSigner)
 		fmt.Printf("Client EVM address: %s\n", evmSigner.Address())
 	}
 
@@ -76,11 +75,11 @@ func main() {
 			log.Fatal("SVM signer does not support SIWX message signing")
 		}
 		client.Register("solana:*", exactsvmclient.NewExactSvmScheme(svmSigner))
-		siwxSigners = append(siwxSigners, signinwithx.NewSolanaSIWXSigner(&solanaSIWXSigner{signer: clientSigner}))
+		svmSIWXSigner = signinwithx.NewSolanaSIWXSigner(&solanaSIWXSigner{signer: clientSigner})
 		fmt.Printf("Client SVM address: %s\n", clientSigner.Address())
 	}
 
-	client.RegisterExtension(signinwithx.CreateClientExtensionWithSigners(siwxSigners...))
+	client.RegisterExtension(signinwithx.CreateClientExtensionWithSigners(evmSIWXSigner, svmSIWXSigner))
 	httpClient := x402http.Newx402HTTPClient(client)
 	wrappedClient := x402http.WrapHTTPClientWithPayment(http.DefaultClient, httpClient)
 
