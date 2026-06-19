@@ -167,7 +167,7 @@ type HTTPRequestContext struct {
 	Method        string
 	PaymentHeader string
 	RoutePattern  string
-	Requirements []types.PaymentRequirements
+	Requirements  []types.PaymentRequirements
 }
 
 // HTTPTransportContext carries request and response data through settlement processing.
