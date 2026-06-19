@@ -2,6 +2,13 @@
 
 <!-- towncrier release notes start -->
 
+## [2.13.1] - 2026-06-19
+
+### Fixed
+
+- Cache SVM exact client mint metadata to avoid repeated mint RPC fetches. ([#2629](https://github.com/x402-foundation/x402/pull/2629)) - Thanks [@wnjoon](https://github.com/wnjoon)!
+
+
 ## [2.13.0] - 2026-06-12
 
 ### Fixed
