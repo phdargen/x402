@@ -25,7 +25,7 @@ from pathlib import Path
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 CONSTANTS_VERSION_RE = re.compile(r'^(\s*)Version = "([^"]+)"$', re.MULTILINE)
 KIND_RE = re.compile(r"^kind:\s*(\S+)\s*$", re.MULTILINE)
-BODY_RE = re.compile(r"^body:\s*(.+)$", re.MULTILINE | re.DOTALL)
+BODY_RE = re.compile(r"^body:\s*(.+?)(?:\ntime:|\Z)", re.MULTILINE | re.DOTALL)
 DEFAULT_REPOSITORY = "x402-foundation/x402"
 REPOSITORY_URL = f"https://github.com/{DEFAULT_REPOSITORY}"
 
