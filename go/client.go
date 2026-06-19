@@ -413,14 +413,12 @@ func (c *x402Client) CreatePaymentPayload(
 		}
 	}
 
-	payloadExtensions := c.paymentPayloadExtensions(extensions)
-
 	// Get partial payload from mechanism.
 	// If the scheme supports extensions (e.g., EIP-2612), pass them for enrichment.
 	var partial types.PaymentPayload
 	var err error
-	if extAware, ok := client.(ExtensionAwareClient); ok && payloadExtensions != nil {
-		partial, err = extAware.CreatePaymentPayloadWithExtensions(ctx, requirements, payloadExtensions)
+	if extAware, ok := client.(ExtensionAwareClient); ok && extensions != nil {
+		partial, err = extAware.CreatePaymentPayloadWithExtensions(ctx, requirements, extensions)
 	} else {
 		partial, err = client.CreatePaymentPayload(ctx, requirements)
 	}
@@ -446,13 +444,13 @@ func (c *x402Client) CreatePaymentPayload(
 	partial.Accepted = requirements
 	partial.Resource = resource
 	// Merge server extensions with any scheme-provided extensions
-	partial.Extensions = mergeExtensions(payloadExtensions, partial.Extensions)
+	partial.Extensions = mergeExtensions(extensions, partial.Extensions)
 
 	// Enrich payload via registered client extensions (for non-scheme extensions)
 	partial, err = c.enrichPaymentPayloadWithExtensions(ctx, partial, types.PaymentRequired{
 		X402Version: 2,
 		Accepts:     []types.PaymentRequirements{requirements},
-		Extensions:  payloadExtensions,
+		Extensions:  extensions,
 		Resource:    resource,
 	})
 	if err != nil {
@@ -480,36 +478,6 @@ func (c *x402Client) CreatePaymentPayload(
 		})
 	}
 	return partial, nil
-}
-
-func (c *x402Client) paymentPayloadExtensions(extensions map[string]interface{}) map[string]interface{} {
-	if len(extensions) == 0 || len(c.extensions) == 0 {
-		return extensions
-	}
-
-	var filtered map[string]interface{}
-	for key := range extensions {
-		ext, registered := c.extensions[key]
-		if !registered {
-			continue
-		}
-		policy, ok := ext.(ClientExtensionPaymentPayloadEchoPolicy)
-		if !ok || policy.EchoPaymentRequiredExtension() {
-			continue
-		}
-
-		if filtered == nil {
-			filtered = make(map[string]interface{}, len(extensions)-1)
-			for existingKey, existingValue := range extensions {
-				filtered[existingKey] = existingValue
-			}
-		}
-		delete(filtered, key)
-	}
-	if filtered != nil {
-		return filtered
-	}
-	return extensions
 }
 
 // GetRegisteredSchemes returns a list of registered schemes for debugging

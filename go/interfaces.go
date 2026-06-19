@@ -149,12 +149,6 @@ type ClientExtension interface {
 	EnrichPaymentPayload(ctx context.Context, payload types.PaymentPayload, required types.PaymentRequired) (types.PaymentPayload, error)
 }
 
-// ClientExtensionPaymentPayloadEchoPolicy is an optional interface for client
-// extensions whose server declaration should not be echoed in payment payloads.
-type ClientExtensionPaymentPayloadEchoPolicy interface {
-	EchoPaymentRequiredExtension() bool
-}
-
 // FacilitatorExtension is the base interface for extensions registered with x402Facilitator.
 // Extensions are stored by key and made available to mechanism implementations via FacilitatorContext.
 // Specific extensions embed this and add their own capabilities (e.g., a batch signer).

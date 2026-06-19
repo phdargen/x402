@@ -223,9 +223,6 @@ func TestCreateClientExtension(t *testing.T) {
 	if extension.PaymentRequiredHook() == nil {
 		t.Fatal("PaymentRequiredHook() = nil")
 	}
-	if extension.EchoPaymentRequiredExtension() {
-		t.Fatal("EchoPaymentRequiredExtension() = true, want false")
-	}
 
 	payload := types.PaymentPayload{X402Version: 2}
 	enriched, err := extension.EnrichPaymentPayload(context.Background(), payload, types.PaymentRequired{})

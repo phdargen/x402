@@ -135,14 +135,6 @@ func (e mockClientExtension) EnrichPaymentPayload(_ context.Context, payload typ
 	return payload, nil
 }
 
-type mockNoEchoClientExtension struct {
-	mockClientExtension
-}
-
-func (e mockNoEchoClientExtension) EchoPaymentRequiredExtension() bool {
-	return false
-}
-
 func TestClientSelectPaymentRequirements(t *testing.T) {
 	client := Newx402Client()
 	mockClient := &mockSchemeNetworkClientV2{scheme: "exact"}
@@ -296,11 +288,11 @@ func TestClientCreatePaymentPayload(t *testing.T) {
 	}
 }
 
-func TestClientCreatePaymentPayloadFiltersNoEchoExtensions(t *testing.T) {
+func TestClientCreatePaymentPayloadEchoesRegisteredExtensions(t *testing.T) {
 	ctx := context.Background()
 	client := Newx402Client()
 	client.Register("eip155:1", &mockSchemeNetworkClientV2{scheme: "exact"})
-	client.RegisterExtension(mockNoEchoClientExtension{mockClientExtension{key: "auth"}})
+	client.RegisterExtension(mockClientExtension{key: "auth"})
 
 	payload, err := client.CreatePaymentPayload(ctx, types.PaymentRequirements{
 		Scheme:  "exact",
@@ -314,9 +306,7 @@ func TestClientCreatePaymentPayloadFiltersNoEchoExtensions(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	if _, ok := payload.Extensions["auth"]; ok {
-		t.Fatalf("no-echo extension was included in payment payload: %#v", payload.Extensions)
-	}
+	require.Contains(t, payload.Extensions, "auth")
 	require.Contains(t, payload.Extensions, "keep")
 }
 

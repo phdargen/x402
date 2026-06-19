@@ -35,10 +35,6 @@ func (e *ClientExtension) EnrichPaymentPayload(_ context.Context, payload types.
 	return payload, nil
 }
 
-func (e *ClientExtension) EchoPaymentRequiredExtension() bool {
-	return false
-}
-
 func (e *ClientExtension) PaymentRequiredHook() x402http.PaymentRequiredHook {
 	return CreateClientHook(e.signer)
 }
