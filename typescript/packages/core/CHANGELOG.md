@@ -1,5 +1,11 @@
 # @x402/core Changelog
 
+## 2.16.0
+
+### Minor Changes
+
+- [59ac597](https://github.com/x402-foundation/x402/commit/59ac597): Added a dynamicInfoFields capability so an extension can mark certain info fields (nonces, timestamps) as regenerated per PaymentRequired response. Those fields are then excluded from the client-echo validatio (extension_echo_mismatch), while all other fields stay strictly compared. Wired into the offer-receipt (["offers"]) and sign-in-with-x (["nonce", "issuedAt", "expirationTime"]) extensions. ([#2653](https://github.com/x402-foundation/x402/pull/2653)) - Thanks [@phdargen](https://github.com/phdargen)!
+
 ## 2.15.0
 
 ### Minor Changes

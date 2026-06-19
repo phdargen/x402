@@ -1,5 +1,16 @@
 # @x402/svm Changelog
 
+## 2.16.0
+
+### Minor Changes
+
+- Updated dependencies [59ac597](https://github.com/x402-foundation/x402/commit/59ac597)
+  - @x402/core@2.16.0
+
+### Patch Changes
+
+- [f5532b8](https://github.com/x402-foundation/x402/commit/f5532b8): Cache SVM exact client mint metadata to avoid repeated mint RPC fetches. ([#2628](https://github.com/x402-foundation/x402/pull/2628)) - Thanks [@wnjoon](https://github.com/wnjoon)!
+
 ## 2.15.0
 
 ### Minor Changes
