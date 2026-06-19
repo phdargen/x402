@@ -7,7 +7,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
+	siwe "github.com/signinwithethereum/siwe-go"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 )
 
@@ -21,19 +21,22 @@ func VerifySignatureWithOptions(ctx context.Context, payload Payload, options Ve
 	if strings.HasPrefix(payload.ChainID, "eip155:") {
 		return verifyEVMPayload(ctx, payload, options)
 	}
+	if strings.HasPrefix(payload.ChainID, "solana:") {
+		return verifySolanaPayload(payload)
+	}
 	return VerifyResult{
 		Valid: false,
-		Error: fmt.Sprintf("Unsupported chain namespace: %s. Supported: eip155:* (EVM)", payload.ChainID),
+		Error: fmt.Sprintf("Unsupported chain namespace: %s. Supported: eip155:* (EVM), solana:* (Solana)", payload.ChainID),
 	}
 }
 
 func verifyEVMPayload(ctx context.Context, payload Payload, options VerifyOptions) VerifyResult {
-	message, err := FormatSIWEMessage(payload)
+	message, err := createSIWEMessage(payload)
 	if err != nil {
 		return VerifyResult{Valid: false, Error: err.Error()}
 	}
 
-	valid, err := verifyEVMMessage(ctx, message, payload.Address, payload.Signature, options)
+	valid, err := verifyEVMMessage(ctx, message, payload.Signature, options)
 	if err != nil {
 		return VerifyResult{Valid: false, Error: err.Error()}
 	}
@@ -41,48 +44,72 @@ func verifyEVMPayload(ctx context.Context, payload Payload, options VerifyOption
 		return VerifyResult{Valid: false, Error: "Signature verification failed"}
 	}
 
-	return VerifyResult{Valid: true, Address: common.HexToAddress(payload.Address).Hex()}
+	return VerifyResult{Valid: true, Address: message.GetAddress().Hex()}
 }
 
 func verifyEVMMessage(
 	ctx context.Context,
-	message string,
-	address string,
+	message *siwe.Message,
 	signature string,
 	options VerifyOptions,
 ) (bool, error) {
 	if options.EVMVerifier != nil {
-		return options.EVMVerifier(ctx, address, message, signature)
+		return options.EVMVerifier(ctx, message.GetAddress().Hex(), message.PrepareMessage(), signature)
 	}
-	return VerifyEVMSignature(message, address, signature)
+	if _, err := message.VerifyEIP191(signature); err == nil {
+		return true, nil
+	}
+	if options.EVMContractVerifier == nil {
+		return false, nil
+	}
+	return options.EVMContractVerifier.VerifyContractSignature(
+		ctx,
+		message.GetAddress(),
+		message.EIP191Hash(),
+		common.FromHex(signature),
+		message.GetChainID(),
+	)
 }
 
 // VerifyEVMSignature verifies an EIP-191 message signature against an EVM address.
 func VerifyEVMSignature(message string, address string, signature string) (bool, error) {
-	if !common.IsHexAddress(address) {
-		return false, fmt.Errorf("invalid EVM address: %s", address)
-	}
-
-	sig := common.FromHex(signature)
-	if len(sig) != 65 {
-		return false, fmt.Errorf("invalid EVM signature length: expected 65 bytes")
-	}
-
-	v := sig[64]
-	if v >= 27 {
-		sig[64] = v - 27
-	}
-	if sig[64] != 0 && sig[64] != 1 {
-		return false, fmt.Errorf("invalid EVM signature recovery id")
-	}
-
-	pubKey, err := crypto.SigToPub(accounts.TextHash([]byte(message)), sig)
+	parsed, err := siwe.ParseMessage(message)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("invalid SIWE message: %w", err)
+	}
+	if !strings.EqualFold(parsed.GetAddress().Hex(), common.HexToAddress(address).Hex()) {
+		return false, fmt.Errorf("address mismatch: message address %s, expected %s", parsed.GetAddress().Hex(), address)
+	}
+	_, err = parsed.VerifyEIP191(signature)
+	return err == nil, err
+}
+
+func verifySolanaPayload(payload Payload) VerifyResult {
+	message, err := FormatSIWSMessage(payload)
+	if err != nil {
+		return VerifyResult{Valid: false, Error: err.Error()}
 	}
 
-	recovered := crypto.PubkeyToAddress(*pubKey)
-	return recovered == common.HexToAddress(address), nil
+	signature, err := DecodeBase58(payload.Signature)
+	if err != nil {
+		return VerifyResult{Valid: false, Error: fmt.Sprintf("Invalid Base58 encoding: %s", err.Error())}
+	}
+	publicKey, err := DecodeBase58(payload.Address)
+	if err != nil {
+		return VerifyResult{Valid: false, Error: fmt.Sprintf("Invalid Base58 encoding: %s", err.Error())}
+	}
+
+	if len(signature) != 64 {
+		return VerifyResult{Valid: false, Error: fmt.Sprintf("Invalid signature length: expected 64 bytes, got %d", len(signature))}
+	}
+	if len(publicKey) != 32 {
+		return VerifyResult{Valid: false, Error: fmt.Sprintf("Invalid public key length: expected 32 bytes, got %d", len(publicKey))}
+	}
+	if !VerifySolanaSignature(message, signature, publicKey) {
+		return VerifyResult{Valid: false, Error: "Solana signature verification failed"}
+	}
+
+	return VerifyResult{Valid: true, Address: payload.Address}
 }
 
 // NewUniversalEVMVerifier creates an EVM verifier for EOA and deployed EIP-1271 signatures.

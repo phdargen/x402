@@ -87,6 +87,32 @@ func TestInMemoryStorageTracksNonces(t *testing.T) {
 	}
 }
 
+func TestResourceServerExtensionEnrichDeclarationFromPaymentRequirements(t *testing.T) {
+	ext := MustCreateResourceServerExtension(ServerOptions{Storage: NewInMemoryStorage()})
+	declaration := DeclareExtension(DeclareOptions{})[ExtensionKey]
+
+	enrichedRaw := ext.EnrichDeclaration(declaration, x402http.HTTPRequestContext{
+		Adapter: &testHTTPAdapter{url: "https://api.example.com/weather"},
+		Requirements: []types.PaymentRequirements{
+			{Scheme: "exact", Network: "eip155:84532"},
+			{Scheme: "exact", Network: SolanaDevnet},
+		},
+	})
+	enriched, ok := enrichedRaw.(Extension)
+	if !ok {
+		t.Fatalf("enriched type = %T, want Extension", enrichedRaw)
+	}
+	if len(enriched.SupportedChains) != 2 {
+		t.Fatalf("supportedChains length = %d, want 2", len(enriched.SupportedChains))
+	}
+	if enriched.SupportedChains[0].ChainID != "eip155:84532" || enriched.SupportedChains[0].Type != SignatureTypeEIP191 {
+		t.Fatalf("first chain = %#v", enriched.SupportedChains[0])
+	}
+	if enriched.SupportedChains[1].ChainID != SolanaDevnet || enriched.SupportedChains[1].Type != SignatureTypeEd25519 {
+		t.Fatalf("second chain = %#v", enriched.SupportedChains[1])
+	}
+}
+
 func TestResourceServerExtensionEnrichDeclaration(t *testing.T) {
 	ext := MustCreateResourceServerExtension(ServerOptions{Storage: NewInMemoryStorage()})
 	declaration := DeclareExtension(DeclareOptions{
@@ -183,7 +209,7 @@ func TestHTTPServerAuthOnlyRouteReturnsSIWXChallenge(t *testing.T) {
 func TestProtectedRequestHookGrantsAuthOnlyAccess(t *testing.T) {
 	storage := NewInMemoryStorage()
 	ext := MustCreateResourceServerExtension(ServerOptions{Storage: storage})
-	header := signedHeaderForTest(t, "https://api.example.com/profile", "nonce-auth")
+	header := signedHeaderForTest(t, "https://api.example.com/profile", "nonceauth")
 
 	result, err := ext.ProtectedRequestHook()(context.Background(), x402http.HTTPRequestContext{
 		Adapter: &testHTTPAdapter{
@@ -221,7 +247,7 @@ func TestProtectedRequestHookGrantsAuthOnlyAccessWithSmartWalletVerifier(t *test
 			},
 		},
 	})
-	header := smartWalletHeaderForTest(t, "https://api.example.com/profile", "nonce-smart-wallet", smartWallet)
+	header := smartWalletHeaderForTest(t, "https://api.example.com/profile", "noncesmartwallet", smartWallet)
 
 	result, err := ext.ProtectedRequestHook()(context.Background(), x402http.HTTPRequestContext{
 		Adapter: &testHTTPAdapter{
@@ -243,7 +269,7 @@ func TestProtectedRequestHookRequiresPaymentRecordForPaidRoute(t *testing.T) {
 	ctx := context.Background()
 	storage := NewInMemoryStorage()
 	ext := MustCreateResourceServerExtension(ServerOptions{Storage: storage})
-	header, address := signedHeaderAndAddressForTest(t, "https://api.example.com/weather", "nonce-paid")
+	header, address := signedHeaderAndAddressForTest(t, "https://api.example.com/weather", "noncepaid")
 	reqCtx := x402http.HTTPRequestContext{
 		Adapter: &testHTTPAdapter{
 			headers: map[string]string{HeaderName: header},
@@ -276,7 +302,7 @@ func TestProtectedRequestHookRequiresPaymentRecordForPaidRoute(t *testing.T) {
 
 func TestProtectedRequestHookRejectsNonceReplay(t *testing.T) {
 	ext := MustCreateResourceServerExtension(ServerOptions{Storage: NewInMemoryStorage()})
-	header := signedHeaderForTest(t, "https://api.example.com/profile", "nonce-replay")
+	header := signedHeaderForTest(t, "https://api.example.com/profile", "noncereplay")
 	reqCtx := x402http.HTTPRequestContext{
 		Adapter: &testHTTPAdapter{
 			headers: map[string]string{HeaderName: header},

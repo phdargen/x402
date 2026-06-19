@@ -167,6 +167,7 @@ type HTTPRequestContext struct {
 	Method        string
 	PaymentHeader string
 	RoutePattern  string
+	Requirements []types.PaymentRequirements
 }
 
 // HTTPTransportContext carries request and response data through settlement processing.
@@ -572,7 +573,9 @@ func (s *x402HTTPResourceServer) ProcessHTTPRequest(ctx context.Context, reqCtx 
 
 	extensions := routeConfig.Extensions
 	if len(extensions) > 0 {
-		extensions = s.EnrichExtensions(extensions, reqCtx)
+		enrichmentCtx := reqCtx
+		enrichmentCtx.Requirements = requirements
+		extensions = s.EnrichExtensions(extensions, enrichmentCtx)
 	}
 
 	if typedPayload == nil {

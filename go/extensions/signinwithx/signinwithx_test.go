@@ -2,6 +2,7 @@ package signinwithx
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -166,6 +167,46 @@ func TestFormatSIWEMessageWithoutStatement(t *testing.T) {
 	}
 }
 
+func TestFormatSIWSMessage(t *testing.T) {
+	payload := testSolanaPayload()
+
+	got, err := FormatSIWSMessage(payload)
+	if err != nil {
+		t.Fatalf("FormatSIWSMessage() error = %v", err)
+	}
+
+	want := "api.example.com wants you to sign in with your Solana account:\n" +
+		"6nYoFimREYaxQZZqBv7vbSd6ozGS1J8uhAAgUXPtaYy6\n\n" +
+		"Sign in to access your purchased content\n\n" +
+		"URI: https://api.example.com/data\n" +
+		"Version: 1\n" +
+		"Chain ID: 5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp\n" +
+		"Nonce: abc123xyz\n" +
+		"Issued At: 2026-05-27T00:00:00Z\n" +
+		"Expiration Time: 2026-05-27T00:05:00Z\n" +
+		"Request ID: request-1\n" +
+		"Resources:\n" +
+		"- https://api.example.com/data"
+
+	if got != want {
+		t.Fatalf("message =\n%s\nwant =\n%s", got, want)
+	}
+}
+
+func TestExtractSolanaChainReference(t *testing.T) {
+	got, err := ExtractSolanaChainReference(SolanaDevnet)
+	if err != nil {
+		t.Fatalf("ExtractSolanaChainReference() error = %v", err)
+	}
+	if got != "EtWTRABZaYq6iMfeYKouRu166VU2xqa1" {
+		t.Fatalf("reference = %q", got)
+	}
+
+	if _, err := ExtractSolanaChainReference("solana:"); err == nil {
+		t.Fatal("ExtractSolanaChainReference() error = nil")
+	}
+}
+
 func TestValidateMessage(t *testing.T) {
 	payload := testPayload()
 	payload.IssuedAt = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
@@ -184,6 +225,49 @@ func TestValidateMessage(t *testing.T) {
 	result = ValidateMessage(payload, "https://api.example.com/data", ValidationOptions{})
 	if result.Valid || !strings.Contains(result.Error, "Domain mismatch") {
 		t.Fatalf("ValidateMessage() = %#v, want domain mismatch", result)
+	}
+}
+
+func TestVerifySolanaSignature(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+
+	payload := testSolanaPayload()
+	payload.Address = EncodeBase58(publicKey)
+
+	message, err := FormatSIWSMessage(payload)
+	if err != nil {
+		t.Fatalf("FormatSIWSMessage() error = %v", err)
+	}
+	payload.Signature = EncodeBase58(ed25519.Sign(privateKey, []byte(message)))
+
+	result := VerifySignature(payload)
+	if !result.Valid {
+		t.Fatalf("VerifySignature() invalid: %s", result.Error)
+	}
+	if result.Address != payload.Address {
+		t.Fatalf("address = %q, want %q", result.Address, payload.Address)
+	}
+
+	payload.Signature = EncodeBase58(ed25519.Sign(privateKey, []byte(message+"tampered")))
+	result = VerifySignature(payload)
+	if result.Valid {
+		t.Fatal("VerifySignature() valid for tampered Solana signature")
+	}
+}
+
+func TestVerifySolanaSignatureRejectsInvalidBase58(t *testing.T) {
+	payload := testSolanaPayload()
+	payload.Signature = "0OIl"
+
+	result := VerifySignature(payload)
+	if result.Valid {
+		t.Fatal("VerifySignature() valid for invalid Base58 signature")
+	}
+	if !strings.Contains(result.Error, "Invalid Base58 encoding") {
+		t.Fatalf("error = %q", result.Error)
 	}
 }
 
@@ -226,7 +310,7 @@ func TestVerifyEVMSignature(t *testing.T) {
 
 func TestVerifySignatureRejectsUnsupportedChain(t *testing.T) {
 	payload := testPayload()
-	payload.ChainID = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+	payload.ChainID = "cosmos:cosmoshub-4"
 
 	result := VerifySignature(payload)
 	if result.Valid {
@@ -408,5 +492,24 @@ func testPayload() Payload {
 		RequestID:      "request-1",
 		Resources:      []string{"https://api.example.com/data"},
 		Signature:      "0xsignature",
+	}
+}
+
+func testSolanaPayload() Payload {
+	return Payload{
+		Domain:          "api.example.com",
+		Address:         "6nYoFimREYaxQZZqBv7vbSd6ozGS1J8uhAAgUXPtaYy6",
+		Statement:       "Sign in to access your purchased content",
+		URI:             "https://api.example.com/data",
+		Version:         Version,
+		ChainID:         SolanaMainnet,
+		Type:            SignatureTypeEd25519,
+		Nonce:           "abc123xyz",
+		IssuedAt:        "2026-05-27T00:00:00Z",
+		ExpirationTime:  "2026-05-27T00:05:00Z",
+		RequestID:       "request-1",
+		Resources:       []string{"https://api.example.com/data"},
+		SignatureScheme: SignatureSchemeSIWS,
+		Signature:       "signature",
 	}
 }

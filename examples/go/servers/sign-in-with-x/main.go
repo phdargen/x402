@@ -13,16 +13,21 @@ import (
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	nethttp "github.com/x402-foundation/x402/go/v2/http/nethttp"
 	exactevmserver "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/server"
+	exactsvmserver "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/server"
 )
 
-const evmNetwork = "eip155:84532"
+const (
+	evmNetwork = "eip155:84532"
+	svmNetwork = signinwithx.SolanaDevnet
+)
 
 func main() {
 	_ = godotenv.Load()
 
 	evmAddress := os.Getenv("EVM_ADDRESS")
-	if evmAddress == "" {
-		log.Fatal("EVM_ADDRESS is required")
+	svmAddress := os.Getenv("SVM_ADDRESS")
+	if evmAddress == "" && svmAddress == "" {
+		log.Fatal("EVM_ADDRESS or SVM_ADDRESS is required")
 	}
 
 	facilitatorURL := os.Getenv("FACILITATOR_URL")
@@ -43,16 +48,24 @@ func main() {
 		},
 	})
 
+	profileNetworks := make([]string, 0, 2)
+	if evmAddress != "" {
+		profileNetworks = append(profileNetworks, evmNetwork)
+	}
+	if svmAddress != "" {
+		profileNetworks = append(profileNetworks, svmNetwork)
+	}
+
 	routes := x402http.RoutesConfig{
-		"GET /weather": protectedRoute("/weather", evmAddress),
-		"GET /joke":    protectedRoute("/joke", evmAddress),
+		"GET /weather": protectedRoute("/weather", evmAddress, svmAddress),
+		"GET /joke":    protectedRoute("/joke", evmAddress, svmAddress),
 		"GET /profile": {
 			Accepts:     x402http.PaymentOptions{},
 			Description: "Auth-only: wallet signature required",
 			Extensions: map[string]interface{}{
 				signinwithx.ExtensionKey: signinwithx.DeclareExtension(signinwithx.DeclareOptions{
 					Statement:         "Sign in to view your profile",
-					Networks:          []string{evmNetwork},
+					Networks:          profileNetworks,
 					ExpirationSeconds: 300,
 				})[signinwithx.ExtensionKey],
 			},
@@ -62,10 +75,16 @@ func main() {
 	facilitatorClient := x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
 		URL: facilitatorURL,
 	})
-	resourceServer := x402.Newx402ResourceServer(
+	serverOpts := []x402.ResourceServerOption{
 		x402.WithFacilitatorClient(facilitatorClient),
-		x402.WithSchemeServer(evmNetwork, exactevmserver.NewExactEvmScheme()),
-	)
+	}
+	if evmAddress != "" {
+		serverOpts = append(serverOpts, x402.WithSchemeServer(evmNetwork, exactevmserver.NewExactEvmScheme()))
+	}
+	if svmAddress != "" {
+		serverOpts = append(serverOpts, x402.WithSchemeServer(svmNetwork, exactsvmserver.NewExactSvmScheme()))
+	}
+	resourceServer := x402.Newx402ResourceServer(serverOpts...)
 	httpServer := x402http.Wrappedx402HTTPResourceServer(routes, resourceServer).
 		RegisterExtension(extension)
 
@@ -105,22 +124,30 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 
-func protectedRoute(path string, payTo string) x402http.RouteConfig {
+func protectedRoute(path, evmAddress, svmAddress string) x402http.RouteConfig {
+	accepts := x402http.PaymentOptions{}
+	if evmAddress != "" {
+		accepts = append(accepts, x402http.PaymentOption{
+			Scheme:  "exact",
+			Price:   "$0.001",
+			Network: evmNetwork,
+			PayTo:   evmAddress,
+		})
+	}
+	if svmAddress != "" {
+		accepts = append(accepts, x402http.PaymentOption{
+			Scheme:  "exact",
+			Price:   "$0.001",
+			Network: svmNetwork,
+			PayTo:   svmAddress,
+		})
+	}
 	return x402http.RouteConfig{
-		Accepts: x402http.PaymentOptions{
-			{
-				Scheme:  "exact",
-				Price:   "$0.001",
-				Network: evmNetwork,
-				PayTo:   payTo,
-			},
-		},
+		Accepts:     accepts,
 		Description: fmt.Sprintf("Protected resource: %s", path),
 		MimeType:    "application/json",
 		Extensions: map[string]interface{}{
-			signinwithx.ExtensionKey: signinwithx.DeclareExtension(signinwithx.DeclareOptions{
-				Networks: []string{evmNetwork},
-			})[signinwithx.ExtensionKey],
+			signinwithx.ExtensionKey: signinwithx.DeclareExtension(signinwithx.DeclareOptions{})[signinwithx.ExtensionKey],
 		},
 	}
 }

@@ -17,14 +17,34 @@ type EVMSigner interface {
 	SignMessage(ctx context.Context, message string) (string, error)
 }
 
+// SolanaSigner signs Ed25519 SIWS messages and returns Base58 signatures.
+type SolanaSigner interface {
+	Address() string
+	SignMessage(ctx context.Context, message string) (string, error)
+}
+
+// Signer is a chain-aware SIWX signer used by multi-signer clients.
+type Signer interface {
+	Address() string
+	SignMessage(ctx context.Context, message string) (string, error)
+	SupportsChain(chain SupportedChain) bool
+	DefaultSignatureScheme() string
+	FormatSignature(signature string) string
+}
+
 // ClientExtension signs SIWX challenges declared by HTTP PaymentRequired responses.
 type ClientExtension struct {
-	signer EVMSigner
+	signers []Signer
 }
 
 // CreateClientExtension creates a client extension that auto-wires SIWX HTTP auth retries.
 func CreateClientExtension(signer EVMSigner) *ClientExtension {
-	return &ClientExtension{signer: signer}
+	return CreateClientExtensionWithSigners(NewEVMSIWXSigner(signer))
+}
+
+// CreateClientExtensionWithSigners creates a client extension with ordered SIWX signers.
+func CreateClientExtensionWithSigners(signers ...Signer) *ClientExtension {
+	return &ClientExtension{signers: compactSigners(signers)}
 }
 
 func (e *ClientExtension) Key() string {
@@ -36,14 +56,20 @@ func (e *ClientExtension) EnrichPaymentPayload(_ context.Context, payload types.
 }
 
 func (e *ClientExtension) PaymentRequiredHook() x402http.PaymentRequiredHook {
-	return CreateClientHook(e.signer)
+	return CreateClientHookWithSigners(e.signers...)
 }
 
 var _ x402.ClientExtension = (*ClientExtension)(nil)
 
 // CreatePayload creates and signs a SIWX payload from a server declaration.
 func CreatePayload(ctx context.Context, declaration interface{}, signer EVMSigner) (Payload, error) {
-	if signer == nil {
+	return CreatePayloadWithSigners(ctx, declaration, NewEVMSIWXSigner(signer))
+}
+
+// CreatePayloadWithSigners creates and signs a SIWX payload using the first compatible signer.
+func CreatePayloadWithSigners(ctx context.Context, declaration interface{}, signers ...Signer) (Payload, error) {
+	signers = compactSigners(signers)
+	if len(signers) == 0 {
 		return Payload{}, fmt.Errorf("SIWX signer is required")
 	}
 
@@ -52,42 +78,32 @@ func CreatePayload(ctx context.Context, declaration interface{}, signer EVMSigne
 		return Payload{}, err
 	}
 
-	chain, ok := selectEVMChain(ext.SupportedChains)
-	if !ok {
-		return Payload{}, fmt.Errorf("SIWX declaration does not support EVM EIP-191 signing")
+	var lastErr error
+	for _, signer := range signers {
+		chain, ok := selectSignerChain(ext.SupportedChains, signer)
+		if !ok {
+			continue
+		}
+
+		payload := payloadForSigner(ext.Info, chain, signer)
+		message, err := CreateMessage(payload)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		signature, err := signer.SignMessage(ctx, message)
+		if err != nil {
+			lastErr = fmt.Errorf("sign SIWX message: %w", err)
+			continue
+		}
+		payload.Signature = signer.FormatSignature(signature)
+		return payload, nil
 	}
 
-	info := ext.Info
-	payload := Payload{
-		Domain:          info.Domain,
-		Address:         signer.Address(),
-		Statement:       info.Statement,
-		URI:             info.URI,
-		Version:         info.Version,
-		ChainID:         chain.ChainID,
-		Type:            chain.Type,
-		Nonce:           info.Nonce,
-		IssuedAt:        info.IssuedAt,
-		ExpirationTime:  info.ExpirationTime,
-		NotBefore:       info.NotBefore,
-		RequestID:       info.RequestID,
-		Resources:       info.Resources,
-		SignatureScheme: chain.SignatureScheme,
+	if lastErr != nil {
+		return Payload{}, lastErr
 	}
-	if payload.SignatureScheme == "" {
-		payload.SignatureScheme = SignatureSchemeEIP191
-	}
-
-	message, err := CreateMessage(payload)
-	if err != nil {
-		return Payload{}, err
-	}
-	signature, err := signer.SignMessage(ctx, message)
-	if err != nil {
-		return Payload{}, fmt.Errorf("sign SIWX message: %w", err)
-	}
-	payload.Signature = normalizeHexSignature(signature)
-	return payload, nil
+	return Payload{}, fmt.Errorf("SIWX declaration does not support any configured signer")
 }
 
 // CreateHeader creates a SIGN-IN-WITH-X header value from a server declaration.
@@ -99,8 +115,23 @@ func CreateHeader(ctx context.Context, declaration interface{}, signer EVMSigner
 	return EncodeHeader(payload)
 }
 
+// CreateHeaderWithSigners creates a SIGN-IN-WITH-X header value with ordered signers.
+func CreateHeaderWithSigners(ctx context.Context, declaration interface{}, signers ...Signer) (string, error) {
+	payload, err := CreatePayloadWithSigners(ctx, declaration, signers...)
+	if err != nil {
+		return "", err
+	}
+	return EncodeHeader(payload)
+}
+
 // CreateClientHook creates an HTTP on-payment-required hook for SIWX authentication.
 func CreateClientHook(signer EVMSigner) x402http.PaymentRequiredHook {
+	return CreateClientHookWithSigners(NewEVMSIWXSigner(signer))
+}
+
+// CreateClientHookWithSigners creates an HTTP on-payment-required hook using ordered SIWX signers.
+func CreateClientHookWithSigners(signers ...Signer) x402http.PaymentRequiredHook {
+	signers = compactSigners(signers)
 	return func(ctx context.Context, paymentRequired types.PaymentRequired) (*x402http.PaymentRequiredHookResult, error) {
 		if paymentRequired.Extensions == nil {
 			return nil, nil
@@ -109,7 +140,7 @@ func CreateClientHook(signer EVMSigner) x402http.PaymentRequiredHook {
 		if !ok {
 			return nil, nil
 		}
-		header, createErr := CreateHeader(ctx, declaration, signer)
+		header, createErr := CreateHeaderWithSigners(ctx, declaration, signers...)
 		if createErr != nil {
 			return noPaymentRequiredHookResult()
 		}
@@ -148,9 +179,9 @@ func extensionFromInterface(declaration interface{}) (Extension, error) {
 	}
 }
 
-func selectEVMChain(chains []SupportedChain) (SupportedChain, bool) {
+func selectSignerChain(chains []SupportedChain, signer Signer) (SupportedChain, bool) {
 	for _, chain := range chains {
-		if chain.Type == SignatureTypeEIP191 && strings.HasPrefix(chain.ChainID, "eip155:") {
+		if signer.SupportsChain(chain) {
 			return chain, true
 		}
 	}
@@ -162,4 +193,37 @@ func normalizeHexSignature(signature string) string {
 		return signature
 	}
 	return "0x" + signature
+}
+
+func payloadForSigner(info Info, chain SupportedChain, signer Signer) Payload {
+	signatureScheme := chain.SignatureScheme
+	if signatureScheme == "" {
+		signatureScheme = signer.DefaultSignatureScheme()
+	}
+	return Payload{
+		Domain:          info.Domain,
+		Address:         signer.Address(),
+		Statement:       info.Statement,
+		URI:             info.URI,
+		Version:         info.Version,
+		ChainID:         chain.ChainID,
+		Type:            chain.Type,
+		Nonce:           info.Nonce,
+		IssuedAt:        info.IssuedAt,
+		ExpirationTime:  info.ExpirationTime,
+		NotBefore:       info.NotBefore,
+		RequestID:       info.RequestID,
+		Resources:       info.Resources,
+		SignatureScheme: signatureScheme,
+	}
+}
+
+func compactSigners(signers []Signer) []Signer {
+	compact := make([]Signer, 0, len(signers))
+	for _, signer := range signers {
+		if signer != nil {
+			compact = append(compact, signer)
+		}
+	}
+	return compact
 }

@@ -3,6 +3,17 @@ package signinwithx
 import (
 	"context"
 	"time"
+
+	siwe "github.com/signinwithethereum/siwe-go"
+)
+
+const (
+	// SolanaMainnet is the CAIP-2 identifier for Solana mainnet-beta.
+	SolanaMainnet = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+	// SolanaDevnet is the CAIP-2 identifier for Solana devnet.
+	SolanaDevnet = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+	// SolanaTestnet is the CAIP-2 identifier for Solana testnet.
+	SolanaTestnet = "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
 )
 
 const (
@@ -108,9 +119,17 @@ type ValidationResult struct {
 // wallet signatures such as EIP-1271 and ERC-6492.
 type EVMMessageVerifier func(ctx context.Context, address string, message string, signature string) (bool, error)
 
+// EVMContractSignatureVerifier verifies SIWE smart-wallet signatures.
+//
+// It matches siwe-go's contract verifier interface. Implementations can use
+// siwe.NewEthCallerVerifier with an ethclient.Client to support deployed
+// EIP-1271 and counterfactual EIP-6492 signatures.
+type EVMContractSignatureVerifier = siwe.ContractSignatureVerifier
+
 // VerifyOptions configures SIWX signature verification.
 type VerifyOptions struct {
-	EVMVerifier EVMMessageVerifier
+	EVMVerifier         EVMMessageVerifier
+	EVMContractVerifier EVMContractSignatureVerifier
 }
 
 // VerifyResult is returned by VerifySignature.

@@ -109,11 +109,41 @@ func (e *ServerExtension) EnrichDeclaration(declaration interface{}, transportCo
 		info.ExpirationTime = time.Now().UTC().Add(time.Duration(options.ExpirationSeconds) * time.Second).Format(time.RFC3339)
 	}
 
+	supportedChains := ext.SupportedChains
+	if len(options.Networks) == 0 {
+		if reqCtx, ok := transportContext.(x402http.HTTPRequestContext); ok {
+			supportedChains = supportedChainsFromRequirements(reqCtx.Requirements)
+		}
+	}
+
 	ext.Info = info
+	ext.SupportedChains = supportedChains
 	if ext.Schema == nil {
 		ext.Schema = Schema()
 	}
 	return ext
+}
+
+func supportedChainsFromRequirements(requirements []types.PaymentRequirements) []SupportedChain {
+	if len(requirements) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(requirements))
+	chains := make([]SupportedChain, 0, len(requirements))
+	for _, requirement := range requirements {
+		if requirement.Network == "" {
+			continue
+		}
+		if _, ok := seen[requirement.Network]; ok {
+			continue
+		}
+		seen[requirement.Network] = struct{}{}
+		chains = append(chains, SupportedChain{
+			ChainID: requirement.Network,
+			Type:    SignatureTypeForNetwork(requirement.Network),
+		})
+	}
+	return chains
 }
 
 func (e *ServerExtension) ResourceServerExtensionHooks() x402.ResourceServerExtensionHooks {

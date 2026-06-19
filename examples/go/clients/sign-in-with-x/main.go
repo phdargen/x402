@@ -17,15 +17,30 @@ import (
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	exactevmclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/client"
 	uptoevmclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/upto/client"
+	exactsvmclient "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/client"
 	evmsigner "github.com/x402-foundation/x402/go/v2/signers/evm"
+	svmsigner "github.com/x402-foundation/x402/go/v2/signers/svm"
 )
+
+type solanaSIWXSigner struct {
+	signer *svmsigner.ClientSigner
+}
+
+func (s *solanaSIWXSigner) Address() string {
+	return s.signer.Address().String()
+}
+
+func (s *solanaSIWXSigner) SignMessage(ctx context.Context, message string) (string, error) {
+	return s.signer.SignMessage(ctx, message)
+}
 
 func main() {
 	_ = godotenv.Load()
 
-	privateKey := os.Getenv("EVM_PRIVATE_KEY")
-	if privateKey == "" {
-		log.Fatal("EVM_PRIVATE_KEY is required")
+	evmPrivateKey := os.Getenv("EVM_PRIVATE_KEY")
+	svmPrivateKey := os.Getenv("SVM_PRIVATE_KEY")
+	if evmPrivateKey == "" && svmPrivateKey == "" {
+		log.Fatal("EVM_PRIVATE_KEY or SVM_PRIVATE_KEY is required")
 	}
 
 	baseURL := strings.TrimRight(os.Getenv("RESOURCE_SERVER_URL"), "/")
@@ -33,23 +48,42 @@ func main() {
 		baseURL = "http://localhost:4021"
 	}
 
-	signer, err := evmsigner.NewClientSignerFromPrivateKey(privateKey)
-	if err != nil {
-		log.Fatalf("create signer: %v", err)
-	}
-	siwxSigner, ok := signer.(signinwithx.EVMSigner)
-	if !ok {
-		log.Fatal("EVM signer does not support SIWX message signing")
+	client := x402.Newx402Client()
+	siwxSigners := make([]signinwithx.Signer, 0, 2)
+
+	if evmPrivateKey != "" {
+		evmSigner, err := evmsigner.NewClientSignerFromPrivateKey(evmPrivateKey)
+		if err != nil {
+			log.Fatalf("create EVM signer: %v", err)
+		}
+		siwxSigner, ok := evmSigner.(signinwithx.EVMSigner)
+		if !ok {
+			log.Fatal("EVM signer does not support SIWX message signing")
+		}
+		client.Register("eip155:*", exactevmclient.NewExactEvmScheme(evmSigner, nil)).
+			Register("eip155:*", uptoevmclient.NewUptoEvmScheme(evmSigner, nil))
+		siwxSigners = append(siwxSigners, signinwithx.NewEVMSIWXSigner(siwxSigner))
+		fmt.Printf("Client EVM address: %s\n", evmSigner.Address())
 	}
 
-	client := x402.Newx402Client().
-		Register("eip155:*", exactevmclient.NewExactEvmScheme(signer, nil)).
-		Register("eip155:*", uptoevmclient.NewUptoEvmScheme(signer, nil)).
-		RegisterExtension(signinwithx.CreateClientExtension(siwxSigner))
+	if svmPrivateKey != "" {
+		svmSigner, err := svmsigner.NewClientSignerFromPrivateKey(svmPrivateKey)
+		if err != nil {
+			log.Fatalf("create SVM signer: %v", err)
+		}
+		clientSigner, ok := svmSigner.(*svmsigner.ClientSigner)
+		if !ok {
+			log.Fatal("SVM signer does not support SIWX message signing")
+		}
+		client.Register("solana:*", exactsvmclient.NewExactSvmScheme(svmSigner))
+		siwxSigners = append(siwxSigners, signinwithx.NewSolanaSIWXSigner(&solanaSIWXSigner{signer: clientSigner}))
+		fmt.Printf("Client SVM address: %s\n", clientSigner.Address())
+	}
+
+	client.RegisterExtension(signinwithx.CreateClientExtensionWithSigners(siwxSigners...))
 	httpClient := x402http.Newx402HTTPClient(client)
 	wrappedClient := x402http.WrapHTTPClientWithPayment(http.DefaultClient, httpClient)
 
-	fmt.Printf("Client EVM address: %s\n", signer.Address())
 	fmt.Printf("Server: %s\n", baseURL)
 
 	demonstrateAuthOnly(wrappedClient, baseURL)
