@@ -7,22 +7,13 @@ description: Guidelines for authoring x402 specification files. Use when writing
 
 Guidance for writing x402 specification files under `specs/`. Use RFC-2119 keywords for normative statements (MUST / MUST NOT, SHOULD / SHOULD NOT, MAY).
 
-## Process
-
-- Before writing, open a GitHub issue or discussion: the problem, the high-level approach, and why existing schemes, extensions, or transports don't suffice.
-- Start from the matching template, then submit a PR:
-  - Scheme overview — [`scheme_template.md`](../../../specs/scheme_template.md) → `specs/schemes/<name>/scheme_<name>.md`.
-  - Chain implementation — [`scheme_impl_template.md`](../../../specs/scheme_impl_template.md) → `specs/schemes/<name>/scheme_<name>_<chain>.md`.
-  - Transport — [`transport_template.md`](../../../specs/transport_template.md) → `specs/transports-v2/<name>.md`.
-  - Extension — `specs/extensions/<name>.md`.
-
 ## General rules
 
 These apply to every spec type (scheme, extension). The references below add type-specific detail.
 
 ### Naming
 
-- Name schemes and extensions in lowercase, hyphen-separated kebab-case (e.g. `batch-settlement`, `auth-capture`, `offer-receipt`), never camelCase.
+- Name schemes and extensions in lowercase, hyphen-separated kebab-case (e.g. `batch-settlement`, `offer-receipt`), never camelCase.
 
 ### Protocol version, networks, and units
 
