@@ -1,0 +1,44 @@
+---
+name: authoring-specs
+description: Guidelines for authoring x402 specification files. Use when writing or proposing a new x402 spec, such as a per-network scheme spec (scheme_<name>_<chain>.md).
+---
+
+# Authoring x402 specs
+
+Guidance for writing x402 specification files under `specs/`. Use RFC-2119 keywords for normative statements (MUST / MUST NOT, SHOULD / SHOULD NOT, MAY).
+
+## Process
+
+- Before writing, open a GitHub issue or discussion: the problem, the high-level approach, and why existing schemes, extensions, or transports don't suffice.
+- Start from the matching template, then submit a PR:
+  - Scheme overview — [`scheme_template.md`](../../../specs/scheme_template.md) → `specs/schemes/<name>/scheme_<name>.md`.
+  - Chain implementation — [`scheme_impl_template.md`](../../../specs/scheme_impl_template.md) → `specs/schemes/<name>/scheme_<name>_<chain>.md`.
+  - Transport — [`transport_template.md`](../../../specs/transport_template.md) → `specs/transports-v2/<name>.md`.
+  - Extension — `specs/extensions/<name>.md`.
+
+## General rules
+
+These apply to every spec type (scheme, extension). The references below add type-specific detail.
+
+### Naming
+
+- Name schemes and extensions in lowercase, hyphen-separated kebab-case (e.g. `batch-settlement`, `auth-capture`, `offer-receipt`), never camelCase.
+
+### Protocol version, networks, and units
+
+- Target protocol v2 only: `x402Version: 2`, the `amount` field (not v1's `maxAmount`), and the `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE` headers (not v1's `X-PAYMENT` / `X-PAYMENT-RESPONSE`). See the [v1 to v2 migration guide](../../../docs/guides/migration-v1-to-v2.mdx).
+- Use canonical CAIP-2 network notation (e.g. `eip155:84532`, not `base-sepolia`).
+- Use atomic units for all amounts.
+
+### Wire format
+
+- Be transport agnostic: specify message contents, not how a particular transport carries them.
+- Every field a spec defines on the wire (`PaymentRequired`, `PaymentPayload`, `PAYMENT-RESPONSE`, facilitator `supported/`) must be consumed by a downstream role. Do not include human-readable or otherwise purely informational fields.
+- Show a decoded example of every message the spec defines.
+- Reuse field names, patterns, and conventions established by existing specs instead of coining new ones.
+- Reference core types (`PaymentRequirements`, `PaymentPayload`, `SettlementResponse`) from [`x402-specification-v2.md`](../../../specs/x402-specification-v2.md) instead of redefining them.
+
+## References
+
+- New network scheme spec (`scheme_<name>_<chain>.md`): see [references/new-network-scheme-spec.md](references/new-network-scheme-spec.md).
+- New extension spec: to be added.
