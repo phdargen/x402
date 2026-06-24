@@ -24,11 +24,11 @@ Checklist for authoring a new per-network scheme spec file (`scheme_<name>_<chai
 
 ## Nonces
 
-- Sequential nonces are strongly discouraged. They effectively lock the client account from signing until the server settles, which may take minutes (bounded only by `maxTimeoutSeconds`, on which the protocol enforces no upper limit). If the client submits another transaction from that account between verification and settlement, the nonce is consumed, settlement fails, and the verification work the server already performed is wasted.
+- Sequential nonces are strongly discouraged. They effectively lock the client account until the server route handler completes and the transaction settles, which may take several minutes (bounded only by `maxTimeoutSeconds`, on which the protocol enforces no upper limit). If the client submits another transaction from that account between verification and settlement, the nonce is consumed, settlement fails, and the work the server already performed is wasted.
 
 ## Verification and settlement
 
-- Use transaction simulation, not only structural payload checks: confirm the transaction would actually succeed onchain, ideally with a full transaction simulation; or, if that is not possible, at least targeted checks (e.g. sufficient client token balance, nonce unconsumed).
+- Use transaction simulation, not only structural payload checks, to confirm the transaction would actually succeed onchain. If that is not possible, at least targeted checks of onchain state MUST be done (e.g. sufficient client token balance, nonce unconsumed).
 - Verify should provide the strongest possible guarantee that settlement will succeed. If settle fails, the client does NOT get access to the resource; but if verify succeeded, the server did unnecessary work, wasting resources (compute). This is a server protection.
 - The facilitator must confirm transaction success onchain before returning success to the server.
 - The facilitator must protect its own funds and bound its fee exposure. Its signature must authorize only the network fee: the facilitator must not appear as the authority, source, or sender of any value-moving instruction (fee-payer isolation), so it cannot be induced to transfer its own funds. It must also cap the fees it pays against client-controlled parameters (e.g. explicit gas limits, compute-unit and priority-fee caps), so a client cannot inflate them.
