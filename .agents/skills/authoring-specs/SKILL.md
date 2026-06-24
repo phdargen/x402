@@ -24,10 +24,9 @@ These apply to every spec type (scheme, extension). The references below add typ
 ### Wire format
 
 - Be transport agnostic: specify message contents, not how a particular transport carries them.
-- Every field a spec defines on the wire (`PaymentRequired`, `PaymentPayload`, `PAYMENT-RESPONSE`, facilitator `supported/`) must be consumed by a downstream role. Do not include human-readable or otherwise purely informational fields.
-- Show a decoded example of every message the spec defines.
+- Reference core types (`PaymentRequirements`, `PaymentPayload`, `SettlementResponse`) from [`x402-specification-v2.md`](../../../specs/x402-specification-v2.md).
+- Every field a spec defines on the wire must be consumed by a downstream role. Do not include human-readable or otherwise purely informational fields.
 - Reuse field names, patterns, and conventions established by existing specs instead of coining new ones.
-- Reference core types (`PaymentRequirements`, `PaymentPayload`, `SettlementResponse`) from [`x402-specification-v2.md`](../../../specs/x402-specification-v2.md) instead of redefining them.
 
 ## References
 

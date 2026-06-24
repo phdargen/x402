@@ -28,6 +28,7 @@ Checklist for authoring a new per-network scheme spec file (`scheme_<name>_<chai
 
 ## Verification and settlement
 
+- Do not introduce new facilitator endpoints beyond `verify/`, `settle/`, and `supported/`. A scheme must express all facilitator interactions through these existing endpoints.
 - Use transaction simulation, not only structural payload checks, to confirm the transaction would actually succeed onchain. If that is not possible, at least targeted checks of onchain state MUST be done (e.g. sufficient client token balance, nonce unconsumed).
 - Verify should provide the strongest possible guarantee that settlement will succeed. If settle fails, the client does NOT get access to the resource; but if verify succeeded, the server did unnecessary work, wasting resources (compute). This is a server protection.
 - The facilitator must confirm transaction success onchain before returning success to the server.
