@@ -1,5 +1,3 @@
-# Contributing
-
 x402 welcomes contributions of schemes, middleware, new chain support, and more. We aim to make x402 as secure and trusted as possible. Merging contributions is at the discretion of the x402 Foundation team, based on the risk of the contribution and the quality of implementation.
 
 ## Contents
