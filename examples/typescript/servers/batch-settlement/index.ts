@@ -92,6 +92,9 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
   },
 });
 
+/**
+ * Initializes facilitator capability checks and starts the batch-settlement server.
+ */
 async function main() {
   // Fail fast on misconfiguration: this throws the capability error (and any
   // HTTP route validation error) before the server starts accepting requests.

@@ -26,7 +26,7 @@ if (!process.env.EVM_PRIVATE_KEY) {
 
 const evmRpcUrl = process.env.EVM_RPC_URL ?? "https://sepolia.base.org";
 
-// Treat unset or blank as not configured 
+// Treat unset or blank as not configured
 const receiverAuthorizerPrivateKey =
   process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
 
@@ -55,9 +55,7 @@ console.info(`EVM Facilitator account: ${evmAccount.address}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
 } else {
-  console.info(
-    "EVM Receiver Authorizer: not configured",
-  );
+  console.info("EVM Receiver Authorizer: not configured");
 }
 
 // Create a Viem client with both wallet and public capabilities

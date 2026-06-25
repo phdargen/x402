@@ -8,9 +8,9 @@ See the [scheme specification](../../../../specs/schemes/batch-settlement/scheme
 
 This example can use separate keys for relaying transactions and authorizing receiver actions:
 
-| Env var                               | Role                                                                       | Onchain effect                                                                                   |
-| ------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `EVM_PRIVATE_KEY`                     | **Relayer** — submits transactions                                         | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature`                 |
+| Env var                               | Role                                                                                  | Onchain effect                                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `EVM_PRIVATE_KEY`                     | **Relayer** — submits transactions                                                    | Pays gas for `deposit` / `claimWithSignature` / `settle` / `refundWithSignature`                           |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** (optional) — signs `ClaimBatch` and `Refund` EIP-712 messages | When set, address is committed into the channel identity for any server that delegates to this facilitator |
 
 If `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is omitted, this example registers `BatchSettlementEvmScheme` without an authorizer signer: no `receiverAuthorizer` is advertised in `/supported`, and servers must supply their own claim/refund authorizer signatures. Set this key only when you want servers to delegate authorization to this facilitator; in production, keep it separate from the relayer so the authorizer key (which controls how much gets claimed) can be rotated independently of the gas-paying hot wallet.
