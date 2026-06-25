@@ -308,17 +308,17 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 
   /**
    * Fails server startup when this scheme delegates the receiver-authorizer role
-   * but the facilitator does not advertise a usable `receiverAuthorizer`. 
+   * but the facilitator does not advertise a usable `receiverAuthorizer`.
    *
    * @param network - The network identifier being validated.
    * @param supportedKind - The facilitator's advertised kind for this scheme/network.
-   * @param _facilitatorExtensions - Extensions advertised by the facilitator (unused).
+   * @param _ - Extensions advertised by the facilitator (unused).
    * @returns A problem message when delegation is impossible, or void when valid.
    */
   validateFacilitatorSupport(
     network: Network,
     supportedKind: SupportedKind,
-    _facilitatorExtensions: string[],
+    _: string[],
   ): string | void {
     if (this.receiverAuthorizerSigner) return;
 
