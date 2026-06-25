@@ -199,6 +199,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — construction & metadata", (
     expect(scheme.getExtra(NETWORK)).toEqual({ receiverAuthorizer: authorizer.address });
   });
 
+  it("getExtra returns undefined when no authorizerSigner is configured", () => {
+    const scheme = new BatchSettlementEvmScheme(buildSigner());
+    expect(scheme.getExtra(NETWORK)).toBeUndefined();
+  });
+
   it("getSigners returns the facilitator addresses", () => {
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
     expect(scheme.getSigners(NETWORK)).toEqual([FACILITATOR_ADDRESS]);
@@ -1215,6 +1220,121 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     );
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(Errors.ErrSettleTransactionFailed);
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", () => {
+  it("returns AuthorizerNotConfigured for a claim without a client signature", async () => {
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer);
+    const config = buildChannelConfig();
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrAuthorizerNotConfigured);
+    expect(signer.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("submits a claim that carries a server-supplied authorizer signature", async () => {
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer);
+    const config = buildChannelConfig();
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claimAuthorizerSignature: "0xserversig" as `0x${string}`,
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(signer.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "claimWithSignature" }),
+    );
+  });
+
+  it("returns AuthorizerNotConfigured for a refund without a client signature", async () => {
+    const signer = buildSigner();
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 0n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(signer);
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+      amount: "9000",
+      refundNonce: "0",
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrAuthorizerNotConfigured);
+    expect(signer.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("submits a refund that carries a server-supplied authorizer signature", async () => {
+    const signer = buildSigner();
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 0n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(signer);
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+      amount: "9000",
+      refundNonce: "0",
+      refundAuthorizerSignature: "0xserversig" as `0x${string}`,
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.amount).toBe("9000");
+    expect(signer.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "refundWithSignature" }),
+    );
   });
 });
 

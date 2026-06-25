@@ -51,13 +51,19 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   /**
    * Creates a facilitator scheme for verifying and settling batch-settlement payments.
    *
-   * @param signer - Facilitator EVM signer used for tx submission and onchain reads.
-   * @param authorizerSigner - Dedicated key for `claimWithSignature` / `refundWithSignature`.
+   * @param signer - Facilitator EVM signer(s) used for tx submission and onchain reads.
+   * @param authorizerSigner - Optional dedicated key that provides EIP-712 signatures for
+   *   `claimWithSignature` / `refundWithSignature`. When provided, the facilitator advertises
+   *   its address as `receiverAuthorizer` in `/supported` and signs missing authorizer
+   *   signatures using this key when the server omits them. A facilitator that advertises a
+   *   `receiverAuthorizer` for servers to delegate to must authenticate refund requests (see the
+   *   spec); when no such mechanism exists, omit this signer so no `receiverAuthorizer` is
+   *   advertised and servers supply their own signatures.
    * @param config - Optional configuration (e.g. ERC-6492 factory allowlist).
    */
   constructor(
     private readonly signer: FacilitatorEvmSigner,
-    private readonly authorizerSigner: AuthorizerSigner,
+    private readonly authorizerSigner?: AuthorizerSigner,
     config?: BatchSettlementEvmSchemeConfig,
   ) {
     this.config = {
@@ -69,12 +75,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    * Returns facilitator-specific extra fields to be merged into payment requirements.
    *
    * Exposes the configured `receiverAuthorizer` address so the server and client can
-   * embed it in `ChannelConfig`.
+   * embed it in `ChannelConfig`. Returns `undefined` when no authorizer signer is
+   * configured, signalling that servers must supply their own authorizer signatures.
    *
    * @param _ - Network identifier (unused).
-   * @returns Extra fields containing `receiverAuthorizer`.
+   * @returns Extra fields containing `receiverAuthorizer`, or `undefined`.
    */
   getExtra(_: string): { receiverAuthorizer: `0x${string}` } | undefined {
+    if (!this.authorizerSigner) {
+      return undefined;
+    }
     return { receiverAuthorizer: this.authorizerSigner.address };
   }
 

@@ -34,6 +34,7 @@ export const ErrReceiverAuthorizerMismatch =
 export const ErrWithdrawDelayMismatch = "invalid_batch_settlement_evm_withdraw_delay_mismatch";
 export const ErrAuthorizerAddressMismatch =
   "invalid_batch_settlement_evm_authorizer_address_mismatch";
+export const ErrAuthorizerNotConfigured = "invalid_batch_settlement_evm_authorizer_not_configured";
 export const ErrDepositSimulationFailed = "invalid_batch_settlement_evm_deposit_simulation_failed";
 
 // ERC-6492 counterfactual deployment errors (ERC-3009 deposit path). Wire values keep the
