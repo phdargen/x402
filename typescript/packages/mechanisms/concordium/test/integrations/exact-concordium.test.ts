@@ -16,10 +16,7 @@ import {
   SettleResponse,
   SupportedResponse,
 } from "@x402/core/types";
-import {
-  buildBasicAccountSigner,
-  AccountAddress,
-} from "@concordium/web-sdk";
+import { buildBasicAccountSigner, AccountAddress } from "@concordium/web-sdk";
 import { ExactConcordiumScheme as ExactConcordiumClient } from "../../src/exact/client/scheme";
 import { ExactConcordiumScheme as ExactConcordiumServer } from "../../src/exact/server/scheme";
 import { ExactConcordiumScheme as ExactConcordiumFacilitator } from "../../src/exact/facilitator/scheme";
@@ -161,11 +158,11 @@ describe("Concordium Integration Tests", () => {
     console.log(`Client: ${clientAddress}`);
 
     facilitatorAddress = FACILITATOR_ADDRESS;
-    facilitatorSigner = toConcordiumFacilitatorSigner(
-      facilitatorAddress,
-      FACILITATOR_PRIVATE_KEY,
-      { host, port, useTls: true },
-    );
+    facilitatorSigner = toConcordiumFacilitatorSigner(facilitatorAddress, FACILITATOR_PRIVATE_KEY, {
+      host,
+      port,
+      useTls: true,
+    });
     console.log(`Facilitator: ${facilitatorAddress}`);
 
     console.log(`PayTo:       ${PAY_TO_ADDRESS}`);

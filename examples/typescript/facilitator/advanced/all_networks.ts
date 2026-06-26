@@ -153,7 +153,9 @@ if (ccdFacilitatorPrivateKey && ccdFacilitatorAddress) {
   );
 
   facilitator.register(CCD_NETWORK, new ExactConcordiumScheme({ signer }));
-  console.info(`CCD Facilitator account: ${ccdFacilitatorAddress} on ${CCD_NETWORK}`);
+  console.info(
+    `CCD Facilitator account: ${ccdFacilitatorAddress} on ${CCD_NETWORK}`,
+  );
 }
 
 // Register EVM scheme if private key is provided
