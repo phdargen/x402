@@ -17,10 +17,12 @@ import {
 } from "@x402/extensions";
 import { BuilderCodeFacilitatorExtension } from "@x402/extensions/builder-code";
 import {
+  AccountId as HederaAccountId,
   PrivateKey as HederaPrivateKey,
   createHederaClient,
   createHederaPreflightTransfer,
   createHederaSignAndSubmitTransaction,
+  createHederaVerifyPayerSignature,
   toFacilitatorHederaSigner,
 } from "@x402/hedera";
 import { ExactHederaScheme } from "@x402/hedera/exact/facilitator";
@@ -208,7 +210,11 @@ async function createFacilitator(): Promise<x402Facilitator> {
       process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
     );
     const hederaFeePayer = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
-    const buildHederaClient = (network: string) => createHederaClient(network);
+    const buildHederaClient = (network: string) => {
+      const client = createHederaClient(network);
+      client.setOperator(HederaAccountId.fromString(hederaFeePayer), hederaFeePayerKey);
+      return client;
+    };
 
     const hederaSigner = toFacilitatorHederaSigner({
       getAddresses: () => [hederaFeePayer],
@@ -216,7 +222,8 @@ async function createFacilitator(): Promise<x402Facilitator> {
         buildHederaClient,
         hederaFeePayerKey,
       ),
-      preflightTransfer: createHederaPreflightTransfer(buildHederaClient),
+      verifyPayerSignature: createHederaVerifyPayerSignature(buildHederaClient),
+      preflightTransfer: createHederaPreflightTransfer(),
     });
 
     facilitator.register(

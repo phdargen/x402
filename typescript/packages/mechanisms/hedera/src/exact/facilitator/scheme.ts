@@ -145,40 +145,68 @@ export class ExactHederaScheme implements SchemeNetworkFacilitator {
       return payToValidation;
     }
 
-    // Phase 5: optional onchain preflight (balance + token association).
-    // Spec §6 — advisory, never throws out of verify.
+    // Phase 5: payer signature verification (fail-closed).
+    // Runs before preflight to avoid wasted Mirror Node calls on bad signatures.
     // Precondition: Phase 3 transfer-semantics guarantees `payer` is non-empty
     // (the payload must contain at least one debited account for `asset`).
-    if (typeof this.signer.preflightTransfer === "function") {
-      let preflight: { ok: boolean; reason?: string; message?: string };
-      try {
-        preflight = await this.signer.preflightTransfer({
-          payer,
-          payTo: requirements.payTo,
-          asset: requirements.asset,
-          amount: requirements.amount,
-          network: requirements.network,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          isValid: false,
-          invalidReason: "invalid_exact_hedera_payload_preflight_failed",
-          invalidMessage: message,
-          payer,
-        };
-      }
-      if (!preflight.ok) {
-        const invalidMessage = preflight.reason
-          ? `${preflight.reason}${preflight.message ? `: ${preflight.message}` : ""}`
-          : preflight.message;
-        return {
-          isValid: false,
-          invalidReason: "invalid_exact_hedera_payload_preflight_failed",
-          invalidMessage,
-          payer,
-        };
-      }
+    let signature: { ok: boolean; reason?: string; message?: string };
+    try {
+      signature = await this.signer.verifyPayerSignature({
+        payer,
+        transaction: transactionBase64,
+        network: requirements.network,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        isValid: false,
+        invalidReason: "invalid_exact_hedera_payload_signature_invalid",
+        invalidMessage: message,
+        payer,
+      };
+    }
+    if (!signature.ok) {
+      const invalidMessage = signature.reason
+        ? `${signature.reason}${signature.message ? `: ${signature.message}` : ""}`
+        : signature.message;
+      return {
+        isValid: false,
+        invalidReason: "invalid_exact_hedera_payload_signature_invalid",
+        invalidMessage,
+        payer,
+      };
+    }
+
+    // Phase 6: onchain preflight (balance + token association), fail-closed.
+    // Spec §6 — never throws out of verify.
+    let preflight: { ok: boolean; reason?: string; message?: string };
+    try {
+      preflight = await this.signer.preflightTransfer({
+        payer,
+        payTo: requirements.payTo,
+        asset: requirements.asset,
+        amount: requirements.amount,
+        network: requirements.network,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        isValid: false,
+        invalidReason: "invalid_exact_hedera_payload_preflight_failed",
+        invalidMessage: message,
+        payer,
+      };
+    }
+    if (!preflight.ok) {
+      const invalidMessage = preflight.reason
+        ? `${preflight.reason}${preflight.message ? `: ${preflight.message}` : ""}`
+        : preflight.message;
+      return {
+        isValid: false,
+        invalidReason: "invalid_exact_hedera_payload_preflight_failed",
+        invalidMessage,
+        payer,
+      };
     }
 
     return {

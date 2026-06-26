@@ -1,9 +1,13 @@
 import type { PaymentRequirements } from "@x402/core/types";
 import {
   AccountId,
+  AccountInfoQuery,
   Client,
   Hbar,
+  Key,
+  KeyList,
   PrivateKey,
+  PublicKey,
   TokenId,
   Transaction,
   TransactionId,
@@ -71,6 +75,28 @@ export type FacilitatorHederaSigner = {
   ): Promise<{ transactionId: string }>;
 
   /**
+   * Verify that the inferred payer actually signed the frozen transaction body.
+   *
+   * Required verify-time capability, called unconditionally by the scheme (it
+   * cannot be silently skipped), mirroring EVM's `verifyTypedData`. The default
+   * `createHederaVerifyPayerSignature` fetches the payer's onchain account key
+   * and verifies the signature against it; on `{ ok: false }` or a thrown error
+   * the scheme fails closed with `invalid_exact_hedera_payload_signature_invalid`.
+   *
+   * @param params - Signature verification parameters
+   * @param params.payer - Payer account id (inferred from decoded transfers)
+   * @param params.transaction - Base64-encoded transaction the payer should have signed
+   * @param params.network - CAIP-2 network identifier
+   * @returns `{ ok: true }` when the payer signed, otherwise
+   *          `{ ok: false, reason?, message? }`
+   */
+  verifyPayerSignature(params: {
+    payer: string;
+    transaction: string;
+    network: string;
+  }): Promise<{ ok: boolean; reason?: string; message?: string }>;
+
+  /**
    * Optional account resolution hook (used for alias policy).
    *
    * @param accountIdOrAlias - payTo field value
@@ -80,15 +106,13 @@ export type FacilitatorHederaSigner = {
   resolveAccount?(accountIdOrAlias: string, network: string): Promise<HederaAccountResolution>;
 
   /**
-   * Optional pre-settlement check that the transfer is expected to succeed
-   * on chain. Implements the SHOULD in
-   * `specs/schemes/exact/scheme_exact_hedera.md` §6 — verify payer balance
-   * and recipient token association / auto-association capacity.
+   * Pre-settlement check that the transfer is expected to succeed on chain.
+   * Implements the SHOULD in `specs/schemes/exact/scheme_exact_hedera.md` §6 —
+   * verify payer balance and recipient token association / auto-association
+   * capacity.
    *
-   * The hook is advisory: if it throws or is unreachable, the scheme treats
-   * the check as failed and reports `invalid_exact_hedera_payload_preflight_failed`,
-   * but verify itself never throws. There is an inherent verify→settle race
-   * (balance may change between calls) — this is best-effort.
+   * Required verify-time capability, called unconditionally by the scheme.
+   * The scheme fails closed with `invalid_exact_hedera_payload_preflight_failed` on `{ ok: false }` or a thrown error.
    *
    * @param params - Preflight parameters
    * @param params.payer - Payer account id (inferred from decoded transfers)
@@ -99,7 +123,7 @@ export type FacilitatorHederaSigner = {
    * @returns `{ ok: true }` when the transfer is expected to succeed,
    *          otherwise `{ ok: false, reason?, message? }`
    */
-  preflightTransfer?(params: {
+  preflightTransfer(params: {
     payer: string;
     payTo: string;
     asset: string;
@@ -223,6 +247,67 @@ export function createHederaSignAndSubmitTransaction(
       const response = await signed.execute(client);
       await response.getReceipt(client);
       return { transactionId: response.transactionId.toString() };
+    } finally {
+      client.close();
+    }
+  };
+}
+
+/**
+ * Returns true when `key` (a single key, or a KeyList whose threshold is met)
+ * has produced a valid signature over `tx`. Recurses into nested KeyLists so
+ * threshold and multi-key accounts are handled.
+ *
+ * @param key - Account key fetched from the network
+ * @param tx - Frozen, signed transaction to verify against
+ * @returns Whether the key's signing requirement is satisfied by `tx`
+ */
+function keySignsTransaction(key: Key, tx: Transaction): boolean {
+  if (key instanceof PublicKey) {
+    return key.verifyTransaction(tx);
+  }
+  if (key instanceof KeyList) {
+    const keys = key.toArray();
+    const threshold = key.threshold ?? keys.length;
+    return keys.filter(k => keySignsTransaction(k, tx)).length >= threshold;
+  }
+  return false;
+}
+
+/**
+ * Builds a `verifyPayerSignature` implementation backed by the Hiero SDK.
+ *
+ * Fetches the payer's onchain account key via `AccountInfoQuery` (consensus
+ * nodes reliably return keys) and verifies that the frozen transaction body
+ * carries a valid signature satisfying that key — including KeyList/threshold
+ * accounts. Binds the signature to the payer account, so a transaction signed
+ * with the wrong key (or left unsigned) is rejected.
+ *
+ * The caller supplies `buildClient(network)` — responsible for SDK client
+ * construction and operator setup so the query fee can be paid. The returned
+ * function closes the client in a `finally` block.
+ *
+ * @param buildClient - Factory that produces an SDK client for a given CAIP-2 network
+ * @returns A function suitable for `FacilitatorHederaSigner.verifyPayerSignature`
+ */
+export function createHederaVerifyPayerSignature(
+  buildClient: (network: string) => Client,
+): FacilitatorHederaSigner["verifyPayerSignature"] {
+  return async ({ payer, transaction, network }) => {
+    const tx = Transaction.fromBytes(Buffer.from(transaction, "base64"));
+    const client = buildClient(network);
+    try {
+      const info = await new AccountInfoQuery()
+        .setAccountId(AccountId.fromString(payer))
+        .execute(client);
+      if (keySignsTransaction(info.key, tx)) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        reason: "signature_invalid",
+        message: `payer ${payer} did not sign the transaction`,
+      };
     } finally {
       client.close();
     }

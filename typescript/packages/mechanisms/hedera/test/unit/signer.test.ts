@@ -1,15 +1,36 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const infoExecute = vi.fn();
+const setInfoAccountId = vi.fn(function (this: unknown) {
+  return this;
+});
+
+vi.mock("@hiero-ledger/sdk", async () => {
+  const actual = await vi.importActual<typeof import("@hiero-ledger/sdk")>("@hiero-ledger/sdk");
+  class AccountInfoQuery {
+    setAccountId = setInfoAccountId;
+    execute = infoExecute;
+  }
+  return { ...actual, AccountInfoQuery };
+});
+
 import {
   AccountId,
   Client,
   Hbar,
+  type Key,
+  KeyList,
   PrivateKey,
   TokenId,
   TopicCreateTransaction,
   TransactionId,
   TransferTransaction,
 } from "@hiero-ledger/sdk";
-import { createClientHederaSigner, createHederaSignAndSubmitTransaction } from "../../src/signer";
+import {
+  createClientHederaSigner,
+  createHederaSignAndSubmitTransaction,
+  createHederaVerifyPayerSignature,
+} from "../../src/signer";
 import { inspectHederaTransaction } from "../../src/utils";
 import { HEDERA_TESTNET_USDC } from "../../src/constants";
 
@@ -271,5 +292,110 @@ describe("createHederaSignAndSubmitTransaction", () => {
     await expect(submit(base64, feePayerAccount, "hedera:testnet")).rejects.toThrow(
       /expected TransferTransaction/,
     );
+  });
+});
+
+describe("createHederaVerifyPayerSignature", () => {
+  const PAYER = "0.0.9001";
+  const PAY_TO = "0.0.7001";
+  const FEE_PAYER = "0.0.5001";
+
+  function fakeClient(): Client {
+    return { close: vi.fn() } as unknown as Client;
+  }
+
+  async function buildTransaction(
+    signers: PrivateKey[],
+  ): Promise<{ transaction: string; client: Client }> {
+    const tx = new TransferTransaction();
+    tx.addHbarTransfer(AccountId.fromString(PAYER), Hbar.fromTinybars("-1000"));
+    tx.addHbarTransfer(AccountId.fromString(PAY_TO), Hbar.fromTinybars("1000"));
+    tx.setTransactionId(TransactionId.generate(AccountId.fromString(FEE_PAYER)));
+    await tx.freezeWith(Client.forTestnet());
+    for (const signer of signers) {
+      await tx.sign(signer);
+    }
+    return {
+      transaction: Buffer.from(tx.toBytes()).toString("base64"),
+      client: fakeClient(),
+    };
+  }
+
+  function withKey(key: Key, client: Client): (network: string) => Client {
+    infoExecute.mockResolvedValue({ key });
+    return () => client;
+  }
+
+  beforeEach(() => {
+    infoExecute.mockReset();
+    setInfoAccountId.mockClear();
+  });
+
+  it("ok when the payer signed with their account key", async () => {
+    const key = PrivateKey.generateED25519();
+    const { transaction, client } = await buildTransaction([key]);
+    const verify = createHederaVerifyPayerSignature(withKey(key.publicKey, client));
+
+    const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+    expect(result).toEqual({ ok: true });
+    expect((client as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
+  });
+
+  it("fails when signed with a different key", async () => {
+    const signingKey = PrivateKey.generateED25519();
+    const accountKey = PrivateKey.generateED25519();
+    const { transaction, client } = await buildTransaction([signingKey]);
+    const verify = createHederaVerifyPayerSignature(withKey(accountKey.publicKey, client));
+
+    const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("signature_invalid");
+  });
+
+  it("fails for an unsigned transaction", async () => {
+    const accountKey = PrivateKey.generateED25519();
+    const { transaction, client } = await buildTransaction([]);
+    const verify = createHederaVerifyPayerSignature(withKey(accountKey.publicKey, client));
+
+    const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("signature_invalid");
+  });
+
+  it("ok when a KeyList threshold is met", async () => {
+    const key1 = PrivateKey.generateED25519();
+    const key2 = PrivateKey.generateED25519();
+    const key3 = PrivateKey.generateED25519();
+    const { transaction, client } = await buildTransaction([key1, key2]);
+    const keyList = new KeyList([key1.publicKey, key2.publicKey, key3.publicKey], 2);
+    const verify = createHederaVerifyPayerSignature(withKey(keyList, client));
+
+    const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("fails when a KeyList threshold is not met", async () => {
+    const key1 = PrivateKey.generateED25519();
+    const key2 = PrivateKey.generateED25519();
+    const key3 = PrivateKey.generateED25519();
+    const { transaction, client } = await buildTransaction([key1]);
+    const keyList = new KeyList([key1.publicKey, key2.publicKey, key3.publicKey], 2);
+    const verify = createHederaVerifyPayerSignature(withKey(keyList, client));
+
+    const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("signature_invalid");
+  });
+
+  it("closes the client even when the account query throws", async () => {
+    const client = fakeClient();
+    infoExecute.mockRejectedValue(new Error("account info down"));
+    const { transaction } = await buildTransaction([PrivateKey.generateED25519()]);
+    const verify = createHederaVerifyPayerSignature(() => client);
+
+    await expect(verify({ payer: PAYER, transaction, network: "hedera:testnet" })).rejects.toThrow(
+      "account info down",
+    );
+    expect((client as unknown as { close: ReturnType<typeof vi.fn> }).close).toHaveBeenCalled();
   });
 });
