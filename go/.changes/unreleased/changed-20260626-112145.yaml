@@ -1,3 +1,0 @@
-kind: changed
-body: Made the batch-settlement facilitator `authorizerSigner` optional: when omitted, no `receiverAuthorizer` is advertised in `/supported` and claim/refund settlement returns `ErrAuthorizerNotConfigured` if the payload carries no authorizer signature. Added a `FacilitatorSupportValidator` hook so the resource server fails fast at `Initialize()` when a scheme delegates the receiver-authorizer role but the facilitator advertises none.
-time: 2026-06-26T11:21:45.808447+02:00
