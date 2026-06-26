@@ -272,6 +272,7 @@ if (process.env.TVM_PRIVATE_KEY) {
   });
   tvmSigner = toFacilitatorTvmSigner({ [TVM_NETWORK]: tvmConfig });
   console.info(`TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`);
+}
 
 let concordiumSigner: ReturnType<typeof toConcordiumFacilitatorSigner> | undefined;
 if (process.env.CCD_FACILITATOR_PRIVATE_KEY && process.env.CCD_FACILITATOR_ADDRESS) {
@@ -282,7 +283,6 @@ if (process.env.CCD_FACILITATOR_PRIVATE_KEY && process.env.CCD_FACILITATOR_ADDRE
     { host, port, useTls: true },
   );
   console.info(`CCD Facilitator account: ${process.env.CCD_FACILITATOR_ADDRESS} on ${CCD_NETWORK} (private key)`);
-}
 }
 
 // Create a Viem client with both wallet and public capabilities

@@ -101,8 +101,7 @@ export function toConcordiumFacilitatorSigner(
  * Creates a `FacilitatorConcordiumSigner` from a sponsor address,
  * an already-built account signer, and gRPC connection config.
  *
- * Use this overload when you already have an `AccountSigner` instance,
- * e.g. from `buildAccountSigner(parseWallet(walletFile))` (wallet export path).
+ * Use this overload when you already have an `AccountSigner` instance.
  *
  * @param sponsorAddress - Sponsor account address (base58check string)
  * @param sponsorSigner  - Pre-built AccountSigner instance
@@ -111,15 +110,14 @@ export function toConcordiumFacilitatorSigner(
  *
  * @example
  * ```typescript
- * import { parseWallet, buildAccountSigner } from "@concordium/web-sdk";
+ * import { buildBasicAccountSigner } from "@concordium/web-sdk";
  * import { getConcordiumGrpcUrl, parseGrpcUrl } from "@x402/concordium";
  *
- * const walletExport = parseWallet(readFileSync("./sponsor.export", "utf8"));
  * const [host, port] = parseGrpcUrl(getConcordiumGrpcUrl(network));
  *
  * const signer = toConcordiumFacilitatorSigner(
- *   walletExport.value.address,
- *   buildAccountSigner(walletExport),
+ *   process.env.CCD_FACILITATOR_ADDRESS!,
+ *   buildBasicAccountSigner(process.env.CCD_FACILITATOR_PRIVATE_KEY!),
  *   { host, port, useTls: true },
  * );
  * ```

@@ -159,13 +159,6 @@ TONAPI_BASE_URL=...                 # Optional custom TonAPI base URL
 TONCENTER_API_KEY=...               # Recommended when TVM_PROVIDER=toncenter
 ```
 
-For a focused Concordium shared-harness run after configuring those values:
-
-```bash
-cd e2e
-pnpm test --testnet --families=ccd --facilitators=typescript --clients=axios,fetch --servers=express,fastify,hono,next --min -v
-```
-
 To run Python SDK TVM e2e scenarios through TonAPI instead of Toncenter:
 
 ```bash

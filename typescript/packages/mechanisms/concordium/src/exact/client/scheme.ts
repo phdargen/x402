@@ -41,12 +41,11 @@ export interface ClientConcordiumConfig {
  * @example
  * ```typescript
  * import { ExactConcordiumScheme } from "@x402/concordium/exact/client";
- * import { buildAccountSigner, parseWallet, AccountAddress } from "@concordium/web-sdk";
+ * import { buildBasicAccountSigner, AccountAddress } from "@concordium/web-sdk";
  *
- * const walletExport = parseWallet(readFileSync("./wallet.export", "utf8"));
  * const signer: ClientConcordiumSigner = {
- *   accountAddress: AccountAddress.fromBase58(walletExport.value.address),
- *   signer: buildAccountSigner(walletExport),
+ *   accountAddress: AccountAddress.fromBase58(process.env.CCD_ADDRESS!),
+ *   signer: buildBasicAccountSigner(process.env.CCD_PRIVATE_KEY!),
  * };
  *
  * const scheme = new ExactConcordiumScheme(signer);

@@ -17,12 +17,9 @@ import {
   SupportedResponse,
 } from "@x402/core/types";
 import {
-  parseWallet,
-  buildAccountSigner,
   buildBasicAccountSigner,
   AccountAddress,
 } from "@concordium/web-sdk";
-import { readFileSync } from "fs";
 import { ExactConcordiumScheme as ExactConcordiumClient } from "../../src/exact/client/scheme";
 import { ExactConcordiumScheme as ExactConcordiumServer } from "../../src/exact/server/scheme";
 import { ExactConcordiumScheme as ExactConcordiumFacilitator } from "../../src/exact/facilitator/scheme";
@@ -36,25 +33,21 @@ import {
   getExplorerTxUrl,
 } from "../../src/constants";
 
-const CLIENT_WALLET_PATH = process.env.CONCORDIUM_CLIENT_WALLET_PATH;
 const CLIENT_PRIVATE_KEY = process.env.CONCORDIUM_CLIENT_PRIVATE_KEY;
 const CLIENT_ADDRESS = process.env.CONCORDIUM_CLIENT_ADDRESS;
-const FACILITATOR_WALLET_PATH = process.env.CONCORDIUM_FACILITATOR_WALLET_PATH;
 const FACILITATOR_PRIVATE_KEY = process.env.CONCORDIUM_FACILITATOR_PRIVATE_KEY;
 const FACILITATOR_ADDRESS = process.env.CONCORDIUM_FACILITATOR_ADDRESS;
 const PAY_TO_ADDRESS = process.env.CONCORDIUM_PAY_TO_ADDRESS;
 
-const hasClientWallet = !!(CLIENT_WALLET_PATH || (CLIENT_PRIVATE_KEY && CLIENT_ADDRESS));
-const hasFacilitatorWallet = !!(
-  FACILITATOR_WALLET_PATH ||
-  (FACILITATOR_PRIVATE_KEY && FACILITATOR_ADDRESS)
-);
-
-if (!hasClientWallet || !hasFacilitatorWallet || !PAY_TO_ADDRESS) {
+if (
+  !CLIENT_PRIVATE_KEY ||
+  !CLIENT_ADDRESS ||
+  !FACILITATOR_PRIVATE_KEY ||
+  !FACILITATOR_ADDRESS ||
+  !PAY_TO_ADDRESS
+) {
   throw new Error(
-    "Either CONCORDIUM_CLIENT_WALLET_PATH or both CONCORDIUM_CLIENT_PRIVATE_KEY + CONCORDIUM_CLIENT_ADDRESS " +
-      "must be set. Either CONCORDIUM_FACILITATOR_WALLET_PATH or both CONCORDIUM_FACILITATOR_PRIVATE_KEY + CONCORDIUM_FACILITATOR_ADDRESS " +
-      "must be set. CONCORDIUM_PAY_TO_ADDRESS must be set.",
+    "CONCORDIUM_CLIENT_PRIVATE_KEY, CONCORDIUM_CLIENT_ADDRESS, CONCORDIUM_FACILITATOR_PRIVATE_KEY, CONCORDIUM_FACILITATOR_ADDRESS, and CONCORDIUM_PAY_TO_ADDRESS must be set.",
   );
 }
 
@@ -160,43 +153,20 @@ describe("Concordium Integration Tests", () => {
   beforeAll(() => {
     const [host, port] = parseGrpcUrl(getConcordiumGrpcUrl(CONCORDIUM_TESTNET_CAIP2));
 
-    // Client setup: prefer private key, fall back to wallet export
-    if (CLIENT_PRIVATE_KEY && CLIENT_ADDRESS) {
-      clientAddress = CLIENT_ADDRESS;
-      clientSigner = {
-        accountAddress: AccountAddress.fromBase58(clientAddress),
-        signer: buildBasicAccountSigner(CLIENT_PRIVATE_KEY),
-      };
-      console.log(`Client (private key): ${clientAddress}`);
-    } else {
-      const clientWallet = parseWallet(readFileSync(CLIENT_WALLET_PATH!, "utf8"));
-      clientAddress = clientWallet.value.address;
-      clientSigner = {
-        accountAddress: AccountAddress.fromBase58(clientAddress),
-        signer: buildAccountSigner(clientWallet),
-      };
-      console.log(`Client (wallet export): ${clientAddress}`);
-    }
+    clientAddress = CLIENT_ADDRESS;
+    clientSigner = {
+      accountAddress: AccountAddress.fromBase58(clientAddress),
+      signer: buildBasicAccountSigner(CLIENT_PRIVATE_KEY),
+    };
+    console.log(`Client: ${clientAddress}`);
 
-    // Facilitator setup: prefer private key, fall back to wallet export
-    if (FACILITATOR_PRIVATE_KEY && FACILITATOR_ADDRESS) {
-      facilitatorAddress = FACILITATOR_ADDRESS;
-      facilitatorSigner = toConcordiumFacilitatorSigner(
-        facilitatorAddress,
-        FACILITATOR_PRIVATE_KEY,
-        { host, port, useTls: true },
-      );
-      console.log(`Facilitator (private key): ${facilitatorAddress}`);
-    } else {
-      const facilitatorWallet = parseWallet(readFileSync(FACILITATOR_WALLET_PATH!, "utf8"));
-      facilitatorAddress = facilitatorWallet.value.address;
-      facilitatorSigner = toConcordiumFacilitatorSigner(
-        AccountAddress.fromBase58(facilitatorAddress).toString(),
-        buildAccountSigner(facilitatorWallet),
-        { host, port, useTls: true },
-      );
-      console.log(`Facilitator (wallet export): ${facilitatorAddress}`);
-    }
+    facilitatorAddress = FACILITATOR_ADDRESS;
+    facilitatorSigner = toConcordiumFacilitatorSigner(
+      facilitatorAddress,
+      FACILITATOR_PRIVATE_KEY,
+      { host, port, useTls: true },
+    );
+    console.log(`Facilitator: ${facilitatorAddress}`);
 
     console.log(`PayTo:       ${PAY_TO_ADDRESS}`);
     console.log(`Network:     ${CONCORDIUM_TESTNET_CAIP2}\n`);

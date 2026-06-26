@@ -79,6 +79,7 @@ function parseTvmKeyPair(privateKey: string): KeyPair {
 async function main(): Promise<void> {
   // Validate at least one private key is provided
   if (
+    !avmPrivateKey &&
     !(ccdPrivateKey && ccdAddress) &&
     !evmPrivateKey &&
     !keetaMnemonic &&

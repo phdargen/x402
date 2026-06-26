@@ -22,7 +22,8 @@ cp .env-local .env
 
 and fill required environment variables:
 
-- `CCD_FACILITATOR_WALLET_PATH` - Concordium sponsor wallet export path (optional; `all-networks`)
+- `CCD_FACILITATOR_PRIVATE_KEY` - Concordium Ed25519 private key for sponsor signing (optional; `all-networks`)
+- `CCD_FACILITATOR_ADDRESS` - Concordium sponsor account address (optional; `all-networks`)
 - `CCD_NETWORK` - Concordium network CAIP-2 (optional; defaults to `ccd:4221332d34e1694168c2a0c0b3fd0f27`)
 - `EVM_PRIVATE_KEY` - Ethereum private key
 - `SVM_PRIVATE_KEY` - Solana private key
@@ -31,19 +32,6 @@ and fill required environment variables:
 - `HEDERA_PRIVATE_KEY` - Hedera **ECDSA** private key (0x-prefixed or DER-encoded) for fee payer (optional)
 - `KEETA_MNEMONIC` - Keeta mnemonic
 - `PORT` - Server port (optional, defaults to 4022)
-
-> **Concordium Testnet (CCD):**
-> 1. Set up Concordium Wallet for Web on **Testnet**.
-> 2. Open the sponsor account.
-> 3. Go to **Activity**.
-> 4. Click **Request CCD**.
-> 5. Wait for the test CCD transfer to arrive.
->    Official guide: https://docs.concordium.com/en/mainnet/docs/plt/setup-guide/request-ccd.html
->
-> **Concordium Testnet (PLT):**
-> There is no universal public faucet for arbitrary PLT symbols.
-> If you want to facilitate PLT payments for a symbol such as `EURR`, use an issuer-provided test distribution or request your own PLT issuance on testnet first:
-> https://docs.concordium.com/en/mainnet/tutorials/plt/request-plt.html
 
 2. Install and build all packages from the typescript examples root:
 

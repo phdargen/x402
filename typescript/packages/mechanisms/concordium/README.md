@@ -59,19 +59,15 @@ The client never broadcasts — the facilitator handles submission after sponsor
 
 ### 1. Client Setup
 
-The client builds and sender-signs a V1 sponsored transaction. It needs a Concordium account signer (from a wallet export or key pair).
+The client builds and sender-signs a V1 sponsored transaction. It needs a Concordium account address and Ed25519 private key.
 
 ```typescript
 import { ExactConcordiumScheme } from "@x402/concordium/exact/client";
-import { parseWallet, buildAccountSigner, AccountAddress } from "@concordium/web-sdk";
-import { readFileSync } from "fs";
-
-// Load wallet
-const walletExport = parseWallet(readFileSync("./wallet.export", "utf8"));
+import { buildBasicAccountSigner, AccountAddress } from "@concordium/web-sdk";
 
 const signer = {
-  accountAddress: AccountAddress.fromBase58(walletExport.value.address),
-  signer: buildAccountSigner(walletExport),
+  accountAddress: AccountAddress.fromBase58(process.env.CCD_ADDRESS!),
+  signer: buildBasicAccountSigner(process.env.CCD_PRIVATE_KEY!),
 };
 
 const scheme = new ExactConcordiumScheme(signer);
@@ -152,13 +148,6 @@ import {
   parseGrpcUrl,
   toConcordiumFacilitatorSigner,
 } from "@x402/concordium";
-import { parseWallet, buildAccountSigner, AccountAddress } from "@concordium/web-sdk";
-import { readFileSync } from "fs";
-
-// Load sponsor wallet
-const walletExport = parseWallet(readFileSync("./sponsor-wallet.export", "utf8"));
-const sponsorAccount = AccountAddress.fromBase58(walletExport.value.address);
-const sponsorSigner = buildAccountSigner(walletExport);
 
 // Resolve gRPC endpoint from network
 const network = CONCORDIUM_MAINNET_CAIP2; // mainnet
@@ -166,8 +155,8 @@ const [host, port] = parseGrpcUrl(getConcordiumGrpcUrl(network));
 
 // Create facilitator signer (gRPC client created internally)
 const signer = toConcordiumFacilitatorSigner(
-  sponsorAccount.toString(),
-  sponsorSigner,
+  process.env.CCD_FACILITATOR_ADDRESS!,
+  process.env.CCD_FACILITATOR_PRIVATE_KEY!,
   { host, port, useTls: true },
 );
 
@@ -204,7 +193,7 @@ const scheme = new ExactConcordiumScheme({
      │     Sign as sender                    │                     │
      │     Sponsor signature slot = empty    │                     │
      │                  │                    │                     │
-     │  5. GET /resource + X-PAYMENT header  │                     │
+     │  5. GET /resource + PAYMENT-SIGNATURE  │                     │
      │     payload: { signedTransaction,     │                     │
      │               sender }                │                     │
      │─────────────────>│                    │                     │
@@ -411,7 +400,7 @@ interface TransactionInfo {
   asset?: string;  // "" for CCD, token symbol for PLT
 }
 
-// V2 payment payload (sent in X-PAYMENT header)
+// V2 payment payload (sent in PAYMENT-SIGNATURE header)
 interface ExactConcordiumPayloadV2 {
   signedTransaction: SignableV1Transaction;
   sender: string;
