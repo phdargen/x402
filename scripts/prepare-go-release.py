@@ -450,7 +450,7 @@ def print_changelog_fragment_preview(
         return
 
     print("Changelog fragment preview:")
-    for _, _, body in bodies:
+    for _, _, body, _ in bodies:
         print(f"- {body}")
     print()
 
