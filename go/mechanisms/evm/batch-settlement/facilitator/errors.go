@@ -108,6 +108,7 @@ const (
 
 	// Authorizer errors
 	ErrAuthorizerAddressMismatch = "invalid_batch_settlement_evm_authorizer_address_mismatch"
+	ErrAuthorizerNotConfigured   = "invalid_batch_settlement_evm_authorizer_not_configured"
 
 	// Settle action errors
 	ErrUnknownSettleAction = "invalid_batch_settlement_evm_unknown_settle_action"

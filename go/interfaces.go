@@ -226,6 +226,15 @@ type PaymentRequiredEnricher interface {
 	EnrichPaymentRequiredResponse(ctx PaymentRequiredContext)
 }
 
+// FacilitatorSupportValidator is an optional interface that SchemeNetworkServer
+// implementations can satisfy to validate facilitator capabilities at startup.
+// Invoked during Initialize(), only when the facilitator supports the
+// scheme/network. Returns a non-nil error describing the problem when the
+// configuration cannot be fulfilled, or nil when valid.
+type FacilitatorSupportValidator interface {
+	ValidateFacilitatorSupport(network Network, supportedKind types.SupportedKind, facilitatorExtensions []string) error
+}
+
 // SchemeNetworkFacilitator is implemented by facilitator-side payment mechanisms (V2)
 type SchemeNetworkFacilitator interface {
 	Scheme() string

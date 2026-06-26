@@ -28,16 +28,19 @@ type BatchSettlementEvmScheme struct {
 }
 
 // NewBatchSettlementEvmScheme creates a new batch settlement facilitator scheme.
-// The authorizerSigner is a dedicated key that provides EIP-712 signatures for
-// claimWithSignature / refundWithSignature. The facilitator auto-signs when the
-// server omits signatures from the payload.
+// The authorizerSigner is an optional dedicated key that provides EIP-712 signatures
+// for claimWithSignature / refundWithSignature. When provided, the facilitator
+// advertises its address as receiverAuthorizer in /supported and auto-signs when the
+// server omits signatures from the payload. When nil, no receiverAuthorizer is
+// advertised and servers must supply their own authorizer signatures.
 func NewBatchSettlementEvmScheme(signer evm.FacilitatorEvmSigner, authorizerSigner batchsettlement.AuthorizerSigner) *BatchSettlementEvmScheme {
 	return &BatchSettlementEvmScheme{signer: signer, authorizerSigner: authorizerSigner}
 }
 
 // NewBatchSettlementEvmSchemeWithConfig creates a batch settlement facilitator scheme with
 // optional configuration (e.g. the ERC-6492 factory allowlist for counterfactual deposits).
-// A nil config behaves identically to NewBatchSettlementEvmScheme.
+// A nil config behaves identically to NewBatchSettlementEvmScheme. The authorizerSigner is
+// optional; see NewBatchSettlementEvmScheme for its semantics.
 func NewBatchSettlementEvmSchemeWithConfig(
 	signer evm.FacilitatorEvmSigner,
 	authorizerSigner batchsettlement.AuthorizerSigner,
@@ -62,7 +65,11 @@ func (f *BatchSettlementEvmScheme) CaipFamily() string {
 
 // GetExtra returns mechanism-specific extra data for the supported kinds endpoint.
 // Exposes the receiverAuthorizer address so server and client can embed it in ChannelConfig.
+// Returns nil when no authorizer signer is configured, so no receiverAuthorizer is advertised.
 func (f *BatchSettlementEvmScheme) GetExtra(_ x402.Network) map[string]interface{} {
+	if f.authorizerSigner == nil {
+		return nil
+	}
 	return map[string]interface{}{
 		"receiverAuthorizer": f.authorizerSigner.Address(),
 	}
