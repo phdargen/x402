@@ -449,6 +449,7 @@ func (s *testFacilitatorSigner) WriteContract(
 	[]byte,
 	string,
 	[]byte,
+	*uint64,
 	...interface{},
 ) (string, error) {
 	return "", errors.New("not implemented")

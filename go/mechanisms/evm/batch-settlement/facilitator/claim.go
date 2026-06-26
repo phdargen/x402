@@ -83,6 +83,7 @@ func ExecuteClaimWithSignature(
 		batchsettlement.BatchSettlementClaimWithSignatureABI,
 		"claimWithSignature",
 		dataSuffix,
+		nil,
 		claimArgs,
 		sigBytes,
 	)

@@ -19,6 +19,10 @@ const (
 	// Permit2DepositCollectorAddress is the deployed Permit2DepositCollector contract address.
 	Permit2DepositCollectorAddress = "0x4020425FAf3B746C082C2f942b4E5159887B0005"
 
+	// SettleGasLimit is an explicit gas limit because `settle` gas estimation can
+	// hit the cheap early-return path on stale RPC state.
+	SettleGasLimit = 120_000
+
 	// MinWithdrawDelay is the minimum withdraw delay in seconds (15 minutes).
 	MinWithdrawDelay = 900
 

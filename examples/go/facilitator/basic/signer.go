@@ -240,6 +240,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	abiJSON []byte,
 	method string,
 	dataSuffix []byte,
+	gas *uint64,
 	args ...interface{},
 ) (string, error) {
 	// Parse ABI
@@ -267,13 +268,29 @@ func (s *facilitatorEvmSigner) WriteContract(
 		return "", fmt.Errorf("failed to get gas price: %w", err)
 	}
 
-	// Create transaction
+	// Use the caller-provided gas limit when set, otherwise estimate via RPC.
 	to := common.HexToAddress(contractAddress)
+	gasLimit := uint64(0)
+	if gas != nil {
+		gasLimit = *gas
+	} else {
+		gasLimit, err = s.client.EstimateGas(ctx, ethereum.CallMsg{
+			From:  s.address,
+			To:    &to,
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to estimate gas: %w", err)
+		}
+	}
+
+	// Create transaction
 	tx := types.NewTransaction(
 		nonce,
 		to,
 		big.NewInt(0), // value
-		300000,        // gas limit
+		gasLimit,
 		gasPrice,
 		data,
 	)

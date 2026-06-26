@@ -238,7 +238,7 @@ class MyCustomSigner:
         # Your implementation
         pass
 
-    def write_contract(self, address, abi, function_name, *args):
+    def write_contract(self, address, abi, function_name, *args, gas=None):
         # Your implementation
         pass
 

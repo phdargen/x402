@@ -406,6 +406,7 @@ func SettleDeposit(
 			batchsettlement.BatchSettlementDepositABI,
 			"deposit",
 			dataSuffix,
+			nil,
 			configTuple,
 			depositAmount,
 			collectorAddr,

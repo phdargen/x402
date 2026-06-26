@@ -36,7 +36,7 @@ func (m *settleMockSigner) VerifyTypedData(ctx context.Context, address string, 
 	return false, nil
 }
 
-func (m *settleMockSigner) WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
+func (m *settleMockSigner) WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, gas *uint64, args ...interface{}) (string, error) {
 	if m.writeErr != nil {
 		return "", m.writeErr
 	}

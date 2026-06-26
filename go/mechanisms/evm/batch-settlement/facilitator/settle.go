@@ -64,12 +64,14 @@ func ExecuteSettle(
 		}, nil
 	}
 
+	settleGas := uint64(batchsettlement.SettleGasLimit)
 	txHash, err := signer.WriteContract(
 		ctx,
 		batchsettlement.BatchSettlementAddress,
 		batchsettlement.BatchSettlementSettleABI,
 		"settle",
 		dataSuffix,
+		&settleGas,
 		receiver,
 		token,
 	)

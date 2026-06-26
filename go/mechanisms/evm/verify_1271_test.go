@@ -50,6 +50,7 @@ func (m *mockFacilitatorSigner) WriteContract(
 	abi []byte,
 	functionName string,
 	dataSuffix []byte,
+	gas *uint64,
 	args ...interface{},
 ) (string, error) {
 	return "", errors.New("not implemented")

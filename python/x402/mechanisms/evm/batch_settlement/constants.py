@@ -21,6 +21,10 @@ PERMIT2_DEPOSIT_COLLECTOR_ADDRESS = to_checksum_address(
     "0x4020425FAf3B746C082C2f942b4E5159887B0005"
 )
 
+# Explicit gas limit because `settle` gas estimation can hit the cheap
+# early-return path on stale RPC state.
+SETTLE_GAS_LIMIT = 120_000
+
 # Withdraw delay bounds (seconds): 15 min – 30 days
 MIN_WITHDRAW_DELAY = 900
 MAX_WITHDRAW_DELAY = 2_592_000
@@ -127,6 +131,7 @@ __all__: list[Any] = [
     "BATCH_SETTLEMENT_ADDRESS",
     "ERC3009_DEPOSIT_COLLECTOR_ADDRESS",
     "PERMIT2_DEPOSIT_COLLECTOR_ADDRESS",
+    "SETTLE_GAS_LIMIT",
     "MIN_WITHDRAW_DELAY",
     "MAX_WITHDRAW_DELAY",
     "BATCH_SETTLEMENT_DOMAIN_NAME",

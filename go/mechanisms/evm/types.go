@@ -253,8 +253,9 @@ type FacilitatorEvmSigner interface {
 	// VerifyTypedData verifies an EIP-712 signature
 	VerifyTypedData(ctx context.Context, address string, domain TypedDataDomain, types map[string][]TypedDataField, primaryType string, message map[string]interface{}, signature []byte) (bool, error)
 
-	// WriteContract executes a smart contract transaction
-	WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error)
+	// WriteContract executes a smart contract transaction.
+	// gas is an optional explicit gas limit; pass nil to let the signer estimate.
+	WriteContract(ctx context.Context, address string, abi []byte, functionName string, dataSuffix []byte, gas *uint64, args ...interface{}) (string, error)
 
 	// SendTransaction sends a raw transaction with arbitrary calldata
 	// Used for smart wallet deployment where calldata is pre-encoded

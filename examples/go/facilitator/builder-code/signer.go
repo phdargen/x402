@@ -139,6 +139,7 @@ func (s *facilitatorEvmSigner) WriteContract(
 	abiJSON []byte,
 	method string,
 	dataSuffix []byte,
+	gas *uint64,
 	args ...interface{},
 ) (string, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(string(abiJSON)))
@@ -150,10 +151,31 @@ func (s *facilitatorEvmSigner) WriteContract(
 		return "", fmt.Errorf("pack call: %w", err)
 	}
 	data = evmmech.AppendDataSuffix(data, dataSuffix)
-	return s.SendTransaction(ctx, contractAddress, data)
+
+	// Use the caller-provided gas limit when set, otherwise estimate via RPC.
+	gasLimit := uint64(0)
+	if gas != nil {
+		gasLimit = *gas
+	} else {
+		to := common.HexToAddress(contractAddress)
+		gasLimit, err = s.client.EstimateGas(ctx, ethereum.CallMsg{
+			From:  s.address,
+			To:    &to,
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+		if err != nil {
+			return "", fmt.Errorf("estimate gas: %w", err)
+		}
+	}
+	return s.sendTx(ctx, contractAddress, data, gasLimit)
 }
 
 func (s *facilitatorEvmSigner) SendTransaction(ctx context.Context, to string, data []byte) (string, error) {
+	return s.sendTx(ctx, to, data, 500000)
+}
+
+func (s *facilitatorEvmSigner) sendTx(ctx context.Context, to string, data []byte, gasLimit uint64) (string, error) {
 	nonce, err := s.client.PendingNonceAt(ctx, s.address)
 	if err != nil {
 		return "", fmt.Errorf("get nonce: %w", err)
@@ -163,7 +185,7 @@ func (s *facilitatorEvmSigner) SendTransaction(ctx context.Context, to string, d
 		return "", fmt.Errorf("suggest gas price: %w", err)
 	}
 	toAddr := common.HexToAddress(to)
-	tx := types.NewTransaction(nonce, toAddr, big.NewInt(0), 500000, gasPrice, data)
+	tx := types.NewTransaction(nonce, toAddr, big.NewInt(0), gasLimit, gasPrice, data)
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(s.chainID), s.privateKey)
 	if err != nil {
 		return "", fmt.Errorf("sign tx: %w", err)

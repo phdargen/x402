@@ -475,6 +475,7 @@ class FacilitatorWeb3Signer:
         abi: list[dict[str, Any]],
         function_name: str,
         *args: Any,
+        gas: int | None = None,
     ) -> str:
         """Execute a smart contract transaction.
 
@@ -483,6 +484,7 @@ class FacilitatorWeb3Signer:
             abi: Contract ABI.
             function_name: Function to call.
             *args: Function arguments.
+            gas: Optional explicit gas limit; None uses the default limit.
 
         Returns:
             Transaction hash.
@@ -498,7 +500,7 @@ class FacilitatorWeb3Signer:
             {
                 "from": self._account.address,
                 "nonce": self._reserve_nonce(),
-                "gas": _DEFAULT_TX_GAS_LIMIT,
+                "gas": gas if gas is not None else _DEFAULT_TX_GAS_LIMIT,
                 "gasPrice": self._w3.eth.gas_price,
             }
         )

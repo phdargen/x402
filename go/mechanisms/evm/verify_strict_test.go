@@ -34,7 +34,7 @@ func (m *mockStrictSigner) GetBalance(_ context.Context, _, _ string) (*big.Int,
 	return big.NewInt(0), nil
 }
 func (m *mockStrictSigner) GetChainID(_ context.Context) (*big.Int, error) { return big.NewInt(1), nil }
-func (m *mockStrictSigner) WriteContract(_ context.Context, _ string, _ []byte, _ string, _ []byte, _ ...interface{}) (string, error) {
+func (m *mockStrictSigner) WriteContract(_ context.Context, _ string, _ []byte, _ string, _ []byte, _ *uint64, _ ...interface{}) (string, error) {
 	return "", nil
 }
 func (m *mockStrictSigner) SendTransaction(_ context.Context, _ string, _ []byte) (string, error) {

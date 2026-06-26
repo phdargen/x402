@@ -211,6 +211,7 @@ func ExecuteRefundWithSignature(
 			batchsettlement.BatchSettlementMulticallABI,
 			"multicall",
 			dataSuffix,
+			nil,
 			[][]byte{claimCalldata, refundCalldata},
 		)
 		if err != nil {
@@ -261,6 +262,7 @@ func ExecuteRefundWithSignature(
 		batchsettlement.BatchSettlementRefundWithSignatureABI,
 		"refundWithSignature",
 		dataSuffix,
+		nil,
 		configTuple,
 		refundAmount,
 		nonce,

@@ -14,6 +14,12 @@ export const ERC3009_DEPOSIT_COLLECTOR_ADDRESS =
 export const PERMIT2_DEPOSIT_COLLECTOR_ADDRESS =
   "0x4020425FAf3B746C082C2f942b4E5159887B0005" as const;
 
+/**
+ * Explicit gas limit because `settle` gas estimation can hit the cheap early-return path on stale RPC state
+ *
+ */
+export const SETTLE_GAS_LIMIT = 120_000n;
+
 /** Minimum withdraw delay in seconds (15 minutes), matching the onchain constant. */
 export const MIN_WITHDRAW_DELAY = 900;
 

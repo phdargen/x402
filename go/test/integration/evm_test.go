@@ -189,6 +189,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	abiBytes []byte,
 	functionName string,
 	dataSuffix []byte,
+	gas *uint64,
 	args ...interface{},
 ) (string, error) {
 	contractABI, err := abi.JSON(strings.NewReader(string(abiBytes)))
@@ -203,7 +204,21 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	data = evm.AppendDataSuffix(data, dataSuffix)
 
 	to := common.HexToAddress(contractAddress)
-	return s.sendTxWithRetry(ctx, to, data, 300000)
+	gasLimit := uint64(0)
+	if gas != nil {
+		gasLimit = *gas
+	} else {
+		gasLimit, err = s.ethClient.EstimateGas(ctx, ethereum.CallMsg{
+			From:  s.address,
+			To:    &to,
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to estimate gas: %w", err)
+		}
+	}
+	return s.sendTxWithRetry(ctx, to, data, gasLimit)
 }
 
 // sendTxWithRetry sends a transaction, retrying on nonce conflicts from back-to-back tests.
@@ -886,6 +901,7 @@ func (s *permit2FacilitatorEvmSigner) WriteContract(
 	abiBytes []byte,
 	functionName string,
 	dataSuffix []byte,
+	gas *uint64,
 	args ...interface{},
 ) (string, error) {
 	contractABI, err := abi.JSON(strings.NewReader(string(abiBytes)))
@@ -900,7 +916,21 @@ func (s *permit2FacilitatorEvmSigner) WriteContract(
 	data = evm.AppendDataSuffix(data, dataSuffix)
 
 	to := common.HexToAddress(contractAddress)
-	return s.sendTxWithRetry(ctx, to, data, 300000)
+	gasLimit := uint64(0)
+	if gas != nil {
+		gasLimit = *gas
+	} else {
+		gasLimit, err = s.ethClient.EstimateGas(ctx, ethereum.CallMsg{
+			From:  s.address,
+			To:    &to,
+			Value: big.NewInt(0),
+			Data:  data,
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to estimate gas: %w", err)
+		}
+	}
+	return s.sendTxWithRetry(ctx, to, data, gasLimit)
 }
 
 func (s *permit2FacilitatorEvmSigner) SendTransaction(

@@ -46,7 +46,7 @@ func (f *fakeFacilitatorSigner) VerifyTypedData(_ context.Context, address strin
 	}
 	return false, errors.New("no rpc")
 }
-func (f *fakeFacilitatorSigner) WriteContract(_ context.Context, _ string, _ []byte, functionName string, _ []byte, args ...interface{}) (string, error) {
+func (f *fakeFacilitatorSigner) WriteContract(_ context.Context, _ string, _ []byte, functionName string, _ []byte, _ *uint64, args ...interface{}) (string, error) {
 	f.writeCalls++
 	if f.writeContract != nil {
 		return f.writeContract(functionName, args...)

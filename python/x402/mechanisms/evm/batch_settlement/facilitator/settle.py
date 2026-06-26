@@ -13,7 +13,7 @@ from .....schemas import PaymentRequirements, SettleResponse
 from ...constants import TX_STATUS_SUCCESS
 from ...signer import FacilitatorEvmSigner
 from ..abi import BATCH_SETTLEMENT_ABI
-from ..constants import BATCH_SETTLEMENT_ADDRESS
+from ..constants import BATCH_SETTLEMENT_ADDRESS, SETTLE_GAS_LIMIT
 from ..errors import (
     ERR_NOTHING_TO_SETTLE,
     ERR_RPC_READ_FAILED,
@@ -72,7 +72,9 @@ def execute_settle(
         )
 
     try:
-        tx = signer.write_contract(contract_addr, BATCH_SETTLEMENT_ABI, "settle", receiver, token)
+        tx = signer.write_contract(
+            contract_addr, BATCH_SETTLEMENT_ABI, "settle", receiver, token, gas=SETTLE_GAS_LIMIT
+        )
         receipt = signer.wait_for_transaction_receipt(tx)
         if receipt.status != TX_STATUS_SUCCESS:
             return SettleResponse(
