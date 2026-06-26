@@ -11828,7 +11828,7 @@ snapshots:
     dependencies:
       '@noble/ciphers': 2.1.1
       '@noble/curves': 2.0.1
-      '@noble/hashes': 2.0.1
+      '@noble/hashes': 2.2.0
       ajv: 8.17.1
       algo-msgpack-with-bigint: 2.1.1
       bn.js: 5.2.2
