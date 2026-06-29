@@ -698,6 +698,77 @@ describe("ExactHedera facilitator scheme", () => {
     });
   });
 
+  describe("multi-sender payloads", () => {
+    async function buildMultiSenderPayload(): Promise<PaymentPayload> {
+      const tx = new TransferTransaction();
+      const tokenId = TokenId.fromString("0.0.6001");
+      tx.addTokenTransfer(tokenId, AccountId.fromString("0.0.9001"), "-600");
+      tx.addTokenTransfer(tokenId, AccountId.fromString("0.0.9002"), "-400");
+      tx.addTokenTransfer(tokenId, AccountId.fromString("0.0.7001"), "1000");
+      tx.setTransactionId(TransactionId.generate(AccountId.fromString("0.0.5001")));
+      await tx.freezeWith(Client.forTestnet());
+      return {
+        ...basePayload,
+        payload: { transaction: Buffer.from(tx.toBytes()).toString("base64") },
+      };
+    }
+
+    it("verifies the signature of every debited sender", async () => {
+      const signer = createSigner();
+      const scheme = new ExactHederaScheme(signer);
+
+      const result = await scheme.verify(await buildMultiSenderPayload(), baseRequirements);
+      expect(result.isValid).toBe(true);
+      expect(signer.verifyPayerSignature).toHaveBeenCalledTimes(2);
+      expect(signer.verifyPayerSignature).toHaveBeenCalledWith(
+        expect.objectContaining({ payer: "0.0.9001" }),
+      );
+      expect(signer.verifyPayerSignature).toHaveBeenCalledWith(
+        expect.objectContaining({ payer: "0.0.9002" }),
+      );
+    });
+
+    it("preflights each sender with their own debited amount", async () => {
+      const signer = createSigner();
+      const scheme = new ExactHederaScheme(signer);
+
+      const result = await scheme.verify(await buildMultiSenderPayload(), baseRequirements);
+      expect(result.isValid).toBe(true);
+      expect(signer.preflightTransfer).toHaveBeenCalledWith({
+        payer: "0.0.9001",
+        payTo: "0.0.7001",
+        asset: "0.0.6001",
+        amount: "600",
+        network: "hedera:testnet",
+      });
+      expect(signer.preflightTransfer).toHaveBeenCalledWith({
+        payer: "0.0.9002",
+        payTo: "0.0.7001",
+        asset: "0.0.6001",
+        amount: "400",
+        network: "hedera:testnet",
+      });
+    });
+
+    it("fails verify when a second sender did not sign", async () => {
+      const signer = {
+        ...createSigner(),
+        verifyPayerSignature: vi.fn(async ({ payer }: { payer: string }) =>
+          payer === "0.0.9002"
+            ? { ok: false, reason: "signature_invalid", message: `payer ${payer} did not sign` }
+            : { ok: true },
+        ),
+      };
+      const scheme = new ExactHederaScheme(signer);
+
+      const result = await scheme.verify(await buildMultiSenderPayload(), baseRequirements);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_exact_hedera_payload_signature_invalid");
+      expect(result.invalidMessage).toContain("0.0.9002");
+      expect(signer.preflightTransfer).not.toHaveBeenCalled();
+    });
+  });
+
   describe("settle on-chain receipt handling", () => {
     async function buildValidPayload(): Promise<PaymentPayload> {
       return {

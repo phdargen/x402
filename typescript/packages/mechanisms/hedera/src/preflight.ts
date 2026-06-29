@@ -82,7 +82,9 @@ export function createHederaPreflightTransfer(
     const required = BigInt(amount);
 
     if (isHbarAsset(asset)) {
-      const account = await fetchJson<MirrorAccount>(`${baseUrl}/api/v1/accounts/${payer}`);
+      const account = await fetchJson<MirrorAccount>(
+        `${baseUrl}/api/v1/accounts/${encodeURIComponent(payer)}`,
+      );
       const held = BigInt(account.balance.balance);
       if (held < required) {
         return {
@@ -95,7 +97,7 @@ export function createHederaPreflightTransfer(
     }
 
     const payerTokens = await fetchJson<MirrorTokensResponse>(
-      `${baseUrl}/api/v1/accounts/${payer}/tokens?token.id=${asset}`,
+      `${baseUrl}/api/v1/accounts/${encodeURIComponent(payer)}/tokens?token.id=${encodeURIComponent(asset)}`,
     );
     const held = payerTokens.tokens[0] ? BigInt(payerTokens.tokens[0].balance) : 0n;
     if (held < required) {
@@ -123,7 +125,7 @@ export function createHederaPreflightTransfer(
  * @param network - CAIP-2 network identifier
  * @returns Mirror Node REST API base URL
  */
-function mirrorNodeUrlForNetwork(network: string): string {
+export function mirrorNodeUrlForNetwork(network: string): string {
   if (network === HEDERA_MAINNET_CAIP2) {
     return HEDERA_MAINNET_MIRROR_NODE_URL;
   }
@@ -144,13 +146,15 @@ function mirrorNodeUrlForNetwork(network: string): string {
  */
 async function isPayToAssociated(baseUrl: string, payTo: string, asset: string): Promise<boolean> {
   const direct = await fetchJson<MirrorTokensResponse>(
-    `${baseUrl}/api/v1/accounts/${payTo}/tokens?token.id=${asset}`,
+    `${baseUrl}/api/v1/accounts/${encodeURIComponent(payTo)}/tokens?token.id=${encodeURIComponent(asset)}`,
   );
   if (direct.tokens.length > 0) {
     return true;
   }
 
-  const account = await fetchJson<MirrorAccount>(`${baseUrl}/api/v1/accounts/${payTo}`);
+  const account = await fetchJson<MirrorAccount>(
+    `${baseUrl}/api/v1/accounts/${encodeURIComponent(payTo)}`,
+  );
   const maxAuto = account.max_automatic_token_associations;
   if (maxAuto === -1) {
     return true;
@@ -179,7 +183,7 @@ async function isPayToAssociated(baseUrl: string, payTo: string, asset: string):
  * @param url - Fully-qualified Mirror Node URL
  * @returns Parsed JSON body
  */
-async function fetchJson<T>(url: string): Promise<T> {
+export async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Mirror Node request failed with status ${response.status}`);

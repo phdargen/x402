@@ -232,7 +232,7 @@ if (process.env.HEDERA_ACCOUNT_ID && process.env.HEDERA_PRIVATE_KEY) {
       buildHederaClient,
       hederaKey,
     ),
-    verifyPayerSignature: createHederaVerifyPayerSignature(buildHederaClient),
+    verifyPayerSignature: createHederaVerifyPayerSignature(),
     preflightTransfer: createHederaPreflightTransfer(),
   });
   console.info(`Hedera Facilitator account: ${hederaAccountId}`);

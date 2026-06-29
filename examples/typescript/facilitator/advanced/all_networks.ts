@@ -235,7 +235,7 @@ if (hederaAccountId && hederaPrivateKey) {
       buildHederaClient,
       hederaKey,
     ),
-    verifyPayerSignature: createHederaVerifyPayerSignature(buildHederaClient),
+    verifyPayerSignature: createHederaVerifyPayerSignature(),
     preflightTransfer: createHederaPreflightTransfer(),
   });
   facilitator.register(HEDERA_NETWORK, new ExactHederaScheme(hederaSigner));

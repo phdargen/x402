@@ -121,7 +121,7 @@ describe("Hedera integration", () => {
         feePayerPrivateKey,
       ),
       resolveAccount: async () => ({ exists: true, isAlias: false }),
-      verifyPayerSignature: createHederaVerifyPayerSignature(buildClient),
+      verifyPayerSignature: createHederaVerifyPayerSignature(),
       preflightTransfer: createHederaPreflightTransfer(),
     };
   }

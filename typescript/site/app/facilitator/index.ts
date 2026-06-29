@@ -222,7 +222,7 @@ async function createFacilitator(): Promise<x402Facilitator> {
         buildHederaClient,
         hederaFeePayerKey,
       ),
-      verifyPayerSignature: createHederaVerifyPayerSignature(buildHederaClient),
+      verifyPayerSignature: createHederaVerifyPayerSignature(),
       preflightTransfer: createHederaPreflightTransfer(),
     });
 

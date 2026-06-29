@@ -238,6 +238,22 @@ describe("createHederaPreflightTransfer (Mirror Node)", () => {
     expect(fetchFn).toHaveBeenCalledWith(`${BASE}/api/v1/accounts/${PAY_TO}/tokens?page=2`);
   });
 
+  it("encodes interpolated path segments before hitting the Mirror Node", async () => {
+    const weirdAsset = "0.0.6001 evil/path";
+    const fetchFn = mockFetch(url =>
+      url.includes("/tokens")
+        ? {
+            tokens: [{ token_id: weirdAsset, balance: 5000, automatic_association: false }],
+            links: { next: null },
+          }
+        : undefined,
+    );
+    await preflight({ asset: weirdAsset, amount: "1000" });
+    const requestedUrl = String(fetchFn.mock.calls[0][0]);
+    expect(requestedUrl).toContain(`token.id=${encodeURIComponent(weirdAsset)}`);
+    expect(requestedUrl).not.toContain(" ");
+  });
+
   it("throws when the Mirror Node returns a non-2xx status", async () => {
     mockFetch(() => undefined);
     await expect(preflight({ asset: HBAR, amount: "1000" })).rejects.toThrow(
