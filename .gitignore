@@ -7,7 +7,6 @@ dist/
 .turbo/
 .next/
 next-env.d.ts
-proxy
 .env
 __pycache__/
 **/.DS_Store
@@ -33,6 +32,7 @@ e2e/servers/mcp-go/mcp-go
 e2e/servers/mcp-go/mcp-server
 e2e/servers/nethttp/nethttp
 e2e/legacy/servers/gin/gin
+go/legacy/bin/proxy
 
 # Example build artifacts
 examples/go/servers/upto/upto
