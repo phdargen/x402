@@ -4,6 +4,8 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+packageExtensionsChecksum: sha256-9aEVigHYMKY79/D4KG0UAC0zjd2npsOZ16El58+Uvfk=
+
 importers:
 
   .:
@@ -11,6 +13,9 @@ importers:
       '@concordium/web-sdk':
         specifier: ^12.0.0
         version: 12.0.2(@protobuf-ts/runtime-rpc@2.11.1)(cbor2@1.12.0)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.15.1
+        version: 1.25.3(hono@4.10.2)(zod@4.1.12)
       '@scure/base':
         specifier: ^1.2.6
         version: 1.2.6
@@ -1483,7 +1488,7 @@ importers:
         specifier: ^0.18.1
         version: 0.18.1
       '@x402/core':
-        specifier: workspace:^
+        specifier: workspace:~
         version: link:../../core
     devDependencies:
       '@eslint/js':
@@ -13745,6 +13750,7 @@ snapshots:
     dependencies:
       '@keetanetwork/currency-info': 1.2.5
       '@keetanetwork/keetanet-client': 0.18.1
+      tslib: 2.8.1
       typia: 9.5.0(@types/node@22.16.0)(typescript@5.8.3)
     transitivePeerDependencies:
       - '@types/node'

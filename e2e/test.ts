@@ -18,6 +18,7 @@ import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, ResourceLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
 import { waitForHealth } from './src/health';
+import { probeMcpReady } from './src/mcpHealth';
 import { createPortAllocator } from './src/ports';
 
 /**
@@ -439,14 +440,30 @@ const parsedArgs = parseArgs();
 
 async function startServer(
   server: any,
-  serverConfig: ServerConfig
+  serverConfig: ServerConfig,
+  options?: { transport?: string },
 ): Promise<boolean> {
   verboseLog(`  🚀 Starting server on port ${serverConfig.port}...`);
   await server.start(serverConfig);
 
-  return waitForHealth(
+  const healthy = await waitForHealth(
     () => server.health(),
     { initialDelayMs: 250, label: 'Server' },
+  );
+
+  if (!healthy) {
+    return false;
+  }
+
+  if (options?.transport !== 'mcp') {
+    return true;
+  }
+
+  // Probe the real protocol (SSE connect + initialize handshake) before handing off to the first real test
+  // request, to avoid racing a freshly booted server's session warm-up.
+  return waitForHealth(
+    async () => ({ success: await probeMcpReady(server.getUrl()) }),
+    { intervalMs: 500, maxAttempts: 10, label: 'MCP session' },
   );
 }
 
@@ -1552,7 +1569,7 @@ async function runTest() {
         : {}),
     };
 
-    const started = await startServer(serverProxy, serverConfig);
+    const started = await startServer(serverProxy, serverConfig, { transport: server.config.transport });
     if (!started) {
       cLog.log(`❌ Failed to start server ${serverName}`);
       return scenarios.map(scenario => ({

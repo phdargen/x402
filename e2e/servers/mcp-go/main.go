@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -217,11 +218,21 @@ func main() {
 	// Mount SSE handler as catch-all
 	mux.Handle("/", sseHandler)
 
+	// Bind the socket first and only then print the "listening" log, so the
+	// e2e harness (which treats this log line as the readiness signal)
+	// doesn't consider the server ready before it can actually accept
+	// connections.
+	listener, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
+		os.Exit(1)
+	}
+
 	fmt.Printf("Server listening on port %s\n", port)
 	fmt.Printf("SSE endpoint: http://localhost:%s/sse\n", port)
 	fmt.Printf("Health: http://localhost:%s/health\n", port)
 
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.Serve(listener, mux); err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
 		os.Exit(1)
 	}

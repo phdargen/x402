@@ -213,16 +213,23 @@ async function main(): Promise<void> {
 
   app.get("/sse", async (req, res) => {
     const transport = new SSEServerTransport("/messages", res);
-    const sessionId = crypto.randomUUID();
-    transports.set(sessionId, transport);
+    // Key by the transport's own session id (the same id it sends the client
+    // via the `endpoint` SSE event and expects back as `?sessionId=` on
+    // POST /messages), not an unrelated locally generated id. This lets
+    // /messages route each request to its actual session instead of
+    // guessing "the first one" -- which would misroute if more than one
+    // SSE session is ever open at once (e.g. a readiness probe connection
+    // that hasn't fully torn down yet when a new client connects).
+    transports.set(transport.sessionId, transport);
     res.on("close", () => {
-      transports.delete(sessionId);
+      transports.delete(transport.sessionId);
     });
     await mcpServer.connect(transport);
   });
 
   app.post("/messages", express.json(), async (req, res) => {
-    const transport = Array.from(transports.values())[0];
+    const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+    const transport = sessionId ? transports.get(sessionId) : Array.from(transports.values())[0];
     if (!transport) {
       res.status(400).json({ error: "No active SSE connection" });
       return;

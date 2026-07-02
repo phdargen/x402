@@ -159,6 +159,18 @@ def main() -> None:
         threading.Thread(target=shutdown, daemon=True).start()
         return response
 
+    async def on_startup() -> None:
+        # Emitted from the ASGI startup hook (not before uvicorn.run()) so the
+        # "Server listening" log only appears once the socket is actually
+        # bound and the app is ready to accept requests.
+        print(f"Server listening on port {PORT}", flush=True)
+        print(f"SSE endpoint: http://localhost:{PORT}/sse", flush=True)
+        print(f"Health: http://localhost:{PORT}/health", flush=True)
+        if EVM_PAYEE_ADDRESS:
+            print(f"EVM payments enabled on {EVM_NETWORK}", flush=True)
+        if TVM_PAYEE_ADDRESS:
+            print(f"TVM payments enabled on {TVM_NETWORK}", flush=True)
+
     # Create MCP SSE app
     mcp_app = mcp.sse_app()
 
@@ -168,18 +180,11 @@ def main() -> None:
             Route("/health", health, methods=["GET"]),
             Route("/close", close, methods=["POST"]),
         ],
+        on_startup=[on_startup],
     )
 
     # Mount MCP SSE app at root so /sse and /messages work
     app.mount("/", mcp_app)
-
-    print(f"Server listening on port {PORT}")
-    print(f"SSE endpoint: http://localhost:{PORT}/sse")
-    print(f"Health: http://localhost:{PORT}/health")
-    if EVM_PAYEE_ADDRESS:
-        print(f"EVM payments enabled on {EVM_NETWORK}")
-    if TVM_PAYEE_ADDRESS:
-        print(f"TVM payments enabled on {TVM_NETWORK}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
 
