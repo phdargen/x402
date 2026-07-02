@@ -4,6 +4,7 @@ import {
   AccountId,
   Client,
   Hbar,
+  Key,
   KeyList,
   PrivateKey,
   TokenId,
@@ -389,6 +390,26 @@ describe("createHederaVerifyPayerSignature", () => {
     const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("signature_invalid");
+  });
+
+  it("fails closed with a diagnosable reason if the SDK's internal Key._fromProtobufKey is unavailable", async () => {
+    const key1 = PrivateKey.generateED25519();
+    const key2 = PrivateKey.generateED25519();
+    const transaction = await buildTransaction([key1, key2]);
+    const keyList = new KeyList([key1.publicKey, key2.publicKey], 2);
+    mockMirrorKey({ _type: "ProtobufEncoded", key: keyListToProtobufHex(keyList) });
+    const verify = createHederaVerifyPayerSignature({ mirrorNodeUrl: "https://mirror.test" });
+
+    const original = (Key as unknown as { _fromProtobufKey?: unknown })._fromProtobufKey;
+    (Key as unknown as { _fromProtobufKey?: unknown })._fromProtobufKey = undefined;
+    try {
+      const result = await verify({ payer: PAYER, transaction, network: "hedera:testnet" });
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("signature_unverifiable");
+      expect(result.message).toContain("_fromProtobufKey");
+    } finally {
+      (Key as unknown as { _fromProtobufKey?: unknown })._fromProtobufKey = original;
+    }
   });
 
   it("fails when the Mirror Node returns no key", async () => {

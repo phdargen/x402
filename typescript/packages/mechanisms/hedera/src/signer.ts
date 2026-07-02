@@ -1,4 +1,7 @@
 import type { PaymentRequirements } from "@x402/core/types";
+// `@hiero-ledger/proto` must stay pinned in lockstep with `@hiero-ledger/sdk`
+// `parseMirrorKey` below relies on the SDK's internal `Key._fromProtobufKey`,
+// so re-check its availability whenever either dependency is bumped.
 import { proto } from "@hiero-ledger/proto";
 import {
   AccountId,
@@ -295,6 +298,13 @@ type MirrorAccountKey = {
 };
 
 /**
+ * Thrown when the Hedera SDK no longer exposes the internal
+ * `Key._fromProtobufKey` that {@link parseMirrorKey} relies on to rebuild
+ * KeyList/threshold keys, e.g. after an SDK upgrade renames or removes it.
+ */
+class ProtobufKeyReconstructionError extends Error {}
+
+/**
  * Converts a Mirror Node `key` field into a Hedera SDK `Key`.
  *
  * Simple keys are parsed directly; threshold / KeyList accounts arrive as a
@@ -304,6 +314,8 @@ type MirrorAccountKey = {
  *
  * @param mirrorKey - The `key` object from the Mirror Node account response
  * @returns Parsed SDK `Key`, or `null` when the key is missing or unrecognized
+ * @throws {ProtobufKeyReconstructionError} If the SDK no longer exposes
+ * `Key._fromProtobufKey`
  */
 function parseMirrorKey(mirrorKey: MirrorAccountKey["key"]): Key | null {
   if (!mirrorKey || typeof mirrorKey.key !== "string" || mirrorKey.key.length === 0) {
@@ -318,9 +330,17 @@ function parseMirrorKey(mirrorKey: MirrorAccountKey["key"]): Key | null {
       const decoded = proto.Key.decode(Buffer.from(mirrorKey.key, "hex"));
       // `_fromProtobufKey` is an internal static on the SDK `Key` base class; it
       // is the only way to rebuild a KeyList/threshold `Key` from its protobuf.
-      return (Key as unknown as { _fromProtobufKey(key: proto.IKey): Key })._fromProtobufKey(
-        decoded,
-      );
+      // Guarded explicitly so a future SDK rename/removal surfaces a
+      // diagnosable error instead of silently failing signature checks.
+      const fromProtobufKey = (Key as unknown as { _fromProtobufKey?: (key: proto.IKey) => Key })
+        ._fromProtobufKey;
+      if (typeof fromProtobufKey !== "function") {
+        throw new ProtobufKeyReconstructionError(
+          "@hiero-ledger/sdk Key._fromProtobufKey is unavailable; check the " +
+            "@hiero-ledger/sdk / @hiero-ledger/proto version pins in package.json",
+        );
+      }
+      return fromProtobufKey(decoded);
     }
     default:
       return null;
@@ -349,7 +369,19 @@ export function createHederaVerifyPayerSignature(
     const account = await fetchJson<MirrorAccountKey>(
       `${baseUrl}/api/v1/accounts/${encodeURIComponent(payer)}`,
     );
-    const key = parseMirrorKey(account.key);
+    let key: Key | null;
+    try {
+      key = parseMirrorKey(account.key);
+    } catch (error) {
+      if (error instanceof ProtobufKeyReconstructionError) {
+        return {
+          ok: false,
+          reason: "signature_unverifiable",
+          message: error.message,
+        };
+      }
+      throw error;
+    }
     if (!key) {
       return {
         ok: false,
