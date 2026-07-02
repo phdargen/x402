@@ -1,8 +1,9 @@
 name: Verified Commits
 
 on:
-  pull_request_target:
-    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows: ["Pull Request Labeler"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -12,6 +13,9 @@ permissions:
 
 jobs:
   check-verified-commits:
+    if: >-
+      github.event.workflow_run.event == 'pull_request_target' &&
+      github.event.workflow_run.conclusion != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - name: Ensure commits are verified
@@ -19,7 +23,7 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const pullRequest = context.payload.pull_request;
+            const workflowRun = context.payload.workflow_run;
             const marker = '<!-- verified-commits-required -->';
             const unverifiedLabel = 'unverified';
             const ignoreNotFound = error => {
@@ -27,6 +31,40 @@ jobs:
                 throw error;
               }
             };
+
+            const resolvePullRequest = async () => {
+              const linkedPullRequest = workflowRun.pull_requests?.[0];
+              if (linkedPullRequest?.number) {
+                const { data } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: linkedPullRequest.number
+                });
+                return data;
+              }
+
+              // Fork PRs do not populate workflow_run.pull_requests.
+              const { data: pullRequests } = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100
+              });
+              const pullRequest = pullRequests.find(
+                candidate => candidate.head.sha === workflowRun.head_sha
+              );
+              if (!pullRequest) {
+                core.warning('Could not resolve pull request for workflow run, skipping.');
+                return null;
+              }
+
+              return pullRequest;
+            };
+
+            const pullRequest = await resolvePullRequest();
+            if (!pullRequest) {
+              return;
+            }
 
             const commits = await github.paginate(github.rest.pulls.listCommits, {
               owner,
@@ -115,4 +153,3 @@ jobs:
             }
 
             core.setFailed('Pull request contains unverified commits.');
-            
