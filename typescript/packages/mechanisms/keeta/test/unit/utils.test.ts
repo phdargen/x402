@@ -1,30 +1,12 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { getUsdcAddress, networkToKeetaNetwork, validateTokenAsset } from "../../src/utils";
 import { KEETA_MAINNET_CAIP2, KEETA_TESTNET_CAIP2 } from "../../src/constants";
-import { getNewKeetaAccount } from "./utils";
+import { getNewKeetaAccount, USDC_TESTNET_ADDRESS } from "./utils";
 
 const KEETA_ACCOUNT = getNewKeetaAccount().publicKeyString.toString();
 
 describe("Keeta utilities", () => {
-  let usdcMainnetAddress: string;
-  let usdcTestnetAddress: string;
-
-  beforeAll(async () => {
-    [usdcTestnetAddress, usdcMainnetAddress] = await Promise.all([
-      await getUsdcAddress(KEETA_TESTNET_CAIP2),
-      await getUsdcAddress(KEETA_MAINNET_CAIP2),
-    ]);
-  });
-
   describe("getUsdcAddress", () => {
-    it("returns mainnet USDC address for mainnet network", async () => {
-      await expect(getUsdcAddress(KEETA_MAINNET_CAIP2)).resolves.toBe(usdcMainnetAddress);
-    });
-
-    it("returns testnet USDC address for testnet network", async () => {
-      await expect(getUsdcAddress(KEETA_TESTNET_CAIP2)).resolves.toBe(usdcTestnetAddress);
-    });
-
     it("throws for unknown network", async () => {
       await expect(getUsdcAddress("keeta:99999")).rejects.toThrow(
         "No USDC address configured for network",
@@ -58,7 +40,7 @@ describe("Keeta utilities", () => {
 
   describe("validateTokenAsset", () => {
     it("returns true for valid token address", () => {
-      expect(validateTokenAsset(usdcTestnetAddress)).toBe(true);
+      expect(validateTokenAsset(USDC_TESTNET_ADDRESS)).toBe(true);
     });
 
     it("returns false when address is not a token type", () => {

@@ -26,7 +26,7 @@ Checklist for adding a new payment mechanism / scheme. Follow the [general contr
 
 ### Unit tests
 
-Pure-logic tests that run offline. Add them with comparable coverage to the EVM reference under **TS** `typescript/packages/mechanisms/<chain>/test/unit/`; **Go** `go/mechanisms/<chain>/` or **Py** `python/x402/tests/unit/mechanisms/<chain>/`. Run them and confirm all pass.
+Pure-logic tests that run offline with no live RPC or network calls. Add them with comparable coverage to the EVM reference under **TS** `typescript/packages/mechanisms/<chain>/test/unit/`; **Go** `go/mechanisms/<chain>/` or **Py** `python/x402/tests/unit/mechanisms/<chain>/`. Run them and confirm all pass.
 
 ```bash
 # typescript/

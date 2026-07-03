@@ -1,19 +1,23 @@
-import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ExactKeetaScheme } from "../../src/exact/server/scheme";
 import { KEETA_TESTNET_CAIP2 } from "../../src/constants";
 import type { Network, PaymentRequirements } from "@x402/core/types";
-import { getNewKeetaAccount } from "./utils";
-import { getUsdcAddress } from "../../src/utils";
+import { getNewKeetaAccount, USDC_TESTNET_ADDRESS } from "./utils";
+
+vi.mock("../../src/utils", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../src/utils")>();
+  const { mockGetUsdcAddress } = await import("./utils");
+  return {
+    ...actual,
+    getUsdcAddress: vi.fn(mockGetUsdcAddress),
+  };
+});
 
 const KEETA_ACCOUNT = getNewKeetaAccount().publicKeyString.toString();
+const usdcTestnetAddress = USDC_TESTNET_ADDRESS;
 
 describe("ExactKeetaServer", () => {
   let server: ExactKeetaScheme;
-  let usdcTestnetAddress: string;
-
-  beforeAll(async () => {
-    usdcTestnetAddress = await getUsdcAddress(KEETA_TESTNET_CAIP2);
-  });
 
   beforeEach(() => {
     server = new ExactKeetaScheme();

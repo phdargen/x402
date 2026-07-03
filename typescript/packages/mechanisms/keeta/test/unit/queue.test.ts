@@ -34,24 +34,16 @@ async function buildSignedBlock(
 }
 
 function createMockSigner(
-  signerAccount: InstanceType<typeof KeetaNet.lib.Account<KeyPairKeyAlgorithm>>,
   submitBlock: FacilitatorKeetaSigner["submitBlock"],
 ): FacilitatorKeetaSigner {
-  let client: KeetaNet.UserClient | undefined;
-  const destroy = () => {
-    if (client) return client.destroy();
-    return Promise.resolve();
-  };
+  const mockClient = { destroy: vi.fn().mockResolvedValue(undefined) };
 
   return {
     getAddresses: () => [FEE_PAYER_1, FEE_PAYER_2],
-    getKeetaUserClient: (_feePayer: string, _network: Network) => {
-      if (!client) client = KeetaNet.UserClient.fromNetwork("test", signerAccount);
-      return client;
-    },
+    getKeetaUserClient: (_feePayer: string, _network: Network) => mockClient,
     submitBlock,
-    destroy,
-    [Symbol.asyncDispose]: () => destroy(),
+    destroy: () => mockClient.destroy(),
+    [Symbol.asyncDispose]: () => mockClient.destroy(),
   };
 }
 
@@ -91,7 +83,7 @@ describe("Keeta SettlementQueue", () => {
 
   beforeEach(() => {
     mockSubmitBlock = vi.fn().mockResolvedValue(hashA);
-    queue = new SettlementQueue(createMockSigner(PAYER_ACCOUNT, mockSubmitBlock));
+    queue = new SettlementQueue(createMockSigner(mockSubmitBlock));
   });
 
   describe("basic enqueue/resolve", () => {

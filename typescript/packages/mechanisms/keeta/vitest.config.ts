@@ -5,6 +5,7 @@ import tsconfigPaths from "vite-tsconfig-paths";
 export default defineConfig(({ mode }) => ({
   test: {
     env: loadEnv(mode, process.cwd(), ""),
+    setupFiles: ["./test/unit/utils.ts"],
     exclude: [
       "**/node_modules/**",
       "**/dist/**",

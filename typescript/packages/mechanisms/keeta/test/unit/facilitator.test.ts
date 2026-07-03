@@ -7,7 +7,17 @@ import { getNewKeetaAccount } from "./utils";
 import { ExactKeetaScheme } from "../../src/exact/facilitator/scheme";
 import { KEETA_MAINNET_CAIP2, KEETA_TESTNET_CAIP2 } from "../../src/constants";
 import type { ExactKeetaPayload } from "../../src/types";
-import { getUsdcAddress, KTA_TESTNET_ADDRESS } from "../../src/utils";
+import { KTA_TESTNET_ADDRESS } from "../../src/utils";
+import { USDC_TESTNET_ADDRESS } from "./utils";
+
+vi.mock("../../src/utils", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../src/utils")>();
+  const { mockGetUsdcAddress } = await import("./utils");
+  return {
+    ...actual,
+    getUsdcAddress: vi.fn(mockGetUsdcAddress),
+  };
+});
 
 const TESTNET_NETWORK_ID = BigInt(KEETA_TESTNET_CAIP2.split(":")[1]);
 const MAINNET_NETWORK_ID = BigInt(KEETA_MAINNET_CAIP2.split(":")[1]);
@@ -47,7 +57,7 @@ describe("ExactKeetaFacilitator", () => {
   let payerAccount: InstanceType<typeof KeetaNet.lib.Account<KeyPairKeyAlgorithm>>;
   let recipientAddress: string;
   let payerOpeningHashHex: string;
-  let usdcTestnetAddress: string;
+  const usdcTestnetAddress = USDC_TESTNET_ADDRESS;
 
   // Different encoded blocks for specific test scenarios
   let sendOp: InstanceType<typeof KeetaNet.lib.Block.Operation.SEND>;
@@ -116,8 +126,6 @@ describe("ExactKeetaFacilitator", () => {
 
     const recipientAccount = getNewKeetaAccount();
     recipientAddress = recipientAccount.publicKeyString.toString();
-
-    usdcTestnetAddress = await getUsdcAddress(KEETA_TESTNET_CAIP2);
 
     delegateAccount = getNewKeetaAccount();
 
@@ -398,12 +406,10 @@ describe("ExactKeetaFacilitator", () => {
 
   describe("verify - token/asset check", () => {
     it("rejects when requirements.asset does not match the block token", async () => {
-      const usdcAddress = await getUsdcAddress(KEETA_TESTNET_CAIP2);
-
       // Block pays KTA_TESTNET_ADDRESS; requirements ask for USDC_TESTNET_ADDRESS
       const result = await facilitator.verify(
         createValidPayload(),
-        createValidRequirements({ asset: usdcAddress }),
+        createValidRequirements({ asset: usdcTestnetAddress }),
       );
 
       expect(result.isValid).toBe(false);
