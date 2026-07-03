@@ -5,7 +5,7 @@ import type {
   Network,
   SchemeNetworkClient,
 } from "@x402/core/types";
-import { isPaymentRequired } from "@x402/core/schemas";
+import { parsePaymentRequired } from "@x402/core/schemas";
 import { x402Client } from "@x402/core/client";
 import type { x402ClientConfig } from "@x402/core/client";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -624,11 +624,11 @@ export class x402MCPClient {
     const paymentRequired = this.extractPaymentRequiredFromResult(result);
     const recoveryResult = paymentPayload.accepted
       ? await this._paymentClient.handlePaymentResponse({
-          paymentPayload,
-          requirements: paymentPayload.accepted,
-          ...(paymentResponse ? { settleResponse: paymentResponse } : {}),
-          ...(paymentRequired ? { paymentRequired } : {}),
-        })
+        paymentPayload,
+        requirements: paymentPayload.accepted,
+        ...(paymentResponse ? { settleResponse: paymentResponse } : {}),
+        ...(paymentRequired ? { paymentRequired } : {}),
+      })
       : undefined;
 
     // A paid attempt can return a corrective 402. Scheme hooks recover local
@@ -809,11 +809,9 @@ export class x402MCPClient {
    * @returns PaymentRequired if found, null otherwise
    */
   private extractPaymentRequiredFromObject(obj: Record<string, unknown>): PaymentRequired | null {
-    if (isPaymentRequired(obj)) {
-      return obj as PaymentRequired;
-    }
-
-    return null;
+    // parsePaymentRequired yields the schema (V1 | V2) union; cast to the transport PaymentRequired type
+    const result = parsePaymentRequired(obj);
+    return result.success ? (result.data as PaymentRequired) : null;
   }
 
   /**
@@ -832,7 +830,9 @@ export class x402MCPClient {
       return null;
     }
 
-    return "x402" in error.data ? error.data.x402 : error.data;
+    const data = "x402" in error.data ? error.data.x402 : error.data;
+    const result = parsePaymentRequired(data);
+    return result.success ? (result.data as PaymentRequired) : null;
   }
 
 }

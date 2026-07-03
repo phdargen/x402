@@ -20,11 +20,14 @@
       "assetTransferMethod": "eip3009"
     },
     {
-      "path": "get_weather",
+      "path": "get_weather_tvm",
       "method": "tool",
-      "description": "Paid weather tool via MCP transport",
+      "toolName": "get_weather_tvm",
+      "mcpTransport": "sse",
+      "description": "Paid weather tool via MCP transport (TVM)",
       "requiresPayment": true,
-      "protocolFamily": "tvm"
+      "protocolFamily": "tvm",
+      "scheme": "exact"
     },
     {
       "path": "/health",

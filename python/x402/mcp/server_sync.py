@@ -182,7 +182,7 @@ def create_payment_wrapper_sync(
             if result.meta is None:
                 result.meta = {}
             result.meta[MCP_PAYMENT_RESPONSE_META_KEY] = (
-                settle_result.model_dump(by_alias=True)
+                settle_result.model_dump(by_alias=True, exclude_none=True)
                 if hasattr(settle_result, "model_dump")
                 else settle_result
             )
@@ -211,7 +211,7 @@ def _create_payment_required_result_sync(
     )
 
     payment_required_dict = (
-        payment_required.model_dump(by_alias=True)
+        payment_required.model_dump(by_alias=True, exclude_none=True)
         if hasattr(payment_required, "model_dump")
         else payment_required
     )
@@ -249,7 +249,7 @@ def _create_settlement_failed_result_sync(
     }
 
     error_data = (
-        payment_required.model_dump(by_alias=True)
+        payment_required.model_dump(by_alias=True, exclude_none=True)
         if hasattr(payment_required, "model_dump")
         else payment_required
     )

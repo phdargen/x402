@@ -145,11 +145,21 @@ def create_payment_wrapper(
                     accepts, tool_resource, f"Invalid payment payload: {e}", extensions
                 )
 
+            # Match the payload against the advertised accepts
+            requirements = resource_server.find_matching_requirements(accepts, payload)
+            if requirements is None:
+                return _create_payment_required_result(
+                    accepts,
+                    tool_resource,
+                    "No matching payment requirements found",
+                    extensions,
+                )
+
             if asyncio.iscoroutinefunction(resource_server.verify_payment):
-                verify_result = await resource_server.verify_payment(payload, accepts[0])
+                verify_result = await resource_server.verify_payment(payload, requirements)
             else:
                 verify_result = await asyncio.to_thread(
-                    resource_server.verify_payment, payload, accepts[0]
+                    resource_server.verify_payment, payload, requirements
                 )
             if not verify_result.is_valid:
                 return _create_payment_required_result(
@@ -164,7 +174,7 @@ def create_payment_wrapper(
                 hook_ctx = ServerHookContext(
                     tool_name=tool_name,
                     arguments=kwargs,
-                    payment_requirements=accepts[0],
+                    payment_requirements=requirements,
                     payment_payload=payload,
                 )
                 proceed = hooks.on_before_execution(hook_ctx)
@@ -222,7 +232,7 @@ def create_payment_wrapper(
                 after_ctx = AfterExecutionContext(
                     tool_name=tool_name,
                     arguments=kwargs,
-                    payment_requirements=accepts[0],
+                    payment_requirements=requirements,
                     payment_payload=payload,
                     result=mcp_result,
                 )
@@ -235,10 +245,10 @@ def create_payment_wrapper(
 
             try:
                 if asyncio.iscoroutinefunction(resource_server.settle_payment):
-                    settle_result = await resource_server.settle_payment(payload, accepts[0])
+                    settle_result = await resource_server.settle_payment(payload, requirements)
                 else:
                     settle_result = await asyncio.to_thread(
-                        resource_server.settle_payment, payload, accepts[0]
+                        resource_server.settle_payment, payload, requirements
                     )
                 if not settle_result.success:
                     return _create_settlement_failed_result(
@@ -246,6 +256,7 @@ def create_payment_wrapper(
                         tool_resource,
                         settle_result.error_reason or "Unknown settlement failure",
                         extensions,
+                        network=requirements.network,
                     )
             except Exception as e:
                 return _create_settlement_failed_result(
@@ -253,6 +264,7 @@ def create_payment_wrapper(
                     tool_resource,
                     str(e),
                     extensions,
+                    network=requirements.network,
                 )
 
             # OnAfterSettlement hook
@@ -260,7 +272,7 @@ def create_payment_wrapper(
                 settlement_ctx = SettlementContext(
                     tool_name=tool_name,
                     arguments=kwargs,
-                    payment_requirements=accepts[0],
+                    payment_requirements=requirements,
                     payment_payload=payload,
                     settlement=settle_result,
                 )
@@ -272,7 +284,7 @@ def create_payment_wrapper(
                     pass
 
             # Return result with payment response in _meta
-            payment_response = settle_result.model_dump(by_alias=True)
+            payment_response = settle_result.model_dump(by_alias=True, exclude_none=True)
             response_meta = result_meta.copy()
             response_meta[MCP_PAYMENT_RESPONSE_META_KEY] = payment_response
             return CallToolResult(
@@ -346,12 +358,12 @@ def _create_payment_required_result(
     """Create a payment required CallToolResult."""
     from mcp.types import CallToolResult, TextContent
 
-    accepts_dicts = [req.model_dump(by_alias=True) for req in accepts]
+    accepts_dicts = [req.model_dump(by_alias=True, exclude_none=True) for req in accepts]
     payment_required: dict[str, Any] = {
         "x402Version": 2,
         "accepts": accepts_dicts,
         "error": error_message,
-        "resource": resource.model_dump(by_alias=True),
+        "resource": resource.model_dump(by_alias=True, exclude_none=True),
     }
     if extensions:
         payment_required["extensions"] = extensions
@@ -367,21 +379,23 @@ def _create_settlement_failed_result(
     resource: ResourceInfo,
     error_message: str,
     extensions: dict[str, Any] | None = None,
+    *,
+    network: str | None = None,
 ) -> Any:
     """Create a settlement failed CallToolResult."""
     from mcp.types import CallToolResult, TextContent
 
-    accepts_dicts = [req.model_dump(by_alias=True) for req in accepts]
+    accepts_dicts = [req.model_dump(by_alias=True, exclude_none=True) for req in accepts]
     error_data: dict[str, Any] = {
         "x402Version": 2,
         "accepts": accepts_dicts,
         "error": f"Payment settlement failed: {error_message}",
-        "resource": resource.model_dump(by_alias=True),
+        "resource": resource.model_dump(by_alias=True, exclude_none=True),
         MCP_PAYMENT_RESPONSE_META_KEY: {
             "success": False,
             "errorReason": error_message,
             "transaction": "",
-            "network": accepts[0].network,
+            "network": network or accepts[0].network,
         },
     }
     if extensions:

@@ -165,9 +165,15 @@ func (c *X402MCPClient) CallTool(ctx context.Context, name string, args map[stri
 		}
 	}
 
+	// Select a supported requirement via the policy-aware selector
+	selected, err := c.paymentClient.SelectPaymentRequirements(paymentRequired.Accepts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select payment requirements: %w", err)
+	}
+
 	payload, err := c.paymentClient.CreatePaymentPayload(
 		ctx,
-		paymentRequired.Accepts[0],
+		selected,
 		paymentRequired.Resource,
 		paymentRequired.Extensions,
 	)
@@ -469,10 +475,15 @@ func CallPaidTool(
 		return buildResult(result, true), nil
 	}
 
-	// Create payment payload using the first requirement
+	// Select a supported requirement via the policy-aware selector
+	selected, err := x402Client.SelectPaymentRequirements(paymentRequired.Accepts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select payment requirements: %w", err)
+	}
+
 	paymentPayload, err := x402Client.CreatePaymentPayload(
 		ctx,
-		paymentRequired.Accepts[0],
+		selected,
 		paymentRequired.Resource,
 		paymentRequired.Extensions,
 	)

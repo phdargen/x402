@@ -301,7 +301,7 @@ def create_payment_wrapper(
             if result.meta is None:
                 result.meta = {}
             result.meta[MCP_PAYMENT_RESPONSE_META_KEY] = (
-                settle_result.model_dump(by_alias=True)
+                settle_result.model_dump(by_alias=True, exclude_none=True)
                 if hasattr(settle_result, "model_dump")
                 else settle_result
             )
@@ -341,7 +341,7 @@ async def _create_payment_required_result_async(
 
     # Convert to dict for structuredContent
     payment_required_dict = (
-        payment_required.model_dump(by_alias=True)
+        payment_required.model_dump(by_alias=True, exclude_none=True)
         if hasattr(payment_required, "model_dump")
         else payment_required
     )
@@ -391,7 +391,7 @@ async def _create_settlement_failed_result_async(
 
     # Merge paymentRequired with settlement failure (camelCase for wire format)
     error_data = (
-        payment_required.model_dump(by_alias=True)
+        payment_required.model_dump(by_alias=True, exclude_none=True)
         if hasattr(payment_required, "model_dump")
         else payment_required
     )
