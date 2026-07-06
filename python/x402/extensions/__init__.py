@@ -36,6 +36,22 @@ from .bazaar import (
 # Create alias for backward compatibility
 ValidationResult = BazaarValidationResult
 
+from .builder_code import (  # noqa: E402
+    BUILDER_CODE,
+    BUILDER_CODE_PATTERN,
+    BUILDER_CODE_SCHEMA,
+    ERC_8021_MARKER,
+    SCHEMA_2_ID,
+    BuilderCodeClientExtension,
+    BuilderCodeExtensionData,
+    BuilderCodeFacilitatorConfig,
+    BuilderCodeFacilitatorExtension,
+    BuilderCodeResourceServerExtension,
+    builder_code_resource_server_extension,
+    declare_builder_code_extension,
+    encode_builder_code_suffix,
+    parse_builder_code_suffix_from_calldata,
+)
 from .payment_identifier import (  # noqa: E402
     PAYMENT_ID_MAX_LENGTH,
     PAYMENT_ID_MIN_LENGTH,
@@ -151,6 +167,26 @@ __all__ = [
     "extract_discovery_info",
     "extract_discovery_info_from_extension",
     "validate_and_extract",
+    # Builder Code constants
+    "BUILDER_CODE",
+    "BUILDER_CODE_PATTERN",
+    "ERC_8021_MARKER",
+    "SCHEMA_2_ID",
+    "BUILDER_CODE_SCHEMA",
+    # Builder Code types
+    "BuilderCodeExtensionData",
+    "BuilderCodeFacilitatorConfig",
+    # Builder Code CBOR encoding
+    "encode_builder_code_suffix",
+    "parse_builder_code_suffix_from_calldata",
+    # Builder Code server
+    "declare_builder_code_extension",
+    "BuilderCodeResourceServerExtension",
+    "builder_code_resource_server_extension",
+    # Builder Code client
+    "BuilderCodeClientExtension",
+    # Builder Code facilitator
+    "BuilderCodeFacilitatorExtension",
     # Payment Identifier constants
     "PAYMENT_IDENTIFIER",
     "PAYMENT_ID_MIN_LENGTH",
