@@ -206,6 +206,64 @@ paymentWrapper := mcp402.NewPaymentWrapper(resourceServer, mcp402.PaymentWrapper
 
 The Bazaar extension just facilitates the data exchange between servers and facilitators - the implementation is yours.
 
+### Builder Code (On-Chain Attribution, ERC-8021)
+
+The **Builder Code** extension enables **on-chain attribution tracking** for x402 payments. At settlement, the facilitator appends an [ERC-8021](https://eip.tools/eip/8021) Schema 2 CBOR suffix to the transaction calldata that records which application exposed the paid endpoint (`a`), which client/intermediary participated (`s`), and which facilitator settled the payment (`w`).
+
+**Import Path:**
+```
+github.com/x402-foundation/x402/go/v2/extensions/buildercode
+```
+
+**Purpose:**
+- Servers declare their app code (`a`) per-route in the 402 response
+- Clients echo `a` and attach their own service code(s) (`s`)
+- Facilitators add their wallet code (`w`) at settlement and encode the ERC-8021 calldata suffix
+
+All codes must match `^[a-z0-9_]{1,32}$` (1-32 characters, lowercase alphanumeric and underscores).
+
+**What it provides:**
+- `DeclareBuilderCodeExtension()` - Server helper to declare the app code (`a`) in `PaymentRequired.extensions`
+- `NewBuilderCodeClientExtension()` - Client helper that attaches service code(s) (`s`) to payment payloads
+- `BuilderCodeFacilitatorExtension` - Facilitator extension that encodes the ERC-8021 suffix at settlement (optionally with a wallet code `w`)
+- `EncodeBuilderCodeSuffix()` / `ParseBuilderCodeSuffixFromCalldata()` - Low-level CBOR helpers to build and parse the suffix
+
+**Server Example:**
+
+```go
+import "github.com/x402-foundation/x402/go/v2/extensions/buildercode"
+
+routes := x402http.RoutesConfig{
+    "GET /api/data": {
+        Accepts: x402http.PaymentOptions{
+            {Scheme: "exact", PayTo: "0x...", Price: "$0.001", Network: "eip155:84532"},
+        },
+        Extensions: buildercode.DeclareBuilderCodeExtension("bc_my_service"),
+    },
+}
+```
+
+**Client Example:**
+
+```go
+import "github.com/x402-foundation/x402/go/v2/extensions/buildercode"
+
+// Single or multiple service codes (layered attribution)
+client.RegisterExtension(buildercode.NewBuilderCodeClientExtension("bc_my_client"))
+```
+
+**Facilitator Example:**
+
+```go
+import "github.com/x402-foundation/x402/go/v2/extensions/buildercode"
+
+facilitator.RegisterExtension(&buildercode.BuilderCodeFacilitatorExtension{
+    BuilderCode: "bc_my_facilitator", // optional wallet code (w)
+})
+```
+
+See the [Builder Code protocol spec](../../specs/extensions/builder_code.md) for the full ERC-8021 wire format.
+
 ### Future Extensions
 
 Extensions can serve many purposes. Planned extensions include:
@@ -387,6 +445,13 @@ extensions/
 │   ├── types.go           - Bazaar-specific types
 │   └── resource_service.go - Declaration helpers
 │
+├── buildercode/           - Builder Code attribution extension (ERC-8021)
+│   ├── types.go           - Types, constants, and validation
+│   ├── server.go          - Server-side declaration helper
+│   ├── client.go          - Client-side service code helper
+│   ├── facilitator.go     - Facilitator suffix construction
+│   └── cbor.go            - ERC-8021 Schema 2 CBOR encode/parse
+│
 ├── v1/                    - V1 protocol extension support
 │   └── facilitator.go     - V1 extraction helpers
 │
@@ -401,6 +466,7 @@ extensions/
 ## Related Documentation
 
 - **[Bazaar Extension](bazaar/)** - API discovery extension implementation
+- **[Builder Code Extension](buildercode/)** - On-chain attribution (ERC-8021) implementation
 - **[Main README](../README.md)** - Package overview
 - **[SERVER.md](../SERVER.md)** - Using extensions in servers
 - **[FACILITATOR.md](../FACILITATOR.md)** - Extracting extensions in facilitators
