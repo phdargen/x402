@@ -5,7 +5,7 @@
  * optional chain configuration via environment variables.
  *
  * New chain support should be added here in alphabetic order by network prefix
- * (e.g., "algorand" before "ccd" before "eip155" before "hedera" before "near" before "solana" before "stellar" before "tvm").
+ * (e.g., "algorand" before "ccd" before "eip155" before "hedera" before "near" before "solana" before "stellar" before "tvm" before "xrpl").
  */
 
 import { config } from "dotenv";
@@ -22,6 +22,8 @@ import { NEAR_TESTNET_CAIP2 } from "@x402/near";
 import { ExactNearScheme } from "@x402/near/exact/server";
 import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { ExactTvmScheme } from "@x402/tvm/exact/server";
+import { XRPL_TESTNET } from "@x402/xrpl";
+import { ExactXrplScheme } from "@x402/xrpl/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { Network, Price } from "@x402/core/types";
 
@@ -37,6 +39,7 @@ const nearAddress = process.env.NEAR_ADDRESS as string | undefined;
 const svmAddress = process.env.SVM_ADDRESS as string | undefined;
 const stellarAddress = process.env.STELLAR_ADDRESS as string | undefined;
 const tvmAddress = process.env.TVM_ADDRESS as string | undefined;
+const xrplAddress = process.env.XRPL_ADDRESS as string | undefined;
 
 // Validate at least one address is provided
 if (
@@ -48,10 +51,11 @@ if (
   !nearAddress &&
   !stellarAddress &&
   !hederaAddress &&
-  !tvmAddress
+  !tvmAddress &&
+  !xrplAddress
 ) {
   console.error(
-    "❌ At least one of AVM_ADDRESS, CCD_ADDRESS, EVM_ADDRESS, KEETA_ADDRESS, NEAR_ADDRESS, SVM_ADDRESS, STELLAR_ADDRESS, HEDERA_ACCOUNT_ID, or TVM_ADDRESS is required",
+    "❌ At least one of AVM_ADDRESS, CCD_ADDRESS, EVM_ADDRESS, KEETA_ADDRESS, NEAR_ADDRESS, SVM_ADDRESS, STELLAR_ADDRESS, HEDERA_ACCOUNT_ID, TVM_ADDRESS, or XRPL_ADDRESS is required",
   );
   process.exit(1);
 }
@@ -74,6 +78,7 @@ const STELLAR_NETWORK = "stellar:testnet" as const; // Stellar Testnet
 const HEDERA_HBAR_ASSET = "0.0.0" as const; // Native HBAR asset id
 const HEDERA_WEATHER_PRICE_TINYBARS = "100000" as const; // 0.001 HBAR
 const TVM_NETWORK = (process.env.TVM_NETWORK || "tvm:-3") as Network; // TON Testnet
+const XRPL_NETWORK = (process.env.XRPL_NETWORK || XRPL_TESTNET) as Network; // XRPL Testnet
 const CCD_WEATHER_PRICE_MICRO_CCD = "1000" as const; // 0.001 CCD
 
 // Build accepts array dynamically based on configured addresses
@@ -161,6 +166,17 @@ if (tvmAddress) {
     payTo: tvmAddress,
   });
 }
+if (xrplAddress) {
+  accepts.push({
+    scheme: "exact",
+    price: {
+      amount: process.env.XRPL_AMOUNT || "1000",
+      asset: "XRP",
+    },
+    network: XRPL_NETWORK,
+    payTo: xrplAddress,
+  });
+}
 
 // Create facilitator client
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
@@ -193,6 +209,9 @@ if (stellarAddress) {
 }
 if (tvmAddress) {
   server.register(TVM_NETWORK, new ExactTvmScheme());
+}
+if (xrplAddress) {
+  server.register(XRPL_NETWORK, new ExactXrplScheme());
 }
 
 // Create Express app
@@ -257,6 +276,9 @@ app.listen(port, () => {
   }
   if (tvmAddress) {
     console.log(`   TVM: ${tvmAddress} on ${TVM_NETWORK}`);
+  }
+  if (xrplAddress) {
+    console.log(`   XRPL: ${xrplAddress} on ${XRPL_NETWORK}`);
   }
   console.log(`   Facilitator: ${facilitatorUrl}`);
   console.log();
