@@ -31,7 +31,7 @@ typescript/
 │   │   └── paywall/       # @x402/paywall - Browser paywall UI
 │   ├── extensions/        # @x402/extensions - Bazaar, Sign-in-with-x
 │   └── legacy/            # Legacy v1 packages (deprecated)
-├── x402-facilitator/      # x402.org testnet facilitator service
+├── site/                 # x402.org site and testnet facilitator service
 ├── turbo.json
 └── pnpm-workspace.yaml
 ```

@@ -1,5 +1,5 @@
 {
-  "name": "x402-facilitator",
+  "name": "site",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:vercel": "cd .. && pnpm install && cd x402-facilitator && pnpm -r --filter=x402-facilitator... run build",
+    "build:vercel": "cd .. && pnpm install && cd site && pnpm -r --filter=site... run build",
     "start": "next start",
     "format": "prettier -c .prettierrc --write \"**/*.{ts,js,cjs,json,md}\"",
     "format:check": "prettier -c .prettierrc --check \"**/*.{ts,js,cjs,json,md}\"",
@@ -26,6 +26,8 @@
     "@x402/extensions": "workspace:*",
     "@x402/hedera": "workspace:*",
     "@x402/keeta": "workspace:*",
+    "@x402/next": "workspace:*",
+    "@x402/paywall": "workspace:*",
     "@x402/stellar": "workspace:*",
     "@x402/svm": "workspace:*",
     "next": "^16.2.6",

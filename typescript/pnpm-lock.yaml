@@ -1759,7 +1759,7 @@ importers:
         specifier: ^3.0.5
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
 
-  x402-facilitator:
+  site:
     dependencies:
       '@aptos-labs/ts-sdk':
         specifier: ^5.2.1
@@ -1794,6 +1794,12 @@ importers:
       '@x402/keeta':
         specifier: workspace:*
         version: link:../packages/mechanisms/keeta
+      '@x402/next':
+        specifier: workspace:*
+        version: link:../packages/http/next
+      '@x402/paywall':
+        specifier: workspace:*
+        version: link:../packages/http/paywall
       '@x402/stellar':
         specifier: workspace:*
         version: link:../packages/mechanisms/stellar

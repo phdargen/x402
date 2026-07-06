@@ -6,7 +6,7 @@ packages:
   - packages/mechanisms/*
   - packages/legacy/*
   - examples/**/*
-  - x402-facilitator
+  - site
 overrides:
   cssstyle: 5.3.6
 packageExtensions:
