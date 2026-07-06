@@ -9,7 +9,7 @@
         "dist/**"
       ]
     },
-    "site#build": {
+    "x402-facilitator#build": {
       "dependsOn": [
         "^build"
       ],
