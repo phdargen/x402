@@ -86,6 +86,9 @@ def create_siwx_resource_server_extension(
 
     class SIWxResourceServerExtension:
         key = SIGN_IN_WITH_X
+        # Regenerated per PaymentRequired response, so they are skipped during
+        # client-echo validation while every other advertised field stays strict.
+        dynamic_info_fields = ["nonce", "issuedAt", "expirationTime"]
 
         def enrich_declaration(self, declaration: Any, transport_context: Any) -> Any:
             return declaration

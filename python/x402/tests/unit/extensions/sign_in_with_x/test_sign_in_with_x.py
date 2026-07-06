@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from eth_account import Account
 
+from x402 import x402ResourceServer
 from x402.extensions.sign_in_with_x import (
     SIGN_IN_WITH_X,
     SOLANA_DEVNET,
@@ -33,12 +34,18 @@ from x402.extensions.sign_in_with_x import (
     verify_siwx_signature,
 )
 from x402.http.types import HTTPRequestContext, RouteConfig
-from x402.schemas import PaymentRequired, PaymentRequirements, ResourceInfo
+from x402.schemas import (
+    PaymentPayload,
+    PaymentRequired,
+    PaymentRequirements,
+    ResourceInfo,
+)
 from x402.schemas.hooks import (
     GrantAccessResult,
     PaymentRequiredContext,
     PaymentRequiredHeadersResult,
 )
+from x402.server_base import ERR_EXTENSION_ECHO_MISMATCH
 
 pytest.importorskip("siwe")
 pytest.importorskip("nacl")
@@ -449,3 +456,96 @@ class TestServerExtension:
         result = await ext.enrich_payment_required_response(declaration[SIGN_IN_WITH_X], ctx)
         assert len(result["info"]["nonce"]) == 32
         assert result["supportedChains"][0]["chainId"] == "eip155:8453"
+
+    def test_declares_dynamic_info_fields(self):
+        storage = InMemorySIWxStorage()
+        ext = create_siwx_resource_server_extension(CreateSIWxHookOptions(storage=storage))
+        assert ext.dynamic_info_fields == ["nonce", "issuedAt", "expirationTime"]
+
+
+class TestServerEchoValidation:
+    """Registered SIWX extension keeps static info strict while nonce/time regenerate."""
+
+    def _server(self):
+        storage = InMemorySIWxStorage()
+        ext = create_siwx_resource_server_extension(CreateSIWxHookOptions(storage=storage))
+        return x402ResourceServer().register_extension(ext)
+
+    @staticmethod
+    def _required(info: dict) -> PaymentRequired:
+        return PaymentRequired(
+            x402_version=2,
+            accepts=[],
+            extensions={SIGN_IN_WITH_X: {"info": info}},
+        )
+
+    @staticmethod
+    def _payload(info: dict) -> PaymentPayload:
+        return PaymentPayload(
+            x402_version=2,
+            payload={"authorization": {}, "signature": "0x"},
+            accepted=PaymentRequirements(
+                scheme="exact",
+                network="eip155:8453",
+                asset="0x",
+                amount="1",
+                pay_to="0x0",
+                max_timeout_seconds=300,
+            ),
+            extensions={SIGN_IN_WITH_X: {"info": info}},
+        )
+
+    def test_passes_when_only_dynamic_fields_differ(self):
+        server = self._server()
+        required = self._required(
+            {
+                "domain": "api.example.com",
+                "uri": "https://api.example.com/data",
+                "version": "1",
+                "nonce": "aaa",
+                "issuedAt": "2024-01-01T00:00:00.000Z",
+                "expirationTime": "2024-01-01T00:05:00.000Z",
+            }
+        )
+        payload = self._payload(
+            {
+                "domain": "api.example.com",
+                "uri": "https://api.example.com/data",
+                "version": "1",
+                "nonce": "bbb",
+                "issuedAt": "2024-02-02T00:00:00.000Z",
+                "expirationTime": "2024-02-02T00:05:00.000Z",
+            }
+        )
+
+        assert server.validate_extensions(required, payload).valid
+
+    def test_rejects_when_static_field_differs(self):
+        server = self._server()
+        required = self._required({"domain": "api.example.com", "nonce": "aaa"})
+        payload = self._payload({"domain": "evil.example.com", "nonce": "bbb"})
+
+        result = server.validate_extensions(required, payload)
+        assert not result.valid
+        assert result.invalid_reason == ERR_EXTENSION_ECHO_MISMATCH
+        assert result.extension_key == SIGN_IN_WITH_X
+
+    def test_rejects_when_static_field_dropped(self):
+        server = self._server()
+        required = self._required(
+            {"domain": "api.example.com", "uri": "https://api.example.com/data", "nonce": "aaa"}
+        )
+        payload = self._payload({"domain": "api.example.com", "nonce": "bbb"})
+
+        result = server.validate_extensions(required, payload)
+        assert not result.valid
+        assert result.invalid_reason == ERR_EXTENSION_ECHO_MISMATCH
+
+    def test_unregistered_siwx_shaped_data_stays_strict(self):
+        server = x402ResourceServer()
+        required = self._required({"domain": "api.example.com", "nonce": "aaa"})
+        payload = self._payload({"domain": "api.example.com", "nonce": "bbb"})
+
+        result = server.validate_extensions(required, payload)
+        assert not result.valid
+        assert result.invalid_reason == ERR_EXTENSION_ECHO_MISMATCH
