@@ -77,6 +77,3 @@ The facilitator API is served at [http://localhost:3000/facilitator](http://loca
 
 We welcome contributions! Please see our [Contributing Guidelines](https://github.com/x402-foundation/x402/blob/main/CONTRIBUTING.md) for details.
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](https://github.com/x402-foundation/x402/blob/main/LICENSE) file for details.
