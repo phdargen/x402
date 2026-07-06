@@ -69,13 +69,13 @@ const x402PaymentProxy = paymentProxyFromConfig(
         },
         ...(avmPayeeAddress
           ? [
-            {
-              payTo: avmPayeeAddress,
-              scheme: "exact" as const,
-              price: "$0.01",
-              network: AVM_NETWORK,
-            },
-          ]
+              {
+                payTo: avmPayeeAddress,
+                scheme: "exact" as const,
+                price: "$0.01",
+                network: AVM_NETWORK,
+              },
+            ]
           : []),
       ],
       description: "Access to protected content",
