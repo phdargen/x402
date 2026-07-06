@@ -133,6 +133,16 @@ class ResourceServerExtension(Protocol):
         """Transport-specific hooks scoped to declared extension keys."""
         ...
 
+    @property
+    def dynamic_info_fields(self) -> list[str] | None:
+        """Info fields regenerated per response, skipped during echo validation.
+
+        Fields listed here (e.g. per-response nonces or timestamps) are dropped
+        from both the advertised and echoed ``info`` before comparison, so fresh
+        server values do not falsely reject a valid client echo.
+        """
+        ...
+
 
 class HTTPClientExtensionHooks(Protocol):
     """HTTP transport hooks for client extensions."""

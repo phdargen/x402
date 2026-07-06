@@ -153,7 +153,14 @@ class MockFacilitatorSigner:
     def verify_typed_data(self, *args: Any, **kwargs: Any) -> bool:
         return self._sig_valid
 
-    def write_contract(self, address: str, abi: list[dict], function_name: str, *args) -> str:
+    def write_contract(
+        self,
+        address: str,
+        abi: list[dict],
+        function_name: str,
+        *args,
+        data_suffix: str | None = None,
+    ) -> str:
         self.write_calls.append((address, function_name, args))
         return "0x" + "ab" * 32
 

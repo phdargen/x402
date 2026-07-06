@@ -458,6 +458,31 @@ class x402HTTPServerBase:
                 ),
             )
 
+        # Reject payments whose echoed extension info drops or changes a
+        # server-advertised (non-dynamic) field before verification.
+        extension_result = self._server.validate_extensions(payment_required, payment_payload)
+        if not extension_result.valid:
+            mismatch_required = yield (
+                "create_payment_required",
+                (
+                    requirements,
+                    resource_info,
+                    extension_result.invalid_reason,
+                    extensions,
+                    transport_context,
+                    payment_payload,
+                ),
+                None,
+            )
+            return HTTPProcessResult(
+                type=RESULT_PAYMENT_ERROR,
+                response=self._create_http_response(
+                    mismatch_required,
+                    is_web_browser=False,
+                    paywall_config=paywall_config,
+                ),
+            )
+
         # Verify payment (yield for async/sync handling)
         try:
             verify_result = yield (

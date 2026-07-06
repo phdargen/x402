@@ -52,6 +52,7 @@ from ..constants import (  # noqa: E402
     X402_UPTO_PERMIT2_PROXY_ADDRESS,
     X402_UPTO_PERMIT2_PROXY_SETTLE_WITH_PERMIT_ABI,
 )
+from ..data_suffix import resolve_data_suffix  # noqa: E402
 from ..erc6492 import parse_erc6492_signature  # noqa: E402
 
 # Reuse exact's allowance verification and settle error mapping
@@ -547,11 +548,19 @@ def settle_upto_permit2(
             transaction="",
         )
 
+    # Resolved once and appended to whichever settlement calldata is broadcast.
+    data_suffix = resolve_data_suffix(context, payload, requirements)
+
     # Branch: EIP-2612 gas sponsoring (atomic settleWithPermit)
     eip2612_info = extract_eip2612_gas_sponsoring_info(payload)
     if eip2612_info is not None:
         return _settle_upto_with_eip2612(
-            signer, payload, permit2_payload, eip2612_info, settlement_amount
+            signer,
+            payload,
+            permit2_payload,
+            eip2612_info,
+            settlement_amount,
+            data_suffix=data_suffix,
         )
 
     # Branch: ERC-20 approval gas sponsoring
@@ -562,11 +571,18 @@ def settle_upto_permit2(
             extension_signer = ext.resolve_signer(str(payload.accepted.network))
             if extension_signer is not None:
                 return _settle_upto_with_erc20_approval(
-                    extension_signer, payload, permit2_payload, erc20_info, settlement_amount
+                    extension_signer,
+                    payload,
+                    permit2_payload,
+                    erc20_info,
+                    settlement_amount,
+                    data_suffix=data_suffix,
                 )
 
     # Branch: standard settle
-    return _settle_upto_direct(signer, payload, permit2_payload, settlement_amount)
+    return _settle_upto_direct(
+        signer, payload, permit2_payload, settlement_amount, data_suffix=data_suffix
+    )
 
 
 def _build_upto_permit2_settle_args(
@@ -602,6 +618,7 @@ def _settle_upto_direct(
     payload: PaymentPayload,
     permit2_payload: UptoPermit2Payload,
     settlement_amount: int,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Standard upto Permit2 settle — allowance is already on-chain."""
     payer = permit2_payload.permit2_authorization.from_address
@@ -621,6 +638,7 @@ def _settle_upto_direct(
             owner_addr,
             witness_tuple,
             sig_bytes,
+            data_suffix=data_suffix,
         )
 
         receipt = signer.wait_for_transaction_receipt(tx_hash)
@@ -651,6 +669,7 @@ def _settle_upto_with_eip2612(
     permit2_payload: UptoPermit2Payload,
     eip2612_info: Any,
     settlement_amount: int,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Settle via settleWithPermit — includes the EIP-2612 permit atomically."""
     payer = permit2_payload.permit2_authorization.from_address
@@ -689,6 +708,7 @@ def _settle_upto_with_eip2612(
             owner_addr,
             witness_tuple,
             sig_bytes,
+            data_suffix=data_suffix,
         )
 
         receipt = signer.wait_for_transaction_receipt(tx_hash)
@@ -719,6 +739,7 @@ def _settle_upto_with_erc20_approval(
     permit2_payload: UptoPermit2Payload,
     erc20_info: Any,
     settlement_amount: int,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Settle via extension signer's send_transactions (approval + settle)."""
     payer = permit2_payload.permit2_authorization.from_address
@@ -739,6 +760,7 @@ def _settle_upto_with_erc20_approval(
                     abi=X402_UPTO_PERMIT2_PROXY_ABI,
                     function="settle",
                     args=[permit_tuple, amount, owner_addr, witness_tuple, sig_bytes],
+                    data_suffix=data_suffix,
                 ),
             ]
         )

@@ -327,6 +327,8 @@ def execute_transfer_with_authorization(
     token_address: str,
     parsed: ParsedEIP3009Authorization,
     sig_data: ERC6492SignatureData,
+    *,
+    data_suffix: str | None = None,
 ) -> str:
     """Execute `transferWithAuthorization` using the correct ABI overload."""
     if len(sig_data.inner_signature) == 65:
@@ -344,6 +346,7 @@ def execute_transfer_with_authorization(
             v,
             r,
             s,
+            data_suffix=data_suffix,
         )
 
     return signer.write_contract(
@@ -357,6 +360,7 @@ def execute_transfer_with_authorization(
         parsed.valid_before,
         parsed.nonce,
         sig_data.inner_signature,
+        data_suffix=data_suffix,
     )
 
 

@@ -141,6 +141,7 @@ def execute_refund_with_signature(
     payload: EnrichedRefundPayload,
     requirements: PaymentRequirements,
     authorizer_signer: AuthorizerSigner | None,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Submit a cooperative refund via `refundWithSignature`, optionally batched with claims."""
     network = str(requirements.network)
@@ -231,7 +232,11 @@ def execute_refund_with_signature(
                 )
 
             tx = signer.write_contract(
-                contract_addr, BATCH_SETTLEMENT_ABI, "multicall", *multicall_args
+                contract_addr,
+                BATCH_SETTLEMENT_ABI,
+                "multicall",
+                *multicall_args,
+                data_suffix=data_suffix,
             )
         else:
             try:
@@ -255,6 +260,7 @@ def execute_refund_with_signature(
                 BATCH_SETTLEMENT_ABI,
                 "refundWithSignature",
                 *refund_args,
+                data_suffix=data_suffix,
             )
 
         receipt = signer.wait_for_transaction_receipt(tx)

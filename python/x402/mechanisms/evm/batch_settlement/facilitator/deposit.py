@@ -181,6 +181,7 @@ def settle_deposit(
     requirements: PaymentRequirements,
     context: FacilitatorContext | None = None,
     allowed_factories: list[str] | None = None,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Verify then execute a deposit onchain via the appropriate collector."""
     assert payload.channel_config is not None and payload.voucher is not None
@@ -230,7 +231,7 @@ def settle_deposit(
         if execution.kind == "erc20Approval":
             assert execution.extension_signer is not None
             assert execution.signed_transaction is not None
-            deposit_call = _build_deposit_write_call(payload, execution)
+            deposit_call = _build_deposit_write_call(payload, execution, data_suffix=data_suffix)
             results = execution.extension_signer.send_transactions(
                 [execution.signed_transaction, deposit_call]
             )
@@ -244,6 +245,7 @@ def settle_deposit(
                 int(deposit.amount),
                 execution.collector,
                 execution.collector_data,
+                data_suffix=data_suffix,
             )
 
         receipt = signer.wait_for_transaction_receipt(tx)
@@ -564,7 +566,11 @@ def _resolve_deposit_transfer_method(
     )
 
 
-def _build_deposit_write_call(payload: DepositPayload, execution: _DepositExecution):
+def _build_deposit_write_call(
+    payload: DepositPayload,
+    execution: _DepositExecution,
+    data_suffix: str | None = None,
+):
     """Build a WriteContractCall for the erc20Approval branch's extension signer."""
     from .....extensions.erc20_approval_gas_sponsoring.types import WriteContractCall
 
@@ -579,6 +585,7 @@ def _build_deposit_write_call(payload: DepositPayload, execution: _DepositExecut
             execution.collector,
             execution.collector_data,
         ],
+        data_suffix=data_suffix,
     )
 
 

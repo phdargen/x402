@@ -45,6 +45,7 @@ def execute_claim_with_signature(
     payload: ClaimPayload,
     requirements: PaymentRequirements,
     authorizer_signer: AuthorizerSigner | None,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Submit a batch claim via claimWithSignature()."""
     network = str(requirements.network)
@@ -89,7 +90,12 @@ def execute_claim_with_signature(
 
     try:
         tx = signer.write_contract(
-            target, BATCH_SETTLEMENT_ABI, "claimWithSignature", claim_args, sig_bytes
+            target,
+            BATCH_SETTLEMENT_ABI,
+            "claimWithSignature",
+            claim_args,
+            sig_bytes,
+            data_suffix=data_suffix,
         )
         receipt = signer.wait_for_transaction_receipt(tx)
         if receipt.status != TX_STATUS_SUCCESS:

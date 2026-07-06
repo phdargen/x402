@@ -24,6 +24,7 @@ except ImportError as e:
     ) from e
 
 from .constants import EIP1271_MAGIC_VALUE, IS_VALID_SIGNATURE_ABI, TX_STATUS_SUCCESS  # noqa: E402
+from .data_suffix import append_data_suffix  # noqa: E402
 from .types import TransactionReceipt, TypedDataDomain, TypedDataField  # noqa: E402
 
 # Gas limit for facilitator-sent transactions (settle transferWithAuthorization and
@@ -475,6 +476,7 @@ class FacilitatorWeb3Signer:
         abi: list[dict[str, Any]],
         function_name: str,
         *args: Any,
+        data_suffix: str | None = None,
     ) -> str:
         """Execute a smart contract transaction.
 
@@ -483,6 +485,7 @@ class FacilitatorWeb3Signer:
             abi: Contract ABI.
             function_name: Function to call.
             *args: Function arguments.
+            data_suffix: Optional hex suffix appended to the encoded calldata.
 
         Returns:
             Transaction hash.
@@ -502,6 +505,12 @@ class FacilitatorWeb3Signer:
                 "gasPrice": self._w3.eth.gas_price,
             }
         )
+
+        if data_suffix:
+            calldata = tx["data"]
+            if isinstance(calldata, (bytes, bytearray)):
+                calldata = "0x" + bytes(calldata).hex()
+            tx["data"] = append_data_suffix(calldata, data_suffix)
 
         # Sign and send
         signed_tx = self._account.sign_transaction(tx)

@@ -397,7 +397,13 @@ class x402ClientBase:
             if enrich is None:
                 continue
             enriched = enrich(enriched, payment_required)
-        return enriched
+
+        # Re-merge so server-declared extension fields survive registered client
+        # extensions: the server's declared entry is preserved while the client
+        # overlays only the new fields it populated.
+        return enriched.model_copy(
+            update={"extensions": _merge_extensions(extensions, enriched.extensions)}
+        )
 
     async def _enrich_payment_payload_with_extensions_async(
         self,
@@ -420,7 +426,13 @@ class x402ClientBase:
                 enriched = await result
             else:
                 enriched = result
-        return enriched
+
+        # Re-merge so server-declared extension fields survive registered client
+        # extensions: the server's declared entry is preserved while the client
+        # overlays only the new fields it populated.
+        return enriched.model_copy(
+            update={"extensions": _merge_extensions(extensions, enriched.extensions)}
+        )
 
     # ========================================================================
     # Core Logic Generators (shared between async/sync)

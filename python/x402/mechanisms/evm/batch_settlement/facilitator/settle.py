@@ -27,6 +27,7 @@ def execute_settle(
     signer: FacilitatorEvmSigner,
     payload: SettlePayload,
     requirements: PaymentRequirements,
+    data_suffix: str | None = None,
 ) -> SettleResponse:
     """Transfer claimed funds from the contract to the receiver.
 
@@ -72,7 +73,14 @@ def execute_settle(
         )
 
     try:
-        tx = signer.write_contract(contract_addr, BATCH_SETTLEMENT_ABI, "settle", receiver, token)
+        tx = signer.write_contract(
+            contract_addr,
+            BATCH_SETTLEMENT_ABI,
+            "settle",
+            receiver,
+            token,
+            data_suffix=data_suffix,
+        )
         receipt = signer.wait_for_transaction_receipt(tx)
         if receipt.status != TX_STATUS_SUCCESS:
             return SettleResponse(

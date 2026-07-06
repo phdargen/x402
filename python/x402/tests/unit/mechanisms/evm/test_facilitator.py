@@ -242,7 +242,14 @@ class MockFacilitatorSigner:
     ) -> bool:
         return self.typed_data_valid
 
-    def write_contract(self, address: str, abi: list[dict], function_name: str, *args) -> str:
+    def write_contract(
+        self,
+        address: str,
+        abi: list[dict],
+        function_name: str,
+        *args,
+        data_suffix: str | None = None,
+    ) -> str:
         self.write_calls += 1
         if self.write_should_revert:
             raise RuntimeError("execution reverted: invalid signature")

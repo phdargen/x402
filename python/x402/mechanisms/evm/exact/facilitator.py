@@ -32,6 +32,7 @@ from ..constants import (
     SCHEME_EXACT,
     TX_STATUS_SUCCESS,
 )
+from ..data_suffix import resolve_data_suffix
 from ..erc6492 import has_deployment_info, parse_erc6492_signature
 from ..exact.eip3009_utils import (
     classify_eip3009_signature,
@@ -428,11 +429,13 @@ class ExactEvmScheme:
                 # parse_eip3009_transfer_error.
 
         try:
+            data_suffix = resolve_data_suffix(context, payload, requirements)
             tx_hash = execute_transfer_with_authorization(
                 self._signer,
                 token_address,
                 parsed_authorization,
                 sig_data,
+                data_suffix=data_suffix,
             )
             receipt = self._signer.wait_for_transaction_receipt(tx_hash)
             if receipt.status != TX_STATUS_SUCCESS:

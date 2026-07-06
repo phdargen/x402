@@ -11,6 +11,7 @@ from .....schemas import (
     SettleResponse,
     VerifyResponse,
 )
+from ...data_suffix import resolve_data_suffix
 from ...signer import FacilitatorEvmSigner
 from ..constants import SCHEME_BATCH_SETTLEMENT
 from ..errors import (
@@ -137,6 +138,9 @@ class BatchSettlementEvmFacilitator:
         raw = payload.payload
         network = str(requirements.network)
 
+        # Resolved once and appended to whichever settlement calldata is broadcast.
+        data_suffix = resolve_data_suffix(context, payload, requirements)
+
         if is_deposit_payload(raw):
             from .deposit import settle_deposit
 
@@ -148,6 +152,7 @@ class BatchSettlementEvmFacilitator:
                 requirements,
                 context,
                 self._eip6492_allowed_factories,
+                data_suffix=data_suffix,
             )
 
         if is_claim_payload(raw):
@@ -155,7 +160,11 @@ class BatchSettlementEvmFacilitator:
 
             claim = ClaimPayload.from_dict(raw)
             return execute_claim_with_signature(
-                self._signer, claim, requirements, self._authorizer_signer
+                self._signer,
+                claim,
+                requirements,
+                self._authorizer_signer,
+                data_suffix=data_suffix,
             )
 
         if is_enriched_refund_payload(raw):
@@ -163,14 +172,18 @@ class BatchSettlementEvmFacilitator:
 
             refund = EnrichedRefundPayload.from_dict(raw)
             return execute_refund_with_signature(
-                self._signer, refund, requirements, self._authorizer_signer
+                self._signer,
+                refund,
+                requirements,
+                self._authorizer_signer,
+                data_suffix=data_suffix,
             )
 
         if is_settle_payload(raw):
             from .settle import execute_settle
 
             settle = SettlePayload.from_dict(raw)
-            return execute_settle(self._signer, settle, requirements)
+            return execute_settle(self._signer, settle, requirements, data_suffix=data_suffix)
 
         return SettleResponse(
             success=False,
