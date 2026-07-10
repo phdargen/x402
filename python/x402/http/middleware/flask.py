@@ -417,10 +417,7 @@ class PaymentMiddleware:
                     return []
 
                 # Check if successful response
-                if (
-                    response_wrapper.status_code is not None
-                    and 200 <= response_wrapper.status_code < 300
-                ):
+                if response_wrapper.status_code is not None and response_wrapper.status_code < 400:
                     # Extract settlement overrides from response headers and strip them
                     overrides = self._http_server._extract_settlement_overrides(
                         response_wrapper.headers,

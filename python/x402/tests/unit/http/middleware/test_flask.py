@@ -11,7 +11,7 @@ import pytest
 
 # Skip all tests if flask not installed
 pytest.importorskip("flask")
-from flask import Flask
+from flask import Flask, redirect
 from werkzeug.datastructures import Headers, ImmutableMultiDict
 
 from x402.http.facilitator_client_base import FacilitatorResponseError
@@ -634,6 +634,55 @@ class TestFlaskMiddlewareIntegration:
                 assert response.status_code == 200
                 assert b"Protected content" in response.data
                 assert "PAYMENT-RESPONSE" in response.headers
+
+    def test_verified_payment_settles_on_redirect(self):
+        """Test that verified payment settles on 3xx redirect responses."""
+        app = Flask(__name__)
+
+        @app.route("/api/protected")
+        def protected_route():
+            return redirect("https://cdn.example/signed", 302)
+
+        mock_server = MagicMock()
+        routes = {
+            "GET /api/protected": RouteConfig(
+                accepts=PaymentOption(
+                    scheme="exact",
+                    pay_to="0x1234567890123456789012345678901234567890",
+                    price="$0.01",
+                    network="eip155:8453",
+                ),
+            )
+        }
+
+        payment_payload = make_v2_payload()
+        payment_requirements = make_payment_requirements()
+
+        with patch("x402.http.middleware.flask.x402HTTPResourceServerSync") as mock_http_server:
+            mock_http_server_instance = MagicMock()
+            mock_http_server_instance.requires_payment.return_value = True
+            mock_http_server_instance.process_http_request.return_value = HTTPProcessResult(
+                type="payment-verified",
+                payment_payload=payment_payload,
+                payment_requirements=payment_requirements,
+            )
+            mock_http_server_instance.process_settlement.return_value = ProcessSettleResult(
+                success=True,
+                headers={"PAYMENT-RESPONSE": "settlement_encoded"},
+            )
+            mock_http_server.return_value = mock_http_server_instance
+
+            PaymentMiddleware(app, routes, mock_server, sync_facilitator_on_start=False)
+
+            with app.test_client() as client:
+                response = client.get(
+                    "/api/protected",
+                    headers={"PAYMENT-SIGNATURE": "valid_payment"},
+                )
+                assert response.status_code == 302
+                assert response.headers["Location"] == "https://cdn.example/signed"
+                assert "PAYMENT-RESPONSE" in response.headers
+                mock_http_server_instance.process_settlement.assert_called_once()
 
     def test_settlement_failure_returns_402(self):
         """Test that settlement failure returns 402 with empty body and PAYMENT-RESPONSE header."""
