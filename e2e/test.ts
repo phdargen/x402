@@ -660,6 +660,51 @@ function envFlagDefaultTrue(value: string | undefined): boolean {
   return !['0', 'false', 'no', 'off'].includes(value.toLowerCase());
 }
 
+function waitForChildProcess(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise(resolve => {
+    const onClose = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.removeListener('close', onClose);
+      resolve(false);
+    }, timeoutMs);
+
+    child.once('close', onClose);
+  });
+}
+
+async function stopMockFacilitator(child: ChildProcess, url: string): Promise<void> {
+  try {
+    const response = await fetch(`${url}/close`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(2_000),
+    });
+    await response.text();
+  } catch (error) {
+    verboseLog(`Mock facilitator graceful shutdown failed: ${String(error)}`);
+  }
+
+  if (await waitForChildProcess(child, 3_000)) {
+    return;
+  }
+
+  child.kill('SIGTERM');
+  if (await waitForChildProcess(child, 3_000)) {
+    return;
+  }
+
+  child.kill('SIGKILL');
+  await waitForChildProcess(child, 2_000);
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
+
 async function runTest() {
   // Show help if requested
   if (parsedArgs.showHelp) {
@@ -1231,7 +1276,7 @@ async function runTest() {
   const mockFacilitatorPort = allocatePort();
   log(`\n🎭 Starting mock facilitator on port ${mockFacilitatorPort}...`);
   const mockFacilitatorProcess: ChildProcess = spawn(
-    'npx', ['tsx', 'index.ts'],
+    process.execPath, ['--import', 'tsx', 'index.ts'],
     {
       cwd: join(process.cwd(), 'mock-facilitator'),
       env: {
@@ -1270,7 +1315,7 @@ async function runTest() {
   );
   if (!mockHealthy) {
     log('❌ Failed to start mock facilitator');
-    mockFacilitatorProcess.kill();
+    await stopMockFacilitator(mockFacilitatorProcess, mockFacilitatorUrl);
     process.exit(1);
   }
   log(`  ✅ Mock facilitator ready at ${mockFacilitatorUrl}`);
@@ -1829,8 +1874,10 @@ async function runTest() {
     facilitatorStopPromises.push(manager.stop());
   }
   log('  🛑 Stopping mock facilitator');
-  mockFacilitatorProcess.kill();
-  await Promise.all(facilitatorStopPromises);
+  await Promise.all([
+    stopMockFacilitator(mockFacilitatorProcess, mockFacilitatorUrl),
+    ...facilitatorStopPromises,
+  ]);
 
   // Calculate totals
   const passed = testResults.filter(r => r.passed).length;
@@ -1993,12 +2040,13 @@ async function runTest() {
   }
 
   // Close logger
-  closeLogger();
-
-  if (failed > 0 || discoveryFailed) {
-    process.exit(1);
-  }
+  await closeLogger();
+  process.exit(failed > 0 || discoveryFailed ? 1 : 0);
 }
 
 // Run the test
-runTest().catch(error => errorLog(error));
+runTest().catch(async error => {
+  errorLog(String(error));
+  await closeLogger();
+  process.exit(1);
+});

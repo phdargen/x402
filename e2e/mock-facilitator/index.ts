@@ -83,6 +83,27 @@ function sendJson(res: http.ServerResponse, statusCode: number, body: unknown) {
 
 const supportedResponse = buildSupportedResponse();
 
+let shuttingDown = false;
+
+function shutdown() {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+  const forceExitTimeout = setTimeout(() => process.exit(1), 5_000);
+  forceExitTimeout.unref();
+
+  server.close(error => {
+    clearTimeout(forceExitTimeout);
+    if (error) {
+      console.error("Failed to close mock facilitator:", error);
+      process.exit(1);
+    }
+    process.exit(0);
+  });
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://localhost:${PORT}`);
 
@@ -93,6 +114,12 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, { status: "ok" });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/close") {
+    sendJson(res, 200, { status: "shutting down" });
+    setImmediate(shutdown);
     return;
   }
 
@@ -119,3 +146,6 @@ server.listen(PORT, () => {
   console.log(`Mock facilitator listening on port ${PORT}`);
   console.log("Facilitator listening");
 });
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
