@@ -793,6 +793,47 @@ describe("x402ResourceServer", () => {
 
         expect(afterVerifyCalled).toBe(false);
       });
+
+      it("returns a failed verify response and stops later hooks when an afterVerify hook aborts", async () => {
+        const laterHook = vi.fn();
+
+        server
+          .onAfterVerify(async () => ({
+            abort: true,
+            reason: "reservation_lost",
+            message: "channel busy",
+          }))
+          .onAfterVerify(laterHook);
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.isValid).toBe(false);
+        expect(result.invalidReason).toBe("reservation_lost");
+        expect(result.invalidMessage).toBe("channel busy");
+        expect(result.skipHandler).toBeUndefined();
+        expect(laterHook).not.toHaveBeenCalled();
+      });
+
+      it("still attaches a skipHandler directive from an afterVerify hook", async () => {
+        server.onAfterVerify(async () => ({
+          skipHandler: true,
+          response: { contentType: "application/json", body: { ok: true } },
+        }));
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.isValid).toBe(true);
+        expect(result.skipHandler).toEqual({
+          contentType: "application/json",
+          body: { ok: true },
+        });
+      });
     });
 
     describe("onVerifyFailure", () => {

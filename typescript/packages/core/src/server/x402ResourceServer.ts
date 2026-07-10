@@ -135,7 +135,11 @@ export type BeforeVerifyHook = (
 
 export type AfterVerifyHook = (
   context: VerifyResultContext,
-) => Promise<void | { skipHandler: true; response?: SkipHandlerDirective }>;
+) => Promise<
+  | void
+  | { skipHandler: true; response?: SkipHandlerDirective }
+  | { abort: true; reason: string; message?: string }
+>;
 
 export type OnVerifyFailureHook = (
   context: VerifyFailureContext,
@@ -1430,6 +1434,13 @@ export class x402ResourceServer {
     )) {
       try {
         const directive = await hook(resultContext);
+        if (directive && "abort" in directive && directive.abort) {
+          return {
+            isValid: false,
+            invalidReason: directive.reason,
+            invalidMessage: directive.message,
+          };
+        }
         if (directive && "skipHandler" in directive && directive.skipHandler) {
           skipHandler = directive.response ?? {};
         }
