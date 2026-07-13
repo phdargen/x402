@@ -12,12 +12,13 @@ import type {
   BatchSettlementRefundPayload,
 } from "../../../src/batch-settlement/types";
 import type {
+  Network,
   PaymentRequirements,
   PaymentPayload,
   VerifyResponse,
   SettleResponse,
 } from "@x402/core/types";
-import type { FacilitatorClient } from "@x402/core/server";
+import { x402ResourceServer, type FacilitatorClient } from "@x402/core/server";
 import { privateKeyToAccount } from "viem/accounts";
 import * as Errors from "../../../src/batch-settlement/errors";
 
@@ -111,7 +112,12 @@ async function reservePending(
     };
   });
 
-  server.mergeRequestContext(paymentPayload, { channelId, pendingId, channelSnapshot: snapshot });
+  server.mergeRequestContext(paymentPayload, {
+    channelId,
+    pendingId,
+    channelSnapshot: snapshot,
+    reservationCommitted: true,
+  });
 }
 
 const PAYER = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as `0x${string}`;
@@ -525,6 +531,22 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
       requirements: makeRequirements(),
     } as never);
     expect(result).toBeUndefined();
+  });
+
+  it("fails closed when reading the channel snapshot throws", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    vi.spyOn(storage, "get").mockRejectedValueOnce(new Error("storage unavailable"));
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrVerificationStateUnavailable,
+    });
   });
 
   it("does nothing when client cumulative matches expected", async () => {
@@ -1245,6 +1267,40 @@ describe("BatchSettlementEvmScheme — two-phase reservation (security)", () => 
     expect(JSON.stringify(await storage.get(channelId))).toBe(before);
   });
 
+  it("clears a committed reservation when a later extension aborts verification", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({ amount: "1000" });
+    const facilitator = {
+      verify: vi.fn().mockResolvedValue(validResult),
+      settle: vi.fn(),
+      getSupported: vi.fn(),
+    } as unknown as FacilitatorClient;
+    const resourceServer = new x402ResourceServer(facilitator);
+    resourceServer.register(NETWORK as Network, server);
+    resourceServer.registerExtension({
+      key: "abort-after-reserve",
+      hooks: {
+        onAfterVerify: async () => ({
+          abort: true,
+          reason: "extension_rejected",
+        }),
+      },
+    });
+
+    const result = await resourceServer.verifyPayment(paymentPayload, requirements, {
+      "abort-after-reserve": {},
+    });
+
+    expect(result).toMatchObject({
+      isValid: false,
+      invalidReason: "extension_rejected",
+    });
+    expect(facilitator.verify).toHaveBeenCalledTimes(1);
+    expect((await storage.get(channelId))?.pendingRequest).toBeUndefined();
+  });
+
   it("lets exactly one of two concurrent requests reserve; the other aborts busy", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
@@ -1333,10 +1389,11 @@ describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
-  it("clears a pending marker when facilitator verification returns invalid", async () => {
+  it("does not update storage when facilitator verification returns invalid", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const payload = buildDepositPayload(channelId, config, "10000", "1000");
+    const updateSpy = vi.spyOn(storage, "updateChannel");
     await runBeforeVerify(server, payload, makeRequirements({ amount: "1000" }));
 
     await server.schemeHooks.onAfterVerify!({
@@ -1346,6 +1403,25 @@ describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
     } as never);
 
     expect(await storage.get(channelId)).toBeUndefined();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not update storage when verification throws before reservation", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({ amount: "1000" });
+    await runBeforeVerify(server, payload, requirements);
+    const updateSpy = vi.spyOn(storage, "updateChannel");
+
+    await server.schemeHooks.onVerifyFailure!({
+      paymentPayload: payload,
+      requirements,
+      declaredExtensions: {},
+      error: new Error("facilitator unavailable"),
+    } as never);
+
+    expect(updateSpy).not.toHaveBeenCalled();
   });
 
   it("clears only its matching pending marker on verified-payment cancellation", async () => {
@@ -1443,6 +1519,51 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
   beforeEach(() => {
     storage = new InMemoryChannelStorage();
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
+  });
+
+  it("fails closed when request context is missing", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+
+    const result = await server.schemeHooks.onAfterVerify!({
+      paymentPayload: buildVoucherPayload(channelId, "1000", config),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrVerificationStateUnavailable,
+    });
+  });
+
+  it("fails closed when reserving the channel throws", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({ amount: "1000" });
+    await runBeforeVerify(server, paymentPayload, requirements);
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new Error("storage unavailable"));
+
+    const result = await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrVerificationStateUnavailable,
+    });
+    expect(await storage.get(channelId)).toBeUndefined();
   });
 
   it("creates a channel record from a deposit payload after a successful verify", async () => {

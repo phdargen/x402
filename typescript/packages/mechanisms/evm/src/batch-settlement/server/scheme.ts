@@ -46,6 +46,7 @@ export interface BatchSettlementRequestContext {
   pendingId?: string;
   channelSnapshot?: Channel;
   localVerify?: boolean;
+  reservationCommitted?: boolean;
 }
 
 /**
@@ -190,7 +191,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   async clearPendingRequest(payload: DeepReadonly<PaymentPayload>): Promise<void> {
     const context = this.takeRequestContext(payload);
-    if (!context?.channelId || !context.pendingId) {
+    if (!context?.reservationCommitted || !context.channelId || !context.pendingId) {
       return;
     }
 

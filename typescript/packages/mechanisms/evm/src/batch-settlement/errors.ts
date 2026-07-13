@@ -69,6 +69,8 @@ export const ErrErc20ApprovalUnavailable =
 export const ErrCumulativeAmountMismatch =
   "invalid_batch_settlement_evm_cumulative_amount_mismatch";
 export const ErrChannelBusy = "invalid_batch_settlement_evm_channel_busy";
+export const ErrVerificationStateUnavailable =
+  "invalid_batch_settlement_evm_verification_state_unavailable";
 export const ErrChargeExceedsSignedCumulative =
   "invalid_batch_settlement_evm_charge_exceeds_signed_cumulative";
 export const ErrMissingChannel = "invalid_batch_settlement_evm_missing_channel";

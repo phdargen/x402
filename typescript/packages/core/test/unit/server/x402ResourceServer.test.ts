@@ -796,6 +796,7 @@ describe("x402ResourceServer", () => {
 
       it("returns a failed verify response and stops later hooks when an afterVerify hook aborts", async () => {
         const laterHook = vi.fn();
+        const cancellationHook = vi.fn();
 
         server
           .onAfterVerify(async () => ({
@@ -803,7 +804,8 @@ describe("x402ResourceServer", () => {
             reason: "reservation_lost",
             message: "channel busy",
           }))
-          .onAfterVerify(laterHook);
+          .onAfterVerify(laterHook)
+          .onVerifiedPaymentCanceled(cancellationHook);
 
         const result = await server.verifyPayment(
           buildPaymentPayload(),
@@ -815,6 +817,35 @@ describe("x402ResourceServer", () => {
         expect(result.invalidMessage).toBe("channel busy");
         expect(result.skipHandler).toBeUndefined();
         expect(laterHook).not.toHaveBeenCalled();
+        expect(cancellationHook).toHaveBeenCalledTimes(1);
+        expect(cancellationHook).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: "after_verify_aborted" }),
+        );
+      });
+
+      it("keeps an afterVerify abort when cancellation cleanup throws", async () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        server
+          .onAfterVerify(async () => ({
+            abort: true,
+            reason: "reservation_lost",
+          }))
+          .onVerifiedPaymentCanceled(async () => {
+            throw new Error("cleanup failed");
+          });
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result).toMatchObject({
+          isValid: false,
+          invalidReason: "reservation_lost",
+        });
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("onVerifiedPaymentCanceled"));
+
+        warnSpy.mockRestore();
       });
 
       it("still attaches a skipHandler directive from an afterVerify hook", async () => {
