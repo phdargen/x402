@@ -38,6 +38,7 @@ cp .env-local .env
 
 and fill required environment variables:
 
+- `APTOS_PRIVATE_KEY` - Aptos Ed25519 private key for Aptos payments (optional; `all-networks`)
 - `CCD_PRIVATE_KEY` - Concordium Ed25519 private key for Concordium payments (optional; `all-networks`)
 - `CCD_ADDRESS` - Concordium account address for Concordium payments (optional; `all-networks`)
 - `EVM_PRIVATE_KEY` - Ethereum private key for EVM payments
@@ -79,6 +80,13 @@ To create a Keeta Testnet wallet:
 1. Go to [Keeta Testnet Wallet](https://wallet.test.keeta.com/) and follow the steps to create your wallet. Make sure to save your mnemonic (seed phrase) to keep access to your wallet. To get your Keeta address, click on "Receive" and copy the deposit address (starting with `keeta_`).
 2. Use the [Keeta Testnet Faucet](https://faucet.test.keeta.com/) to send Testnet KTA to your wallet.
 3. To get Testnet USDC on Keeta, go to the "Receive" page in the wallet, click on "Any token from Keeta Testnet", select "USDC from Base (Sepolia) Testnet" and copy the deposit address (starting with `0x`). Then go the [Circle Faucet](https://faucet.circle.com/), select Base network and enter your Base deposit address.
+
+#### Aptos Testnet
+
+For testing on Aptos testnet, you can obtain test tokens from these faucets:
+
+- **Test APT**: https://aptos.dev/network/faucet or through an account on [geomi.dev](https://geomi.dev/manage/faucet)
+- **Test USDC**: https://faucet.circle.com/
 
 #### Concordium Testnet
 

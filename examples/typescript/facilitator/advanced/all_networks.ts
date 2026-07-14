@@ -5,10 +5,18 @@
  * optional chain configuration via environment variables.
  *
  * New chain support should be added here in alphabetic order by network prefix
- * (e.g., "algorand" before "ccd" before "eip155" before "hedera" before "near" before "solana" before "stellar" before "tvm").
+ * (e.g., "algorand" before "aptos" before "ccd" before "eip155" before "hedera" before "near" before "solana" before "stellar" before "tvm").
  */
 
+import {
+  Account,
+  Ed25519PrivateKey,
+  PrivateKey as AptosPrivateKey,
+  PrivateKeyVariants,
+} from "@aptos-labs/ts-sdk";
 import * as KeetaNet from "@keetanetwork/keetanet-client";
+import { toFacilitatorAptosSigner } from "@x402/aptos";
+import { ExactAptosScheme } from "@x402/aptos/exact/facilitator";
 import { toFacilitatorAvmSigner } from "@x402/avm";
 import { ExactAvmScheme } from "@x402/avm/exact/facilitator";
 import { ExactConcordiumScheme } from "@x402/concordium/exact/facilitator";
@@ -78,6 +86,8 @@ const PORT = process.env.PORT || "4022";
 
 // Configuration - optional per network (alphabetic order)
 const avmPrivateKey = process.env.AVM_PRIVATE_KEY as string | undefined;
+const aptosPrivateKey = process.env.APTOS_PRIVATE_KEY as string | undefined;
+const aptosRpcUrl = process.env.APTOS_RPC_URL as string | undefined;
 const ccdFacilitatorPrivateKey = process.env.CCD_FACILITATOR_PRIVATE_KEY as
   | string
   | undefined;
@@ -104,6 +114,7 @@ const hederaPrivateKey = process.env.HEDERA_PRIVATE_KEY;
 // Validate at least one private key is provided
 if (
   !avmPrivateKey &&
+  !aptosPrivateKey &&
   !(ccdFacilitatorPrivateKey && ccdFacilitatorAddress) &&
   !evmPrivateKey &&
   !keetaMnemonic &&
@@ -114,13 +125,14 @@ if (
   !(hederaAccountId && hederaPrivateKey)
 ) {
   console.error(
-    "❌ At least one of AVM_PRIVATE_KEY, CCD_FACILITATOR_PRIVATE_KEY + CCD_FACILITATOR_ADDRESS, EVM_PRIVATE_KEY, KEETA_MNEMONIC, NEAR_RELAYER_ACCOUNT_ID + NEAR_RELAYER_PRIVATE_KEY, SVM_PRIVATE_KEY, STELLAR_PRIVATE_KEY, TVM_PRIVATE_KEY, or HEDERA_ACCOUNT_ID + HEDERA_PRIVATE_KEY is required",
+    "❌ At least one of AVM_PRIVATE_KEY, APTOS_PRIVATE_KEY, CCD_FACILITATOR_PRIVATE_KEY + CCD_FACILITATOR_ADDRESS, EVM_PRIVATE_KEY, KEETA_MNEMONIC, NEAR_RELAYER_ACCOUNT_ID + NEAR_RELAYER_PRIVATE_KEY, SVM_PRIVATE_KEY, STELLAR_PRIVATE_KEY, TVM_PRIVATE_KEY, or HEDERA_ACCOUNT_ID + HEDERA_PRIVATE_KEY is required",
   );
   process.exit(1);
 }
 
 // Network configuration (alphabetic order)
 const AVM_NETWORK = "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI="; // Algorand Testnet
+const APTOS_NETWORK = (process.env.APTOS_NETWORK || "aptos:2") as Network; // Aptos Testnet
 const CCD_NETWORK = "ccd:4221332d34e1694168c2a0c0b3fd0f27"; // Concordium Testnet
 const EVM_NETWORK = "eip155:84532"; // Base Sepolia
 const HEDERA_NETWORK = "hedera:testnet"; // Hedera Testnet
@@ -156,6 +168,25 @@ if (avmPrivateKey) {
   const avmSigner = toFacilitatorAvmSigner(avmPrivateKey);
   console.info(`AVM Facilitator account: ${avmSigner.getAddresses()[0]}`);
   facilitator.register(AVM_NETWORK, new ExactAvmScheme(avmSigner));
+}
+
+// Register Aptos scheme if private key is provided
+if (aptosPrivateKey) {
+  const formattedKey = AptosPrivateKey.formatPrivateKey(
+    aptosPrivateKey,
+    PrivateKeyVariants.Ed25519,
+  );
+  const aptosAccount = Account.fromPrivateKey({
+    privateKey: new Ed25519PrivateKey(formattedKey),
+  });
+  const aptosSigner = toFacilitatorAptosSigner(
+    aptosAccount,
+    aptosRpcUrl ? { defaultRpcUrl: aptosRpcUrl } : undefined,
+  );
+  facilitator.register(APTOS_NETWORK, new ExactAptosScheme(aptosSigner));
+  console.info(
+    `Aptos Facilitator account: ${aptosAccount.accountAddress.toStringLong()} on ${APTOS_NETWORK}`,
+  );
 }
 
 // Register Concordium scheme if private key + address are provided (recommended).
