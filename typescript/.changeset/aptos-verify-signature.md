@@ -1,5 +1,5 @@
 ---
-"@x402/aptos": patch
+"@x402/aptos": minor
 ---
 
-Reject forged Aptos sender authenticators during facilitator verification by cryptographically verifying the transaction signing message before balance lookup or simulation.
+Verify the transaction signing message before balance lookup or simulation.
