@@ -1037,6 +1037,30 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     });
   });
 
+  it("soft-fails corrective enrich when the claimed channel id is malformed", async () => {
+    const config = buildChannelConfig();
+    const getSpy = vi.spyOn(storage, "get");
+    const requirements = [makeRequirements({ amount: "1000" })];
+
+    await expect(
+      server.enrichPaymentRequiredResponse({
+        requirements,
+        paymentPayload: buildVoucherPayload("../../../etc/passwd", "500", config),
+        resourceInfo: { url: "https://example.com" },
+        error: Errors.ErrCumulativeAmountMismatch,
+        paymentRequiredResponse: {
+          x402Version: 2,
+          resource: { url: "https://example.com" },
+          accepts: requirements,
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(requirements[0].extra.channelState).toBeUndefined();
+    expect(requirements[0].extra.voucherState).toBeUndefined();
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
   it("reuses the mismatch channel snapshot for corrective payment-required accepts", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);

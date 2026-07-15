@@ -907,6 +907,56 @@ describe("x402ResourceServer", () => {
         expect(result.payer).toBe("0xRecovered");
       });
 
+      it("runs afterVerify hooks when onVerifyFailure recovers", async () => {
+        const afterVerify = vi.fn();
+        mockClient.setVerifyResponse(new Error("Temporary failure"));
+
+        server
+          .onVerifyFailure(async () => ({
+            recovered: true,
+            result: { isValid: true, payer: "0xRecovered" },
+          }))
+          .onAfterVerify(afterVerify);
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.isValid).toBe(true);
+        expect(result.payer).toBe("0xRecovered");
+        expect(afterVerify).toHaveBeenCalledTimes(1);
+        expect(afterVerify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            result: expect.objectContaining({ isValid: true, payer: "0xRecovered" }),
+          }),
+        );
+      });
+
+      it("fails closed when an afterVerify hook aborts a recovered verify", async () => {
+        mockClient.setVerifyResponse(new Error("Temporary failure"));
+
+        server
+          .onVerifyFailure(async () => ({
+            recovered: true,
+            result: { isValid: true, payer: "0xRecovered" },
+          }))
+          .onAfterVerify(async () => ({
+            abort: true,
+            reason: "reservation_lost",
+            message: "channel busy",
+          }));
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.isValid).toBe(false);
+        expect(result.invalidReason).toBe("reservation_lost");
+        expect(result.invalidMessage).toBe("channel busy");
+      });
+
       it("should try all hooks until one recovers", async () => {
         const executionOrder: number[] = [];
 

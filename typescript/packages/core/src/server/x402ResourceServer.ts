@@ -1012,7 +1012,12 @@ export class x402ResourceServer {
         try {
           const result = await hook(failureContext);
           if (result && "recovered" in result && result.recovered) {
-            return result.result;
+            return this.runAfterVerifyHooks(
+              result.result,
+              context,
+              extensionKeysInUse,
+              matchedScheme,
+            );
           }
         } catch (error) {
           this.warnResourceServerHookFailure("onVerifyFailure", label, error);

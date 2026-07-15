@@ -201,6 +201,12 @@ export async function handleEnrichPaymentRequiredResponse(
     return;
   }
 
+  if (
+    channelIdBindingError(raw.channelConfig, raw.voucher.channelId, paymentPayload.accepted.network)
+  ) {
+    return;
+  }
+
   const channel =
     scheme.takeChannelSnapshot(paymentPayload) ??
     (await scheme.getStorage().get(raw.voucher.channelId));
