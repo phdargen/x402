@@ -105,6 +105,7 @@ The easiest way to implement SIWX is registering the provided extension factorie
     storage := signinwithx.NewInMemoryStorage()
     extension := signinwithx.MustCreateResourceServerExtension(signinwithx.ServerOptions{
         Storage: storage,
+        Origin:  "https://api.example.com",
     })
 
     // Declare SIWX support in routes
@@ -173,7 +174,12 @@ The easiest way to implement SIWX is registering the provided extension factorie
     server = x402ResourceServer(facilitator)
     server.register(NETWORK, ExactEvmServerScheme())
     server.register_extension(
-        create_siwx_resource_server_extension(CreateSIWxHookOptions(storage=storage))
+        create_siwx_resource_server_extension(
+            CreateSIWxHookOptions(
+                storage=storage,
+                origin="https://api.example.com",
+            )
+        )
     )
 
     # 2. Declare SIWX support in routes
@@ -208,12 +214,34 @@ The server extension derives `network` from `accepts`, derives `domain`/`uri` fr
 
 SIWX proofs bind to the public origin configured when creating the server extension or request hook. Challenge issuance and validation both use this value — never request headers such as `Host`, `X-Forwarded-Host`, or `X-Forwarded-Proto`.
 
-```typescript
-createSIWxResourceServerExtension({
-  storage,
-  origin: 'https://api.example.com',
-});
-```
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    createSIWxResourceServerExtension({
+      storage,
+      origin: 'https://api.example.com',
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    signinwithx.MustCreateResourceServerExtension(signinwithx.ServerOptions{
+        Storage: storage,
+        Origin:  "https://api.example.com",
+    })
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    create_siwx_resource_server_extension(
+        CreateSIWxHookOptions(
+            storage=storage,
+            origin="https://api.example.com",
+        )
+    )
+    ```
+  </Tab>
+</Tabs>
 
 Behind a TLS-terminating reverse proxy, set `origin` to the browser-visible URL (for example `https://api.example.com`), not the upstream listener address (for example `http://127.0.0.1:4021`). The request path is rebased onto the configured origin for each challenge.
 
@@ -259,6 +287,7 @@ By default, only EOA (Externally Owned Account) signatures are verified. To supp
 
     extension := signinwithx.MustCreateResourceServerExtension(signinwithx.ServerOptions{
         Storage: storage,
+        Origin:  "https://api.example.com",
         VerifyOptions: signinwithx.VerifyOptions{
             EVMContractVerifier: contractVerifier,
         },
@@ -280,6 +309,7 @@ By default, only EOA (Externally Owned Account) signatures are verified. To supp
         create_siwx_resource_server_extension(
             CreateSIWxHookOptions(
                 storage=storage,
+                origin="https://api.example.com",
                 verify_options=SIWxVerifyOptions(provider=provider),
             )
         )
@@ -616,7 +646,7 @@ Clients match their wallet's `chainId` against `supportedChains` and use the fir
 
 ### `declareSIWxExtension(options?)`
 
-Creates the extension declaration for servers to include in PaymentRequired. Domain and URI are derived from the configured `origin` passed to `createSIWxResourceServerExtension`.
+Creates the extension declaration for servers to include in PaymentRequired. Domain and URI are derived from the configured `origin` passed to the server extension factory (`createSIWxResourceServerExtension` in TypeScript/Python, `CreateResourceServerExtension` in Go). Do not set `domain` or `resource_uri`/`ResourceURI` in route declarations.
 
 ```typescript
 declareSIWxExtension({
@@ -627,11 +657,19 @@ declareSIWxExtension({
 })
 ```
 
+Go: `DeclareExtension(DeclareOptions{Statement, Version, Networks, ExpirationSeconds})`
+
+Python: `declare_siwx_extension(DeclareSIWxOptions(...))`
+
 **Note for auth-only routes:** When using `accepts: []`, the `network` parameter cannot be inferred from payment requirements and must be provided explicitly.
 
-### `createSIWxResourceServerExtension(options)`
+### `createSIWxResourceServerExtension(options)` / `CreateResourceServerExtension` / `create_siwx_resource_server_extension`
 
-Creates the server extension that enriches SIWX challenges, records successful payments, and verifies HTTP SIWX proofs for declared routes. Requires `origin`. Internally uses `createSIWxSettleHook` and `createSIWxRequestHook`.
+Creates the server extension that enriches SIWX challenges, records successful payments, and verifies HTTP SIWX proofs for declared routes. Requires `origin` / `Origin`. Internally uses settle and request hooks.
+
+Go: `CreateResourceServerExtension(ServerOptions{Storage, Origin, VerifyOptions, OnEvent})`
+
+Python: `create_siwx_resource_server_extension(CreateSIWxHookOptions(storage=..., origin=...))`
 
 ### `createSIWxSettleHook(options)`
 
@@ -676,7 +714,7 @@ Creates the client extension that signs compatible SIWX challenges before fallin
 
 Parses a base64-encoded SIGN-IN-WITH-X header into a payload object.
 
-### `validateSIWxMessage(payload, expectedOrigin, options?)`
+### `validateSIWxMessage(payload, expectedOrigin, options?)` / `ValidateMessage` / `validate_siwx_message`
 
 Validates message fields (expiry, domain binding, nonce, etc.).
 
@@ -687,6 +725,10 @@ validateSIWxMessage(payload, new URL('https://api.example.com'), {
 })
 // Returns: { valid: boolean; error?: string }
 ```
+
+Go: `ValidateMessage(payload, *url.URL, ValidationOptions)`
+
+Python: `validate_siwx_message(message, expected_origin: str, options=None)`
 
 ### `verifySIWxSignature(payload, options?)`
 
