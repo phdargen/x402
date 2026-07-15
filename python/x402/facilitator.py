@@ -144,8 +144,11 @@ class x402Facilitator(x402FacilitatorBase):
         result = None
         try:
             while True:
-                _, hook, ctx = gen.send(result)
-                result = await self._execute_hook(hook, ctx)
+                phase, hook, ctx = gen.send(result)
+                if phase == "scheme_verify":
+                    result = await hook
+                else:
+                    result = await self._execute_hook(hook, ctx)
         except StopIteration as e:
             return e.value
 
@@ -181,8 +184,11 @@ class x402Facilitator(x402FacilitatorBase):
         result = None
         try:
             while True:
-                _, hook, ctx = gen.send(result)
-                result = await self._execute_hook(hook, ctx)
+                phase, hook, ctx = gen.send(result)
+                if phase == "scheme_settle":
+                    result = await hook
+                else:
+                    result = await self._execute_hook(hook, ctx)
         except StopIteration as e:
             return e.value
 
@@ -293,13 +299,22 @@ class x402FacilitatorSync(x402FacilitatorBase):
         Raises:
             SchemeNotFoundError: If no facilitator registered for scheme/network.
             PaymentAbortedError: If a before hook aborts.
+            TypeError: If scheme uses async methods (use x402Facilitator instead).
         """
         gen = self._verify_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
             while True:
-                _, hook, ctx = gen.send(result)
-                result = self._execute_hook_sync(hook, ctx)
+                phase, hook, ctx = gen.send(result)
+                if phase == "scheme_verify":
+                    if asyncio.iscoroutine(hook):
+                        hook.close()
+                        raise TypeError(
+                            "Async scheme methods are not supported in x402FacilitatorSync. "
+                            "Use x402Facilitator for async scheme support."
+                        )
+                else:
+                    result = self._execute_hook_sync(hook, ctx)
         except StopIteration as e:
             return e.value
 
@@ -330,13 +345,22 @@ class x402FacilitatorSync(x402FacilitatorBase):
         Raises:
             SchemeNotFoundError: If no facilitator registered for scheme/network.
             PaymentAbortedError: If a before hook aborts.
+            TypeError: If scheme uses async methods (use x402Facilitator instead).
         """
         gen = self._settle_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
             while True:
-                _, hook, ctx = gen.send(result)
-                result = self._execute_hook_sync(hook, ctx)
+                phase, hook, ctx = gen.send(result)
+                if phase == "scheme_settle":
+                    if asyncio.iscoroutine(hook):
+                        hook.close()
+                        raise TypeError(
+                            "Async scheme methods are not supported in x402FacilitatorSync. "
+                            "Use x402Facilitator for async scheme support."
+                        )
+                else:
+                    result = self._execute_hook_sync(hook, ctx)
         except StopIteration as e:
             return e.value
 

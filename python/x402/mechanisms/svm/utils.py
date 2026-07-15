@@ -34,10 +34,10 @@ from .constants import (
 from .types import ExactSvmPayload, TransactionInfo
 
 if TYPE_CHECKING:
-    from solana.rpc.api import Client as SolanaClient
+    from solana.rpc.async_api import AsyncClient as SolanaClient
 
 
-def resolve_blockhash(client: "SolanaClient", recent_blockhash: object = None) -> Hash:
+async def resolve_blockhash(client: "SolanaClient", recent_blockhash: object = None) -> Hash:
     """Use a valid supplied blockhash, falling back to the latest blockhash from RPC."""
     if isinstance(recent_blockhash, str) and recent_blockhash:
         try:
@@ -45,7 +45,8 @@ def resolve_blockhash(client: "SolanaClient", recent_blockhash: object = None) -
         except ParseHashError:
             pass
 
-    return client.get_latest_blockhash().value.blockhash
+    blockhash_resp = await client.get_latest_blockhash()
+    return blockhash_resp.value.blockhash
 
 
 def normalize_network(network: str) -> str:

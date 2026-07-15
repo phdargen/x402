@@ -1,19 +1,28 @@
 """Concrete SVM signer implementations."""
 
+import asyncio
 import base64
 import time
 
 try:
-    from solana.rpc.api import Client as SolanaClient
+    from solana.rpc.async_api import AsyncClient as SolanaClient
     from solana.rpc.commitment import Confirmed
-    from solana.rpc.types import TxOpts
+    from solana.rpc.models import TxOpts
     from solders.keypair import Keypair
     from solders.signature import Signature
     from solders.transaction import VersionedTransaction
-except ImportError as e:
-    raise ImportError(
-        "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
-    ) from e
+except ImportError:
+    try:
+        from solana.rpc.api import Client as SolanaClient  # type: ignore[no-redef]
+        from solana.rpc.commitment import Confirmed  # type: ignore[no-redef]
+        from solana.rpc.types import TxOpts  # type: ignore[no-redef]
+        from solders.keypair import Keypair  # type: ignore[no-redef]
+        from solders.signature import Signature  # type: ignore[no-redef]
+        from solders.transaction import VersionedTransaction  # type: ignore[no-redef]
+    except ImportError as e:
+        raise ImportError(
+            "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
+        ) from e
 
 from .utils import get_network_config, normalize_network
 
@@ -134,7 +143,7 @@ class FacilitatorKeypairSigner:
             network: CAIP-2 network identifier.
 
         Returns:
-            Solana RPC client.
+            Solana RPC client (AsyncClient for solana>=0.40, Client for <0.40).
         """
         caip2_network = normalize_network(network)
 
@@ -258,7 +267,7 @@ class FacilitatorKeypairSigner:
 
         return False
 
-    def simulate_transaction(self, tx_base64: str, network: str) -> None:
+    async def simulate_transaction(self, tx_base64: str, network: str) -> None:
         """Simulate a transaction.
 
         Args:
@@ -275,12 +284,12 @@ class FacilitatorKeypairSigner:
         tx = VersionedTransaction.from_bytes(tx_bytes)
 
         # Simulate with explicit signature verification
-        result = client.simulate_transaction(tx, sig_verify=True, commitment=Confirmed)
+        result = await client.simulate_transaction(tx, sig_verify=True, commitment=Confirmed)
 
         if result.value.err:
             raise RuntimeError(f"Simulation failed: {result.value.err}")
 
-    def send_transaction(self, tx_base64: str, network: str) -> str:
+    async def send_transaction(self, tx_base64: str, network: str) -> str:
         """Send a transaction.
 
         Args:
@@ -301,11 +310,11 @@ class FacilitatorKeypairSigner:
         # Use send_raw_transaction with skip_preflight option
         # This bypasses preflight checks since transaction was already simulated during verify()
         tx_opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-        result = client.send_raw_transaction(tx_bytes, opts=tx_opts)
+        result = await client.send_raw_transaction(tx_bytes, opts=tx_opts)
 
         return str(result.value)
 
-    def confirm_transaction(
+    async def confirm_transaction(
         self,
         signature: str,
         network: str,
@@ -328,7 +337,7 @@ class FacilitatorKeypairSigner:
 
         start_time = time.time()
         while time.time() - start_time < timeout_seconds:
-            result = client.get_signature_statuses([sig])
+            result = await client.get_signature_statuses([sig])
 
             if result.value and result.value[0]:
                 status = result.value[0]
@@ -341,7 +350,7 @@ class FacilitatorKeypairSigner:
                 if status.err:
                     raise RuntimeError(f"Transaction failed: {status.err}")
 
-            time.sleep(1)
+            await asyncio.sleep(1)
 
         raise RuntimeError("Transaction confirmation timeout")
 

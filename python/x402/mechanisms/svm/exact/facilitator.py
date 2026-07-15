@@ -128,7 +128,7 @@ class ExactSvmScheme:
         _ = network  # Unused
         return list(self._signer.get_addresses())
 
-    def verify(
+    async def verify(
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
@@ -354,7 +354,7 @@ class ExactSvmScheme:
             )
 
             # Simulate to verify transaction would succeed
-            self._signer.simulate_transaction(fully_signed_tx, network)
+            await self._signer.simulate_transaction(fully_signed_tx, network)
         except Exception as e:
             error_msg = str(e)
             return VerifyResponse(
@@ -366,7 +366,7 @@ class ExactSvmScheme:
 
         return VerifyResponse(is_valid=True, payer=payer)
 
-    def settle(
+    async def settle(
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
@@ -424,10 +424,10 @@ class ExactSvmScheme:
                 payer = get_token_payer_from_transaction(tx) or ""
             except Exception:
                 payer = ""
-            return self._reconcile_pending_settlement(tx_key, cached_signature, payer, network)
+            return await self._reconcile_pending_settlement(tx_key, cached_signature, payer, network)
 
         # First verify
-        verify_result = self.verify(payload, requirements, context)
+        verify_result = await self.verify(payload, requirements, context)
         if not verify_result.is_valid:
             return SettleResponse(
                 success=False,
@@ -469,7 +469,7 @@ class ExactSvmScheme:
 
         try:
             # Send transaction to network
-            signature = self._signer.send_transaction(fully_signed_tx, network)
+            signature = await self._signer.send_transaction(fully_signed_tx, network)
         except Exception as e:
             self._settlement_cache.delete(tx_key)
             return SettleResponse(
@@ -483,9 +483,9 @@ class ExactSvmScheme:
 
         # Wait for confirmation, shared with the pending-settlement reconciliation
         # path in _reconcile_pending_settlement() below.
-        return self._await_confirmation(tx_key, signature, verify_result.payer or "", network)
+        return await self._await_confirmation(tx_key, signature, verify_result.payer or "", network)
 
-    def _reconcile_pending_settlement(
+    async def _reconcile_pending_settlement(
         self,
         tx_key: str,
         signature: str,
@@ -500,9 +500,9 @@ class ExactSvmScheme:
         re-verifying/re-signing/re-sending — see the fast-path comment in settle() for
         why re-sending is unsafe here.
         """
-        return self._await_confirmation(tx_key, signature, payer, network)
+        return await self._await_confirmation(tx_key, signature, payer, network)
 
-    def _await_confirmation(
+    async def _await_confirmation(
         self,
         tx_key: str,
         signature: str,
@@ -517,7 +517,7 @@ class ExactSvmScheme:
         retry reconciles via the fast path instead of re-verifying/re-sending.
         """
         try:
-            self._signer.confirm_transaction(signature, network)
+            await self._signer.confirm_transaction(signature, network)
         except Exception as e:
             try:
                 self._pending_store.set(tx_key, signature)
