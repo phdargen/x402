@@ -140,7 +140,10 @@ func (c *BatchSettlementEvmScheme) CreatePaymentPayload(
 	if err != nil {
 		return types.PaymentPayload{}, fmt.Errorf("failed to compute channel ID: %w", err)
 	}
-	channelId = batchsettlement.NormalizeChannelId(channelId)
+	channelId, err = batchsettlement.NormalizeChannelId(channelId)
+	if err != nil {
+		return types.PaymentPayload{}, err
+	}
 
 	session, err := c.storage.Get(channelId)
 	if err != nil {
@@ -366,7 +369,10 @@ func (c *BatchSettlementEvmScheme) ProcessSettleResponse(settle map[string]inter
 	if cs.ChannelId == "" {
 		return nil
 	}
-	channelId := batchsettlement.NormalizeChannelId(cs.ChannelId)
+	channelId, err := batchsettlement.NormalizeChannelId(cs.ChannelId)
+	if err != nil {
+		return err
+	}
 
 	prev, _ := c.storage.Get(channelId)
 	next := &BatchSettlementClientContext{}
@@ -387,13 +393,13 @@ func (c *BatchSettlementEvmScheme) ProcessSettleResponse(settle map[string]inter
 
 // HasSession checks if a session exists for the given channel ID.
 func (c *BatchSettlementEvmScheme) HasSession(channelId string) bool {
-	session, _ := c.storage.Get(batchsettlement.NormalizeChannelId(channelId))
+	session, _ := c.storage.Get(channelId)
 	return session != nil
 }
 
 // GetSession returns the session for the given channel ID.
 func (c *BatchSettlementEvmScheme) GetSession(channelId string) (*BatchSettlementClientContext, bool) {
-	session, err := c.storage.Get(batchsettlement.NormalizeChannelId(channelId))
+	session, err := c.storage.Get(channelId)
 	if err != nil || session == nil {
 		return nil, false
 	}
@@ -417,7 +423,10 @@ func (c *BatchSettlementEvmScheme) RecoverSession(ctx context.Context, requireme
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute channel ID: %w", err)
 	}
-	channelId = batchsettlement.NormalizeChannelId(channelId)
+	channelId, err = batchsettlement.NormalizeChannelId(channelId)
+	if err != nil {
+		return nil, err
+	}
 
 	channelIdBytes := common.HexToHash(channelId)
 
@@ -561,7 +570,10 @@ func (c *BatchSettlementEvmScheme) recoverFromSignature(
 	if err != nil {
 		return false, nil //nolint:nilerr
 	}
-	channelId = batchsettlement.NormalizeChannelId(channelId)
+	channelId, err = batchsettlement.NormalizeChannelId(channelId)
+	if err != nil {
+		return false, nil //nolint:nilerr
+	}
 
 	// Read onchain state to verify
 	channelIdBytes := common.HexToHash(channelId)

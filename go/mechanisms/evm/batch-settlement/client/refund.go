@@ -262,7 +262,7 @@ func executeRefund(
 		if settle != nil && settle.Extra != nil {
 			if cs, ok := settle.Extra["channelState"].(map[string]interface{}); ok {
 				if channelId, ok := cs["channelId"].(string); ok && channelId != "" {
-					_ = UpdateSessionAfterRefund(scheme.Storage(), batchsettlement.NormalizeChannelId(channelId), settle.Extra)
+					_ = UpdateSessionAfterRefund(scheme.Storage(), channelId, settle.Extra)
 				}
 			}
 		}
@@ -287,7 +287,10 @@ func buildRefundVoucherPayload(
 	if err != nil {
 		return nil, fmt.Errorf("refund: compute channel ID: %w", err)
 	}
-	channelId = batchsettlement.NormalizeChannelId(channelId)
+	channelId, err = batchsettlement.NormalizeChannelId(channelId)
+	if err != nil {
+		return nil, err
+	}
 
 	storage := scheme.Storage()
 	session, _ := storage.Get(channelId)

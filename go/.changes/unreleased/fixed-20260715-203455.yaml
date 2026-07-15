@@ -1,0 +1,3 @@
+kind: fixed
+body: Fix unauthenticated path-traversal and pre-verification channel mutation in the batch-settlement server scheme, and widen AfterVerifyHook so hooks can abort with after_verify_aborted cancellation. Channel ids are validated to canonical bytes32 form before storage access; file paths stay within the storage root; reservation is deferred until after successful verify; recovered onVerifyFailure results now run after-verify hooks.
+time: 2026-07-15T20:34:55.417577+02:00
