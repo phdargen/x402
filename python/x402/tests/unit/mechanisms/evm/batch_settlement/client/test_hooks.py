@@ -36,7 +36,10 @@ def _deps() -> BatchSettlementClientDeps:
     )
 
 
-def _settle(channel_id: str | None = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", balance: str = "100") -> SettleResponse:
+def _settle(
+    channel_id: str | None = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    balance: str = "100",
+) -> SettleResponse:
     extra = (
         {
             "channelState": {
@@ -65,7 +68,9 @@ class TestHandlePaymentResponse:
             PaymentResponseContext(
                 payment_payload={
                     "type": "voucher",
-                    "voucher": {"channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "voucher": {
+                        "channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
                 },
                 settle_response=_settle(),
             ),
@@ -77,14 +82,19 @@ class TestHandlePaymentResponse:
 
     def test_refund_payload_uses_refund_update_path(self):
         deps = _deps()
-        deps.storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="500"))
+        deps.storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="500"),
+        )
         result = handle_batch_settlement_payment_response(
             deps,
             PaymentResponseContext(
                 payment_payload={
                     "type": "refund",
                     "channelConfig": {},
-                    "voucher": {"channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "voucher": {
+                        "channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
                 },
                 settle_response=_settle(balance="50"),
             ),
@@ -96,14 +106,19 @@ class TestHandlePaymentResponse:
 
     def test_refund_with_zero_balance_keeps_sentinel_channel(self):
         deps = _deps()
-        deps.storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="500"))
+        deps.storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="500"),
+        )
         handle_batch_settlement_payment_response(
             deps,
             PaymentResponseContext(
                 payment_payload={
                     "type": "refund",
                     "channelConfig": {},
-                    "voucher": {"channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "voucher": {
+                        "channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
                 },
                 settle_response=_settle(balance="0"),
             ),
@@ -115,14 +130,19 @@ class TestHandlePaymentResponse:
 
     def test_refund_without_channel_id_in_extra_is_noop(self):
         deps = _deps()
-        deps.storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
+        deps.storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
         result = handle_batch_settlement_payment_response(
             deps,
             PaymentResponseContext(
                 payment_payload={
                     "type": "refund",
                     "channelConfig": {},
-                    "voucher": {"channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "voucher": {
+                        "channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
                 },
                 settle_response=SettleResponse(
                     success=True,
@@ -134,7 +154,10 @@ class TestHandlePaymentResponse:
         )
         assert result is None
         # Untouched.
-        assert deps.storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is not None
+        assert (
+            deps.storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            is not None
+        )
 
     def test_payment_required_without_recoverable_returns_none(self):
         deps = _deps()
@@ -167,10 +190,15 @@ class TestCreateBatchSettlementClientHooks:
             PaymentResponseContext(
                 payment_payload={
                     "type": "voucher",
-                    "voucher": {"channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    "voucher": {
+                        "channelId": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    },
                 },
                 settle_response=_settle(),
             )
         )
         assert result is None
-        assert deps.storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is not None
+        assert (
+            deps.storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            is not None
+        )

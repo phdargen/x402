@@ -112,7 +112,10 @@ class TestProcessSettleResponse:
         storage = InMemoryClientChannelStorage()
         process_settle_response(storage, _settle_response(None))
         process_settle_response(storage, _settle_response({}))
-        assert storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is None
+        assert (
+            storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            is None
+        )
 
     def test_creates_context_when_absent(self):
         storage = InMemoryClientChannelStorage()
@@ -169,13 +172,24 @@ class TestProcessSettleResponse:
 class TestUpdateChannelAfterRefund:
     def test_no_extra_deletes_record(self):
         storage = InMemoryClientChannelStorage()
-        storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
-        update_channel_after_refund(storage, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", None)
-        assert storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") is None
+        storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
+        update_channel_after_refund(
+            storage, "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", None
+        )
+        assert (
+            storage.get("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            is None
+        )
 
     def test_zero_balance_keeps_sentinel_record(self):
         storage = InMemoryClientChannelStorage()
-        storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
+        storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
         update_channel_after_refund(
             storage,
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -196,7 +210,10 @@ class TestUpdateChannelAfterRefund:
 
     def test_remaining_balance_updates_record(self):
         storage = InMemoryClientChannelStorage()
-        storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
+        storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
         update_channel_after_refund(
             storage,
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -218,11 +235,26 @@ class TestUpdateChannelAfterRefund:
 class TestHasAndGetChannel:
     def test_get_returns_record_case_insensitively(self):
         storage = InMemoryClientChannelStorage()
-        storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
-        assert get_channel(storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") is not None
+        storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
+        assert (
+            get_channel(
+                storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            )
+            is not None
+        )
 
     def test_has_channel(self):
         storage = InMemoryClientChannelStorage()
-        assert not has_channel(storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        storage.set("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", BatchSettlementClientContext(balance="100"))
-        assert has_channel(storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        assert not has_channel(
+            storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        storage.set(
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            BatchSettlementClientContext(balance="100"),
+        )
+        assert has_channel(
+            storage, "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )

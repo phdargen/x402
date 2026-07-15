@@ -460,7 +460,9 @@ describe("InMemoryClientChannelStorage", () => {
 
   it("normalizes keys to lowercase canonical channel ids", async () => {
     await storage.set(MIXED_CASE_ID, { chargedCumulativeAmount: "1" });
-    expect(await storage.get(MIXED_CASE_ID.toLowerCase())).toEqual({ chargedCumulativeAmount: "1" });
+    expect(await storage.get(MIXED_CASE_ID.toLowerCase())).toEqual({
+      chargedCumulativeAmount: "1",
+    });
     expect(await storage.get(MIXED_CASE_ID)).toEqual({ chargedCumulativeAmount: "1" });
   });
 
