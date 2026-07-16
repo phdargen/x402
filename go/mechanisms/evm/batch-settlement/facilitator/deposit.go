@@ -277,18 +277,11 @@ func VerifyDeposit(
 		}
 	}
 
-	// Build response with projected state after deposit
-	projectedState := &batchsettlement.ChannelState{
-		Balance:             effectiveBalance,
-		TotalClaimed:        state.TotalClaimed,
-		WithdrawRequestedAt: state.WithdrawRequestedAt,
-		RefundNonce:         state.RefundNonce,
-	}
-
+	// Return current onchain state
 	return &x402.VerifyResponse{
 		IsValid: true,
 		Payer:   config.Payer,
-		Extra:   BuildVerifyExtra(channelId, projectedState),
+		Extra:   BuildVerifyExtra(channelId, state),
 	}, nil
 }
 

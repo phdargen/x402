@@ -2,16 +2,22 @@ package facilitator
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	bsclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/client"
+	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -389,6 +395,131 @@ func TestSettleDeposit_PostReceiptBalanceNotDoubled(t *testing.T) {
 	}
 	if tryAggregateCalls < 2 {
 		t.Fatalf("tryAggregateCalls = %d, want at least pre-submit + post-receipt", tryAggregateCalls)
+	}
+}
+
+// TestVerifyDeposit_ExtraBalanceIsOnchainNotProjected pins that verify extra
+// reports the current onchain balance, not balance+deposit. Projecting here
+// lets AfterVerifyHook cache unmined escrow and approve later vouchers against it.
+func TestVerifyDeposit_ExtraBalanceIsOnchainNotProjected(t *testing.T) {
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	payerAddr := crypto.PubkeyToAddress(privKey.PublicKey).Hex()
+	clientSigner, err := evmsigners.NewClientSignerFromPrivateKey(hex.EncodeToString(crypto.FromECDSA(privKey)))
+	if err != nil {
+		t.Fatalf("NewClientSignerFromPrivateKey: %v", err)
+	}
+
+	cfg := validConfig()
+	cfg.Payer = payerAddr
+	cfg.PayerAuthorizer = payerAddr // voucher ECDSA against payerAuthorizer
+	id, err := batchsettlement.ComputeChannelId(cfg, testNetwork)
+	if err != nil {
+		t.Fatalf("ComputeChannelId: %v", err)
+	}
+
+	onchainBalance := big.NewInt(100)
+	depositAmount := big.NewInt(100)
+	maxClaimable := "150" // within onchain+deposit (200), above onchain (100)
+	tokenName, tokenVersion := "USD Coin", "2"
+	now := time.Now().Unix()
+	salt := "0x" + strings.Repeat("aa", 32)
+
+	erc3009Nonce, err := batchsettlement.BuildErc3009DepositNonce(id, salt)
+	if err != nil {
+		t.Fatalf("BuildErc3009DepositNonce: %v", err)
+	}
+	nonceBytes, err := evm.HexToBytes(erc3009Nonce)
+	if err != nil {
+		t.Fatalf("HexToBytes nonce: %v", err)
+	}
+	erc3009Sig, err := clientSigner.SignTypedData(
+		context.Background(),
+		evm.TypedDataDomain{
+			Name:              tokenName,
+			Version:           tokenVersion,
+			ChainID:           big.NewInt(8453),
+			VerifyingContract: cfg.Token,
+		},
+		map[string][]evm.TypedDataField{
+			"EIP712Domain": {
+				{Name: "name", Type: "string"},
+				{Name: "version", Type: "string"},
+				{Name: "chainId", Type: "uint256"},
+				{Name: "verifyingContract", Type: "address"},
+			},
+			"ReceiveWithAuthorization": batchsettlement.ReceiveAuthorizationTypes["ReceiveWithAuthorization"],
+		},
+		"ReceiveWithAuthorization",
+		map[string]interface{}{
+			"from":        payerAddr,
+			"to":          batchsettlement.ERC3009DepositCollectorAddress,
+			"value":       depositAmount,
+			"validAfter":  big.NewInt(0),
+			"validBefore": big.NewInt(now + 3600),
+			"nonce":       nonceBytes,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SignTypedData ERC-3009: %v", err)
+	}
+	voucher, err := bsclient.SignVoucher(context.Background(), clientSigner, id, maxClaimable, testNetwork)
+	if err != nil {
+		t.Fatalf("SignVoucher: %v", err)
+	}
+
+	facSigner := &fakeFacilitatorSigner{
+		addresses: []string{"0xfacilitator"},
+		getBalance: func(_ string, _ string) (*big.Int, error) {
+			return big.NewInt(1000), nil
+		},
+		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+			switch functionName {
+			case evm.FunctionTryAggregate:
+				return multicallChannelStateResult(t, onchainBalance, big.NewInt(0), 0, big.NewInt(0)), nil
+			case "deposit":
+				return nil, nil // simulation ok
+			default:
+				return nil, fmt.Errorf("unexpected rpc: %s", functionName)
+			}
+		},
+	}
+	payload := &batchsettlement.BatchSettlementDepositPayload{
+		Type:          "deposit",
+		ChannelConfig: cfg,
+		Deposit: batchsettlement.BatchSettlementDepositData{
+			Amount: depositAmount.String(),
+			Authorization: batchsettlement.BatchSettlementDepositAuthorization{
+				Erc3009Authorization: &batchsettlement.BatchSettlementErc3009Authorization{
+					ValidAfter:  "0",
+					ValidBefore: fmt.Sprintf("%d", now+3600),
+					Salt:        salt,
+					Signature:   evm.BytesToHex(erc3009Sig),
+				},
+			},
+		},
+		Voucher: *voucher,
+	}
+	reqs := reqsFor(testNetwork)
+	reqs.Extra = map[string]interface{}{
+		"receiverAuthorizer":  cfg.ReceiverAuthorizer,
+		"assetTransferMethod": "eip3009",
+		"name":                tokenName,
+		"version":             tokenVersion,
+	}
+
+	resp, err := VerifyDeposit(context.Background(), facSigner, payload, reqs, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("VerifyDeposit: %v", err)
+	}
+	if resp == nil || !resp.IsValid {
+		t.Fatalf("expected valid verify, got %+v", resp)
+	}
+	got, _ := resp.Extra["balance"].(string)
+	if got != "100" {
+		t.Fatalf("extra.balance = %q, want %q (onchain, not projected 200)", got, "100")
 	}
 }
 

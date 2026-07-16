@@ -1,0 +1,3 @@
+kind: fixed
+body: Fix batch-settlement VerifyDeposit returning projected balance+deposit in verify extra before the deposit is mined, aligning with TS/Python so AfterVerifyHook does not cache unconfirmed escrow.
+time: 2026-07-16T18:45:00.000000+02:00
