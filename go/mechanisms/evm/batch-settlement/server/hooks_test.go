@@ -2,11 +2,17 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
+
 	x402 "github.com/x402-foundation/x402/go/v2"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	bsclient "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/client"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/facilitator"
+	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -23,15 +29,17 @@ type stubRequirements struct {
 	network string
 	asset   string
 	amount  string
+	payTo   string
+	extra   map[string]interface{}
 }
 
 func (s stubRequirements) GetScheme() string                { return s.scheme }
 func (s stubRequirements) GetNetwork() string               { return s.network }
 func (s stubRequirements) GetAsset() string                 { return s.asset }
 func (s stubRequirements) GetAmount() string                { return s.amount }
-func (s stubRequirements) GetPayTo() string                 { return "" }
+func (s stubRequirements) GetPayTo() string                 { return s.payTo }
 func (s stubRequirements) GetMaxTimeoutSeconds() int        { return 60 }
-func (s stubRequirements) GetExtra() map[string]interface{} { return nil }
+func (s stubRequirements) GetExtra() map[string]interface{} { return s.extra }
 
 func batchedReqs() stubRequirements {
 	return stubRequirements{scheme: batchsettlement.SchemeBatched, network: "eip155:8453", amount: "10"}
@@ -197,6 +205,81 @@ func TestBeforeVerifyHook_FreshCumulativePasses(t *testing.T) {
 	})
 	if err != nil || res != nil {
 		t.Fatalf("expected pass-through, got %v / %v", res, err)
+	}
+}
+
+// TestBeforeVerifyHook_LocalVerifyRejectsOverEscrow pins that a voucher whose
+// cumulative maxClaimable exceeds the cached (real) escrow balance is not
+// locally approved. With an inflated cached balance (e.g. SettleDeposit
+// double-count), the same voucher would incorrectly pass the local fast path.
+func TestBeforeVerifyHook_LocalVerifyRejectsOverEscrow(t *testing.T) {
+	priv, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	voucherSigner, err := evmsigners.NewClientSignerFromPrivateKey(hex.EncodeToString(crypto.FromECDSA(priv)))
+	if err != nil {
+		t.Fatalf("client signer: %v", err)
+	}
+	payerAuthorizer := voucherSigner.Address()
+
+	cfg := testConfig()
+	cfg.PayerAuthorizer = payerAuthorizer
+	channelId, err := batchsettlement.ComputeChannelId(cfg, "eip155:8453")
+	if err != nil {
+		t.Fatalf("compute channel id: %v", err)
+	}
+
+	// charged=100, reqAmount=10 → expected maxClaimable=110 > Balance=100.
+	const maxClaimable = "110"
+	voucher, err := bsclient.SignVoucher(context.Background(), voucherSigner, channelId, maxClaimable, "eip155:8453")
+	if err != nil {
+		t.Fatalf("sign voucher: %v", err)
+	}
+
+	s := NewBatchSettlementEvmScheme(cfg.Receiver, nil)
+	sess := sampleSession(channelId, "100")
+	sess.ChannelConfig = cfg
+	sess.Balance = "100"
+	sess.TotalClaimed = "0"
+	sess.OnchainSyncedAt = time.Now().UnixMilli()
+	_ = s.UpdateSession(channelId, sess)
+
+	reqs := stubRequirements{
+		scheme:  batchsettlement.SchemeBatched,
+		network: "eip155:8453",
+		asset:   cfg.Token,
+		amount:  "10",
+		payTo:   cfg.Receiver,
+		extra: map[string]interface{}{
+			"receiverAuthorizer": cfg.ReceiverAuthorizer,
+		},
+	}
+	payload := map[string]interface{}{
+		"type":          "voucher",
+		"channelConfig": batchsettlement.ChannelConfigToMap(cfg),
+		"voucher": map[string]interface{}{
+			"channelId":          channelId,
+			"maxClaimableAmount": maxClaimable,
+			"signature":          voucher.Signature,
+		},
+	}
+
+	res, err := s.BeforeVerifyHook()(x402.VerifyContext{
+		Payload:      &stubPayload{data: payload},
+		Requirements: reqs,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res == nil || !res.Skip || res.SkipVerifyResult == nil {
+		t.Fatalf("expected local verify skip result, got %+v", res)
+	}
+	if res.SkipVerifyResult.IsValid {
+		t.Fatal("expected local verify to reject over-escrow voucher")
+	}
+	if res.SkipVerifyResult.InvalidReason != facilitator.ErrMaxClaimableExceedsBal {
+		t.Fatalf("InvalidReason = %q, want %q", res.SkipVerifyResult.InvalidReason, facilitator.ErrMaxClaimableExceedsBal)
 	}
 }
 

@@ -315,6 +315,83 @@ func TestSettleDeposit_MissingAuthorization(t *testing.T) {
 	}
 }
 
+// TestSettleDeposit_PostReceiptBalanceNotDoubled pins that SettleDeposit anchors
+// optimistic balance to the pre-submit channel read. When the post-receipt RPC
+// already reflects deposit=100 (balance=100), the settle extra must report 100
+// — not 200 from adding depositAmount again on top of the post-deposit read.
+func TestSettleDeposit_PostReceiptBalanceNotDoubled(t *testing.T) {
+	cfg := validConfig()
+	channelId, err := batchsettlement.ComputeChannelId(cfg, testNetwork)
+	if err != nil {
+		t.Fatalf("compute channel id: %v", err)
+	}
+
+	var tryAggregateCalls int
+	var writeSeen bool
+	signer := &fakeFacilitatorSigner{
+		addresses: []string{"0xfacilitator"},
+		writeContract: func(functionName string, _ ...interface{}) (string, error) {
+			if functionName != "deposit" {
+				t.Fatalf("unexpected write: %s", functionName)
+			}
+			if tryAggregateCalls < 1 {
+				t.Fatal("expected pre-submit ReadChannelState before WriteContract")
+			}
+			writeSeen = true
+			return "0x" + strings.Repeat("ab", 32), nil
+		},
+		waitForReceipt: func(txHash string) (*evm.TransactionReceipt, error) {
+			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash}, nil
+		},
+		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+			if functionName != evm.FunctionTryAggregate {
+				return nil, errors.New("unexpected rpc")
+			}
+			tryAggregateCalls++
+			if !writeSeen {
+				// Pre-submit: channel empty.
+				return multicallChannelStateResult(t, big.NewInt(0), big.NewInt(0), 0, big.NewInt(0)), nil
+			}
+			// Post-receipt: RPC already includes the mined deposit.
+			return multicallChannelStateResult(t, big.NewInt(100), big.NewInt(0), 0, big.NewInt(0)), nil
+		},
+	}
+
+	payload := &batchsettlement.BatchSettlementDepositPayload{
+		Type:          "deposit",
+		ChannelConfig: cfg,
+		Voucher: batchsettlement.BatchSettlementVoucherFields{
+			ChannelId:          channelId,
+			MaxClaimableAmount: "100",
+			Signature:          "0x" + strings.Repeat("22", 65),
+		},
+		Deposit: batchsettlement.BatchSettlementDepositData{
+			Amount: "100",
+			Authorization: batchsettlement.BatchSettlementDepositAuthorization{
+				Erc3009Authorization: goodErc3009Auth(),
+			},
+		},
+	}
+
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("SettleDeposit: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("expected success, got %+v", resp)
+	}
+	cs, ok := resp.Extra["channelState"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("missing channelState in extra: %+v", resp.Extra)
+	}
+	if got, _ := cs["balance"].(string); got != "100" {
+		t.Fatalf("channelState.balance = %q, want \"100\" (not doubled)", got)
+	}
+	if tryAggregateCalls < 2 {
+		t.Fatalf("tryAggregateCalls = %d, want at least pre-submit + post-receipt", tryAggregateCalls)
+	}
+}
+
 // ----- VerifyDeposit pre-RPC paths -----
 
 func TestVerifyDeposit_BadAmount(t *testing.T) {

@@ -1,0 +1,3 @@
+kind: fixed
+body: Fix batch-settlement SettleDeposit double-counting channel balance after a confirmed deposit by anchoring the optimistic balance to a pre-submit ReadChannelState and adding depositAmount once.
+time: 2026-07-16T14:02:29.783307+02:00
