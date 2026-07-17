@@ -1,0 +1,3 @@
+kind: changed
+body: SIWX validation and verification results now use IsValid, InvalidReason, InvalidMessage, and Payer instead of Valid, Error, and Address. Each failure includes a machine-readable invalid_siwx_* code aligned with the TypeScript SDK.
+time: 2026-07-17T12:00:00.000000+02:00
