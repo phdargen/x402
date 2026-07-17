@@ -1,5 +1,12 @@
 # @x402/svm Changelog
 
+## 2.19.0
+
+### Minor Changes
+
+- Updated dependencies [c72cfee](https://github.com/x402-foundation/x402/commit/c72cfee)
+  - @x402/core@2.19.0
+
 ## 2.18.0
 
 ### Minor Changes
