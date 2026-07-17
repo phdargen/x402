@@ -1,3 +1,11 @@
+## v2.19.0 - 2026-07-17
+### Changed
+- SIWX validation and verification results now use IsValid, InvalidReason, InvalidMessage, and Payer instead of Valid, Error, and Address. Each failure includes a machine-readable invalid_siwx_* code aligned with the TypeScript SDK. ([#2889](https://github.com/x402-foundation/x402/pull/2889)) - Thanks [@phdargen](https://github.com/phdargen)!
+### Fixed
+- Fix unauthenticated path-traversal and pre-verification channel mutation in the batch-settlement server scheme, and widen AfterVerifyHook so hooks can abort with after_verify_aborted cancellation. Channel ids are validated to canonical bytes32 form before storage access; file paths stay within the storage root; reservation is deferred until after successful verify; recovered onVerifyFailure results now run after-verify hooks. ([#2863](https://github.com/x402-foundation/x402/pull/2863)) - Thanks [@phdargen](https://github.com/phdargen)!
+- Fix batch-settlement SettleDeposit double-counting channel balance after a confirmed deposit by anchoring the optimistic balance to a pre-submit ReadChannelState and adding depositAmount once. ([#2881](https://github.com/x402-foundation/x402/pull/2881)) - Thanks [@phdargen](https://github.com/phdargen)!
+- Fix batch-settlement VerifyDeposit returning projected balance+deposit in verify extra before the deposit is mined, aligning with TS/Python so AfterVerifyHook does not cache unconfirmed escrow. ([#2883](https://github.com/x402-foundation/x402/pull/2883)) - Thanks [@phdargen](https://github.com/phdargen)!
+
 ## v2.18.0 - 2026-07-10
 ### Added
 - Add Igra mainnet (eip155:38833) default stablecoin USDC via Permit2 ([#2800](https://github.com/x402-foundation/x402/pull/2800)) - Thanks [@emdin](https://github.com/emdin)!
