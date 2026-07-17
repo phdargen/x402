@@ -27,6 +27,8 @@ export type {
   SIWxValidationCode,
   SIWxValidationResult,
   SIWxValidationOptions,
+  SIWxVerifyCode,
+  SIWxErrorCode,
   SIWxVerifyResult,
   EVMMessageVerifier,
   SIWxVerifyOptions,

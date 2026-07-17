@@ -117,12 +117,12 @@ async function handleRequest(request: Request) {
 
   // Verify signature and recover address
   const verification = await verifySIWxSignature(payload);
-  if (!verification.valid) {
-    return { error: verification.error };
+  if (!verification.isValid) {
+    return { error: verification.invalidMessage };
   }
 
-  // verification.address is the verified wallet
-  if (await isAuthOnlyRoute(request) || await checkPaymentHistory(verification.address)) {
+  // verification.payer is the verified wallet
+  if (await isAuthOnlyRoute(request) || await checkPaymentHistory(verification.payer)) {
     // Grant access
   }
 }
@@ -257,7 +257,15 @@ Verifies the cryptographic signature and recovers the signer address.
 verifySIWxSignature(payload, {
   evmVerifier?: EVMMessageVerifier;  // For smart wallet support
 })
-// Returns: { valid: boolean; address?: string; error?: string; cause?: unknown }
+// Returns: { isValid: true; payer: string }
+//        | { isValid: false; invalidReason: SIWxVerifyCode; invalidMessage: string }
+
+type SIWxVerifyCode =
+  | "invalid_siwx_signature"
+  | "invalid_siwx_chain_id"
+  | "invalid_siwx_unsupported_chain"
+  | "invalid_siwx_malformed_signature"
+  | "invalid_siwx_verifier_error";
 ```
 
 **Smart Wallet Support (EIP-1271 / EIP-6492):**

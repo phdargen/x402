@@ -420,8 +420,8 @@ describe("Sign-In-With-X Extension", () => {
       expect(validation.isValid).toBe(true);
 
       const verification = await verifySIWxSignature(parsed);
-      expect(verification.valid).toBe(true);
-      expect(verification.address?.toLowerCase()).toBe(account.address.toLowerCase());
+      expect(verification.isValid).toBe(true);
+      expect(verification.payer?.toLowerCase()).toBe(account.address.toLowerCase());
     });
 
     it("should reject tampered signature", async () => {
@@ -443,7 +443,8 @@ describe("Sign-In-With-X Extension", () => {
       payload.signature = "0x" + "00".repeat(65); // Invalid signature
 
       const verification = await verifySIWxSignature(payload);
-      expect(verification.valid).toBe(false);
+      expect(verification.isValid).toBe(false);
+      expect(verification.invalidReason).toBe("invalid_siwx_signature");
     });
 
     it("should work for auth-only endpoints (no enrichment)", async () => {
@@ -472,8 +473,8 @@ describe("Sign-In-With-X Extension", () => {
       expect(validation.isValid).toBe(true);
 
       const result = await verifySIWxSignature(parsed);
-      expect(result.valid).toBe(true);
-      expect(result.address?.toLowerCase()).toBe(account.address.toLowerCase());
+      expect(result.isValid).toBe(true);
+      expect(result.payer?.toLowerCase()).toBe(account.address.toLowerCase());
     });
   });
 
@@ -506,7 +507,7 @@ describe("Sign-In-With-X Extension", () => {
         message: expect.any(String),
         signature: expect.any(String),
       });
-      expect(result.valid).toBe(true);
+      expect(result.isValid).toBe(true);
     });
 
     it("should fallback to EOA verification when no verifier provided", async () => {
@@ -528,8 +529,8 @@ describe("Sign-In-With-X Extension", () => {
 
       // No verifier - should still work for EOA
       const result = await verifySIWxSignature(payload);
-      expect(result.valid).toBe(true);
-      expect(result.address?.toLowerCase()).toBe(account.address.toLowerCase());
+      expect(result.isValid).toBe(true);
+      expect(result.payer?.toLowerCase()).toBe(account.address.toLowerCase());
     });
 
     it("should return error when verifier returns false", async () => {
@@ -554,14 +555,13 @@ describe("Sign-In-With-X Extension", () => {
         evmVerifier: mockVerifier,
       });
 
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Signature verification failed");
-      expect(result.cause).toBeUndefined();
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_signature");
+      expect(result.invalidMessage).toContain("Signature verification failed");
     });
 
     it("should return error when verifier throws", async () => {
-      const rpcError = new Error("RPC error");
-      const mockVerifier: EVMMessageVerifier = vi.fn().mockRejectedValue(rpcError);
+      const mockVerifier: EVMMessageVerifier = vi.fn().mockRejectedValue(new Error("RPC error"));
       const account = privateKeyToAccount(generatePrivateKey());
 
       const extension = createTestChallenge({
@@ -582,9 +582,9 @@ describe("Sign-In-With-X Extension", () => {
         evmVerifier: mockVerifier,
       });
 
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("RPC error");
-      expect(result.cause).toBe(rpcError);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_verifier_error");
+      expect(result.invalidMessage).toContain("RPC error");
     });
 
     it("should not use verifier for Solana signatures", async () => {
@@ -617,8 +617,8 @@ describe("Sign-In-With-X Extension", () => {
 
       // Verifier should NOT be called for Solana
       expect(mockVerifier).not.toHaveBeenCalled();
-      expect(result.valid).toBe(true);
-      expect(result.address).toBe(address);
+      expect(result.isValid).toBe(true);
+      expect(result.payer).toBe(address);
     });
   });
 
@@ -805,8 +805,9 @@ describe("Sign-In-With-X Extension", () => {
       };
 
       const result = await verifySIWxSignature(payload);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Unsupported chain namespace");
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_unsupported_chain");
+      expect(result.invalidMessage).toContain("Unsupported chain namespace");
     });
 
     it("should return error for malformed EVM chainId", async () => {
@@ -816,9 +817,9 @@ describe("Sign-In-With-X Extension", () => {
       };
 
       const result = await verifySIWxSignature(payload);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Invalid EVM chainId format");
-      expect(result.cause).toBeInstanceOf(Error);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_chain_id");
+      expect(result.invalidMessage).toContain("Invalid EVM chainId format");
     });
 
     it("should verify Solana signatures", async () => {
@@ -849,8 +850,8 @@ describe("Sign-In-With-X Extension", () => {
       };
 
       const result = await verifySIWxSignature(payload);
-      expect(result.valid).toBe(true);
-      expect(result.address).toBe(address);
+      expect(result.isValid).toBe(true);
+      expect(result.payer).toBe(address);
     });
 
     it("should reject invalid Solana signature length", async () => {
@@ -867,8 +868,9 @@ describe("Sign-In-With-X Extension", () => {
       };
 
       const result = await verifySIWxSignature(payload);
-      expect(result.valid).toBe(false);
-      expect(result.error).toContain("Invalid signature length");
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_malformed_signature");
+      expect(result.invalidMessage).toContain("Invalid signature length");
     });
   });
 
@@ -965,8 +967,8 @@ describe("Sign-In-With-X Extension", () => {
 
         // Verify the signature is valid
         const result = await verifySIWxSignature(payload);
-        expect(result.valid).toBe(true);
-        expect(result.address).toBe(address);
+        expect(result.isValid).toBe(true);
+        expect(result.payer).toBe(address);
       });
 
       it("should roundtrip through encode/parse/verify with Solana", async () => {
@@ -999,8 +1001,8 @@ describe("Sign-In-With-X Extension", () => {
         expect(validation.isValid).toBe(true);
 
         const verification = await verifySIWxSignature(parsed);
-        expect(verification.valid).toBe(true);
-        expect(verification.address).toBe(address);
+        expect(verification.isValid).toBe(true);
+        expect(verification.payer).toBe(address);
       });
 
       it("should work with PublicKey object style signer", async () => {
@@ -1031,7 +1033,7 @@ describe("Sign-In-With-X Extension", () => {
         expect(payload.chainId).toBe(SOLANA_DEVNET);
 
         const verification = await verifySIWxSignature(payload);
-        expect(verification.valid).toBe(true);
+        expect(verification.isValid).toBe(true);
       });
     });
 
@@ -1066,7 +1068,7 @@ describe("Sign-In-With-X Extension", () => {
 
         // Verification should still work because it uses chainId, not signatureScheme
         const result = await verifySIWxSignature(payload);
-        expect(result.valid).toBe(true); // Proves signatureScheme is ignored
+        expect(result.isValid).toBe(true); // Proves signatureScheme is ignored
       });
     });
   });

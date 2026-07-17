@@ -294,6 +294,16 @@ Route verification by `chainId` prefix:
 - **`eip155:*`**: Reconstruct SIWE message, verify using ECDSA recovery (EOA) or on-chain verification (EIP-1271/EIP-6492 for smart wallets).
 - **`solana:*`**: Reconstruct SIWS message, verify Ed25519 signature.
 
+Verification failures SHOULD be reported with a machine-readable code identifying the failed check:
+
+| Code                               | Failed check                                              |
+| ---------------------------------- | --------------------------------------------------------- |
+| `invalid_siwx_signature`           | cryptographic signature verification failed               |
+| `invalid_siwx_chain_id`            | `chainId` is not a valid CAIP-2 EVM identifier            |
+| `invalid_siwx_unsupported_chain`   | `chainId` namespace is not supported                      |
+| `invalid_siwx_malformed_signature` | signature or address encoding/length is invalid (Solana)  |
+| `invalid_siwx_verifier_error`      | verifier threw (e.g. RPC unavailable during EIP-1271)     |
+
 ### 4. Check Payment History
 
 If signature is valid, the Server checks whether the recovered `address` has previously paid for the requested resource. This is application-specific logic.

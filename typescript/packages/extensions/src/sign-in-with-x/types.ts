@@ -203,16 +203,27 @@ export interface SIWxValidationOptions {
 }
 
 /**
- * Result from signature verification
+ * Machine-readable code identifying which signature verification check failed
  */
-export interface SIWxVerifyResult {
-  valid: boolean;
-  /** Recovered/verified address (checksummed) */
-  address?: string;
-  error?: string;
-  /** Error thrown during verification (absent when a signature check simply failed) */
-  cause?: unknown;
-}
+export type SIWxVerifyCode =
+  | "invalid_siwx_signature"
+  | "invalid_siwx_chain_id"
+  | "invalid_siwx_unsupported_chain"
+  | "invalid_siwx_malformed_signature"
+  | "invalid_siwx_verifier_error";
+
+/** All spec-documented SIWx failure codes (validation and verify). */
+export type SIWxErrorCode = SIWxValidationCode | SIWxVerifyCode;
+
+/**
+ * Result from signature verification.
+ *
+ * Failure fields follow the facilitator VerifyResponse naming
+ * (isValid/invalidReason/invalidMessage).
+ */
+export type SIWxVerifyResult =
+  | { isValid: true; payer: string }
+  | { isValid: false; invalidReason: SIWxVerifyCode; invalidMessage: string };
 
 /**
  * EVM message verifier function type.
