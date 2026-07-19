@@ -235,6 +235,7 @@ export interface SchemeNetworkServer {
     paymentRequirements: PaymentRequirements,
     supportedKind: SupportedKind,
     facilitatorExtensions: string[],
+    facilitatorExtensionInfo?: Record<string, Record<string, unknown>>,
   ): Promise<PaymentRequirements>;
 
   /**
@@ -245,6 +246,7 @@ export interface SchemeNetworkServer {
    * @param network - The network identifier being validated
    * @param supportedKind - The facilitator's advertised kind for this scheme/network
    * @param facilitatorExtensions - Extensions advertised by the facilitator
+   * @param facilitatorExtensionInfo - Optional per-extension info from GET /supported
    * @returns A human-readable problem message when the configuration cannot be
    *   fulfilled, or void/undefined when valid.
    */
@@ -252,5 +254,6 @@ export interface SchemeNetworkServer {
     network: Network,
     supportedKind: SupportedKind,
     facilitatorExtensions: string[],
+    facilitatorExtensionInfo?: Record<string, Record<string, unknown>>,
   ): string | void;
 }

@@ -43,6 +43,18 @@ import { createBatchSettlementClientHooks } from "./hooks";
 import { processCorrectivePaymentRequired } from "./recovery";
 import type { ClientChannelStorage } from "./storage";
 import { signVoucher } from "./voucher";
+import { hasVoucherGatewayExtension } from "../gateway/utils";
+import {
+  createGatewayPaymentPayload,
+  type GatewayClientPaymentDeps,
+} from "../gateway/client/payment";
+import {
+  processGatewayCorrectivePaymentRequired,
+  processGatewaySettleResponseFromPayload,
+  storeAggregateVoucher,
+} from "../gateway/client/response";
+import { InMemoryGatewayClientStorage } from "../gateway/client/storage";
+import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
 
 export type { BatchSettlementClientContext } from "./storage";
 export type {
@@ -69,6 +81,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
   readonly schemeHooks: SchemeClientHooks;
 
   private readonly storage: ClientChannelStorage;
+  private readonly gatewayStorage = new InMemoryGatewayClientStorage();
   private readonly depositPolicy: BatchSettlementDepositPolicy | undefined;
   private readonly depositStrategy: BatchSettlementDepositStrategy | undefined;
   private readonly salt: `0x${string}`;
@@ -112,7 +125,54 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     }
 
     validateDepositPolicy(depositPolicy);
-    this.schemeHooks = createBatchSettlementClientHooks(this.deps());
+    const baseHooks = createBatchSettlementClientHooks(this.deps());
+    this.schemeHooks = {
+      ...baseHooks,
+      onPaymentResponse: async ctx => {
+        if (
+          ctx.settleResponse &&
+          hasVoucherGatewayExtension(
+            ctx.paymentPayload.extensions as Record<string, unknown> | undefined,
+          )
+        ) {
+          const raw = ctx.paymentPayload.payload;
+          if (isBatchSettlementDepositPayload(raw) || isBatchSettlementVoucherPayload(raw)) {
+            const channelId = raw.voucher.channelId;
+            if (isBatchSettlementDepositPayload(raw)) {
+              await storeAggregateVoucher(
+                this.gatewayStorage,
+                channelId,
+                raw.voucher.maxClaimableAmount,
+                raw.voucher.signature,
+              );
+            }
+            await processGatewaySettleResponseFromPayload(
+              this.gatewayStorage,
+              ctx.settleResponse,
+              ctx.paymentPayload.extensions as Record<string, unknown> | undefined,
+              ctx.paymentPayload.accepted,
+              channelId,
+            );
+            return;
+          }
+        }
+
+        if (
+          ctx.paymentRequired &&
+          hasVoucherGatewayExtension(
+            ctx.paymentRequired.extensions as Record<string, unknown> | undefined,
+          )
+        ) {
+          const recovered = await processGatewayCorrectivePaymentRequired(
+            this.gatewayStorage,
+            ctx.paymentRequired,
+          );
+          return recovered ? { recovered: true } : undefined;
+        }
+
+        return baseHooks.onPaymentResponse?.(ctx);
+      },
+    };
   }
 
   /**
@@ -132,6 +192,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     paymentRequirements: PaymentRequirements,
     context?: PaymentPayloadContext,
   ): Promise<PaymentPayloadResult> {
+    if (hasVoucherGatewayExtension(context?.extensions)) {
+      return createGatewayPaymentPayload(
+        this.gatewayDeps(),
+        x402Version,
+        paymentRequirements,
+        context,
+      );
+    }
+
     const deps = this.deps();
     const config = buildChannelConfig(deps, paymentRequirements);
     const channelId = computeChannelId(config, paymentRequirements.network);
@@ -371,6 +440,21 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
       salt: this.salt,
       payerAuthorizer: this.payerAuthorizer,
       voucherSigner: this.voucherSigner,
+    };
+  }
+
+  /**
+   * Bundles gateway client deps for voucher-gateway payment construction.
+   *
+   * @returns Gateway payment deps wrapping the scheme's signer and gateway storage.
+   */
+  private gatewayDeps(): GatewayClientPaymentDeps {
+    return {
+      ...this.deps(),
+      gatewayStorage: this.gatewayStorage,
+      depositPolicy: this.depositPolicy,
+      depositStrategy: this.depositStrategy,
+      extensionRpcOptions: this.extensionRpcOptions,
     };
   }
 }

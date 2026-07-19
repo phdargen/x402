@@ -224,6 +224,7 @@ export class x402Facilitator {
       extra?: Record<string, unknown>;
     }>;
     extensions: string[];
+    extensionInfo?: Record<string, Record<string, unknown>>;
     signers: Record<string, string[]>;
   } {
     const kinds: Array<{
@@ -233,15 +234,17 @@ export class x402Facilitator {
       extra?: Record<string, unknown>;
     }> = [];
     const signersByFamily: Record<string, Set<string>> = {};
+    const networks = new Set<string>();
 
     // Iterate over registered scheme data (array supports multiple facilitators per version)
     for (const [version, schemeDataArray] of this.registeredFacilitatorSchemes) {
       for (const schemeData of schemeDataArray) {
-        const { facilitator, networks } = schemeData;
+        const { facilitator, networks: schemeNetworks } = schemeData;
         const scheme = facilitator.scheme;
 
         // Iterate over stored concrete networks
-        for (const network of networks) {
+        for (const network of schemeNetworks) {
+          networks.add(network);
           const extra = facilitator.getExtra(network);
           kinds.push({
             x402Version: version,
@@ -266,9 +269,22 @@ export class x402Facilitator {
       signers[family] = Array.from(signerSet);
     }
 
+    const extensionInfo: Record<string, Record<string, unknown>> = {};
+    for (const extension of this.extensions.values()) {
+      if (!extension.getSupportedInfo) continue;
+      // Prefer the first registered network; gateway policy is facilitator-global today.
+      const network = networks.values().next().value as `${string}:${string}` | undefined;
+      if (!network) continue;
+      const info = extension.getSupportedInfo(network);
+      if (info !== undefined) {
+        extensionInfo[extension.key] = info;
+      }
+    }
+
     return {
       kinds,
       extensions: this.getExtensions(),
+      ...(Object.keys(extensionInfo).length > 0 ? { extensionInfo } : {}),
       signers,
     };
   }

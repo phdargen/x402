@@ -13,6 +13,20 @@ See the [scheme specification](https://github.com/x402-foundation/x402/blob/main
 | Client | `@x402/evm/batch-settlement/client` |
 | Server | `@x402/evm/batch-settlement/server` |
 | Facilitator | `@x402/evm/batch-settlement/facilitator` |
+| Gateway (shared) | `@x402/evm/batch-settlement/gateway` |
+| Gateway client | `@x402/evm/batch-settlement/gateway/client` |
+| Gateway server | `@x402/evm/batch-settlement/gateway/server` |
+| Gateway facilitator | `@x402/evm/batch-settlement/gateway/facilitator` |
+
+## Voucher Gateway Extension
+
+Optional `voucher-gateway` mode lets many servers share one client deposit through a facilitator-operated gateway contract. Scheme string stays `"batch-settlement"`; activation is via `extensions["voucher-gateway"]`.
+
+- **Facilitator:** `registerExtension(createVoucherGatewayFacilitatorExtension({ gateway, withdrawDelay, storage }))` — advertises `{ gateway, withdrawDelay }` under `/supported.extensionInfo["voucher-gateway"]` (not `kinds[].extra`), owns storage, and runs `createChannelManager(signer, network).start(...)` for `claimAndDistribute`.
+- **Server:** declare the route extension + `registerExtension(createVoucherGatewayServerExtension())`. No local ChannelManager; every request proxies `/verify` then `/settle` with a signed `GatewayClaimAuthorization`.
+- **Client:** same `BatchSettlementEvmScheme`; gateway path activates when the 402 includes the extension.
+
+See [voucher-gateway.md](https://github.com/x402-foundation/x402/blob/main/specs/extensions/voucher-gateway.md) and the [gateway examples](https://github.com/x402-foundation/x402/tree/main/examples/typescript/facilitator/batch-settlement-gateway).
 
 ## Client Usage
 
@@ -215,6 +229,8 @@ Deposits are sponsored by the facilitator (gasless for the client).
 - [Client example](https://github.com/x402-foundation/x402/tree/main/examples/typescript/clients/batch-settlement)
 - [Facilitator example](https://github.com/x402-foundation/x402/tree/main/examples/typescript/facilitator/batch-settlement)
 - [Streaming server (SSE, mid-stream voucher renewal)](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/batch-settlement-streaming)
+- [Gateway facilitator](https://github.com/x402-foundation/x402/tree/main/examples/typescript/facilitator/batch-settlement-gateway)
+- [Gateway server](https://github.com/x402-foundation/x402/tree/main/examples/typescript/servers/batch-settlement-gateway) (use the [vanilla client](https://github.com/x402-foundation/x402/tree/main/examples/typescript/clients/batch-settlement) — gateway activates from the 402 extension)
 
 ## See Also
 

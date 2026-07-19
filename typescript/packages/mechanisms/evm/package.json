@@ -211,6 +211,56 @@
         "default": "./dist/cjs/batch-settlement/facilitator/index.js"
       }
     },
+    "./batch-settlement/gateway": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/gateway/index.d.mts",
+        "default": "./dist/esm/batch-settlement/gateway/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/gateway/index.d.ts",
+        "default": "./dist/cjs/batch-settlement/gateway/index.js"
+      }
+    },
+    "./batch-settlement/gateway/client": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/gateway/client/index.d.mts",
+        "default": "./dist/esm/batch-settlement/gateway/client/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/gateway/client/index.d.ts",
+        "default": "./dist/cjs/batch-settlement/gateway/client/index.js"
+      }
+    },
+    "./batch-settlement/gateway/server": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/gateway/server/index.d.mts",
+        "default": "./dist/esm/batch-settlement/gateway/server/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/gateway/server/index.d.ts",
+        "default": "./dist/cjs/batch-settlement/gateway/server/index.js"
+      }
+    },
+    "./batch-settlement/gateway/facilitator": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/gateway/facilitator/index.d.mts",
+        "default": "./dist/esm/batch-settlement/gateway/facilitator/index.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/gateway/facilitator/index.d.ts",
+        "default": "./dist/cjs/batch-settlement/gateway/facilitator/index.js"
+      }
+    },
+    "./batch-settlement/gateway/facilitator/file-storage": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/gateway/facilitator/file-storage.d.mts",
+        "default": "./dist/esm/batch-settlement/gateway/facilitator/file-storage.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/gateway/facilitator/file-storage.d.ts",
+        "default": "./dist/cjs/batch-settlement/gateway/facilitator/file-storage.js"
+      }
+    },
     "./auth-capture/client": {
       "import": {
         "types": "./dist/esm/auth-capture/client/index.d.mts",

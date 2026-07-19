@@ -33,6 +33,10 @@ import {
   handleEnrichSettlementResponse,
   handleSettleFailure,
 } from "./settle";
+import { VOUCHER_GATEWAY } from "../gateway/constants";
+import { hasVoucherGatewayExtension } from "../gateway/utils";
+import { handleGatewayAfterSettle, handleGatewayBeforeSettle } from "../gateway/server/settle";
+import { handleGatewayBeforeVerify } from "../gateway/server/verify";
 
 export interface BatchSettlementEvmSchemeServerConfig {
   storage?: ChannelStorage;
@@ -81,10 +85,22 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     this.onchainStateTtlMs =
       config?.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
     this.schemeHooks = {
-      onBeforeVerify: ctx => handleBeforeVerify(this, ctx),
-      onAfterVerify: ctx => handleAfterVerify(this, ctx),
-      onBeforeSettle: ctx => handleBeforeSettle(this, ctx),
-      onAfterSettle: ctx => handleAfterSettle(this, ctx),
+      onBeforeVerify: ctx =>
+        hasVoucherGatewayExtension(ctx.paymentPayload.extensions as Record<string, unknown>)
+          ? handleGatewayBeforeVerify(this, ctx)
+          : handleBeforeVerify(this, ctx),
+      onAfterVerify: ctx =>
+        hasVoucherGatewayExtension(ctx.paymentPayload.extensions as Record<string, unknown>)
+          ? Promise.resolve()
+          : handleAfterVerify(this, ctx),
+      onBeforeSettle: ctx =>
+        hasVoucherGatewayExtension(ctx.paymentPayload.extensions as Record<string, unknown>)
+          ? handleGatewayBeforeSettle(this, ctx)
+          : handleBeforeSettle(this, ctx),
+      onAfterSettle: ctx =>
+        hasVoucherGatewayExtension(ctx.paymentPayload.extensions as Record<string, unknown>)
+          ? handleGatewayAfterSettle(this, ctx)
+          : handleAfterSettle(this, ctx),
       onVerifyFailure: ctx => handleVerifyFailure(this, ctx),
       onSettleFailure: ctx => handleSettleFailure(this, ctx),
       onVerifiedPaymentCanceled: ctx => handleVerifiedPaymentCanceled(this, ctx),
@@ -263,7 +279,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param supportedKind.scheme - Scheme name from the matched kind.
    * @param supportedKind.network - Network identifier from the matched kind.
    * @param supportedKind.extra - Optional extra fields on the matched kind.
-   * @param _extensionKeys - Extension keys (unused).
+   * @param extensionKeys - Extension keys from the request.
+   * @param facilitatorExtensionInfo - Facilitator extension info keyed by extension id.
    * @returns Enhanced payment requirements with batched fields in `extra`.
    */
   async enhancePaymentRequirements(
@@ -274,10 +291,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       network: Network;
       extra?: Record<string, unknown>;
     },
-    _extensionKeys: string[],
+    extensionKeys: string[],
+    facilitatorExtensionInfo?: Record<string, Record<string, unknown>>,
   ): Promise<PaymentRequirements> {
-    void _extensionKeys;
-
     const assetInfo = getDefaultAsset(paymentRequirements.network as Network);
 
     const receiverAuthorizer =
@@ -293,12 +309,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
     }
 
+    const gatewayInfo = facilitatorExtensionInfo?.[VOUCHER_GATEWAY];
+    const gatewayWithdrawDelay =
+      extensionKeys.includes(VOUCHER_GATEWAY) && typeof gatewayInfo?.withdrawDelay === "number"
+        ? gatewayInfo.withdrawDelay
+        : undefined;
+
     return {
       ...paymentRequirements,
       extra: {
         ...paymentRequirements.extra,
         receiverAuthorizer: getAddress(receiverAuthorizer),
-        withdrawDelay: this.withdrawDelay,
+        withdrawDelay: gatewayWithdrawDelay ?? this.withdrawDelay,
         name: assetInfo.name,
         version: assetInfo.version,
         assetTransferMethod:
@@ -310,17 +332,30 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Fails server startup when this scheme delegates the receiver-authorizer role
    * but the facilitator does not advertise a usable `receiverAuthorizer`.
+   * When `voucher-gateway` is registered, also requires facilitator extensionInfo.gateway.
    *
    * @param network - The network identifier being validated.
    * @param supportedKind - The facilitator's advertised kind for this scheme/network.
-   * @param _ - Extensions advertised by the facilitator (unused).
+   * @param facilitatorExtensions - Extensions advertised by the facilitator.
+   * @param facilitatorExtensionInfo - Optional per-extension info from GET /supported.
    * @returns A problem message when delegation is impossible, or void when valid.
    */
   validateFacilitatorSupport(
     network: Network,
     supportedKind: SupportedKind,
-    _: string[],
+    facilitatorExtensions: string[],
+    facilitatorExtensionInfo?: Record<string, Record<string, unknown>>,
   ): string | void {
+    if (facilitatorExtensions.includes(VOUCHER_GATEWAY)) {
+      const gateway = facilitatorExtensionInfo?.[VOUCHER_GATEWAY]?.gateway;
+      if (typeof gateway !== "string" || !gateway) {
+        return (
+          `voucher-gateway is enabled but the facilitator does not advertise ` +
+          `extensionInfo["voucher-gateway"].gateway on ${network}.`
+        );
+      }
+    }
+
     if (this.receiverAuthorizerSigner) return;
 
     const advertised = supportedKind.extra?.receiverAuthorizer;

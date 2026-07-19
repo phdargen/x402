@@ -486,19 +486,24 @@ Independently of the request path, the facilitator SHOULD run `claimAndDistribut
       "scheme": "batch-settlement",
       "network": "eip155:8453",
       "extra": {
-        "gateway": "0xGatewayContractAddress",
-        "withdrawDelay": 900
+        "receiverAuthorizer": "0xFacilitatorAuthorizerAddress"
       }
     }
   ],
   "extensions": ["voucher-gateway"],
+  "extensionInfo": {
+    "voucher-gateway": {
+      "gateway": "0xGatewayContractAddress",
+      "withdrawDelay": 900
+    }
+  },
   "signers": {
     "eip155:*": ["0xFacilitatorAuthorizerAddress"]
   }
 }
 ```
 
-Participating servers MUST copy `gateway` and `withdrawDelay` into their 402. `signers` lists addresses available for delegated `receiverAuthorizer`.
+Gateway policy (`gateway`, `withdrawDelay`) is advertised under `extensionInfo["voucher-gateway"]`, not under `kinds[].extra`. Participating servers MUST copy `gateway` into 402 `extensions["voucher-gateway"].info.gateway` and `withdrawDelay` into `accepts[].extra.withdrawDelay`. `signers` lists addresses available for delegated `receiverAuthorizer`.
 
 ### Verification rules
 

@@ -119,6 +119,9 @@ export function buildSupportedResponse(overrides?: Partial<SupportedResponse>): 
     if (overrides.extensions !== undefined) {
       base.extensions = overrides.extensions;
     }
+    if (overrides.extensionInfo !== undefined) {
+      base.extensionInfo = overrides.extensionInfo;
+    }
     if (overrides.signers !== undefined) {
       base.signers = overrides.signers;
     }

@@ -170,6 +170,10 @@ const supportedKindSchema: z.ZodType<SupportedResponse["kinds"][number], z.ZodTy
 const supportedResponseSchema: z.ZodType<SupportedResponse, z.ZodTypeDef, unknown> = z.object({
   kinds: z.array(supportedKindSchema),
   extensions: z.array(z.string()).default([]),
+  extensionInfo: z
+    .record(z.string(), z.record(z.string(), z.unknown()))
+    .nullish()
+    .transform(v => v ?? undefined),
   signers: z.record(z.string(), z.array(z.string())).default({}),
 });
 

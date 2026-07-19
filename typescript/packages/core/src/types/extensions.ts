@@ -1,4 +1,5 @@
 import type { VerifyResponse, SettleResponse } from "./facilitator";
+import type { Network } from "./";
 import type {
   PaymentRequiredContext,
   SettleResultContext,
@@ -29,6 +30,13 @@ export type {
 
 export interface FacilitatorExtension {
   key: string;
+  /**
+   * Optional info advertised in GET /supported under `extensionInfo[key]`.
+   *
+   * @param network - Network identifier for the supported kind being advertised.
+   * @returns Extension-specific supported info, or undefined when none applies.
+   */
+  getSupportedInfo?(network: Network): Record<string, unknown> | undefined;
 }
 
 /**

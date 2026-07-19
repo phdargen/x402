@@ -24,6 +24,10 @@ import { executeSettle } from "./settle";
 import { executeRefundWithSignature } from "./refund";
 import { resolveDataSuffix } from "../../shared/extensions";
 import * as Errors from "../errors";
+import { VOUCHER_GATEWAY } from "../gateway/constants";
+import * as GwErrors from "../gateway/errors";
+import { hasVoucherGatewayExtension } from "../gateway/utils";
+import type { VoucherGatewayFacilitatorExtension } from "../gateway/facilitator/extension";
 
 export interface BatchSettlementEvmSchemeConfig {
   /**
@@ -126,6 +130,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       return { isValid: false, invalidReason: Errors.ErrNetworkMismatch };
     }
 
+    if (hasVoucherGatewayExtension(payload.extensions)) {
+      const gatewayExt = context?.getExtension<VoucherGatewayFacilitatorExtension>(VOUCHER_GATEWAY);
+      if (!gatewayExt) {
+        return { isValid: false, invalidReason: GwErrors.ErrExtensionMissing };
+      }
+      return gatewayExt.verify(this.signer, payload, requirements, context);
+    }
+
     if (isBatchSettlementDepositPayload(rawPayload)) {
       return verifyDeposit(
         this.signer,
@@ -168,6 +180,19 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const rawPayload = payload.payload;
+
+    if (hasVoucherGatewayExtension(payload.extensions)) {
+      const gatewayExt = context?.getExtension<VoucherGatewayFacilitatorExtension>(VOUCHER_GATEWAY);
+      if (!gatewayExt) {
+        return {
+          success: false,
+          errorReason: GwErrors.ErrExtensionMissing,
+          transaction: "",
+          network: requirements.network,
+        };
+      }
+      return gatewayExt.settle(this.signer, payload, requirements, context);
+    }
 
     const dataSuffix = await resolveDataSuffix(context, {
       paymentPayload: payload,

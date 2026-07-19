@@ -59,6 +59,8 @@ export interface PaymentRequiredContext {
   error?: string;
   paymentRequiredResponse: PaymentRequired;
   transportContext?: unknown;
+  /** Facilitator-advertised per-extension info from GET /supported. */
+  facilitatorExtensionInfo?: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -675,6 +677,26 @@ export class x402ResourceServer {
   }
 
   /**
+   * Get facilitator extension info for a specific version, network, and scheme
+   *
+   * @param x402Version - The x402 version
+   * @param network - The network identifier
+   * @param scheme - The payment scheme
+   * @returns The facilitator extensionInfo map, or undefined if not found
+   */
+  getFacilitatorExtensionInfo(
+    x402Version: number,
+    network: Network,
+    scheme: string,
+  ): Record<string, Record<string, unknown>> | undefined {
+    const versionMap = this.supportedResponsesMap.get(x402Version);
+    if (!versionMap) return undefined;
+
+    const supportedResponse = findByNetworkAndScheme(versionMap, scheme, network);
+    return supportedResponse?.extensionInfo;
+  }
+
+  /**
    * Build payment requirements for a protected resource
    *
    * @param resourceConfig - Configuration for the protected resource
@@ -720,6 +742,11 @@ export class x402ResourceServer {
       resourceConfig.network,
       SchemeNetworkServer.scheme,
     );
+    const facilitatorExtensionInfo = this.getFacilitatorExtensionInfo(
+      x402Version,
+      resourceConfig.network,
+      SchemeNetworkServer.scheme,
+    );
 
     // Parse the price using the scheme's price parser
     const parsedPrice = await SchemeNetworkServer.parsePrice(
@@ -746,6 +773,7 @@ export class x402ResourceServer {
       baseRequirements,
       supportedKind,
       facilitatorExtensions,
+      facilitatorExtensionInfo,
     );
 
     requirements.push(requirement);
@@ -871,6 +899,14 @@ export class x402ResourceServer {
 
     // Let declared extensions add data to PaymentRequired response
     if (extensions) {
+      const primaryAccept = workingAccepts[0];
+      const facilitatorExtensionInfo = primaryAccept
+        ? this.getFacilitatorExtensionInfo(
+            response.x402Version,
+            primaryAccept.network as Network,
+            primaryAccept.scheme,
+          )
+        : undefined;
       for (const [key, declaration] of Object.entries(extensions)) {
         const extension = this.registeredExtensions.get(key);
         if (extension?.enrichPaymentRequiredResponse) {
@@ -881,6 +917,7 @@ export class x402ResourceServer {
               error,
               paymentRequiredResponse: response,
               transportContext,
+              facilitatorExtensionInfo,
             };
             const extensionData = await extension.enrichPaymentRequiredResponse(
               declaration,
@@ -1371,10 +1408,16 @@ export class x402ResourceServer {
           if (!supportedKind) continue;
 
           const extensions = this.getFacilitatorExtensions(x402Version, network as Network, scheme);
+          const extensionInfo = this.getFacilitatorExtensionInfo(
+            x402Version,
+            network as Network,
+            scheme,
+          );
           const problem = server.validateFacilitatorSupport(
             network as Network,
             supportedKind,
             extensions,
+            extensionInfo,
           );
           if (problem) configErrors.push(`${scheme} on ${network}: ${problem}`);
         }
