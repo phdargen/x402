@@ -538,9 +538,18 @@ If any check fails, the client MUST NOT sign another voucher from that response.
 
 ### State recovery
 
-Onchain baselines: per-server `gateway.distributedCumulative(channelId, receiver)`; aggregate `gateway.distributedByChannel(channelId)` which MUST equal base `totalClaimed`. Offchain actuals are trusted only with valid signatures. Without proofs, set baselines to onchain values and forfeit undistributed charges. Without a stored aggregate voucher signature, redemption cannot proceed until the client submits a new `deposit`.
+Onchain baselines: per-server `gateway.distributedCumulative(channelId, receiver)`; aggregate `gateway.distributedByChannel(channelId)` which MUST equal base `totalClaimed`. Offchain actuals are trusted only with valid signatures. Without proofs, set baselines to onchain values and forfeit undistributed charges. Without a stored aggregate voucher signature, the client MUST submit a new `deposit` to refresh the deposit-signed aggregate before steady-state `voucher` requests.
 
-A stale per-server cumulative yields a corrective 402 with base `channelState` / `voucherState` under `accepts[].extra` and per-server snapshot under the extension:
+**Client cold start.** When the client has no local gateway channel record, it reads onchain `channels(channelId)` and `distributedCumulative(channelId, payTo)`, sets per-server charged to `distributedCumulative` and aggregate charged to channel `totalClaimed`, then signs `GatewayVoucher.maxClaimableAmount = distributedCumulative + amount`. If the aggregate voucher signature is missing locally, the client MUST deposit (or top up) to obtain a fresh deposit-signed aggregate even when channel balance is already positive.
+
+**Corrective 402.** The following errors are recoverable (analogous to base `invalid_batch_settlement_evm_cumulative_amount_mismatch` / `invalid_batch_settlement_evm_cumulative_below_claimed`):
+
+| Error | Typical cause | Client baseline |
+| ----- | ------------- | --------------- |
+| `invalid_voucher_gateway_cumulative_mismatch` | Client ceiling ≠ facilitator tracked actual + `amount` | Prefer signed `claimAuthorization` / aggregate `voucherState` from the 402 after verification; else onchain |
+| `invalid_voucher_gateway_receiver_cumulative_below_distributed` | Client ceiling ≤ onchain `distributedCumulative` | Prefer signed proofs when present; else onchain `distributedCumulative` |
+
+Both use the same snapshot shape. The facilitator attaches nested `accepts[].extra.channelState` / `voucherState` and `extensions["voucher-gateway"].info.gatewayState` on the invalid `VerifyResponse`; the resource server MUST forward those fields onto the client-facing `PaymentRequired`. The client MUST verify all signatures before adopting proofs, then retry with a fresh payload.
 
 ```json
 {
@@ -596,7 +605,7 @@ A stale per-server cumulative yields a corrective 402 with base `channelState` /
 }
 ```
 
-The client MUST verify all signatures before re-synchronizing.
+`invalid_voucher_gateway_receiver_cumulative_below_distributed` uses the same body with that `error` value; `gatewayState.claimAuthorization` / per-server `voucherState` MAY be omitted when only the onchain floor is available.
 
 ---
 
@@ -618,9 +627,9 @@ In addition to base `invalid_batch_settlement_evm_*` codes:
 | `invalid_voucher_gateway_voucher_signature`                     | `GatewayVoucher` signature invalid for client authorization identity                                          |
 | `invalid_voucher_gateway_server_settlement_payload`             | Settlement missing, malformed, or not bound to the gateway voucher                                            |
 | `invalid_voucher_gateway_claim_authorization_signature`         | `claimAuthorization` signature invalid for `gatewayConfig.receiverAuthorizer`                                 |
-| `invalid_voucher_gateway_cumulative_mismatch`                   | Corrective 402: per-server ceiling ≠ tracked actual + `amount`                                                |
+| `invalid_voucher_gateway_cumulative_mismatch`                   | Corrective 402: per-server ceiling ≠ tracked actual + `amount` (resync + retry)                               |
 | `invalid_voucher_gateway_aggregate_mismatch`                    | Aggregate voucher does not match stored deposit-signed aggregate, or deposit aggregate ≠ post-deposit balance |
-| `invalid_voucher_gateway_receiver_cumulative_below_distributed` | Ceiling not greater than onchain `distributedCumulative`                                                      |
+| `invalid_voucher_gateway_receiver_cumulative_below_distributed` | Corrective 402: ceiling ≤ onchain `distributedCumulative` (resync + retry)                                    |
 | `invalid_voucher_gateway_accounting_mismatch`                   | Base `totalClaimed` ≠ gateway `distributedByChannel`                                                          |
 | `invalid_voucher_gateway_distribute_simulation_failed`          | `claimAndDistribute` simulation failed                                                                        |
 | `invalid_voucher_gateway_distribute_transaction_failed`         | Onchain `claimAndDistribute` failed                                                                           |

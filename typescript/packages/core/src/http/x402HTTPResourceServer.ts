@@ -627,6 +627,10 @@ export class x402HTTPResourceServer {
           extensions,
           transportContext,
           paymentPayload,
+          {
+            extra: verifyResult.extra,
+            extensions: verifyResult.extensions,
+          },
         );
         return {
           type: "payment-error",

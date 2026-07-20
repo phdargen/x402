@@ -45,7 +45,6 @@ export type SupportedKind = {
 export type SupportedResponse = {
   kinds: SupportedKind[];
   extensions: string[];
-  /** Optional per-extension supported info keyed by extension key. */
   extensionInfo?: Record<string, Record<string, unknown>>;
   signers: Record<string, string[]>; // CAIP family pattern → Signer addresses
 };

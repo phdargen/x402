@@ -834,6 +834,7 @@ export class x402ResourceServer {
    * @param extensions - Optional declared extensions (for per-key enrichment)
    * @param transportContext - Optional transport-specific context (e.g., HTTP request, MCP tool context)
    * @param paymentPayload - Optional failed payment payload for response-time scheme enrichment
+   * @param verifyFailure - Optional invalid verify extras to merge onto the corrective 402
    * @returns Payment required response object
    */
   async createPaymentRequiredResponse(
@@ -843,6 +844,7 @@ export class x402ResourceServer {
     extensions?: Record<string, unknown>,
     transportContext?: unknown,
     paymentPayload?: PaymentPayload,
+    verifyFailure?: Pick<VerifyResponse, "extra" | "extensions">,
   ): Promise<PaymentRequired> {
     const acceptsClone = requirements.map(req => ({
       ...req,
@@ -859,9 +861,29 @@ export class x402ResourceServer {
       accepts: workingAccepts,
     };
 
-    // Add extensions if provided
+    // Seed declared extensions, then overlay facilitator verify-failure extensions
+    // so extension enrich can preserve corrective snapshots (e.g. gatewayState).
     if (extensions && Object.keys(extensions).length > 0) {
-      response.extensions = extensions;
+      response.extensions = structuredClone(extensions);
+    }
+    if (verifyFailure?.extensions && Object.keys(verifyFailure.extensions).length > 0) {
+      response.extensions = deepMergeExtensionMaps(
+        response.extensions ?? {},
+        verifyFailure.extensions,
+      );
+    }
+
+    // Copy nested corrective fields from verify.extra onto the matching accept.
+    if (verifyFailure?.extra && Object.keys(verifyFailure.extra).length > 0) {
+      const target = findAcceptForVerifyFailure(workingAccepts, paymentPayload);
+      if (target) {
+        target.extra = {
+          ...(target.extra ?? {}),
+          ...structuredClone(verifyFailure.extra),
+        };
+        response.accepts = workingAccepts;
+        baselineAccepts = snapshotPaymentRequirementsList(workingAccepts);
+      }
     }
 
     for (let i = 0; i < workingAccepts.length; i++) {
@@ -1790,6 +1812,64 @@ function objectContainsSubset(expected: unknown, actual: unknown): boolean {
     }
     return objectContainsSubset(value, actualRecord[key]);
   });
+}
+
+/**
+ * Deep-merges extension maps. Nested plain objects are merged; other values from
+ * `overlay` replace `base`.
+ *
+ * @param base - Declared / existing extensions.
+ * @param overlay - Facilitator verify-failure extensions to merge in.
+ * @returns Merged extension map.
+ */
+function deepMergeExtensionMaps(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, overlayValue] of Object.entries(overlay)) {
+    const baseValue = out[key];
+    if (
+      baseValue !== null &&
+      typeof baseValue === "object" &&
+      !Array.isArray(baseValue) &&
+      overlayValue !== null &&
+      typeof overlayValue === "object" &&
+      !Array.isArray(overlayValue)
+    ) {
+      out[key] = deepMergeExtensionMaps(
+        baseValue as Record<string, unknown>,
+        overlayValue as Record<string, unknown>,
+      );
+    } else {
+      out[key] = structuredClone(overlayValue);
+    }
+  }
+  return out;
+}
+
+/**
+ * Picks the accept entry that should receive verify-failure corrective extras.
+ *
+ * @param accepts - Working accepts list.
+ * @param paymentPayload - Optional failed payment payload.
+ * @returns Matching accept, or the first accept as fallback.
+ */
+function findAcceptForVerifyFailure(
+  accepts: PaymentRequirements[],
+  paymentPayload?: PaymentPayload,
+): PaymentRequirements | undefined {
+  if (accepts.length === 0) {
+    return undefined;
+  }
+  if (!paymentPayload) {
+    return accepts[0];
+  }
+  const matched = accepts.find(
+    a =>
+      a.scheme === paymentPayload.accepted.scheme && a.network === paymentPayload.accepted.network,
+  );
+  return matched ?? accepts[0];
 }
 
 export default x402ResourceServer;

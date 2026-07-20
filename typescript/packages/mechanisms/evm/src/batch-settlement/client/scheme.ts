@@ -49,10 +49,10 @@ import {
   type GatewayClientPaymentDeps,
 } from "../gateway/client/payment";
 import {
-  processGatewayCorrectivePaymentRequired,
   processGatewaySettleResponseFromPayload,
   storeAggregateVoucher,
 } from "../gateway/client/response";
+import { processGatewayCorrectivePaymentRequired } from "../gateway/client/recovery";
 import { InMemoryGatewayClientStorage } from "../gateway/client/storage";
 import { isBatchSettlementDepositPayload, isBatchSettlementVoucherPayload } from "../types";
 
@@ -157,17 +157,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
           }
         }
 
-        if (
-          ctx.paymentRequired &&
-          hasVoucherGatewayExtension(
-            ctx.paymentRequired.extensions as Record<string, unknown> | undefined,
-          )
-        ) {
+        if (ctx.paymentRequired) {
           const recovered = await processGatewayCorrectivePaymentRequired(
-            this.gatewayStorage,
+            this.gatewayDeps(),
             ctx.paymentRequired,
           );
-          return recovered ? { recovered: true } : undefined;
+          if (recovered) {
+            return { recovered: true };
+          }
         }
 
         return baseHooks.onPaymentResponse?.(ctx);

@@ -5,7 +5,12 @@
  * Use createPaymentWrapper to wrap tool handlers with payment verification and settlement.
  */
 
-import type { PaymentPayload, PaymentRequirements, ResourceInfo } from "@x402/core/types";
+import type {
+  PaymentPayload,
+  PaymentRequirements,
+  ResourceInfo,
+  VerifyResponse,
+} from "@x402/core/types";
 import { x402ResourceServer } from "@x402/core/server";
 
 import type {
@@ -279,6 +284,10 @@ export function createPaymentWrapper(
           verifyResult.invalidReason || "Payment verification failed",
           transportContext,
           paymentPayload,
+          {
+            extra: verifyResult.extra,
+            extensions: verifyResult.extensions,
+          },
         );
       }
 
@@ -485,6 +494,7 @@ function buildToolResourceInfo(toolName: string, config: PaymentWrapperConfig): 
  * @param errorMessage - Error message describing why payment is required
  * @param transportContext - Optional MCP payment transport context for the current tool call.
  * @param paymentPayload - Optional client payment payload to include when building the 402 response.
+ * @param verifyFailure - Optional invalid verify extras to merge onto the corrective 402.
  * @returns Promise resolving to structured 402 error result with payment requirements
  */
 async function createPaymentRequiredResult(
@@ -494,6 +504,7 @@ async function createPaymentRequiredResult(
   errorMessage: string,
   transportContext?: MCPPaymentTransportContext,
   paymentPayload?: PaymentPayload,
+  verifyFailure?: Pick<VerifyResponse, "extra" | "extensions">,
 ): Promise<WrappedToolResult> {
   const resourceInfo = buildToolResourceInfo(toolName, config);
 
@@ -504,6 +515,7 @@ async function createPaymentRequiredResult(
     config.extensions,
     transportContext,
     paymentPayload,
+    verifyFailure,
   );
 
   return {

@@ -8,62 +8,25 @@ import {
   trySignEip2612PermitExtension,
   trySignErc20ApprovalExtension,
 } from "../../../shared/extensions";
-import type { EvmSchemeOptions } from "../../../shared/rpc";
 import { createBatchSettlementEIP3009DepositPayload } from "../../client/eip3009";
 import { createBatchSettlementPermit2DepositPayload } from "../../client/permit2";
 import {
   depositAmountForRequest,
-  type BatchSettlementDepositPolicy,
-  type BatchSettlementDepositStrategy,
   type BatchSettlementDepositStrategyContext,
 } from "../../client/config";
-import type { BatchSettlementClientDeps } from "../../client/channel";
 import {
   BatchSettlementAssetTransferMethod,
   type BatchSettlementVoucherPayload,
   type ChannelConfig,
 } from "../../types";
-import { MIN_WITHDRAW_DELAY } from "../../constants";
 import { computeChannelId } from "../../utils";
 import { VOUCHER_GATEWAY } from "../constants";
 import type { GatewayConfig, VoucherGatewayExtensionInfo } from "../types";
 import { computeGatewayId, readVoucherGatewayInfo, signGatewayVoucher } from "../utils";
-import type { GatewayClientStorage } from "./storage";
+import { buildGatewayChannelConfig, type GatewayClientPaymentDeps } from "./deps";
+import { recoverGatewayChannel } from "./recovery";
 
-export interface GatewayClientPaymentDeps extends BatchSettlementClientDeps {
-  gatewayStorage: GatewayClientStorage;
-  depositPolicy?: BatchSettlementDepositPolicy;
-  depositStrategy?: BatchSettlementDepositStrategy;
-  extensionRpcOptions?: EvmSchemeOptions;
-}
-
-/**
- * Builds ChannelConfig for gateway mode: onchain receiver roles are the gateway.
- *
- * @param deps - Client identity inputs.
- * @param paymentRequirements - Server payment requirements.
- * @param gateway - Gateway contract address from the 402 extension.
- * @returns Channel config with gateway as receiver and receiverAuthorizer.
- */
-export function buildGatewayChannelConfig(
-  deps: BatchSettlementClientDeps,
-  paymentRequirements: PaymentRequirements,
-  gateway: `0x${string}`,
-): ChannelConfig {
-  const extra = paymentRequirements.extra as { withdrawDelay?: number } | undefined;
-  return {
-    payer: deps.signer.address,
-    payerAuthorizer: getAddress(
-      deps.payerAuthorizer ?? deps.voucherSigner?.address ?? deps.signer.address,
-    ),
-    receiver: getAddress(gateway),
-    receiverAuthorizer: getAddress(gateway),
-    token: paymentRequirements.asset as `0x${string}`,
-    withdrawDelay:
-      typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : MIN_WITHDRAW_DELAY,
-    salt: deps.salt,
-  };
-}
+export { buildGatewayChannelConfig, type GatewayClientPaymentDeps } from "./deps";
 
 /**
  * Creates a gateway-mode payment payload (deposit or voucher) with voucher-gateway extension.
@@ -95,7 +58,17 @@ export async function createGatewayPaymentPayload(
   const channelId = computeChannelId(config, paymentRequirements.network);
   const key = channelId.toLowerCase();
 
-  let channelCtx = (await deps.gatewayStorage.get(key)) ?? { servers: {} };
+  let channelCtx = await deps.gatewayStorage.get(key);
+  if (
+    (channelCtx === undefined ||
+      channelCtx.balance === undefined ||
+      channelCtx.servers[getAddress(paymentRequirements.payTo).toLowerCase()] === undefined) &&
+    deps.signer.readContract
+  ) {
+    channelCtx = await recoverGatewayChannel(deps, paymentRequirements, gateway);
+  }
+  channelCtx = channelCtx ?? { servers: {} };
+
   const serverKey = getAddress(paymentRequirements.payTo).toLowerCase();
   const serverCharged = BigInt(channelCtx.servers[serverKey]?.chargedCumulativeAmount ?? "0");
   const requestAmount = BigInt(paymentRequirements.amount);
@@ -130,12 +103,15 @@ export async function createGatewayPaymentPayload(
   };
 
   const needsInitialDeposit = !channelCtx.balance || channelCtx.balance === "0";
+  const missingAggregate = !channelCtx.aggregateMaxClaimable || !channelCtx.aggregateSignature;
   const currentBalance = BigInt(channelCtx.balance ?? "0");
   // Top-up when aggregate charged + headroom would exceed balance; use aggregate ceiling.
   const aggregateCharged = BigInt(channelCtx.aggregateChargedCumulativeAmount ?? "0");
   const needsTopUp = !needsInitialDeposit && aggregateCharged + requestAmount > currentBalance;
+  // After onchain recovery without a stored deposit-signed aggregate, re-deposit to refresh it.
+  const needsAggregateRefresh = !needsInitialDeposit && missingAggregate;
 
-  if (needsInitialDeposit || needsTopUp) {
+  if (needsInitialDeposit || needsTopUp || needsAggregateRefresh) {
     const postDepositBalanceNeeded = needsInitialDeposit
       ? requestAmount // at least cover this request; deposit policy may deposit more
       : aggregateCharged + requestAmount;

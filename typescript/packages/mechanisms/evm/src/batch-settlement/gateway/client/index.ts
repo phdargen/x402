@@ -6,9 +6,9 @@ export {
 export {
   processGatewaySettleResponse,
   processGatewaySettleResponseFromPayload,
-  processGatewayCorrectivePaymentRequired,
   storeAggregateVoucher,
 } from "./response";
+export { processGatewayCorrectivePaymentRequired, recoverGatewayChannel } from "./recovery";
 export {
   InMemoryGatewayClientStorage,
   type GatewayClientStorage,

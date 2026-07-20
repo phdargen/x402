@@ -197,11 +197,22 @@ export async function settleGatewayPayment(
       return depositResult;
     }
     transaction = depositResult.transaction;
-    const extra = depositResult.extra ?? {};
-    balance = String(extra.balance ?? "0");
-    totalClaimed = String(extra.totalClaimed ?? "0");
-    withdrawRequestedAt = Number(extra.withdrawRequestedAt ?? 0);
-    refundNonce = String(extra.refundNonce ?? "0");
+    const channelState = (
+      depositResult.extra as
+        | {
+            channelState?: {
+              balance?: string;
+              totalClaimed?: string;
+              withdrawRequestedAt?: number;
+              refundNonce?: string;
+            };
+          }
+        | undefined
+    )?.channelState;
+    balance = String(channelState?.balance ?? "0");
+    totalClaimed = String(channelState?.totalClaimed ?? "0");
+    withdrawRequestedAt = Number(channelState?.withdrawRequestedAt ?? 0);
+    refundNonce = String(channelState?.refundNonce ?? "0");
 
     // Deposit aggregate must equal post-deposit balance.
     if (raw.voucher.maxClaimableAmount !== balance) {

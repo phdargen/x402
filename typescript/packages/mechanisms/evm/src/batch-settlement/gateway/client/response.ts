@@ -1,8 +1,7 @@
-import type { PaymentRequired, SettleResponse } from "@x402/core/types";
+import type { SettleResponse } from "@x402/core/types";
 import { getAddress, verifyTypedData } from "viem";
 import { getEvmChainId } from "../../../utils";
 import { gatewayClaimAuthorizationTypes, VOUCHER_GATEWAY } from "../constants";
-import type { GatewayClaimAuthorization } from "../types";
 import {
   computeGatewayVoucherDigest,
   getGatewayEip712Domain,
@@ -211,64 +210,6 @@ export async function storeAggregateVoucher(
     aggregateMaxClaimable,
     aggregateSignature,
   });
-}
-
-/**
- * Resyncs gateway client state from a corrective 402 when possible.
- *
- * @param storage - Gateway client storage.
- * @param paymentRequired - Corrective PaymentRequired body.
- * @returns Whether state was updated.
- */
-export async function processGatewayCorrectivePaymentRequired(
-  storage: GatewayClientStorage,
-  paymentRequired: PaymentRequired,
-): Promise<boolean> {
-  const info = readVoucherGatewayInfo(
-    paymentRequired.extensions as Record<string, unknown> | undefined,
-  );
-  const accept = paymentRequired.accepts?.[0];
-  if (!info || !accept) return false;
-
-  const channelState = accept.extra?.channelState as
-    | {
-        channelId?: string;
-        balance?: string;
-        totalClaimed?: string;
-        chargedCumulativeAmount?: string;
-      }
-    | undefined;
-  const voucherState = accept.extra?.voucherState as
-    | { signedMaxClaimable?: string; signature?: `0x${string}` }
-    | undefined;
-  if (!channelState?.channelId) return false;
-
-  const gatewayState = info.gatewayState;
-  const claimAuthorization = gatewayState?.claimAuthorization as
-    | GatewayClaimAuthorization
-    | undefined;
-
-  const key = channelState.channelId.toLowerCase();
-  const prev = (await storage.get(key)) ?? { servers: {} };
-  const serverKey = getAddress(accept.payTo).toLowerCase();
-
-  await storage.set(key, {
-    ...prev,
-    balance: channelState.balance ?? prev.balance,
-    totalClaimed: channelState.totalClaimed ?? prev.totalClaimed,
-    aggregateChargedCumulativeAmount:
-      channelState.chargedCumulativeAmount ?? prev.aggregateChargedCumulativeAmount,
-    aggregateMaxClaimable: voucherState?.signedMaxClaimable ?? prev.aggregateMaxClaimable,
-    aggregateSignature: voucherState?.signature ?? prev.aggregateSignature,
-    servers: {
-      ...prev.servers,
-      ...(claimAuthorization
-        ? { [serverKey]: { chargedCumulativeAmount: claimAuthorization.totalClaimed } }
-        : {}),
-    },
-  });
-
-  return true;
 }
 
 export { VOUCHER_GATEWAY };

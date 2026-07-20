@@ -2134,6 +2134,69 @@ describe("x402ResourceServer", () => {
       expect(result.extensions).toEqual({ bazaar: true, customExt: "value" });
     });
 
+    it("merges invalid verifyFailure extra and extensions onto the corrective 402", async () => {
+      const server = new x402ResourceServer();
+      const requirements = [buildPaymentRequirements()];
+
+      const result = await server.createPaymentRequiredResponse(
+        requirements,
+        { url: "https://example.com", description: "", mimeType: "" },
+        "invalid_voucher_gateway_receiver_cumulative_below_distributed",
+        {
+          "voucher-gateway": {
+            info: { gateway: "0xGateway" },
+            schema: { type: "object" },
+          },
+        },
+        undefined,
+        undefined,
+        {
+          extra: {
+            channelState: {
+              channelId: "0xabc",
+              balance: "40000",
+              totalClaimed: "14100",
+              chargedCumulativeAmount: "14100",
+            },
+            voucherState: {
+              signedMaxClaimable: "40000",
+              signature: "0xsig",
+            },
+          },
+          extensions: {
+            "voucher-gateway": {
+              info: {
+                gateway: "0xGateway",
+                gatewayState: {
+                  gatewayId: "0xgid",
+                  distributedCumulative: "14100",
+                },
+              },
+            },
+          },
+        },
+      );
+
+      expect(result.error).toBe("invalid_voucher_gateway_receiver_cumulative_below_distributed");
+      expect(result.accepts[0].extra?.channelState).toEqual({
+        channelId: "0xabc",
+        balance: "40000",
+        totalClaimed: "14100",
+        chargedCumulativeAmount: "14100",
+      });
+      expect(result.accepts[0].extra?.voucherState).toEqual({
+        signedMaxClaimable: "40000",
+        signature: "0xsig",
+      });
+      const gw = result.extensions?.["voucher-gateway"] as {
+        info: { gateway: string; gatewayState: { distributedCumulative: string } };
+        schema: unknown;
+      };
+      expect(gw.info.gateway).toBe("0xGateway");
+      expect(gw.info.gatewayState.distributedCumulative).toBe("14100");
+      expect(gw.schema).toEqual({ type: "object" });
+    });
+
     it("should omit extensions if empty", async () => {
       const server = new x402ResourceServer();
 
