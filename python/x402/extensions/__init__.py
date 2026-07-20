@@ -41,6 +41,7 @@ from .builder_code import (  # noqa: E402
     BUILDER_CODE_PATTERN,
     BUILDER_CODE_SCHEMA,
     ERC_8021_MARKER,
+    MAX_SERVICE_CODES,
     SCHEMA_2_ID,
     BuilderCodeClientExtension,
     BuilderCodeExtensionData,
@@ -177,6 +178,7 @@ __all__ = [
     "BUILDER_CODE",
     "BUILDER_CODE_PATTERN",
     "ERC_8021_MARKER",
+    "MAX_SERVICE_CODES",
     "SCHEMA_2_ID",
     "BUILDER_CODE_SCHEMA",
     # Builder Code types
