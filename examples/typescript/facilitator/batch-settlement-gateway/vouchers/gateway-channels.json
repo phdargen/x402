@@ -1,0 +1,42 @@
+{
+  "aggregates": {
+    "0x67b5dec5fb42e2a4786aabb474222d2fb5e343d50a88a22792ab393b902341d5": {
+      "channel": {
+        "payer": "0xE33A295AF5C90A0649DFBECfDf9D604789B892e2",
+        "payerAuthorizer": "0x583F7fbe385B7fe2B5B5a51aB5e0077249B973bE",
+        "receiver": "0x55B151f55038e7FCF2a5440a0ea0ea39D415EC2D",
+        "receiverAuthorizer": "0x55B151f55038e7FCF2a5440a0ea0ea39D415EC2D",
+        "token": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "withdrawDelay": 900,
+        "salt": "0x0000000000000000000000000000000000000000000000000000000000000006"
+      },
+      "voucher": {
+        "channelId": "0x67b5dec5fb42e2a4786aabb474222d2fb5e343d50a88a22792ab393b902341d5",
+        "maxClaimableAmount": "80000",
+        "signature": "0x0e0b43e26012351671085b49b17d1dab90be010797f3254504240dfeb7ddd83c2b40d1c746f61eb1901c7d337a135bc97fc737ab254bc09e4f7314028e8a59a01b"
+      }
+    }
+  },
+  "aggregateCharged": {
+    "0x67b5dec5fb42e2a4786aabb474222d2fb5e343d50a88a22792ab393b902341d5": "39200"
+  },
+  "servers": {
+    "0x67b5dec5fb42e2a4786aabb474222d2fb5e343d50a88a22792ab393b902341d5:0x1c47e9c085c2b7458f5b6c16ccbd65a65255a9f6": {
+      "gatewayConfig": {
+        "channelId": "0x67b5dec5fb42e2a4786aabb474222d2fb5e343d50a88a22792ab393b902341d5",
+        "receiver": "0x1c47E9C085c2B7458F5b6C16cCBD65A65255a9f6",
+        "receiverAuthorizer": "0xa1aD2CD47DB081d2E72507D64df0B85e4fe646e5"
+      },
+      "gatewayVoucher": {
+        "gatewayId": "0x179632017c109b2ff1bdab7962ff89da3dad28faae56f543f4a5709862e47d4e",
+        "maxClaimableAmount": "46700",
+        "signature": "0x5fa0f9406fc8dac35a73384797c44625cb8607a91de65b6005f6cc67d534e4f24bddc0cf36e8f9375feae63e999d4446d5b98f43f17e99a447e7ce1dc7f47d5b1b"
+      },
+      "claimAuthorization": {
+        "totalClaimed": "39200",
+        "signature": "0x1272781d69edb14f80f804f0bd1b9b055472cab2a0d40e3ffacb25921632bd382622e0b495ce5557b7b8aeacc012b337210f3a8e6addb7990fa81b47c1d4277b1c"
+      },
+      "chargedCumulativeAmount": "39200"
+    }
+  }
+}
