@@ -252,17 +252,7 @@ describe("Builder Code Extension", () => {
           paymentPayloadExtensions: {
             [BUILDER_CODE]: {
               info: {
-                s: [
-                  "INVALID",
-                  "bc_1",
-                  "bc_2",
-                  "bc_3",
-                  "bc_4",
-                  "bc_5",
-                  "bc_6",
-                  "bc_7",
-                  "bc_8",
-                ],
+                s: ["INVALID", "bc_1", "bc_2", "bc_3", "bc_4", "bc_5", "bc_6", "bc_7", "bc_8"],
               },
               schema: {},
             },
