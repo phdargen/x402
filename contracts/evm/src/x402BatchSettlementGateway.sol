@@ -107,7 +107,7 @@ contract x402BatchSettlementGateway is
     // =========================================================================
 
     /// @notice The immutable {x402BatchSettlement} deployment this gateway claims and settles against.
-    x402BatchSettlement public immutable SETTLEMENT;
+    x402BatchSettlement public immutable X402_BATCH_SETTLEMENT;
 
     /// @notice Cumulative amount already credited to `receiver` from `channelId`.
     /// @dev Monotonic; gives replay protection exactly like onchain `totalClaimed`.
@@ -177,7 +177,7 @@ contract x402BatchSettlementGateway is
         address settlement
     ) EIP712("x402 Batch Settlement Gateway", "1") {
         if (settlement == address(0)) revert InvalidSettlement();
-        SETTLEMENT = x402BatchSettlement(settlement);
+        X402_BATCH_SETTLEMENT = x402BatchSettlement(settlement);
     }
 
     // =========================================================================
@@ -223,7 +223,7 @@ contract x402BatchSettlementGateway is
         uint256 tokenCount;
 
         for (uint256 i = 0; i < n; ++i) {
-            bytes32 channelId = SETTLEMENT.getChannelId(
+            bytes32 channelId = X402_BATCH_SETTLEMENT.getChannelId(
                 distributions[i].voucher.channel
             );
             for (uint256 j = 0; j < i; ++j) {
@@ -240,9 +240,9 @@ contract x402BatchSettlementGateway is
         }
 
         // Atomic base claim (gateway is the receiver, so no ClaimBatch signature is needed) then settle per token.
-        SETTLEMENT.claim(claims);
+        X402_BATCH_SETTLEMENT.claim(claims);
         for (uint256 t = 0; t < tokenCount; ++t) {
-            SETTLEMENT.settle(address(this), tokens[t]);
+            X402_BATCH_SETTLEMENT.settle(address(this), tokens[t]);
         }
 
         for (uint256 i = 0; i < n; ++i) {
@@ -344,7 +344,9 @@ contract x402BatchSettlementGateway is
         ChannelDistribution calldata dist,
         bytes32 channelId
     ) internal view returns (x402BatchSettlement.VoucherClaim memory) {
-        x402BatchSettlement.ChannelConfig calldata config = dist.voucher.channel;
+        x402BatchSettlement.ChannelConfig calldata config = dist
+            .voucher
+            .channel;
         if (
             config.receiver != address(this) ||
             config.receiverAuthorizer != address(this)
@@ -352,7 +354,9 @@ contract x402BatchSettlementGateway is
             revert NotGatewayChannel();
         }
 
-        (, uint128 baseTotalClaimed) = SETTLEMENT.channels(channelId);
+        (, uint128 baseTotalClaimed) = X402_BATCH_SETTLEMENT.channels(
+            channelId
+        );
         uint128 distributedSoFar = distributedByChannel[channelId];
         if (baseTotalClaimed != distributedSoFar) revert AccountingMismatch();
 
@@ -463,17 +467,11 @@ contract x402BatchSettlementGateway is
             uint128 delta = totalClaimed - distributed;
             distributedCumulative[channelId][receiver] = totalClaimed;
             withdrawable[receiver][token] += delta;
-            totalOutstanding[token] += delta;
             channelDelta += delta;
 
-            emit Distributed(
-                channelId,
-                receiver,
-                token,
-                delta,
-                totalClaimed
-            );
+            emit Distributed(channelId, receiver, token, delta, totalClaimed);
         }
+        totalOutstanding[token] += channelDelta;
         distributedByChannel[channelId] += channelDelta;
     }
 
