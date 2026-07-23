@@ -136,7 +136,7 @@ Integrate the payment middleware into your application. You will need to provide
               {
                 scheme: "exact",
                 price: "$0.001",
-                network: "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=", // Algorand Testnet
+                network: "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe", // Algorand Testnet
                 payTo: avmAddress,
               },
             ],
@@ -147,7 +147,7 @@ Integrate the payment middleware into your application. You will need to provide
         new x402ResourceServer(facilitatorClient)
           .register("eip155:84532", new ExactEvmScheme())
           .register("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", new ExactSvmScheme())
-          .register("algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=", new ExactAvmScheme()),
+          .register("algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe", new ExactAvmScheme()),
       ),
     );
 

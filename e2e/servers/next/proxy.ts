@@ -34,7 +34,7 @@ export const EVM_NETWORK = (process.env.EVM_NETWORK || "eip155:84532") as `${str
 export const SVM_NETWORK = (process.env.SVM_NETWORK ||
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1") as `${string}:${string}`;
 export const AVM_NETWORK = (process.env.AVM_NETWORK ||
-  "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDexi9/cOUJOiI=") as `${string}:${string}`;
+  "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe") as `${string}:${string}`;
 export const APTOS_NETWORK = (process.env.APTOS_NETWORK || "aptos:2") as `${string}:${string}`;
 export const HEDERA_NETWORK = (process.env.HEDERA_NETWORK ||
   "hedera:testnet") as `${string}:${string}`;
