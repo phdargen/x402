@@ -27,15 +27,20 @@ if (!process.env.EVM_PRIVATE_KEY) {
   process.exit(1);
 }
 
-const gatewayAddress = process.env.GATEWAY_ADDRESS?.trim() as `0x${string}` | undefined;
+const gatewayAddress = process.env.GATEWAY_ADDRESS?.trim() as
+  | `0x${string}`
+  | undefined;
 if (!gatewayAddress || !/^0x[0-9a-fA-F]{40}$/.test(gatewayAddress)) {
-  console.error("❌ GATEWAY_ADDRESS environment variable is required (0x-prefixed address)");
+  console.error(
+    "❌ GATEWAY_ADDRESS environment variable is required (0x-prefixed address)",
+  );
   process.exit(1);
 }
 
 const withdrawDelay = Number(process.env.WITHDRAW_DELAY_SECONDS ?? "900");
 const evmRpcUrl = process.env.EVM_RPC_URL ?? "https://sepolia.base.org";
 const storageDir = process.env.STORAGE_DIR?.trim();
+const autoClaim = process.env.AUTO_CLAIM !== "false";
 
 const receiverAuthorizerPrivateKey =
   process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
@@ -52,7 +57,7 @@ if (receiverAuthorizerPrivateKey) {
   );
   authorizerSigner = {
     address: authorizerAccount.address,
-    signTypedData: params =>
+    signTypedData: (params) =>
       authorizerAccount.signTypedData(
         params as Parameters<typeof authorizerAccount.signTypedData>[0],
       ),
@@ -62,6 +67,7 @@ if (receiverAuthorizerPrivateKey) {
 console.info(`EVM Facilitator account: ${evmAccount.address}`);
 console.info(`Gateway: ${gatewayAddress}`);
 console.info(`Withdraw delay: ${withdrawDelay}s`);
+console.info(`Auto claim: ${autoClaim ? "enabled" : "disabled"}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
 } else {
@@ -76,24 +82,24 @@ const viemClient = createWalletClient({
 
 const evmSigner = toFacilitatorEvmSigner({
   address: evmAccount.address,
-  getCode: args => viemClient.getCode(args),
-  readContract: args =>
+  getCode: (args) => viemClient.getCode(args),
+  readContract: (args) =>
     viemClient.readContract({ ...args, args: args.args ?? [] } as Parameters<
       typeof viemClient.readContract
     >[0]),
-  verifyTypedData: args =>
+  verifyTypedData: (args) =>
     viemClient.verifyTypedData(
       args as Parameters<typeof viemClient.verifyTypedData>[0],
     ),
-  writeContract: args =>
+  writeContract: (args) =>
     viemClient.writeContract(
       args as Parameters<typeof viemClient.writeContract>[0],
     ),
-  sendTransaction: args =>
+  sendTransaction: (args) =>
     viemClient.sendTransaction(
       args as Parameters<typeof viemClient.sendTransaction>[0],
     ),
-  waitForTransactionReceipt: args =>
+  waitForTransactionReceipt: (args) =>
     viemClient.waitForTransactionReceipt(args),
 });
 
@@ -101,7 +107,11 @@ const voucherGateway = createVoucherGatewayFacilitatorExtension({
   gateway: gatewayAddress,
   withdrawDelay,
   ...(storageDir
-    ? { storage: new FileGatewayChannelStorage(`${storageDir}/gateway-channels.json`) }
+    ? {
+        storage: new FileGatewayChannelStorage(
+          `${storageDir}/gateway-channels.json`,
+        ),
+      }
     : {}),
 });
 
@@ -110,19 +120,21 @@ const facilitator = new x402Facilitator()
   .register(NETWORK, new BatchSettlementEvmScheme(evmSigner, authorizerSigner));
 
 const channelManager = voucherGateway.createChannelManager(evmSigner, NETWORK);
-channelManager.start({
-  distributeIntervalSecs: 60,
-  maxClaimsPerBatch: 100,
-  onDistribute: r =>
-    console.log(
-      `Distributed ${r.claims} claims across ${r.channels} channels (tx: ${r.transaction})`,
-    ),
-  onError: e => console.error("Distribute error:", e),
-});
+if (autoClaim) {
+  channelManager.start({
+    distributeIntervalSecs: 60,
+    maxClaimsPerBatch: 100,
+    onDistribute: (r) =>
+      console.log(
+        `Distributed ${r.claims} claims across ${r.channels} channels (tx: ${r.transaction})`,
+      ),
+    onError: (e) => console.error("Distribute error:", e),
+  });
+}
 
 process.on("SIGINT", async () => {
   console.log("Shutting down — flushing pending distributions…");
-  await channelManager.stop({ flush: true });
+  await channelManager.stop({ flush: autoClaim });
   process.exit(0);
 });
 
@@ -169,6 +181,7 @@ app.post("/settle", async (req, res) => {
       paymentPayload as PaymentPayload,
       paymentRequirements as PaymentRequirements,
     );
+    console.log("Settle response", response);
     res.json(response);
   } catch (error) {
     console.error("Settle error:", error);
@@ -193,6 +206,19 @@ app.get("/supported", async (_req, res) => {
     res.json(facilitator.getSupported());
   } catch (error) {
     console.error("Supported error:", error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Optional immediate redemption for local load tests (schedule still runs every 60s).
+app.post("/distribute", async (_req, res) => {
+  try {
+    const result = await channelManager.distribute();
+    res.json(result ?? { channels: 0, claims: 0, transaction: null });
+  } catch (error) {
+    console.error("Distribute error:", error);
     res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });

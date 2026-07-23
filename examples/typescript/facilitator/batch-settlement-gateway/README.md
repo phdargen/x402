@@ -7,7 +7,8 @@ Registers `createVoucherGatewayFacilitatorExtension({ gateway, withdrawDelay, st
 - Lists `voucher-gateway` in `GET /supported.extensions`
 - Advertises `{ gateway, withdrawDelay }` under `extensionInfo["voucher-gateway"]` (not under `kinds[].extra`)
 - Owns offchain channel/server commitment storage
-- Runs `claimAndDistribute` on a schedule via `createChannelManager(signer, network).start(...)`
+- Runs `claimAndDistribute` on a schedule via `createChannelManager(signer, network).start(...)` (disable with `AUTO_CLAIM=false`)
+- Exposes `POST /distribute` so the load client can redeem all pending commitments immediately
 
 See the [extension specification](../../../../specs/extensions/voucher-gateway.md).
 
@@ -32,7 +33,7 @@ pnpm dev
 
 Default listen URL: `http://localhost:4022`.
 
-Pair with the [gateway server](../../servers/batch-settlement-gateway) and the [vanilla batch-settlement client](../../clients/batch-settlement) (gateway mode activates from the 402 extension).
+Pair with the [gateway server](../../servers/batch-settlement-gateway) and [gateway client](../../clients/batch-settlement-gateway).
 
 ## Env
 
@@ -43,5 +44,6 @@ Pair with the [gateway server](../../servers/batch-settlement-gateway) and the [
 | `WITHDRAW_DELAY_SECONDS` | no | Policy advertised in `/supported` (default `900`) |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Optional delegated server authorizer |
 | `STORAGE_DIR` | no | File-backed gateway storage directory |
+| `AUTO_CLAIM` | no | Scheduled claimAndDistribute loop (`true` by default; set `false` to disable) |
 | `EVM_RPC_URL` | no | Default Base Sepolia public RPC |
 | `PORT` | no | Default `4022` |
