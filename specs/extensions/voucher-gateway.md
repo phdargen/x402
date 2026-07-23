@@ -89,7 +89,7 @@ keccak256("GatewayClaimAuthorization(bytes32 gatewayVoucherDigest,uint128 totalC
 
 Key operations:
 
-- `claimAndDistribute(distributions)` — For each channel, verify per-server `GatewayVoucher` + `GatewayClaimAuthorization` rows, derive channel-1 `totalClaimed` as prior distributed sum plus nonzero deltas, call base `claim` then `settle` into the gateway, credit `withdrawable[receiver][token]`. Atomic: any failure reverts the batch. The same deposit-signed aggregate voucher MAY be reused across calls (including subsets of servers) while `newTotalClaimed <= voucher.maxClaimableAmount`.
+- `claimAndDistribute(distributions)` — For each channel, verify per-server `GatewayVoucher` + `GatewayClaimAuthorization` rows, derive channel-1 `totalClaimed` as prior distributed sum plus nonzero deltas, call base `claim` then `settle` into the gateway, credit `withdrawable[receiver][token]`. Atomic: any failure reverts the batch. Callers MUST submit `distributions` strictly ascending by `channelId` (no duplicates; unsorted or duplicate channels revert) and each distribution's `claims` strictly ascending by `voucher.config.receiver` (no duplicates; unsorted or duplicate receivers revert). The same deposit-signed aggregate voucher MAY be reused across calls (including subsets of servers) while `newTotalClaimed <= voucher.maxClaimableAmount`.
 - `withdraw(receiver, token)` — Permissionless transfer of `withdrawable[receiver][token]` to `receiver`. The caller cannot redirect funds.
 
 ---
@@ -474,7 +474,7 @@ The facilitator calls `withdraw` for that receiver. Response `amount` is the tra
 
 ### Async redemption jobs
 
-Independently of the request path, the facilitator SHOULD run `claimAndDistribute` on a schedule, when aggregate pending credit exceeds a threshold, and before honoring a server `settle` withdraw when the server has uncredited commitments. Each call reuses the stored deposit-signed aggregate voucher plus selected per-server claims. Batch sizing is an operational choice; failed simulations MUST NOT leave partial offchain credits applied onchain.
+Independently of the request path, the facilitator SHOULD run `claimAndDistribute` on a schedule, when aggregate pending credit exceeds a threshold, and before honoring a server `settle` withdraw when the server has uncredited commitments. Each call reuses the stored deposit-signed aggregate voucher plus selected per-server claims, ordered as required by the gateway (`channelId`, then per-channel `receiver`). Batch sizing is an operational choice; failed simulations MUST NOT leave partial offchain credits applied onchain.
 
 ### GET /supported
 
@@ -644,8 +644,9 @@ In addition to base `invalid_batch_settlement_evm_*` codes:
 ## Version history
 
 
-| Version | Date       | Changes       | Authors   |
-| ------- | ---------- | ------------- | --------- |
-| v0.1    | 2026-06-26 | Initial draft | @phdargen |
+| Version | Date       | Changes                                                                                         | Authors   |
+| ------- | ---------- | ----------------------------------------------------------------------------------------------- | --------- |
+| v0.1    | 2026-06-26 | Initial draft                                                                                   | @phdargen |
+| v0.2    | 2026-07-23 | `claimAndDistribute` requires strictly ordered distributions (`channelId`, then `receiver`) | @phdargen |
 
 

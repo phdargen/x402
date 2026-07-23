@@ -17,7 +17,8 @@ export type ChannelDistributionInput = {
  * @param signer - Facilitator signer.
  * @param gateway - Gateway contract address.
  * @param network - CAIP-2 network identifier.
- * @param distributions - Per-channel aggregate voucher + selected server claims.
+ * @param distributions - Per-channel aggregate voucher + selected server claims
+ *   (sorted ascending by channelId / receiver before submit).
  * @returns Transaction hash on success.
  */
 export async function executeClaimAndDistribute(
@@ -39,7 +40,23 @@ export async function executeClaimAndDistribute(
 
   const gatewayAddr = getAddress(gateway);
 
-  const encoded = distributions.map(dist => {
+  // Contract requires strictly ascending channelId, then receiver (no duplicates).
+  const ordered = [...distributions]
+    .sort((a, b) => {
+      const left = a.aggregate.voucher.channelId.toLowerCase();
+      const right = b.aggregate.voucher.channelId.toLowerCase();
+      return left < right ? -1 : left > right ? 1 : 0;
+    })
+    .map(dist => ({
+      ...dist,
+      claims: [...dist.claims].sort((a, b) => {
+        const left = getAddress(a.gatewayConfig.receiver).toLowerCase();
+        const right = getAddress(b.gatewayConfig.receiver).toLowerCase();
+        return left < right ? -1 : left > right ? 1 : 0;
+      }),
+    }));
+
+  const encoded = ordered.map(dist => {
     const claims = dist.claims.map(commitment => {
       const digest = computeGatewayVoucherDigest(
         commitment.gatewayVoucher.gatewayId,

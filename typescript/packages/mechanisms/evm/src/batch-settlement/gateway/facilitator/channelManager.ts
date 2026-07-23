@@ -76,7 +76,11 @@ export class GatewayChannelManager {
    */
   async distribute(): Promise<GatewayDistributeResult | undefined> {
     const maxClaims = this.config.maxClaimsPerBatch ?? 100;
-    const channelIds = await this.deps.storage.listChannels();
+    const channelIds = (await this.deps.storage.listChannels()).sort((a, b) => {
+      const left = a.toLowerCase();
+      const right = b.toLowerCase();
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
     const distributions: {
       aggregate: StoredAggregateVoucher;
       claims: StoredServerCommitment[];
@@ -88,7 +92,13 @@ export class GatewayChannelManager {
       const aggregate = await this.deps.storage.getAggregate(channelId);
       if (!aggregate) continue;
 
-      const commitments = await this.deps.storage.listServerCommitments(channelId);
+      const commitments = (await this.deps.storage.listServerCommitments(channelId)).sort(
+        (a, b) => {
+          const left = getAddress(a.gatewayConfig.receiver).toLowerCase();
+          const right = getAddress(b.gatewayConfig.receiver).toLowerCase();
+          return left < right ? -1 : left > right ? 1 : 0;
+        },
+      );
       const pending: StoredServerCommitment[] = [];
       for (const commitment of commitments) {
         if (claimCount >= maxClaims) break;
@@ -145,7 +155,11 @@ export class GatewayChannelManager {
    */
   async distributeForReceiver(receiver: `0x${string}`): Promise<void> {
     const receiverAddr = getAddress(receiver);
-    const channelIds = await this.deps.storage.listChannels();
+    const channelIds = (await this.deps.storage.listChannels()).sort((a, b) => {
+      const left = a.toLowerCase();
+      const right = b.toLowerCase();
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
     const distributions: {
       aggregate: StoredAggregateVoucher;
       claims: StoredServerCommitment[];
