@@ -9,6 +9,7 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 
+import {CompressedSparseMerkleProof} from "./libraries/CompressedSparseMerkleProof.sol";
 import {x402BatchSettlement} from "./x402BatchSettlement.sol";
 
 /// @title x402BatchSettlementGateway
@@ -23,11 +24,7 @@ import {x402BatchSettlement} from "./x402BatchSettlement.sol";
 ///        `GatewayVoucherClaim`, with `payerAuthorizer` inherited from channel 1.
 ///
 /// @author x402 Protocol
-contract x402BatchSettlementGateway is
-    EIP712,
-    Multicall,
-    ReentrancyGuardTransient
-{
+contract x402BatchSettlementGateway is EIP712, Multicall, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     // =========================================================================
@@ -65,11 +62,16 @@ contract x402BatchSettlementGateway is
     }
 
     /// @notice One channel-2 claim: the payer `GatewayVoucher` plus the receiver-authorizer authorization.
+    /// @dev The proof fields authenticate `previousCumulative` against the channel's current cumulative root. They
+    ///      are calldata only and are not included in either EIP-712 signature.
     struct GatewayVoucherClaim {
         GatewayVoucher voucher;
         bytes gatewaySignature;
         GatewayClaimAuthorization claim;
         bytes receiverAuthorizerSignature;
+        uint128 previousCumulative;
+        uint256 nonzeroSiblingBitmap;
+        bytes32[] nonzeroSiblings;
     }
 
     /// @notice One channel-1 redemption: the base voucher plus its channel-2 split.
@@ -81,26 +83,27 @@ contract x402BatchSettlementGateway is
         GatewayVoucherClaim[] claims;
     }
 
+    /// @dev State derived while validating one distribution and applied only after the base claim and settlement.
+    struct DistributionValidation {
+        x402BatchSettlement.VoucherClaim baseClaim;
+        bytes32 finalRoot;
+        uint128[] deltas;
+    }
+
     // =========================================================================
     // Constants — EIP-712 Type Hashes
     // =========================================================================
 
     bytes32 public constant GATEWAY_CONFIG_TYPEHASH =
-        keccak256(
-            "GatewayConfig(bytes32 channelId,address receiver,address receiverAuthorizer)"
-        );
+        keccak256("GatewayConfig(bytes32 channelId,address receiver,address receiverAuthorizer)");
 
     /// @dev The signed `GatewayVoucher` type references `gatewayId` (the hash of `GatewayConfig`), not the raw
     ///      struct — mirroring how the base `Voucher` digest references `channelId` rather than `ChannelConfig`.
     bytes32 public constant GATEWAY_VOUCHER_TYPEHASH =
-        keccak256(
-            "GatewayVoucher(bytes32 gatewayId,uint128 maxClaimableAmount)"
-        );
+        keccak256("GatewayVoucher(bytes32 gatewayId,uint128 maxClaimableAmount)");
 
     bytes32 public constant GATEWAY_CLAIM_AUTHORIZATION_TYPEHASH =
-        keccak256(
-            "GatewayClaimAuthorization(bytes32 gatewayVoucherDigest,uint128 totalClaimed)"
-        );
+        keccak256("GatewayClaimAuthorization(bytes32 gatewayVoucherDigest,uint128 totalClaimed)");
 
     // =========================================================================
     // Storage
@@ -109,18 +112,19 @@ contract x402BatchSettlementGateway is
     /// @notice The immutable {x402BatchSettlement} deployment this gateway claims and settles against.
     x402BatchSettlement public immutable X402_BATCH_SETTLEMENT;
 
-    /// @notice Cumulative amount already credited to `receiver` from `channelId`.
-    /// @dev Monotonic; gives replay protection exactly like onchain `totalClaimed`.
-    mapping(bytes32 channelId => mapping(address receiver => uint128))
-        public distributedCumulative;
+    /// @notice Canonical root of an empty cumulative sparse Merkle tree.
+    bytes32 public immutable EMPTY_CUMULATIVE_ROOT;
+
+    /// @dev Sparse Merkle root committing every receiver's cumulative for a channel.
+    ///      A zero storage value is normalized to {EMPTY_CUMULATIVE_ROOT} by {getCumulativeRoot}.
+    mapping(bytes32 channelId => bytes32 root) private _cumulativeRoots;
 
     /// @notice Total amount credited across all receivers from a channel.
     /// @dev MUST equal that channel's base-contract `totalClaimed` at every completed gateway transaction.
     mapping(bytes32 channelId => uint128) public distributedByChannel;
 
     /// @notice A receiver's accrued, not-yet-withdrawn balance for a token.
-    mapping(address receiver => mapping(address token => uint128))
-        public withdrawable;
+    mapping(address receiver => mapping(address token => uint128)) public withdrawable;
 
     /// @notice Aggregate accrued, not-yet-withdrawn receiver liabilities for a token.
     mapping(address token => uint128) public totalOutstanding;
@@ -139,12 +143,7 @@ contract x402BatchSettlementGateway is
     );
 
     /// @notice Emitted when a receiver's accrued balance for a token is transferred to its payout address.
-    event Withdrawn(
-        address indexed receiver,
-        address indexed token,
-        address indexed sender,
-        uint128 amount
-    );
+    event Withdrawn(address indexed receiver, address indexed token, address indexed sender, uint128 amount);
 
     // =========================================================================
     // Errors
@@ -163,6 +162,7 @@ contract x402BatchSettlementGateway is
     error ClaimVoucherMismatch();
     error InvalidReceiverAuthorizerSignature();
     error ClaimExceedsCeiling();
+    error InvalidCumulativeProof();
     error NoClaimableDelta();
     error NothingToWithdraw();
     error GatewayInsolvent();
@@ -178,6 +178,7 @@ contract x402BatchSettlementGateway is
     ) EIP712("x402 Batch Settlement Gateway", "1") {
         if (settlement == address(0)) revert InvalidSettlement();
         X402_BATCH_SETTLEMENT = x402BatchSettlement(settlement);
+        EMPTY_CUMULATIVE_ROOT = CompressedSparseMerkleProof.emptyRoot();
     }
 
     // =========================================================================
@@ -198,14 +199,16 @@ contract x402BatchSettlementGateway is
     ///           `(channelId, voucher.config.receiver)`; `voucher.config.channelId == channelId`; a valid payer
     ///           signature over the `GatewayVoucher` digest (`gatewayId`, `maxClaimableAmount`); a matching
     ///           `claim.gatewayVoucherDigest`; a valid `receiverAuthorizer` signature over the
-    ///           `GatewayClaimAuthorization` digest; and `claim.totalClaimed <= voucher.maxClaimableAmount`. Rows at
-    ///           or below the stored `distributedCumulative` are no-ops.
+    ///           `GatewayClaimAuthorization` digest; `claim.totalClaimed <= voucher.maxClaimableAmount`; and a
+    ///           canonical proof of `previousCumulative` against the rolling channel root. Rows at or below the
+    ///           proven cumulative are no-ops.
     ///        4. **Derived channel-1 claim.** The channel delta (sum of nonzero receiver deltas) MUST be nonzero and
     ///           is added to `distributedByChannel[channelId]` to derive the base `totalClaimed`; callers cannot pick it.
     ///        5. **Atomic base claim + settle.** {x402BatchSettlement.claim} is called once with all derived rows, then
     ///           `settle(address(this), token)` once per distinct token.
-    ///        6. **Credit receivers.** Each nonzero delta advances `distributedCumulative`, `distributedByChannel`,
-    ///           `withdrawable`, and `totalOutstanding`, emitting {Distributed}. No-op rows change nothing.
+    ///        6. **Credit receivers.** The final cumulative root is stored and each nonzero proven delta advances
+    ///           `distributedByChannel`, `withdrawable`, and `totalOutstanding`, emitting {Distributed}. No-op rows
+    ///           change nothing.
     ///        7. **Solvency.** For every affected token the gateway's balance MUST cover `totalOutstanding[token]`.
     ///
     ///      Any invalid row or failed base call reverts the entire batch. Relayers SHOULD pre-simulate and submit
@@ -216,27 +219,22 @@ contract x402BatchSettlementGateway is
         uint256 n = distributions.length;
         if (n == 0) revert EmptyBatch();
 
-        x402BatchSettlement.VoucherClaim[]
-            memory claims = new x402BatchSettlement.VoucherClaim[](n);
+        x402BatchSettlement.VoucherClaim[] memory claims = new x402BatchSettlement.VoucherClaim[](n);
+        DistributionValidation[] memory validations = new DistributionValidation[](n);
         bytes32[] memory channelIds = new bytes32[](n);
         address[] memory tokens = new address[](n);
         uint256 tokenCount;
 
         for (uint256 i = 0; i < n; ++i) {
-            bytes32 channelId = X402_BATCH_SETTLEMENT.getChannelId(
-                distributions[i].voucher.channel
-            );
+            bytes32 channelId = X402_BATCH_SETTLEMENT.getChannelId(distributions[i].voucher.channel);
             for (uint256 j = 0; j < i; ++j) {
                 if (channelIds[j] == channelId) revert DuplicateChannel();
             }
             channelIds[i] = channelId;
 
-            claims[i] = _validateDistribution(distributions[i], channelId);
-            tokenCount = _trackToken(
-                tokens,
-                tokenCount,
-                distributions[i].voucher.channel.token
-            );
+            validations[i] = _validateDistribution(distributions[i], channelId);
+            claims[i] = validations[i].baseClaim;
+            tokenCount = _trackToken(tokens, tokenCount, distributions[i].voucher.channel.token);
         }
 
         // Atomic base claim (gateway is the receiver, so no ClaimBatch signature is needed) then settle per token.
@@ -246,14 +244,12 @@ contract x402BatchSettlementGateway is
         }
 
         for (uint256 i = 0; i < n; ++i) {
-            _creditReceivers(distributions[i], channelIds[i]);
+            _creditReceivers(distributions[i], channelIds[i], validations[i]);
         }
 
         for (uint256 t = 0; t < tokenCount; ++t) {
             address token = tokens[t];
-            if (
-                IERC20(token).balanceOf(address(this)) < totalOutstanding[token]
-            ) revert GatewayInsolvent();
+            if (IERC20(token).balanceOf(address(this)) < totalOutstanding[token]) revert GatewayInsolvent();
         }
     }
 
@@ -268,7 +264,10 @@ contract x402BatchSettlementGateway is
     ///
     /// @dev Permissionless (relay-friendly): a relayer MAY sponsor this so the receiver needs no gas or RPC.
     ///      Funds always go to `receiver`; the caller cannot redirect them. Follows checks-effects-interactions.
-    function withdraw(address receiver, address token) external nonReentrant {
+    function withdraw(
+        address receiver,
+        address token
+    ) external nonReentrant {
         uint128 amount = withdrawable[receiver][token];
         if (amount == 0) revert NothingToWithdraw();
 
@@ -284,16 +283,36 @@ contract x402BatchSettlementGateway is
     // View Functions
     // =========================================================================
 
+    /// @notice Returns the current cumulative sparse Merkle root for `channelId`.
+    /// @dev Channels without a stored root return {EMPTY_CUMULATIVE_ROOT}, never the mapping's zero sentinel.
+    function getCumulativeRoot(
+        bytes32 channelId
+    ) public view returns (bytes32) {
+        bytes32 root = _cumulativeRoots[channelId];
+        return root == bytes32(0) ? EMPTY_CUMULATIVE_ROOT : root;
+    }
+
+    /// @notice Verifies a receiver cumulative against the channel's current root.
+    /// @dev Returns false for both a root mismatch and a non-canonical compressed proof.
+    function verifyReceiverCumulative(
+        bytes32 channelId,
+        address receiver,
+        uint128 cumulative,
+        uint256 nonzeroSiblingBitmap,
+        bytes32[] calldata nonzeroSiblings
+    ) external view returns (bool) {
+        return CompressedSparseMerkleProof.verify(
+            getCumulativeRoot(channelId), receiver, cumulative, nonzeroSiblingBitmap, nonzeroSiblings
+        );
+    }
+
     /// @notice EIP-712 digest of a `GatewayConfig`, bound to this gateway's domain (chainId + address).
     /// @param config The payer-signed per-receiver identity binding.
     /// @return The `gatewayId` referenced by that receiver's `GatewayVoucher`.
     function getGatewayId(
         GatewayConfig calldata config
     ) public view returns (bytes32) {
-        return
-            _hashTypedDataV4(
-                keccak256(abi.encode(GATEWAY_CONFIG_TYPEHASH, config))
-            );
+        return _hashTypedDataV4(keccak256(abi.encode(GATEWAY_CONFIG_TYPEHASH, config)));
     }
 
     /// @notice EIP-712 digest of a `GatewayVoucher` with the given `gatewayId` and `maxClaimableAmount`.
@@ -304,16 +323,7 @@ contract x402BatchSettlementGateway is
         bytes32 gatewayId,
         uint128 maxClaimableAmount
     ) public view returns (bytes32) {
-        return
-            _hashTypedDataV4(
-                keccak256(
-                    abi.encode(
-                        GATEWAY_VOUCHER_TYPEHASH,
-                        gatewayId,
-                        maxClaimableAmount
-                    )
-                )
-            );
+        return _hashTypedDataV4(keccak256(abi.encode(GATEWAY_VOUCHER_TYPEHASH, gatewayId, maxClaimableAmount)));
     }
 
     /// @notice EIP-712 digest of a `GatewayClaimAuthorization`, bound to this gateway's domain.
@@ -322,154 +332,156 @@ contract x402BatchSettlementGateway is
     function getGatewayClaimAuthorizationDigest(
         GatewayClaimAuthorization calldata claim
     ) public view returns (bytes32) {
-        return
-            _hashTypedDataV4(
-                keccak256(
-                    abi.encode(
-                        GATEWAY_CLAIM_AUTHORIZATION_TYPEHASH,
-                        claim.gatewayVoucherDigest,
-                        claim.totalClaimed
-                    )
-                )
-            );
+        return _hashTypedDataV4(
+            keccak256(abi.encode(GATEWAY_CLAIM_AUTHORIZATION_TYPEHASH, claim.gatewayVoucherDigest, claim.totalClaimed))
+        );
     }
 
     // =========================================================================
     // Internal Helpers
     // =========================================================================
 
-    /// @dev Validates one distribution and returns the derived base voucher claim. View-only: it reads state and
-    ///      verifies signatures but performs no writes (crediting happens in {_creditReceivers} after the base calls).
+    /// @dev Validates one distribution and derives its base claim, rolling cumulative root, and per-row deltas.
+    ///      View-only: crediting happens in {_creditReceivers} after the base calls.
     function _validateDistribution(
         ChannelDistribution calldata dist,
         bytes32 channelId
-    ) internal view returns (x402BatchSettlement.VoucherClaim memory) {
-        x402BatchSettlement.ChannelConfig calldata config = dist
-            .voucher
-            .channel;
-        if (
-            config.receiver != address(this) ||
-            config.receiverAuthorizer != address(this)
-        ) {
+    ) internal view returns (DistributionValidation memory validation) {
+        x402BatchSettlement.ChannelConfig calldata config = dist.voucher.channel;
+        if (config.receiver != address(this) || config.receiverAuthorizer != address(this)) {
             revert NotGatewayChannel();
         }
 
-        (, uint128 baseTotalClaimed) = X402_BATCH_SETTLEMENT.channels(
-            channelId
-        );
+        (, uint128 baseTotalClaimed) = X402_BATCH_SETTLEMENT.channels(channelId);
         uint128 distributedSoFar = distributedByChannel[channelId];
         if (baseTotalClaimed != distributedSoFar) revert AccountingMismatch();
 
         GatewayVoucherClaim[] calldata claims = dist.claims;
         uint256 m = claims.length;
+        uint128[] memory deltas = new uint128[](m);
+        bytes32 rollingRoot = getCumulativeRoot(channelId);
         uint128 channelDelta;
         for (uint256 k = 0; k < m; ++k) {
             for (uint256 l = 0; l < k; ++l) {
-                if (
-                    claims[l].voucher.config.receiver ==
-                    claims[k].voucher.config.receiver
-                ) revert DuplicateReceiver();
+                if (claims[l].voucher.config.receiver == claims[k].voucher.config.receiver) revert DuplicateReceiver();
             }
-            channelDelta += _validateGatewayVoucherClaim(
-                claims[k],
-                channelId,
-                config
-            );
+            uint128 delta;
+            (delta, rollingRoot) = _validateGatewayVoucherClaim(claims[k], channelId, config, rollingRoot);
+            deltas[k] = delta;
+            channelDelta += delta;
         }
         if (channelDelta == 0) revert NoClaimableDelta();
 
-        return
-            x402BatchSettlement.VoucherClaim({
-                voucher: dist.voucher,
-                signature: dist.signature,
-                totalClaimed: distributedSoFar + channelDelta
-            });
+        validation = DistributionValidation({
+            baseClaim: x402BatchSettlement.VoucherClaim({
+                voucher: dist.voucher, signature: dist.signature, totalClaimed: distributedSoFar + channelDelta
+            }),
+            finalRoot: rollingRoot,
+            deltas: deltas
+        });
     }
 
-    /// @dev Verifies one channel-2 claim and returns its delta over the stored `distributedCumulative` (0 for a no-op).
+    /// @dev Verifies one channel-2 claim and its cumulative proof, returning its delta and replacement root.
     function _validateGatewayVoucherClaim(
         GatewayVoucherClaim calldata gvc,
         bytes32 channelId,
-        x402BatchSettlement.ChannelConfig calldata config
-    ) internal view returns (uint128) {
+        x402BatchSettlement.ChannelConfig calldata config,
+        bytes32 currentRoot
+    ) internal view returns (uint128 delta, bytes32 newRoot) {
         GatewayConfig calldata gwConfig = gvc.voucher.config;
-        if (gwConfig.channelId != channelId)
+        if (gwConfig.channelId != channelId) {
             revert GatewayConfigChannelMismatch();
+        }
 
+        _validateGatewayAuthorization(gvc, config);
+        return _validateCumulativeUpdate(gvc, currentRoot);
+    }
+
+    /// @dev Verifies the payer ceiling and receiver-authorizer approval for a gateway claim.
+    function _validateGatewayAuthorization(
+        GatewayVoucherClaim calldata gvc,
+        x402BatchSettlement.ChannelConfig calldata config
+    ) internal view {
+        GatewayConfig calldata gwConfig = gvc.voucher.config;
         bytes32 gatewayId = getGatewayId(gwConfig);
-        bytes32 voucherDigest = getGatewayVoucherDigest(
-            gatewayId,
-            gvc.voucher.maxClaimableAmount
-        );
+        bytes32 voucherDigest = getGatewayVoucherDigest(gatewayId, gvc.voucher.maxClaimableAmount);
 
         // Payer authorization: same identity that signs the channel-1 voucher.
         address payerAuthorizer = config.payerAuthorizer;
         if (payerAuthorizer != address(0)) {
-            if (
-                ECDSA.recoverCalldata(voucherDigest, gvc.gatewaySignature) !=
-                payerAuthorizer
-            ) {
+            if (ECDSA.recoverCalldata(voucherDigest, gvc.gatewaySignature) != payerAuthorizer) {
                 revert InvalidSignature();
             }
         } else {
-            if (
-                !SignatureChecker.isValidSignatureNow(
-                    config.payer,
-                    voucherDigest,
-                    gvc.gatewaySignature
-                )
-            ) {
+            if (!SignatureChecker.isValidSignatureNow(config.payer, voucherDigest, gvc.gatewaySignature)) {
                 revert InvalidSignature();
             }
         }
 
         // The claim authorization must bind this exact voucher, then be signed by the wire-level receiver authorizer.
-        if (gvc.claim.gatewayVoucherDigest != voucherDigest)
+        if (gvc.claim.gatewayVoucherDigest != voucherDigest) {
             revert ClaimVoucherMismatch();
-        if (
-            !SignatureChecker.isValidSignatureNow(
+        }
+        if (!SignatureChecker.isValidSignatureNow(
                 gwConfig.receiverAuthorizer,
                 getGatewayClaimAuthorizationDigest(gvc.claim),
                 gvc.receiverAuthorizerSignature
-            )
-        ) {
+            )) {
             revert InvalidReceiverAuthorizerSignature();
         }
 
-        if (gvc.claim.totalClaimed > gvc.voucher.maxClaimableAmount)
+        if (gvc.claim.totalClaimed > gvc.voucher.maxClaimableAmount) {
             revert ClaimExceedsCeiling();
-
-        uint128 distributed = distributedCumulative[channelId][
-            gwConfig.receiver
-        ];
-        if (gvc.claim.totalClaimed <= distributed) return 0;
-        return gvc.claim.totalClaimed - distributed;
+        }
     }
 
-    /// @dev Applies the per-receiver credits for a validated distribution and advances `distributedByChannel`.
-    ///      Deltas are recomputed from unchanged storage (the intervening base calls never touch gateway state),
-    ///      so they equal the amounts used to derive the channel-1 claim. No-op rows change nothing.
+    /// @dev Proves the prior cumulative and computes the monotonic replacement root.
+    function _validateCumulativeUpdate(
+        GatewayVoucherClaim calldata gvc,
+        bytes32 currentRoot
+    ) internal pure returns (uint128 delta, bytes32 newRoot) {
+        uint128 previousCumulative = gvc.previousCumulative;
+        uint128 totalClaimed = gvc.claim.totalClaimed;
+        uint128 replacement = totalClaimed > previousCumulative ? totalClaimed : previousCumulative;
+        bool valid;
+        (valid, newRoot) = CompressedSparseMerkleProof.verifyAndUpdate(
+            currentRoot,
+            gvc.voucher.config.receiver,
+            previousCumulative,
+            replacement,
+            gvc.nonzeroSiblingBitmap,
+            gvc.nonzeroSiblings
+        );
+        if (!valid) revert InvalidCumulativeProof();
+
+        if (totalClaimed <= previousCumulative) {
+            return (0, currentRoot);
+        }
+        return (totalClaimed - previousCumulative, newRoot);
+    }
+
+    /// @dev Commits the validated final root and exact per-row deltas after base claim and settlement succeed.
     function _creditReceivers(
         ChannelDistribution calldata dist,
-        bytes32 channelId
+        bytes32 channelId,
+        DistributionValidation memory validation
     ) internal {
         address token = dist.voucher.channel.token;
         GatewayVoucherClaim[] calldata claims = dist.claims;
         uint256 m = claims.length;
 
+        _cumulativeRoots[channelId] = validation.finalRoot;
+
         uint128 channelDelta;
         for (uint256 k = 0; k < m; ++k) {
-            address receiver = claims[k].voucher.config.receiver;
-            uint128 totalClaimed = claims[k].claim.totalClaimed;
-            uint128 distributed = distributedCumulative[channelId][receiver];
-            if (totalClaimed <= distributed) continue;
+            uint128 delta = validation.deltas[k];
+            if (delta == 0) continue;
 
-            uint128 delta = totalClaimed - distributed;
-            distributedCumulative[channelId][receiver] = totalClaimed;
+            address receiver = claims[k].voucher.config.receiver;
             withdrawable[receiver][token] += delta;
             channelDelta += delta;
 
-            emit Distributed(channelId, receiver, token, delta, totalClaimed);
+            emit Distributed(channelId, receiver, token, delta, claims[k].claim.totalClaimed);
         }
         totalOutstanding[token] += channelDelta;
         distributedByChannel[channelId] += channelDelta;
