@@ -411,6 +411,29 @@ func TestVerifySolanaSignature(t *testing.T) {
 	}
 }
 
+func TestVerifySolanaSignatureRejectsSmallOrderPublicKey(t *testing.T) {
+	publicKey := bytesRepeat(ed25519.PublicKeySize, 0)
+	publicKey[0] = 1
+	signature := bytesRepeat(ed25519.SignatureSize, 0)
+	signature[0] = 1
+
+	if VerifySolanaSignature("arbitrary message", signature, publicKey) {
+		t.Fatal("VerifySolanaSignature() valid for small-order public key forgery")
+	}
+
+	payload := testSolanaPayload()
+	payload.Address = EncodeBase58(publicKey)
+	payload.Signature = EncodeBase58(signature)
+
+	result := VerifySignature(payload)
+	if result.IsValid {
+		t.Fatal("VerifySignature() valid for small-order public key forgery")
+	}
+	if result.InvalidReason != ErrInvalidSIWxSignature {
+		t.Fatalf("InvalidReason = %q, want %q", result.InvalidReason, ErrInvalidSIWxSignature)
+	}
+}
+
 func TestVerifySolanaSignatureRejectsInvalidBase58(t *testing.T) {
 	payload := testSolanaPayload()
 	payload.Signature = "0OIl"

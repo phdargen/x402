@@ -38,6 +38,7 @@ from x402.extensions.sign_in_with_x import (
     parse_siwx_header,
     validate_siwx_message,
     verify_siwx_signature,
+    verify_solana_signature,
 )
 from x402.http.types import HTTPRequestContext, PaymentOption, RouteConfig
 from x402.schemas import (
@@ -393,6 +394,27 @@ class TestSolana:
         result = await verify_siwx_signature(payload)
         assert result.is_valid
         assert result.payer == address
+
+    def test_rejects_small_order_public_key_forgery(self):
+        public_key = b"\x01" + bytes(31)
+        signature = b"\x01" + bytes(63)
+
+        assert verify_solana_signature("arbitrary message", signature, public_key) is False
+
+    @pytest.mark.asyncio
+    async def test_siwx_rejects_small_order_public_key_forgery(self):
+        public_key = b"\x01" + bytes(31)
+        signature = b"\x01" + bytes(63)
+        payload = _valid_payload(
+            chainId=SOLANA_MAINNET,
+            type="ed25519",
+            address=encode_base58(public_key),
+            signature=encode_base58(signature),
+        )
+
+        result = await verify_siwx_signature(payload)
+        assert result.is_valid is False
+        assert result.invalid_reason == "invalid_siwx_signature"
 
     @pytest.mark.asyncio
     async def test_keypair_signer_sign_verify(self):

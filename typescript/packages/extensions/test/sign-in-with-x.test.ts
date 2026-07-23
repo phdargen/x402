@@ -39,6 +39,7 @@ import {
 } from "../src/sign-in-with-x/index";
 import { safeBase64Encode } from "@x402/core/utils";
 import { x402ResourceServer } from "@x402/core/server";
+import { ED25519_TORSION_SUBGROUP } from "@noble/curves/ed25519.js";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import nacl from "tweetnacl";
 import { randomBytes } from "crypto";
@@ -794,6 +795,14 @@ describe("Sign-In-With-X Extension", () => {
       const valid = verifySolanaSignature(message, signature, keypair2.publicKey);
       expect(valid).toBe(false);
     });
+
+    it.each(ED25519_TORSION_SUBGROUP)("should reject small-order public key %s", publicKeyHex => {
+      const publicKey = Uint8Array.from(Buffer.from(publicKeyHex, "hex"));
+      const signature = new Uint8Array(64);
+      signature[0] = 1;
+
+      expect(verifySolanaSignature("arbitrary message", signature, publicKey)).toBe(false);
+    });
   });
 
   describe("verifySIWxSignature - chain routing", () => {
@@ -852,6 +861,28 @@ describe("Sign-In-With-X Extension", () => {
       const result = await verifySIWxSignature(payload);
       expect(result.isValid).toBe(true);
       expect(result.payer).toBe(address);
+    });
+
+    it("should reject a small-order Solana public key forgery", async () => {
+      const publicKey = new Uint8Array(32);
+      publicKey[0] = 1;
+      const signature = new Uint8Array(64);
+      signature[0] = 1;
+      const payload = {
+        domain: "api.example.com",
+        uri: "https://api.example.com/data",
+        version: "1",
+        chainId: SOLANA_MAINNET,
+        type: "ed25519" as const,
+        nonce: "test123",
+        issuedAt: new Date().toISOString(),
+        address: encodeBase58(publicKey),
+        signature: encodeBase58(signature),
+      };
+
+      const result = await verifySIWxSignature(payload);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_siwx_signature");
     });
 
     it("should reject invalid Solana signature length", async () => {
