@@ -875,16 +875,16 @@ To make paid MCP tools discoverable, pass the discovery extension in your paymen
 
 ### Troubleshooting catalog visibility
 
-Whether and how a resource appears in a facilitator's catalog is a **facilitator
-implementation detail**.
+Whether and how a resource appears in a facilitator's catalog is an implementation detail of the **facilitator
+operator**, an external 3rd party service provider.
 Payment verification and settlement succeeding does not, by itself, guarantee
 catalog inclusion. If a resource does not appear where you expect, contact the
 **facilitator or catalog operator** you are integrating with. Catalog behavior,
 indexing latency, and discovery APIs are outside the scope of the x402
-open-source repositories.
+open-source repository.
 
 It is adviced to use the **official x402 SDKs** (or a maintained [third-party SDK](/dev-tools/third-party-sdks)) to declare, echo, and
-validate bazaar data, instead of hand-rolling `PaymentRequired`, `PaymentPayload` or extension schemas, or service-metadata validation.
+validate bazaar data, instead of hand-rolling `PaymentRequired`, `PaymentPayload` or extension schemas.
 
 Common protocol-level mistakes include:
 
