@@ -22,14 +22,14 @@ import {
   declareErc20ApprovalGasSponsoringExtension,
 } from "@x402/extensions";
 
-export const EVM_PAYEE_ADDRESS = process.env.EVM_PAYEE_ADDRESS as `0x${string}`;
-export const SVM_PAYEE_ADDRESS = process.env.SVM_PAYEE_ADDRESS as string;
-export const AVM_PAYEE_ADDRESS = process.env.AVM_PAYEE_ADDRESS as string;
-export const APTOS_PAYEE_ADDRESS = process.env.APTOS_PAYEE_ADDRESS as string;
-export const HEDERA_PAYEE_ADDRESS = process.env.HEDERA_PAYEE_ADDRESS as string | undefined;
-export const KEETA_PAYEE_ADDRESS = process.env.KEETA_PAYEE_ADDRESS as string | undefined;
-export const STELLAR_PAYEE_ADDRESS = process.env.STELLAR_PAYEE_ADDRESS as string | undefined;
-export const TVM_PAYEE_ADDRESS = process.env.TVM_PAYEE_ADDRESS as string | undefined;
+export const SERVER_EVM_ADDRESS = process.env.SERVER_EVM_ADDRESS as `0x${string}`;
+export const SERVER_SVM_ADDRESS = process.env.SERVER_SVM_ADDRESS as string;
+export const SERVER_AVM_ADDRESS = process.env.SERVER_AVM_ADDRESS as string;
+export const SERVER_APTOS_ADDRESS = process.env.SERVER_APTOS_ADDRESS as string;
+export const SERVER_HEDERA_ADDRESS = process.env.SERVER_HEDERA_ADDRESS as string | undefined;
+export const SERVER_KEETA_ADDRESS = process.env.SERVER_KEETA_ADDRESS as string | undefined;
+export const SERVER_STELLAR_ADDRESS = process.env.SERVER_STELLAR_ADDRESS as string | undefined;
+export const SERVER_TVM_ADDRESS = process.env.SERVER_TVM_ADDRESS as string | undefined;
 export const EVM_NETWORK = (process.env.EVM_NETWORK || "eip155:84532") as `${string}:${string}`;
 export const SVM_NETWORK = (process.env.SVM_NETWORK ||
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1") as `${string}:${string}`;
@@ -44,17 +44,17 @@ export const KEETA_NETWORK = (process.env.KEETA_NETWORK || KEETA_TESTNET_CAIP2) 
 export const STELLAR_NETWORK = (process.env.STELLAR_NETWORK ||
   "stellar:testnet") as `${string}:${string}`;
 export const TVM_NETWORK = (process.env.TVM_NETWORK || "tvm:-3") as `${string}:${string}`;
-export const NEAR_PAYEE_ADDRESS = process.env.NEAR_PAYEE_ADDRESS as string | undefined;
+export const SERVER_NEAR_ADDRESS = process.env.SERVER_NEAR_ADDRESS as string | undefined;
 export const NEAR_NETWORK = (process.env.NEAR_NETWORK || "near:testnet") as `${string}:${string}`;
-export const NEAR_ASSET = process.env.NEAR_ASSET as string | undefined;
-export const NEAR_AMOUNT = process.env.NEAR_AMOUNT as string | undefined;
-export const XRPL_PAYEE_ADDRESS = process.env.XRPL_PAYEE_ADDRESS as string | undefined;
+export const SERVER_NEAR_ASSET = process.env.SERVER_NEAR_ASSET as string | undefined;
+export const SERVER_NEAR_AMOUNT = process.env.SERVER_NEAR_AMOUNT as string | undefined;
+export const SERVER_XRPL_ADDRESS = process.env.SERVER_XRPL_ADDRESS as string | undefined;
 export const XRPL_NETWORK = (process.env.XRPL_NETWORK || "xrpl:1") as `${string}:${string}`;
-export const XRPL_ASSET = process.env.XRPL_ASSET as string | undefined;
-export const XRPL_AMOUNT = process.env.XRPL_AMOUNT as string | undefined;
-export const XRPL_ISSUER = process.env.XRPL_ISSUER as string | undefined;
+export const SERVER_XRPL_ASSET = process.env.SERVER_XRPL_ASSET as string | undefined;
+export const SERVER_XRPL_AMOUNT = process.env.SERVER_XRPL_AMOUNT as string | undefined;
+export const SERVER_XRPL_ISSUER = process.env.SERVER_XRPL_ISSUER as string | undefined;
 export const CCD_NETWORK = (process.env.CCD_NETWORK || "ccd:4221332d34e1694168c2a0c0b3fd0f27") as `${string}:${string}`;
-export const CCD_PAYEE_ADDRESS = process.env.CCD_PAYEE_ADDRESS as string | undefined;
+export const SERVER_CCD_ADDRESS = process.env.SERVER_CCD_ADDRESS as string | undefined;
 export const CCD_WEATHER_PRICE_MICRO_CCD = "1000";
 const EVM_PERMIT2_ASSET = process.env.EVM_PERMIT2_ASSET as `0x${string}`;
 const facilitatorUrl = process.env.FACILITATOR_URL;
@@ -67,11 +67,11 @@ export const createXrplPaymentConfig = (
     payTo,
     scheme: "exact" as const,
     price: {
-      amount: XRPL_AMOUNT || "1000",
-      asset: XRPL_ASSET || "XRP",
+      amount: SERVER_XRPL_AMOUNT || "1000",
+      asset: SERVER_XRPL_ASSET || "XRP",
       extra: {
         assetTransferMethod,
-        ...(XRPL_ASSET && XRPL_ASSET !== "XRP" && XRPL_ISSUER ? { issuer: XRPL_ISSUER } : {}),
+        ...(SERVER_XRPL_ASSET && SERVER_XRPL_ASSET !== "XRP" && SERVER_XRPL_ISSUER ? { issuer: SERVER_XRPL_ISSUER } : {}),
       },
     },
     network: XRPL_NETWORK,
@@ -111,10 +111,10 @@ if (mockFacilitatorUrl) {
 export const server = new x402ResourceServer(facilitatorClients);
 
 // Register server schemes
-if (AVM_PAYEE_ADDRESS) {
+if (SERVER_AVM_ADDRESS) {
   server.register("algorand:*", new ExactAvmScheme());
 }
-if (CCD_PAYEE_ADDRESS) {
+if (SERVER_CCD_ADDRESS) {
   server.register("ccd:*", new ExactConcordiumScheme());
 }
 server.register("eip155:*", new ExactEvmScheme());
@@ -122,7 +122,7 @@ server.register("eip155:*", new UptoEvmScheme());
 
 // Register batch-settlement scheme for the EVM payee.
 // e2e flow does NOT use ChannelManager — settle actions are handled inline.
-const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
+const receiverAuthorizerPrivateKey = process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
   | `0x${string}`
   | undefined;
 const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
@@ -130,30 +130,30 @@ const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
   : undefined;
 server.register(
   "eip155:*",
-  new BatchSettlementEvmScheme(EVM_PAYEE_ADDRESS, {
+  new BatchSettlementEvmScheme(SERVER_EVM_ADDRESS, {
     ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
   }),
 );
 server.register("solana:*", new ExactSvmScheme());
-if (APTOS_PAYEE_ADDRESS) {
+if (SERVER_APTOS_ADDRESS) {
   server.register("aptos:*", new ExactAptosScheme());
 }
-if (HEDERA_PAYEE_ADDRESS) {
+if (SERVER_HEDERA_ADDRESS) {
   server.register("hedera:*", new ExactHederaScheme());
 }
-if (KEETA_PAYEE_ADDRESS) {
+if (SERVER_KEETA_ADDRESS) {
   server.register("keeta:*", new ExactKeetaScheme());
 }
-if (STELLAR_PAYEE_ADDRESS) {
+if (SERVER_STELLAR_ADDRESS) {
   server.register("stellar:*", new ExactStellarScheme());
 }
-if (TVM_PAYEE_ADDRESS) {
+if (SERVER_TVM_ADDRESS) {
   server.register("tvm:*", new ExactTvmScheme());
 }
-if (NEAR_PAYEE_ADDRESS) {
+if (SERVER_NEAR_ADDRESS) {
   server.register("near:*", new ExactNearScheme());
 }
-if (XRPL_PAYEE_ADDRESS) {
+if (SERVER_XRPL_ADDRESS) {
   server.register("xrpl:*", new ExactXrplScheme());
 }
 
@@ -166,7 +166,7 @@ export const proxy = paymentProxy(
   {
     "/api/batch-settlement/evm/eip3009/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "batch-settlement",
         price: "$0.001",
         network: EVM_NETWORK,
@@ -174,7 +174,7 @@ export const proxy = paymentProxy(
     },
     "/api/batch-settlement/evm/permit2/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "batch-settlement",
         network: EVM_NETWORK,
         price: {
@@ -190,7 +190,7 @@ export const proxy = paymentProxy(
     },
     "/api/batch-settlement/evm/permit2-eip2612GasSponsoring/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "batch-settlement",
         network: EVM_NETWORK,
         price: "$0.001",
@@ -202,7 +202,7 @@ export const proxy = paymentProxy(
     },
     "/api/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "batch-settlement",
         network: EVM_NETWORK,
         price: {
@@ -219,7 +219,7 @@ export const proxy = paymentProxy(
     },
     "/api/exact/evm/eip3009/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "exact",
         price: "$0.001",
         network: EVM_NETWORK,
@@ -244,7 +244,7 @@ export const proxy = paymentProxy(
     },
     "/api/exact/svm": {
       accepts: {
-        payTo: SVM_PAYEE_ADDRESS,
+        payTo: SERVER_SVM_ADDRESS,
         scheme: "exact",
         price: "$0.001",
         network: SVM_NETWORK,
@@ -267,11 +267,11 @@ export const proxy = paymentProxy(
         }),
       },
     },
-    ...(AVM_PAYEE_ADDRESS
+    ...(SERVER_AVM_ADDRESS
       ? {
           "/api/exact/avm": {
             accepts: {
-              payTo: AVM_PAYEE_ADDRESS,
+              payTo: SERVER_AVM_ADDRESS,
               scheme: "exact",
               price: "$0.001",
               network: AVM_NETWORK,
@@ -296,11 +296,11 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(CCD_PAYEE_ADDRESS
+    ...(SERVER_CCD_ADDRESS
       ? {
           "/api/exact/ccd": {
             accepts: {
-              payTo: CCD_PAYEE_ADDRESS,
+              payTo: SERVER_CCD_ADDRESS,
               scheme: "exact",
               price: {
                 amount: CCD_WEATHER_PRICE_MICRO_CCD,
@@ -328,11 +328,11 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(APTOS_PAYEE_ADDRESS
+    ...(SERVER_APTOS_ADDRESS
       ? {
           "/api/exact/aptos": {
             accepts: {
-              payTo: APTOS_PAYEE_ADDRESS,
+              payTo: SERVER_APTOS_ADDRESS,
               scheme: "exact",
               price: "$0.001",
               network: APTOS_NETWORK,
@@ -357,11 +357,11 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(HEDERA_PAYEE_ADDRESS
+    ...(SERVER_HEDERA_ADDRESS
       ? {
           "/api/exact/hedera": {
             accepts: {
-              payTo: HEDERA_PAYEE_ADDRESS,
+              payTo: SERVER_HEDERA_ADDRESS,
               scheme: "exact",
               price: {
                 amount: HEDERA_AMOUNT,
@@ -389,11 +389,11 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(KEETA_PAYEE_ADDRESS
+    ...(SERVER_KEETA_ADDRESS
       ? {
         "/api/exact/keeta": {
           accepts: {
-            payTo: KEETA_PAYEE_ADDRESS,
+            payTo: SERVER_KEETA_ADDRESS,
             scheme: "exact",
             price: "$0.001",
             network: KEETA_NETWORK,
@@ -418,15 +418,15 @@ export const proxy = paymentProxy(
         },
       }
       : {}),
-    ...(NEAR_PAYEE_ADDRESS
+    ...(SERVER_NEAR_ADDRESS
       ? {
           "/api/exact/near": {
             accepts: {
-              payTo: NEAR_PAYEE_ADDRESS,
+              payTo: SERVER_NEAR_ADDRESS,
               scheme: "exact" as const,
               price: {
-                amount: NEAR_AMOUNT || "1000000000000000000000",
-                asset: NEAR_ASSET || "wrap.testnet",
+                amount: SERVER_NEAR_AMOUNT || "1000000000000000000000",
+                asset: SERVER_NEAR_ASSET || "wrap.testnet",
               },
               network: NEAR_NETWORK,
             },
@@ -450,20 +450,20 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(XRPL_PAYEE_ADDRESS
+    ...(SERVER_XRPL_ADDRESS
       ? {
-          "/api/exact/xrpl/sequence": createXrplPaymentConfig(XRPL_PAYEE_ADDRESS, "sequence"),
+          "/api/exact/xrpl/sequence": createXrplPaymentConfig(SERVER_XRPL_ADDRESS, "sequence"),
           "/api/exact/xrpl/ticketSequence": createXrplPaymentConfig(
-            XRPL_PAYEE_ADDRESS,
+            SERVER_XRPL_ADDRESS,
             "ticketSequence",
           ),
         }
       : {}),
-    ...(STELLAR_PAYEE_ADDRESS
+    ...(SERVER_STELLAR_ADDRESS
       ? {
           "/api/exact/stellar": {
             accepts: {
-              payTo: STELLAR_PAYEE_ADDRESS,
+              payTo: SERVER_STELLAR_ADDRESS,
               scheme: "exact",
               price: "$0.001",
               network: STELLAR_NETWORK,
@@ -488,11 +488,11 @@ export const proxy = paymentProxy(
           },
         }
       : {}),
-    ...(TVM_PAYEE_ADDRESS
+    ...(SERVER_TVM_ADDRESS
       ? {
           "/api/exact/tvm": {
             accepts: {
-              payTo: TVM_PAYEE_ADDRESS,
+              payTo: SERVER_TVM_ADDRESS,
               scheme: "exact",
               price: "$0.001",
               network: TVM_NETWORK,
@@ -519,7 +519,7 @@ export const proxy = paymentProxy(
       : {}),
     "/api/exact/evm/permit2/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "exact",
         network: EVM_NETWORK,
         price: {
@@ -552,7 +552,7 @@ export const proxy = paymentProxy(
     },
     "/api/exact/evm/permit2-eip2612GasSponsoring/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "exact",
         network: EVM_NETWORK,
         price: "$0.001",
@@ -581,7 +581,7 @@ export const proxy = paymentProxy(
     },
     "/api/exact/evm/permit2-erc20ApprovalGasSponsoring/proxy": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "exact",
         network: EVM_NETWORK,
         price: {
@@ -598,7 +598,7 @@ export const proxy = paymentProxy(
     },
     "/api/upto/evm/permit2": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "upto",
         network: EVM_NETWORK,
         price: {
@@ -614,7 +614,7 @@ export const proxy = paymentProxy(
     },
     "/api/upto/evm/permit2-eip2612GasSponsoring": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "upto",
         network: EVM_NETWORK,
         price: {
@@ -633,7 +633,7 @@ export const proxy = paymentProxy(
     },
     "/api/upto/evm/permit2-erc20ApprovalGasSponsoring": {
       accepts: {
-        payTo: EVM_PAYEE_ADDRESS,
+        payTo: SERVER_EVM_ADDRESS,
         scheme: "upto",
         network: EVM_NETWORK,
         price: {

@@ -11,11 +11,11 @@ const baseURL = process.env.RESOURCE_SERVER_URL as string;
 const endpointPath = process.env.ENDPOINT_PATH as string;
 const url = `${baseURL}${endpointPath}`;
 
-if (!baseURL || !endpointPath || !process.env.SVM_PRIVATE_KEY) {
+if (!baseURL || !endpointPath || !process.env.CLIENT_SVM_PRIVATE_KEY) {
   console.log(
     JSON.stringify({
       success: false,
-      error: "RESOURCE_SERVER_URL, ENDPOINT_PATH, and SVM_PRIVATE_KEY are required",
+      error: "RESOURCE_SERVER_URL, ENDPOINT_PATH, and CLIENT_SVM_PRIVATE_KEY are required",
     }),
   );
   process.exit(1);
@@ -34,7 +34,7 @@ if (!swigAccountAddress) {
 }
 
 const authority = await createKeyPairSignerFromBytes(
-  base58.decode(process.env.SVM_PRIVATE_KEY as string),
+  base58.decode(process.env.CLIENT_SVM_PRIVATE_KEY as string),
 );
 
 const client = new x402Client().register(

@@ -25,7 +25,8 @@
     "@x402/tvm": "workspace:*",
     "@x402/xrpl": "workspace:*",
     "dotenv": "^16.6.1",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "@x402/e2e-server-shared": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

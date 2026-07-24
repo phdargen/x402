@@ -24,8 +24,8 @@
       "ENDPOINT_PATH"
     ],
     "optional": [
-      "EVM_PRIVATE_KEY",
-      "TVM_PRIVATE_KEY",
+      "CLIENT_EVM_PRIVATE_KEY",
+      "CLIENT_TVM_PRIVATE_KEY",
       "TVM_NETWORK",
       "TVM_PROVIDER",
       "TONCENTER_API_KEY",

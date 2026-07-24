@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
-import { server, EVM_PAYEE_ADDRESS, EVM_NETWORK } from "@/proxy";
+import { server, SERVER_EVM_ADDRESS, EVM_NETWORK } from "@/proxy";
 
 const handler = async (_: NextRequest) => {
   return NextResponse.json({
@@ -16,7 +16,7 @@ export const GET = withX402(
   handler,
   {
     accepts: {
-      payTo: EVM_PAYEE_ADDRESS,
+      payTo: SERVER_EVM_ADDRESS,
       scheme: "batch-settlement",
       price: "$0.001",
       network: EVM_NETWORK,

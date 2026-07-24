@@ -27,8 +27,8 @@
   ],
   "environment": {
     "required": [
-      "EVM_PRIVATE_KEY",
-      "SVM_PRIVATE_KEY",
+      "CLIENT_EVM_PRIVATE_KEY",
+      "CLIENT_SVM_PRIVATE_KEY",
       "RESOURCE_SERVER_URL",
       "ENDPOINT_PATH"
     ],
@@ -36,7 +36,7 @@
       "EVM_RPC_URL",
       "CHANNEL_SALT",
       "BATCH_SETTLEMENT_PHASE",
-      "EVM_VOUCHER_SIGNER_PRIVATE_KEY"
+      "CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY"
     ]
   }
 }

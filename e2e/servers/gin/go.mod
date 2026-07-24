@@ -5,9 +5,8 @@ go 1.24.0
 toolchain go1.24.1
 
 require (
-	github.com/ethereum/go-ethereum v1.17.2
 	github.com/gin-gonic/gin v1.11.0
-	github.com/joho/godotenv v1.5.1
+	github.com/x402-foundation/x402/e2e/servers/goshared v0.0.0
 	github.com/x402-foundation/x402/go/v2 v2.14.0
 )
 
@@ -29,6 +28,7 @@ require (
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
+	github.com/ethereum/go-ethereum v1.17.2 // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/gagliardetto/binary v0.8.0 // indirect
@@ -94,3 +94,5 @@ require (
 )
 
 replace github.com/x402-foundation/x402/go/v2 => ../../../go
+
+replace github.com/x402-foundation/x402/e2e/servers/goshared => ../goshared

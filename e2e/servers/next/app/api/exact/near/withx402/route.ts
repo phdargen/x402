@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { server, NEAR_PAYEE_ADDRESS, NEAR_NETWORK, NEAR_ASSET, NEAR_AMOUNT } from "@/proxy";
+import { server, SERVER_NEAR_ADDRESS, NEAR_NETWORK, SERVER_NEAR_ASSET, SERVER_NEAR_AMOUNT } from "@/proxy";
 
 /**
  * Handler for the protected endpoint
@@ -15,18 +15,18 @@ const handler = async (_: NextRequest) => {
 
 /**
  * Protected NEAR endpoint using withX402 wrapper
- * Only exported if NEAR_PAYEE_ADDRESS is configured
+ * Only exported if SERVER_NEAR_ADDRESS is configured
  */
-export const GET = NEAR_PAYEE_ADDRESS
+export const GET = SERVER_NEAR_ADDRESS
   ? withX402(
       handler,
       {
         accepts: {
-          payTo: NEAR_PAYEE_ADDRESS,
+          payTo: SERVER_NEAR_ADDRESS,
           scheme: "exact",
           price: {
-            amount: NEAR_AMOUNT || "1000000000000000000000",
-            asset: NEAR_ASSET || "wrap.testnet",
+            amount: SERVER_NEAR_AMOUNT || "1000000000000000000000",
+            asset: SERVER_NEAR_ASSET || "wrap.testnet",
           },
           network: NEAR_NETWORK,
         },

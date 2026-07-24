@@ -28,7 +28,7 @@
     "required": [
       "PORT",
       "EVM_NETWORK",
-      "EVM_PAYEE_ADDRESS"
+      "SERVER_EVM_ADDRESS"
     ],
     "optional": [
       "FACILITATOR_URL"

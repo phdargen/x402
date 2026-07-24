@@ -35,9 +35,9 @@ func main() {
 		return
 	}
 
-	evmPrivateKey := os.Getenv("EVM_PRIVATE_KEY")
+	evmPrivateKey := os.Getenv("CLIENT_EVM_PRIVATE_KEY")
 	if evmPrivateKey == "" {
-		outputError("EVM_PRIVATE_KEY is required")
+		outputError("CLIENT_EVM_PRIVATE_KEY is required")
 		return
 	}
 

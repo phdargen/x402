@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { server, KEETA_PAYEE_ADDRESS, KEETA_NETWORK } from "@/proxy";
+import { server, SERVER_KEETA_ADDRESS, KEETA_NETWORK } from "@/proxy";
 
 /**
  * Handler for the protected endpoint
@@ -15,14 +15,14 @@ const handler = async (_: NextRequest) => {
 
 /**
  * Protected Keeta endpoint using withX402 wrapper
- * Only exported if KEETA_PAYEE_ADDRESS is configured
+ * Only exported if SERVER_KEETA_ADDRESS is configured
  */
-export const GET = KEETA_PAYEE_ADDRESS
+export const GET = SERVER_KEETA_ADDRESS
   ? withX402(
       handler,
       {
         accepts: {
-          payTo: KEETA_PAYEE_ADDRESS,
+          payTo: SERVER_KEETA_ADDRESS,
           scheme: "exact",
           price: "$0.001",
           network: KEETA_NETWORK,

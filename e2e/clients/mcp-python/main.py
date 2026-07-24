@@ -10,22 +10,20 @@ import json
 import os
 import sys
 
-from dotenv import load_dotenv
 
-load_dotenv()
 
 # Get environment variables
 server_url = os.getenv("RESOURCE_SERVER_URL", "")
 endpoint_path = os.getenv("ENDPOINT_PATH", "")  # tool name, e.g. "get_weather"
-evm_private_key = os.getenv("EVM_PRIVATE_KEY", "")
-tvm_private_key = os.getenv("TVM_PRIVATE_KEY", "")
+evm_private_key = os.getenv("CLIENT_EVM_PRIVATE_KEY", "")
+tvm_private_key = os.getenv("CLIENT_TVM_PRIVATE_KEY", "")
 
 if not server_url or not endpoint_path or not (evm_private_key or tvm_private_key):
     result = {
         "success": False,
         "error": (
             "Missing required environment variables: RESOURCE_SERVER_URL, ENDPOINT_PATH, "
-            "and one of EVM_PRIVATE_KEY or TVM_PRIVATE_KEY"
+            "and one of CLIENT_EVM_PRIVATE_KEY or CLIENT_TVM_PRIVATE_KEY"
         ),
     }
     print(json.dumps(result))

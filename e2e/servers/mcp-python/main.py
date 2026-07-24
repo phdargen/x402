@@ -9,19 +9,17 @@ import os
 import random
 import threading
 
-from dotenv import load_dotenv
 
-load_dotenv()
 
 PORT = int(os.getenv("PORT", "4022"))
 EVM_NETWORK = os.getenv("EVM_NETWORK", "eip155:84532")
-EVM_PAYEE_ADDRESS = os.getenv("EVM_PAYEE_ADDRESS", "")
+SERVER_EVM_ADDRESS = os.getenv("SERVER_EVM_ADDRESS", "")
 TVM_NETWORK = os.getenv("TVM_NETWORK", "tvm:-3")
-TVM_PAYEE_ADDRESS = os.getenv("TVM_PAYEE_ADDRESS", "")
+SERVER_TVM_ADDRESS = os.getenv("SERVER_TVM_ADDRESS", "")
 FACILITATOR_URL = os.getenv("FACILITATOR_URL", "")
 
-if not EVM_PAYEE_ADDRESS and not TVM_PAYEE_ADDRESS:
-    print("At least one of EVM_PAYEE_ADDRESS or TVM_PAYEE_ADDRESS is required")
+if not SERVER_EVM_ADDRESS and not SERVER_TVM_ADDRESS:
+    print("At least one of SERVER_EVM_ADDRESS or SERVER_TVM_ADDRESS is required")
     exit(1)
 
 if not FACILITATOR_URL:
@@ -57,9 +55,9 @@ def main() -> None:
     # Set up x402 resource server
     facilitator_client = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
     resource_server = x402ResourceServer(facilitator_client)
-    if EVM_PAYEE_ADDRESS:
+    if SERVER_EVM_ADDRESS:
         register_exact_evm_server(resource_server, EVM_NETWORK)
-    if TVM_PAYEE_ADDRESS:
+    if SERVER_TVM_ADDRESS:
         resource_server.register(TVM_NETWORK, ExactTvmServerScheme())
 
     # Initialize (fetches supported kinds from facilitator)
@@ -108,10 +106,10 @@ def main() -> None:
         async def _get_weather(city: str) -> str:
             return json.dumps(get_weather_data(city))
 
-    if EVM_PAYEE_ADDRESS:
-        register_weather_tool("get_weather", EVM_NETWORK, EVM_PAYEE_ADDRESS)
-    if TVM_PAYEE_ADDRESS:
-        register_weather_tool("get_weather_tvm", TVM_NETWORK, TVM_PAYEE_ADDRESS)
+    if SERVER_EVM_ADDRESS:
+        register_weather_tool("get_weather", EVM_NETWORK, SERVER_EVM_ADDRESS)
+    if SERVER_TVM_ADDRESS:
+        register_weather_tool("get_weather_tvm", TVM_NETWORK, SERVER_TVM_ADDRESS)
 
     @mcp.tool(name="ping", description="A free health check tool")
     def ping() -> str:
@@ -128,15 +126,15 @@ def main() -> None:
             {
                 "status": "ok",
                 "tools": [
-                    *(["get_weather (paid: $0.001)"] if EVM_PAYEE_ADDRESS else []),
-                    *(["get_weather_tvm (paid: $0.001)"] if TVM_PAYEE_ADDRESS else []),
+                    *(["get_weather (paid: $0.001)"] if SERVER_EVM_ADDRESS else []),
+                    *(["get_weather_tvm (paid: $0.001)"] if SERVER_TVM_ADDRESS else []),
                     "ping (free)",
                 ],
                 "protocols": [
                     protocol
                     for protocol, enabled in {
-                        "evm": bool(EVM_PAYEE_ADDRESS),
-                        "tvm": bool(TVM_PAYEE_ADDRESS),
+                        "evm": bool(SERVER_EVM_ADDRESS),
+                        "tvm": bool(SERVER_TVM_ADDRESS),
                     }.items()
                     if enabled
                 ],
@@ -162,9 +160,9 @@ def main() -> None:
         print(f"Server listening on port {PORT}", flush=True)
         print(f"SSE endpoint: http://localhost:{PORT}/sse", flush=True)
         print(f"Health: http://localhost:{PORT}/health", flush=True)
-        if EVM_PAYEE_ADDRESS:
+        if SERVER_EVM_ADDRESS:
             print(f"EVM payments enabled on {EVM_NETWORK}", flush=True)
-        if TVM_PAYEE_ADDRESS:
+        if SERVER_TVM_ADDRESS:
             print(f"TVM payments enabled on {TVM_NETWORK}", flush=True)
 
     # Create MCP SSE app

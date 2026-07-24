@@ -160,26 +160,26 @@ if (STELLAR_RPC_URL) console.log(`🌐 Stellar RPC URL: ${STELLAR_RPC_URL}`);
 console.log(`🌐 TVM Provider: ${TVM_PROVIDER}`);
 
 // Validate required environment variables
-if (!process.env.EVM_PRIVATE_KEY) {
-  console.error("❌ EVM_PRIVATE_KEY environment variable is required");
+if (!process.env.FACILITATOR_EVM_PRIVATE_KEY) {
+  console.error("❌ FACILITATOR_EVM_PRIVATE_KEY environment variable is required");
   process.exit(1);
 }
 
-if (!process.env.SVM_PRIVATE_KEY) {
-  console.error("❌ SVM_PRIVATE_KEY environment variable is required");
+if (!process.env.FACILITATOR_SVM_PRIVATE_KEY) {
+  console.error("❌ FACILITATOR_SVM_PRIVATE_KEY environment variable is required");
   process.exit(1);
 }
 
 // Initialize the EVM account from private key
 const evmAccount = privateKeyToAccount(
-  process.env.EVM_PRIVATE_KEY as `0x${string}`,
+  process.env.FACILITATOR_EVM_PRIVATE_KEY as `0x${string}`,
   { nonceManager },
 );
 console.info(`EVM Facilitator account: ${evmAccount.address}`);
 
-// Dedicated receiver authorizer for the batch-settlement scheme (falls back to EVM_PRIVATE_KEY)
+// Dedicated receiver authorizer for the batch-settlement scheme (falls back to FACILITATOR_EVM_PRIVATE_KEY)
 const receiverAuthorizerPrivateKey =
-  process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY ?? process.env.EVM_PRIVATE_KEY;
+  process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY ?? process.env.FACILITATOR_EVM_PRIVATE_KEY;
 const authorizerAccount = privateKeyToAccount(
   receiverAuthorizerPrivateKey as `0x${string}`,
 );
@@ -194,15 +194,15 @@ console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
 
 // Initialize the SVM account from private key
 const svmAccount = await createKeyPairSignerFromBytes(
-  base58.decode(process.env.SVM_PRIVATE_KEY as string),
+  base58.decode(process.env.FACILITATOR_SVM_PRIVATE_KEY as string),
 );
 console.info(`SVM Facilitator account: ${svmAccount.address}`);
 
 // Initialize the Aptos account from private key (format to AIP-80 compliant format) if provided
 let aptosAccount: Account | undefined;
-if (process.env.APTOS_PRIVATE_KEY) {
+if (process.env.FACILITATOR_APTOS_PRIVATE_KEY) {
   const formattedAptosKey = PrivateKey.formatPrivateKey(
-    process.env.APTOS_PRIVATE_KEY as string,
+    process.env.FACILITATOR_APTOS_PRIVATE_KEY as string,
     PrivateKeyVariants.Ed25519,
   );
   const aptosPrivateKey = new Ed25519PrivateKey(formattedAptosKey);
@@ -214,17 +214,17 @@ if (process.env.APTOS_PRIVATE_KEY) {
 
 // Initialize the AVM signer from private key (optional)
 let avmSigner: ReturnType<typeof toFacilitatorAvmSigner> | undefined;
-if (process.env.AVM_PRIVATE_KEY) {
-  avmSigner = toFacilitatorAvmSigner(process.env.AVM_PRIVATE_KEY as string);
+if (process.env.FACILITATOR_AVM_PRIVATE_KEY) {
+  avmSigner = toFacilitatorAvmSigner(process.env.FACILITATOR_AVM_PRIVATE_KEY as string);
   console.info(`AVM Facilitator account: ${avmSigner.getAddresses()[0]}`);
 }
 
 // Initialize the Hedera signer from account + private key (optional)
 let hederaSigner: ReturnType<typeof toFacilitatorHederaSigner> | undefined;
-if (process.env.HEDERA_ACCOUNT_ID && process.env.HEDERA_PRIVATE_KEY) {
-  const hederaAccountId = process.env.HEDERA_ACCOUNT_ID;
+if (process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_PRIVATE_KEY) {
+  const hederaAccountId = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
   const hederaKey = HederaPrivateKey.fromStringECDSA(
-    process.env.HEDERA_PRIVATE_KEY,
+    process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
   );
 
   const buildHederaClient = (network: string): HederaClient => {
@@ -246,9 +246,9 @@ if (process.env.HEDERA_ACCOUNT_ID && process.env.HEDERA_PRIVATE_KEY) {
 }
 
 let keetaSigner: FacilitatorKeetaSigner | undefined;
-if (process.env.KEETA_FACILITATOR_MNEMONIC) {
+if (process.env.FACILITATOR_KEETA_MNEMONIC) {
   const keetaAccount = KeetaNet.lib.Account.fromSeed(
-    await KeetaNet.lib.Account.seedFromPassphrase(process.env.KEETA_FACILITATOR_MNEMONIC),
+    await KeetaNet.lib.Account.seedFromPassphrase(process.env.FACILITATOR_KEETA_MNEMONIC),
     0,
   );
   console.info(`Keeta Facilitator account: ${keetaAccount.publicKeyString.toString()}`);
@@ -257,9 +257,9 @@ if (process.env.KEETA_FACILITATOR_MNEMONIC) {
 
 // Initialize the Stellar signer from private key (optional)
 let stellarSigner: FacilitatorStellarSigner | undefined;
-if (process.env.STELLAR_PRIVATE_KEY) {
+if (process.env.FACILITATOR_STELLAR_PRIVATE_KEY) {
   stellarSigner = createEd25519Signer(
-    process.env.STELLAR_PRIVATE_KEY as string,
+    process.env.FACILITATOR_STELLAR_PRIVATE_KEY as string,
     STELLAR_NETWORK as Network,
   );
   console.info(`Stellar Facilitator account: ${stellarSigner.address}`);
@@ -267,8 +267,8 @@ if (process.env.STELLAR_PRIVATE_KEY) {
 
 // Initialize the TVM highload signer from private key (optional)
 let tvmSigner: FacilitatorHighloadV3Signer | undefined;
-if (process.env.TVM_PRIVATE_KEY) {
-  const tvmConfig = HighloadV3Config.fromPrivateKey(process.env.TVM_PRIVATE_KEY, {
+if (process.env.FACILITATOR_TVM_PRIVATE_KEY) {
+  const tvmConfig = HighloadV3Config.fromPrivateKey(process.env.FACILITATOR_TVM_PRIVATE_KEY, {
     provider: TVM_PROVIDER,
     apiKey:
       TVM_PROVIDER === TVM_PROVIDER_TONAPI
@@ -285,29 +285,29 @@ if (process.env.TVM_PRIVATE_KEY) {
 
 // Initialize the NEAR facilitator (relayer) signer from account + key (optional)
 let nearSigner: ReturnType<typeof createFacilitatorNearSigner> | undefined;
-if (process.env.NEAR_RELAYER_ACCOUNT_ID && process.env.NEAR_RELAYER_PRIVATE_KEY) {
+if (process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIVATE_KEY) {
   nearSigner = createFacilitatorNearSigner({
     relayers: [
       {
-        accountId: process.env.NEAR_RELAYER_ACCOUNT_ID,
+        accountId: process.env.FACILITATOR_NEAR_ACCOUNT_ID,
         secretKey: process.env
-          .NEAR_RELAYER_PRIVATE_KEY as FacilitatorNearSignerConfig["relayers"][number]["secretKey"],
+          .FACILITATOR_NEAR_PRIVATE_KEY as FacilitatorNearSignerConfig["relayers"][number]["secretKey"],
       },
     ],
     rpcUrls: NEAR_RPC_URL ? { [NEAR_NETWORK]: NEAR_RPC_URL } : undefined,
   });
-  console.info(`NEAR Facilitator relayer: ${process.env.NEAR_RELAYER_ACCOUNT_ID}`);
+  console.info(`NEAR Facilitator relayer: ${process.env.FACILITATOR_NEAR_ACCOUNT_ID}`);
 }
 
 let concordiumSigner: ReturnType<typeof toConcordiumFacilitatorSigner> | undefined;
-if (process.env.CCD_FACILITATOR_PRIVATE_KEY && process.env.CCD_FACILITATOR_ADDRESS) {
+if (process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRESS) {
   const [host, port] = parseGrpcUrl(CCD_GRPC_URL);
   concordiumSigner = toConcordiumFacilitatorSigner(
-    process.env.CCD_FACILITATOR_ADDRESS,
-    process.env.CCD_FACILITATOR_PRIVATE_KEY,
+    process.env.FACILITATOR_CCD_ADDRESS,
+    process.env.FACILITATOR_CCD_PRIVATE_KEY,
     { host, port, useTls: true },
   );
-  console.info(`CCD Facilitator account: ${process.env.CCD_FACILITATOR_ADDRESS} on ${CCD_NETWORK} (private key)`);
+  console.info(`CCD Facilitator account: ${process.env.FACILITATOR_CCD_ADDRESS} on ${CCD_NETWORK} (private key)`);
 }
 
 // Create a Viem client with both wallet and public capabilities
@@ -889,7 +889,7 @@ app.get("/health", (req, res) => {
     avmNetwork: avmSigner ? AVM_NETWORK : "(not configured)",
     aptosNetwork: aptosAccount ? APTOS_NETWORK : "(not configured)",
     hederaNetwork: hederaSigner ? HEDERA_NETWORK : "(not configured)",
-    keetaNetwork: process.env.KEETA_FACILITATOR_MNEMONIC ? KEETA_NETWORK : "(not configured)",
+    keetaNetwork: process.env.FACILITATOR_KEETA_MNEMONIC ? KEETA_NETWORK : "(not configured)",
     stellarNetwork: stellarSigner ? STELLAR_NETWORK : "(not configured)",
     nearNetwork: nearSigner ? NEAR_NETWORK : "(not configured)",
     xrplNetwork: process.env.XRPL_NETWORK ? XRPL_NETWORK : "(not configured)",
@@ -935,10 +935,10 @@ let server = app.listen(parseInt(PORT), () => {
 ║  EVM Address:  ${evmAccount.address}                   ║
 ║  AVM Address:  ${avmSigner ? avmSigner.getAddresses()[0] : "(not configured)"}
 ║  Aptos Address: ${aptosAccount ? aptosAccount.accountAddress.toStringLong().slice(0, 20) + "..." : "(not configured)"}
-║  Hedera Address: ${process.env.HEDERA_ACCOUNT_ID || "(not configured)"} ║
+║  Hedera Address: ${process.env.FACILITATOR_HEDERA_ACCOUNT_ID || "(not configured)"} ║
 ║  Keeta Address: ${keetaSigner?.getAddresses()[0] || "(not configured)"} ║
 ║  Stellar Address: ${stellarSigner ? stellarSigner.address : "(not configured)"} ║
-║  NEAR Address: ${process.env.NEAR_RELAYER_ACCOUNT_ID || "(not configured)"} ║
+║  NEAR Address: ${process.env.FACILITATOR_NEAR_ACCOUNT_ID || "(not configured)"} ║
 ║  CCD Address:  ${concordiumSigner ? concordiumSigner.getAddress() : "(not configured)"} ║
 ║  Extensions:   bazaar                                  ║
 ║                                                        ║

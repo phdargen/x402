@@ -853,14 +853,14 @@ func main() {
 	log.Printf("🌐 EVM Network: %s", evmNetwork)
 	log.Printf("🌐 SVM Network: %s", svmNetwork)
 
-	evmPrivateKey := os.Getenv("EVM_PRIVATE_KEY")
+	evmPrivateKey := os.Getenv("FACILITATOR_EVM_PRIVATE_KEY")
 	if evmPrivateKey == "" {
-		log.Fatal("❌ EVM_PRIVATE_KEY environment variable is required")
+		log.Fatal("❌ FACILITATOR_EVM_PRIVATE_KEY environment variable is required")
 	}
 
-	svmPrivateKey := os.Getenv("SVM_PRIVATE_KEY")
+	svmPrivateKey := os.Getenv("FACILITATOR_SVM_PRIVATE_KEY")
 	if svmPrivateKey == "" {
-		log.Fatal("❌ SVM_PRIVATE_KEY environment variable is required")
+		log.Fatal("❌ FACILITATOR_SVM_PRIVATE_KEY environment variable is required")
 	}
 
 	// Initialize the real EVM blockchain signer with dynamic RPC URL
@@ -901,9 +901,9 @@ func main() {
 
 	// Register batch-settlement EVM scheme. Mirrors TS:
 	// `new BatchSettlementEvmScheme(evmSigner, authorizerSigner)` where the
-	// authorizer key falls back to EVM_PRIVATE_KEY when
-	// EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is not set.
-	authorizerKey := os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
+	// authorizer key falls back to FACILITATOR_EVM_PRIVATE_KEY when
+	// SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is not set.
+	authorizerKey := os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
 	if authorizerKey == "" {
 		authorizerKey = evmPrivateKey
 	}

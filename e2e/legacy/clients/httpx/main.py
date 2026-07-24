@@ -1,17 +1,15 @@
 import os
 import json
 import asyncio
-from dotenv import load_dotenv
 from eth_account import Account
 from x402.clients.httpx import x402_payment_hooks
 from x402.clients.base import decode_x_payment_response
 import httpx
 
 # Load environment variables
-load_dotenv()
 
 # Get environment variables
-private_key = os.getenv("EVM_PRIVATE_KEY")
+private_key = os.getenv("CLIENT_EVM_PRIVATE_KEY")
 base_url = os.getenv("RESOURCE_SERVER_URL")
 endpoint_path = os.getenv("ENDPOINT_PATH")
 

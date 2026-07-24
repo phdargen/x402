@@ -52,9 +52,9 @@ func main() {
 		port = "4022"
 	}
 
-	evmPayeeAddress := os.Getenv("EVM_PAYEE_ADDRESS")
+	evmPayeeAddress := os.Getenv("SERVER_EVM_ADDRESS")
 	if evmPayeeAddress == "" {
-		fmt.Println("❌ EVM_PAYEE_ADDRESS environment variable is required")
+		fmt.Println("❌ SERVER_EVM_ADDRESS environment variable is required")
 		os.Exit(1)
 	}
 

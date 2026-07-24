@@ -25,7 +25,6 @@ logging.getLogger("x402.permit2").setLevel(logging.DEBUG)
 logging.getLogger("x402.signers").setLevel(logging.DEBUG)
 
 from bazaar import BazaarCatalog
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from solders.keypair import Keypair
@@ -59,7 +58,6 @@ from x402.mechanisms.tvm import (
 from x402.mechanisms.tvm.exact import ExactTvmFacilitatorScheme
 
 # Load environment variables
-load_dotenv()
 
 # Configuration
 PORT = int(os.environ.get("PORT", "4022"))
@@ -70,13 +68,13 @@ bazaar_catalog = BazaarCatalog()
 # Validate that at least one chain is configured
 if not any(
     [
-        os.environ.get("EVM_PRIVATE_KEY"),
-        os.environ.get("SVM_PRIVATE_KEY"),
-        os.environ.get("TVM_PRIVATE_KEY"),
+        os.environ.get("FACILITATOR_EVM_PRIVATE_KEY"),
+        os.environ.get("FACILITATOR_SVM_PRIVATE_KEY"),
+        os.environ.get("FACILITATOR_TVM_PRIVATE_KEY"),
     ]
 ):
     print(
-        "❌ At least one of EVM_PRIVATE_KEY, SVM_PRIVATE_KEY, or TVM_PRIVATE_KEY is required"
+        "❌ At least one of FACILITATOR_EVM_PRIVATE_KEY, FACILITATOR_SVM_PRIVATE_KEY, or FACILITATOR_TVM_PRIVATE_KEY is required"
     )
     sys.exit(1)
 
@@ -87,25 +85,25 @@ TVM_NETWORK = os.environ.get("TVM_NETWORK", TVM_TESTNET)
 
 # Initialize the EVM signer from private key when configured
 evm_signer = None
-if os.environ.get("EVM_PRIVATE_KEY"):
+if os.environ.get("FACILITATOR_EVM_PRIVATE_KEY"):
     evm_rpc_url = os.environ.get("EVM_RPC_URL") or "https://sepolia.base.org"
     evm_signer = FacilitatorWeb3Signer(
-        private_key=os.environ["EVM_PRIVATE_KEY"],
+        private_key=os.environ["FACILITATOR_EVM_PRIVATE_KEY"],
         rpc_url=evm_rpc_url,
     )
     print(f"EVM Facilitator account: {evm_signer.get_addresses()[0]}")
 
 # Initialize the SVM signer from private key when configured
 svm_signer = None
-if os.environ.get("SVM_PRIVATE_KEY"):
-    svm_keypair = Keypair.from_base58_string(os.environ["SVM_PRIVATE_KEY"])
+if os.environ.get("FACILITATOR_SVM_PRIVATE_KEY"):
+    svm_keypair = Keypair.from_base58_string(os.environ["FACILITATOR_SVM_PRIVATE_KEY"])
     svm_signer = FacilitatorKeypairSigner(svm_keypair)
     print(f"SVM Facilitator account: {svm_signer.get_addresses()[0]}")
 
 # Initialize the TVM signer from private key when configured
 tvm_signer = None
-if os.environ.get("TVM_PRIVATE_KEY"):
-    tvm_config = HighloadV3Config.from_private_key(os.environ["TVM_PRIVATE_KEY"])
+if os.environ.get("FACILITATOR_TVM_PRIVATE_KEY"):
+    tvm_config = HighloadV3Config.from_private_key(os.environ["FACILITATOR_TVM_PRIVATE_KEY"])
     tvm_provider = (os.environ.get("TVM_PROVIDER") or "").strip().lower()
     tvm_config.provider = tvm_provider or tvm_config.provider
     tvm_config.api_key = (
@@ -265,8 +263,8 @@ if evm_signer is not None:
     # Register batch-settlement EVM scheme (V2 only). Receiver-authorizer key
     # falls back to the facilitator key, matching the TS e2e facilitator.
     receiver_authorizer_pk = (
-        os.environ.get("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
-        or os.environ["EVM_PRIVATE_KEY"]
+        os.environ.get("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
+        or os.environ["FACILITATOR_EVM_PRIVATE_KEY"]
     )
     batch_settlement_authorizer = LocalAuthorizerSigner(receiver_authorizer_pk)
     print(

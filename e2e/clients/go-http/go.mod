@@ -4,10 +4,7 @@ go 1.24.0
 
 toolchain go1.24.1
 
-require (
-	github.com/ethereum/go-ethereum v1.17.2
-	github.com/x402-foundation/x402/go/v2 v2.14.0
-)
+require github.com/x402-foundation/x402/e2e/clients/goshared v0.0.0
 
 require (
 	filippo.io/edwards25519 v1.0.0-rc.1 // indirect
@@ -24,6 +21,7 @@ require (
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.1.0 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
+	github.com/ethereum/go-ethereum v1.17.2 // indirect
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/gagliardetto/binary v0.8.0 // indirect
 	github.com/gagliardetto/solana-go v1.14.0 // indirect
@@ -50,6 +48,7 @@ require (
 	github.com/supranational/blst v0.3.16 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
+	github.com/x402-foundation/x402/go/v2 v2.14.0 // indirect
 	go.mongodb.org/mongo-driver v1.12.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.40.0 // indirect
@@ -67,3 +66,5 @@ require (
 )
 
 replace github.com/x402-foundation/x402/go/v2 => ../../../go
+
+replace github.com/x402-foundation/x402/e2e/clients/goshared => ../goshared

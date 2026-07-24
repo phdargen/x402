@@ -2,6 +2,24 @@
 
 End-to-end test suite for validating client-server-facilitator communication across languages and frameworks.
 
+## Add a network
+
+Adding a new protocol family to e2e is a short checklist:
+
+1. **Registry** — add the family to [`src/networks/networks.ts`](src/networks/networks.ts): extend `ProtocolFamily`, add entries to `FAMILY_CREDENTIALS` and `FAMILY_NETWORK_ENV`, and add testnet/mainnet configs to `NETWORK_SETS`.
+2. **Secrets template** — add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` lines to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below.
+3. **Scheme wiring** — register the x402 scheme where frameworks share config:
+   - TS servers (express/hono/fastify): [`servers/shared`](servers/shared)
+   - Go servers (gin/nethttp/echo): [`servers/goshared`](servers/goshared)
+   - Python servers (fastapi/flask): [`servers/pyshared`](servers/pyshared)
+   - TS clients (axios/fetch): [`clients/shared`](clients/shared)
+   - Go client (go-http): [`clients/goshared`](clients/goshared)
+   - Python clients (httpx/requests): [`clients/pyshared`](clients/pyshared)
+   - Other frameworks (Next, MCP, etc.) still need local scheme registration
+4. **Endpoints** — declare routes in those components' `test.config.json`.
+
+You do **not** need to edit `generic-server` / `generic-client` / `generic-facilitator`, hand-list proxy env maps, duplicate env/route blocks across sibling frameworks, or add per-component READMEs or `.env-local` files.
+
 ## Setup
 
 ### First Time Setup

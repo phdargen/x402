@@ -4,7 +4,6 @@ import sys
 import asyncio
 from typing import Any, Dict
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from x402.fastapi.middleware import require_payment
 from x402.types import EIP712Domain, TokenAmount, TokenAsset
@@ -17,11 +16,10 @@ from x402.chains import (
 )
 
 # Load environment variables
-load_dotenv()
 
 # Get configuration from environment
 NETWORK = os.getenv("EVM_NETWORK", "base-sepolia")
-ADDRESS = os.getenv("EVM_PAYEE_ADDRESS")
+ADDRESS = os.getenv("SERVER_EVM_ADDRESS")
 PORT = int(os.getenv("PORT", "4021"))
 FACILITATOR_URL = os.getenv("FACILITATOR_URL")
 

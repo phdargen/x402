@@ -1,12 +1,170 @@
 /**
- * Network configuration for E2E tests
+ * Network and protocol-family configuration for E2E tests.
  *
- * This is the single source of truth for all network configs.
- * Use getNetworkSet() to get configs for testnet or mainnet mode.
+ * Single source of truth for protocol families, credential env keys, network
+ * configs, and helpers. Use getNetworkSet() for testnet or mainnet mode.
+ *
+ * Adding a network SDK: extend ProtocolFamily, FAMILY_CREDENTIALS,
+ * FAMILY_NETWORK_ENV, and NETWORK_SETS below.
  */
 
+export type ProtocolFamily =
+  | 'evm'
+  | 'svm'
+  | 'avm'
+  | 'aptos'
+  | 'hedera'
+  | 'keeta'
+  | 'near'
+  | 'stellar'
+  | 'ccd'
+  | 'tvm'
+  | 'xrpl';
+
+/** All protocol families in registry order. */
+export const PROTOCOL_FAMILIES: readonly ProtocolFamily[] = [
+  'evm',
+  'svm',
+  'avm',
+  'aptos',
+  'hedera',
+  'keeta',
+  'near',
+  'stellar',
+  'ccd',
+  'tvm',
+  'xrpl',
+] as const;
+
+export type Role = 'server' | 'client' | 'facilitator';
+
+export type FamilyCredentialSchema = {
+  /** Root .env keys forwarded unchanged into child processes */
+  server: string[];
+  client: string[];
+  facilitator: string[];
+};
+
+export type FamilyNetworkEnv = {
+  /** Env var for network identifier (CAIP-2 or legacy v1 string after translation) */
+  networkKey: string;
+  /** Env var for RPC/WS/gRPC endpoint; omitted when unused */
+  rpcUrlKey?: string;
+};
+
+/**
+ * Credential env keys per family and role. Exceptional multi-field shapes
+ * (Hedera account+key, CCD key+address, NEAR account+key) live here only.
+ */
+export const FAMILY_CREDENTIALS: Record<ProtocolFamily, FamilyCredentialSchema> = {
+  evm: {
+    server: ['SERVER_EVM_ADDRESS'],
+    client: ['CLIENT_EVM_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_EVM_PRIVATE_KEY'],
+  },
+  svm: {
+    server: ['SERVER_SVM_ADDRESS'],
+    client: ['CLIENT_SVM_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_SVM_PRIVATE_KEY'],
+  },
+  avm: {
+    server: ['SERVER_AVM_ADDRESS'],
+    client: ['CLIENT_AVM_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_AVM_PRIVATE_KEY'],
+  },
+  aptos: {
+    server: ['SERVER_APTOS_ADDRESS'],
+    client: ['CLIENT_APTOS_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_APTOS_PRIVATE_KEY'],
+  },
+  ccd: {
+    server: ['SERVER_CCD_ADDRESS'],
+    client: ['CLIENT_CCD_PRIVATE_KEY', 'CLIENT_CCD_ADDRESS'],
+    facilitator: ['FACILITATOR_CCD_PRIVATE_KEY', 'FACILITATOR_CCD_ADDRESS'],
+  },
+  hedera: {
+    server: ['SERVER_HEDERA_ADDRESS'],
+    client: ['CLIENT_HEDERA_ACCOUNT_ID', 'CLIENT_HEDERA_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_HEDERA_ACCOUNT_ID', 'FACILITATOR_HEDERA_PRIVATE_KEY'],
+  },
+  keeta: {
+    server: ['SERVER_KEETA_ADDRESS'],
+    client: ['CLIENT_KEETA_MNEMONIC'],
+    facilitator: ['FACILITATOR_KEETA_MNEMONIC'],
+  },
+  near: {
+    server: ['SERVER_NEAR_ADDRESS'],
+    client: ['CLIENT_NEAR_ACCOUNT_ID', 'CLIENT_NEAR_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_NEAR_ACCOUNT_ID', 'FACILITATOR_NEAR_PRIVATE_KEY'],
+  },
+  stellar: {
+    server: ['SERVER_STELLAR_ADDRESS'],
+    client: ['CLIENT_STELLAR_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_STELLAR_PRIVATE_KEY'],
+  },
+  tvm: {
+    server: ['SERVER_TVM_ADDRESS'],
+    client: ['CLIENT_TVM_PRIVATE_KEY'],
+    facilitator: ['FACILITATOR_TVM_PRIVATE_KEY'],
+  },
+  xrpl: {
+    server: ['SERVER_XRPL_ADDRESS'],
+    client: ['CLIENT_XRPL_SEED'],
+    facilitator: [],
+  },
+};
+
+/** Network env var names injected by proxies from NetworkSet. */
+export const FAMILY_NETWORK_ENV: Record<ProtocolFamily, FamilyNetworkEnv> = {
+  evm: { networkKey: 'EVM_NETWORK', rpcUrlKey: 'EVM_RPC_URL' },
+  svm: { networkKey: 'SVM_NETWORK', rpcUrlKey: 'SVM_RPC_URL' },
+  avm: { networkKey: 'AVM_NETWORK', rpcUrlKey: 'AVM_RPC_URL' },
+  aptos: { networkKey: 'APTOS_NETWORK', rpcUrlKey: 'APTOS_RPC_URL' },
+  ccd: { networkKey: 'CCD_NETWORK', rpcUrlKey: 'CCD_GRPC_URL' },
+  hedera: { networkKey: 'HEDERA_NETWORK', rpcUrlKey: 'HEDERA_NODE_URL' },
+  keeta: { networkKey: 'KEETA_NETWORK' },
+  near: { networkKey: 'NEAR_NETWORK', rpcUrlKey: 'NEAR_RPC_URL' },
+  stellar: { networkKey: 'STELLAR_NETWORK', rpcUrlKey: 'STELLAR_RPC_URL' },
+  tvm: { networkKey: 'TVM_NETWORK' },
+  xrpl: { networkKey: 'XRPL_NETWORK', rpcUrlKey: 'XRPL_WS_URL' },
+};
+
+/** Human-readable names for 501 errors, banners, and CLI output. */
+export const FAMILY_DISPLAY_NAME: Record<ProtocolFamily, string> = {
+  evm: 'EVM',
+  svm: 'SVM',
+  avm: 'AVM',
+  aptos: 'Aptos',
+  hedera: 'Hedera',
+  keeta: 'Keeta',
+  near: 'NEAR',
+  stellar: 'Stellar',
+  ccd: 'Concordium',
+  tvm: 'TVM',
+  xrpl: 'XRPL',
+};
+
+/** Server payee address env key for a family. */
+export function serverAddressKey(family: ProtocolFamily): string {
+  return `SERVER_${family.toUpperCase()}_ADDRESS`;
+}
+
+/** Collect all credential env keys for a role across families. */
+export function allCredentialKeys(role: Role): string[] {
+  const keys: string[] = [];
+  for (const family of PROTOCOL_FAMILIES) {
+    keys.push(...FAMILY_CREDENTIALS[family][role]);
+  }
+  return keys;
+}
+
+/** Required env keys for a family (all roles that have keys). */
+export function requiredEnvForFamily(family: ProtocolFamily): string[] {
+  const schema = FAMILY_CREDENTIALS[family];
+  return [...schema.server, ...schema.client, ...schema.facilitator];
+}
+
 export type NetworkMode = 'testnet' | 'mainnet';
-export type ProtocolFamily = 'evm' | 'svm' | 'avm' | 'aptos' | 'hedera' | 'keeta' | 'near' | 'stellar' | 'ccd' | 'tvm' | 'xrpl';
 
 export type NetworkConfig = {
   name: string;
@@ -15,19 +173,7 @@ export type NetworkConfig = {
   permit2Asset?: string;
 };
 
-export type NetworkSet = {
-  evm: NetworkConfig;
-  svm: NetworkConfig;
-  avm: NetworkConfig;
-  aptos: NetworkConfig;
-  hedera: NetworkConfig;
-  keeta: NetworkConfig;
-  stellar: NetworkConfig;
-  ccd: NetworkConfig;
-  tvm: NetworkConfig;
-  near: NetworkConfig;
-  xrpl: NetworkConfig;
-};
+export type NetworkSet = Record<ProtocolFamily, NetworkConfig>;
 
 /**
  * All supported networks, organized by mode and protocol family
@@ -189,7 +335,7 @@ export function resolveEvmPermit2Asset(networks: NetworkSet): string {
  */
 export function getNetworkForProtocol(
   mode: NetworkMode,
-  protocolFamily: ProtocolFamily
+  protocolFamily: ProtocolFamily,
 ): NetworkConfig {
   return NETWORK_SETS[mode][protocolFamily];
 }
@@ -202,6 +348,6 @@ export function getNetworkForProtocol(
  */
 export function getNetworkModeDescription(mode: NetworkMode): string {
   const set = NETWORK_SETS[mode];
-  const networks = [set.evm.name, set.svm.name, set.avm.name, set.aptos.name, set.hedera.name, set.keeta.name, set.near.name, set.stellar.name, set.ccd.name, set.tvm.name, set.xrpl.name];
+  const networks = PROTOCOL_FAMILIES.map(f => set[f].name);
   return networks.join(' + ');
 }

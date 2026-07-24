@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
 import type { XrplAssetTransferMethod } from "@x402/xrpl";
-import { createXrplPaymentConfig, server, XRPL_PAYEE_ADDRESS } from "@/proxy";
+import { createXrplPaymentConfig, server, SERVER_XRPL_ADDRESS } from "@/proxy";
 
 /**
  * Return the common successful response for XRPL payment routes.
@@ -23,10 +23,10 @@ export const xrplHandler = async (_: NextRequest) => {
  * @returns A protected route handler, or a 503 handler when XRPL is not configured
  */
 export function createXrplWithX402Handler(assetTransferMethod: XrplAssetTransferMethod) {
-  return XRPL_PAYEE_ADDRESS
+  return SERVER_XRPL_ADDRESS
     ? withX402(
         xrplHandler,
-        createXrplPaymentConfig(XRPL_PAYEE_ADDRESS, assetTransferMethod),
+        createXrplPaymentConfig(SERVER_XRPL_ADDRESS, assetTransferMethod),
         server,
       )
     : async () => {

@@ -18,12 +18,12 @@ import { z } from "zod";
 
 const PORT = process.env.PORT || "4022";
 const EVM_NETWORK = (process.env.EVM_NETWORK || "eip155:84532") as `${string}:${string}`;
-const EVM_PAYEE_ADDRESS = process.env.EVM_PAYEE_ADDRESS as `0x${string}`;
+const SERVER_EVM_ADDRESS = process.env.SERVER_EVM_ADDRESS as `0x${string}`;
 const EVM_PERMIT2_ASSET = process.env.EVM_PERMIT2_ASSET as `0x${string}`;
 const facilitatorUrl = process.env.FACILITATOR_URL;
 
-if (!EVM_PAYEE_ADDRESS) {
-  console.error("❌ EVM_PAYEE_ADDRESS environment variable is required");
+if (!SERVER_EVM_ADDRESS) {
+  console.error("❌ SERVER_EVM_ADDRESS environment variable is required");
   process.exit(1);
 }
 
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
   const resourceServer = new x402ResourceServer(facilitatorClient);
   resourceServer.register("eip155:*", new ExactEvmScheme());
-  const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
+  const receiverAuthorizerPrivateKey = process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
     | `0x${string}`
     | undefined;
   const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
@@ -69,7 +69,7 @@ async function main(): Promise<void> {
     : undefined;
   resourceServer.register(
     "eip155:*",
-    new BatchSettlementEvmScheme(EVM_PAYEE_ADDRESS, {
+    new BatchSettlementEvmScheme(SERVER_EVM_ADDRESS, {
       ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
     }),
   );
@@ -79,20 +79,20 @@ async function main(): Promise<void> {
   const weatherAccepts = await resourceServer.buildPaymentRequirements({
     scheme: "exact",
     network: EVM_NETWORK,
-    payTo: EVM_PAYEE_ADDRESS,
+    payTo: SERVER_EVM_ADDRESS,
     price: "$0.001",
     extra: { name: "USDC", version: "2" },
   });
   const batchEip3009Accepts = await resourceServer.buildPaymentRequirements({
     scheme: "batch-settlement",
     network: EVM_NETWORK,
-    payTo: EVM_PAYEE_ADDRESS,
+    payTo: SERVER_EVM_ADDRESS,
     price: "$0.001",
   });
   const batchPermit2Accepts = await resourceServer.buildPaymentRequirements({
     scheme: "batch-settlement",
     network: EVM_NETWORK,
-    payTo: EVM_PAYEE_ADDRESS,
+    payTo: SERVER_EVM_ADDRESS,
     price: {
       amount: "1000",
       asset: EVM_PERMIT2_ASSET,

@@ -14,7 +14,7 @@
   ],
   "environment": {
     "required": [
-      "SVM_PRIVATE_KEY",
+      "CLIENT_SVM_PRIVATE_KEY",
       "SWIG_ACCOUNT_ADDRESS",
       "RESOURCE_SERVER_URL",
       "ENDPOINT_PATH"

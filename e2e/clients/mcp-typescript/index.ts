@@ -38,7 +38,7 @@ interface RequestResult {
 
 const serverUrl = process.env.RESOURCE_SERVER_URL as string;
 const endpointPath = process.env.ENDPOINT_PATH as string; // tool name, e.g. "get_weather"
-const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
+const evmPrivateKey = process.env.CLIENT_EVM_PRIVATE_KEY as `0x${string}`;
 const evmNetwork = process.env.EVM_NETWORK || "eip155:84532";
 const evmChain = evmNetwork === "eip155:8453" ? base : baseSepolia;
 const channelSalt = process.env.CHANNEL_SALT as `0x${string}` | undefined;
@@ -51,7 +51,7 @@ const batchSettlementPhase = process.env.BATCH_SETTLEMENT_PHASE as
 if (!serverUrl || !endpointPath || !evmPrivateKey) {
   const result: E2EResult = {
     success: false,
-    error: "Missing required environment variables: RESOURCE_SERVER_URL, ENDPOINT_PATH, EVM_PRIVATE_KEY",
+    error: "Missing required environment variables: RESOURCE_SERVER_URL, ENDPOINT_PATH, CLIENT_EVM_PRIVATE_KEY",
   };
   console.log(JSON.stringify(result));
   process.exit(1);
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const evmSchemeOptions: ExactEvmSchemeOptions | undefined = process.env.EVM_RPC_URL
     ? { rpcUrl: process.env.EVM_RPC_URL }
     : undefined;
-  const voucherSignerKey = process.env.EVM_VOUCHER_SIGNER_PRIVATE_KEY as
+  const voucherSignerKey = process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY as
     | `0x${string}`
     | undefined;
   const voucherSigner = voucherSignerKey

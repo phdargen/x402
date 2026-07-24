@@ -20,7 +20,7 @@
   },
   "environment": {
     "required": [
-      "EVM_PRIVATE_KEY",
+      "CLIENT_EVM_PRIVATE_KEY",
       "RESOURCE_SERVER_URL",
       "ENDPOINT_PATH"
     ],

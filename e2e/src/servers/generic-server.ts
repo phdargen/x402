@@ -2,6 +2,11 @@ import { BaseProxy, RunConfig } from '../proxy-base';
 import { ServerProxy, ServerConfig } from '../types';
 import { verboseLog, errorLog } from '../logger';
 import { resolveEvmPermit2Asset } from '../networks/networks';
+import {
+  forwardConfigEnv,
+  forwardRoleCredentials,
+  injectNetworkEnv,
+} from '../env';
 
 export interface ProtectedResponse {
   message: string;
@@ -32,8 +37,6 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
     // Use different ready logs for different server types
     const readyLog = directory.includes('next') ? 'Ready' : 'Server listening';
     super(directory, readyLog);
-
-    // Load endpoints from test config
     this.loadEndpoints();
   }
 
@@ -59,10 +62,24 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
           this.closeEndpoint = closeEndpoint.path;
         }
       }
-    } catch (error) {
+    } catch {
       // Fallback to defaults if config loading fails
       errorLog(`Failed to load endpoints from config for ${this.directory}, using defaults`);
     }
+  }
+
+  private loadConfig(): any {
+    try {
+      const { readFileSync, existsSync } = require('fs');
+      const { join } = require('path');
+      const configPath = join(this.directory, 'test.config.json');
+      if (existsSync(configPath)) {
+        return JSON.parse(readFileSync(configPath, 'utf-8'));
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   }
 
   async start(config: ServerConfig): Promise<void> {
@@ -73,96 +90,26 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
 
     verboseLog(`  📂 Server directory: ${this.directory}, isV1: ${isV1Server}`);
 
-    // For legacy servers, translate CAIP-2 to v1 network names
-    let evmNetwork: string = config.networks.evm.caip2;
-    let svmNetwork: string = config.networks.svm.caip2;
-
     if (isV1Server) {
-      evmNetwork = translateNetworkForV1(config.networks.evm.caip2);
-      svmNetwork = translateNetworkForV1(config.networks.svm.caip2);
-
-      verboseLog(`  🔄 Translating networks for v1 server: ${config.networks.evm.caip2} → ${evmNetwork}, ${config.networks.svm.caip2} → ${svmNetwork}`);
+      verboseLog(
+        `  🔄 Translating networks for v1 server: ${config.networks.evm.caip2} → legacy EVM/SVM values`,
+      );
     }
+
+    const baseEnv: Record<string, string> = {
+      PORT: config.port.toString(),
+      ...forwardRoleCredentials('server', config.enabledFamilies),
+      ...injectNetworkEnv(config.networks, { legacyV1: isV1Server }),
+      EVM_PERMIT2_ASSET: resolveEvmPermit2Asset(config.networks),
+      FACILITATOR_URL: config.facilitatorUrl || '',
+      MOCK_FACILITATOR_URL: config.mockFacilitatorUrl || '',
+    };
 
     const runConfig: RunConfig = {
       port: config.port,
-      env: {
-        PORT: config.port.toString(),
-
-        // EVM network config
-        EVM_NETWORK: evmNetwork,
-        EVM_RPC_URL: config.networks.evm.rpcUrl,
-        EVM_PAYEE_ADDRESS: config.evmPayTo,
-        EVM_PERMIT2_ASSET: resolveEvmPermit2Asset(config.networks),
-
-        // SVM network config
-        SVM_NETWORK: svmNetwork,
-        SVM_RPC_URL: config.networks.svm.rpcUrl,
-        SVM_PAYEE_ADDRESS: config.svmPayTo,
-
-        // AVM network config
-        AVM_NETWORK: config.networks.avm.caip2,
-        AVM_RPC_URL: config.networks.avm.rpcUrl,
-        AVM_PAYEE_ADDRESS: config.avmPayTo,
-
-        // Aptos network config
-        APTOS_NETWORK: config.networks.aptos.caip2,
-        APTOS_RPC_URL: config.networks.aptos.rpcUrl,
-        APTOS_PAYEE_ADDRESS: config.aptosPayTo,
-
-        // Concordium network config
-        CCD_NETWORK: config.networks.ccd.caip2,
-        CCD_PAYEE_ADDRESS: config.ccdPayTo,
-
-        // Hedera network config. HEDERA_ASSET / HEDERA_AMOUNT are only
-        // forwarded when set by the caller; the resource servers apply their
-        // own HBAR defaults (0.0.0 / 100000 tinybars) when absent, so passing
-        // an empty string here would clobber those defaults.
-        HEDERA_NETWORK: config.networks.hedera.caip2,
-        HEDERA_NODE_URL: config.networks.hedera.rpcUrl,
-        HEDERA_PAYEE_ADDRESS: config.hederaPayTo,
-        ...(config.hederaAsset !== undefined ? { HEDERA_ASSET: config.hederaAsset } : {}),
-        ...(config.hederaAmount !== undefined ? { HEDERA_AMOUNT: config.hederaAmount } : {}),
-
-        // Keeta network config
-        KEETA_NETWORK: config.networks.keeta.caip2,
-        KEETA_PAYEE_ADDRESS: config.keetaPayTo,
-
-        // Stellar network config
-        STELLAR_NETWORK: config.networks.stellar.caip2,
-        STELLAR_RPC_URL: config.networks.stellar.rpcUrl,
-        STELLAR_PAYEE_ADDRESS: config.stellarPayTo,
-
-        // TVM network config
-        TVM_NETWORK: config.networks.tvm.caip2,
-        TVM_PAYEE_ADDRESS: config.tvmPayTo,
-
-        // NEAR network config
-        NEAR_NETWORK: config.networks.near.caip2,
-        NEAR_RPC_URL: config.networks.near.rpcUrl,
-        NEAR_PAYEE_ADDRESS: config.nearPayTo,
-        ...(config.nearAsset !== undefined ? { NEAR_ASSET: config.nearAsset } : {}),
-        ...(config.nearAmount !== undefined ? { NEAR_AMOUNT: config.nearAmount } : {}),
-
-        // XRPL network config
-        XRPL_NETWORK: config.networks.xrpl.caip2,
-        XRPL_WS_URL: config.networks.xrpl.rpcUrl,
-        XRPL_PAYEE_ADDRESS: config.xrplPayTo,
-        ...(config.xrplAsset !== undefined ? { XRPL_ASSET: config.xrplAsset } : {}),
-        ...(config.xrplAmount !== undefined ? { XRPL_AMOUNT: config.xrplAmount } : {}),
-        ...(config.xrplIssuer !== undefined ? { XRPL_ISSUER: config.xrplIssuer } : {}),
-
-        // Facilitator
-        FACILITATOR_URL: config.facilitatorUrl || '',
-        MOCK_FACILITATOR_URL: config.mockFacilitatorUrl || '',
-
-        ...(config.batchSettlement
-          ? {
-              EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY:
-                config.batchSettlement.receiverAuthorizerPrivateKey,
-            }
-          : {}),
-      }
+      // Optional family-specific vars (HEDERA_ASSET, SERVER_NEAR_ASSET, etc.) are
+      // forwarded from the root process via forwardConfigEnv + test.config.json.
+      env: forwardConfigEnv(this.loadConfig(), baseEnv),
     };
 
     await this.startProcess(runConfig);
@@ -176,7 +123,7 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
         return {
           success: false,
           error: `Protected endpoint failed: ${response.status} ${response.statusText}`,
-          statusCode: response.status
+          statusCode: response.status,
         };
       }
 
@@ -184,12 +131,12 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
       return {
         success: true,
         data: data as ProtectedResponse,
-        statusCode: response.status
+        statusCode: response.status,
       };
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
@@ -202,7 +149,7 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
         return {
           success: false,
           error: `Health check failed: ${response.status} ${response.statusText}`,
-          statusCode: response.status
+          statusCode: response.status,
         };
       }
 
@@ -210,12 +157,12 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
       return {
         success: true,
         data: data as HealthResponse,
-        statusCode: response.status
+        statusCode: response.status,
       };
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
@@ -223,14 +170,14 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
   async close(): Promise<ServerResult<CloseResponse>> {
     try {
       const response = await fetch(`http://localhost:${this.port}${this.closeEndpoint}`, {
-        method: 'POST'
+        method: 'POST',
       });
 
       if (!response.ok) {
         return {
           success: false,
           error: `Close failed: ${response.status} ${response.statusText}`,
-          statusCode: response.status
+          statusCode: response.status,
         };
       }
 
@@ -238,12 +185,12 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
       return {
         success: true,
         data: data as CloseResponse,
-        statusCode: response.status
+        statusCode: response.status,
       };
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
@@ -259,7 +206,7 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
         } else {
           verboseLog('Graceful shutdown failed, using force kill');
         }
-      } catch (error) {
+      } catch {
         verboseLog('Graceful shutdown failed, using force kill');
       }
     }
@@ -278,23 +225,4 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
   getUrl(): string {
     return `http://localhost:${this.port}`;
   }
-}
-
-/**
- * Translates v2 CAIP-2 network format to v1 simple format for legacy servers
- *
- * @param network - Network in CAIP-2 format (e.g., "eip155:84532")
- * @returns Network in v1 format (e.g., "base-sepolia")
- */
-function translateNetworkForV1(network: string): string {
-  const networkMap: Record<string, string> = {
-    // Testnets
-    'eip155:84532': 'base-sepolia',
-    'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1': 'solana-devnet',
-    // Mainnets
-    'eip155:8453': 'base',
-    'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': 'solana',
-  };
-
-  return networkMap[network] || network;
 }

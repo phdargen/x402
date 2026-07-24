@@ -29,11 +29,11 @@
   "environment": {
     "required": [
       "PORT",
-      "EVM_PRIVATE_KEY",
-      "SVM_PRIVATE_KEY"
+      "FACILITATOR_EVM_PRIVATE_KEY",
+      "FACILITATOR_SVM_PRIVATE_KEY"
     ],
     "optional": [
-      "EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"
+      "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"
     ]
   }
 }

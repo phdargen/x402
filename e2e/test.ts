@@ -13,7 +13,8 @@ import { parseArgs, printHelp } from './src/cli/args';
 import { runInteractiveMode } from './src/cli/interactive';
 import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/cli/filters';
 import { minimizeScenarios } from './src/sampling';
-import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset } from './src/networks/networks';
+import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily } from './src/networks/networks';
+import { injectNetworkEnv } from './src/env';
 import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, ResourceLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
@@ -861,63 +862,10 @@ async function runTest() {
     return;
   }
 
-  const requiredEnvByFamily: Record<string, Array<[string, string | undefined]>> = {
-    evm: [
-      ['SERVER_EVM_ADDRESS', serverEvmAddress],
-      ['CLIENT_EVM_PRIVATE_KEY', clientEvmPrivateKey],
-      ['FACILITATOR_EVM_PRIVATE_KEY', facilitatorEvmPrivateKey],
-    ],
-    svm: [
-      ['SERVER_SVM_ADDRESS', serverSvmAddress],
-      ['CLIENT_SVM_PRIVATE_KEY', clientSvmPrivateKey],
-      ['FACILITATOR_SVM_PRIVATE_KEY', facilitatorSvmPrivateKey],
-    ],
-    aptos: [
-      ['SERVER_APTOS_ADDRESS', serverAptosAddress],
-      ['CLIENT_APTOS_PRIVATE_KEY', clientAptosPrivateKey],
-      ['FACILITATOR_APTOS_PRIVATE_KEY', facilitatorAptosPrivateKey],
-    ],
-    avm: [
-      ['SERVER_AVM_ADDRESS', serverAvmAddress],
-      ['CLIENT_AVM_PRIVATE_KEY', clientAvmPrivateKey],
-      ['FACILITATOR_AVM_PRIVATE_KEY', facilitatorAvmPrivateKey],
-    ],
-    ccd: [
-      ['SERVER_CCD_ADDRESS', serverCcdAddress],
-      ['CLIENT_CCD_PRIVATE_KEY', clientCcdPrivateKey],
-      ['CLIENT_CCD_ADDRESS', clientCcdAddress],
-      ['FACILITATOR_CCD_PRIVATE_KEY', facilitatorCcdPrivateKey],
-      ['FACILITATOR_CCD_ADDRESS', facilitatorCcdAddress],
-    ],
-    hedera: [
-      ['SERVER_HEDERA_ADDRESS', serverHederaAddress],
-      ['CLIENT_HEDERA_ACCOUNT_ID', clientHederaAccountId],
-      ['CLIENT_HEDERA_PRIVATE_KEY', clientHederaPrivateKey],
-      ['FACILITATOR_HEDERA_ACCOUNT_ID', facilitatorHederaAccountId],
-      ['FACILITATOR_HEDERA_PRIVATE_KEY', facilitatorHederaPrivateKey],
-    ],
-    stellar: [
-      ['SERVER_STELLAR_ADDRESS', serverStellarAddress],
-      ['CLIENT_STELLAR_PRIVATE_KEY', clientStellarPrivateKey],
-      ['FACILITATOR_STELLAR_PRIVATE_KEY', facilitatorStellarPrivateKey],
-    ],
-    tvm: [
-      ['SERVER_TVM_ADDRESS', serverTvmAddress],
-      ['CLIENT_TVM_PRIVATE_KEY', clientTvmPrivateKey],
-      ['FACILITATOR_TVM_PRIVATE_KEY', facilitatorTvmPrivateKey],
-    ],
-    near: [
-      ['SERVER_NEAR_ADDRESS', serverNearAddress],
-      ['CLIENT_NEAR_ACCOUNT_ID', clientNearAccountId],
-      ['CLIENT_NEAR_PRIVATE_KEY', clientNearPrivateKey],
-      ['FACILITATOR_NEAR_ACCOUNT_ID', facilitatorNearAccountId],
-      ['FACILITATOR_NEAR_PRIVATE_KEY', facilitatorNearPrivateKey],
-    ],
-    xrpl: [
-      ['SERVER_XRPL_ADDRESS', serverXrplAddress],
-      ['CLIENT_XRPL_SEED', clientXrplSeed],
-    ],
-  };
+  const requiredEnvByFamily: Record<string, Array<[string, string | undefined]>> = {};
+  for (const family of PROTOCOL_FAMILIES) {
+    requiredEnvByFamily[family] = requiredEnvForFamily(family).map(key => [key, process.env[key]]);
+  }
 
   // Apply coverage-based minimization if --min flag is set
   if (parsedArgs.minimize) {
@@ -1102,14 +1050,19 @@ async function runTest() {
   // Environment variables managed by the test framework (don't require user to set)
   const systemManagedVars = new Set([
     'PORT',
-    'EVM_PRIVATE_KEY',
-    'SVM_PRIVATE_KEY',
-    'APTOS_PRIVATE_KEY',
-    'HEDERA_ACCOUNT_ID',
-    'HEDERA_PRIVATE_KEY',
-    'KEETA_FACILITATOR_MNEMONIC',
-    'STELLAR_PRIVATE_KEY',
-    'TVM_PRIVATE_KEY',
+    'FACILITATOR_EVM_PRIVATE_KEY',
+    'FACILITATOR_SVM_PRIVATE_KEY',
+    'FACILITATOR_APTOS_PRIVATE_KEY',
+    'FACILITATOR_HEDERA_ACCOUNT_ID',
+    'FACILITATOR_HEDERA_PRIVATE_KEY',
+    'FACILITATOR_KEETA_MNEMONIC',
+    'FACILITATOR_STELLAR_PRIVATE_KEY',
+    'FACILITATOR_TVM_PRIVATE_KEY',
+    'FACILITATOR_NEAR_ACCOUNT_ID',
+    'FACILITATOR_NEAR_PRIVATE_KEY',
+    'FACILITATOR_AVM_PRIVATE_KEY',
+    'FACILITATOR_CCD_PRIVATE_KEY',
+    'FACILITATOR_CCD_ADDRESS',
     'EVM_NETWORK',
     'SVM_NETWORK',
     'APTOS_NETWORK',
@@ -1117,31 +1070,31 @@ async function runTest() {
     'KEETA_NETWORK',
     'STELLAR_NETWORK',
     'TVM_NETWORK',
+    'AVM_NETWORK',
+    'CCD_NETWORK',
+    'CCD_GRPC_URL',
     'EVM_RPC_URL',
     'SVM_RPC_URL',
     'SWIG_ACCOUNT_ADDRESS',
     'APTOS_RPC_URL',
     'HEDERA_NODE_URL',
     'STELLAR_RPC_URL',
+    'AVM_RPC_URL',
     'TONCENTER_BASE_URL',
     'TVM_PROVIDER',
     'TONAPI_API_KEY',
     'TONAPI_BASE_URL',
     'NEAR_NETWORK',
     'NEAR_RPC_URL',
-    'NEAR_ACCOUNT_ID',
-    'NEAR_PRIVATE_KEY',
-    'NEAR_RELAYER_ACCOUNT_ID',
-    'NEAR_RELAYER_PRIVATE_KEY',
-    'NEAR_PAYEE_ADDRESS',
-    'NEAR_ASSET',
-    'NEAR_AMOUNT',
+    'SERVER_NEAR_ASSET',
+    'SERVER_NEAR_AMOUNT',
+    'HEDERA_ASSET',
+    'HEDERA_AMOUNT',
     'XRPL_NETWORK',
     'XRPL_WS_URL',
-    'XRPL_SEED',
-    'XRPL_PAYEE_ADDRESS',
-    'XRPL_ASSET',
-    'XRPL_AMOUNT',
+    'SERVER_XRPL_ASSET',
+    'SERVER_XRPL_AMOUNT',
+    'SERVER_XRPL_ISSUER',
   ]);
 
   for (const [facilitatorName, facilitator] of uniqueFacilitators) {
@@ -1295,15 +1248,7 @@ async function runTest() {
       env: {
         ...process.env,
         PORT: mockFacilitatorPort.toString(),
-        EVM_NETWORK: networks.evm.caip2,
-        SVM_NETWORK: networks.svm.caip2,
-        APTOS_NETWORK: networks.aptos.caip2,
-        CCD_NETWORK: networks.ccd.caip2,
-        KEETA_NETWORK: networks.keeta.caip2,
-        STELLAR_NETWORK: networks.stellar.caip2,
-        TVM_NETWORK: networks.tvm.caip2,
-        NEAR_NETWORK: networks.near.caip2,
-        XRPL_NETWORK: networks.xrpl.caip2,
+        ...injectNetworkEnv(networks),
       },
       stdio: 'pipe',
     },
@@ -1361,37 +1306,9 @@ async function runTest() {
     const isBatchSettlement = endpointUsesBatchSettlement(scenario.endpoint);
     const voucherSignerPrivateKey = process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY;
     const baseClientConfig: ClientConfig = {
-      evmPrivateKey: clientEvmPrivateKey!,
-      svmPrivateKey: clientSvmPrivateKey!,
-      avmPrivateKey: clientAvmPrivateKey || '',
-      aptosPrivateKey: clientAptosPrivateKey || '',
-      ccdPrivateKey: clientCcdPrivateKey || '',
-      ccdAddress: clientCcdAddress || '',
-      hederaAccountId: clientHederaAccountId || '',
-      hederaPrivateKey: clientHederaPrivateKey || '',
-      keetaClientMnemonic: clientKeetaMnemonic || '',
-      stellarPrivateKey: clientStellarPrivateKey || '',
-      tvmPrivateKey: clientTvmPrivateKey || '',
       serverUrl: `http://localhost:${port}`,
       endpointPath: scenario.endpoint.path,
-      evmNetwork: networks.evm.caip2,
-      evmRpcUrl: networks.evm.rpcUrl,
-      svmNetwork: networks.svm.caip2,
-      svmRpcUrl: networks.svm.rpcUrl,
-      ccdNetwork: networks.ccd.caip2,
-      ccdGrpcUrl: networks.ccd.rpcUrl,
-      hederaNetwork: networks.hedera.caip2,
-      hederaNodeUrl: networks.hedera.rpcUrl,
-      keetaNetwork: networks.keeta.caip2,
-      tvmNetwork: networks.tvm.caip2,
-      tvmRpcUrl: networks.tvm.rpcUrl,
-      nearAccountId: clientNearAccountId || '',
-      nearPrivateKey: clientNearPrivateKey || '',
-      nearNetwork: networks.near.caip2,
-      nearRpcUrl: networks.near.rpcUrl,
-      xrplSeed: clientXrplSeed || '',
-      xrplNetwork: networks.xrpl.caip2,
-      xrplWsUrl: networks.xrpl.rpcUrl,
+      networks,
     };
 
     try {
@@ -1617,54 +1534,39 @@ async function runTest() {
     cLog.log(`🚀 Starting server: ${serverName} (port ${port}) with facilitator: ${facilitatorName || 'none'}`);
 
     const facilitatorConfig = facilitatorName ? uniqueFacilitators.get(facilitatorName)?.config : undefined;
-    const facilitatorSupportsAvm = facilitatorConfig?.protocolFamilies?.includes('avm') ?? false;
-    const facilitatorSupportsAptos = facilitatorConfig?.protocolFamilies?.includes('aptos') ?? false;
-    const facilitatorSupportsCcd = facilitatorConfig?.protocolFamilies?.includes('ccd') ?? false;
-    const facilitatorSupportsHedera = facilitatorConfig?.protocolFamilies?.includes('hedera') ?? false;
-    const facilitatorSupportsKeeta = facilitatorConfig?.protocolFamilies?.includes('keeta') ?? false;
-    const facilitatorSupportsStellar = facilitatorConfig?.protocolFamilies?.includes('stellar') ?? false;
-    const facilitatorSupportsTvm = facilitatorConfig?.protocolFamilies?.includes('tvm') ?? false;
-    const facilitatorSupportsNear = facilitatorConfig?.protocolFamilies?.includes('near') ?? false;
-    const facilitatorSupportsXrpl = facilitatorConfig?.protocolFamilies?.includes('xrpl') ?? false;
 
+    const enabledFamilies: import('./src/types').ProtocolFamily[] = ['evm', 'svm'];
+    const familySupport: Array<[import('./src/types').ProtocolFamily, boolean]> = [
+      ['avm', facilitatorConfig?.protocolFamilies?.includes('avm') ?? false],
+      ['aptos', facilitatorConfig?.protocolFamilies?.includes('aptos') ?? false],
+      ['ccd', facilitatorConfig?.protocolFamilies?.includes('ccd') ?? false],
+      ['hedera', facilitatorConfig?.protocolFamilies?.includes('hedera') ?? false],
+      ['keeta', facilitatorConfig?.protocolFamilies?.includes('keeta') ?? false],
+      ['stellar', facilitatorConfig?.protocolFamilies?.includes('stellar') ?? false],
+      ['tvm', facilitatorConfig?.protocolFamilies?.includes('tvm') ?? false],
+      ['near', facilitatorConfig?.protocolFamilies?.includes('near') ?? false],
+      ['xrpl', facilitatorConfig?.protocolFamilies?.includes('xrpl') ?? false],
+    ];
+    for (const [family, supported] of familySupport) {
+      if (!supported) continue;
+      if (
+        family === 'hedera' &&
+        (!facilitatorHederaAccountId || !facilitatorHederaPrivateKey)
+      ) {
+        continue;
+      }
+      enabledFamilies.push(family);
+    }
+
+    // SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is forwarded via test.config.json
+    // optional env when set, so the server can self-manage batch-settlement
+    // claim/refund signatures.
     const serverConfig: ServerConfig = {
       port,
-      evmPayTo: serverEvmAddress!,
-      svmPayTo: serverSvmAddress!,
-      avmPayTo: facilitatorSupportsAvm ? (serverAvmAddress || '') : '',
-      aptosPayTo: facilitatorSupportsAptos ? (serverAptosAddress || '') : '',
-      ccdPayTo: facilitatorSupportsCcd ? (serverCcdAddress || '') : '',
-      hederaPayTo:
-        facilitatorSupportsHedera &&
-          facilitatorHederaAccountId &&
-          facilitatorHederaPrivateKey
-          ? (serverHederaAddress || '')
-          : '',
-      hederaAsset: process.env.HEDERA_ASSET,
-      hederaAmount: process.env.HEDERA_AMOUNT,
-      keetaPayTo: facilitatorSupportsKeeta ? (serverKeetaAddress || '') : '',
-      stellarPayTo: facilitatorSupportsStellar ? (serverStellarAddress || '') : '',
-      tvmPayTo: facilitatorSupportsTvm ? (serverTvmAddress || '') : '',
-      nearPayTo: facilitatorSupportsNear ? (serverNearAddress || '') : '',
-      nearAsset: process.env.SERVER_NEAR_ASSET,
-      nearAmount: process.env.SERVER_NEAR_AMOUNT,
-      xrplPayTo: facilitatorSupportsXrpl ? (serverXrplAddress || '') : '',
-      xrplAsset: process.env.SERVER_XRPL_ASSET,
-      xrplAmount: process.env.SERVER_XRPL_AMOUNT,
-      xrplIssuer: process.env.SERVER_XRPL_ISSUER,
       networks,
+      enabledFamilies,
       facilitatorUrl,
       mockFacilitatorUrl,
-      // Forward the optional receiver-authorizer EOA key so the server can
-      // self-manage batch-settlement claim/refund signatures when set.
-      ...(process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY
-        ? {
-          batchSettlement: {
-            receiverAuthorizerPrivateKey:
-              process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
-          },
-        }
-        : {}),
     };
 
     const started = await startServer(serverProxy, serverConfig, { transport: server.config.transport });

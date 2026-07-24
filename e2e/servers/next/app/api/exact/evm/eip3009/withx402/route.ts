@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { server, EVM_PAYEE_ADDRESS, EVM_NETWORK } from "@/proxy";
+import { server, SERVER_EVM_ADDRESS, EVM_NETWORK } from "@/proxy";
 
 /**
  * Handler for the protected endpoint
@@ -21,7 +21,7 @@ export const GET = withX402(
   handler,
   {
     accepts: {
-      payTo: EVM_PAYEE_ADDRESS,
+      payTo: SERVER_EVM_ADDRESS,
       scheme: "exact",
       price: "$0.001",
       network: EVM_NETWORK,

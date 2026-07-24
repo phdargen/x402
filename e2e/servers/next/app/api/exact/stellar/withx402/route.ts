@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withX402 } from "@x402/next";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
-import { server, STELLAR_PAYEE_ADDRESS, STELLAR_NETWORK } from "@/proxy";
+import { server, SERVER_STELLAR_ADDRESS, STELLAR_NETWORK } from "@/proxy";
 
 /**
  * Handler for the protected endpoint
@@ -15,14 +15,14 @@ const handler = async (_: NextRequest) => {
 
 /**
  * Protected Stellar endpoint using withX402 wrapper
- * Only exported if STELLAR_PAYEE_ADDRESS is configured
+ * Only exported if SERVER_STELLAR_ADDRESS is configured
  */
-export const GET = STELLAR_PAYEE_ADDRESS
+export const GET = SERVER_STELLAR_ADDRESS
   ? withX402(
     handler,
     {
       accepts: {
-        payTo: STELLAR_PAYEE_ADDRESS,
+        payTo: SERVER_STELLAR_ADDRESS,
         scheme: "exact",
         price: "$0.001",
         network: STELLAR_NETWORK,

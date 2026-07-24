@@ -60,11 +60,11 @@
   "environment": {
     "required": [
       "PORT",
-      "EVM_PAYEE_ADDRESS",
+      "SERVER_EVM_ADDRESS",
       "FACILITATOR_URL"
     ],
     "optional": [
-      "EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
+      "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
       "EVM_PERMIT2_ASSET"
     ]
   }

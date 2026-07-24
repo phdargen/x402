@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 	x402gin "github.com/x402-foundation/x402/go/pkg/gin"
 	"github.com/x402-foundation/x402/go/pkg/types"
 )
@@ -18,17 +17,12 @@ import (
 var shutdownRequested bool
 
 func main() {
-	// Load .env file if it exists
-	if err := godotenv.Load(); err != nil {
-		fmt.Println("Warning: .env file not found. Using environment variables.")
-	}
-
 	// Get configuration from environment
 	network := os.Getenv("EVM_NETWORK")
 	if network == "" {
 		network = "base-sepolia"
 	}
-	address := os.Getenv("EVM_PAYEE_ADDRESS")
+	address := os.Getenv("SERVER_EVM_ADDRESS")
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "4021"
@@ -36,7 +30,7 @@ func main() {
 	facilitatorURL := os.Getenv("FACILITATOR_URL")
 
 	if address == "" {
-		fmt.Println("Error: Missing required environment variable EVM_PAYEE_ADDRESS")
+		fmt.Println("Error: Missing required environment variable SERVER_EVM_ADDRESS")
 		os.Exit(1)
 	}
 

@@ -32,7 +32,8 @@
     "axios": "1.12.2",
     "dotenv": "^16.4.7",
     "xrpl": "^4.6.0",
-    "viem": "^2.48.11"
+    "viem": "^2.48.11",
+    "@x402/e2e-client-shared": "workspace:*"
   },
   "devDependencies": {
     "@eslint/js": "^9.24.0",

@@ -21,14 +21,14 @@
   },
   "environment": {
     "required": [
-      "EVM_PRIVATE_KEY",
+      "CLIENT_EVM_PRIVATE_KEY",
       "RESOURCE_SERVER_URL",
       "ENDPOINT_PATH"
     ],
     "optional": [
       "CHANNEL_SALT",
       "BATCH_SETTLEMENT_PHASE",
-      "EVM_VOUCHER_SIGNER_PRIVATE_KEY"
+      "CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY"
     ]
   }
 }

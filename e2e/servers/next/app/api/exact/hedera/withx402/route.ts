@@ -3,7 +3,7 @@ import { withX402 } from "@x402/next";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import {
   server,
-  HEDERA_PAYEE_ADDRESS,
+  SERVER_HEDERA_ADDRESS,
   HEDERA_NETWORK,
   HEDERA_ASSET,
   HEDERA_AMOUNT,
@@ -21,14 +21,14 @@ const handler = async (_: NextRequest) => {
 
 /**
  * Protected Hedera endpoint using withX402 wrapper
- * Only exported if HEDERA_PAYEE_ADDRESS is configured
+ * Only exported if SERVER_HEDERA_ADDRESS is configured
  */
-export const GET = HEDERA_PAYEE_ADDRESS
+export const GET = SERVER_HEDERA_ADDRESS
   ? withX402(
     handler,
     {
       accepts: {
-        payTo: HEDERA_PAYEE_ADDRESS,
+        payTo: SERVER_HEDERA_ADDRESS,
         scheme: "exact",
         price: {
           amount: HEDERA_AMOUNT,

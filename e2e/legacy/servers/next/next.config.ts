@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
     nodeMiddleware: true, // TEMPORARY: Only needed until Edge runtime support is added
   } as NextConfig["experimental"],
   env: {
-    EVM_PAYEE_ADDRESS: process.env.EVM_PAYEE_ADDRESS,
+    SERVER_EVM_ADDRESS: process.env.SERVER_EVM_ADDRESS,
     EVM_NETWORK: process.env.EVM_NETWORK,
     FACILITATOR_URL: process.env.FACILITATOR_URL,
     PORT: process.env.PORT,

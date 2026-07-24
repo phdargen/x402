@@ -33,9 +33,9 @@
       "ENDPOINT_PATH"
     ],
     "optional": [
-      "EVM_PRIVATE_KEY",
-      "SVM_PRIVATE_KEY",
-      "TVM_PRIVATE_KEY",
+      "CLIENT_EVM_PRIVATE_KEY",
+      "CLIENT_SVM_PRIVATE_KEY",
+      "CLIENT_TVM_PRIVATE_KEY",
       "EVM_RPC_URL",
       "TVM_NETWORK",
       "TVM_PROVIDER",
@@ -44,7 +44,7 @@
       "TONAPI_API_KEY",
       "TONAPI_BASE_URL",
       "CHANNEL_SALT",
-      "EVM_VOUCHER_SIGNER_PRIVATE_KEY",
+      "CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY",
       "BATCH_SETTLEMENT_PHASE"
     ]
   }

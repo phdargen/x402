@@ -1,11 +1,9 @@
-import { config } from "dotenv";
 import { Hex } from "viem";
 import { createSigner, decodeXPaymentResponse, MultiNetworkSigner, wrapFetchWithPayment } from "x402-fetch";
 
-config();
 
-const evmPrivateKey = process.env.EVM_PRIVATE_KEY as Hex;
-const svmPrivateKey = process.env.SVM_PRIVATE_KEY as string;
+const evmPrivateKey = process.env.CLIENT_EVM_PRIVATE_KEY as Hex;
+const svmPrivateKey = process.env.CLIENT_SVM_PRIVATE_KEY as string;
 const baseURL = process.env.RESOURCE_SERVER_URL as string;
 const endpointPath = process.env.ENDPOINT_PATH as string;
 const url = `${baseURL}${endpointPath}`;

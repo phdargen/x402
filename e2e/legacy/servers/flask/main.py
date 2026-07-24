@@ -3,7 +3,6 @@ import signal
 import sys
 import logging
 from flask import Flask, jsonify
-from dotenv import load_dotenv
 from x402.flask.middleware import PaymentMiddleware
 
 # Configure logging to reduce verbosity
@@ -11,11 +10,10 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 logging.getLogger("flask").setLevel(logging.ERROR)
 
 # Load environment variables
-load_dotenv()
 
 # Get configuration from environment
 NETWORK = os.getenv("EVM_NETWORK", "base-sepolia")
-ADDRESS = os.getenv("EVM_PAYEE_ADDRESS")
+ADDRESS = os.getenv("SERVER_EVM_ADDRESS")
 PORT = int(os.getenv("PORT", "4021"))
 FACILITATOR_URL = os.getenv("FACILITATOR_URL")
 
