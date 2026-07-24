@@ -47,9 +47,7 @@ Register the facilitator extension to encode the ERC-8021 suffix at settlement. 
 ```python
 from x402.extensions.builder_code import BuilderCodeFacilitatorExtension
 
-facilitator.register_extension(
-    BuilderCodeFacilitatorExtension(builder_code="bc_my_facilitator")
-)
+facilitator.register_extension(BuilderCodeFacilitatorExtension(builder_code="bc_my_facilitator"))
 ```
 
 At settlement the extension reads `a` and `s` from the client payment payload, adds its configured `w`, CBOR-encodes the present fields, and returns the hex suffix for the settlement mechanism to append to calldata. It returns `None` when no attribution is present.
