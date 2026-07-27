@@ -20,7 +20,7 @@ import { HTTPFacilitatorClient, type RoutesConfig, type x402ResourceServer } fro
 import { privateKeyToAccount } from "viem/accounts";
 import type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
 import { resolvedRoutes, type ResolvedRoute } from "./catalog";
-import { routeDiscoveryOutput } from "../../src/mechanisms";
+import { routeDiscoveryOutput, mcpToolName, type RouteTransport } from "../../src/mechanisms";
 
 export type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
 export { loadServerEnv } from "../../src/server-env";
@@ -94,10 +94,21 @@ export function configureResourceServer(server: x402ResourceServer, cfg: ServerE
 }
 
 /** Maps a catalog extension id to the SDK call that declares it on a route. */
-function declareExtension(id: string, route: ResolvedRoute): Record<string, unknown> {
+function declareExtension(
+  id: string,
+  route: ResolvedRoute,
+  transport: RouteTransport = "http",
+): Record<string, unknown> {
   switch (id) {
     case "bazaar":
-      return declareDiscoveryExtension({ output: routeDiscoveryOutput() });
+      return transport === "mcp"
+        ? declareDiscoveryExtension({
+            toolName: mcpToolName(route.path),
+            transport: "sse",
+            inputSchema: { type: "object", properties: {} },
+            output: routeDiscoveryOutput(),
+          })
+        : declareDiscoveryExtension({ output: routeDiscoveryOutput() });
     case "eip2612GasSponsoring":
       return declareEip2612GasSponsoringExtension();
     case "erc20ApprovalGasSponsoring":
@@ -107,9 +118,12 @@ function declareExtension(id: string, route: ResolvedRoute): Record<string, unkn
   }
 }
 
-/** Single-route payment config shared by HTTP frameworks and the Next e2e server. */
-export function buildResolvedRouteConfig(route: ResolvedRoute): Record<string, unknown> {
-  const extensions = Object.assign({}, ...route.extensions.map(id => declareExtension(id, route)));
+/** Single-route payment config shared by HTTP frameworks, the Next e2e server, and MCP tools. */
+export function buildResolvedRouteConfig(
+  route: ResolvedRoute,
+  transport: RouteTransport = "http",
+): Record<string, unknown> {
+  const extensions = Object.assign({}, ...route.extensions.map(id => declareExtension(id, route, transport)));
 
   return {
     accepts: {

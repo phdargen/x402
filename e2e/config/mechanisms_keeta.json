@@ -7,7 +7,6 @@
       "FACILITATOR_KEETA_MNEMONIC"
     ]
   },
-  "rpcUrlKey": null,
   "testnet": {
     "name": "Keeta Testnet",
     "caip2": "keeta:1413829460",

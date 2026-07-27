@@ -9,17 +9,14 @@
       "FACILITATOR_CCD_ADDRESS"
     ]
   },
-  "rpcUrlKey": "CCD_GRPC_URL",
   "testnet": {
     "name": "Concordium Testnet",
     "caip2": "ccd:4221332d34e1694168c2a0c0b3fd0f27",
-    "rpcUrlEnv": "CONCORDIUM_TESTNET_GRPC_URL",
     "rpcUrlDefault": "grpc.testnet.concordium.com:20000"
   },
   "mainnet": {
     "name": "Concordium Mainnet",
     "caip2": "ccd:9dd9ca4d19e9393877d2c44b70f89acb",
-    "rpcUrlEnv": "CONCORDIUM_MAINNET_GRPC_URL",
     "rpcUrlDefault": "grpc.mainnet.concordium.software:20000"
   },
   "routes": {

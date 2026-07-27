@@ -17,7 +17,6 @@
   "testnet": {
     "name": "Base Sepolia",
     "caip2": "eip155:84532",
-    "rpcUrlEnv": "BASE_SEPOLIA_RPC_URL",
     "rpcUrlDefault": "https://sepolia.base.org",
     "permit2Asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     "permit2AssetName": "USDC"
@@ -25,7 +24,6 @@
   "mainnet": {
     "name": "Base",
     "caip2": "eip155:8453",
-    "rpcUrlEnv": "BASE_RPC_URL",
     "rpcUrlDefault": "https://mainnet.base.org",
     "permit2Asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     "permit2AssetName": "USD Coin"

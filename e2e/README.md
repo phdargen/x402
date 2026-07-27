@@ -13,8 +13,7 @@ You do **not** need to edit `generic-server` / `generic-client` / `generic-facil
 `mechanisms_global.json` holds only cross-cutting harness env (`PORT`, `FACILITATOR_URL`, `RESOURCE_SERVER_URL`, `ENDPOINT_PATH`, `MOCK_FACILITATOR_URL`). Each `mechanisms_<id>.json` holds:
 
 - **`env`** — one flat `{ required, optional }` list; roles are assigned by key prefix (`SERVER_` / `CLIENT_` / `FACILITATOR_`), with a small fixed override table in [`src/mechanisms.ts`](src/mechanisms.ts) for keys that don't map cleanly by prefix
-- **`testnet` / `mainnet`** — `name`, `caip2`, optional `rpcUrlEnv`/`rpcUrlDefault`, optional `permit2Asset`/`permit2AssetName`
-- **`rpcUrlKey`** — optional override for the derived `${ID}_RPC_URL` env key; `null` suppresses it entirely
+- **`testnet` / `mainnet`** — `name`, `caip2`, optional `rpcUrlDefault`, optional `permit2Asset`/`permit2AssetName`. RPC env is pure convention, not declared: an operator sets `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL` (e.g. `EVM_TESTNET_RPC_URL`), and the harness injects it into every spawned component as `${ID}_RPC_URL`. Set `rpcUrlRequired: true` on a mode with no `rpcUrlDefault` and no free public endpoint at all (a network whose SDK has no built-in node default, unlike e.g. Hedera/Keeta) so the harness fails fast at startup — with the missing input key named in the same preflight list as other required env — instead of deep inside a scenario run.
 - **`routes`** — one canonical definition per paid HTTP path: `scheme`, `sdks`, `assetTransferMethod`, `schemeOptions`, declared `extensions`, required `price`, and optional `settlementOverride`. Handlers always return `{ message: "Protected endpoint accessed successfully", timestamp }`. The loader injects `network` (the file id) — routes never declare it themselves.
 
 Every SDK reads this same set of files. The harness ([`src/mechanisms.ts`](src/mechanisms.ts)) merges `mechanisms_global.json` with every `mechanisms_<id>.json` and derives component configs from the result:
@@ -44,7 +43,7 @@ After a server reports healthy, the harness requests every paid route it declare
 
 Four edits, no catalog type to touch:
 
-1. **Catalog** — add [`config/mechanisms_<id>.json`](config/) with `env` (`required`/`optional`), `testnet`/`mainnet`, and `routes`.
+1. **Catalog** — add [`config/mechanisms_<id>.json`](config/) with `env` (`required`/`optional`), `testnet`/`mainnet` (RPC input keys are pure convention: `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL`), and `routes`.
 2. **Server** — register the scheme in `servers/<lang>/` (e.g. [`servers/typescript/config.ts`](servers/typescript/config.ts) / [`servers/python/config.py`](servers/python/config.py) / [`servers/go/config.go`](servers/go/config.go)).
 3. **Client** — register the scheme in `clients/<lang>/` (e.g. [`clients/typescript/client.ts`](clients/typescript/client.ts) / [`clients/python/client.py`](clients/python/client.py) / [`clients/go/client.go`](clients/go/client.go)).
 4. **Facilitator** — register the scheme in [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python).
@@ -230,14 +229,16 @@ FACILITATOR_NEAR_PRIVATE_KEY=ed25519:... # NEAR relayer private key
 
 # Concordium network override
 CCD_NETWORK=ccd:4221332d34e1694168c2a0c0b3fd0f27  # Optional; defaults to testnet
-CCD_GRPC_URL=grpc.testnet.concordium.com:20000    # Optional; defaults by network
+CCD_TESTNET_RPC_URL=grpc.testnet.concordium.com:20000  # Optional; defaults by network
 
 # TVM support
 TVM_PROVIDER=tonapi                 # Optional: toncenter (default) or tonapi
 TVM_TONAPI_API_KEY=...              # Required when TVM_PROVIDER=tonapi
-TVM_TONAPI_BASE_URL=...             # Optional custom TonAPI base URL
 TVM_TONCENTER_API_KEY=...           # Recommended when TVM_PROVIDER=toncenter
+TVM_TESTNET_RPC_URL=...             # Optional custom provider base URL (toncenter or tonapi, per TVM_PROVIDER)
 ```
+
+Every network's RPC endpoint follows the same convention: set `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL` (e.g. `EVM_TESTNET_RPC_URL`, `XRPL_MAINNET_RPC_URL`) to override the catalog default; the harness injects it into spawned components as `${ID}_RPC_URL`.
 
 To run Python SDK TVM e2e scenarios through TonAPI instead of Toncenter:
 

@@ -10,13 +10,11 @@
   "testnet": {
     "name": "Stellar Testnet",
     "caip2": "stellar:testnet",
-    "rpcUrlEnv": "STELLAR_TESTNET_RPC_URL",
     "rpcUrlDefault": "https://soroban-testnet.stellar.org"
   },
   "mainnet": {
     "name": "Stellar Pubnet",
     "caip2": "stellar:pubnet",
-    "rpcUrlEnv": "STELLAR_RPC_URL",
     "rpcUrlDefault": "https://mainnet.sorobanrpc.com"
   },
   "routes": {

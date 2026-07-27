@@ -54,9 +54,8 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
     svm_rpc_url = os.getenv("SVM_RPC_URL")
     tvm_provider = (os.getenv("TVM_PROVIDER") or "").strip().lower()
     toncenter_api_key = os.getenv("TVM_TONCENTER_API_KEY")
-    toncenter_base_url = os.getenv("TVM_TONCENTER_BASE_URL")
     tonapi_api_key = os.getenv("TVM_TONAPI_API_KEY")
-    tonapi_base_url = os.getenv("TVM_TONAPI_BASE_URL")
+    tvm_rpc_url = os.getenv("TVM_RPC_URL")
     tvm_network = os.getenv("TVM_NETWORK", TVM_TESTNET)
     base_url = os.getenv("RESOURCE_SERVER_URL")
     endpoint_path = os.getenv("ENDPOINT_PATH")
@@ -114,9 +113,7 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
         tvm_config.api_key = (
             tonapi_api_key if tvm_provider == TVM_PROVIDER_TONAPI else toncenter_api_key
         )
-        tvm_config.provider_base_url = (
-            tonapi_base_url if tvm_provider == TVM_PROVIDER_TONAPI else toncenter_base_url
-        )
+        tvm_config.provider_base_url = tvm_rpc_url
         client.register(
             tvm_network,
             ExactTvmClientScheme(WalletV5R1MnemonicSigner(tvm_config)),

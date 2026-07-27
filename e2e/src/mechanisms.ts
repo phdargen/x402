@@ -38,8 +38,8 @@ type NetworkEnv = {
 type NetworkModeConfig = {
   name: string;
   caip2: string;
-  rpcUrlEnv?: string;
   rpcUrlDefault?: string;
+  rpcUrlRequired?: boolean;
   permit2Asset?: string;
   /** EIP-712 domain name of `permit2Asset` on this network. */
   permit2AssetName?: string;
@@ -76,8 +76,6 @@ export type PriceSpec = {
 /** One network's file contents (mechanisms_<id>.json). */
 type NetworkFile = {
   env: EnvList;
-  /** Override the derived `${ID}_RPC_URL` network env key; `null` suppresses it. */
-  rpcUrlKey?: string | null;
   testnet: NetworkModeConfig;
   mainnet: NetworkModeConfig;
   routes: Record<string, Omit<RouteDefinition, 'network'>>;
@@ -85,7 +83,6 @@ type NetworkFile = {
 
 export type NetworkDefinition = {
   env: EnvList;
-  rpcUrlKey?: string | null;
   networks: Record<NetworkMode, NetworkModeConfig>;
 };
 
@@ -128,7 +125,14 @@ type EndpointLike = {
   extensions?: string[];
   health?: boolean;
   close?: boolean;
+  /** MCP tool name, equal to `path` for MCP endpoints (`method: 'tool'`). */
+  toolName?: string;
+  /** MCP transport the tool is served over, e.g. `'sse'`. */
+  mcpTransport?: string;
 };
+
+/** Surface an SDK route is exposed over. */
+export type RouteTransport = 'http' | 'mcp';
 
 /** e2e/ root — resolve from this file at src/mechanisms.ts */
 function e2eRoot(): string {
@@ -165,7 +169,6 @@ function loadCatalog(): MechanismsCatalog {
 
     networks[id] = {
       env: file.env,
-      rpcUrlKey: file.rpcUrlKey,
       networks: { testnet: file.testnet, mainnet: file.mainnet },
     };
 
@@ -258,7 +261,28 @@ function routeDescription(route: SdkRoute): string {
   return `Protected ${scheme}${transfer}endpoint on ${label}${suffix}`;
 }
 
-export function sdkRouteToEndpoint(route: SdkRoute): EndpointLike {
+/** MCP tool name for a catalog path: `/exact/evm/eip3009` → `exact_evm_eip3009`. */
+export function mcpToolName(path: string): string {
+  return path.replace(/^\//, '').replace(/[/-]/g, '_');
+}
+
+export function sdkRouteToEndpoint(route: SdkRoute, transport: RouteTransport = 'http'): EndpointLike {
+  if (transport === 'mcp') {
+    const toolName = mcpToolName(route.path);
+    return {
+      path: toolName,
+      method: 'tool',
+      toolName,
+      mcpTransport: 'sse',
+      description: routeDescription(route),
+      requiresPayment: true,
+      protocolFamily: route.network,
+      scheme: route.scheme,
+      assetTransferMethod: route.assetTransferMethod,
+      schemeOptions: route.schemeOptions,
+    };
+  }
+
   return {
     path: route.path,
     method: 'GET',
@@ -386,7 +410,7 @@ export function filterRoutes(routes: SdkRoute[], filter?: RouteFilter): SdkRoute
 }
 
 export function sdkRoutesToEndpoints(sdk: string, filter?: RouteFilter): EndpointLike[] {
-  return filterRoutes(sdkRoutesFor(sdk), filter).map(sdkRouteToEndpoint);
+  return filterRoutes(sdkRoutesFor(sdk), filter).map(route => sdkRouteToEndpoint(route));
 }
 
 /**
@@ -423,6 +447,14 @@ const HARNESS_ROLE_MAP: Record<string, ConfigRole[]> = {
 };
 
 /**
+ * Env keys the harness assigns itself per run (not operator-supplied), so the
+ * facilitator env preflight check must never flag them as "missing". `PORT`
+ * is the only one: it's allocated by {@link createPortAllocator} and injected
+ * by `GenericFacilitatorProxy.start`, well after the preflight check runs.
+ */
+export const FACILITATOR_ENV_PREFLIGHT_ALLOWLIST: ReadonlySet<string> = new Set(['PORT']);
+
+/**
  * Role hints for network env keys that don't map cleanly by prefix, or whose
  * prefix role doesn't cover every role that actually reads them (e.g. the
  * batch-settlement receiver authorizer key is `SERVER_`-prefixed but a
@@ -436,9 +468,7 @@ const NETWORK_ENV_ROLE_OVERRIDES: Record<string, ConfigRole[]> = {
   EVM_BATCH_SETTLEMENT_RECOVERY: ['client'],
   TVM_PROVIDER: ['client', 'facilitator'],
   TVM_TONCENTER_API_KEY: ['client', 'facilitator'],
-  TVM_TONCENTER_BASE_URL: ['client', 'facilitator'],
   TVM_TONAPI_API_KEY: ['client', 'facilitator'],
-  TVM_TONAPI_BASE_URL: ['client', 'facilitator'],
 };
 
 /** Which roles read an env key: explicit override, else SERVER_/CLIENT_/FACILITATOR_ prefix. */
@@ -456,10 +486,14 @@ function derivedNetworkKey(network: CatalogNetworkId): string {
   return `${network.toUpperCase()}_NETWORK`;
 }
 
-/** Derived RPC env key: `${ID}_RPC_URL`, unless overridden or explicitly suppressed (`null`). */
-function derivedRpcUrlKey(network: CatalogNetworkId, def: NetworkDefinition): string | undefined {
-  if (def.rpcUrlKey === null) return undefined;
-  return def.rpcUrlKey ?? `${network.toUpperCase()}_RPC_URL`;
+/** Derived RPC output env key injected into every spawned component: `${ID}_RPC_URL`. */
+function derivedRpcUrlKey(network: CatalogNetworkId): string {
+  return `${network.toUpperCase()}_RPC_URL`;
+}
+
+/** Derived RPC input env key an operator sets: `${ID}_{TESTNET,MAINNET}_RPC_URL`. */
+function derivedRpcUrlInputKey(network: CatalogNetworkId, mode: NetworkMode): string {
+  return `${network.toUpperCase()}_${mode.toUpperCase()}_RPC_URL`;
 }
 
 /**
@@ -488,10 +522,7 @@ export function buildEnvironmentForRole(
     addAll(def.env.required, required);
     addAll(def.env.optional, optional);
     optional.add(derivedNetworkKey(network));
-    const rpcUrlKey = derivedRpcUrlKey(network, def);
-    if (rpcUrlKey) {
-      optional.add(rpcUrlKey);
-    }
+    optional.add(derivedRpcUrlKey(network));
   }
 
   if (role === 'server') {
@@ -612,11 +643,12 @@ export function enrichConfigFromMechanisms(
   );
 
   const isNext = isNextHttpServer(options, config);
+  const isMcp = config.transport === 'mcp';
 
   if (type === 'server' && (config.endpoints == null || isNext)) {
     enriched.endpoints = isNext
       ? nextServerEndpoints(routes)
-      : [...routes.map(sdkRouteToEndpoint), ...HEALTH_CLOSE];
+      : [...routes.map(route => sdkRouteToEndpoint(route, isMcp ? 'mcp' : 'http')), ...HEALTH_CLOSE];
   }
 
   return enriched;
@@ -667,13 +699,11 @@ export function catalogRequiredEnv(): Record<CatalogNetworkId, string[]> {
 /** Network env schema derived from the catalog. */
 export function catalogNetworkEnv(): Record<
   CatalogNetworkId,
-  { networkKey: string; rpcUrlKey?: string }
+  { networkKey: string; rpcUrlKey: string }
 > {
-  const out = {} as Record<CatalogNetworkId, { networkKey: string; rpcUrlKey?: string }>;
+  const out = {} as Record<CatalogNetworkId, { networkKey: string; rpcUrlKey: string }>;
   for (const id of NETWORK_IDS) {
-    const def = getNetworkDefinition(id);
-    const rpcUrlKey = derivedRpcUrlKey(id, def);
-    out[id] = { networkKey: derivedNetworkKey(id), ...(rpcUrlKey ? { rpcUrlKey } : {}) };
+    out[id] = { networkKey: derivedNetworkKey(id), rpcUrlKey: derivedRpcUrlKey(id) };
   }
   return out;
 }
@@ -690,10 +720,8 @@ export function catalogDisplayNames(): Record<CatalogNetworkId, string> {
 /** Resolve rpc URL for a network/mode from catalog + process.env. */
 export function resolveNetworkRpcUrl(network: CatalogNetworkId, mode: NetworkMode): string {
   const net = getNetworkDefinition(network).networks[mode];
-  if (net.rpcUrlEnv) {
-    const fromEnv = process.env[net.rpcUrlEnv];
-    if (fromEnv) return fromEnv;
-  }
+  const fromEnv = process.env[derivedRpcUrlInputKey(network, mode)];
+  if (fromEnv) return fromEnv;
   return net.rpcUrlDefault ?? '';
 }
 
@@ -702,6 +730,20 @@ export function getCatalogNetwork(
   mode: NetworkMode,
 ): NetworkModeConfig {
   return getNetworkDefinition(network).networks[mode];
+}
+
+/**
+ * The RPC input env key the operator must set for this network/mode, or
+ * `undefined` when unset RPC is fine (has a usable default, or the mode
+ * doesn't mark `rpcUrlRequired`). Used to promote that key into the
+ * harness's startup preflight instead of failing deep inside a scenario run.
+ */
+export function requiredRpcUrlInputKey(
+  network: CatalogNetworkId,
+  mode: NetworkMode,
+): string | undefined {
+  const net = getNetworkDefinition(network).networks[mode];
+  return net.rpcUrlRequired ? derivedRpcUrlInputKey(network, mode) : undefined;
 }
 
 /** Which catalog mode a CAIP-2 identifier belongs to. Defaults to testnet. */

@@ -51,18 +51,16 @@ type catalogEnvList struct {
 }
 
 type catalogNetwork struct {
-	Env       catalogEnvList                `json:"env"`
-	RpcURLKey *string                       `json:"rpcUrlKey"`
-	Networks  map[string]catalogNetworkMode `json:"networks"`
+	Env      catalogEnvList                `json:"env"`
+	Networks map[string]catalogNetworkMode `json:"networks"`
 }
 
 // networkFile is one mechanisms_<id>.json file's contents.
 type networkFile struct {
-	Env      catalogEnvList             `json:"env"`
-	RpcURLKey *string                   `json:"rpcUrlKey"`
-	Testnet  catalogNetworkMode         `json:"testnet"`
-	Mainnet  catalogNetworkMode         `json:"mainnet"`
-	Routes   map[string]json.RawMessage `json:"routes"`
+	Env     catalogEnvList             `json:"env"`
+	Testnet catalogNetworkMode         `json:"testnet"`
+	Mainnet catalogNetworkMode         `json:"mainnet"`
+	Routes  map[string]json.RawMessage `json:"routes"`
 }
 
 type globalFile struct {
@@ -106,15 +104,16 @@ type CatalogRoute struct {
 
 // ResolvedRoute is a catalog route with env-dependent requirements resolved.
 type ResolvedRoute struct {
-	Path               string
-	NetworkID          string
-	Scheme             string
-	Network            string
-	PayTo              string
-	Price              interface{}
-	Extra              map[string]interface{}
-	Extensions         []string
-	SettlementOverride *SettlementAmount
+	Path                string
+	NetworkID           string
+	Scheme              string
+	Network             string
+	AssetTransferMethod string
+	PayTo               string
+	Price               interface{}
+	Extra               map[string]interface{}
+	Extensions          []string
+	SettlementOverride  *SettlementAmount
 }
 
 var (
@@ -207,9 +206,8 @@ func loadCatalog() (mechanismsCatalog, error) {
 			}
 
 			networks[id] = catalogNetwork{
-				Env:       nf.Env,
-				RpcURLKey: nf.RpcURLKey,
-				Networks:  map[string]catalogNetworkMode{"testnet": nf.Testnet, "mainnet": nf.Mainnet},
+				Env:      nf.Env,
+				Networks: map[string]catalogNetworkMode{"testnet": nf.Testnet, "mainnet": nf.Mainnet},
 			}
 
 			// Re-decode from the raw file (not nf.Routes) to preserve route key order.
@@ -460,19 +458,59 @@ func ResolvedRoutes() []ResolvedRoute {
 		}
 
 		resolved = append(resolved, ResolvedRoute{
-			Path:               route.Path,
-			NetworkID:          route.Network,
-			Scheme:             route.Scheme,
-			Network:            caip2,
-			PayTo:              payTo,
-			Price:              price,
-			Extra:              extra,
-			Extensions:         route.Extensions,
-			SettlementOverride: route.SettlementOverride,
+			Path:                route.Path,
+			NetworkID:           route.Network,
+			Scheme:              route.Scheme,
+			Network:             caip2,
+			AssetTransferMethod: route.AssetTransferMethod,
+			PayTo:               payTo,
+			Price:               price,
+			Extra:               extra,
+			Extensions:          route.Extensions,
+			SettlementOverride:  route.SettlementOverride,
 		})
 	}
 
 	return resolved
+}
+
+// gasSponsoringLabels are extensions that change how gas is paid, and so are
+// worth naming in route descriptions. Mirrors TS GAS_SPONSORING_LABELS.
+var gasSponsoringLabels = map[string]string{
+	"eip2612GasSponsoring":       "EIP-2612 gas sponsoring",
+	"erc20ApprovalGasSponsoring": "ERC-20 approval gas sponsoring",
+}
+
+// RouteDescription builds a human-readable route description, mirroring TS
+// `routeDescription`: "Protected <scheme> <transfer>endpoint on <NETWORK> with <sponsoring>".
+func RouteDescription(route ResolvedRoute) string {
+	label := strings.ToUpper(route.NetworkID)
+	scheme := ""
+	if route.Scheme != "exact" {
+		scheme = route.Scheme + " "
+	}
+	transfer := ""
+	if route.AssetTransferMethod != "" {
+		transfer = route.AssetTransferMethod + " "
+	}
+	sponsoring := make([]string, 0, len(route.Extensions))
+	for _, id := range route.Extensions {
+		if label, ok := gasSponsoringLabels[id]; ok {
+			sponsoring = append(sponsoring, label)
+		}
+	}
+	suffix := ""
+	if len(sponsoring) > 0 {
+		suffix = " with " + strings.Join(sponsoring, " and ")
+	}
+	return fmt.Sprintf("Protected %s%sendpoint on %s%s", scheme, transfer, label, suffix)
+}
+
+// McpToolName converts a catalog path to an MCP tool name: "/exact/evm/eip3009" → "exact_evm_eip3009".
+func McpToolName(path string) string {
+	trimmed := strings.TrimPrefix(path, "/")
+	replaced := strings.ReplaceAll(trimmed, "/", "_")
+	return strings.ReplaceAll(replaced, "-", "_")
 }
 
 // RouteDiscoveryOutput returns bazaar metadata matching the fixed paid-route body.

@@ -2,12 +2,7 @@ import { BaseProxy, RunConfig } from '../proxy-base';
 import { loadComponentConfig } from '../component';
 import { verboseLog, errorLog } from '../logger';
 import type { NetworkSet } from '../networks/networks';
-import {
-  forwardConfigEnv,
-  forwardRoleCredentials,
-  injectNetworkEnv,
-  tvmToncenterDefault,
-} from '../env';
+import { forwardConfigEnv, forwardRoleCredentials, injectNetworkEnv } from '../env';
 
 export interface VerifyRequest {
   x402Version: number;
@@ -109,7 +104,6 @@ export class GenericFacilitatorProxy extends BaseProxy implements FacilitatorPro
 
     const baseEnv: Record<string, string> = {
       PORT: config.port.toString(),
-      ...tvmToncenterDefault(config.networks),
       ...forwardRoleCredentials('facilitator'),
       // Network configs from NetworkSet
       ...injectNetworkEnv(config.networks),

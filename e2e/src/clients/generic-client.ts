@@ -1,12 +1,7 @@
 import { BaseProxy, RunConfig } from '../proxy-base';
 import { loadComponentConfig } from '../component';
 import { ClientConfig, ClientProxy } from '../types';
-import {
-  forwardConfigEnv,
-  forwardRoleCredentials,
-  injectNetworkEnv,
-  tvmToncenterDefault,
-} from '../env';
+import { forwardConfigEnv, forwardRoleCredentials, injectNetworkEnv } from '../env';
 
 export interface ClientCallResult {
   success: boolean;
@@ -28,7 +23,6 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
       const isV1Client = this.directory.includes('legacy/');
 
       const baseEnv: Record<string, string> = {
-        ...tvmToncenterDefault(config.networks),
         ...forwardRoleCredentials('client'),
         ...injectNetworkEnv(config.networks, { legacyV1: isV1Client }),
         RESOURCE_SERVER_URL: config.serverUrl,

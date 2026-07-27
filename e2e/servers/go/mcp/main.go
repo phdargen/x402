@@ -4,236 +4,157 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	e2eserver "github.com/x402-foundation/x402/e2e/servers/go"
 	x402 "github.com/x402-foundation/x402/go/v2"
-	"github.com/x402-foundation/x402/go/v2/extensions/bazaar"
-	x402http "github.com/x402-foundation/x402/go/v2/http"
 	mcp402 "github.com/x402-foundation/x402/go/v2/mcp"
-	evm "github.com/x402-foundation/x402/go/v2/mechanisms/evm/exact/server"
-	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-// getWeatherData simulates fetching weather data for a city.
-func getWeatherData(city string) map[string]interface{} {
-	conditions := []string{"sunny", "cloudy", "rainy", "snowy", "windy"}
-	weather := conditions[rand.Intn(len(conditions))]
-	temperature := rand.Intn(40) + 40
-	return map[string]interface{}{
-		"city":        city,
-		"weather":     weather,
-		"temperature": temperature,
-	}
-}
+var shutdownRequested bool
 
-// getString extracts a string argument from CallToolRequest.
-func getString(request *mcp.CallToolRequest, key string, defaultValue string) string {
-	if request.Params.Arguments == nil {
-		return defaultValue
-	}
-	var args map[string]any
-	if err := json.Unmarshal(request.Params.Arguments, &args); err != nil {
-		return defaultValue
-	}
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return defaultValue
-}
+// MCP E2E Test Server with x402 Payment Support.
+//
+// Thin MCP transport over the same mechanisms catalog as the HTTP servers
+// (see e2eserver.ResolvedRoutes) — each catalog route becomes an MCP tool
+// wrapped with mcp402.PaymentWrapper for verification + settlement.
 
 func main() {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "4022"
+	cfg := e2eserver.LoadConfig()
+	facilitatorClient := e2eserver.NewFacilitatorClient(cfg)
+
+	resourceServer := x402.Newx402ResourceServer(x402.WithFacilitatorClient(facilitatorClient))
+	for _, binding := range e2eserver.SchemeBindings(cfg) {
+		resourceServer.Register(binding.Network, binding.Server)
 	}
 
-	evmPayeeAddress := os.Getenv("SERVER_EVM_ADDRESS")
-	if evmPayeeAddress == "" {
-		fmt.Println("❌ SERVER_EVM_ADDRESS environment variable is required")
-		os.Exit(1)
-	}
-
-	facilitatorURL := os.Getenv("FACILITATOR_URL")
-	if facilitatorURL == "" {
-		fmt.Println("❌ FACILITATOR_URL environment variable is required")
-		os.Exit(1)
-	}
-
-	evmNetworkStr := os.Getenv("EVM_NETWORK")
-	if evmNetworkStr == "" {
-		evmNetworkStr = "eip155:84532"
-	}
-	evmNetwork := x402.Network(evmNetworkStr)
-
-	// Create HTTP facilitator client for payment verification
-	facilitatorClient := x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
-		URL: facilitatorURL,
-	})
-
-	// Create x402 resource server
-	resourceServer := x402.Newx402ResourceServer(
-		x402.WithFacilitatorClient(facilitatorClient),
-		x402.WithSchemeServer(evmNetwork, evm.NewExactEvmScheme()),
-	)
 	ctx := context.Background()
 	if err := resourceServer.Initialize(ctx); err != nil {
-		fmt.Printf("❌ Failed to initialize resource server: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Warning: failed to initialize x402 server: %v\n", err)
 	}
 
-	// Build payment requirements for weather tool
-	weatherAccepts, err := resourceServer.BuildPaymentRequirementsFromConfig(ctx, x402.ResourceConfig{
-		Scheme:  "exact",
-		Network: evmNetwork,
-		PayTo:   evmPayeeAddress,
-		Price:   "$0.001",
-	})
-	if err != nil {
-		fmt.Printf("❌ Failed to build payment requirements: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Declare bazaar MCP discovery extension for weather tool
-	weatherInputSchema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"city": map[string]any{
-				"type":        "string",
-				"description": "The city name to get weather for",
-			},
-		},
-		"required": []string{"city"},
-	}
-	bazaarExtension, err := bazaar.DeclareMcpDiscoveryExtension(bazaar.DeclareMcpDiscoveryConfig{
-		ToolName:    "get_weather",
-		Description: "Get current weather for a city. Requires payment of $0.001.",
-		Transport:   bazaar.TransportSSE,
-		InputSchema: weatherInputSchema,
-		Example:     map[string]any{"city": "San Francisco"},
-	})
-	if err != nil {
-		fmt.Printf("❌ Failed to declare bazaar extension: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Create payment wrapper using the x402 MCP SDK
-	paymentWrapper := mcp402.NewPaymentWrapper(resourceServer, mcp402.PaymentWrapperConfig{
-		Accepts: weatherAccepts,
-		Resource: &types.ResourceInfo{
-			URL:         "mcp://tool/get_weather",
-			Description: "Get current weather for a city",
-			MimeType:    "application/json",
-		},
-		Extensions: map[string]interface{}{
-			bazaar.BAZAAR.Key(): bazaarExtension,
-		},
-	})
-
-	// Create MCP server using the official SDK
-	mcpServer := mcp.NewServer(
-		&mcp.Implementation{
-			Name:    "x402 MCP E2E Server",
-			Version: "1.0.0",
-		},
-		nil,
-	)
-
-	// Register paid weather tool - wrapped with payment verification/settlement
-	weatherTool := &mcp.Tool{
-		Name:        "get_weather",
-		Description: "Get current weather for a city. Requires payment of $0.001.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"city": map[string]any{
-					"type":        "string",
-					"description": "The city name to get weather for",
-				},
-			},
-			"required": []string{"city"},
-		},
-	}
-
-	mcpServer.AddTool(weatherTool, paymentWrapper.Wrap(
-		func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// This handler only runs after payment is verified.
-			// Settlement happens automatically after this returns.
-			city := getString(request, "city", "unknown")
-			data := getWeatherData(city)
-			dataJSON, _ := json.Marshal(data)
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: string(dataJSON)}},
-			}, nil
-		},
-	))
-
-	// Register free ping tool (no payment wrapper)
-	pingTool := &mcp.Tool{
-		Name:        "ping",
-		Description: "A free health check tool",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	}
-
-	mcpServer.AddTool(pingTool, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "pong"}},
-		}, nil
-	})
-
-	// Create SSE handler using the official SDK
-	sseHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
-		return mcpServer
+	mcpServer := mcp.NewServer(&mcp.Implementation{
+		Name:    "x402 MCP E2E Server",
+		Version: "1.0.0",
 	}, nil)
 
-	// Create HTTP mux for health and close endpoints alongside SSE
+	for _, route := range e2eserver.ResolvedRoutes() {
+		route := route
+		toolName := e2eserver.McpToolName(route.Path)
+		description := e2eserver.RouteDescription(route)
+		_, extensions := e2eserver.BuildResolvedRouteConfig(route, "mcp")
+
+		requirements, err := resourceServer.BuildPaymentRequirementsFromConfig(ctx, x402.ResourceConfig{
+			Scheme:  route.Scheme,
+			PayTo:   route.PayTo,
+			Price:   route.Price,
+			Network: x402.Network(route.Network),
+			Extra:   route.Extra,
+		})
+		if err != nil {
+			fmt.Printf("❌ Failed to build payment requirements for %s: %v\n", route.Path, err)
+			os.Exit(1)
+		}
+
+		wrapperConfig := mcp402.PaymentWrapperConfig{
+			Accepts: requirements,
+			Resource: &mcp402.ResourceInfo{
+				URL:         "mcp://tool/" + toolName,
+				Description: description,
+				MimeType:    "application/json",
+			},
+		}
+		if len(extensions) > 0 {
+			wrapperConfig.Extensions = extensions
+		}
+		wrapper := mcp402.NewPaymentWrapper(resourceServer, wrapperConfig)
+
+		tool := &mcp.Tool{
+			Name:        toolName,
+			Description: description,
+			InputSchema: &jsonschema.Schema{Type: "object"},
+		}
+
+		mcpServer.AddTool(tool, wrapper.Wrap(
+			func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				if shutdownRequested {
+					body, _ := json.Marshal(map[string]interface{}{"error": "Server shutting down"})
+					return &mcp.CallToolResult{
+						Content: []mcp.Content{&mcp.TextContent{Text: string(body)}},
+						IsError: true,
+					}, nil
+				}
+				body, _ := json.Marshal(e2eserver.RouteBody())
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil
+			},
+		))
+	}
+
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "ok",
-			"tools":  []string{"get_weather (paid: $0.001)", "ping (free)"},
-		})
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, e2eserver.HealthBody())
 	})
 
-	mux.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+	mux.HandleFunc("POST /close", func(w http.ResponseWriter, r *http.Request) {
+		shutdownRequested = true
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"message": "Server shutting down gracefully",
 		})
+		fmt.Println("Received shutdown request")
+
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			os.Exit(0)
 		}()
 	})
 
-	// Mount SSE handler as catch-all
+	sseHandler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+		return mcpServer
+	}, nil)
 	mux.Handle("/", sseHandler)
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-quit
+		fmt.Println("Received shutdown signal, exiting...")
+		os.Exit(0)
+	}()
 
 	// Bind the socket first and only then print the "listening" log, so the
 	// e2e harness (which treats this log line as the readiness signal)
 	// doesn't consider the server ready before it can actually accept
 	// connections.
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, err := net.Listen("tcp", ":"+cfg.Port)
 	if err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Server listening on port %s\n", port)
-	fmt.Printf("SSE endpoint: http://localhost:%s/sse\n", port)
-	fmt.Printf("Health: http://localhost:%s/health\n", port)
+	fmt.Println(e2eserver.FormatStartupBanner(
+		"x402 MCP E2E Test Server",
+		"http://localhost:"+cfg.Port,
+	))
 
 	if err := http.Serve(listener, mux); err != nil {
 		fmt.Printf("Error starting server: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// writeJSON is a helper to write JSON responses.
+func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
 }

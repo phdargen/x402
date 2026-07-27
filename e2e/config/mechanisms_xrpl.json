@@ -6,17 +6,14 @@
       "CLIENT_XRPL_SEED"
     ]
   },
-  "rpcUrlKey": "XRPL_WS_URL",
   "testnet": {
     "name": "XRPL Testnet",
     "caip2": "xrpl:1",
-    "rpcUrlEnv": "XRPL_TESTNET_WS_URL",
     "rpcUrlDefault": "wss://s.altnet.rippletest.net:51233"
   },
   "mainnet": {
     "name": "XRPL",
     "caip2": "xrpl:0",
-    "rpcUrlEnv": "XRPL_MAINNET_WS_URL",
     "rpcUrlDefault": "wss://s1.ripple.com:51233"
   },
   "routes": {

@@ -12,13 +12,11 @@
   "testnet": {
     "name": "NEAR Testnet",
     "caip2": "near:testnet",
-    "rpcUrlEnv": "NEAR_TESTNET_RPC_URL",
     "rpcUrlDefault": "https://rpc.testnet.fastnear.com"
   },
   "mainnet": {
     "name": "NEAR",
     "caip2": "near:mainnet",
-    "rpcUrlEnv": "NEAR_RPC_URL",
     "rpcUrlDefault": "https://rpc.mainnet.fastnear.com"
   },
   "routes": {

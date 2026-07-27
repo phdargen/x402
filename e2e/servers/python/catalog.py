@@ -64,7 +64,6 @@ def _load() -> dict[str, Any]:
 
         networks[network_id] = {
             "env": file_data["env"],
-            "rpcUrlKey": file_data.get("rpcUrlKey"),
             "networks": {"testnet": file_data["testnet"], "mainnet": file_data["mainnet"]},
         }
 
@@ -268,6 +267,36 @@ def served_networks(env: Callable[[str], str | None] = os.getenv) -> list[Served
             ServedNetwork(id=route.network_id, network=route.network, pay_to=route.pay_to),
         )
     return list(served.values())
+
+
+def mcp_tool_name(path: str) -> str:
+    """MCP tool name for a catalog path: `/exact/evm/eip3009` -> `exact_evm_eip3009`."""
+    return re.sub(r"[/-]", "_", path.lstrip("/"))
+
+
+_GAS_SPONSORING_LABELS = {
+    "eip2612GasSponsoring": "EIP-2612 gas sponsoring",
+    "erc20ApprovalGasSponsoring": "ERC-20 approval gas sponsoring",
+}
+
+
+def route_description(
+    network_id: str,
+    scheme: str,
+    asset_transfer_method: str | None,
+    extensions: list[str] | None,
+) -> str:
+    """Human-readable description for an MCP tool, mirroring the TS catalog helper."""
+    label = network_id.upper()
+    scheme_prefix = "" if scheme == "exact" else f"{scheme} "
+    transfer = f"{asset_transfer_method} " if asset_transfer_method else ""
+    sponsoring = [
+        _GAS_SPONSORING_LABELS[ext_id]
+        for ext_id in (extensions or [])
+        if ext_id in _GAS_SPONSORING_LABELS
+    ]
+    suffix = f" with {' and '.join(sponsoring)}" if sponsoring else ""
+    return f"Protected {scheme_prefix}{transfer}endpoint on {label}{suffix}"
 
 
 def route_discovery_output() -> dict[str, Any]:

@@ -111,11 +111,7 @@ if os.environ.get("FACILITATOR_TVM_PRIVATE_KEY"):
         if tvm_provider == TVM_PROVIDER_TONAPI
         else os.environ.get("TVM_TONCENTER_API_KEY")
     )
-    tvm_config.provider_base_url = (
-        os.environ.get("TVM_TONAPI_BASE_URL")
-        if tvm_provider == TVM_PROVIDER_TONAPI
-        else os.environ.get("TVM_TONCENTER_BASE_URL")
-    )
+    tvm_config.provider_base_url = os.environ.get("TVM_RPC_URL")
     tvm_signer = FacilitatorHighloadV3Signer({TVM_NETWORK: tvm_config})
     print(f"TVM Facilitator account: {tvm_signer.get_addresses()[0]}")
 

@@ -7,22 +7,17 @@
       "FACILITATOR_TVM_PRIVATE_KEY",
       "TVM_PROVIDER",
       "TVM_TONCENTER_API_KEY",
-      "TVM_TONCENTER_BASE_URL",
-      "TVM_TONAPI_API_KEY",
-      "TVM_TONAPI_BASE_URL"
+      "TVM_TONAPI_API_KEY"
     ]
   },
-  "rpcUrlKey": null,
   "testnet": {
     "name": "TON Testnet",
     "caip2": "tvm:-3",
-    "rpcUrlEnv": "TONCENTER_TESTNET_BASE_URL",
     "rpcUrlDefault": "https://testnet.toncenter.com"
   },
   "mainnet": {
     "name": "TON Mainnet",
     "caip2": "tvm:-239",
-    "rpcUrlEnv": "TONCENTER_MAINNET_BASE_URL",
     "rpcUrlDefault": "https://toncenter.com"
   },
   "routes": {

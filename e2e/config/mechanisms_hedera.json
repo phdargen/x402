@@ -9,17 +9,14 @@
       "FACILITATOR_HEDERA_PRIVATE_KEY"
     ]
   },
-  "rpcUrlKey": "HEDERA_NODE_URL",
   "testnet": {
     "name": "Hedera Testnet",
     "caip2": "hedera:testnet",
-    "rpcUrlEnv": "HEDERA_TESTNET_NODE_URL",
     "rpcUrlDefault": ""
   },
   "mainnet": {
     "name": "Hedera Mainnet",
     "caip2": "hedera:mainnet",
-    "rpcUrlEnv": "HEDERA_NODE_URL",
     "rpcUrlDefault": ""
   },
   "routes": {

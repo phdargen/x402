@@ -11,12 +11,23 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from x402.extensions.bazaar import declare_discovery_extension, OutputConfig
+from x402.extensions.bazaar import (
+    DeclareMcpDiscoveryConfig,
+    declare_discovery_extension,
+    declare_mcp_discovery_extension,
+    OutputConfig,
+)
 from x402.extensions.eip2612_gas_sponsoring import declare_eip2612_gas_sponsoring_extension
 from x402.extensions.erc20_approval_gas_sponsoring import (
     declare_erc20_approval_gas_sponsoring_extension,
 )
-from catalog import ResolvedRoute, network_caip2, resolve_routes, route_discovery_output
+from catalog import (
+    ResolvedRoute,
+    mcp_tool_name,
+    network_caip2,
+    resolve_routes,
+    route_discovery_output,
+)
 
 
 @dataclass(frozen=True)
@@ -94,10 +105,19 @@ def configure_resource_server(server: Any, cfg: ServerConfig) -> None:
     server.register_extension(bazaar_resource_server_extension)
 
 
-def _declare_extension(extension_id: str, route: ResolvedRoute) -> dict[str, Any]:
+def _declare_extension(extension_id: str, route: ResolvedRoute, transport: str = "http") -> dict[str, Any]:
     """Map a catalog extension id to the SDK call that declares it on a route."""
     if extension_id == "bazaar":
         output = route_discovery_output()
+        if transport == "mcp":
+            return declare_mcp_discovery_extension(
+                DeclareMcpDiscoveryConfig(
+                    tool_name=mcp_tool_name(route.path),
+                    transport="sse",
+                    input_schema={"properties": {}},
+                    output=OutputConfig(example=output["example"], schema=output["schema"]),
+                )
+            )
         return declare_discovery_extension(
             output=OutputConfig(example=output["example"], schema=output["schema"])
         )
@@ -108,27 +128,30 @@ def _declare_extension(extension_id: str, route: ResolvedRoute) -> dict[str, Any
     raise ValueError(f'Route {route.path} declares unknown extension "{extension_id}"')
 
 
+def build_resolved_route_config(route: ResolvedRoute, transport: str = "http") -> dict[str, Any]:
+    """Single-route payment config shared by fastapi/flask and MCP tools."""
+    accepts: dict[str, Any] = {
+        "scheme": route.scheme,
+        "payTo": route.pay_to,
+        "network": route.network,
+        "price": route.price,
+    }
+    if route.extra:
+        accepts["extra"] = route.extra
+
+    entry: dict[str, Any] = {"accepts": accepts}
+    if route.extensions:
+        extensions: dict[str, Any] = {}
+        for extension_id in route.extensions:
+            extensions.update(_declare_extension(extension_id, route, transport))
+        entry["extensions"] = extensions
+
+    return entry
+
+
 def build_payment_routes(cfg: ServerConfig) -> dict[str, Any]:
     """Payment route map for fastapi/flask e2e servers, derived from the catalog."""
-    routes: dict[str, Any] = {}
-
-    for route in resolve_routes():
-        accepts: dict[str, Any] = {
-            "scheme": route.scheme,
-            "payTo": route.pay_to,
-            "network": route.network,
-            "price": route.price,
-        }
-        if route.extra:
-            accepts["extra"] = route.extra
-
-        entry: dict[str, Any] = {"accepts": accepts}
-        if route.extensions:
-            extensions: dict[str, Any] = {}
-            for extension_id in route.extensions:
-                extensions.update(_declare_extension(extension_id, route))
-            entry["extensions"] = extensions
-
-        routes[f"GET {route.path}"] = entry
-
-    return routes
+    return {
+        f"GET {route.path}": build_resolved_route_config(route)
+        for route in resolve_routes()
+    }

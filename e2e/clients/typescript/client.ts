@@ -34,7 +34,8 @@ import * as KeetaNet from "@keetanetwork/keetanet-client";
 import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { keyPairFromSeed, type KeyPair } from "@ton/crypto";
-import { x402Client } from "@x402/core/client";
+import { x402Client, type SchemeRegistration } from "@x402/core/client";
+import type { SettleResponse } from "@x402/core/types";
 
 export type RequestResult = {
   success: boolean;
@@ -65,6 +66,14 @@ function parseTvmKeyPair(privateKey: string): KeyPair {
 export type E2EClientContext = {
   url: string;
   client: x402Client;
+  /**
+   * The same scheme registrations backing `client`, exposed separately so
+   * transports that build their own `x402Client` internally (e.g. MCP's
+   * `createx402MCPClient`, which must construct its MCP `Client` against its
+   * own resolved `@modelcontextprotocol/sdk` version) can still share this
+   * setup instead of duplicating it.
+   */
+  schemes: SchemeRegistration[];
   batchSettlementScheme: BatchSettlementEvmScheme;
   batchSettlementPhase: BatchSettlementPhase | undefined;
 };
@@ -138,7 +147,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       HederaPrivateKey.fromStringECDSA(process.env.CLIENT_HEDERA_PRIVATE_KEY),
       {
         network: process.env.HEDERA_NETWORK || "hedera:testnet",
-        nodeUrl: process.env.HEDERA_NODE_URL || undefined,
+        nodeUrl: process.env.HEDERA_RPC_URL || undefined,
       },
     );
   }
@@ -174,52 +183,50 @@ export async function createE2EClient(): Promise<E2EClientContext> {
             tvmProvider === TVM_PROVIDER_TONAPI
               ? process.env.TVM_TONAPI_API_KEY
               : process.env.TVM_TONCENTER_API_KEY,
-          providerBaseUrl:
-            tvmProvider === TVM_PROVIDER_TONAPI
-              ? process.env.TVM_TONAPI_BASE_URL
-              : process.env.TVM_TONCENTER_BASE_URL,
+          providerBaseUrl: process.env.TVM_RPC_URL,
         }),
       )
     : undefined;
 
-  const client = new x402Client()
-    .register("eip155:*", new ExactEvmScheme(evmSigner, evmSchemeOptions))
-    .register("eip155:*", new UptoEvmClientScheme(evmSigner, uptoSchemeOptions))
-    .register("eip155:*", batchSettlementScheme)
-    .registerV1("base-sepolia", new ExactEvmSchemeV1(evmSigner))
-    .registerV1("base", new ExactEvmSchemeV1(evmSigner))
-    .register("solana:*", new ExactSvmScheme(svmSigner, svmSchemeOptions))
-    .registerV1("solana-devnet", new ExactSvmSchemeV1(svmSigner, svmSchemeOptions))
-    .registerV1("solana", new ExactSvmSchemeV1(svmSigner, svmSchemeOptions));
+  const schemes: SchemeRegistration[] = [
+    { network: "eip155:*", client: new ExactEvmScheme(evmSigner, evmSchemeOptions) },
+    { network: "eip155:*", client: new UptoEvmClientScheme(evmSigner, uptoSchemeOptions) },
+    { network: "eip155:*", client: batchSettlementScheme },
+    { network: "base-sepolia", client: new ExactEvmSchemeV1(evmSigner), x402Version: 1 },
+    { network: "base", client: new ExactEvmSchemeV1(evmSigner), x402Version: 1 },
+    { network: "solana:*", client: new ExactSvmScheme(svmSigner, svmSchemeOptions) },
+    { network: "solana-devnet", client: new ExactSvmSchemeV1(svmSigner, svmSchemeOptions), x402Version: 1 },
+    { network: "solana", client: new ExactSvmSchemeV1(svmSigner, svmSchemeOptions), x402Version: 1 },
+  ];
   if (ccdPrivateKey && ccdAddress) {
-    client.register(
-      "ccd:*",
-      new ExactConcordiumScheme(
+    schemes.push({
+      network: "ccd:*",
+      client: new ExactConcordiumScheme(
         {
           accountAddress: AccountAddress.fromBase58(ccdAddress),
           signer: buildBasicAccountSigner(ccdPrivateKey),
         },
-        process.env.CCD_GRPC_URL ? { grpcUrl: process.env.CCD_GRPC_URL } : undefined,
+        process.env.CCD_RPC_URL ? { grpcUrl: process.env.CCD_RPC_URL } : undefined,
       ),
-    );
+    });
   }
   if (aptosAccount) {
-    client.register("aptos:*", new ExactAptosScheme(aptosAccount));
+    schemes.push({ network: "aptos:*", client: new ExactAptosScheme(aptosAccount) });
   }
   if (hederaClientSigner) {
-    client.register("hedera:*", new ExactHederaScheme(hederaClientSigner));
+    schemes.push({ network: "hedera:*", client: new ExactHederaScheme(hederaClientSigner) });
   }
   if (keetaSigner) {
-    client.register(KEETA_TESTNET_CAIP2, new ExactKeetaScheme(keetaSigner));
+    schemes.push({ network: KEETA_TESTNET_CAIP2, client: new ExactKeetaScheme(keetaSigner) });
   }
   if (stellarSigner) {
-    client.register("stellar:*", new ExactStellarScheme(stellarSigner));
+    schemes.push({ network: "stellar:*", client: new ExactStellarScheme(stellarSigner) });
   }
   if (avmSigner) {
-    client.register("algorand:*", new ExactAvmClientScheme(avmSigner));
+    schemes.push({ network: "algorand:*", client: new ExactAvmClientScheme(avmSigner) });
   }
   if (tvmScheme) {
-    client.register("tvm:*", tvmScheme);
+    schemes.push({ network: "tvm:*", client: tvmScheme });
   }
   if (process.env.CLIENT_NEAR_ACCOUNT_ID && process.env.CLIENT_NEAR_PRIVATE_KEY) {
     const nearNetwork = (process.env.NEAR_NETWORK || "near:testnet") as `${string}:${string}`;
@@ -228,25 +235,26 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       secretKey: process.env.CLIENT_NEAR_PRIVATE_KEY as ClientNearSignerConfig["secretKey"],
       rpcUrls: process.env.NEAR_RPC_URL ? { [nearNetwork]: process.env.NEAR_RPC_URL } : undefined,
     });
-    client.register(nearNetwork, new ExactNearClientScheme(nearSigner));
+    schemes.push({ network: nearNetwork, client: new ExactNearClientScheme(nearSigner) });
   }
   if (process.env.CLIENT_XRPL_SEED) {
     const xrplNetwork = (process.env.XRPL_NETWORK || "xrpl:1") as `xrpl:${number}`;
     const xrplSigner = createXrplWalletSigner(Wallet.fromSeed(process.env.CLIENT_XRPL_SEED));
-    client.register(
-      xrplNetwork,
-      new ExactXrplClientScheme(
+    schemes.push({
+      network: xrplNetwork,
+      client: new ExactXrplClientScheme(
         xrplSigner,
-        process.env.XRPL_WS_URL
-          ? { wsUrlByNetwork: { [xrplNetwork]: process.env.XRPL_WS_URL } }
+        process.env.XRPL_RPC_URL
+          ? { wsUrlByNetwork: { [xrplNetwork]: process.env.XRPL_RPC_URL } }
           : {},
       ),
-    );
+    });
   }
 
+  const client = x402Client.fromConfig({ schemes });
   const batchSettlementPhase = process.env.EVM_BATCH_SETTLEMENT_PHASE as BatchSettlementPhase | undefined;
 
-  return { url, client, batchSettlementScheme, batchSettlementPhase };
+  return { url, client, schemes, batchSettlementScheme, batchSettlementPhase };
 }
 
 function aggregateBatchResult(
@@ -274,6 +282,12 @@ export type ClientScenarioDeps = {
   batchSettlementPhase: BatchSettlementPhase | undefined;
   batchSettlementScheme: BatchSettlementEvmScheme;
   issueRequest: () => Promise<RequestResult>;
+  /**
+   * Overrides how the cooperative refund request is sent. Defaults to
+   * `batchSettlementScheme.refund(url)` (a real HTTP request). Transports that
+   * don't speak plain HTTP (e.g. MCP) provide a `fetch` shim here instead.
+   */
+  refund?: () => Promise<SettleResponse>;
 };
 
 /**
@@ -281,6 +295,7 @@ export type ClientScenarioDeps = {
  */
 export async function runClientScenario(deps: ClientScenarioDeps): Promise<void> {
   const { url, batchSettlementPhase, batchSettlementScheme, issueRequest } = deps;
+  const sendRefund = deps.refund ?? (() => batchSettlementScheme.refund(url));
 
   if (!batchSettlementPhase) {
     const result = await issueRequest();
@@ -299,7 +314,7 @@ export async function runClientScenario(deps: ClientScenarioDeps): Promise<void>
 
   if (batchSettlementPhase === "recovery-refund") {
     const recoveryVoucher = await issueRequest();
-    const refundSettle = await batchSettlementScheme.refund(url);
+    const refundSettle = await sendRefund();
     const refund = {
       success: refundSettle.success,
       data: { refund: true },
@@ -320,7 +335,7 @@ export async function runClientScenario(deps: ClientScenarioDeps): Promise<void>
   if (batchSettlementPhase === "full") {
     const deposit = await issueRequest();
     const voucher = await issueRequest();
-    const refundSettle = await batchSettlementScheme.refund(url);
+    const refundSettle = await sendRefund();
     const refund = {
       success: refundSettle.success,
       data: { refund: true },

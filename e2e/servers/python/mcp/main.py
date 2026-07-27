@@ -1,90 +1,66 @@
 """MCP E2E Test Server with x402 Payment-Wrapped Tools.
 
-This server exposes paid MCP tools over SSE transport for e2e testing.
-Uses the x402 SDK's MCP server wrapper for payment handling.
+Thin MCP adapter over the same mechanisms catalog the HTTP frameworks use: one
+tool per resolved route, each wrapped with ``create_payment_wrapper`` using
+payment requirements built from the same ``accepts`` config
+``build_payment_routes`` feeds the HTTP middleware. Tools take no arguments
+and return the fixed ``{message, timestamp}`` body every HTTP route returns.
 """
 
-import json
+from __future__ import annotations
+
 import os
-import random
 import threading
-
-
-
-PORT = int(os.getenv("PORT", "4022"))
-EVM_NETWORK = os.getenv("EVM_NETWORK", "eip155:84532")
-SERVER_EVM_ADDRESS = os.getenv("SERVER_EVM_ADDRESS", "")
-TVM_NETWORK = os.getenv("TVM_NETWORK", "tvm:-3")
-SERVER_TVM_ADDRESS = os.getenv("SERVER_TVM_ADDRESS", "")
-FACILITATOR_URL = os.getenv("FACILITATOR_URL", "")
-
-if not SERVER_EVM_ADDRESS and not SERVER_TVM_ADDRESS:
-    print("At least one of SERVER_EVM_ADDRESS or SERVER_TVM_ADDRESS is required")
-    exit(1)
-
-if not FACILITATOR_URL:
-    print("FACILITATOR_URL environment variable is required")
-    exit(1)
-
-
-def get_weather_data(city: str) -> dict:
-    """Simulate fetching weather data for a city."""
-    conditions = ["sunny", "cloudy", "rainy", "snowy", "windy"]
-    weather = random.choice(conditions)
-    temperature = random.randint(40, 80)
-    return {"city": city, "weather": weather, "temperature": temperature}
+from typing import Any
 
 
 def main() -> None:
     """Start the MCP server with x402 payment-wrapped tools."""
+    import uvicorn
     from mcp.server.fastmcp import FastMCP
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
 
     from x402 import ResourceConfig, ResourceInfo, x402ResourceServer
-    from x402.extensions.bazaar import (
-        DeclareMcpDiscoveryConfig,
-        declare_mcp_discovery_extension,
-    )
     from x402.http import FacilitatorConfig, HTTPFacilitatorClient
     from x402.mcp import create_payment_wrapper
-    from x402.mechanisms.evm.exact import register_exact_evm_server
-    from x402.mechanisms.tvm.exact import ExactTvmServerScheme
 
-    # Create FastMCP server
+    from catalog import PROTECTED_ROUTE_MESSAGE, catalog_routes, mcp_tool_name, resolve_routes, route_description
+    from config import build_resolved_route_config, configure_resource_server, load_server_config
+    from handlers import CLOSE_PATH, HEALTH_PATH, close_body, health_body, route_body
+
+    cfg = load_server_config()
+
     mcp = FastMCP("x402 MCP E2E Server")
 
-    # Set up x402 resource server
-    facilitator_client = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
+    facilitator_client = HTTPFacilitatorClient(FacilitatorConfig(url=cfg.facilitator_url))
     resource_server = x402ResourceServer(facilitator_client)
-    if SERVER_EVM_ADDRESS:
-        register_exact_evm_server(resource_server, EVM_NETWORK)
-    if SERVER_TVM_ADDRESS:
-        resource_server.register(TVM_NETWORK, ExactTvmServerScheme())
-
-    # Initialize (fetches supported kinds from facilitator)
+    configure_resource_server(resource_server, cfg)
     resource_server.initialize()
 
-    # Expose one paid tool per protocol family
-    def register_weather_tool(tool_name: str, network: str, pay_to: str) -> None:
+    # Tool descriptions come from the unresolved catalog routes (which still
+    # carry `asset_transfer_method`), so unconfigured networks get sensible
+    # descriptions too even though they never register a tool below.
+    tool_descriptions = {
+        route.path: route_description(
+            route.network, route.scheme, route.asset_transfer_method, route.extensions
+        )
+        for route in catalog_routes()
+    }
+
+    def register_route_tool(route: Any) -> None:
+        tool_name = mcp_tool_name(route.path)
+        description = tool_descriptions.get(route.path, f"Paid MCP tool for {route.path}")
+        route_config = build_resolved_route_config(route, "mcp")
+        accepts_cfg = route_config["accepts"]
         accepts = resource_server.build_payment_requirements(
             ResourceConfig(
-                scheme="exact",
-                network=network,
-                pay_to=pay_to,
-                price="$0.001",
-            )
-        )
-        discovery = declare_mcp_discovery_extension(
-            DeclareMcpDiscoveryConfig(
-                tool_name=tool_name,
-                description="Get current weather for a city",
-                transport="sse",
-                input_schema={
-                    "properties": {
-                        "city": {"type": "string", "description": "City name"}
-                    },
-                    "required": ["city"],
-                },
-                example={"city": "San Francisco"},
+                scheme=accepts_cfg["scheme"],
+                pay_to=accepts_cfg["payTo"],
+                network=accepts_cfg["network"],
+                price=accepts_cfg["price"],
+                extra=accepts_cfg.get("extra"),
             )
         )
         wrapper = create_payment_wrapper(
@@ -92,57 +68,37 @@ def main() -> None:
             accepts=accepts,
             resource=ResourceInfo(
                 url=f"mcp://tool/{tool_name}",
-                description="Get current weather for a city",
+                description=description,
                 mime_type="application/json",
             ),
-            extensions=discovery,
+            extensions=route_config.get("extensions"),
         )
 
-        @mcp.tool(
-            name=tool_name,
-            description="Get current weather for a city. Requires payment of $0.001.",
-        )
+        @mcp.tool(name=tool_name, description=description)
         @wrapper
-        async def _get_weather(city: str) -> str:
-            return json.dumps(get_weather_data(city))
+        async def _tool() -> str:
+            import json
+            from datetime import datetime, timezone
 
-    if SERVER_EVM_ADDRESS:
-        register_weather_tool("get_weather", EVM_NETWORK, SERVER_EVM_ADDRESS)
-    if SERVER_TVM_ADDRESS:
-        register_weather_tool("get_weather_tvm", TVM_NETWORK, SERVER_TVM_ADDRESS)
+            return json.dumps(
+                {
+                    "message": PROTECTED_ROUTE_MESSAGE,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+    for route in resolve_routes():
+        register_route_tool(route)
 
     @mcp.tool(name="ping", description="A free health check tool")
     def ping() -> str:
         return "pong"
 
-    # Start with SSE transport via starlette/uvicorn
-    import uvicorn
-    from starlette.applications import Starlette
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-
     async def health(request):
-        return JSONResponse(
-            {
-                "status": "ok",
-                "tools": [
-                    *(["get_weather (paid: $0.001)"] if SERVER_EVM_ADDRESS else []),
-                    *(["get_weather_tvm (paid: $0.001)"] if SERVER_TVM_ADDRESS else []),
-                    "ping (free)",
-                ],
-                "protocols": [
-                    protocol
-                    for protocol, enabled in {
-                        "evm": bool(SERVER_EVM_ADDRESS),
-                        "tvm": bool(SERVER_TVM_ADDRESS),
-                    }.items()
-                    if enabled
-                ],
-            }
-        )
+        return JSONResponse(health_body("mcp"))
 
     async def close(request):
-        response = JSONResponse({"message": "Server shutting down gracefully"})
+        response = JSONResponse(close_body())
 
         def shutdown():
             import time
@@ -157,22 +113,16 @@ def main() -> None:
         # Emitted from the ASGI startup hook (not before uvicorn.run()) so the
         # "Server listening" log only appears once the socket is actually
         # bound and the app is ready to accept requests.
-        print(f"Server listening on port {PORT}", flush=True)
-        print(f"SSE endpoint: http://localhost:{PORT}/sse", flush=True)
-        print(f"Health: http://localhost:{PORT}/health", flush=True)
-        if SERVER_EVM_ADDRESS:
-            print(f"EVM payments enabled on {EVM_NETWORK}", flush=True)
-        if SERVER_TVM_ADDRESS:
-            print(f"TVM payments enabled on {TVM_NETWORK}", flush=True)
+        print(f"Server listening on port {cfg.port}", flush=True)
+        print(f"SSE endpoint: http://localhost:{cfg.port}/sse", flush=True)
+        print(f"Health: http://localhost:{cfg.port}{HEALTH_PATH}", flush=True)
 
-    # Create MCP SSE app
     mcp_app = mcp.sse_app()
 
-    # Create combined Starlette app with health/close routes
     app = Starlette(
         routes=[
-            Route("/health", health, methods=["GET"]),
-            Route("/close", close, methods=["POST"]),
+            Route(HEALTH_PATH, health, methods=["GET"]),
+            Route(CLOSE_PATH, close, methods=["POST"]),
         ],
         on_startup=[on_startup],
     )
@@ -180,7 +130,7 @@ def main() -> None:
     # Mount MCP SSE app at root so /sse and /messages work
     app.mount("/", mcp_app)
 
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")
+    uvicorn.run(app, host="0.0.0.0", port=cfg.port, log_level="warning")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ import {
   catalogNetworkEnv,
   catalogRequiredEnv,
   getCatalogNetwork,
+  requiredRpcUrlInputKey,
   resolveNetworkRpcUrl,
   type CatalogNetworkId,
 } from '../mechanisms';
@@ -43,8 +44,8 @@ export type FamilyCredentialSchema = {
 export type FamilyNetworkEnv = {
   /** Env var for network identifier (CAIP-2 or legacy v1 string after translation) */
   networkKey: string;
-  /** Env var for RPC/WS/gRPC endpoint; omitted when unused */
-  rpcUrlKey?: string;
+  /** Env var a spawned component reads for its RPC/WS/gRPC endpoint: `${ID}_RPC_URL`. */
+  rpcUrlKey: string;
 };
 
 /**
@@ -93,6 +94,18 @@ export function requiredEnvForFamily(family: ProtocolFamily): string[] {
 }
 
 export type NetworkMode = 'testnet' | 'mainnet';
+
+/**
+ * RPC input env key(s) that must be set for `family` in `mode` — empty
+ * unless the catalog marks that network/mode `rpcUrlRequired` (networks
+ * with no usable public default, e.g. one requiring a user-supplied node).
+ * Merged into the harness's startup preflight alongside
+ * {@link requiredEnvForFamily}, which is mode-agnostic.
+ */
+export function requiredRpcEnvForFamily(family: ProtocolFamily, mode: NetworkMode): string[] {
+  const key = requiredRpcUrlInputKey(family, mode);
+  return key ? [key] : [];
+}
 
 export type NetworkConfig = {
   name: string;

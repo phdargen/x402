@@ -54,18 +54,20 @@ type ClientContext struct {
 	BatchPhase    string
 }
 
-// CreateClient builds the shared x402 client used by go-http e2e.
-func CreateClient() *ClientContext {
-	serverURL := os.Getenv("RESOURCE_SERVER_URL")
-	if serverURL == "" {
-		log.Fatal("RESOURCE_SERVER_URL is required")
-	}
+// PaymentClientContext bundles the signer-backed x402 payment client shared
+// by the go-http and MCP e2e clients, built once from the same env vars.
+// Transports that speak something other than plain HTTP (e.g. MCP) wrap
+// Client themselves instead of going through Newx402HTTPClient.
+type PaymentClientContext struct {
+	Client        *x402.X402Client
+	BatchedScheme *batchedclient.BatchSettlementEvmScheme
+	BatchPhase    string
+}
 
-	endpointPath := os.Getenv("ENDPOINT_PATH")
-	if endpointPath == "" {
-		endpointPath = "/protected"
-	}
-
+// BuildPaymentClient builds the shared x402 payment client + batched scheme
+// from env vars, registering every network scheme the Go e2e clients support
+// (EVM and SVM). Exits the process via OutputError on misconfiguration.
+func BuildPaymentClient() *PaymentClientContext {
 	evmPrivateKey := os.Getenv("CLIENT_EVM_PRIVATE_KEY")
 	if evmPrivateKey == "" {
 		log.Fatal("CLIENT_EVM_PRIVATE_KEY environment variable is required")
@@ -137,48 +139,89 @@ func CreateClient() *ClientContext {
 		RegisterV1("solana-devnet", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg)).
 		RegisterV1("solana", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg))
 
-	httpClient := x402http.Newx402HTTPClient(x402Client)
+	return &PaymentClientContext{
+		Client:        x402Client,
+		BatchedScheme: batchedScheme,
+		BatchPhase:    os.Getenv("EVM_BATCH_SETTLEMENT_PHASE"),
+	}
+}
+
+// CreateClient builds the shared x402 client used by go-http e2e, wrapping
+// BuildPaymentClient's payment client in a payment-capable *http.Client.
+func CreateClient() *ClientContext {
+	serverURL := os.Getenv("RESOURCE_SERVER_URL")
+	if serverURL == "" {
+		log.Fatal("RESOURCE_SERVER_URL is required")
+	}
+
+	endpointPath := os.Getenv("ENDPOINT_PATH")
+	if endpointPath == "" {
+		endpointPath = "/protected"
+	}
+
+	pc := BuildPaymentClient()
+	if pc == nil {
+		return nil
+	}
+
+	httpClient := x402http.Newx402HTTPClient(pc.Client)
 	client := x402http.WrapHTTPClientWithPayment(http.DefaultClient, httpClient)
 
 	return &ClientContext{
 		URL:           serverURL + endpointPath,
 		HTTPClient:    client,
 		Settle:        httpClient,
-		BatchedScheme: batchedScheme,
-		BatchPhase:    os.Getenv("EVM_BATCH_SETTLEMENT_PHASE"),
+		BatchedScheme: pc.BatchedScheme,
+		BatchPhase:    pc.BatchPhase,
 	}
 }
 
 // RunScenario executes the single-request or batch-settlement client flow.
 func RunScenario(ctx context.Context, c *ClientContext) {
-	switch c.BatchPhase {
+	RunPhasedScenario(ctx, c.BatchPhase,
+		func(ctx context.Context) StepResult { return IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL) },
+		func(ctx context.Context) StepResult { return IssueRefund(ctx, c.BatchedScheme, c.URL, nil) },
+	)
+}
+
+// RunPhasedScenario runs the shared single-request / batch-settlement phase
+// flow used by both the go-http and MCP e2e clients, given transport-specific
+// issueRequest/refund callbacks (MCP bridges these onto tool calls instead of
+// raw HTTP requests).
+func RunPhasedScenario(
+	ctx context.Context,
+	batchPhase string,
+	issueRequest func(ctx context.Context) StepResult,
+	refund func(ctx context.Context) StepResult,
+) {
+	switch batchPhase {
 	case "initial":
-		deposit := IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)
-		voucher := IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)
+		deposit := issueRequest(ctx)
+		voucher := issueRequest(ctx)
 		Emit(Aggregate("initial", []StepResult{deposit, voucher}, map[string]StepResult{
 			"deposit": deposit,
 			"voucher": voucher,
 		}))
 	case "recovery-refund":
-		recoveryVoucher := IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)
-		refund := IssueRefund(ctx, c.BatchedScheme, c.URL)
-		Emit(Aggregate("recovery-refund", []StepResult{recoveryVoucher, refund}, map[string]StepResult{
+		recoveryVoucher := issueRequest(ctx)
+		refundResult := refund(ctx)
+		Emit(Aggregate("recovery-refund", []StepResult{recoveryVoucher, refundResult}, map[string]StepResult{
 			"recoveryVoucher": recoveryVoucher,
-			"refund":          refund,
+			"refund":          refundResult,
 		}))
 	case "full":
-		deposit := IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)
-		voucher := IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)
-		refund := IssueRefund(ctx, c.BatchedScheme, c.URL)
-		Emit(Aggregate("full", []StepResult{deposit, voucher, refund}, map[string]StepResult{
+		deposit := issueRequest(ctx)
+		voucher := issueRequest(ctx)
+		refundResult := refund(ctx)
+		Emit(Aggregate("full", []StepResult{deposit, voucher, refundResult}, map[string]StepResult{
 			"deposit": deposit,
 			"voucher": voucher,
-			"refund":  refund,
+			"refund":  refundResult,
 		}))
 	case "":
-		Emit(ToAggregate(IssueRequest(ctx, c.HTTPClient, c.Settle, c.URL)))
+		Emit(ToAggregate(issueRequest(ctx)))
 	default:
-		OutputError(fmt.Sprintf("Unknown EVM_BATCH_SETTLEMENT_PHASE: %s", c.BatchPhase))
+		OutputError(fmt.Sprintf("Unknown EVM_BATCH_SETTLEMENT_PHASE: %s", batchPhase))
 	}
 }
 
@@ -231,8 +274,14 @@ func IssueRequest(
 }
 
 // IssueRefund triggers a cooperative refund on the batch-settlement channel.
-func IssueRefund(ctx context.Context, scheme *batchedclient.BatchSettlementEvmScheme, url string) StepResult {
-	settle, err := scheme.Refund(ctx, url, &batchedclient.RefundOptions{})
+// options is optional (nil uses the default plain-HTTP RefundOptions); the
+// MCP client passes an HTTPClient whose Transport bridges refund requests
+// onto MCP tool calls instead.
+func IssueRefund(ctx context.Context, scheme *batchedclient.BatchSettlementEvmScheme, url string, options *batchedclient.RefundOptions) StepResult {
+	if options == nil {
+		options = &batchedclient.RefundOptions{}
+	}
+	settle, err := scheme.Refund(ctx, url, options)
 	if err != nil {
 		return StepResult{
 			Success:    false,

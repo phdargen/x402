@@ -118,15 +118,15 @@ const TVM_NETWORK = process.env.TVM_NETWORK || "tvm:-3";
 const NEAR_NETWORK = process.env.NEAR_NETWORK || "near:testnet";
 const NEAR_RPC_URL = process.env.NEAR_RPC_URL;
 const XRPL_NETWORK = process.env.XRPL_NETWORK || "xrpl:1";
-const XRPL_WS_URL = process.env.XRPL_WS_URL;
+const XRPL_RPC_URL = process.env.XRPL_RPC_URL;
 const CCD_NETWORK = process.env.CCD_NETWORK || CONCORDIUM_TESTNET_CAIP2;
-const CCD_GRPC_URL =
-  process.env.CCD_GRPC_URL || getConcordiumGrpcUrl(CCD_NETWORK as Network);
+const CCD_RPC_URL =
+  process.env.CCD_RPC_URL || getConcordiumGrpcUrl(CCD_NETWORK as Network);
 const EVM_RPC_URL = process.env.EVM_RPC_URL;
 const SVM_RPC_URL = process.env.SVM_RPC_URL;
 const AVM_RPC_URL = process.env.AVM_RPC_URL;
 const APTOS_RPC_URL = process.env.APTOS_RPC_URL;
-const HEDERA_NODE_URL = process.env.HEDERA_NODE_URL;
+const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
 const STELLAR_RPC_URL = process.env.STELLAR_RPC_URL;
 const TVM_PROVIDER = (process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER).toLowerCase();
 
@@ -150,12 +150,12 @@ console.log(`🌐 Keeta Network: ${KEETA_NETWORK}`);
 console.log(`🌐 Stellar Network: ${STELLAR_NETWORK}`);
 console.log(`🌐 TVM Network: ${TVM_NETWORK}`);
 console.log(`🌐 CCD Network: ${CCD_NETWORK}`);
-console.log(`🌐 CCD gRPC URL: ${CCD_GRPC_URL}`);
+console.log(`🌐 CCD gRPC URL: ${CCD_RPC_URL}`);
 if (EVM_RPC_URL) console.log(`🌐 EVM RPC URL: ${EVM_RPC_URL}`);
 if (SVM_RPC_URL) console.log(`🌐 SVM RPC URL: ${SVM_RPC_URL}`);
 if (AVM_RPC_URL) console.log(`🌐 AVM RPC URL: ${AVM_RPC_URL}`);
 if (APTOS_RPC_URL) console.log(`🌐 Aptos RPC URL: ${APTOS_RPC_URL}`);
-if (HEDERA_NODE_URL) console.log(`🌐 Hedera Node URL: ${HEDERA_NODE_URL}`);
+if (HEDERA_RPC_URL) console.log(`🌐 Hedera Node URL: ${HEDERA_RPC_URL}`);
 if (STELLAR_RPC_URL) console.log(`🌐 Stellar RPC URL: ${STELLAR_RPC_URL}`);
 console.log(`🌐 TVM Provider: ${TVM_PROVIDER}`);
 
@@ -228,7 +228,7 @@ if (process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_
   );
 
   const buildHederaClient = (network: string): HederaClient => {
-    const client = createHederaClient(network, HEDERA_NODE_URL);
+    const client = createHederaClient(network, HEDERA_RPC_URL);
     client.setOperator(AccountId.fromString(hederaAccountId), hederaKey);
     return client;
   };
@@ -274,10 +274,7 @@ if (process.env.FACILITATOR_TVM_PRIVATE_KEY) {
       TVM_PROVIDER === TVM_PROVIDER_TONAPI
         ? process.env.TVM_TONAPI_API_KEY
         : process.env.TVM_TONCENTER_API_KEY,
-    providerBaseUrl:
-      TVM_PROVIDER === TVM_PROVIDER_TONAPI
-        ? process.env.TVM_TONAPI_BASE_URL
-        : process.env.TVM_TONCENTER_BASE_URL,
+    providerBaseUrl: process.env.TVM_RPC_URL,
   });
   tvmSigner = toFacilitatorTvmSigner({ [TVM_NETWORK]: tvmConfig });
   console.info(`TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`);
@@ -301,7 +298,7 @@ if (process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIV
 
 let concordiumSigner: ReturnType<typeof toConcordiumFacilitatorSigner> | undefined;
 if (process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRESS) {
-  const [host, port] = parseGrpcUrl(CCD_GRPC_URL);
+  const [host, port] = parseGrpcUrl(CCD_RPC_URL);
   concordiumSigner = toConcordiumFacilitatorSigner(
     process.env.FACILITATOR_CCD_ADDRESS,
     process.env.FACILITATOR_CCD_PRIVATE_KEY,
@@ -558,7 +555,7 @@ if (process.env.XRPL_NETWORK) {
   facilitator.register(
     XRPL_NETWORK as Network,
     new ExactXrplFacilitatorScheme(
-      XRPL_WS_URL ? { wsUrlByNetwork: { [XRPL_NETWORK as `xrpl:${number}`]: XRPL_WS_URL } } : {},
+      XRPL_RPC_URL ? { wsUrlByNetwork: { [XRPL_NETWORK as `xrpl:${number}`]: XRPL_RPC_URL } } : {},
     ),
   );
   console.info(`XRPL facilitator enabled on ${XRPL_NETWORK} (payer-signed; no facilitator signer)`);

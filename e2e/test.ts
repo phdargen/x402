@@ -13,9 +13,9 @@ import { parseArgs, printHelp } from './src/cli/args';
 import { runInteractiveMode } from './src/cli/interactive';
 import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/cli/filters';
 import { minimizeScenarios } from './src/sampling';
-import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily } from './src/networks/networks';
+import { getNetworkSet, NetworkMode, NetworkConfig, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily, requiredRpcEnvForFamily } from './src/networks/networks';
 import { injectNetworkEnv } from './src/env';
-import { buildEnvironmentForRole } from './src/mechanisms';
+import { FACILITATOR_ENV_PREFLIGHT_ALLOWLIST } from './src/mechanisms';
 import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, ResourceLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
@@ -74,7 +74,7 @@ function isTransientPaymentFailure(error?: string): boolean {
  * Approve Permit2 so that the standard/direct settle path can be exercised.
  * Grants unlimited Permit2 allowance for the given token (permit2-approval script default if omitted).
  */
-async function approvePermit2Approval(tokenAddress?: string): Promise<boolean> {
+async function approvePermit2Approval(evm: NetworkConfig, tokenAddress?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const label = tokenAddress ? `token ${tokenAddress}` : '(script default token)';
     verboseLog(`  🔓 Approving Permit2 for ${label}...`);
@@ -87,6 +87,7 @@ async function approvePermit2Approval(tokenAddress?: string): Promise<boolean> {
       cwd: process.cwd(),
       stdio: 'pipe',
       shell: true,
+      env: { ...process.env, EVM_NETWORK: evm.caip2, EVM_RPC_URL: evm.rpcUrl },
     });
 
     let stderr = '';
@@ -124,7 +125,7 @@ async function approvePermit2Approval(tokenAddress?: string): Promise<boolean> {
  * Revoke Permit2 approval so that gas sponsoring extensions are exercised.
  * Sets the Permit2 allowance to 0 for the given token (permit2-approval script default if omitted).
  */
-async function revokePermit2Approval(tokenAddress?: string): Promise<boolean> {
+async function revokePermit2Approval(evm: NetworkConfig, tokenAddress?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const label = tokenAddress ? `token ${tokenAddress}` : '(script default token)';
     verboseLog(`  🔓 Revoking Permit2 approval for ${label}...`);
@@ -137,6 +138,7 @@ async function revokePermit2Approval(tokenAddress?: string): Promise<boolean> {
       cwd: process.cwd(),
       stdio: 'pipe',
       shell: true,
+      env: { ...process.env, EVM_NETWORK: evm.caip2, EVM_RPC_URL: evm.rpcUrl },
     });
 
     let stderr = '';
@@ -246,13 +248,13 @@ async function setupSwigWallet(svmRpcUrl: string): Promise<boolean> {
 
 /**
  * Shared EVM clients for the ETH sandwich helpers.
- * Lazily initialised on first use so that missing env vars don't blow up
- * non-EVM test runs.
+ * Fed from the resolved NetworkSet (not the parent process env) so cold-start
+ * approve/revoke honor `--mainnet`/`--testnet` instead of silently reading
+ * whatever `EVM_RPC_URL` happens to be set to on the harness process.
  */
-function getEvmClients() {
-  const evmNetwork = process.env.EVM_NETWORK || 'eip155:84532';
-  const evmRpcUrl = process.env.EVM_RPC_URL;
-  const evmChain = evmNetwork === 'eip155:8453' ? base : baseSepolia;
+function getEvmClients(evm: NetworkConfig) {
+  const evmChain = evm.caip2 === 'eip155:8453' ? base : baseSepolia;
+  const evmRpcUrl = evm.rpcUrl;
 
   const facilitatorKey = process.env.FACILITATOR_EVM_PRIVATE_KEY;
   const clientKey = process.env.CLIENT_EVM_PRIVATE_KEY;
@@ -328,8 +330,8 @@ const REVOKE_FUND_AMOUNT = parseEther('0.001');
  * Send a small amount of ETH from the facilitator wallet to the client wallet
  * so the client can pay gas for Permit2 revocation transactions.
  */
-async function fundClientForRevoke(): Promise<boolean> {
-  const { publicClient, facilitatorWallet, facilitatorAccount, clientAccount } = getEvmClients();
+async function fundClientForRevoke(evm: NetworkConfig): Promise<boolean> {
+  const { publicClient, facilitatorWallet, facilitatorAccount, clientAccount } = getEvmClients(evm);
 
   const clientBalance = await publicClient.getBalance({ address: clientAccount.address });
   if (clientBalance >= REVOKE_FUND_AMOUNT) {
@@ -380,9 +382,9 @@ async function fundClientForRevoke(): Promise<boolean> {
  * leaving the client with ~0 ETH so the gas sponsoring funding step is
  * exercised during the test.
  */
-async function drainClientETH(): Promise<boolean> {
+async function drainClientETH(evm: NetworkConfig): Promise<boolean> {
   try {
-    const { publicClient, clientWallet, facilitatorAccount, clientAccount } = getEvmClients();
+    const { publicClient, clientWallet, facilitatorAccount, clientAccount } = getEvmClients(evm);
 
     // Use pending balance so we see any in-flight fund transaction that hasn't confirmed yet.
     const balance = await publicClient.getBalance({ address: clientAccount.address, blockTag: 'pending' });
@@ -874,7 +876,8 @@ async function runTest() {
 
   const requiredEnvByFamily: Record<string, Array<[string, string | undefined]>> = {};
   for (const family of PROTOCOL_FAMILIES) {
-    requiredEnvByFamily[family] = requiredEnvForFamily(family).map(key => [key, process.env[key]]);
+    const keys = [...requiredEnvForFamily(family), ...requiredRpcEnvForFamily(family, networkMode)];
+    requiredEnvByFamily[family] = keys.map(key => [key, process.env[key]]);
   }
 
   // Apply coverage-based minimization if --min flag is set
@@ -1057,25 +1060,13 @@ async function runTest() {
   log('\n🔍 Validating facilitator environment variables...\n');
   const missingEnvVars: { facilitatorName: string; missingVars: string[] }[] = [];
 
-  // Environment variables managed by the test framework: PORT is assigned per-run by
-  // the harness, and everything else here is whatever the catalog currently treats as
-  // an *optional* facilitator-role env key (network ids, RPC urls, provider creds,
-  // price overrides, ...) — derived so it never drifts from mechanisms_<id>.json as
-  // networks are added/renamed. Only a component's own `environment.required` (built
-  // from catalog `env.required`) can ever trip the check below.
-  const systemManagedVars = new Set<string>([
-    'PORT',
-    'SWIG_ACCOUNT_ADDRESS', // svm-smart-wallet scenario knob, not modeled in the catalog
-    ...buildEnvironmentForRole('facilitator', [...PROTOCOL_FAMILIES]).optional,
-  ]);
-
   for (const [facilitatorName, facilitator] of uniqueFacilitators) {
     const requiredVars = facilitator.config.environment?.required || [];
     const missing: string[] = [];
 
     for (const envVar of requiredVars) {
-      // Skip variables managed by the test framework
-      if (systemManagedVars.has(envVar)) {
+      // Skip env keys the harness assigns itself (e.g. PORT), never operator-supplied
+      if (FACILITATOR_ENV_PREFLIGHT_ALLOWLIST.has(envVar)) {
         continue;
       }
 
@@ -1573,7 +1564,7 @@ async function runTest() {
           }
 
           if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
-            const approved = await approvePermit2Approval(evmPermit2Asset);
+            const approved = await approvePermit2Approval(networks.evm, evmPermit2Asset);
             if (!approved) {
               return setupFailure('Permit2 approval setup failed');
             }
@@ -1584,13 +1575,13 @@ async function runTest() {
             // whatever wallet state the first client left behind.
             const endpointKey = `${scenario.client.name}::${scenario.endpoint.path}`;
             if (!coldStartedEndpoints.has(endpointKey)) {
-              const funded = await fundClientForRevoke();
+              const funded = await fundClientForRevoke(networks.evm);
               if (!funded) {
                 return setupFailure('Client gas funding setup failed');
               }
               // Give fund tx 1s to propagate before submitting revoke (from client wallet)
               await new Promise(resolve => setTimeout(resolve, 1000));
-              const revoked = await revokePermit2Approval(evmPermit2Asset);
+              const revoked = await revokePermit2Approval(networks.evm, evmPermit2Asset);
               if (!revoked) {
                 return setupFailure('Permit2 revoke setup failed');
               }
@@ -1599,7 +1590,7 @@ async function runTest() {
               // immediately after the revoke submission, causing the drain to
               // collide with the revoke's nonce ("replacement transaction underpriced").
               await new Promise(resolve => setTimeout(resolve, 2000));
-              const drained = await drainClientETH();
+              const drained = await drainClientETH(networks.evm);
               if (!drained) {
                 return setupFailure('Client ETH drain setup failed');
               }
