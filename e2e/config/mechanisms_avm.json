@@ -1,0 +1,30 @@
+{
+  "env": {
+    "required": [],
+    "optional": [
+      "SERVER_AVM_ADDRESS",
+      "CLIENT_AVM_PRIVATE_KEY",
+      "FACILITATOR_AVM_PRIVATE_KEY"
+    ]
+  },
+  "testnet": {
+    "name": "Algorand Testnet",
+    "caip2": "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe",
+    "rpcUrlEnv": "AVM_TESTNET_RPC_URL",
+    "rpcUrlDefault": "https://testnet-api.4160.nodely.dev"
+  },
+  "mainnet": {
+    "name": "Algorand Mainnet",
+    "caip2": "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73k",
+    "rpcUrlEnv": "AVM_RPC_URL",
+    "rpcUrlDefault": "https://mainnet-api.4160.nodely.dev"
+  },
+  "routes": {
+    "/exact/avm": {
+      "scheme": "exact",
+      "sdks": ["typescript"],
+      "price": { "usd": "$0.001" },
+      "extensions": ["bazaar"]
+    }
+  }
+}

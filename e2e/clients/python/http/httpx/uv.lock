@@ -743,9 +743,9 @@ wheels = [
 ]
 
 [[package]]
-name = "e2e-client-shared"
+name = "e2e-client"
 version = "0.1.0"
-source = { editable = "../../shared" }
+source = { editable = "../../" }
 dependencies = [
     { name = "eth-account" },
     { name = "x402", extra = ["evm", "extensions", "svm", "tvm"] },
@@ -2448,14 +2448,14 @@ name = "x402-httpx-e2e"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "e2e-client-shared" },
+    { name = "e2e-client" },
     { name = "python-dotenv" },
     { name = "x402", extra = ["evm", "extensions", "httpx", "svm", "tvm"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "e2e-client-shared", editable = "../../shared" },
+    { name = "e2e-client", editable = "../../" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "x402", extras = ["httpx", "evm", "svm", "tvm", "extensions"], editable = "../../../../../python/x402" },
 ]

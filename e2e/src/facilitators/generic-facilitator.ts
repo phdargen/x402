@@ -6,7 +6,7 @@ import {
   forwardConfigEnv,
   forwardRoleCredentials,
   injectNetworkEnv,
-  tvmProviderEnv,
+  tvmToncenterDefault,
 } from '../env';
 
 export interface VerifyRequest {
@@ -109,10 +109,10 @@ export class GenericFacilitatorProxy extends BaseProxy implements FacilitatorPro
 
     const baseEnv: Record<string, string> = {
       PORT: config.port.toString(),
+      ...tvmToncenterDefault(config.networks),
       ...forwardRoleCredentials('facilitator'),
       // Network configs from NetworkSet
       ...injectNetworkEnv(config.networks),
-      ...tvmProviderEnv(config.networks),
     };
 
     // Pass through any additional environment variables required by the facilitator.

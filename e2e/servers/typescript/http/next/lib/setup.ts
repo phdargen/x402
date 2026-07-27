@@ -18,12 +18,12 @@ import {
   loadServerEnv,
   type ServerEnvConfig,
 } from "../../../../../src/server-env";
-import { catalogRoutes, resolvedRoutes } from "../../../shared/catalog";
+import { catalogRoutes, resolvedRoutes } from "../../../catalog";
 import {
   buildResolvedRouteConfig,
   configureResourceServer,
   createFacilitatorClients,
-} from "../../../shared/config";
+} from "../../../config";
 
 export { nextProxyHttpPath, nextWithX402HttpPath } from "../../../../../src/mechanisms";
 

@@ -6,7 +6,7 @@ toolchain go1.24.1
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/x402-foundation/x402/e2e/servers/goshared v0.0.0
+	github.com/x402-foundation/x402/e2e/servers/go v0.0.0
 	github.com/x402-foundation/x402/go/v2 v2.14.0
 )
 
@@ -95,4 +95,4 @@ require (
 
 replace github.com/x402-foundation/x402/go/v2 => ../../../../../go
 
-replace github.com/x402-foundation/x402/e2e/servers/goshared => ../../shared
+replace github.com/x402-foundation/x402/e2e/servers/go => ../..

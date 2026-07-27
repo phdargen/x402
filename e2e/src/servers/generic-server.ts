@@ -3,7 +3,7 @@ import { loadComponentConfig } from '../component';
 import { ServerProxy, ServerConfig } from '../types';
 import { verboseLog, errorLog } from '../logger';
 import { resolveEvmPermit2Asset } from '../networks/networks';
-import { CATALOG_PATH } from '../mechanisms';
+import { CATALOG_DIR } from '../mechanisms';
 import {
   excludedServerCredentialKeys,
   forwardConfigEnv,
@@ -104,7 +104,7 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
       MOCK_FACILITATOR_URL: config.mockFacilitatorUrl || '',
       // Servers resolve their own routes from the same catalog the harness uses,
       // including the exclusions that narrow a surface (e.g. echo, no batching).
-      E2E_MECHANISMS_CATALOG: CATALOG_PATH,
+      E2E_MECHANISMS_CATALOG: CATALOG_DIR,
       ...routeExclusionEnv(componentConfig),
     };
 

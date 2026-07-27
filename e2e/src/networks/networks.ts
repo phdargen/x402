@@ -1,17 +1,18 @@
 /**
  * Network and protocol-family configuration for E2E tests.
  *
- * Network credential env keys and identifiers come from e2e/config/mechanisms.json
- * (via src/mechanisms.ts). Paid HTTP routes declare implementing SDKs via
- * `routes.*.sdks`. This module exposes the runtime NetworkSet helpers used by the harness.
+ * Network credential env keys and identifiers come from
+ * e2e/config/mechanisms_<id>.json (via src/mechanisms.ts). Paid HTTP routes
+ * declare implementing SDKs via `routes.*.sdks`. This module exposes the
+ * runtime NetworkSet helpers used by the harness.
  *
- * Adding a network:
- * 1. Add `networks.<id>` to e2e/config/mechanisms.json (`env`, `networkEnv`, `networks`)
- * 2. Add routes under `routes` with `sdks` listing each SDK that implements them
- * 3. Register the scheme in clients|servers|facilitators shared modules for that sdk
- * 4. Add secrets to .env-local / README
+ * Adding a network (4 edits, no catalog type edit):
+ * 1. Add e2e/config/mechanisms_<id>.json (`env`, `testnet`/`mainnet`, `routes`)
+ * 2. Register the scheme in servers/<lang>/ (e.g. servers/typescript/config.ts)
+ * 3. Register the scheme in clients/<lang>/ (e.g. clients/python/client.py)
+ * 4. Register the scheme in facilitators/<lang>/
  *
- * Legacy v1 is not driven by mechanisms.json.
+ * Legacy v1 is not driven by the mechanisms catalog.
  */
 
 import {
@@ -19,6 +20,7 @@ import {
   catalogCredentials,
   catalogDisplayNames,
   catalogNetworkEnv,
+  catalogRequiredEnv,
   getCatalogNetwork,
   resolveNetworkRpcUrl,
   type CatalogNetworkId,
@@ -46,10 +48,18 @@ export type FamilyNetworkEnv = {
 };
 
 /**
- * Credential env keys per network and role — derived from config/mechanisms.json.
+ * Credential env keys per network and role — derived from the mechanisms catalog.
+ * Includes both `required` and `optional` catalog keys (e.g. batch-settlement,
+ * gas-sponsoring add-ons), since components need every role-prefixed key forwarded.
  */
 export const FAMILY_CREDENTIALS: Record<ProtocolFamily, FamilyCredentialSchema> =
   catalogCredentials();
+
+/**
+ * Per-network `env.required` keys — must be set before that family can be exercised
+ * at all. Unlike {@link FAMILY_CREDENTIALS}, this excludes `env.optional` add-ons.
+ */
+const FAMILY_REQUIRED_ENV: Record<ProtocolFamily, string[]> = catalogRequiredEnv();
 
 /** Network env var names injected by proxies from NetworkSet. */
 export const FAMILY_NETWORK_ENV: Record<ProtocolFamily, FamilyNetworkEnv> =
@@ -73,10 +83,13 @@ export function allCredentialKeys(role: Role): string[] {
   return keys;
 }
 
-/** Required env keys for a family (all roles that have keys). */
+/**
+ * Env keys that must be set before a family can be exercised at all
+ * (the catalog's `env.required` list — excludes optional add-ons like
+ * batch-settlement or gas-sponsoring extras).
+ */
 export function requiredEnvForFamily(family: ProtocolFamily): string[] {
-  const schema = FAMILY_CREDENTIALS[family];
-  return [...schema.server, ...schema.client, ...schema.facilitator];
+  return FAMILY_REQUIRED_ENV[family];
 }
 
 export type NetworkMode = 'testnet' | 'mainnet';

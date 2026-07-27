@@ -62,14 +62,14 @@ async def main() -> dict:
         tvm_provider = (os.getenv("TVM_PROVIDER") or "").strip().lower()
         tvm_config.provider = tvm_provider or tvm_config.provider
         tvm_config.api_key = (
-            os.getenv("TONAPI_API_KEY")
+            os.getenv("TVM_TONAPI_API_KEY")
             if tvm_provider == TVM_PROVIDER_TONAPI
-            else os.getenv("TONCENTER_API_KEY")
+            else os.getenv("TVM_TONCENTER_API_KEY")
         )
         tvm_config.provider_base_url = (
-            os.getenv("TONAPI_BASE_URL")
+            os.getenv("TVM_TONAPI_BASE_URL")
             if tvm_provider == TVM_PROVIDER_TONAPI
-            else os.getenv("TONCENTER_BASE_URL")
+            else os.getenv("TVM_TONCENTER_BASE_URL")
         )
         client.register(
             tvm_network,

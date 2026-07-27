@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 
-	"github.com/x402-foundation/x402/e2e/clients/goshared"
+	e2eclient "github.com/x402-foundation/x402/e2e/clients/go"
 )
 
 func main() {
-	client := goshared.CreateClient()
+	client := e2eclient.CreateClient()
 	if client == nil {
 		return
 	}
-	goshared.RunScenario(context.Background(), client)
+	e2eclient.RunScenario(context.Background(), client)
 }

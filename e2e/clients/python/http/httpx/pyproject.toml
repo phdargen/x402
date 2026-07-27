@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Python httpx client for x402 e2e tests"
 requires-python = ">=3.10"
 dependencies = [
-    "e2e-client-shared",
+    "e2e-client",
     "python-dotenv>=1.0.0",
     "x402[httpx,evm,svm,tvm,extensions]"
 ]
@@ -25,5 +25,5 @@ exclude-newer = "3 days"
 package = false
 
 [tool.uv.sources]
-e2e-client-shared = { path = "../../shared", editable = true }
+e2e-client = { path = "../..", editable = true }
 x402 = { path = "../../../../../python/x402", editable = true }

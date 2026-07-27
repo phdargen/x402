@@ -41,8 +41,8 @@ const endpointPath = process.env.ENDPOINT_PATH as string; // tool name, e.g. "ge
 const evmPrivateKey = process.env.CLIENT_EVM_PRIVATE_KEY as `0x${string}`;
 const evmNetwork = process.env.EVM_NETWORK || "eip155:84532";
 const evmChain = evmNetwork === "eip155:8453" ? base : baseSepolia;
-const channelSalt = process.env.CHANNEL_SALT as `0x${string}` | undefined;
-const batchSettlementPhase = process.env.BATCH_SETTLEMENT_PHASE as
+const channelSalt = process.env.EVM_BATCH_SETTLEMENT_CHANNEL as `0x${string}` | undefined;
+const batchSettlementPhase = process.env.EVM_BATCH_SETTLEMENT_PHASE as
   | "initial"
   | "recovery-refund"
   | "full"
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const evmSchemeOptions: ExactEvmSchemeOptions | undefined = process.env.EVM_RPC_URL
     ? { rpcUrl: process.env.EVM_RPC_URL }
     : undefined;
-  const voucherSignerKey = process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY as
+  const voucherSignerKey = process.env.CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY as
     | `0x${string}`
     | undefined;
   const voucherSigner = voucherSignerKey
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       process.exit(0);
     }
 
-    throw new Error(`Unknown BATCH_SETTLEMENT_PHASE: ${batchSettlementPhase}`);
+    throw new Error(`Unknown EVM_BATCH_SETTLEMENT_PHASE: ${batchSettlementPhase}`);
   } catch (error: any) {
     const e2eResult: E2EResult = {
       success: false,

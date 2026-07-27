@@ -1,0 +1,38 @@
+{
+  "env": {
+    "required": [],
+    "optional": [
+      "SERVER_HEDERA_ADDRESS",
+      "CLIENT_HEDERA_ACCOUNT_ID",
+      "CLIENT_HEDERA_PRIVATE_KEY",
+      "FACILITATOR_HEDERA_ACCOUNT_ID",
+      "FACILITATOR_HEDERA_PRIVATE_KEY"
+    ]
+  },
+  "rpcUrlKey": "HEDERA_NODE_URL",
+  "testnet": {
+    "name": "Hedera Testnet",
+    "caip2": "hedera:testnet",
+    "rpcUrlEnv": "HEDERA_TESTNET_NODE_URL",
+    "rpcUrlDefault": ""
+  },
+  "mainnet": {
+    "name": "Hedera Mainnet",
+    "caip2": "hedera:mainnet",
+    "rpcUrlEnv": "HEDERA_NODE_URL",
+    "rpcUrlDefault": ""
+  },
+  "routes": {
+    "/exact/hedera": {
+      "scheme": "exact",
+      "sdks": ["typescript"],
+      "price": {
+        "amount": "100000",
+        "amountEnv": "HEDERA_AMOUNT",
+        "asset": "0.0.0",
+        "assetEnv": "HEDERA_ASSET"
+      },
+      "extensions": ["bazaar"]
+    }
+  }
+}

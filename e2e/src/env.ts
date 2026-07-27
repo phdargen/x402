@@ -143,12 +143,15 @@ export function forwardConfigEnv(
   return env;
 }
 
-/** TVM provider env vars forwarded to TVM-capable components. */
-export function tvmProviderEnv(networks: NetworkSet): Record<string, string> {
-  return {
-    TVM_PROVIDER: process.env.TVM_PROVIDER || '',
-    TONCENTER_BASE_URL: process.env.TONCENTER_BASE_URL || networks.tvm.rpcUrl,
-    TONAPI_API_KEY: process.env.TONAPI_API_KEY || '',
-    TONAPI_BASE_URL: process.env.TONAPI_BASE_URL || '',
-  };
+/**
+ * Default Toncenter RPC URL for TVM-capable components, used when `TVM_TONCENTER_BASE_URL`
+ * isn't set. TVM suppresses the generic derived `{ID}_RPC_URL` key (`rpcUrlKey: null` in
+ * `mechanisms_tvm.json`) since it selects an RPC by provider (toncenter/tonapi) rather
+ * than a single network default — every other TVM env var (`TVM_PROVIDER`,
+ * `TVM_TONCENTER_API_KEY`, `TVM_TONAPI_*`) is a normal catalog credential and is already
+ * forwarded by {@link forwardRoleCredentials}. Spread this *before* forwardRoleCredentials
+ * in the merged env so an operator-supplied value takes precedence over the default.
+ */
+export function tvmToncenterDefault(networks: NetworkSet): Record<string, string> {
+  return { TVM_TONCENTER_BASE_URL: networks.tvm.rpcUrl };
 }

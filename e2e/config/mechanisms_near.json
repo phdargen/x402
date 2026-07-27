@@ -1,0 +1,37 @@
+{
+  "env": {
+    "required": [],
+    "optional": [
+      "SERVER_NEAR_ADDRESS",
+      "CLIENT_NEAR_ACCOUNT_ID",
+      "CLIENT_NEAR_PRIVATE_KEY",
+      "FACILITATOR_NEAR_ACCOUNT_ID",
+      "FACILITATOR_NEAR_PRIVATE_KEY"
+    ]
+  },
+  "testnet": {
+    "name": "NEAR Testnet",
+    "caip2": "near:testnet",
+    "rpcUrlEnv": "NEAR_TESTNET_RPC_URL",
+    "rpcUrlDefault": "https://rpc.testnet.fastnear.com"
+  },
+  "mainnet": {
+    "name": "NEAR",
+    "caip2": "near:mainnet",
+    "rpcUrlEnv": "NEAR_RPC_URL",
+    "rpcUrlDefault": "https://rpc.mainnet.fastnear.com"
+  },
+  "routes": {
+    "/exact/near": {
+      "scheme": "exact",
+      "sdks": ["typescript"],
+      "price": {
+        "amount": "1000000000000000000000",
+        "amountEnv": "SERVER_NEAR_AMOUNT",
+        "asset": "wrap.testnet",
+        "assetEnv": "SERVER_NEAR_ASSET"
+      },
+      "extensions": ["bazaar"]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "env": {
+    "required": [
+      "SERVER_SVM_ADDRESS",
+      "CLIENT_SVM_PRIVATE_KEY",
+      "FACILITATOR_SVM_PRIVATE_KEY"
+    ],
+    "optional": []
+  },
+  "testnet": {
+    "name": "Solana Devnet",
+    "caip2": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    "rpcUrlEnv": "SOLANA_DEVNET_RPC_URL",
+    "rpcUrlDefault": "https://api.devnet.solana.com"
+  },
+  "mainnet": {
+    "name": "Solana",
+    "caip2": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    "rpcUrlEnv": "SOLANA_RPC_URL",
+    "rpcUrlDefault": "https://api.mainnet-beta.solana.com"
+  },
+  "routes": {
+    "/exact/svm": {
+      "scheme": "exact",
+      "sdks": ["typescript", "go", "python"],
+      "price": { "usd": "$0.001" },
+      "extensions": ["bazaar"]
+    }
+  }
+}

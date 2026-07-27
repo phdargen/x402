@@ -272,12 +272,12 @@ if (process.env.FACILITATOR_TVM_PRIVATE_KEY) {
     provider: TVM_PROVIDER,
     apiKey:
       TVM_PROVIDER === TVM_PROVIDER_TONAPI
-        ? process.env.TONAPI_API_KEY
-        : process.env.TONCENTER_API_KEY,
+        ? process.env.TVM_TONAPI_API_KEY
+        : process.env.TVM_TONCENTER_API_KEY,
     providerBaseUrl:
       TVM_PROVIDER === TVM_PROVIDER_TONAPI
-        ? process.env.TONAPI_BASE_URL
-        : process.env.TONCENTER_BASE_URL,
+        ? process.env.TVM_TONAPI_BASE_URL
+        : process.env.TVM_TONCENTER_BASE_URL,
   });
   tvmSigner = toFacilitatorTvmSigner({ [TVM_NETWORK]: tvmConfig });
   console.info(`TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`);

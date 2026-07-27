@@ -1,38 +1,33 @@
 /**
- * Mechanisms catalog loader — SSOT is e2e/config/mechanisms.json.
+ * Mechanisms catalog loader — SSOT is e2e/config/mechanisms_global.json +
+ * one e2e/config/mechanisms_<id>.json per network.
  *
- * `networks` holds shared network identity, env keys, and default pricing.
- * `routes` holds one canonical definition per paid HTTP path, including `sdks`
- * listing which SDKs implement it. Resource servers resolve their middleware
- * config and handlers from the same data, so a new mechanism is a catalog entry
- * rather than an edit in every framework entrypoint.
+ * `mechanisms_global.json` holds cross-cutting harness env only. Each
+ * `mechanisms_<id>.json` holds one network's env keys, testnet/mainnet
+ * identity, and the routes it serves. `routes` holds one canonical
+ * definition per paid HTTP path, including `sdks` listing which SDKs
+ * implement it. Resource servers resolve their middleware config and
+ * handlers from the same data, so a new mechanism is a catalog entry rather
+ * than an edit in every framework entrypoint.
  *
- * Executable scheme registration stays in clients|servers|facilitators shared
- * modules. Legacy v1 components are not enriched from this catalog.
+ * Executable scheme registration stays in clients|servers|facilitators
+ * language modules. Legacy v1 components are not enriched from this catalog.
  */
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 /** Keep local types here to avoid circular imports with types.ts / networks.ts. */
 export type SdkId = 'typescript' | 'python' | 'go';
 export type ConfigRole = 'server' | 'client' | 'facilitator';
-export type CatalogNetworkId =
-  | 'evm'
-  | 'svm'
-  | 'avm'
-  | 'aptos'
-  | 'hedera'
-  | 'keeta'
-  | 'near'
-  | 'stellar'
-  | 'ccd'
-  | 'tvm'
-  | 'xrpl';
+/** Network id, e.g. "evm" — one per `mechanisms_<id>.json` file. No fixed union: adding a network is a catalog-only edit. */
+export type CatalogNetworkId = string;
 
 type PaymentScheme = 'exact' | 'upto' | 'batch-settlement';
 type AssetTransferMethod = 'eip3009' | 'permit2' | 'sequence' | 'ticketSequence';
 export type NetworkMode = 'testnet' | 'mainnet';
+
+type EnvList = { required: string[]; optional: string[] };
 
 type NetworkEnv = {
   server: string[];
@@ -59,7 +54,8 @@ type ExtraEnvSpec = {
 
 /**
  * Declarative price. Either a USD string (the SDK converts it against the
- * network's default asset) or an explicit amount/asset pair.
+ * network's default asset) or an explicit amount/asset pair. Every route
+ * declares its own price — there is no network-level default to fall back to.
  */
 export type PriceSpec = {
   /** USD-denominated price, e.g. "$0.001". Mutually exclusive with `amount`. */
@@ -77,11 +73,19 @@ export type PriceSpec = {
   extraEnv?: Record<string, ExtraEnvSpec>;
 };
 
+/** One network's file contents (mechanisms_<id>.json). */
+type NetworkFile = {
+  env: EnvList;
+  /** Override the derived `${ID}_RPC_URL` network env key; `null` suppresses it. */
+  rpcUrlKey?: string | null;
+  testnet: NetworkModeConfig;
+  mainnet: NetworkModeConfig;
+  routes: Record<string, Omit<RouteDefinition, 'network'>>;
+};
+
 export type NetworkDefinition = {
-  displayName: string;
-  defaultPrice: PriceSpec;
-  env: NetworkEnv;
-  networkEnv: { networkKey: string; rpcUrlKey?: string };
+  env: EnvList;
+  rpcUrlKey?: string | null;
   networks: Record<NetworkMode, NetworkModeConfig>;
 };
 
@@ -93,8 +97,8 @@ export type RouteDefinition = {
   /** SDKs that implement this route. */
   sdks: SdkId[];
   schemeOptions?: Record<string, boolean>;
-  /** Overrides the network's `defaultPrice`. */
-  price?: PriceSpec;
+  /** Every route declares its own price. */
+  price: PriceSpec;
   /** Extension ids the server declares on this route. */
   extensions?: string[];
   /** Settle less than the maximum (upto scheme). */
@@ -107,7 +111,7 @@ export const PROTECTED_ROUTE_MESSAGE = 'Protected endpoint accessed successfully
 export type SdkRoute = RouteDefinition & { path: string };
 
 type MechanismsCatalog = {
-  harnessEnv: Record<ConfigRole, { required: string[]; optional: string[] }>;
+  globalEnv: EnvList;
   networks: Record<string, NetworkDefinition>;
   routes: Record<string, RouteDefinition>;
 };
@@ -135,13 +139,50 @@ function e2eRoot(): string {
   }
 }
 
-/** Absolute catalog path: harness-injected when set, else relative to e2e/. */
-export const CATALOG_PATH: string =
-  process.env.E2E_MECHANISMS_CATALOG || join(e2eRoot(), 'config/mechanisms.json');
+/** Catalog directory: harness-injected when set, else `e2e/config`. */
+export const CATALOG_DIR: string =
+  process.env.E2E_MECHANISMS_CATALOG || join(e2eRoot(), 'config');
 
-const catalog: MechanismsCatalog = JSON.parse(readFileSync(CATALOG_PATH, 'utf-8'));
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, 'utf-8')) as T;
+}
 
-/** Ordered network ids from the catalog. */
+/** `mechanisms_<id>.json` file names in the catalog dir, `global` excluded. */
+function networkCatalogFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter(name => /^mechanisms_.+\.json$/.test(name) && name !== 'mechanisms_global.json')
+    .sort();
+}
+
+function loadCatalog(): MechanismsCatalog {
+  const globalFile = readJson<{ env: EnvList }>(join(CATALOG_DIR, 'mechanisms_global.json'));
+  const networks: Record<string, NetworkDefinition> = {};
+  const routes: Record<string, RouteDefinition> = {};
+
+  for (const fileName of networkCatalogFiles(CATALOG_DIR)) {
+    const id = fileName.replace(/^mechanisms_/, '').replace(/\.json$/, '');
+    const file = readJson<NetworkFile>(join(CATALOG_DIR, fileName));
+
+    networks[id] = {
+      env: file.env,
+      rpcUrlKey: file.rpcUrlKey,
+      networks: { testnet: file.testnet, mainnet: file.mainnet },
+    };
+
+    for (const [path, def] of Object.entries(file.routes ?? {})) {
+      if (routes[path]) {
+        throw new Error(`Duplicate route path across mechanisms catalog files: ${path}`);
+      }
+      routes[path] = { ...def, network: id };
+    }
+  }
+
+  return { globalEnv: globalFile.env, networks, routes };
+}
+
+const catalog: MechanismsCatalog = loadCatalog();
+
+/** Ordered network ids from the catalog (alphabetical by file name). */
 export const NETWORK_IDS = Object.keys(catalog.networks) as CatalogNetworkId[];
 
 export function getNetworkDefinition(network: CatalogNetworkId): NetworkDefinition {
@@ -201,8 +242,13 @@ const GAS_SPONSORING_LABELS: Record<string, string> = {
   erc20ApprovalGasSponsoring: 'ERC-20 approval gas sponsoring',
 };
 
+/** Human-readable network label — the catalog file id, upper-cased. */
+function networkLabel(network: CatalogNetworkId): string {
+  return network.toUpperCase();
+}
+
 function routeDescription(route: SdkRoute): string {
-  const label = getNetworkDefinition(route.network).displayName;
+  const label = networkLabel(route.network);
   const scheme = route.scheme === 'exact' ? '' : `${route.scheme} `;
   const transfer = route.assetTransferMethod ? `${route.assetTransferMethod} ` : '';
   const sponsoring = (route.extensions ?? [])
@@ -365,55 +411,95 @@ export function extensionsForSdk(sdk: string, role: ConfigRole): string[] {
 }
 
 /**
- * Build environment required/optional lists for a role from network metadata
- * (+ harness keys). Overlay extras are merged by the caller.
+ * Role hints for harness env keys with no SERVER_/CLIENT_/FACILITATOR_ prefix
+ * (from mechanisms_global.json).
+ */
+const HARNESS_ROLE_MAP: Record<string, ConfigRole[]> = {
+  PORT: ['server', 'facilitator'],
+  FACILITATOR_URL: ['server'],
+  RESOURCE_SERVER_URL: ['client'],
+  ENDPOINT_PATH: ['client'],
+  MOCK_FACILITATOR_URL: ['server'],
+};
+
+/**
+ * Role hints for network env keys that don't map cleanly by prefix, or whose
+ * prefix role doesn't cover every role that actually reads them (e.g. the
+ * batch-settlement receiver authorizer key is `SERVER_`-prefixed but a
+ * facilitator can also hold it when self-managing claim/refund signatures).
+ */
+const NETWORK_ENV_ROLE_OVERRIDES: Record<string, ConfigRole[]> = {
+  SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: ['server', 'facilitator'],
+  EVM_PERMIT2_ASSET: ['server'],
+  EVM_BATCH_SETTLEMENT_CHANNEL: ['client'],
+  EVM_BATCH_SETTLEMENT_PHASE: ['client'],
+  EVM_BATCH_SETTLEMENT_RECOVERY: ['client'],
+  TVM_PROVIDER: ['client', 'facilitator'],
+  TVM_TONCENTER_API_KEY: ['client', 'facilitator'],
+  TVM_TONCENTER_BASE_URL: ['client', 'facilitator'],
+  TVM_TONAPI_API_KEY: ['client', 'facilitator'],
+  TVM_TONAPI_BASE_URL: ['client', 'facilitator'],
+};
+
+/** Which roles read an env key: explicit override, else SERVER_/CLIENT_/FACILITATOR_ prefix. */
+function rolesForKey(key: string): ConfigRole[] {
+  const override = NETWORK_ENV_ROLE_OVERRIDES[key] ?? HARNESS_ROLE_MAP[key];
+  if (override) return override;
+  if (key.startsWith('SERVER_')) return ['server'];
+  if (key.startsWith('CLIENT_')) return ['client'];
+  if (key.startsWith('FACILITATOR_')) return ['facilitator'];
+  return ['server', 'client', 'facilitator'];
+}
+
+/** Derived network env key: `${ID}_NETWORK`. */
+function derivedNetworkKey(network: CatalogNetworkId): string {
+  return `${network.toUpperCase()}_NETWORK`;
+}
+
+/** Derived RPC env key: `${ID}_RPC_URL`, unless overridden or explicitly suppressed (`null`). */
+function derivedRpcUrlKey(network: CatalogNetworkId, def: NetworkDefinition): string | undefined {
+  if (def.rpcUrlKey === null) return undefined;
+  return def.rpcUrlKey ?? `${network.toUpperCase()}_RPC_URL`;
+}
+
+/**
+ * Build environment required/optional lists for a role from the catalog
+ * (harness keys + per-network keys assigned to this role). Overlay extras are
+ * merged by the caller.
  */
 export function buildEnvironmentForRole(
   role: ConfigRole,
   networks: CatalogNetworkId[],
 ): { required: string[]; optional: string[] } {
-  const harness = catalog.harnessEnv[role] ?? { required: [], optional: [] };
-  const required = new Set<string>(harness.required);
-  const optional = new Set<string>(harness.optional);
+  const required = new Set<string>();
+  const optional = new Set<string>();
+
+  const addAll = (keys: string[], target: Set<string>) => {
+    for (const key of keys) {
+      if (rolesForKey(key).includes(role)) target.add(key);
+    }
+  };
+
+  addAll(catalog.globalEnv.required, required);
+  addAll(catalog.globalEnv.optional, optional);
 
   for (const network of networks) {
     const def = getNetworkDefinition(network);
-    for (const key of def.env[role]) {
-      optional.add(key);
-    }
-    optional.add(def.networkEnv.networkKey);
-    if (def.networkEnv.rpcUrlKey) {
-      optional.add(def.networkEnv.rpcUrlKey);
-    }
-    if (role === 'server') {
-      for (const key of priceEnvKeys(def.defaultPrice)) {
-        optional.add(key);
-      }
+    addAll(def.env.required, required);
+    addAll(def.env.optional, optional);
+    optional.add(derivedNetworkKey(network));
+    const rpcUrlKey = derivedRpcUrlKey(network, def);
+    if (rpcUrlKey) {
+      optional.add(rpcUrlKey);
     }
   }
 
   if (role === 'server') {
     for (const path of Object.keys(catalog.routes)) {
-      const price = catalog.routes[path].price;
-      if (price) {
-        for (const key of priceEnvKeys(price)) {
-          optional.add(key);
-        }
+      for (const key of priceEnvKeys(catalog.routes[path].price)) {
+        optional.add(key);
       }
     }
-  }
-
-  if (role === 'client') {
-    if (networks.includes('evm')) required.add('CLIENT_EVM_PRIVATE_KEY');
-    if (networks.includes('svm')) required.add('CLIENT_SVM_PRIVATE_KEY');
-  }
-  if (role === 'server') {
-    if (networks.includes('evm')) required.add('SERVER_EVM_ADDRESS');
-    if (networks.includes('svm')) required.add('SERVER_SVM_ADDRESS');
-  }
-  if (role === 'facilitator') {
-    if (networks.includes('evm')) required.add('FACILITATOR_EVM_PRIVATE_KEY');
-    if (networks.includes('svm')) required.add('FACILITATOR_SVM_PRIVATE_KEY');
   }
 
   for (const key of required) {
@@ -536,11 +622,44 @@ export function enrichConfigFromMechanisms(
   return enriched;
 }
 
+/**
+ * Credential env keys per network and role, derived from the flat catalog `env`.
+ * Includes both `required` and `optional` keys (e.g. batch-settlement, gas-sponsoring
+ * add-ons) — components need every role-relevant key for env forwarding, regardless of
+ * whether the catalog treats it as baseline-mandatory. Use {@link catalogRequiredEnv}
+ * for the "must be set before running this family at all" gate.
+ *
+ * Uses {@link rolesForKey} (prefix + override table) rather than a bare prefix check,
+ * so unprefixed provider keys (e.g. `TVM_PROVIDER`) are attributed to every role that
+ * actually reads them instead of being silently dropped.
+ */
+function credentialKeysForRole(def: NetworkDefinition, role: ConfigRole): string[] {
+  return [...def.env.required, ...def.env.optional].filter(key => rolesForKey(key).includes(role));
+}
+
 /** Credential map derived from the network catalog (for networks.ts). */
 export function catalogCredentials(): Record<CatalogNetworkId, NetworkEnv> {
   const out = {} as Record<CatalogNetworkId, NetworkEnv>;
   for (const id of NETWORK_IDS) {
-    out[id] = getNetworkDefinition(id).env;
+    const def = getNetworkDefinition(id);
+    out[id] = {
+      server: credentialKeysForRole(def, 'server'),
+      client: credentialKeysForRole(def, 'client'),
+      facilitator: credentialKeysForRole(def, 'facilitator'),
+    };
+  }
+  return out;
+}
+
+/**
+ * Per-network `env.required` keys — the ones that must be set before a family can be
+ * exercised at all (as opposed to `env.optional` add-ons like batch-settlement or
+ * gas-sponsoring extras). Used for the CLI's upfront "missing required env" gate.
+ */
+export function catalogRequiredEnv(): Record<CatalogNetworkId, string[]> {
+  const out = {} as Record<CatalogNetworkId, string[]>;
+  for (const id of NETWORK_IDS) {
+    out[id] = [...getNetworkDefinition(id).env.required];
   }
   return out;
 }
@@ -552,16 +671,18 @@ export function catalogNetworkEnv(): Record<
 > {
   const out = {} as Record<CatalogNetworkId, { networkKey: string; rpcUrlKey?: string }>;
   for (const id of NETWORK_IDS) {
-    out[id] = getNetworkDefinition(id).networkEnv;
+    const def = getNetworkDefinition(id);
+    const rpcUrlKey = derivedRpcUrlKey(id, def);
+    out[id] = { networkKey: derivedNetworkKey(id), ...(rpcUrlKey ? { rpcUrlKey } : {}) };
   }
   return out;
 }
 
-/** Display names from the catalog. */
+/** Display names from the catalog (the file id, upper-cased). */
 export function catalogDisplayNames(): Record<CatalogNetworkId, string> {
   const out = {} as Record<CatalogNetworkId, string>;
   for (const id of NETWORK_IDS) {
-    out[id] = getNetworkDefinition(id).displayName;
+    out[id] = networkLabel(id);
   }
   return out;
 }
@@ -608,13 +729,18 @@ export type ResolvedRoute = {
   settlementOverride?: { amount: string };
 };
 
+/** Server payee address env key for a network, by fixed naming convention. */
+function serverAddressEnvKey(network: CatalogNetworkId): string {
+  return `SERVER_${network.toUpperCase()}_ADDRESS`;
+}
+
 function resolvePrice(
   route: SdkRoute,
   caip2: string,
   env: EnvLookup,
 ): { price: ResolvedPrice; extra?: Record<string, string> } {
   const def = getNetworkDefinition(route.network);
-  const spec = route.price ?? def.defaultPrice;
+  const spec = route.price;
 
   if (spec.usd) {
     const extra =
@@ -675,10 +801,10 @@ export function resolvePaymentRoutes(
 
   for (const route of filterRoutes(sdkRoutesFor(sdk), filter)) {
     const def = getNetworkDefinition(route.network);
-    const payTo = env(def.env.server[0]);
+    const payTo = env(serverAddressEnvKey(route.network));
     if (!payTo) continue;
 
-    const caip2 = env(def.networkEnv.networkKey) ?? def.networks.testnet.caip2;
+    const caip2 = env(derivedNetworkKey(route.network)) ?? def.networks.testnet.caip2;
     const { price, extra } = resolvePrice(route, caip2, env);
 
     resolved.push({

@@ -14,7 +14,7 @@ logging.getLogger("x402.permit2").setLevel(logging.DEBUG)
 
 from x402.http import decode_payment_response_header
 from x402.http.clients import x402_httpx_transport
-from e2e_client_shared import create_e2e_client, run_client_scenario
+from client import create_e2e_client, run_client_scenario
 import httpx
 
 

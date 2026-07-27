@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Python Flask server for x402 e2e tests"
 requires-python = ">=3.10"
 dependencies = [
-    "e2e-server-shared",
+    "e2e-server",
     "python-dotenv>=1.0.0",
     "x402[flask,evm,svm,tvm,extensions]"
 ]
@@ -25,5 +25,5 @@ exclude-newer = "3 days"
 package = false
 
 [tool.uv.sources]
-e2e-server-shared = { path = "../../shared", editable = true }
+e2e-server = { path = "../..", editable = true }
 x402 = { path = "../../../../../python/x402", editable = true }

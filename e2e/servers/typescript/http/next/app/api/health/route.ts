@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { loadServerEnv } from "../../../../../shared/config";
-import { buildHealthResponse } from "../../../../../shared/routes";
+import { loadServerEnv } from "../../../../../config";
+import { buildHealthResponse } from "../../../../../routes";
 
 export const runtime = "nodejs";
 

@@ -2,36 +2,39 @@
 
 End-to-end test suite for validating client-server-facilitator communication across languages and frameworks.
 
-Layout is `role/language/transport/component` (e.g. `servers/typescript/http/express/index.ts`). One pnpm package per TS language role; Go/Python keep per-component modules with a language `shared/` package. Vanilla HTTP/MCP components omit `test.config.json`; the harness infers type/language/transport from the path and merges [`config/mechanisms.json`](config/mechanisms.json). Overlays (echo, MCP, Next, svm-smart-wallet) keep a local config.
+Layout is `role/language/transport/component` (e.g. `servers/typescript/http/express/index.ts`). One pnpm package per TS language role; Go/Python keep per-component modules and flat language-root modules (`clients/<lang>/client.*`, `servers/<lang>/{catalog,config,routes}.*`) — no `shared/` subdirectory or extra package dir in any language. Vanilla HTTP/MCP components omit `test.config.json`; the harness infers type/language/transport from the path and merges the mechanisms catalog (see below). Overlays (echo, MCP, Next, svm-smart-wallet) keep a local config.
 
 You do **not** need to edit `generic-server` / `generic-client` / `generic-facilitator`, hand-list proxy env maps, or duplicate env/route blocks across sibling HTTP frameworks.
 
 ## Mechanisms catalog (SSOT)
 
-[`config/mechanisms.json`](config/mechanisms.json) is the source of truth for v2 mechanisms:
+[`config/mechanisms_global.json`](config/mechanisms_global.json) plus one [`config/mechanisms_<id>.json`](config/) per network are the source of truth for v2 mechanisms. The file id is the network id (`mechanisms_evm.json` → `evm`); there is no fixed network-id type anywhere in the harness — adding a network is purely a catalog-file edit.
 
-- **`networks`** — shared env keys, CAIP-2 identifiers, RPC metadata, and the network’s `defaultPrice`
-- **`routes`** — one canonical definition per paid HTTP path: `scheme`, `network`, `sdks`, `assetTransferMethod`, `schemeOptions`, declared `extensions`, optional `price` override, and optional `settlementOverride`. Handlers always return `{ message: "Protected endpoint accessed successfully", timestamp }`.
-- **`harnessEnv`** — cross-cutting required/optional env keys per role
+`mechanisms_global.json` holds only cross-cutting harness env (`PORT`, `FACILITATOR_URL`, `RESOURCE_SERVER_URL`, `ENDPOINT_PATH`, `MOCK_FACILITATOR_URL`). Each `mechanisms_<id>.json` holds:
 
-Both sides read this file. The harness ([`src/mechanisms.ts`](src/mechanisms.ts)) derives component configs from it:
+- **`env`** — one flat `{ required, optional }` list; roles are assigned by key prefix (`SERVER_` / `CLIENT_` / `FACILITATOR_`), with a small fixed override table in [`src/mechanisms.ts`](src/mechanisms.ts) for keys that don't map cleanly by prefix
+- **`testnet` / `mainnet`** — `name`, `caip2`, optional `rpcUrlEnv`/`rpcUrlDefault`, optional `permit2Asset`/`permit2AssetName`
+- **`rpcUrlKey`** — optional override for the derived `${ID}_RPC_URL` env key; `null` suppresses it entirely
+- **`routes`** — one canonical definition per paid HTTP path: `scheme`, `sdks`, `assetTransferMethod`, `schemeOptions`, declared `extensions`, required `price`, and optional `settlementOverride`. Handlers always return `{ message: "Protected endpoint accessed successfully", timestamp }`. The loader injects `network` (the file id) — routes never declare it themselves.
+
+Every SDK reads this same set of files. The harness ([`src/mechanisms.ts`](src/mechanisms.ts)) merges `mechanisms_global.json` with every `mechanisms_<id>.json` and derives component configs from the result:
 
 - **Routes** → `routes` whose `sdks` include the language become server `endpoints` when no local `endpoints` overlay
 - **`protocolFamilies` / `schemes` / `evm.assetTransferMethods`** → union of values on that SDK’s route list
 - **`extensions`** → union of route `extensions` (+ `eip2612GasSponsoring` for coldstart routes; `bazaar` on servers/facilitators)
-- **Environment** → derived from `networks.*.env` for networks present in that SDK’s routes
+- **Environment** → derived from each network's `env` for networks present in that SDK’s routes, filtered to the requesting role
 - **Legacy v1** under `legacy/` is **not** driven by this catalog
 
-Resource servers resolve the same data at boot — payment middleware config **and** route handlers — through a per-language loader: [`servers/typescript/shared/catalog.ts`](servers/typescript/shared/catalog.ts), [`servers/python/shared/e2e_server_shared/catalog.py`](servers/python/shared/e2e_server_shared/catalog.py), [`servers/go/shared/catalog.go`](servers/go/shared/catalog.go). No framework entrypoint hardcodes a path, price, or extension; each loops over its resolved routes. The harness passes the catalog location in `E2E_MECHANISMS_CATALOG`, and each loader falls back to walking up to `e2e/config/mechanisms.json` so a server still runs standalone from its own directory.
+Resource servers resolve the same data at boot — payment middleware config **and** route handlers — through a per-language loader: [`servers/typescript/catalog.ts`](servers/typescript/catalog.ts), [`servers/python/catalog.py`](servers/python/catalog.py), [`servers/go/catalog.go`](servers/go/catalog.go). No framework entrypoint hardcodes a path, price, or extension; each loops over its resolved routes. The harness passes the catalog directory in `E2E_MECHANISMS_CATALOG`, and each loader falls back to walking up to `e2e/config/` so a server still runs standalone from its own directory.
 
-Route support is **listed** on each route via `sdks`, never inferred from a cartesian product. Scheme **registration** stays in existing shared modules / facilitator mains.
+Route support is **listed** on each route via `sdks`, never inferred from a cartesian product. Scheme **registration** stays in the language-root client/server modules and facilitator mains.
 
 ## Add a mechanism
 
 Adding a paid route to every SDK that should serve it is a catalog edit:
 
-1. **Define the route** — add an entry under `routes` in [`config/mechanisms.json`](config/mechanisms.json) keyed by its path, with `scheme`, `network`, and `sdks` (e.g. `["typescript", "go", "python"]`). Payment requirements default to the network’s `defaultPrice`; add `price`, `extensions`, `schemeOptions`, or `settlementOverride` only where the route differs.
-2. **Register the scheme once per language**, if it is new: server shared module (`servers/<lang>/shared`), client shared module, and the facilitator main.
+1. **Define the route** — add an entry under `routes` in the relevant `config/mechanisms_<id>.json`, keyed by its path, with `scheme`, `sdks` (e.g. `["typescript", "go", "python"]`), and `price`. Add `extensions`, `schemeOptions`, or `settlementOverride` only where the route needs them.
+2. **Register the scheme once per language**, if it is new: server module (`servers/<lang>/`), client module (`clients/<lang>/`), and the facilitator main.
 
 Servers pick up the route, its `402` payment requirements, and its handler with no per-framework edit. A surface that serves less than its SDK’s list declares the narrowing in its local `test.config.json` (`excludeSchemes` / `excludeNetworks`) — see [`servers/go/http/echo/test.config.json`](servers/go/http/echo/test.config.json). The harness applies it to the derived endpoints and forwards it to the server process (`E2E_EXCLUDE_SCHEMES` / `E2E_EXCLUDE_NETWORKS`), so declared and mounted routes cannot diverge.
 
@@ -39,22 +42,20 @@ After a server reports healthy, the harness requests every paid route it declare
 
 ## Add a network
 
-1. **Catalog** — add `networks.<id>` to [`config/mechanisms.json`](config/mechanisms.json): `env`, `networkEnv`, `networks` (testnet/mainnet), `defaultPrice`.
-2. **Routes** — add its paths under `routes` with `sdks` listing each SDK that implements the network.
-3. **Secrets template** — add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` lines to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below.
-4. **Scheme wiring** (one registration site per role for each SDK that lists routes):
-   - Client shared: [`clients/typescript/shared`](clients/typescript/shared) / [`clients/go/shared`](clients/go/shared) / [`clients/python/shared`](clients/python/shared)
-   - Server shared: [`servers/typescript/shared`](servers/typescript/shared) / [`servers/go/shared`](servers/go/shared) / [`servers/python/shared`](servers/python/shared)
-   - Facilitator: [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python)
-   - Next / MCP keep local scheme registration in their component entry
+Four edits, no catalog type to touch:
 
-Unique surfaces (Next, MCP, svm-smart-wallet) keep a **local** `test.config.json` overlay with explicit `endpoints`. Prefer `excludeSchemes` / `excludeNetworks` over an endpoint list when the surface is simply narrower than its SDK’s catalog routes.
+1. **Catalog** — add [`config/mechanisms_<id>.json`](config/) with `env` (`required`/`optional`), `testnet`/`mainnet`, and `routes`.
+2. **Server** — register the scheme in `servers/<lang>/` (e.g. [`servers/typescript/config.ts`](servers/typescript/config.ts) / [`servers/python/config.py`](servers/python/config.py) / [`servers/go/config.go`](servers/go/config.go)).
+3. **Client** — register the scheme in `clients/<lang>/` (e.g. [`clients/typescript/client.ts`](clients/typescript/client.ts) / [`clients/python/client.py`](clients/python/client.py) / [`clients/go/client.go`](clients/go/client.go)).
+4. **Facilitator** — register the scheme in [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python).
+
+Also add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` secrets to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below. Next / MCP keep local scheme registration in their own component entry; unique surfaces (Next, MCP, svm-smart-wallet) keep a **local** `test.config.json` overlay with explicit `endpoints`. Prefer `excludeSchemes` / `excludeNetworks` over an endpoint list when the surface is simply narrower than its SDK’s catalog routes.
 
 ## Add an HTTP framework
 
 | SDK | Steps |
 |-----|--------|
-| TypeScript | Add `clients/typescript/http/<name>/index.ts` or `servers/typescript/http/<name>/index.ts` using the language `shared/` helpers; add the adapter dep to the language `package.json`. Vanilla components need no local `test.config.json`. |
+| TypeScript | Add `clients/typescript/http/<name>/index.ts` or `servers/typescript/http/<name>/index.ts` using the language-root helpers (`../../client.ts` / `../../index.ts` for servers); add the adapter dep to the language `package.json`. Vanilla components need no local `test.config.json`. |
 | Go / Python | Add component dir with `main.go` / `main.py` + module file. `setup.sh` runs language defaults. Use a local overlay only when the surface is narrower (e.g. echo). |
 
 ## Custom flows (escape hatches)
@@ -66,7 +67,7 @@ These keep local `endpoints` overlays and/or special orchestration — not just 
 | Batch-settlement multi-phase | Catalog `routes` entries + orchestration in [`test.ts`](test.ts) + shared scheme registration |
 | Gas sponsoring / Permit2 coldstart | Route `schemeOptions.coldstart` (+ optional `extensions`) + fund/revoke/drain in `test.ts` + facilitator extension registration |
 | Swig smart wallet | Overlay [`clients/typescript/http/svm-smart-wallet/test.config.json`](clients/typescript/http/svm-smart-wallet/test.config.json) + [`scripts/swig-setup.ts`](scripts/swig-setup.ts) |
-| Legacy (v1) | `legacy/` trees only — separate configs; do not extend `mechanisms.json` for v1 |
+| Legacy (v1) | `legacy/` trees only — separate configs; do not extend the mechanisms catalog for v1 |
 
 If an SDK implements a route end-to-end (client + server + facilitator), list it in that route’s `sdks`. Omit only when the mechanism package is missing (e.g. Go has no TVM; Python/Go have no AVM/NEAR/XRPL).
 
@@ -233,9 +234,9 @@ CCD_GRPC_URL=grpc.testnet.concordium.com:20000    # Optional; defaults by networ
 
 # TVM support
 TVM_PROVIDER=tonapi                 # Optional: toncenter (default) or tonapi
-TONAPI_API_KEY=...                  # Required when TVM_PROVIDER=tonapi
-TONAPI_BASE_URL=...                 # Optional custom TonAPI base URL
-TONCENTER_API_KEY=...               # Recommended when TVM_PROVIDER=toncenter
+TVM_TONAPI_API_KEY=...              # Required when TVM_PROVIDER=tonapi
+TVM_TONAPI_BASE_URL=...             # Optional custom TonAPI base URL
+TVM_TONCENTER_API_KEY=...           # Recommended when TVM_PROVIDER=toncenter
 ```
 
 To run Python SDK TVM e2e scenarios through TonAPI instead of Toncenter:
@@ -243,16 +244,16 @@ To run Python SDK TVM e2e scenarios through TonAPI instead of Toncenter:
 ```bash
 cd e2e
 TVM_PROVIDER=tonapi \
-TONAPI_API_KEY=<tonapi-key> \
+TVM_TONAPI_API_KEY=<tonapi-key> \
 pnpm test --testnet --families=tvm --facilitators=python --clients=python/http/httpx,python/http/requests --servers=python/http/fastapi,python/http/flask --min -v
 ```
 
 Optional environment variables (batch-settlement scheme):
 
 ```bash
-SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x... # server-side self-managed claim/refund signer
-CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY=0x...      # EOA the client uses to sign vouchers
-BATCH_SETTLEMENT_RECOVERY=true                   # test client state-loss recovery scenario (default: true)
+SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...              # server-side self-managed claim/refund signer
+CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY=0x...  # EOA the client uses to sign vouchers
+EVM_BATCH_SETTLEMENT_RECOVERY=true                            # test client state-loss recovery scenario (default: true)
 ```
 
 Optional environment variables for XRPL issued-currency tests are generated by

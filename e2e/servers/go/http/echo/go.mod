@@ -6,7 +6,7 @@ toolchain go1.24.1
 
 require (
 	github.com/labstack/echo/v4 v4.15.1
-	github.com/x402-foundation/x402/e2e/servers/goshared v0.0.0
+	github.com/x402-foundation/x402/e2e/servers/go v0.0.0
 	github.com/x402-foundation/x402/go/v2 v2.14.0
 )
 
@@ -77,4 +77,4 @@ require (
 
 replace github.com/x402-foundation/x402/go/v2 => ../../../../../go
 
-replace github.com/x402-foundation/x402/e2e/servers/goshared => ../../shared
+replace github.com/x402-foundation/x402/e2e/servers/go => ../..

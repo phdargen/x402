@@ -4,7 +4,7 @@ go 1.24.0
 
 toolchain go1.24.1
 
-require github.com/x402-foundation/x402/e2e/clients/goshared v0.0.0
+require github.com/x402-foundation/x402/e2e/clients/go v0.0.0
 
 require (
 	filippo.io/edwards25519 v1.0.0-rc.1 // indirect
@@ -67,4 +67,4 @@ require (
 
 replace github.com/x402-foundation/x402/go/v2 => ../../../../../go
 
-replace github.com/x402-foundation/x402/e2e/clients/goshared => ../../shared
+replace github.com/x402-foundation/x402/e2e/clients/go => ../..

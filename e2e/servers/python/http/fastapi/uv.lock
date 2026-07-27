@@ -793,9 +793,9 @@ wheels = [
 ]
 
 [[package]]
-name = "e2e-server-shared"
+name = "e2e-server"
 version = "0.1.0"
-source = { editable = "../../shared" }
+source = { editable = "../../" }
 dependencies = [
     { name = "x402", extra = ["evm", "extensions", "svm", "tvm"] },
 ]
@@ -3416,7 +3416,7 @@ name = "x402-fastapi-e2e"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "e2e-server-shared" },
+    { name = "e2e-server" },
     { name = "python-dotenv" },
     { name = "uvicorn" },
     { name = "x402", extra = ["evm", "extensions", "fastapi", "svm", "tvm"] },
@@ -3424,7 +3424,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "e2e-server-shared", editable = "../../shared" },
+    { name = "e2e-server", editable = "../../" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "uvicorn", specifier = ">=0.24.0" },
     { name = "x402", extras = ["evm", "svm", "tvm", "fastapi", "extensions"], editable = "../../../../../python/x402" },

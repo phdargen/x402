@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { buildCloseResponse } from "../../../../../shared/routes";
+import { buildCloseResponse } from "../../../../../routes";
 
 export const runtime = "nodejs";
 

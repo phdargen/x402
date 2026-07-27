@@ -14,7 +14,7 @@ import {
   buildHealthResponse,
   buildCloseResponse,
   formatStartupBanner,
-} from "../../shared/index.ts";
+} from "../../index.ts";
 
 const cfg = loadServerEnv();
 const { PORT, facilitatorUrl } = cfg;

@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { x402ResourceServer } from "@x402/core/server";
 
-import { loadServerEnv } from "../../shared/config";
+import { loadServerEnv } from "../../config";
 import { createNextPaymentProxy, createResourceServer } from "./lib/setup";
 
 let resourceServer: x402ResourceServer | undefined;

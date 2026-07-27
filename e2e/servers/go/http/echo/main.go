@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/x402-foundation/x402/e2e/servers/goshared"
+	e2eserver "github.com/x402-foundation/x402/e2e/servers/go"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	echomw "github.com/x402-foundation/x402/go/v2/http/echo"
 )
@@ -18,15 +18,15 @@ var shutdownRequested bool
 
 // Echo E2E Test Server with x402 v2 Payment Middleware.
 //
-// Paid routes come from e2e/config/mechanisms.json — see goshared.CatalogRoutes.
+// Paid routes come from the mechanisms catalog — see e2eserver.CatalogRoutes.
 
 func main() {
-	cfg := goshared.LoadConfig()
-	routes := goshared.BuildRoutes()
-	facilitatorClient := goshared.NewFacilitatorClient(cfg)
+	cfg := e2eserver.LoadConfig()
+	routes := e2eserver.BuildRoutes()
+	facilitatorClient := e2eserver.NewFacilitatorClient(cfg)
 
 	schemes := make([]echomw.SchemeConfig, 0)
-	for _, binding := range goshared.SchemeBindings(cfg) {
+	for _, binding := range e2eserver.SchemeBindings(cfg) {
 		schemes = append(schemes, echomw.SchemeConfig{Network: binding.Network, Server: binding.Server})
 	}
 
@@ -57,7 +57,7 @@ func main() {
 	}))
 
 	// Protected endpoints — clients must present a valid payment to access these.
-	for _, route := range goshared.CatalogRoutes() {
+	for _, route := range e2eserver.CatalogRoutes() {
 		paidRoute := route
 		e.GET(paidRoute.Path, func(c echo.Context) error {
 			if shutdownRequested {
@@ -70,12 +70,12 @@ func main() {
 					Amount: paidRoute.SettlementOverride.Amount,
 				})
 			}
-			return c.JSON(http.StatusOK, goshared.RouteBody())
+			return c.JSON(http.StatusOK, e2eserver.RouteBody())
 		})
 	}
 
 	e.GET("/health", func(c echo.Context) error {
-		return c.JSON(http.StatusOK, goshared.HealthBody())
+		return c.JSON(http.StatusOK, e2eserver.HealthBody())
 	})
 
 	e.POST("/close", func(c echo.Context) error {
@@ -102,7 +102,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	fmt.Println(goshared.FormatStartupBanner(
+	fmt.Println(e2eserver.FormatStartupBanner(
 		"x402 Echo E2E Test Server",
 		"http://localhost:"+cfg.Port,
 	))

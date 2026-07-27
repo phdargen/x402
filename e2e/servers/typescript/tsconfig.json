@@ -11,6 +11,6 @@
     "baseUrl": ".",
     "types": ["node"]
   },
-  "include": ["shared/**/*.ts", "http/**/*.ts", "mcp/**/*.ts"],
+  "include": ["*.ts", "http/**/*.ts", "mcp/**/*.ts"],
   "exclude": ["http/next", "node_modules"]
 }

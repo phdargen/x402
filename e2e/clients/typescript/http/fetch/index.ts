@@ -4,7 +4,7 @@ import {
   createE2EClient,
   runClientScenario,
   type RequestResult,
-} from "../../shared/index.ts";
+} from "../../index.ts";
 
 /**
  * Fetch E2E Test Client with x402 Payment Wrapper

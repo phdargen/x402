@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/x402-foundation/x402/e2e/servers/goshared"
+	e2eserver "github.com/x402-foundation/x402/e2e/servers/go"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	nethttpmw "github.com/x402-foundation/x402/go/v2/http/nethttp"
 )
@@ -18,22 +18,22 @@ var shutdownRequested bool
 
 // net/http E2E Test Server with x402 v2 Payment Middleware.
 //
-// Paid routes come from e2e/config/mechanisms.json — see goshared.CatalogRoutes.
+// Paid routes come from the mechanisms catalog — see e2eserver.CatalogRoutes.
 
 func main() {
-	cfg := goshared.LoadConfig()
-	routes := goshared.BuildRoutes()
-	facilitatorClient := goshared.NewFacilitatorClient(cfg)
+	cfg := e2eserver.LoadConfig()
+	routes := e2eserver.BuildRoutes()
+	facilitatorClient := e2eserver.NewFacilitatorClient(cfg)
 
 	schemes := make([]nethttpmw.SchemeConfig, 0)
-	for _, binding := range goshared.SchemeBindings(cfg) {
+	for _, binding := range e2eserver.SchemeBindings(cfg) {
 		schemes = append(schemes, nethttpmw.SchemeConfig{Network: binding.Network, Server: binding.Server})
 	}
 
 	mux := http.NewServeMux()
 
 	// Protected endpoints — clients must present a valid payment to access these.
-	for _, route := range goshared.CatalogRoutes() {
+	for _, route := range e2eserver.CatalogRoutes() {
 		paidRoute := route
 		mux.HandleFunc("GET "+paidRoute.Path, func(w http.ResponseWriter, r *http.Request) {
 			if shutdownRequested {
@@ -47,12 +47,12 @@ func main() {
 					Amount: paidRoute.SettlementOverride.Amount,
 				})
 			}
-			writeJSON(w, http.StatusOK, goshared.RouteBody())
+			writeJSON(w, http.StatusOK, e2eserver.RouteBody())
 		})
 	}
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, goshared.HealthBody())
+		writeJSON(w, http.StatusOK, e2eserver.HealthBody())
 	})
 
 	mux.HandleFunc("POST /close", func(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +104,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	fmt.Println(goshared.FormatStartupBanner(
+	fmt.Println(e2eserver.FormatStartupBanner(
 		"x402 net/http E2E Test Server",
 		"http://localhost:"+cfg.Port,
 	))

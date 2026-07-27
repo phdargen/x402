@@ -5,7 +5,7 @@ import {
   forwardConfigEnv,
   forwardRoleCredentials,
   injectNetworkEnv,
-  tvmProviderEnv,
+  tvmToncenterDefault,
 } from '../env';
 
 export interface ClientCallResult {
@@ -28,17 +28,20 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
       const isV1Client = this.directory.includes('legacy/');
 
       const baseEnv: Record<string, string> = {
+        ...tvmToncenterDefault(config.networks),
         ...forwardRoleCredentials('client'),
         ...injectNetworkEnv(config.networks, { legacyV1: isV1Client }),
-        ...tvmProviderEnv(config.networks),
         RESOURCE_SERVER_URL: config.serverUrl,
         ENDPOINT_PATH: config.endpointPath,
         ...(config.batchSettlement
           ? {
-              CHANNEL_SALT: config.batchSettlement.channelSalt,
-              BATCH_SETTLEMENT_PHASE: config.batchSettlement.phase,
+              EVM_BATCH_SETTLEMENT_CHANNEL: config.batchSettlement.channelSalt,
+              EVM_BATCH_SETTLEMENT_PHASE: config.batchSettlement.phase,
               ...(config.batchSettlement.voucherSignerPrivateKey
-                ? { CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY: config.batchSettlement.voucherSignerPrivateKey }
+                ? {
+                    CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY:
+                      config.batchSettlement.voucherSignerPrivateKey,
+                  }
                 : {}),
             }
           : {}),

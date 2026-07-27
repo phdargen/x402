@@ -1,0 +1,30 @@
+{
+  "env": {
+    "required": [],
+    "optional": [
+      "SERVER_APTOS_ADDRESS",
+      "CLIENT_APTOS_PRIVATE_KEY",
+      "FACILITATOR_APTOS_PRIVATE_KEY"
+    ]
+  },
+  "testnet": {
+    "name": "Aptos Testnet",
+    "caip2": "aptos:2",
+    "rpcUrlEnv": "APTOS_TESTNET_RPC_URL",
+    "rpcUrlDefault": "https://fullnode.testnet.aptoslabs.com/v1"
+  },
+  "mainnet": {
+    "name": "Aptos",
+    "caip2": "aptos:1",
+    "rpcUrlEnv": "APTOS_RPC_URL",
+    "rpcUrlDefault": "https://fullnode.mainnet.aptoslabs.com/v1"
+  },
+  "routes": {
+    "/exact/aptos": {
+      "scheme": "exact",
+      "sdks": ["typescript"],
+      "price": { "usd": "$0.001" },
+      "extensions": ["bazaar"]
+    }
+  }
+}

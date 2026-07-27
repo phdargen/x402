@@ -18,17 +18,5 @@
       "eip3009",
       "permit2"
     ]
-  },
-  "environment": {
-    "required": [
-      "CLIENT_EVM_PRIVATE_KEY",
-      "RESOURCE_SERVER_URL",
-      "ENDPOINT_PATH"
-    ],
-    "optional": [
-      "CHANNEL_SALT",
-      "BATCH_SETTLEMENT_PHASE",
-      "CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY"
-    ]
   }
 }

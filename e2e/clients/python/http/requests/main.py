@@ -4,7 +4,7 @@ import json
 
 from x402.http import decode_payment_response_header
 from x402.http.clients import x402_requests
-from e2e_client_shared import create_e2e_client, run_client_scenario_sync
+from client import create_e2e_client, run_client_scenario_sync
 
 
 def main():

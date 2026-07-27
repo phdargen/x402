@@ -1,7 +1,7 @@
 """FastAPI e2e test server using x402 v2 SDK.
 
-Paid routes are mounted from e2e/config/mechanisms.json — see
-`e2e_server_shared.catalog`. Adding a mechanism does not require editing this file.
+Paid routes are mounted from the mechanisms catalog — see `catalog`. Adding a
+mechanism does not require editing this file.
 """
 
 import os
@@ -16,16 +16,13 @@ from fastapi import Response as FastAPIResponse
 from x402 import x402ResourceServer
 from x402.http import FacilitatorConfig, HTTPFacilitatorClient
 from x402.http.middleware.fastapi import payment_middleware, set_settlement_overrides
-from e2e_server_shared import (
+from catalog import CatalogRoute, catalog_routes
+from config import build_payment_routes, configure_resource_server, load_server_config
+from handlers import (
     CLOSE_PATH,
     HEALTH_PATH,
-    CatalogRoute,
-    build_payment_routes,
-    catalog_routes,
     close_body,
-    configure_resource_server,
     health_body,
-    load_server_config,
     print_startup_banner,
     route_body,
 )

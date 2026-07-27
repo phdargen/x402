@@ -15,6 +15,7 @@ import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/c
 import { minimizeScenarios } from './src/sampling';
 import { getNetworkSet, NetworkMode, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily } from './src/networks/networks';
 import { injectNetworkEnv } from './src/env';
+import { buildEnvironmentForRole } from './src/mechanisms';
 import { GenericServerProxy } from './src/servers/generic-server';
 import { Semaphore, ResourceLock } from './src/concurrency';
 import { FacilitatorManager } from './src/facilitators/facilitator-manager';
@@ -769,7 +770,7 @@ async function runTest() {
   const facilitatorTvmPrivateKey = process.env.FACILITATOR_TVM_PRIVATE_KEY;
   const facilitatorNearAccountId = process.env.FACILITATOR_NEAR_ACCOUNT_ID;
   const facilitatorNearPrivateKey = process.env.FACILITATOR_NEAR_PRIVATE_KEY;
-  const batchSettlementRecovery = envFlagDefaultTrue(process.env.BATCH_SETTLEMENT_RECOVERY);
+  const batchSettlementRecovery = envFlagDefaultTrue(process.env.EVM_BATCH_SETTLEMENT_RECOVERY);
 
   // Discover all servers, clients, and facilitators (always include legacy)
   const discovery = new TestDiscovery('.');
@@ -1056,54 +1057,16 @@ async function runTest() {
   log('\n🔍 Validating facilitator environment variables...\n');
   const missingEnvVars: { facilitatorName: string; missingVars: string[] }[] = [];
 
-  // Environment variables managed by the test framework (don't require user to set)
-  const systemManagedVars = new Set([
+  // Environment variables managed by the test framework: PORT is assigned per-run by
+  // the harness, and everything else here is whatever the catalog currently treats as
+  // an *optional* facilitator-role env key (network ids, RPC urls, provider creds,
+  // price overrides, ...) — derived so it never drifts from mechanisms_<id>.json as
+  // networks are added/renamed. Only a component's own `environment.required` (built
+  // from catalog `env.required`) can ever trip the check below.
+  const systemManagedVars = new Set<string>([
     'PORT',
-    'FACILITATOR_EVM_PRIVATE_KEY',
-    'FACILITATOR_SVM_PRIVATE_KEY',
-    'FACILITATOR_APTOS_PRIVATE_KEY',
-    'FACILITATOR_HEDERA_ACCOUNT_ID',
-    'FACILITATOR_HEDERA_PRIVATE_KEY',
-    'FACILITATOR_KEETA_MNEMONIC',
-    'FACILITATOR_STELLAR_PRIVATE_KEY',
-    'FACILITATOR_TVM_PRIVATE_KEY',
-    'FACILITATOR_NEAR_ACCOUNT_ID',
-    'FACILITATOR_NEAR_PRIVATE_KEY',
-    'FACILITATOR_AVM_PRIVATE_KEY',
-    'FACILITATOR_CCD_PRIVATE_KEY',
-    'FACILITATOR_CCD_ADDRESS',
-    'EVM_NETWORK',
-    'SVM_NETWORK',
-    'APTOS_NETWORK',
-    'HEDERA_NETWORK',
-    'KEETA_NETWORK',
-    'STELLAR_NETWORK',
-    'TVM_NETWORK',
-    'AVM_NETWORK',
-    'CCD_NETWORK',
-    'CCD_GRPC_URL',
-    'EVM_RPC_URL',
-    'SVM_RPC_URL',
-    'SWIG_ACCOUNT_ADDRESS',
-    'APTOS_RPC_URL',
-    'HEDERA_NODE_URL',
-    'STELLAR_RPC_URL',
-    'AVM_RPC_URL',
-    'TONCENTER_BASE_URL',
-    'TVM_PROVIDER',
-    'TONAPI_API_KEY',
-    'TONAPI_BASE_URL',
-    'NEAR_NETWORK',
-    'NEAR_RPC_URL',
-    'SERVER_NEAR_ASSET',
-    'SERVER_NEAR_AMOUNT',
-    'HEDERA_ASSET',
-    'HEDERA_AMOUNT',
-    'XRPL_NETWORK',
-    'XRPL_WS_URL',
-    'SERVER_XRPL_ASSET',
-    'SERVER_XRPL_AMOUNT',
-    'SERVER_XRPL_ISSUER',
+    'SWIG_ACCOUNT_ADDRESS', // svm-smart-wallet scenario knob, not modeled in the catalog
+    ...buildEnvironmentForRole('facilitator', [...PROTOCOL_FAMILIES]).optional,
   ]);
 
   for (const [facilitatorName, facilitator] of uniqueFacilitators) {
@@ -1313,7 +1276,7 @@ async function runTest() {
     const testName = `${scenario.client.name} → ${scenario.server.name} → ${scenario.endpoint.path}${facilitatorLabel}`;
 
     const isBatchSettlement = endpointUsesBatchSettlement(scenario.endpoint);
-    const voucherSignerPrivateKey = process.env.CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY;
+    const voucherSignerPrivateKey = process.env.CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY;
     const baseClientConfig: ClientConfig = {
       serverUrl: `http://localhost:${port}`,
       endpointPath: scenario.endpoint.path,
@@ -1545,23 +1508,10 @@ async function runTest() {
     const facilitatorConfig = facilitatorName ? uniqueFacilitators.get(facilitatorName)?.config : undefined;
 
     const enabledFamilies: import('./src/types').ProtocolFamily[] = ['evm', 'svm'];
-    const familySupport: Array<[import('./src/types').ProtocolFamily, boolean]> = [
-      ['avm', facilitatorConfig?.protocolFamilies?.includes('avm') ?? false],
-      ['aptos', facilitatorConfig?.protocolFamilies?.includes('aptos') ?? false],
-      ['ccd', facilitatorConfig?.protocolFamilies?.includes('ccd') ?? false],
-      ['hedera', facilitatorConfig?.protocolFamilies?.includes('hedera') ?? false],
-      ['keeta', facilitatorConfig?.protocolFamilies?.includes('keeta') ?? false],
-      ['stellar', facilitatorConfig?.protocolFamilies?.includes('stellar') ?? false],
-      ['tvm', facilitatorConfig?.protocolFamilies?.includes('tvm') ?? false],
-      ['near', facilitatorConfig?.protocolFamilies?.includes('near') ?? false],
-      ['xrpl', facilitatorConfig?.protocolFamilies?.includes('xrpl') ?? false],
-    ];
-    for (const [family, supported] of familySupport) {
-      if (!supported) continue;
-      if (
-        family === 'hedera' &&
-        (!facilitatorHederaAccountId || !facilitatorHederaPrivateKey)
-      ) {
+    for (const family of PROTOCOL_FAMILIES) {
+      if (family === 'evm' || family === 'svm') continue;
+      if (!(facilitatorConfig?.protocolFamilies?.includes(family) ?? false)) continue;
+      if (family === 'hedera' && (!facilitatorHederaAccountId || !facilitatorHederaPrivateKey)) {
         continue;
       }
       enabledFamilies.push(family);
