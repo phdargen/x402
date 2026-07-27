@@ -1,4 +1,5 @@
 import { BaseProxy, RunConfig } from '../proxy-base';
+import { loadComponentConfig } from '../component';
 import { ClientConfig, ClientProxy } from '../types';
 import {
   forwardConfigEnv,
@@ -75,13 +76,6 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
   }
 
   /**
-   * Check if the client process is currently running
-   */
-  isRunning(): boolean {
-    return this.process !== null && !this.process.killed;
-  }
-
-  /**
    * Force stop the client process if it's running
    */
   async forceStop(): Promise<void> {
@@ -89,17 +83,6 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
   }
 
   private loadConfig(): any {
-    try {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const configPath = join(this.directory, 'test.config.json');
-
-      if (existsSync(configPath)) {
-        return JSON.parse(readFileSync(configPath, 'utf-8'));
-      }
-    } catch {
-      // Fall back to the explicitly provided env set when config loading fails.
-    }
-    return null;
+    return loadComponentConfig(this.directory);
   }
 }

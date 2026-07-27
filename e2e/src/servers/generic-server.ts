@@ -1,16 +1,30 @@
 import { BaseProxy, RunConfig } from '../proxy-base';
+import { loadComponentConfig } from '../component';
 import { ServerProxy, ServerConfig } from '../types';
 import { verboseLog, errorLog } from '../logger';
 import { resolveEvmPermit2Asset } from '../networks/networks';
+import { CATALOG_PATH } from '../mechanisms';
 import {
+  excludedServerCredentialKeys,
   forwardConfigEnv,
   forwardRoleCredentials,
   injectNetworkEnv,
 } from '../env';
 
-export interface ProtectedResponse {
-  message: string;
-  timestamp: string;
+/** Mirror a component's declared narrowing into the env its server reads. */
+function routeExclusionEnv(config: unknown): Record<string, string> {
+  const { excludeSchemes, excludeNetworks } = (config ?? {}) as {
+    excludeSchemes?: string[];
+    excludeNetworks?: string[];
+  };
+  const env: Record<string, string> = {};
+  if (excludeSchemes?.length) {
+    env.E2E_EXCLUDE_SCHEMES = excludeSchemes.join(',');
+  }
+  if (excludeNetworks?.length) {
+    env.E2E_EXCLUDE_NETWORKS = excludeNetworks.join(',');
+  }
+  return env;
 }
 
 export interface HealthResponse {
@@ -42,25 +56,19 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
 
   private loadEndpoints(): void {
     try {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const configPath = join(this.directory, 'test.config.json');
+      const config = loadComponentConfig(this.directory) as {
+        endpoints?: Array<{ path: string; health?: boolean; close?: boolean }>;
+      } | null;
+      if (!config?.endpoints) return;
 
-      if (existsSync(configPath)) {
-        const configContent = readFileSync(configPath, 'utf-8');
-        const config = JSON.parse(configContent);
+      const healthEndpoint = config.endpoints.find(endpoint => endpoint.health);
+      if (healthEndpoint) {
+        this.healthEndpoint = healthEndpoint.path;
+      }
 
-        // Load health endpoint
-        const healthEndpoint = config.endpoints?.find((endpoint: any) => endpoint.health);
-        if (healthEndpoint) {
-          this.healthEndpoint = healthEndpoint.path;
-        }
-
-        // Load close endpoint
-        const closeEndpoint = config.endpoints?.find((endpoint: any) => endpoint.close);
-        if (closeEndpoint) {
-          this.closeEndpoint = closeEndpoint.path;
-        }
+      const closeEndpoint = config.endpoints.find(endpoint => endpoint.close);
+      if (closeEndpoint) {
+        this.closeEndpoint = closeEndpoint.path;
       }
     } catch {
       // Fallback to defaults if config loading fails
@@ -69,21 +77,12 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
   }
 
   private loadConfig(): any {
-    try {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const configPath = join(this.directory, 'test.config.json');
-      if (existsSync(configPath)) {
-        return JSON.parse(readFileSync(configPath, 'utf-8'));
-      }
-    } catch {
-      // ignore
-    }
-    return null;
+    return loadComponentConfig(this.directory);
   }
 
   async start(config: ServerConfig): Promise<void> {
     this.port = config.port;
+    const componentConfig = this.loadConfig();
 
     // Check if this is a v1 (legacy) server based on directory name
     const isV1Server = this.directory.includes('legacy/');
@@ -103,42 +102,69 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
       EVM_PERMIT2_ASSET: resolveEvmPermit2Asset(config.networks),
       FACILITATOR_URL: config.facilitatorUrl || '',
       MOCK_FACILITATOR_URL: config.mockFacilitatorUrl || '',
+      // Servers resolve their own routes from the same catalog the harness uses,
+      // including the exclusions that narrow a surface (e.g. echo, no batching).
+      E2E_MECHANISMS_CATALOG: CATALOG_PATH,
+      ...routeExclusionEnv(componentConfig),
     };
 
     const runConfig: RunConfig = {
       port: config.port,
       // Optional family-specific vars (HEDERA_ASSET, SERVER_NEAR_ASSET, etc.) are
       // forwarded from the root process via forwardConfigEnv + test.config.json.
-      env: forwardConfigEnv(this.loadConfig(), baseEnv),
+      env: forwardConfigEnv(componentConfig, baseEnv, config.enabledFamilies),
+      // Strip SERVER_*_ADDRESS for excluded families even if they're inherited
+      // from the harness's own process.env (e.g. e2e/.env), so a component never
+      // registers a scheme its paired facilitator doesn't support.
+      unsetEnv: excludedServerCredentialKeys(config.enabledFamilies),
     };
 
     await this.startProcess(runConfig);
   }
 
-  async protected(): Promise<ServerResult<ProtectedResponse>> {
-    try {
-      const response = await fetch(`http://localhost:${this.port}/protected`);
+  /**
+   * Catch catalog drift: every paid route a component declares must be mounted,
+   * so an unpaid GET reaches the payment middleware instead of falling through
+   * to the router. Only a missing route (404/405) fails the check — any other
+   * status means the middleware owns the path, and a payment-time error there is
+   * the test suite's job to report, not a startup failure. Only families enabled
+   * for this run are checked, since the server drops routes whose payee is unset.
+   */
+  async verifyPaidRoutes(enabledFamilies?: string[]): Promise<{ ok: boolean; problems: string[] }> {
+    const config = this.loadConfig() as {
+      endpoints?: Array<{
+        path: string;
+        method?: string;
+        requiresPayment?: boolean;
+        protocolFamily?: string;
+      }>;
+    } | null;
 
-      if (!response.ok) {
-        return {
-          success: false,
-          error: `Protected endpoint failed: ${response.status} ${response.statusText}`,
-          statusCode: response.status,
-        };
+    const paths = (config?.endpoints ?? [])
+      .filter(endpoint => endpoint.requiresPayment && (endpoint.method ?? 'GET') === 'GET')
+      .filter(
+        endpoint =>
+          !enabledFamilies ||
+          !endpoint.protocolFamily ||
+          enabledFamilies.includes(endpoint.protocolFamily),
+      )
+      .map(endpoint => endpoint.path);
+
+    const problems: string[] = [];
+    for (const path of paths) {
+      try {
+        const response = await fetch(`http://localhost:${this.port}${path}`);
+        if (response.status === 404 || response.status === 405) {
+          problems.push(`${path} → ${response.status} (declared in the catalog but not mounted)`);
+        } else if (response.status !== 402) {
+          verboseLog(`  ⚠️  ${path} answered ${response.status} instead of 402 without payment`);
+        }
+      } catch (error) {
+        problems.push(`${path} → ${error instanceof Error ? error.message : String(error)}`);
       }
-
-      const data = await response.json();
-      return {
-        success: true,
-        data: data as ProtectedResponse,
-        statusCode: response.status,
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
     }
+
+    return { ok: problems.length === 0, problems };
   }
 
   async health(): Promise<ServerResult<HealthResponse>> {
@@ -212,14 +238,6 @@ export class GenericServerProxy extends BaseProxy implements ServerProxy {
     }
 
     await this.stopProcess();
-  }
-
-  getHealthUrl(): string {
-    return `http://localhost:${this.port}${this.healthEndpoint}`;
-  }
-
-  getProtectedPath(): string {
-    return `/protected`;
   }
 
   getUrl(): string {

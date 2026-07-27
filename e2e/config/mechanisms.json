@@ -1,0 +1,782 @@
+{
+  "$schemaComment": "SSOT for v2 mechanisms. `networks` holds network identity, env keys, and default pricing. `routes` holds one canonical definition per paid HTTP path (payment requirements, declared extensions, and `sdks` listing which SDKs implement it). Handlers always return `{ message: \"Protected endpoint accessed successfully\", timestamp }`. Servers derive middleware config and handlers from this file; nothing is hardcoded per framework. Legacy v1 is out of scope.",
+  "networks": {
+    "evm": {
+      "displayName": "EVM",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_EVM_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_EVM_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_EVM_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "EVM_NETWORK",
+        "rpcUrlKey": "EVM_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Base Sepolia",
+          "caip2": "eip155:84532",
+          "rpcUrlEnv": "BASE_SEPOLIA_RPC_URL",
+          "rpcUrlDefault": "https://sepolia.base.org",
+          "permit2Asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "permit2AssetName": "USDC"
+        },
+        "mainnet": {
+          "name": "Base",
+          "caip2": "eip155:8453",
+          "rpcUrlEnv": "BASE_RPC_URL",
+          "rpcUrlDefault": "https://mainnet.base.org",
+          "permit2Asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "permit2AssetName": "USD Coin"
+        }
+      }
+    },
+    "svm": {
+      "displayName": "SVM",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_SVM_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_SVM_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_SVM_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "SVM_NETWORK",
+        "rpcUrlKey": "SVM_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Solana Devnet",
+          "caip2": "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+          "rpcUrlEnv": "SOLANA_DEVNET_RPC_URL",
+          "rpcUrlDefault": "https://api.devnet.solana.com"
+        },
+        "mainnet": {
+          "name": "Solana",
+          "caip2": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+          "rpcUrlEnv": "SOLANA_RPC_URL",
+          "rpcUrlDefault": "https://api.mainnet-beta.solana.com"
+        }
+      }
+    },
+    "avm": {
+      "displayName": "AVM",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_AVM_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_AVM_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_AVM_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "AVM_NETWORK",
+        "rpcUrlKey": "AVM_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Algorand Testnet",
+          "caip2": "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe",
+          "rpcUrlEnv": "AVM_TESTNET_RPC_URL",
+          "rpcUrlDefault": "https://testnet-api.4160.nodely.dev"
+        },
+        "mainnet": {
+          "name": "Algorand Mainnet",
+          "caip2": "algorand:wGHE2Pwdvd7S12BL5FaOP20EGYesN73k",
+          "rpcUrlEnv": "AVM_RPC_URL",
+          "rpcUrlDefault": "https://mainnet-api.4160.nodely.dev"
+        }
+      }
+    },
+    "aptos": {
+      "displayName": "Aptos",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_APTOS_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_APTOS_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_APTOS_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "APTOS_NETWORK",
+        "rpcUrlKey": "APTOS_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Aptos Testnet",
+          "caip2": "aptos:2",
+          "rpcUrlEnv": "APTOS_TESTNET_RPC_URL",
+          "rpcUrlDefault": "https://fullnode.testnet.aptoslabs.com/v1"
+        },
+        "mainnet": {
+          "name": "Aptos",
+          "caip2": "aptos:1",
+          "rpcUrlEnv": "APTOS_RPC_URL",
+          "rpcUrlDefault": "https://fullnode.mainnet.aptoslabs.com/v1"
+        }
+      }
+    },
+    "hedera": {
+      "displayName": "Hedera",
+      "defaultPrice": {
+        "amount": "100000",
+        "amountEnv": "HEDERA_AMOUNT",
+        "asset": "0.0.0",
+        "assetEnv": "HEDERA_ASSET"
+      },
+      "env": {
+        "server": [
+          "SERVER_HEDERA_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_HEDERA_ACCOUNT_ID",
+          "CLIENT_HEDERA_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_HEDERA_ACCOUNT_ID",
+          "FACILITATOR_HEDERA_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "HEDERA_NETWORK",
+        "rpcUrlKey": "HEDERA_NODE_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Hedera Testnet",
+          "caip2": "hedera:testnet",
+          "rpcUrlEnv": "HEDERA_TESTNET_NODE_URL",
+          "rpcUrlDefault": ""
+        },
+        "mainnet": {
+          "name": "Hedera Mainnet",
+          "caip2": "hedera:mainnet",
+          "rpcUrlEnv": "HEDERA_NODE_URL",
+          "rpcUrlDefault": ""
+        }
+      }
+    },
+    "keeta": {
+      "displayName": "Keeta",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_KEETA_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_KEETA_MNEMONIC"
+        ],
+        "facilitator": [
+          "FACILITATOR_KEETA_MNEMONIC"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "KEETA_NETWORK"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Keeta Testnet",
+          "caip2": "keeta:1413829460",
+          "rpcUrlDefault": ""
+        },
+        "mainnet": {
+          "name": "Keeta",
+          "caip2": "keeta:21378",
+          "rpcUrlDefault": ""
+        }
+      }
+    },
+    "near": {
+      "displayName": "NEAR",
+      "defaultPrice": {
+        "amount": "1000000000000000000000",
+        "amountEnv": "SERVER_NEAR_AMOUNT",
+        "asset": "wrap.testnet",
+        "assetEnv": "SERVER_NEAR_ASSET"
+      },
+      "env": {
+        "server": [
+          "SERVER_NEAR_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_NEAR_ACCOUNT_ID",
+          "CLIENT_NEAR_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_NEAR_ACCOUNT_ID",
+          "FACILITATOR_NEAR_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "NEAR_NETWORK",
+        "rpcUrlKey": "NEAR_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "NEAR Testnet",
+          "caip2": "near:testnet",
+          "rpcUrlEnv": "NEAR_TESTNET_RPC_URL",
+          "rpcUrlDefault": "https://rpc.testnet.fastnear.com"
+        },
+        "mainnet": {
+          "name": "NEAR",
+          "caip2": "near:mainnet",
+          "rpcUrlEnv": "NEAR_RPC_URL",
+          "rpcUrlDefault": "https://rpc.mainnet.fastnear.com"
+        }
+      }
+    },
+    "stellar": {
+      "displayName": "Stellar",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_STELLAR_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_STELLAR_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_STELLAR_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "STELLAR_NETWORK",
+        "rpcUrlKey": "STELLAR_RPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Stellar Testnet",
+          "caip2": "stellar:testnet",
+          "rpcUrlEnv": "STELLAR_TESTNET_RPC_URL",
+          "rpcUrlDefault": "https://soroban-testnet.stellar.org"
+        },
+        "mainnet": {
+          "name": "Stellar Pubnet",
+          "caip2": "stellar:pubnet",
+          "rpcUrlEnv": "STELLAR_RPC_URL",
+          "rpcUrlDefault": "https://mainnet.sorobanrpc.com"
+        }
+      }
+    },
+    "ccd": {
+      "displayName": "Concordium",
+      "defaultPrice": {
+        "amount": "1000",
+        "amountEnv": "CCD_WEATHER_PRICE_MICRO_CCD",
+        "asset": "CCD"
+      },
+      "env": {
+        "server": [
+          "SERVER_CCD_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_CCD_PRIVATE_KEY",
+          "CLIENT_CCD_ADDRESS"
+        ],
+        "facilitator": [
+          "FACILITATOR_CCD_PRIVATE_KEY",
+          "FACILITATOR_CCD_ADDRESS"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "CCD_NETWORK",
+        "rpcUrlKey": "CCD_GRPC_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "Concordium Testnet",
+          "caip2": "ccd:4221332d34e1694168c2a0c0b3fd0f27",
+          "rpcUrlEnv": "CONCORDIUM_TESTNET_GRPC_URL",
+          "rpcUrlDefault": "grpc.testnet.concordium.com:20000"
+        },
+        "mainnet": {
+          "name": "Concordium Mainnet",
+          "caip2": "ccd:9dd9ca4d19e9393877d2c44b70f89acb",
+          "rpcUrlEnv": "CONCORDIUM_MAINNET_GRPC_URL",
+          "rpcUrlDefault": "grpc.mainnet.concordium.software:20000"
+        }
+      }
+    },
+    "tvm": {
+      "displayName": "TVM",
+      "defaultPrice": {
+        "usd": "$0.001"
+      },
+      "env": {
+        "server": [
+          "SERVER_TVM_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_TVM_PRIVATE_KEY"
+        ],
+        "facilitator": [
+          "FACILITATOR_TVM_PRIVATE_KEY"
+        ]
+      },
+      "networkEnv": {
+        "networkKey": "TVM_NETWORK"
+      },
+      "networks": {
+        "testnet": {
+          "name": "TON Testnet",
+          "caip2": "tvm:-3",
+          "rpcUrlEnv": "TONCENTER_TESTNET_BASE_URL",
+          "rpcUrlDefault": "https://testnet.toncenter.com"
+        },
+        "mainnet": {
+          "name": "TON Mainnet",
+          "caip2": "tvm:-239",
+          "rpcUrlEnv": "TONCENTER_MAINNET_BASE_URL",
+          "rpcUrlDefault": "https://toncenter.com"
+        }
+      }
+    },
+    "xrpl": {
+      "displayName": "XRPL",
+      "defaultPrice": {
+        "amount": "1000",
+        "amountEnv": "SERVER_XRPL_AMOUNT",
+        "asset": "XRP",
+        "assetEnv": "SERVER_XRPL_ASSET",
+        "extraEnv": {
+          "issuer": {
+            "env": "SERVER_XRPL_ISSUER",
+            "whenAssetOverridden": true
+          }
+        }
+      },
+      "env": {
+        "server": [
+          "SERVER_XRPL_ADDRESS"
+        ],
+        "client": [
+          "CLIENT_XRPL_SEED"
+        ],
+        "facilitator": []
+      },
+      "networkEnv": {
+        "networkKey": "XRPL_NETWORK",
+        "rpcUrlKey": "XRPL_WS_URL"
+      },
+      "networks": {
+        "testnet": {
+          "name": "XRPL Testnet",
+          "caip2": "xrpl:1",
+          "rpcUrlEnv": "XRPL_TESTNET_WS_URL",
+          "rpcUrlDefault": "wss://s.altnet.rippletest.net:51233"
+        },
+        "mainnet": {
+          "name": "XRPL",
+          "caip2": "xrpl:0",
+          "rpcUrlEnv": "XRPL_MAINNET_WS_URL",
+          "rpcUrlDefault": "wss://s1.ripple.com:51233"
+        }
+      }
+    }
+  },
+  "harnessEnv": {
+    "server": {
+      "required": [
+        "PORT",
+        "FACILITATOR_URL"
+      ],
+      "optional": [
+        "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
+        "EVM_PERMIT2_ASSET",
+        "MOCK_FACILITATOR_URL"
+      ]
+    },
+    "client": {
+      "required": [
+        "RESOURCE_SERVER_URL",
+        "ENDPOINT_PATH"
+      ],
+      "optional": [
+        "CHANNEL_SALT",
+        "BATCH_SETTLEMENT_PHASE",
+        "BATCH_SETTLEMENT_RECOVERY",
+        "CLIENT_EVM_VOUCHER_SIGNER_PRIVATE_KEY",
+        "TVM_PROVIDER",
+        "TONCENTER_API_KEY",
+        "TONCENTER_BASE_URL",
+        "TONAPI_API_KEY",
+        "TONAPI_BASE_URL"
+      ]
+    },
+    "facilitator": {
+      "required": [
+        "PORT"
+      ],
+      "optional": [
+        "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
+        "TVM_PROVIDER",
+        "TONCENTER_API_KEY",
+        "TONCENTER_BASE_URL",
+        "TONAPI_API_KEY",
+        "TONAPI_BASE_URL"
+      ]
+    }
+  },
+  "routes": {
+    "/batch-settlement/evm/eip3009": {
+      "scheme": "batch-settlement",
+      "network": "evm",
+      "assetTransferMethod": "eip3009",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ]
+    },
+    "/batch-settlement/evm/permit2": {
+      "scheme": "batch-settlement",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "permit2Direct": true
+      },
+      "price": {
+        "amount": "1000",
+        "assetRef": "permit2",
+        "permit2Domain": true
+      }
+    },
+    "/batch-settlement/evm/permit2-eip2612GasSponsoring": {
+      "scheme": "batch-settlement",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "usd": "$0.001",
+        "declareAssetTransferMethod": true
+      },
+      "extensions": [
+        "eip2612GasSponsoring"
+      ]
+    },
+    "/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring": {
+      "scheme": "batch-settlement",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "amount": "1000",
+        "assetRef": "permit2"
+      },
+      "extensions": [
+        "erc20ApprovalGasSponsoring"
+      ]
+    },
+    "/exact/evm/eip3009": {
+      "scheme": "exact",
+      "network": "evm",
+      "assetTransferMethod": "eip3009",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/evm/permit2": {
+      "scheme": "exact",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "permit2Direct": true
+      },
+      "price": {
+        "amount": "1000",
+        "assetRef": "permit2",
+        "permit2Domain": true
+      },
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/evm/permit2-eip2612GasSponsoring": {
+      "scheme": "exact",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "usd": "$0.001",
+        "declareAssetTransferMethod": true
+      },
+      "extensions": [
+        "bazaar",
+        "eip2612GasSponsoring"
+      ]
+    },
+    "/exact/evm/permit2-erc20ApprovalGasSponsoring": {
+      "scheme": "exact",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "amount": "1000",
+        "assetRef": "permit2"
+      },
+      "extensions": [
+        "erc20ApprovalGasSponsoring"
+      ]
+    },
+    "/upto/evm/permit2": {
+      "scheme": "upto",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "permit2Direct": true
+      },
+      "price": {
+        "amount": "2000",
+        "assetRef": "permit2",
+        "permit2Domain": true
+      },
+      "settlementOverride": {
+        "amount": "1000"
+      }
+    },
+    "/upto/evm/permit2-eip2612GasSponsoring": {
+      "scheme": "upto",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "amount": "2000",
+        "assetRef": "permit2",
+        "permit2Domain": true
+      },
+      "extensions": [
+        "eip2612GasSponsoring"
+      ],
+      "settlementOverride": {
+        "amount": "1000"
+      }
+    },
+    "/upto/evm/permit2-erc20ApprovalGasSponsoring": {
+      "scheme": "upto",
+      "network": "evm",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "schemeOptions": {
+        "coldstart": true
+      },
+      "price": {
+        "amount": "2000",
+        "assetRef": "permit2"
+      },
+      "extensions": [
+        "erc20ApprovalGasSponsoring"
+      ],
+      "settlementOverride": {
+        "amount": "1000"
+      }
+    },
+    "/exact/svm": {
+      "scheme": "exact",
+      "network": "svm",
+      "sdks": [
+        "typescript",
+        "go",
+        "python"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/avm": {
+      "scheme": "exact",
+      "network": "avm",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/aptos": {
+      "scheme": "exact",
+      "network": "aptos",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/hedera": {
+      "scheme": "exact",
+      "network": "hedera",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/keeta": {
+      "scheme": "exact",
+      "network": "keeta",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/ccd": {
+      "scheme": "exact",
+      "network": "ccd",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/stellar": {
+      "scheme": "exact",
+      "network": "stellar",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/tvm": {
+      "scheme": "exact",
+      "network": "tvm",
+      "sdks": [
+        "typescript",
+        "python"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/near": {
+      "scheme": "exact",
+      "network": "near",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/xrpl/sequence": {
+      "scheme": "exact",
+      "network": "xrpl",
+      "assetTransferMethod": "sequence",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    },
+    "/exact/xrpl/ticketSequence": {
+      "scheme": "exact",
+      "network": "xrpl",
+      "assetTransferMethod": "ticketSequence",
+      "sdks": [
+        "typescript"
+      ],
+      "extensions": [
+        "bazaar"
+      ]
+    }
+  }
+}

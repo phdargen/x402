@@ -457,6 +457,15 @@ async function startServer(
   }
 
   if (options?.transport !== 'mcp') {
+    if (typeof server.verifyPaidRoutes === 'function') {
+      const { ok, problems } = await server.verifyPaidRoutes(serverConfig.enabledFamilies);
+      if (!ok) {
+        errorLog(
+          `  ❌ Server does not mount every paid route it declares in the mechanisms catalog:\n     ${problems.join('\n     ')}`,
+        );
+        return false;
+      }
+    }
     return true;
   }
 
@@ -763,7 +772,7 @@ async function runTest() {
   const batchSettlementRecovery = envFlagDefaultTrue(process.env.BATCH_SETTLEMENT_RECOVERY);
 
   // Discover all servers, clients, and facilitators (always include legacy)
-  const discovery = new TestDiscovery('.', true); // Always discover legacy
+  const discovery = new TestDiscovery('.');
 
   const allClients = discovery.discoverClients();
   const allServers = discovery.discoverServers();
@@ -1024,7 +1033,7 @@ async function runTest() {
   }
 
   const hasSwigSmartWalletScenarios = filteredScenarios.some(
-    s => s.client.name === 'svm-smart-wallet',
+    s => s.client.name === 'typescript/http/svm-smart-wallet',
   );
 
   if (hasSwigSmartWalletScenarios) {
@@ -1609,7 +1618,7 @@ async function runTest() {
             error,
           });
 
-          if (scenario.client.name === 'svm-smart-wallet') {
+          if (scenario.client.name === 'typescript/http/svm-smart-wallet') {
             await setupSwigWallet(networks.svm.rpcUrl);
           }
 

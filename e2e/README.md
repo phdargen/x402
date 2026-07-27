@@ -2,23 +2,77 @@
 
 End-to-end test suite for validating client-server-facilitator communication across languages and frameworks.
 
+Layout is `role/language/transport/component` (e.g. `servers/typescript/http/express/index.ts`). One pnpm package per TS language role; Go/Python keep per-component modules with a language `shared/` package. Vanilla HTTP/MCP components omit `test.config.json`; the harness infers type/language/transport from the path and merges [`config/mechanisms.json`](config/mechanisms.json). Overlays (echo, MCP, Next, svm-smart-wallet) keep a local config.
+
+You do **not** need to edit `generic-server` / `generic-client` / `generic-facilitator`, hand-list proxy env maps, or duplicate env/route blocks across sibling HTTP frameworks.
+
+## Mechanisms catalog (SSOT)
+
+[`config/mechanisms.json`](config/mechanisms.json) is the source of truth for v2 mechanisms:
+
+- **`networks`** — shared env keys, CAIP-2 identifiers, RPC metadata, and the network’s `defaultPrice`
+- **`routes`** — one canonical definition per paid HTTP path: `scheme`, `network`, `sdks`, `assetTransferMethod`, `schemeOptions`, declared `extensions`, optional `price` override, and optional `settlementOverride`. Handlers always return `{ message: "Protected endpoint accessed successfully", timestamp }`.
+- **`harnessEnv`** — cross-cutting required/optional env keys per role
+
+Both sides read this file. The harness ([`src/mechanisms.ts`](src/mechanisms.ts)) derives component configs from it:
+
+- **Routes** → `routes` whose `sdks` include the language become server `endpoints` when no local `endpoints` overlay
+- **`protocolFamilies` / `schemes` / `evm.assetTransferMethods`** → union of values on that SDK’s route list
+- **`extensions`** → union of route `extensions` (+ `eip2612GasSponsoring` for coldstart routes; `bazaar` on servers/facilitators)
+- **Environment** → derived from `networks.*.env` for networks present in that SDK’s routes
+- **Legacy v1** under `legacy/` is **not** driven by this catalog
+
+Resource servers resolve the same data at boot — payment middleware config **and** route handlers — through a per-language loader: [`servers/typescript/shared/catalog.ts`](servers/typescript/shared/catalog.ts), [`servers/python/shared/e2e_server_shared/catalog.py`](servers/python/shared/e2e_server_shared/catalog.py), [`servers/go/shared/catalog.go`](servers/go/shared/catalog.go). No framework entrypoint hardcodes a path, price, or extension; each loops over its resolved routes. The harness passes the catalog location in `E2E_MECHANISMS_CATALOG`, and each loader falls back to walking up to `e2e/config/mechanisms.json` so a server still runs standalone from its own directory.
+
+Route support is **listed** on each route via `sdks`, never inferred from a cartesian product. Scheme **registration** stays in existing shared modules / facilitator mains.
+
+## Add a mechanism
+
+Adding a paid route to every SDK that should serve it is a catalog edit:
+
+1. **Define the route** — add an entry under `routes` in [`config/mechanisms.json`](config/mechanisms.json) keyed by its path, with `scheme`, `network`, and `sdks` (e.g. `["typescript", "go", "python"]`). Payment requirements default to the network’s `defaultPrice`; add `price`, `extensions`, `schemeOptions`, or `settlementOverride` only where the route differs.
+2. **Register the scheme once per language**, if it is new: server shared module (`servers/<lang>/shared`), client shared module, and the facilitator main.
+
+Servers pick up the route, its `402` payment requirements, and its handler with no per-framework edit. A surface that serves less than its SDK’s list declares the narrowing in its local `test.config.json` (`excludeSchemes` / `excludeNetworks`) — see [`servers/go/http/echo/test.config.json`](servers/go/http/echo/test.config.json). The harness applies it to the derived endpoints and forwards it to the server process (`E2E_EXCLUDE_SCHEMES` / `E2E_EXCLUDE_NETWORKS`), so declared and mounted routes cannot diverge.
+
+After a server reports healthy, the harness requests every paid route it declares without payment. A `404`/`405` means the catalog lists a route the server never mounted, and fails startup immediately instead of silently dropping test coverage; any other status means the payment middleware owns the path, so payment-time failures stay the test suite’s job to report.
+
 ## Add a network
 
-Adding a new protocol family to e2e is a short checklist:
+1. **Catalog** — add `networks.<id>` to [`config/mechanisms.json`](config/mechanisms.json): `env`, `networkEnv`, `networks` (testnet/mainnet), `defaultPrice`.
+2. **Routes** — add its paths under `routes` with `sdks` listing each SDK that implements the network.
+3. **Secrets template** — add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` lines to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below.
+4. **Scheme wiring** (one registration site per role for each SDK that lists routes):
+   - Client shared: [`clients/typescript/shared`](clients/typescript/shared) / [`clients/go/shared`](clients/go/shared) / [`clients/python/shared`](clients/python/shared)
+   - Server shared: [`servers/typescript/shared`](servers/typescript/shared) / [`servers/go/shared`](servers/go/shared) / [`servers/python/shared`](servers/python/shared)
+   - Facilitator: [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python)
+   - Next / MCP keep local scheme registration in their component entry
 
-1. **Registry** — add the family to [`src/networks/networks.ts`](src/networks/networks.ts): extend `ProtocolFamily`, add entries to `FAMILY_CREDENTIALS` and `FAMILY_NETWORK_ENV`, and add testnet/mainnet configs to `NETWORK_SETS`.
-2. **Secrets template** — add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` lines to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below.
-3. **Scheme wiring** — register the x402 scheme where frameworks share config:
-   - TS servers (express/hono/fastify): [`servers/shared`](servers/shared)
-   - Go servers (gin/nethttp/echo): [`servers/goshared`](servers/goshared)
-   - Python servers (fastapi/flask): [`servers/pyshared`](servers/pyshared)
-   - TS clients (axios/fetch): [`clients/shared`](clients/shared)
-   - Go client (go-http): [`clients/goshared`](clients/goshared)
-   - Python clients (httpx/requests): [`clients/pyshared`](clients/pyshared)
-   - Other frameworks (Next, MCP, etc.) still need local scheme registration
-4. **Endpoints** — declare routes in those components' `test.config.json`.
+Unique surfaces (Next, MCP, svm-smart-wallet) keep a **local** `test.config.json` overlay with explicit `endpoints`. Prefer `excludeSchemes` / `excludeNetworks` over an endpoint list when the surface is simply narrower than its SDK’s catalog routes.
 
-You do **not** need to edit `generic-server` / `generic-client` / `generic-facilitator`, hand-list proxy env maps, duplicate env/route blocks across sibling frameworks, or add per-component READMEs or `.env-local` files.
+## Add an HTTP framework
+
+| SDK | Steps |
+|-----|--------|
+| TypeScript | Add `clients/typescript/http/<name>/index.ts` or `servers/typescript/http/<name>/index.ts` using the language `shared/` helpers; add the adapter dep to the language `package.json`. Vanilla components need no local `test.config.json`. |
+| Go / Python | Add component dir with `main.go` / `main.py` + module file. `setup.sh` runs language defaults. Use a local overlay only when the surface is narrower (e.g. echo). |
+
+## Custom flows (escape hatches)
+
+These keep local `endpoints` overlays and/or special orchestration — not just a catalog append:
+
+| Flow | Where it lives |
+|------|----------------|
+| Batch-settlement multi-phase | Catalog `routes` entries + orchestration in [`test.ts`](test.ts) + shared scheme registration |
+| Gas sponsoring / Permit2 coldstart | Route `schemeOptions.coldstart` (+ optional `extensions`) + fund/revoke/drain in `test.ts` + facilitator extension registration |
+| Swig smart wallet | Overlay [`clients/typescript/http/svm-smart-wallet/test.config.json`](clients/typescript/http/svm-smart-wallet/test.config.json) + [`scripts/swig-setup.ts`](scripts/swig-setup.ts) |
+| Legacy (v1) | `legacy/` trees only — separate configs; do not extend `mechanisms.json` for v1 |
+
+If an SDK implements a route end-to-end (client + server + facilitator), list it in that route’s `sdks`. Omit only when the mechanism package is missing (e.g. Go has no TVM; Python/Go have no AVM/NEAR/XRPL).
+
+## Legacy
+
+`legacy/` is always discovered for v1 coverage. It is intentionally outside the v2 family catalog. New v2 mechanisms do **not** require legacy changes unless you explicitly want v1 parity.
 
 ## Setup
 
@@ -32,8 +86,8 @@ pnpm install:all
 
 This will:
 
-1. Install TypeScript dependencies via `pnpm install`
-2. Run `install.sh` and `build.sh` for all clients, servers, and facilitators
+1. Install TypeScript dependencies via `pnpm install` (including `servers/typescript` / `clients/typescript`)
+2. Run per-component setup: local `install.sh`/`build.sh` when present, otherwise language defaults (`go mod tidy` / `go build`, `uv sync`)
 3. Handle nested directories (like `external-proxies/` and `local/`)
 
 For legacy (v1) implementations as well:
@@ -50,12 +104,11 @@ If you only want to set up v2 implementations:
 pnpm setup
 ```
 
-Or manually for a specific component:
+Or manually for a specific Go/Python component:
 
 ```bash
 cd facilitators/go
-bash install.sh
-bash build.sh
+go mod tidy && go build -o go .
 ```
 
 ## Usage
@@ -87,7 +140,7 @@ Same interactive CLI, but with intelligent test minimization:
 - **90% fewer tests** compared to full mode
 - Each selected component is tested at least once across all variations
 - Skips redundant combinations that provide no additional coverage
-- Example: `legacy-hono` (v1 only) tests once, while `express` (v1+v2, EVM+SVM) tests all 4 combinations
+- Example: `legacy/typescript/http/hono` (v1 only) tests once, while `typescript/http/express` (v1+v2, EVM+SVM) tests all 4 combinations
 
 Perfect for rapid iteration during development while maintaining comprehensive coverage.
 
@@ -191,7 +244,7 @@ To run Python SDK TVM e2e scenarios through TonAPI instead of Toncenter:
 cd e2e
 TVM_PROVIDER=tonapi \
 TONAPI_API_KEY=<tonapi-key> \
-pnpm test --testnet --families=tvm --facilitators=python --clients=httpx,requests --servers=fastapi,flask --min -v
+pnpm test --testnet --families=tvm --facilitators=python --clients=python/http/httpx,python/http/requests --servers=python/http/fastapi,python/http/flask --min -v
 ```
 
 Optional environment variables (batch-settlement scheme):
@@ -280,7 +333,7 @@ $ pnpm test --min
 ==================
 
 ✔ Select facilitators › go, typescript
-✔ Select servers › express, hono, legacy-express
+✔ Select servers › typescript/http/express, typescript/http/hono, legacy/typescript/http/express
 ✔ Select clients › axios, fetch, httpx
 ✔ Select extensions › bazaar
 ✔ Select protocol families › EVM, SVM, Aptos, Hedera, Keeta, Stellar, TVM

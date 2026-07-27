@@ -477,7 +477,7 @@ async function validateFacilitatorDiscovery(
  * const result = await handleDiscoveryValidation(
  *   facilitators.map(f => ({ proxy: f.proxy, config: f.config })),
  *   servers,
- *   new Map([['express', 4021], ['hono', 4022]]),
+ *   new Map([['typescript/http/express', 4021], ['typescript/http/hono', 4022]]),
  *   undefined,
  *   testedDiscoveryScenarios,
  * );

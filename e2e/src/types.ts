@@ -69,13 +69,6 @@ export interface BatchSettlementClientConfig {
   /** Optional alternate EOA used to sign vouchers (deposits still use the main client signer). */
   voucherSignerPrivateKey?: string;
 }
-
-/** Scheme-specific knobs the harness forwards to a server for a batch-settlement scenario. */
-export interface BatchSettlementServerConfig {
-  /** Optional EOA private key the server uses as a self-managed receiver authorizer. */
-  receiverAuthorizerPrivateKey: string;
-}
-
 export interface ClientConfig {
   serverUrl: string;
   endpointPath: string;
@@ -95,8 +88,6 @@ export interface ServerConfig {
 export interface ServerProxy {
   start(config: ServerConfig): Promise<void>;
   stop(): Promise<void>;
-  getHealthUrl(): string;
-  getProtectedPath(): string;
   getUrl(): string;
 }
 

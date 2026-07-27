@@ -1,4 +1,5 @@
 import { BaseProxy, RunConfig } from '../proxy-base';
+import { loadComponentConfig } from '../component';
 import { verboseLog, errorLog } from '../logger';
 import type { NetworkSet } from '../networks/networks';
 import {
@@ -83,24 +84,19 @@ export class GenericFacilitatorProxy extends BaseProxy implements FacilitatorPro
 
   private loadEndpoints(): void {
     try {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const configPath = join(this.directory, 'test.config.json');
+      const config = loadComponentConfig(this.directory) as {
+        endpoints?: Array<{ path: string; health?: boolean; close?: boolean }>;
+      } | null;
+      if (!config?.endpoints) return;
 
-      if (existsSync(configPath)) {
-        const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const healthEndpoint = config.endpoints.find(endpoint => endpoint.health);
+      if (healthEndpoint) {
+        this.healthEndpoint = healthEndpoint.path;
+      }
 
-        // Load health endpoint if specified
-        const healthEndpoint = config.endpoints?.find((endpoint: any) => endpoint.health);
-        if (healthEndpoint) {
-          this.healthEndpoint = healthEndpoint.path;
-        }
-
-        // Load close endpoint if specified
-        const closeEndpoint = config.endpoints?.find((endpoint: any) => endpoint.close);
-        if (closeEndpoint) {
-          this.closeEndpoint = closeEndpoint.path;
-        }
+      const closeEndpoint = config.endpoints.find(endpoint => endpoint.close);
+      if (closeEndpoint) {
+        this.closeEndpoint = closeEndpoint.path;
       }
     } catch {
       // Fallback to defaults if config loading fails
@@ -130,17 +126,7 @@ export class GenericFacilitatorProxy extends BaseProxy implements FacilitatorPro
   }
 
   private loadConfig(): any {
-    try {
-      const { readFileSync, existsSync } = require('fs');
-      const { join } = require('path');
-      const configPath = join(this.directory, 'test.config.json');
-      if (existsSync(configPath)) {
-        return JSON.parse(readFileSync(configPath, 'utf-8'));
-      }
-    } catch (error) {
-      errorLog(`Failed to load config from ${this.directory}: ${error}`);
-    }
-    return null;
+    return loadComponentConfig(this.directory);
   }
 
   async verify(request: VerifyRequest): Promise<FacilitatorResult<VerifyResponse>> {

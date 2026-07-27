@@ -1,0 +1,9 @@
+{
+  "name": "echo",
+  "type": "server",
+  "language": "go",
+  "transport": "http",
+  "x402Version": 2,
+  "description": "Go Echo server (narrower endpoint set — no batch-settlement)",
+  "excludeSchemes": ["batch-settlement"]
+}

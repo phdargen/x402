@@ -91,16 +91,52 @@ export function forwardRoleCredentials(
   return env;
 }
 
+/**
+ * SERVER_* credential keys that must be actively stripped from a spawned
+ * component's env, because they belong to families excluded by enabledFamilies.
+ *
+ * Spawned processes inherit the full parent env (see proxy-base.ts's
+ * `{ ...process.env, ...config.env }`), so forwardRoleCredentials simply
+ * omitting a key from its returned env object is not enough on its own — the
+ * value can still leak in from the parent process (e.g. loaded from e2e/.env)
+ * unless it is explicitly unset in the child env.
+ */
+export function excludedServerCredentialKeys(enabledFamilies?: ProtocolFamily[]): string[] {
+  if (!enabledFamilies) return [];
+  const keys: string[] = [];
+  for (const family of PROTOCOL_FAMILIES) {
+    if (enabledFamilies.includes(family)) continue;
+    keys.push(...FAMILY_CREDENTIALS[family].server);
+  }
+  return keys;
+}
+
+function protocolFamilyForServerEnvKey(key: string): ProtocolFamily | undefined {
+  for (const family of PROTOCOL_FAMILIES) {
+    if (FAMILY_CREDENTIALS[family].server.includes(key)) {
+      return family;
+    }
+  }
+  return undefined;
+}
+
 /** Merge env from test.config.json required/optional lists (pass-through from root). */
 export function forwardConfigEnv(
   config: { environment?: { required?: string[]; optional?: string[] } } | null,
   baseEnv: Record<string, string>,
+  enabledFamilies?: ProtocolFamily[],
 ): Record<string, string> {
   const env = { ...baseEnv };
   if (!config?.environment) return env;
 
   for (const key of [...(config.environment.required ?? []), ...(config.environment.optional ?? [])]) {
     if (process.env[key] && !env[key]) {
+      if (enabledFamilies && key.startsWith('SERVER_')) {
+        const family = protocolFamilyForServerEnvKey(key);
+        if (family && !enabledFamilies.includes(family)) {
+          continue;
+        }
+      }
       env[key] = process.env[key]!;
     }
   }
