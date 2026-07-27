@@ -1,18 +1,20 @@
 {
   "env": {
-    "required": [
-      "SERVER_EVM_ADDRESS",
-      "CLIENT_EVM_PRIVATE_KEY",
-      "FACILITATOR_EVM_PRIVATE_KEY"
-    ],
-    "optional": [
-      "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
-      "EVM_PERMIT2_ASSET",
-      "EVM_BATCH_SETTLEMENT_CHANNEL",
-      "EVM_BATCH_SETTLEMENT_PHASE",
-      "EVM_BATCH_SETTLEMENT_RECOVERY",
-      "CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY"
-    ]
+    "SERVER_EVM_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_EVM_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "FACILITATOR_EVM_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] },
+    "SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY": {
+      "required": false,
+      "roles": ["server"]
+    },
+    "EVM_PERMIT2_ASSET": { "required": false, "roles": ["server"] },
+    "EVM_BATCH_SETTLEMENT_CHANNEL": { "required": false, "roles": ["client"] },
+    "EVM_BATCH_SETTLEMENT_PHASE": { "required": false, "roles": ["client"] },
+    "EVM_BATCH_SETTLEMENT_RECOVERY": { "required": false, "roles": ["client"] },
+    "CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY": {
+      "required": false,
+      "roles": ["client"]
+    }
   },
   "testnet": {
     "name": "Base Sepolia",
@@ -33,7 +35,8 @@
       "scheme": "batch-settlement",
       "assetTransferMethod": "eip3009",
       "sdks": ["typescript", "go", "python"],
-      "price": { "usd": "$0.001" }
+      "price": { "usd": "$0.001" },
+      "extensions": ["bazaar"]
     },
     "/batch-settlement/evm/permit2": {
       "scheme": "batch-settlement",
@@ -44,7 +47,8 @@
         "amount": "1000",
         "assetRef": "permit2",
         "permit2Domain": true
-      }
+      },
+      "extensions": ["bazaar"]
     },
     "/batch-settlement/evm/permit2-eip2612GasSponsoring": {
       "scheme": "batch-settlement",
@@ -55,7 +59,7 @@
         "usd": "$0.001",
         "declareAssetTransferMethod": true
       },
-      "extensions": ["eip2612GasSponsoring"]
+      "extensions": ["bazaar", "eip2612GasSponsoring"]
     },
     "/batch-settlement/evm/permit2-erc20ApprovalGasSponsoring": {
       "scheme": "batch-settlement",
@@ -66,7 +70,7 @@
         "amount": "1000",
         "assetRef": "permit2"
       },
-      "extensions": ["erc20ApprovalGasSponsoring"]
+      "extensions": ["bazaar", "erc20ApprovalGasSponsoring"]
     },
     "/exact/evm/eip3009": {
       "scheme": "exact",
@@ -107,7 +111,7 @@
         "amount": "1000",
         "assetRef": "permit2"
       },
-      "extensions": ["erc20ApprovalGasSponsoring"]
+      "extensions": ["bazaar", "erc20ApprovalGasSponsoring"]
     },
     "/upto/evm/permit2": {
       "scheme": "upto",
@@ -119,6 +123,7 @@
         "assetRef": "permit2",
         "permit2Domain": true
       },
+      "extensions": ["bazaar"],
       "settlementOverride": { "amount": "1000" }
     },
     "/upto/evm/permit2-eip2612GasSponsoring": {
@@ -131,7 +136,7 @@
         "assetRef": "permit2",
         "permit2Domain": true
       },
-      "extensions": ["eip2612GasSponsoring"],
+      "extensions": ["bazaar", "eip2612GasSponsoring"],
       "settlementOverride": { "amount": "1000" }
     },
     "/upto/evm/permit2-erc20ApprovalGasSponsoring": {
@@ -143,7 +148,7 @@
         "amount": "2000",
         "assetRef": "permit2"
       },
-      "extensions": ["erc20ApprovalGasSponsoring"],
+      "extensions": ["bazaar", "erc20ApprovalGasSponsoring"],
       "settlementOverride": { "amount": "1000" }
     }
   }

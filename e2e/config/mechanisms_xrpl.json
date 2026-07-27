@@ -1,10 +1,10 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_XRPL_ADDRESS",
-      "CLIENT_XRPL_SEED"
-    ]
+    "SERVER_XRPL_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_XRPL_SEED": { "required": true, "roles": ["client"] },
+    "SERVER_XRPL_AMOUNT": { "required": false, "roles": ["server"] },
+    "SERVER_XRPL_ASSET": { "required": false, "roles": ["server"] },
+    "SERVER_XRPL_ISSUER": { "required": false, "roles": ["server"] }
   },
   "testnet": {
     "name": "XRPL Testnet",

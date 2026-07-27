@@ -1,4 +1,5 @@
 import http from "node:http";
+import { resolveNetworkCaip2 } from "./catalog-network.ts";
 
 /**
  * Mock facilitator that claims to support all schemes/networks but errors
@@ -11,12 +12,12 @@ import http from "node:http";
  */
 
 const PORT = parseInt(process.env.PORT || "4099", 10);
-const EVM_NETWORK = process.env.EVM_NETWORK || "eip155:84532";
-const SVM_NETWORK = process.env.SVM_NETWORK || "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const APTOS_NETWORK = process.env.APTOS_NETWORK || "aptos:2";
-const STELLAR_NETWORK = process.env.STELLAR_NETWORK || "stellar:testnet";
-const NEAR_NETWORK = process.env.NEAR_NETWORK || "near:testnet";
-const XRPL_NETWORK = process.env.XRPL_NETWORK || "xrpl:1";
+const EVM_NETWORK = resolveNetworkCaip2("evm");
+const SVM_NETWORK = resolveNetworkCaip2("svm");
+const APTOS_NETWORK = resolveNetworkCaip2("aptos");
+const STELLAR_NETWORK = resolveNetworkCaip2("stellar");
+const NEAR_NETWORK = resolveNetworkCaip2("near");
+const XRPL_NETWORK = resolveNetworkCaip2("xrpl");
 
 const DUMMY_EVM_SIGNER = "0x0000000000000000000000000000000000000001";
 const DUMMY_SVM_SIGNER = "11111111111111111111111111111111";

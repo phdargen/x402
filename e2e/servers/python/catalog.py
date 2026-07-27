@@ -45,6 +45,20 @@ def _read_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _flatten_env(env: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize per-key {required, roles} env map to required/optional lists."""
+    required: list[str] = []
+    optional: list[str] = []
+    for key, decl in env.items():
+        if not isinstance(decl, dict) or "required" not in decl or "roles" not in decl:
+            raise ValueError(f"env.{key} must be {{ required: bool, roles: [...] }}")
+        if decl["required"]:
+            required.append(key)
+        else:
+            optional.append(key)
+    return {"required": sorted(required), "optional": sorted(optional)}
+
+
 def _load() -> dict[str, Any]:
     catalog_dir = _find_catalog_dir()
     global_file = _read_json(catalog_dir / "mechanisms_global.json")
@@ -63,7 +77,7 @@ def _load() -> dict[str, Any]:
         file_data = _read_json(catalog_dir / file_name)
 
         networks[network_id] = {
-            "env": file_data["env"],
+            "env": _flatten_env(file_data["env"]),
             "networks": {"testnet": file_data["testnet"], "mainnet": file_data["mainnet"]},
         }
 
@@ -72,7 +86,7 @@ def _load() -> dict[str, Any]:
                 raise ValueError(f"Duplicate route path across mechanisms catalog files: {path}")
             routes[path] = {**definition, "network": network_id}
 
-    return {"globalEnv": global_file["env"], "networks": networks, "routes": routes}
+    return {"globalEnv": _flatten_env(global_file["env"]), "networks": networks, "routes": routes}
 
 
 _CATALOG = _load()

@@ -12,15 +12,17 @@ You do **not** need to edit `generic-server` / `generic-client` / `generic-facil
 
 `mechanisms_global.json` holds only cross-cutting harness env (`PORT`, `FACILITATOR_URL`, `RESOURCE_SERVER_URL`, `ENDPOINT_PATH`, `MOCK_FACILITATOR_URL`). Each `mechanisms_<id>.json` holds:
 
-- **`env`** — one flat `{ required, optional }` list; roles are assigned by key prefix (`SERVER_` / `CLIENT_` / `FACILITATOR_`), with a small fixed override table in [`src/mechanisms.ts`](src/mechanisms.ts) for keys that don't map cleanly by prefix
-- **`testnet` / `mainnet`** — `name`, `caip2`, optional `rpcUrlDefault`, optional `permit2Asset`/`permit2AssetName`. RPC env is pure convention, not declared: an operator sets `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL` (e.g. `EVM_TESTNET_RPC_URL`), and the harness injects it into every spawned component as `${ID}_RPC_URL`. Set `rpcUrlRequired: true` on a mode with no `rpcUrlDefault` and no free public endpoint at all (a network whose SDK has no built-in node default, unlike e.g. Hedera/Keeta) so the harness fails fast at startup — with the missing input key named in the same preflight list as other required env — instead of deep inside a scenario run.
+- **`env`** — map of env key → `{ required: boolean, roles: ["server"|"client"|"facilitator", ...] }`. Every key a role reads (including unprefixed ones like `TVM_PROVIDER` or `EVM_PERMIT2_ASSET`) is declared here; [`src/mechanisms.ts`](src/mechanisms.ts) has no hardcoded role override table. Prefix (`SERVER_` / `CLIENT_` / `FACILITATOR_`) is only a fallback for undeclared keys.
+- **`testnet` / `mainnet`** — `name`, `caip2`, optional `rpcUrlDefault`, optional `permit2Asset`/`permit2AssetName`. RPC env is pure convention, not declared: an operator sets `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL` (e.g. `EVM_TESTNET_RPC_URL`), and the harness injects it into every spawned component as `${ID}_RPC_URL`. Set `rpcUrlRequired: true` on a mode with no `rpcUrlDefault` and no free public endpoint at all (a network whose SDK has no built-in node default, unlike e.g. Hedera/Keeta) so the harness fails fast at startup — with the missing input key named in the same preflight list as other required env — instead of deep inside a scenario run. Network identity defaults (`${ID}_NETWORK`) fall back to catalog `testnet.caip2` via `resolveNetworkCaip2`.
 - **`routes`** — one canonical definition per paid HTTP path: `scheme`, `sdks`, `assetTransferMethod`, `schemeOptions`, declared `extensions`, required `price`, and optional `settlementOverride`. Handlers always return `{ message: "Protected endpoint accessed successfully", timestamp }`. The loader injects `network` (the file id) — routes never declare it themselves.
+
+CI family selection ([`scripts/ci-select-families.sh`](scripts/ci-select-families.sh) → [`scripts/ci-select-families.ts`](scripts/ci-select-families.ts)) prints families whose catalog `required: true` keys are all set — no per-family hardcoding in the shell script.
 
 Every SDK reads this same set of files. The harness ([`src/mechanisms.ts`](src/mechanisms.ts)) merges `mechanisms_global.json` with every `mechanisms_<id>.json` and derives component configs from the result:
 
 - **Routes** → `routes` whose `sdks` include the language become server `endpoints` when no local `endpoints` overlay
 - **`protocolFamilies` / `schemes` / `evm.assetTransferMethods`** → union of values on that SDK’s route list
-- **`extensions`** → union of route `extensions` (+ `eip2612GasSponsoring` for coldstart routes; `bazaar` on servers/facilitators)
+- **`extensions`** → union of route `extensions` from the catalog (clients omit `bazaar`; they consume declarations but do not implement discovery)
 - **Environment** → derived from each network's `env` for networks present in that SDK’s routes, filtered to the requesting role
 - **Legacy v1** under `legacy/` is **not** driven by this catalog
 
@@ -43,7 +45,7 @@ After a server reports healthy, the harness requests every paid route it declare
 
 Four edits, no catalog type to touch:
 
-1. **Catalog** — add [`config/mechanisms_<id>.json`](config/) with `env` (`required`/`optional`), `testnet`/`mainnet` (RPC input keys are pure convention: `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL`), and `routes`.
+1. **Catalog** — add [`config/mechanisms_<id>.json`](config/) with `env` (per-key `{ required, roles }`), `testnet`/`mainnet` (RPC input keys are pure convention: `${ID}_TESTNET_RPC_URL` / `${ID}_MAINNET_RPC_URL`), and `routes`. Mark wallet credentials `required: true` so CI ([`scripts/ci-select-families.sh`](scripts/ci-select-families.sh)) and harness preflight pick up the family automatically.
 2. **Server** — register the scheme in `servers/<lang>/` (e.g. [`servers/typescript/config.ts`](servers/typescript/config.ts) / [`servers/python/config.py`](servers/python/config.py) / [`servers/go/config.go`](servers/go/config.go)).
 3. **Client** — register the scheme in `clients/<lang>/` (e.g. [`clients/typescript/client.ts`](clients/typescript/client.ts) / [`clients/python/client.py`](clients/python/client.py) / [`clients/go/client.go`](clients/go/client.go)).
 4. **Facilitator** — register the scheme in [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python).
@@ -64,7 +66,7 @@ These keep local `endpoints` overlays and/or special orchestration — not just 
 | Flow | Where it lives |
 |------|----------------|
 | Batch-settlement multi-phase | Catalog `routes` entries + orchestration in [`test.ts`](test.ts) + shared scheme registration |
-| Gas sponsoring / Permit2 coldstart | Route `schemeOptions.coldstart` (+ optional `extensions`) + fund/revoke/drain in `test.ts` + facilitator extension registration |
+| Gas sponsoring / Permit2 coldstart | Route `schemeOptions.coldstart` + declared gas `extensions` + fund/revoke/drain in `test.ts` + facilitator extension registration |
 | Swig smart wallet | Overlay [`clients/typescript/http/svm-smart-wallet/test.config.json`](clients/typescript/http/svm-smart-wallet/test.config.json) + [`scripts/swig-setup.ts`](scripts/swig-setup.ts) |
 | Legacy (v1) | `legacy/` trees only — separate configs; do not extend the mechanisms catalog for v1 |
 
@@ -252,7 +254,7 @@ pnpm test --testnet --families=tvm --facilitators=python --clients=python/http/h
 Optional environment variables (batch-settlement scheme):
 
 ```bash
-SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...              # server-side self-managed claim/refund signer
+SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...              # optional: self-managed receiver authorizer (omit to delegate to facilitator /supported)
 CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY=0x...  # EOA the client uses to sign vouchers
 EVM_BATCH_SETTLEMENT_RECOVERY=true                            # test client state-loss recovery scenario (default: true)
 ```

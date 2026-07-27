@@ -1,14 +1,11 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_TVM_ADDRESS",
-      "CLIENT_TVM_PRIVATE_KEY",
-      "FACILITATOR_TVM_PRIVATE_KEY",
-      "TVM_PROVIDER",
-      "TVM_TONCENTER_API_KEY",
-      "TVM_TONAPI_API_KEY"
-    ]
+    "SERVER_TVM_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_TVM_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "FACILITATOR_TVM_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] },
+    "TVM_PROVIDER": { "required": false, "roles": ["client", "facilitator"] },
+    "TVM_TONCENTER_API_KEY": { "required": false, "roles": ["client", "facilitator"] },
+    "TVM_TONAPI_API_KEY": { "required": false, "roles": ["client", "facilitator"] }
   },
   "testnet": {
     "name": "TON Testnet",

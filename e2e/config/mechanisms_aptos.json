@@ -1,11 +1,8 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_APTOS_ADDRESS",
-      "CLIENT_APTOS_PRIVATE_KEY",
-      "FACILITATOR_APTOS_PRIVATE_KEY"
-    ]
+    "SERVER_APTOS_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_APTOS_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "FACILITATOR_APTOS_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] }
   },
   "testnet": {
     "name": "Aptos Testnet",

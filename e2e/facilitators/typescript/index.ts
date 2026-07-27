@@ -61,11 +61,10 @@ import {
   createEd25519Signer,
   type FacilitatorStellarSigner,
 } from "@x402/stellar";
-import { toFacilitatorKeetaSigner, KEETA_TESTNET_CAIP2, FacilitatorKeetaSigner } from "@x402/keeta";
+import { toFacilitatorKeetaSigner, FacilitatorKeetaSigner } from "@x402/keeta";
 import { ExactKeetaScheme } from "@x402/keeta/exact/facilitator";
 import { ExactStellarScheme } from "@x402/stellar/exact/facilitator";
 import {
-  CONCORDIUM_TESTNET_CAIP2,
   getConcordiumGrpcUrl,
   parseGrpcUrl,
   toConcordiumFacilitatorSigner,
@@ -98,28 +97,26 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia, base } from "viem/chains";
+import { resolveNetworkCaip2 } from "./catalog-network.js";
 import { BazaarCatalog } from "./bazaar.js";
 
 dotenv.config();
 
-// Configuration
+// Configuration — network identity from harness-injected `${ID}_NETWORK` or catalog testnet
 const PORT = process.env.PORT || "4022";
-const EVM_NETWORK = process.env.EVM_NETWORK || "eip155:84532";
-const SVM_NETWORK =
-  process.env.SVM_NETWORK || "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1";
-const APTOS_NETWORK = process.env.APTOS_NETWORK || "aptos:2";
-const AVM_NETWORK =
-  process.env.AVM_NETWORK ||
-  "algorand:SGO1GKSzyE7IEPItTxCByw9x8FmnrCDe";
-const HEDERA_NETWORK = process.env.HEDERA_NETWORK || "hedera:testnet";
-const KEETA_NETWORK = process.env.KEETA_NETWORK || KEETA_TESTNET_CAIP2;
-const STELLAR_NETWORK = process.env.STELLAR_NETWORK || "stellar:testnet";
-const TVM_NETWORK = process.env.TVM_NETWORK || "tvm:-3";
-const NEAR_NETWORK = process.env.NEAR_NETWORK || "near:testnet";
+const EVM_NETWORK = resolveNetworkCaip2("evm");
+const SVM_NETWORK = resolveNetworkCaip2("svm");
+const APTOS_NETWORK = resolveNetworkCaip2("aptos");
+const AVM_NETWORK = resolveNetworkCaip2("avm");
+const HEDERA_NETWORK = resolveNetworkCaip2("hedera");
+const KEETA_NETWORK = resolveNetworkCaip2("keeta");
+const STELLAR_NETWORK = resolveNetworkCaip2("stellar");
+const TVM_NETWORK = resolveNetworkCaip2("tvm");
+const NEAR_NETWORK = resolveNetworkCaip2("near");
 const NEAR_RPC_URL = process.env.NEAR_RPC_URL;
-const XRPL_NETWORK = process.env.XRPL_NETWORK || "xrpl:1";
+const XRPL_NETWORK = resolveNetworkCaip2("xrpl");
 const XRPL_RPC_URL = process.env.XRPL_RPC_URL;
-const CCD_NETWORK = process.env.CCD_NETWORK || CONCORDIUM_TESTNET_CAIP2;
+const CCD_NETWORK = resolveNetworkCaip2("ccd");
 const CCD_RPC_URL =
   process.env.CCD_RPC_URL || getConcordiumGrpcUrl(CCD_NETWORK as Network);
 const EVM_RPC_URL = process.env.EVM_RPC_URL;
@@ -177,17 +174,13 @@ const evmAccount = privateKeyToAccount(
 );
 console.info(`EVM Facilitator account: ${evmAccount.address}`);
 
-// Dedicated receiver authorizer for the batch-settlement scheme (falls back to FACILITATOR_EVM_PRIVATE_KEY)
-const receiverAuthorizerPrivateKey =
-  process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY ?? process.env.FACILITATOR_EVM_PRIVATE_KEY;
-const authorizerAccount = privateKeyToAccount(
-  receiverAuthorizerPrivateKey as `0x${string}`,
-);
+// Batch-settlement receiver authorizer advertised in /supported. Servers may
+// delegate to this address or supply their own (SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY).
 const authorizerSigner: AuthorizerSigner = {
-  address: authorizerAccount.address,
+  address: evmAccount.address,
   signTypedData: (params) =>
-    authorizerAccount.signTypedData(
-      params as Parameters<typeof authorizerAccount.signTypedData>[0],
+    evmAccount.signTypedData(
+      params as Parameters<typeof evmAccount.signTypedData>[0],
     ),
 };
 console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);

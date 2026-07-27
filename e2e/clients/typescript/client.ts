@@ -36,6 +36,7 @@ import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { keyPairFromSeed, type KeyPair } from "@ton/crypto";
 import { x402Client, type SchemeRegistration } from "@x402/core/client";
 import type { SettleResponse } from "@x402/core/types";
+import { resolveNetworkCaip2 } from "./catalog-network.ts";
 
 export type RequestResult = {
   success: boolean;
@@ -90,7 +91,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     base58.decode(process.env.CLIENT_SVM_PRIVATE_KEY as string),
   );
 
-  const evmNetwork = process.env.EVM_NETWORK || "eip155:84532";
+  const evmNetwork = resolveNetworkCaip2("evm");
   const evmRpcUrl = process.env.EVM_RPC_URL;
   const evmChain = evmNetwork === "eip155:8453" ? base : baseSepolia;
 
@@ -146,7 +147,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       process.env.CLIENT_HEDERA_ACCOUNT_ID,
       HederaPrivateKey.fromStringECDSA(process.env.CLIENT_HEDERA_PRIVATE_KEY),
       {
-        network: process.env.HEDERA_NETWORK || "hedera:testnet",
+        network: resolveNetworkCaip2("hedera"),
         nodeUrl: process.env.HEDERA_RPC_URL || undefined,
       },
     );
@@ -171,7 +172,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     avmSigner = toClientAvmSigner(process.env.CLIENT_AVM_PRIVATE_KEY);
   }
 
-  const tvmNetwork = process.env.TVM_NETWORK || "tvm:-3";
+  const tvmNetwork = resolveNetworkCaip2("tvm");
   const tvmPrivateKey = process.env.CLIENT_TVM_PRIVATE_KEY;
   const tvmProvider = (process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER).toLowerCase();
   const tvmScheme = tvmPrivateKey
@@ -229,7 +230,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     schemes.push({ network: "tvm:*", client: tvmScheme });
   }
   if (process.env.CLIENT_NEAR_ACCOUNT_ID && process.env.CLIENT_NEAR_PRIVATE_KEY) {
-    const nearNetwork = (process.env.NEAR_NETWORK || "near:testnet") as `${string}:${string}`;
+    const nearNetwork = resolveNetworkCaip2("near") as `${string}:${string}`;
     const nearSigner = createClientNearSigner({
       accountId: process.env.CLIENT_NEAR_ACCOUNT_ID,
       secretKey: process.env.CLIENT_NEAR_PRIVATE_KEY as ClientNearSignerConfig["secretKey"],
@@ -238,7 +239,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     schemes.push({ network: nearNetwork, client: new ExactNearClientScheme(nearSigner) });
   }
   if (process.env.CLIENT_XRPL_SEED) {
-    const xrplNetwork = (process.env.XRPL_NETWORK || "xrpl:1") as `xrpl:${number}`;
+    const xrplNetwork = resolveNetworkCaip2("xrpl") as `xrpl:${number}`;
     const xrplSigner = createXrplWalletSigner(Wallet.fromSeed(process.env.CLIENT_XRPL_SEED));
     schemes.push({
       network: xrplNetwork,

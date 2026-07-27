@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -777,6 +778,58 @@ func (s *realFacilitatorSvmSigner) GetAddresses(ctx context.Context, network str
 	return []solana.PublicKey{s.privateKey.PublicKey()}
 }
 
+// catalogTestnetCaip2 reads testnet.caip2 from e2e/config/mechanisms_<id>.json.
+func catalogTestnetCaip2(networkID string) (string, error) {
+	candidates := []string{}
+	if injected := os.Getenv("E2E_MECHANISMS_CATALOG"); injected != "" {
+		candidates = append(candidates, injected)
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		candidates = append(candidates, filepath.Join(dir, "config"))
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	for _, catalogDir := range candidates {
+		path := filepath.Join(catalogDir, fmt.Sprintf("mechanisms_%s.json", networkID))
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var file struct {
+			Testnet struct {
+				Caip2 string `json:"caip2"`
+			} `json:"testnet"`
+		}
+		if err := json.Unmarshal(raw, &file); err != nil {
+			return "", fmt.Errorf("%s: %w", path, err)
+		}
+		if file.Testnet.Caip2 == "" {
+			return "", fmt.Errorf("%s: missing testnet.caip2", path)
+		}
+		return file.Testnet.Caip2, nil
+	}
+	return "", fmt.Errorf("could not locate mechanisms_%s.json", networkID)
+}
+
+// resolveNetworkCaip2 prefers `${ID}_NETWORK`, else catalog testnet CAIP-2.
+func resolveNetworkCaip2(networkID string) string {
+	if fromEnv := os.Getenv(strings.ToUpper(networkID) + "_NETWORK"); fromEnv != "" {
+		return fromEnv
+	}
+	caip2, err := catalogTestnetCaip2(networkID)
+	if err != nil {
+		log.Fatalf("❌ %v", err)
+	}
+	return caip2
+}
+
 // Network configuration helpers
 func getEvmRpcUrl(network string) string {
 	// Check for custom RPC URL first
@@ -840,15 +893,9 @@ func main() {
 		port = DefaultPort
 	}
 
-	// Network configuration from environment
-	evmNetwork := os.Getenv("EVM_NETWORK")
-	if evmNetwork == "" {
-		evmNetwork = "eip155:84532" // Default: Base Sepolia
-	}
-	svmNetwork := os.Getenv("SVM_NETWORK")
-	if svmNetwork == "" {
-		svmNetwork = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" // Default: Solana Devnet
-	}
+	// Network configuration — harness-injected `${ID}_NETWORK` or catalog testnet
+	evmNetwork := resolveNetworkCaip2("evm")
+	svmNetwork := resolveNetworkCaip2("svm")
 
 	log.Printf("🌐 EVM Network: %s", evmNetwork)
 	log.Printf("🌐 SVM Network: %s", svmNetwork)
@@ -899,15 +946,9 @@ func main() {
 	uptoEvmFacilitatorScheme := uptoevm.NewUptoEvmScheme(evmSigner, nil)
 	facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, uptoEvmFacilitatorScheme)
 
-	// Register batch-settlement EVM scheme. Mirrors TS:
-	// `new BatchSettlementEvmScheme(evmSigner, authorizerSigner)` where the
-	// authorizer key falls back to FACILITATOR_EVM_PRIVATE_KEY when
-	// SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is not set.
-	authorizerKey := os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
-	if authorizerKey == "" {
-		authorizerKey = evmPrivateKey
-	}
-	batchedAuthorizer, err := newBatchedAuthorizerSigner(authorizerKey)
+	// Register batch-settlement EVM scheme. The facilitator key is advertised as
+	// receiverAuthorizer in /supported; servers may delegate to it or supply their own.
+	batchedAuthorizer, err := newBatchedAuthorizerSigner(evmPrivateKey)
 	if err != nil {
 		log.Fatalf("Failed to create batch-settlement authorizer: %v", err)
 	}

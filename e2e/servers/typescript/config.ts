@@ -19,11 +19,34 @@ import {
 import { HTTPFacilitatorClient, type RoutesConfig, type x402ResourceServer } from "@x402/core/server";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
+import {
+  getServerAddress,
+  isFamilyConfigured,
+} from "../../src/server-env";
+import {
+  PROTOCOL_FAMILIES,
+  type ProtocolFamily,
+} from "../../src/networks/networks";
 import { resolvedRoutes, type ResolvedRoute } from "./catalog";
 import { routeDiscoveryOutput, mcpToolName, type RouteTransport } from "../../src/mechanisms";
 
 export type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
 export { loadServerEnv } from "../../src/server-env";
+
+/** CAIP-2 namespace pattern each family registers under. */
+const FAMILY_CAIP2_PATTERN: Record<ProtocolFamily, `${string}:*`> = {
+  evm: "eip155:*",
+  svm: "solana:*",
+  avm: "algorand:*",
+  aptos: "aptos:*",
+  ccd: "ccd:*",
+  hedera: "hedera:*",
+  keeta: "keeta:*",
+  stellar: "stellar:*",
+  tvm: "tvm:*",
+  near: "near:*",
+  xrpl: "xrpl:*",
+};
 
 /**
  * Builds facilitator clients from FACILITATOR_URL (+ optional MOCK_FACILITATOR_URL).
@@ -37,63 +60,86 @@ export function createFacilitatorClients(facilitatorUrl: string): HTTPFacilitato
   return facilitatorClients;
 }
 
+/** Register schemes for one configured family. */
+function registerFamilySchemes(
+  server: x402ResourceServer,
+  family: ProtocolFamily,
+  cfg: ServerEnvConfig,
+): void {
+  const pattern = FAMILY_CAIP2_PATTERN[family];
+
+  switch (family) {
+    case "avm":
+      server.register(pattern, new ExactAvmScheme());
+      return;
+    case "ccd":
+      server.register(pattern, new ExactConcordiumScheme());
+      return;
+    case "evm": {
+      server.register(pattern, new ExactEvmScheme());
+      server.register(pattern, new UptoEvmScheme());
+      const receiverAuthorizerPrivateKey = process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
+        | `0x${string}`
+        | undefined;
+      const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
+        ? privateKeyToAccount(receiverAuthorizerPrivateKey)
+        : undefined;
+      const payTo = getServerAddress(cfg, "evm") as `0x${string}`;
+      server.register(
+        pattern,
+        new BatchSettlementEvmScheme(payTo, {
+          ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
+        }),
+      );
+      return;
+    }
+    case "svm":
+      server.register(pattern, new ExactSvmScheme());
+      return;
+    case "aptos":
+      server.register(pattern, new ExactAptosScheme());
+      return;
+    case "hedera":
+      server.register(pattern, new ExactHederaScheme());
+      return;
+    case "keeta":
+      server.register(pattern, new ExactKeetaScheme());
+      return;
+    case "stellar":
+      server.register(pattern, new ExactStellarScheme());
+      return;
+    case "tvm":
+      server.register(pattern, new ExactTvmScheme());
+      return;
+    case "near":
+      server.register(pattern, new ExactNearScheme());
+      return;
+    case "xrpl":
+      server.register(pattern, new ExactXrplScheme());
+      return;
+  }
+}
+
 /**
- * Registers all e2e schemes + bazaar extension on a resource server.
+ * Registers e2e schemes + bazaar extension for every family with a payee address
+ * configured (catalog-driven via {@link isFamilyConfigured}).
  */
 export function configureResourceServer(server: x402ResourceServer, cfg: ServerEnvConfig): void {
-  if (cfg.SERVER_AVM_ADDRESS) {
-    server.register("algorand:*", new ExactAvmScheme());
-  }
-  if (cfg.SERVER_CCD_ADDRESS) {
-    server.register("ccd:*", new ExactConcordiumScheme());
-  }
-  if (cfg.SERVER_EVM_ADDRESS) {
-    server.register("eip155:*", new ExactEvmScheme());
-    server.register("eip155:*", new UptoEvmScheme());
-
-    // e2e flow does NOT use ChannelManager — settle actions are handled inline.
-    const receiverAuthorizerPrivateKey = process.env.SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY as
-      | `0x${string}`
-      | undefined;
-    const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
-      ? privateKeyToAccount(receiverAuthorizerPrivateKey)
-      : undefined;
-    server.register(
-      "eip155:*",
-      new BatchSettlementEvmScheme(cfg.SERVER_EVM_ADDRESS as `0x${string}`, {
-        ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
-      }),
-    );
-  }
-  if (cfg.SERVER_SVM_ADDRESS) {
-    server.register("solana:*", new ExactSvmScheme());
-  }
-  if (cfg.SERVER_APTOS_ADDRESS) {
-    server.register("aptos:*", new ExactAptosScheme());
-  }
-  if (cfg.SERVER_HEDERA_ADDRESS) {
-    server.register("hedera:*", new ExactHederaScheme());
-  }
-  if (cfg.SERVER_KEETA_ADDRESS) {
-    server.register("keeta:*", new ExactKeetaScheme());
-  }
-  if (cfg.SERVER_STELLAR_ADDRESS) {
-    server.register("stellar:*", new ExactStellarScheme());
-  }
-  if (cfg.SERVER_TVM_ADDRESS) {
-    server.register("tvm:*", new ExactTvmScheme());
-  }
-  if (cfg.SERVER_NEAR_ADDRESS) {
-    server.register("near:*", new ExactNearScheme());
-  }
-  if (cfg.SERVER_XRPL_ADDRESS) {
-    server.register("xrpl:*", new ExactXrplScheme());
+  for (const family of PROTOCOL_FAMILIES) {
+    if (isFamilyConfigured(cfg, family)) {
+      registerFamilySchemes(server, family, cfg);
+    }
   }
 
   server.registerExtension(bazaarResourceServerExtension);
 }
 
-/** Maps a catalog extension id to the SDK call that declares it on a route. */
+/**
+ * Maps a catalog extension id to the SDK call that declares it on a route.
+ * Declaration comes from mechanisms JSON `extensions` per route; process-level
+ * registration (e.g. {@link configureResourceServer}'s bazaar handler) is
+ * separate and enables enriching/honoring those declarations.
+ */
 function declareExtension(
   id: string,
   route: ResolvedRoute,
@@ -103,11 +149,11 @@ function declareExtension(
     case "bazaar":
       return transport === "mcp"
         ? declareDiscoveryExtension({
-            toolName: mcpToolName(route.path),
-            transport: "sse",
-            inputSchema: { type: "object", properties: {} },
-            output: routeDiscoveryOutput(),
-          })
+          toolName: mcpToolName(route.path),
+          transport: "sse",
+          inputSchema: { type: "object", properties: {} },
+          output: routeDiscoveryOutput(),
+        })
         : declareDiscoveryExtension({ output: routeDiscoveryOutput() });
     case "eip2612GasSponsoring":
       return declareEip2612GasSponsoringExtension();

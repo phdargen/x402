@@ -7,7 +7,7 @@
  * runtime NetworkSet helpers used by the harness.
  *
  * Adding a network (4 edits, no catalog type edit):
- * 1. Add e2e/config/mechanisms_<id>.json (`env`, `testnet`/`mainnet`, `routes`)
+ * 1. Add e2e/config/mechanisms_<id>.json (`env` per-key {required,roles}, testnet/mainnet, routes)
  * 2. Register the scheme in servers/<lang>/ (e.g. servers/typescript/config.ts)
  * 3. Register the scheme in clients/<lang>/ (e.g. clients/python/client.py)
  * 4. Register the scheme in facilitators/<lang>/
@@ -57,8 +57,9 @@ export const FAMILY_CREDENTIALS: Record<ProtocolFamily, FamilyCredentialSchema> 
   catalogCredentials();
 
 /**
- * Per-network `env.required` keys — must be set before that family can be exercised
- * at all. Unlike {@link FAMILY_CREDENTIALS}, this excludes `env.optional` add-ons.
+ * Per-network required env keys (catalog `required: true`) — must be set before
+ * that family can be exercised at all. Unlike {@link FAMILY_CREDENTIALS}, this
+ * excludes optional add-ons.
  */
 const FAMILY_REQUIRED_ENV: Record<ProtocolFamily, string[]> = catalogRequiredEnv();
 
@@ -86,11 +87,26 @@ export function allCredentialKeys(role: Role): string[] {
 
 /**
  * Env keys that must be set before a family can be exercised at all
- * (the catalog's `env.required` list — excludes optional add-ons like
+ * (catalog keys with `required: true` — excludes optional add-ons like
  * batch-settlement or gas-sponsoring extras).
  */
 export function requiredEnvForFamily(family: ProtocolFamily): string[] {
   return FAMILY_REQUIRED_ENV[family];
+}
+
+/** Protocol family that owns a catalog credential key, if any. */
+export function protocolFamilyForCredentialKey(key: string): ProtocolFamily | undefined {
+  for (const family of PROTOCOL_FAMILIES) {
+    const creds = FAMILY_CREDENTIALS[family];
+    if (
+      creds.server.includes(key) ||
+      creds.client.includes(key) ||
+      creds.facilitator.includes(key)
+    ) {
+      return family;
+    }
+  }
+  return undefined;
 }
 
 export type NetworkMode = 'testnet' | 'mainnet';

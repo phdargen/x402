@@ -1,11 +1,8 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_KEETA_ADDRESS",
-      "CLIENT_KEETA_MNEMONIC",
-      "FACILITATOR_KEETA_MNEMONIC"
-    ]
+    "SERVER_KEETA_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_KEETA_MNEMONIC": { "required": true, "roles": ["client"] },
+    "FACILITATOR_KEETA_MNEMONIC": { "required": true, "roles": ["facilitator"] }
   },
   "testnet": {
     "name": "Keeta Testnet",

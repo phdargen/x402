@@ -23,7 +23,6 @@
     }
   },
   "include": [
-    "types/video.d.ts",
     "next-env.d.ts",
     "**/*.ts",
     "**/*.tsx",

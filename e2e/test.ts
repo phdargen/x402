@@ -13,7 +13,7 @@ import { parseArgs, printHelp } from './src/cli/args';
 import { runInteractiveMode } from './src/cli/interactive';
 import { filterScenarios, TestFilters, shouldShowExtensionOutput } from './src/cli/filters';
 import { minimizeScenarios } from './src/sampling';
-import { getNetworkSet, NetworkMode, NetworkConfig, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily, requiredRpcEnvForFamily } from './src/networks/networks';
+import { getNetworkSet, NetworkMode, NetworkConfig, getNetworkModeDescription, resolveEvmPermit2Asset, PROTOCOL_FAMILIES, requiredEnvForFamily, requiredRpcEnvForFamily, protocolFamilyForCredentialKey } from './src/networks/networks';
 import { injectNetworkEnv } from './src/env';
 import { FACILITATOR_ENV_PREFLIGHT_ALLOWLIST } from './src/mechanisms';
 import { GenericServerProxy } from './src/servers/generic-server';
@@ -733,45 +733,11 @@ async function runTest() {
   log('🚀 Starting X402 E2E Test Suite');
   log('===============================');
 
-  // Load configuration from environment
-  const serverEvmAddress = process.env.SERVER_EVM_ADDRESS;
-  const serverSvmAddress = process.env.SERVER_SVM_ADDRESS;
-  const serverAvmAddress = process.env.SERVER_AVM_ADDRESS;
-  const serverAptosAddress = process.env.SERVER_APTOS_ADDRESS;
-  const serverCcdAddress = process.env.SERVER_CCD_ADDRESS;
-  const serverHederaAddress = process.env.SERVER_HEDERA_ADDRESS;
-  const serverKeetaAddress = process.env.SERVER_KEETA_ADDRESS;
-  const serverStellarAddress = process.env.SERVER_STELLAR_ADDRESS;
-  const serverTvmAddress = process.env.SERVER_TVM_ADDRESS;
-  const serverNearAddress = process.env.SERVER_NEAR_ADDRESS;
-  const serverXrplAddress = process.env.SERVER_XRPL_ADDRESS;
+  // Env keys used below (preflight + funding use catalog/process.env directly)
   const clientEvmPrivateKey = process.env.CLIENT_EVM_PRIVATE_KEY;
-  const clientSvmPrivateKey = process.env.CLIENT_SVM_PRIVATE_KEY;
-  const clientAvmPrivateKey = process.env.CLIENT_AVM_PRIVATE_KEY;
-  const clientAptosPrivateKey = process.env.CLIENT_APTOS_PRIVATE_KEY;
-  const clientCcdPrivateKey = process.env.CLIENT_CCD_PRIVATE_KEY;
-  const clientCcdAddress = process.env.CLIENT_CCD_ADDRESS;
-  const clientHederaAccountId = process.env.CLIENT_HEDERA_ACCOUNT_ID;
-  const clientHederaPrivateKey = process.env.CLIENT_HEDERA_PRIVATE_KEY;
-  const clientKeetaMnemonic = process.env.CLIENT_KEETA_MNEMONIC;
-  const clientStellarPrivateKey = process.env.CLIENT_STELLAR_PRIVATE_KEY;
-  const clientTvmPrivateKey = process.env.CLIENT_TVM_PRIVATE_KEY;
-  const clientNearAccountId = process.env.CLIENT_NEAR_ACCOUNT_ID;
-  const clientNearPrivateKey = process.env.CLIENT_NEAR_PRIVATE_KEY;
-  const clientXrplSeed = process.env.CLIENT_XRPL_SEED;
   const facilitatorEvmPrivateKey = process.env.FACILITATOR_EVM_PRIVATE_KEY;
-  const facilitatorSvmPrivateKey = process.env.FACILITATOR_SVM_PRIVATE_KEY;
-  const facilitatorAvmPrivateKey = process.env.FACILITATOR_AVM_PRIVATE_KEY;
-  const facilitatorAptosPrivateKey = process.env.FACILITATOR_APTOS_PRIVATE_KEY;
-  const facilitatorCcdPrivateKey = process.env.FACILITATOR_CCD_PRIVATE_KEY;
-  const facilitatorCcdAddress = process.env.FACILITATOR_CCD_ADDRESS;
   const facilitatorHederaAccountId = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
   const facilitatorHederaPrivateKey = process.env.FACILITATOR_HEDERA_PRIVATE_KEY;
-  const facilitatorKeetaMnemonic = process.env.FACILITATOR_KEETA_MNEMONIC;
-  const facilitatorStellarPrivateKey = process.env.FACILITATOR_STELLAR_PRIVATE_KEY;
-  const facilitatorTvmPrivateKey = process.env.FACILITATOR_TVM_PRIVATE_KEY;
-  const facilitatorNearAccountId = process.env.FACILITATOR_NEAR_ACCOUNT_ID;
-  const facilitatorNearPrivateKey = process.env.FACILITATOR_NEAR_PRIVATE_KEY;
   const batchSettlementRecovery = envFlagDefaultTrue(process.env.EVM_BATCH_SETTLEMENT_RECOVERY);
 
   // Discover all servers, clients, and facilitators (always include legacy)
@@ -848,17 +814,13 @@ async function runTest() {
       : 'unset';
 
   log(`\n🌐 Network Mode: ${networkMode.toUpperCase()}`);
-  log(`   EVM: ${networks.evm.name} (${networks.evm.caip2})`);
-  log(`   EVM Permit2 asset: ${evmPermit2Asset || '(missing)'} (${permit2AssetSource})`);
-  log(`   SVM: ${networks.svm.name} (${networks.svm.caip2})`);
-  log(`   APTOS: ${networks.aptos.name} (${networks.aptos.caip2})`);
-  log(`   CCD: ${networks.ccd.name} (${networks.ccd.caip2})`);
-  log(`   HEDERA: ${networks.hedera.name} (${networks.hedera.caip2})`);
-  log(`   KEETA: ${networks.keeta.name} (${networks.keeta.caip2})`);
-  log(`   STELLAR: ${networks.stellar.name} (${networks.stellar.caip2})`);
-  log(`   TVM: ${networks.tvm.name} (${networks.tvm.caip2})`);
-  log(`   NEAR: ${networks.near.name} (${networks.near.caip2})`);
-  log(`   XRPL: ${networks.xrpl.name} (${networks.xrpl.caip2})`);
+  for (const family of PROTOCOL_FAMILIES) {
+    const net = networks[family];
+    log(`   ${family.toUpperCase()}: ${net.name} (${net.caip2})`);
+    if (family === 'evm') {
+      log(`   EVM Permit2 asset: ${evmPermit2Asset || '(missing)'} (${permit2AssetSource})`);
+    }
+  }
 
   if (networkMode === 'mainnet') {
     log('\n⚠️  WARNING: Running on MAINNET - real funds will be used!');
@@ -900,21 +862,6 @@ async function runTest() {
       if (!value) {
         missingRequiredEnv.add(name);
       }
-    }
-  }
-
-  // CCD: require private-key+address for client and facilitator.
-  if (selectedProtocolFamilies.has('ccd')) {
-    const clientHasKey = !!(clientCcdPrivateKey && clientCcdAddress);
-    const facilitatorHasKey = !!(facilitatorCcdPrivateKey && facilitatorCcdAddress);
-
-    if (clientHasKey) {
-      missingRequiredEnv.delete('CLIENT_CCD_PRIVATE_KEY');
-      missingRequiredEnv.delete('CLIENT_CCD_ADDRESS');
-    }
-    if (facilitatorHasKey) {
-      missingRequiredEnv.delete('FACILITATOR_CCD_PRIVATE_KEY');
-      missingRequiredEnv.delete('FACILITATOR_CCD_ADDRESS');
     }
   }
 
@@ -1067,6 +1014,12 @@ async function runTest() {
     for (const envVar of requiredVars) {
       // Skip env keys the harness assigns itself (e.g. PORT), never operator-supplied
       if (FACILITATOR_ENV_PREFLIGHT_ALLOWLIST.has(envVar)) {
+        continue;
+      }
+      // Skip credentials for families not in this run (catalog marks all wallet
+      // keys required per family; only selected families need them present).
+      const family = protocolFamilyForCredentialKey(envVar);
+      if (family && !selectedProtocolFamilies.has(family)) {
         continue;
       }
 
@@ -1508,9 +1461,9 @@ async function runTest() {
       enabledFamilies.push(family);
     }
 
-    // SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is forwarded via test.config.json
-    // optional env when set, so the server can self-manage batch-settlement
-    // claim/refund signatures.
+    // Optional SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY (server role only) opts
+    // into self-managed batch-settlement claim/refund signing; omit to delegate
+    // to the facilitator's /supported receiverAuthorizer.
     const serverConfig: ServerConfig = {
       port,
       networks,

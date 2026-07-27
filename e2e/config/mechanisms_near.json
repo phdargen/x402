@@ -1,13 +1,12 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_NEAR_ADDRESS",
-      "CLIENT_NEAR_ACCOUNT_ID",
-      "CLIENT_NEAR_PRIVATE_KEY",
-      "FACILITATOR_NEAR_ACCOUNT_ID",
-      "FACILITATOR_NEAR_PRIVATE_KEY"
-    ]
+    "SERVER_NEAR_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_NEAR_ACCOUNT_ID": { "required": true, "roles": ["client"] },
+    "CLIENT_NEAR_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "FACILITATOR_NEAR_ACCOUNT_ID": { "required": true, "roles": ["facilitator"] },
+    "FACILITATOR_NEAR_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] },
+    "SERVER_NEAR_AMOUNT": { "required": false, "roles": ["server"] },
+    "SERVER_NEAR_ASSET": { "required": false, "roles": ["server"] }
   },
   "testnet": {
     "name": "NEAR Testnet",

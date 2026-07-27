@@ -11,7 +11,10 @@ import (
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 )
 
-// declareExtension maps a catalog extension id to the SDK call that declares it.
+// declareExtension maps a catalog extension id to the SDK call that declares it
+// on a route. Declaration comes from mechanisms JSON `extensions` per route;
+// process-level registration (e.g. bazaar on the HTTP middleware) is separate
+// and enables enriching/honoring those declarations.
 // transport is "http" (default) or "mcp"; the bazaar extension shapes its
 // discovery declaration differently per transport (mirrors TS/Python declareExtension).
 func declareExtension(extensionID string, route ResolvedRoute, transport string) (map[string]interface{}, error) {

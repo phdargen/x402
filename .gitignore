@@ -16,8 +16,7 @@ typescript/package-lock.json
 .pnpm-store/
 cdk.out/
 
-# e2e Go build artifacts (compiled binaries) — named after their containing dir,
-# since `go build`/`go run` output isn't redirected to a common bin/ dir.
+# e2e Go build artifacts (compiled binaries)
 e2e/clients/go/http/go-http/go-http
 e2e/clients/go/mcp/mcp
 e2e/clients/go/mcp/mcp-go

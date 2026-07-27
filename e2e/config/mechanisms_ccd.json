@@ -1,13 +1,11 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_CCD_ADDRESS",
-      "CLIENT_CCD_PRIVATE_KEY",
-      "CLIENT_CCD_ADDRESS",
-      "FACILITATOR_CCD_PRIVATE_KEY",
-      "FACILITATOR_CCD_ADDRESS"
-    ]
+    "SERVER_CCD_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_CCD_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "CLIENT_CCD_ADDRESS": { "required": true, "roles": ["client"] },
+    "FACILITATOR_CCD_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] },
+    "FACILITATOR_CCD_ADDRESS": { "required": true, "roles": ["facilitator"] },
+    "CCD_WEATHER_PRICE_MICRO_CCD": { "required": false, "roles": ["server"] }
   },
   "testnet": {
     "name": "Concordium Testnet",

@@ -1,13 +1,12 @@
 {
   "env": {
-    "required": [],
-    "optional": [
-      "SERVER_HEDERA_ADDRESS",
-      "CLIENT_HEDERA_ACCOUNT_ID",
-      "CLIENT_HEDERA_PRIVATE_KEY",
-      "FACILITATOR_HEDERA_ACCOUNT_ID",
-      "FACILITATOR_HEDERA_PRIVATE_KEY"
-    ]
+    "SERVER_HEDERA_ADDRESS": { "required": true, "roles": ["server"] },
+    "CLIENT_HEDERA_ACCOUNT_ID": { "required": true, "roles": ["client"] },
+    "CLIENT_HEDERA_PRIVATE_KEY": { "required": true, "roles": ["client"] },
+    "FACILITATOR_HEDERA_ACCOUNT_ID": { "required": true, "roles": ["facilitator"] },
+    "FACILITATOR_HEDERA_PRIVATE_KEY": { "required": true, "roles": ["facilitator"] },
+    "HEDERA_AMOUNT": { "required": false, "roles": ["server"] },
+    "HEDERA_ASSET": { "required": false, "roles": ["server"] }
   },
   "testnet": {
     "name": "Hedera Testnet",

@@ -136,6 +136,11 @@ function buildExpectedEndpoint(
   if (endpoint.requiresPayment !== true) {
     return null;
   }
+  // Catalog route `extensions` is the source of truth for declaration; only
+  // routes that declare bazaar are expected in the discovery catalog.
+  if (!endpoint.extensions?.includes("bazaar")) {
+    return null;
+  }
 
   const serverTransport = server.config.transport ?? "http";
   const serverUrl = `http://localhost:${serverPort}`;

@@ -45,9 +45,16 @@ type catalogPrice struct {
 	ExtraEnv                   map[string]catalogExtraEnv `json:"extraEnv"`
 }
 
+// catalogEnvDecl is one env key's declaration in mechanisms_*.json.
+type catalogEnvDecl struct {
+	Required bool     `json:"required"`
+	Roles    []string `json:"roles"`
+}
+
+// catalogEnvList is the flattened required/optional view of an env map.
 type catalogEnvList struct {
-	Required []string `json:"required"`
-	Optional []string `json:"optional"`
+	Required []string
+	Optional []string
 }
 
 type catalogNetwork struct {
@@ -57,14 +64,29 @@ type catalogNetwork struct {
 
 // networkFile is one mechanisms_<id>.json file's contents.
 type networkFile struct {
-	Env     catalogEnvList             `json:"env"`
+	Env     map[string]catalogEnvDecl  `json:"env"`
 	Testnet catalogNetworkMode         `json:"testnet"`
 	Mainnet catalogNetworkMode         `json:"mainnet"`
 	Routes  map[string]json.RawMessage `json:"routes"`
 }
 
 type globalFile struct {
-	Env catalogEnvList `json:"env"`
+	Env map[string]catalogEnvDecl `json:"env"`
+}
+
+func flattenEnvMap(env map[string]catalogEnvDecl) catalogEnvList {
+	required := []string{}
+	optional := []string{}
+	for key, decl := range env {
+		if decl.Required {
+			required = append(required, key)
+		} else {
+			optional = append(optional, key)
+		}
+	}
+	sort.Strings(required)
+	sort.Strings(optional)
+	return catalogEnvList{Required: required, Optional: optional}
 }
 
 type catalogRouteDefinition struct {
@@ -170,6 +192,8 @@ func loadCatalog() (mechanismsCatalog, error) {
 			catalogErr = err
 			return
 		}
+		// Validate the new per-key env shape (global keys are harness-only).
+		_ = flattenEnvMap(g.Env)
 
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -206,7 +230,7 @@ func loadCatalog() (mechanismsCatalog, error) {
 			}
 
 			networks[id] = catalogNetwork{
-				Env:      nf.Env,
+				Env:      flattenEnvMap(nf.Env),
 				Networks: map[string]catalogNetworkMode{"testnet": nf.Testnet, "mainnet": nf.Mainnet},
 			}
 

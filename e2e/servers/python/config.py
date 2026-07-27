@@ -106,7 +106,12 @@ def configure_resource_server(server: Any, cfg: ServerConfig) -> None:
 
 
 def _declare_extension(extension_id: str, route: ResolvedRoute, transport: str = "http") -> dict[str, Any]:
-    """Map a catalog extension id to the SDK call that declares it on a route."""
+    """Map a catalog extension id to the SDK call that declares it on a route.
+
+    Declaration comes from mechanisms JSON ``extensions`` per route; process-level
+    registration (e.g. bazaar on the resource server) is separate and enables
+    enriching/honoring those declarations.
+    """
     if extension_id == "bazaar":
         output = route_discovery_output()
         if transport == "mcp":

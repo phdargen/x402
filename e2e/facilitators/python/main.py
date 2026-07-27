@@ -15,9 +15,11 @@ Supports:
 Run with: uv run uvicorn main:app --port 4022
 """
 
+import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 logging.basicConfig(level=logging.INFO, format="%(name)s %(levelname)s: %(message)s")
@@ -50,14 +52,33 @@ from x402.mechanisms.evm.batch_settlement.facilitator import (
 from x402.mechanisms.svm import FacilitatorKeypairSigner
 from x402.mechanisms.svm.exact import register_exact_svm_facilitator
 from x402.mechanisms.tvm import (
-    TVM_TESTNET,
     TVM_PROVIDER_TONAPI,
     HighloadV3Config,
     FacilitatorHighloadV3Signer,
 )
 from x402.mechanisms.tvm.exact import ExactTvmFacilitatorScheme
 
-# Load environment variables
+
+def _catalog_testnet_caip2(network_id: str) -> str:
+    """Read testnet.caip2 from e2e/config/mechanisms_<id>.json."""
+    injected = os.getenv("E2E_MECHANISMS_CATALOG")
+    candidates: list[Path] = []
+    if injected:
+        candidates.append(Path(injected))
+    here = Path(__file__).resolve()
+    candidates.extend(parent / "config" for parent in here.parents)
+    for catalog_dir in candidates:
+        path = catalog_dir / f"mechanisms_{network_id}.json"
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data["testnet"]["caip2"]
+    raise FileNotFoundError(f"Could not locate mechanisms_{network_id}.json")
+
+
+def _resolve_network_caip2(network_id: str) -> str:
+    env_key = f"{network_id.upper()}_NETWORK"
+    return os.environ.get(env_key) or _catalog_testnet_caip2(network_id)
+
 
 # Configuration
 PORT = int(os.environ.get("PORT", "4022"))
@@ -78,10 +99,10 @@ if not any(
     )
     sys.exit(1)
 
-# Network configuration
-EVM_NETWORK = os.environ.get("EVM_NETWORK", "eip155:84532")
-SVM_NETWORK = os.environ.get("SVM_NETWORK", "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1")
-TVM_NETWORK = os.environ.get("TVM_NETWORK", TVM_TESTNET)
+# Network configuration — harness-injected `${ID}_NETWORK` or catalog testnet
+EVM_NETWORK = _resolve_network_caip2("evm")
+SVM_NETWORK = _resolve_network_caip2("svm")
+TVM_NETWORK = _resolve_network_caip2("tvm")
 
 # Initialize the EVM signer from private key when configured
 evm_signer = None
@@ -256,13 +277,12 @@ if evm_signer is not None:
     # Register upto EVM scheme (V2 only)
     facilitator.register([EVM_NETWORK], UptoEvmFacilitatorScheme(evm_signer))
 
-    # Register batch-settlement EVM scheme (V2 only). Receiver-authorizer key
-    # falls back to the facilitator key, matching the TS e2e facilitator.
-    receiver_authorizer_pk = (
-        os.environ.get("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
-        or os.environ["FACILITATOR_EVM_PRIVATE_KEY"]
+    # Register batch-settlement EVM scheme (V2 only). Facilitator key is
+    # advertised as receiverAuthorizer in /supported; servers may delegate
+    # to it or supply their own (SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY).
+    batch_settlement_authorizer = LocalAuthorizerSigner(
+        os.environ["FACILITATOR_EVM_PRIVATE_KEY"]
     )
-    batch_settlement_authorizer = LocalAuthorizerSigner(receiver_authorizer_pk)
     print(
         f"EVM Receiver Authorizer (batch-settlement): {batch_settlement_authorizer.address}"
     )
