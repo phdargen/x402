@@ -33,6 +33,14 @@ func main() {
 	ginfw.SetMode(ginfw.ReleaseMode)
 	r := ginfw.New()
 	r.Use(ginfw.Recovery())
+	r.Use(func(c *ginfw.Context) {
+		if err := e2eserver.UnconfiguredErrorForPath(c.Request.URL.Path); err != nil {
+			c.JSON(http.StatusNotImplemented, err)
+			c.Abort()
+			return
+		}
+		c.Next()
+	})
 
 	r.Use(ginmw.X402Payment(ginmw.Config{
 		Routes:                 routes,

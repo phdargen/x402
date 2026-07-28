@@ -359,45 +359,9 @@ export function isNextHttpServer(
   return dir.endsWith('/typescript/http/next') || dir.endsWith('/http/next');
 }
 
-/** Next paymentProxy URL for a catalog route. */
-export function nextProxyHttpPath(route: {
-  path: string;
-  scheme: string;
-  network?: string;
-  networkId?: string;
-}): string {
-  const family = route.network ?? route.networkId;
-  if (route.scheme === 'batch-settlement' || (route.scheme === 'exact' && family === 'evm')) {
-    return `/api${route.path}/proxy`;
-  }
-  return `/api${route.path}`;
-}
-
 /** Next withX402 App Router URL for a catalog route. */
 export function nextWithX402HttpPath(catalogPath: string): string {
   return `/api${catalogPath}/withx402`;
-}
-
-/** Resolve a catalog path from Next URL segments (proxy suffix optional). */
-export function catalogPathFromNextSegments(segments: string[]): string | null {
-  if (segments.length === 0) {
-    return null;
-  }
-  let catalogPath: string;
-  if (segments[segments.length - 1] === 'proxy') {
-    catalogPath = `/${segments.slice(0, -1).join('/')}`;
-  } else {
-    catalogPath = `/${segments.join('/')}`;
-  }
-  return sdkRoutesFor('typescript').some(route => route.path === catalogPath) ? catalogPath : null;
-}
-
-function nextRouteToProxyEndpoint(route: SdkRoute): EndpointLike {
-  return {
-    ...sdkRouteToEndpoint(route),
-    path: nextProxyHttpPath(route),
-    description: `${routeDescription(route)} (proxy middleware)`,
-  };
 }
 
 function nextRouteToWithX402Endpoint(route: SdkRoute): EndpointLike {
@@ -411,7 +375,7 @@ function nextRouteToWithX402Endpoint(route: SdkRoute): EndpointLike {
 /** Paid + infra endpoints for the Next e2e server, derived from the catalog. */
 export function nextServerEndpoints(routes: SdkRoute[]): EndpointLike[] {
   return [
-    ...routes.flatMap(route => [nextRouteToProxyEndpoint(route), nextRouteToWithX402Endpoint(route)]),
+    ...routes.map(nextRouteToWithX402Endpoint),
     {
       path: '/api/health',
       method: 'GET',
@@ -749,6 +713,26 @@ export function resolveNetworkCaip2(
   env: EnvLookup = key => process.env[key],
 ): string {
   return env(derivedNetworkKey(network)) || getCatalogNetwork(network, 'testnet').caip2;
+}
+
+/** Derive a CAIP-2 namespace wildcard (`eip155:*`) from a concrete CAIP-2 id. */
+export function caip2Pattern(caip2: string): `${string}:*` {
+  const ns = caip2.split(':')[0];
+  if (!ns) {
+    throw new Error(`invalid caip2: ${caip2}`);
+  }
+  return `${ns}:*`;
+}
+
+/**
+ * Client/resource-server registration pattern for a catalog network id —
+ * `${namespace}:*` derived from catalog (or env-overridden) CAIP-2.
+ */
+export function networkCaip2Pattern(
+  network: CatalogNetworkId,
+  env: EnvLookup = key => process.env[key],
+): `${string}:*` {
+  return caip2Pattern(resolveNetworkCaip2(network, env));
 }
 
 /**

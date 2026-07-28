@@ -69,7 +69,7 @@ func main() {
 		}()
 	})
 
-	handler := nethttpmw.X402Payment(nethttpmw.Config{
+	paymentHandler := nethttpmw.X402Payment(nethttpmw.Config{
 		Routes:                 routes,
 		Facilitator:            facilitatorClient,
 		Schemes:                schemes,
@@ -94,6 +94,14 @@ func main() {
 			fmt.Printf("   Payer: %s\n", settleResp.Payer)
 		},
 	})(mux)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := e2eserver.UnconfiguredErrorForPath(r.URL.Path); err != nil {
+			writeJSON(w, http.StatusNotImplemented, err)
+			return
+		}
+		paymentHandler.ServeHTTP(w, r)
+	})
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

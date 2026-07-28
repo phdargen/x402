@@ -36,3 +36,17 @@ export function resolveNetworkCaip2(networkId: string): string {
   const fromEnv = process.env[`${networkId.toUpperCase()}_NETWORK`];
   return fromEnv || catalogTestnetCaip2(networkId);
 }
+
+/** Derive a CAIP-2 namespace wildcard (`eip155:*`) from a concrete CAIP-2 id. */
+export function caip2Pattern(caip2: string): `${string}:*` {
+  const ns = caip2.split(":")[0];
+  if (!ns) {
+    throw new Error(`invalid caip2: ${caip2}`);
+  }
+  return `${ns}:*`;
+}
+
+/** Client/resource-server registration pattern for a catalog network id. */
+export function networkCaip2Pattern(networkId: string): `${string}:*` {
+  return caip2Pattern(resolveNetworkCaip2(networkId));
+}

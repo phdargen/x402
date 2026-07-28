@@ -3,6 +3,7 @@ import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes, type Address } from "@solana/kit";
 import { wrapFetchWithPayment } from "@x402/fetch";
 import { x402Client, x402HTTPClient } from "@x402/core/client";
+import { networkCaip2Pattern } from "../../catalog-network.ts";
 import { ExactSwigSvmScheme } from "./swigScheme.js";
 
 config();
@@ -38,7 +39,7 @@ const authority = await createKeyPairSignerFromBytes(
 );
 
 const client = new x402Client().register(
-  "solana:*",
+  networkCaip2Pattern("svm"),
   new ExactSwigSvmScheme(
     authority,
     swigAccountAddress as Address,

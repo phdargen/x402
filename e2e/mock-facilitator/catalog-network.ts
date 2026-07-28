@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,4 +31,26 @@ export function resolveNetworkCaip2(networkId: string): string {
     testnet: { caip2: string };
   };
   return data.testnet.caip2;
+}
+
+/** Derive a CAIP-2 namespace wildcard (`eip155:*`) from a concrete CAIP-2 id. */
+export function caip2Pattern(caip2: string): `${string}:*` {
+  const ns = caip2.split(":")[0];
+  if (!ns) {
+    throw new Error(`invalid caip2: ${caip2}`);
+  }
+  return `${ns}:*`;
+}
+
+/** Client/resource-server registration pattern for a catalog network id. */
+export function networkCaip2Pattern(networkId: string): `${string}:*` {
+  return caip2Pattern(resolveNetworkCaip2(networkId));
+}
+
+/** Network ids present as `mechanisms_<id>.json` (excludes global). */
+export function catalogNetworkIds(): string[] {
+  return readdirSync(catalogDir())
+    .filter(name => /^mechanisms_.+\.json$/.test(name) && name !== "mechanisms_global.json")
+    .map(name => name.replace(/^mechanisms_/, "").replace(/\.json$/, ""))
+    .sort();
 }

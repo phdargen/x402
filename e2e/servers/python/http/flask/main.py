@@ -24,6 +24,7 @@ from handlers import (
     health_body,
     print_startup_banner,
     route_body,
+    unconfigured_error_for_path,
 )
 
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -45,6 +46,16 @@ routes = build_payment_routes(cfg)
 
 # Apply payment middleware
 PaymentMiddleware(app, routes, server)
+
+
+@app.before_request
+def reject_unconfigured_networks():
+    from flask import request
+
+    err = unconfigured_error_for_path(request.path)
+    if err:
+        return jsonify(err), 501
+
 
 # Global flag to track if server should accept new requests
 shutdown_requested = False

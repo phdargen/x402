@@ -178,6 +178,35 @@ def network_caip2(network_id: str, env: Callable[[str], str | None] = os.getenv)
     return env(_derived_network_key(network_id)) or definition["networks"]["testnet"]["caip2"]
 
 
+def caip2_pattern(caip2: str) -> str:
+    """Derive a CAIP-2 namespace wildcard (`eip155:*`) from a concrete CAIP-2 id."""
+    ns = caip2.split(":", 1)[0]
+    if not ns:
+        raise ValueError(f"invalid caip2: {caip2}")
+    return f"{ns}:*"
+
+
+def network_caip2_pattern(
+    network_id: str, env: Callable[[str], str | None] = os.getenv
+) -> str:
+    """Client/resource-server registration pattern for a catalog network id."""
+    return caip2_pattern(network_caip2(network_id, env))
+
+
+def catalog_network_ids() -> list[str]:
+    """Network ids that have at least one route for this SDK, in stable order."""
+    seen: list[str] = []
+    for route in catalog_routes():
+        if route.network not in seen:
+            seen.append(route.network)
+    return seen
+
+
+def server_address_env_key(network_id: str) -> str:
+    """Exported `SERVER_${ID}_ADDRESS` env key for a network."""
+    return _server_address_env_key(network_id)
+
+
 def _network_mode(network_id: str, caip2: str) -> str:
     modes = _network_definition(network_id)["networks"]
     return "mainnet" if modes["mainnet"]["caip2"] == caip2 else "testnet"

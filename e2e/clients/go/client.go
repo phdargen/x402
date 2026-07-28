@@ -65,79 +65,85 @@ type PaymentClientContext struct {
 }
 
 // BuildPaymentClient builds the shared x402 payment client + batched scheme
-// from env vars, registering every network scheme the Go e2e clients support
-// (EVM and SVM). Exits the process via OutputError on misconfiguration.
+// from env vars, registering each Go-supported network whose credentials are set.
+// Exits the process via OutputError on misconfiguration.
 func BuildPaymentClient() *PaymentClientContext {
 	evmPrivateKey := os.Getenv("CLIENT_EVM_PRIVATE_KEY")
-	if evmPrivateKey == "" {
-		log.Fatal("CLIENT_EVM_PRIVATE_KEY environment variable is required")
-	}
-
 	svmPrivateKey := os.Getenv("CLIENT_SVM_PRIVATE_KEY")
-	if svmPrivateKey == "" {
-		log.Fatal("CLIENT_SVM_PRIVATE_KEY environment variable is required")
+	if evmPrivateKey == "" && svmPrivateKey == "" {
+		log.Fatal("At least one of CLIENT_EVM_PRIVATE_KEY or CLIENT_SVM_PRIVATE_KEY is required")
 	}
 
-	evmRpcURL := os.Getenv("EVM_RPC_URL")
-	if evmRpcURL == "" {
-		evmRpcURL = "https://sepolia.base.org"
-	}
-	ethClient, err := ethclient.Dial(evmRpcURL)
-	if err != nil {
-		OutputError(fmt.Sprintf("Failed to connect to EVM RPC: %v", err))
-		return nil
-	}
+	x402Client := x402.Newx402Client()
+	var batchedScheme *batchedclient.BatchSettlementEvmScheme
 
-	evmSigner, err := evmsigners.NewClientSignerFromPrivateKeyWithClient(evmPrivateKey, ethClient)
-	if err != nil {
-		OutputError(fmt.Sprintf("Failed to create EVM signer: %v", err))
-		return nil
-	}
-
-	svmSigner, err := svmsigners.NewClientSignerFromPrivateKey(svmPrivateKey)
-	if err != nil {
-		OutputError(fmt.Sprintf("Failed to create SVM signer: %v", err))
-		return nil
-	}
-
-	var evmConfig *exactevm.ExactEvmSchemeConfig
-	if evmRpcURL != "" {
-		evmConfig = &exactevm.ExactEvmSchemeConfig{RPCURL: evmRpcURL}
-	}
-
-	var uptoConfig *uptoevm.UptoEvmSchemeConfig
-	if evmRpcURL != "" {
-		uptoConfig = &uptoevm.UptoEvmSchemeConfig{RPCURL: evmRpcURL}
-	}
-
-	var svmCfg *svmconfig.ClientConfig
-	if svmRpcURL := os.Getenv("SVM_RPC_URL"); svmRpcURL != "" {
-		svmCfg = &svmconfig.ClientConfig{RPCURL: svmRpcURL}
-	}
-
-	batchedCfg := &batchedclient.BatchSettlementEvmSchemeOptions{}
-	if salt := os.Getenv("EVM_BATCH_SETTLEMENT_CHANNEL"); salt != "" {
-		batchedCfg.Salt = salt
-	}
-	if voucherKey := os.Getenv("CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY"); voucherKey != "" {
-		voucherSigner, err := evmsigners.NewClientSignerFromPrivateKeyWithClient(voucherKey, ethClient)
+	if evmPrivateKey != "" {
+		evmRpcURL := os.Getenv("EVM_RPC_URL")
+		if evmRpcURL == "" {
+			evmRpcURL = "https://sepolia.base.org"
+		}
+		ethClient, err := ethclient.Dial(evmRpcURL)
 		if err != nil {
-			OutputError(fmt.Sprintf("Failed to create voucher signer: %v", err))
+			OutputError(fmt.Sprintf("Failed to connect to EVM RPC: %v", err))
 			return nil
 		}
-		batchedCfg.VoucherSigner = voucherSigner
-	}
-	batchedScheme := batchedclient.NewBatchSettlementEvmScheme(evmSigner, batchedCfg)
 
-	x402Client := x402.Newx402Client().
-		Register("eip155:*", exactevm.NewExactEvmScheme(evmSigner, evmConfig)).
-		Register("eip155:*", uptoevm.NewUptoEvmScheme(evmSigner, uptoConfig)).
-		Register("eip155:*", batchedScheme).
-		Register("solana:*", svm.NewExactSvmScheme(svmSigner, svmCfg)).
-		RegisterV1("base-sepolia", exactevmv1.NewExactEvmSchemeV1(evmSigner)).
-		RegisterV1("base", exactevmv1.NewExactEvmSchemeV1(evmSigner)).
-		RegisterV1("solana-devnet", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg)).
-		RegisterV1("solana", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg))
+		evmSigner, err := evmsigners.NewClientSignerFromPrivateKeyWithClient(evmPrivateKey, ethClient)
+		if err != nil {
+			OutputError(fmt.Sprintf("Failed to create EVM signer: %v", err))
+			return nil
+		}
+
+		var evmConfig *exactevm.ExactEvmSchemeConfig
+		if evmRpcURL != "" {
+			evmConfig = &exactevm.ExactEvmSchemeConfig{RPCURL: evmRpcURL}
+		}
+		var uptoConfig *uptoevm.UptoEvmSchemeConfig
+		if evmRpcURL != "" {
+			uptoConfig = &uptoevm.UptoEvmSchemeConfig{RPCURL: evmRpcURL}
+		}
+
+		batchedCfg := &batchedclient.BatchSettlementEvmSchemeOptions{}
+		if salt := os.Getenv("EVM_BATCH_SETTLEMENT_CHANNEL"); salt != "" {
+			batchedCfg.Salt = salt
+		}
+		if voucherKey := os.Getenv("CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY"); voucherKey != "" {
+			voucherSigner, err := evmsigners.NewClientSignerFromPrivateKeyWithClient(voucherKey, ethClient)
+			if err != nil {
+				OutputError(fmt.Sprintf("Failed to create voucher signer: %v", err))
+				return nil
+			}
+			batchedCfg.VoucherSigner = voucherSigner
+		}
+		batchedScheme = batchedclient.NewBatchSettlementEvmScheme(evmSigner, batchedCfg)
+
+		evmPattern := x402.Network(networkCaip2Pattern("evm"))
+		x402Client.
+			Register(evmPattern, exactevm.NewExactEvmScheme(evmSigner, evmConfig)).
+			Register(evmPattern, uptoevm.NewUptoEvmScheme(evmSigner, uptoConfig)).
+			Register(evmPattern, batchedScheme).
+			RegisterV1("base-sepolia", exactevmv1.NewExactEvmSchemeV1(evmSigner)).
+			RegisterV1("base", exactevmv1.NewExactEvmSchemeV1(evmSigner))
+	}
+
+	if svmPrivateKey != "" {
+		svmSigner, err := svmsigners.NewClientSignerFromPrivateKey(svmPrivateKey)
+		if err != nil {
+			OutputError(fmt.Sprintf("Failed to create SVM signer: %v", err))
+			return nil
+		}
+
+		var svmCfg *svmconfig.ClientConfig
+		if svmRpcURL := os.Getenv("SVM_RPC_URL"); svmRpcURL != "" {
+			svmCfg = &svmconfig.ClientConfig{RPCURL: svmRpcURL}
+		}
+
+		svmPattern := x402.Network(networkCaip2Pattern("svm"))
+		x402Client.
+			Register(svmPattern, svm.NewExactSvmScheme(svmSigner, svmCfg)).
+			RegisterV1("solana-devnet", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg)).
+			RegisterV1("solana", svmv1.NewExactSvmSchemeV1(svmSigner, svmCfg))
+	}
 
 	return &PaymentClientContext{
 		Client:        x402Client,

@@ -6,13 +6,34 @@ name a network, a route, or a price.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
-from catalog import PROTECTED_ROUTE_MESSAGE, catalog_routes, served_networks
+from catalog import (
+    PROTECTED_ROUTE_MESSAGE,
+    catalog_routes,
+    server_address_env_key,
+    served_networks,
+)
 
 HEALTH_PATH = "/health"
 CLOSE_PATH = "/close"
+
+
+def unconfigured_error_for_path(path: str) -> dict[str, str] | None:
+    """Return a 501 payload when path is a catalog route with no payee configured."""
+    for route in catalog_routes():
+        if route.path != path:
+            continue
+        env_key = server_address_env_key(route.network)
+        if os.getenv(env_key):
+            return None
+        return {
+            "error": f"{route.network.upper()} payments not configured",
+            "message": f"{env_key} environment variable is not set",
+        }
+    return None
 
 
 def _timestamp() -> str:

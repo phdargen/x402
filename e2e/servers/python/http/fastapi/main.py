@@ -25,7 +25,9 @@ from handlers import (
     health_body,
     print_startup_banner,
     route_body,
+    unconfigured_error_for_path,
 )
+from fastapi.responses import JSONResponse
 
 cfg = load_server_config()
 app = FastAPI()
@@ -42,10 +44,19 @@ configure_resource_server(server, cfg)
 routes = build_payment_routes(cfg)
 
 
-# Apply payment middleware
+# Apply payment middleware (inner). Unconfigured check is registered after so it
+# becomes the outer middleware and short-circuits with 501 first.
 @app.middleware("http")
 async def x402_payment_middleware(request, call_next):
     return await payment_middleware(routes, server)(request, call_next)
+
+
+@app.middleware("http")
+async def unconfigured_network_middleware(request, call_next):
+    err = unconfigured_error_for_path(request.url.path)
+    if err:
+        return JSONResponse(status_code=501, content=err)
+    return await call_next(request)
 
 
 # Global flag to track if server should accept new requests

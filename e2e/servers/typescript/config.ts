@@ -28,25 +28,15 @@ import {
   type ProtocolFamily,
 } from "../../src/networks/networks";
 import { resolvedRoutes, type ResolvedRoute } from "./catalog";
-import { routeDiscoveryOutput, mcpToolName, type RouteTransport } from "../../src/mechanisms";
+import {
+  networkCaip2Pattern,
+  routeDiscoveryOutput,
+  mcpToolName,
+  type RouteTransport,
+} from "../../src/mechanisms";
 
 export type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
 export { loadServerEnv } from "../../src/server-env";
-
-/** CAIP-2 namespace pattern each family registers under. */
-const FAMILY_CAIP2_PATTERN: Record<ProtocolFamily, `${string}:*`> = {
-  evm: "eip155:*",
-  svm: "solana:*",
-  avm: "algorand:*",
-  aptos: "aptos:*",
-  ccd: "ccd:*",
-  hedera: "hedera:*",
-  keeta: "keeta:*",
-  stellar: "stellar:*",
-  tvm: "tvm:*",
-  near: "near:*",
-  xrpl: "xrpl:*",
-};
 
 /**
  * Builds facilitator clients from FACILITATOR_URL (+ optional MOCK_FACILITATOR_URL).
@@ -66,7 +56,7 @@ function registerFamilySchemes(
   family: ProtocolFamily,
   cfg: ServerEnvConfig,
 ): void {
-  const pattern = FAMILY_CAIP2_PATTERN[family];
+  const pattern = networkCaip2Pattern(family);
 
   switch (family) {
     case "avm":

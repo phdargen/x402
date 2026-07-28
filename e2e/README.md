@@ -2,13 +2,13 @@
 
 End-to-end test suite for validating client-server-facilitator communication across languages and frameworks.
 
-Layout is `role/language/transport/component` (e.g. `servers/typescript/http/express/index.ts`). One pnpm package per TS language role; Go/Python keep per-component modules and flat language-root modules (`clients/<lang>/client.*`, `servers/<lang>/{catalog,config,routes}.*`) — no `shared/` subdirectory or extra package dir in any language. Vanilla HTTP/MCP components omit `test.config.json`; the harness infers type/language/transport from the path and merges the mechanisms catalog (see below). Overlays (echo, MCP, Next, svm-smart-wallet) keep a local config.
+Layout is `role/language/transport/component` (e.g. `servers/typescript/http/express/index.ts`). One pnpm package per TS language role; Go/Python keep per-component modules and flat language-root modules (`clients/<lang>/client.*`, `servers/<lang>/{catalog,config,routes}.*`) — no `shared/` subdirectory or extra package dir in any language. Vanilla HTTP/MCP components omit `test.config.json`; the harness infers type/language/transport from the path and merges the mechanisms catalog (see below). Custom surfaces (e.g. svm-smart-wallet) keep a local `test.config.json` overlay; Next and MCP use the shared language-root modules with no local endpoint list.
 
 You do **not** need to edit `generic-server` / `generic-client` / `generic-facilitator`, hand-list proxy env maps, or duplicate env/route blocks across sibling HTTP frameworks.
 
 ## Mechanisms catalog (SSOT)
 
-[`config/mechanisms_global.json`](config/mechanisms_global.json) plus one [`config/mechanisms_<id>.json`](config/) per network are the source of truth for v2 mechanisms. The file id is the network id (`mechanisms_evm.json` → `evm`); there is no fixed network-id type anywhere in the harness — adding a network is purely a catalog-file edit.
+[`config/mechanisms_global.json`](config/mechanisms_global.json) plus one [`config/mechanisms_<id>.json`](config/) per network are the source of truth for v2 mechanisms. The file id is the network id (`mechanisms_evm.json` → `evm`); the harness has no fixed network-id union — network identity (CAIP-2, env keys, routes) comes from the catalog. CAIP-2 registration patterns are derived from catalog `caip2` (never a per-family string table): clients and TS/Python resource servers use `${namespace}:*` via `networkCaip2Pattern`; Go resource servers register the exact catalog CAIP-2 (Go’s `BuildPaymentRequirements` looks up schemes by exact network); facilitators always register exact CAIP-2 via `resolveNetworkCaip2`. Scheme **classes** still need a one-time register call per language role (see [Add a network](#add-a-network)).
 
 `mechanisms_global.json` holds only cross-cutting harness env (`PORT`, `FACILITATOR_URL`, `RESOURCE_SERVER_URL`, `ENDPOINT_PATH`, `MOCK_FACILITATOR_URL`). Each `mechanisms_<id>.json` holds:
 
@@ -37,7 +37,7 @@ Adding a paid route to every SDK that should serve it is a catalog edit:
 1. **Define the route** — add an entry under `routes` in the relevant `config/mechanisms_<id>.json`, keyed by its path, with `scheme`, `sdks` (e.g. `["typescript", "go", "python"]`), and `price`. Add `extensions`, `schemeOptions`, or `settlementOverride` only where the route needs them.
 2. **Register the scheme once per language**, if it is new: server module (`servers/<lang>/`), client module (`clients/<lang>/`), and the facilitator main.
 
-Servers pick up the route, its `402` payment requirements, and its handler with no per-framework edit. A surface that serves less than its SDK’s list declares the narrowing in its local `test.config.json` (`excludeSchemes` / `excludeNetworks`) — see [`servers/go/http/echo/test.config.json`](servers/go/http/echo/test.config.json). The harness applies it to the derived endpoints and forwards it to the server process (`E2E_EXCLUDE_SCHEMES` / `E2E_EXCLUDE_NETWORKS`), so declared and mounted routes cannot diverge.
+Servers pick up the route, its `402` payment requirements, and its handler with no per-framework edit. A surface that serves less than its SDK’s list can declare the narrowing in a local `test.config.json` (`excludeSchemes` / `excludeNetworks`); the harness applies it to the derived endpoints and forwards it to the server process (`E2E_EXCLUDE_SCHEMES` / `E2E_EXCLUDE_NETWORKS`), so declared and mounted routes cannot diverge.
 
 After a server reports healthy, the harness requests every paid route it declares without payment. A `404`/`405` means the catalog lists a route the server never mounted, and fails startup immediately instead of silently dropping test coverage; any other status means the payment middleware owns the path, so payment-time failures stay the test suite’s job to report.
 
@@ -50,14 +50,14 @@ Four edits, no catalog type to touch:
 3. **Client** — register the scheme in `clients/<lang>/` (e.g. [`clients/typescript/client.ts`](clients/typescript/client.ts) / [`clients/python/client.py`](clients/python/client.py) / [`clients/go/client.go`](clients/go/client.go)).
 4. **Facilitator** — register the scheme in [`facilitators/typescript`](facilitators/typescript) / [`facilitators/go`](facilitators/go) / [`facilitators/python`](facilitators/python).
 
-Also add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` secrets to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below. Next / MCP keep local scheme registration in their own component entry; unique surfaces (Next, MCP, svm-smart-wallet) keep a **local** `test.config.json` overlay with explicit `endpoints`. Prefer `excludeSchemes` / `excludeNetworks` over an endpoint list when the surface is simply narrower than its SDK’s catalog routes.
+Also add `SERVER_*` / `CLIENT_*` / `FACILITATOR_*` secrets to [`.env-local`](.env-local) and the [Environment Variables](#environment-variables) section below. HTTP frameworks, Next, and MCP all pick up routes and scheme registration from the language-root modules — no per-framework CAIP-2 tables. Only custom flows (e.g. svm-smart-wallet) keep a local `endpoints` overlay.
 
 ## Add an HTTP framework
 
 | SDK | Steps |
 |-----|--------|
 | TypeScript | Add `clients/typescript/http/<name>/index.ts` or `servers/typescript/http/<name>/index.ts` using the language-root helpers (`../../client.ts` / `../../index.ts` for servers); add the adapter dep to the language `package.json`. Vanilla components need no local `test.config.json`. |
-| Go / Python | Add component dir with `main.go` / `main.py` + module file. `setup.sh` runs language defaults. Use a local overlay only when the surface is narrower (e.g. echo). |
+| Go / Python | Add component dir with `main.go` / `main.py` + module file. `setup.sh` runs language defaults. Vanilla components need no local `test.config.json`. |
 
 ## Custom flows (escape hatches)
 
@@ -184,12 +184,13 @@ having a stable balance during or after a run.
 
 ## Environment Variables
 
-Required environment variables (set in `.env` file):
+Copy [`.env-local`](.env-local) to `.env` and fill in values. Required wallet/payee keys are declared per network in `config/mechanisms_<id>.json` (`env` with `required: true`); the template lists those placeholders.
 
 ```bash
 # Client wallets (⚠️ TEST WALLETS ONLY — balances will be swept during runs)
 CLIENT_EVM_PRIVATE_KEY=0x...        # EVM private key for client payments
 CLIENT_SVM_PRIVATE_KEY=...          # Solana private key for client payments
+CLIENT_AVM_PRIVATE_KEY=...          # Algorand private key for client payments
 CLIENT_APTOS_PRIVATE_KEY=...        # Aptos private key for client payments (hex string)
 CLIENT_CCD_PRIVATE_KEY=...         # Concordium private key for client payments
 CLIENT_CCD_ADDRESS=...            # Concordium account address for client payments
@@ -205,6 +206,7 @@ CLIENT_XRPL_SEED=s...               # XRPL seed for client payments (payer signs
 # Server payment addresses
 SERVER_EVM_ADDRESS=0x...            # Where servers receive EVM payments
 SERVER_SVM_ADDRESS=...              # Where servers receive Solana payments
+SERVER_AVM_ADDRESS=...              # Where servers receive Algorand payments
 SERVER_APTOS_ADDRESS=0x...          # Where servers receive Aptos payments
 SERVER_CCD_ADDRESS=...              # Where servers receive Concordium payments
 SERVER_HEDERA_ADDRESS=0.0....       # Where servers receive Hedera payments
@@ -217,6 +219,7 @@ SERVER_XRPL_ADDRESS=r...            # Where servers receive XRPL payments
 # Facilitator wallets (⚠️ TEST WALLETS ONLY — used to fund/drain client between tests)
 FACILITATOR_EVM_PRIVATE_KEY=0x...   # EVM private key for facilitator
 FACILITATOR_SVM_PRIVATE_KEY=...     # Solana private key for facilitator
+FACILITATOR_AVM_PRIVATE_KEY=...     # Algorand private key for facilitator
 FACILITATOR_APTOS_PRIVATE_KEY=...   # Aptos private key for facilitator (hex string)
 FACILITATOR_CCD_PRIVATE_KEY=...    # Concordium private key for facilitator
 FACILITATOR_CCD_ADDRESS=...       # Concordium account address for facilitator

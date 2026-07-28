@@ -32,6 +32,14 @@ func main() {
 
 	e := echo.New()
 	e.HideBanner = true
+	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if err := e2eserver.UnconfiguredErrorForPath(c.Request().URL.Path); err != nil {
+				return c.JSON(http.StatusNotImplemented, err)
+			}
+			return next(c)
+		}
+	})
 
 	e.Use(echomw.X402Payment(echomw.Config{
 		Routes:                 routes,

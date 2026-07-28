@@ -23,54 +23,52 @@ from x402.extensions.erc20_approval_gas_sponsoring import (
 )
 from catalog import (
     ResolvedRoute,
+    catalog_network_ids,
     mcp_tool_name,
-    network_caip2,
+    network_caip2_pattern,
     resolve_routes,
     route_discovery_output,
+    server_address_env_key,
 )
 
 
 @dataclass(frozen=True)
 class ServerConfig:
-    evm_address: str | None
-    svm_address: str | None
-    tvm_address: str | None
     port: int
     facilitator_url: str | None
+    payees: dict[str, str]  # network id → SERVER_${ID}_ADDRESS
     evm_permit2_asset: str
-    evm_network: str
-    svm_network: str
-    tvm_network: str
+
+    def payee(self, network_id: str) -> str | None:
+        return self.payees.get(network_id)
 
 
 def load_server_config() -> ServerConfig:
     """Load and validate shared server env."""
-    evm_address = os.getenv("SERVER_EVM_ADDRESS")
-    svm_address = os.getenv("SERVER_SVM_ADDRESS")
-    tvm_address = os.getenv("SERVER_TVM_ADDRESS")
-    if not any([evm_address, svm_address, tvm_address]):
+    payees: dict[str, str] = {}
+    for network_id in catalog_network_ids():
+        addr = os.getenv(server_address_env_key(network_id))
+        if addr:
+            payees[network_id] = addr
+
+    if not payees:
         print(
-            "Error: At least one of SERVER_EVM_ADDRESS, SERVER_SVM_ADDRESS, or SERVER_TVM_ADDRESS is required"
+            "Error: At least one SERVER_*_ADDRESS for a Python catalog network is required"
         )
         sys.exit(1)
 
     return ServerConfig(
-        evm_address=evm_address,
-        svm_address=svm_address,
-        tvm_address=tvm_address,
         port=int(os.getenv("PORT", "4021")),
         facilitator_url=os.getenv("FACILITATOR_URL"),
+        payees=payees,
         evm_permit2_asset=os.getenv(
             "EVM_PERMIT2_ASSET", "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
         ),
-        evm_network=network_caip2("evm"),
-        svm_network=network_caip2("svm"),
-        tvm_network=network_caip2("tvm"),
     )
 
 
 def configure_resource_server(server: Any, cfg: ServerConfig) -> None:
-    """Register exact/upto/batch-settlement/tvm schemes + bazaar on a resource server."""
+    """Register schemes for configured catalog networks + bazaar on a resource server."""
     from x402.mechanisms.evm.exact import register_exact_evm_server
     from x402.mechanisms.evm.upto import UptoEvmServerScheme
     from x402.mechanisms.evm.batch_settlement.authorizer_signer import LocalAuthorizerSigner
@@ -82,25 +80,29 @@ def configure_resource_server(server: Any, cfg: ServerConfig) -> None:
     from x402.mechanisms.tvm.exact import ExactTvmServerScheme
     from x402.extensions.bazaar import bazaar_resource_server_extension
 
-    register_exact_evm_server(server, cfg.evm_network)
-    server.register(cfg.evm_network, UptoEvmServerScheme())
-    register_exact_svm_server(server, cfg.svm_network)
-    server.register(cfg.tvm_network, ExactTvmServerScheme())
-
-    if cfg.evm_address:
+    if cfg.payee("evm"):
+        evm_pattern = network_caip2_pattern("evm")
+        register_exact_evm_server(server, evm_pattern)
+        server.register(evm_pattern, UptoEvmServerScheme())
         receiver_authorizer_pk = os.environ.get("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
         batch_settlement_authorizer_signer = (
             LocalAuthorizerSigner(receiver_authorizer_pk) if receiver_authorizer_pk else None
         )
         server.register(
-            cfg.evm_network,
+            evm_pattern,
             BatchSettlementServerScheme(
-                cfg.evm_address,
+                cfg.payee("evm"),
                 BatchSettlementEvmSchemeServerConfig(
                     receiver_authorizer_signer=batch_settlement_authorizer_signer,
                 ),
             ),
         )
+
+    if cfg.payee("svm"):
+        register_exact_svm_server(server, network_caip2_pattern("svm"))
+
+    if cfg.payee("tvm"):
+        server.register(network_caip2_pattern("tvm"), ExactTvmServerScheme())
 
     server.register_extension(bazaar_resource_server_extension)
 

@@ -80,6 +80,19 @@ def _resolve_network_caip2(network_id: str) -> str:
     return os.environ.get(env_key) or _catalog_testnet_caip2(network_id)
 
 
+def _caip2_pattern(caip2: str) -> str:
+    """Derive a CAIP-2 namespace wildcard (`eip155:*`) from a concrete CAIP-2 id."""
+    ns = caip2.split(":", 1)[0]
+    if not ns:
+        raise ValueError(f"invalid caip2: {caip2}")
+    return f"{ns}:*"
+
+
+def _network_caip2_pattern(network_id: str) -> str:
+    """Client/resource-server registration pattern for a catalog network id."""
+    return _caip2_pattern(_resolve_network_caip2(network_id))
+
+
 # Configuration
 PORT = int(os.environ.get("PORT", "4022"))
 

@@ -29,6 +29,8 @@ from x402.mechanisms.tvm import (
 )
 from x402.mechanisms.tvm.exact import ExactTvmClientScheme
 
+from catalog_network import network_caip2_pattern, resolve_network_caip2
+
 
 @dataclass
 class ClientContext:
@@ -56,7 +58,7 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
     toncenter_api_key = os.getenv("TVM_TONCENTER_API_KEY")
     tonapi_api_key = os.getenv("TVM_TONAPI_API_KEY")
     tvm_rpc_url = os.getenv("TVM_RPC_URL")
-    tvm_network = os.getenv("TVM_NETWORK", TVM_TESTNET)
+    tvm_network = resolve_network_caip2("tvm")
     base_url = os.getenv("RESOURCE_SERVER_URL")
     endpoint_path = os.getenv("ENDPOINT_PATH")
     channel_salt = os.getenv("EVM_BATCH_SETTLEMENT_CHANNEL")
@@ -82,10 +84,11 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
     batch_scheme: Optional[BatchSettlementClientScheme] = None
 
     if evm_private_key:
+        evm_pattern = network_caip2_pattern("evm")
         evm_account = Account.from_key(evm_private_key)
         evm_signer = EthAccountSignerWithRPC(evm_account, rpc_url=evm_rpc_url)
-        register_exact_evm_client(client, evm_signer)
-        client.register("eip155:*", UptoEvmClientScheme(evm_signer))
+        register_exact_evm_client(client, evm_signer, networks=evm_pattern)
+        client.register(evm_pattern, UptoEvmClientScheme(evm_signer))
 
         voucher_signer = None
         if voucher_signer_key:
@@ -99,11 +102,13 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
                 voucher_signer=voucher_signer,
             ),
         )
-        client.register("eip155:*", batch_scheme)
+        client.register(evm_pattern, batch_scheme)
 
     if svm_private_key:
         svm_signer = KeypairSigner.from_base58(svm_private_key)
-        register_exact_svm_client(client, svm_signer, rpc_url=svm_rpc_url)
+        register_exact_svm_client(
+            client, svm_signer, networks=network_caip2_pattern("svm"), rpc_url=svm_rpc_url
+        )
 
     if tvm_private_key:
         if tvm_network not in {TVM_TESTNET, TVM_MAINNET}:
@@ -115,7 +120,7 @@ def create_e2e_client(*, sync: bool = False) -> ClientContext:
         )
         tvm_config.provider_base_url = tvm_rpc_url
         client.register(
-            tvm_network,
+            network_caip2_pattern("tvm"),
             ExactTvmClientScheme(WalletV5R1MnemonicSigner(tvm_config)),
         )
 

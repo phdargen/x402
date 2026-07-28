@@ -830,6 +830,20 @@ func resolveNetworkCaip2(networkID string) string {
 	return caip2
 }
 
+// caip2Pattern derives a CAIP-2 namespace wildcard (eip155:*) from a concrete CAIP-2 id.
+func caip2Pattern(caip2 string) string {
+	ns, _, ok := strings.Cut(caip2, ":")
+	if !ok || ns == "" {
+		log.Fatalf("❌ invalid caip2: %s", caip2)
+	}
+	return ns + ":*"
+}
+
+// networkCaip2Pattern is the client/resource-server registration pattern for a catalog network.
+func networkCaip2Pattern(networkID string) string {
+	return caip2Pattern(resolveNetworkCaip2(networkID))
+}
+
 // Network configuration helpers
 func getEvmRpcUrl(network string) string {
 	// Check for custom RPC URL first
@@ -897,85 +911,75 @@ func main() {
 	evmNetwork := resolveNetworkCaip2("evm")
 	svmNetwork := resolveNetworkCaip2("svm")
 
-	log.Printf("🌐 EVM Network: %s", evmNetwork)
-	log.Printf("🌐 SVM Network: %s", svmNetwork)
-
 	evmPrivateKey := os.Getenv("FACILITATOR_EVM_PRIVATE_KEY")
-	if evmPrivateKey == "" {
-		log.Fatal("❌ FACILITATOR_EVM_PRIVATE_KEY environment variable is required")
-	}
-
 	svmPrivateKey := os.Getenv("FACILITATOR_SVM_PRIVATE_KEY")
-	if svmPrivateKey == "" {
-		log.Fatal("❌ FACILITATOR_SVM_PRIVATE_KEY environment variable is required")
+	if evmPrivateKey == "" && svmPrivateKey == "" {
+		log.Fatal("❌ At least one of FACILITATOR_EVM_PRIVATE_KEY or FACILITATOR_SVM_PRIVATE_KEY is required")
 	}
 
-	// Initialize the real EVM blockchain signer with dynamic RPC URL
-	evmRpcUrl := getEvmRpcUrl(evmNetwork)
-	log.Printf("🌐 EVM RPC URL: %s", evmRpcUrl)
-	evmSigner, err := newRealFacilitatorEvmSigner(evmPrivateKey, evmRpcUrl)
-	if err != nil {
-		log.Fatalf("Failed to create EVM signer: %v", err)
-	}
-
-	chainID, _ := evmSigner.GetChainID(context.Background())
-	addresses := evmSigner.GetAddresses()
-	log.Printf("EVM Facilitator account: %s", addresses[0])
-	log.Printf("Connected to chain ID: %s", chainID.String())
-
-	// Initialize the real SVM blockchain signer with dynamic RPC URL
-	svmRpcUrl := getSvmRpcUrl(svmNetwork)
-	log.Printf("🌐 SVM RPC URL: %s", svmRpcUrl)
-	svmSigner, err := newRealFacilitatorSvmSigner(svmPrivateKey, svmRpcUrl)
-	if err != nil {
-		log.Fatalf("Failed to create SVM signer: %v", err)
-	}
-
-	svmAddresses := svmSigner.GetAddresses(context.Background(), svmNetwork)
-	log.Printf("SVM Facilitator account: %s", svmAddresses[0].String())
-
-	// Initialize the x402 Facilitator with EVM and SVM support
 	facilitator := x402.Newx402Facilitator()
+	var evmSigner *realFacilitatorEvmSigner
 
-	// Register EVM schemes with dynamic network
-	evmConfig := &exactevm.ExactEvmSchemeConfig{}
-	evmFacilitatorScheme := exactevm.NewExactEvmScheme(evmSigner, evmConfig)
-	facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, evmFacilitatorScheme)
+	if evmPrivateKey != "" {
+		log.Printf("🌐 EVM Network: %s", evmNetwork)
+		evmRpcUrl := getEvmRpcUrl(evmNetwork)
+		log.Printf("🌐 EVM RPC URL: %s", evmRpcUrl)
+		var err error
+		evmSigner, err = newRealFacilitatorEvmSigner(evmPrivateKey, evmRpcUrl)
+		if err != nil {
+			log.Fatalf("Failed to create EVM signer: %v", err)
+		}
 
-	// Register upto EVM scheme
-	uptoEvmFacilitatorScheme := uptoevm.NewUptoEvmScheme(evmSigner, nil)
-	facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, uptoEvmFacilitatorScheme)
+		chainID, _ := evmSigner.GetChainID(context.Background())
+		addresses := evmSigner.GetAddresses()
+		log.Printf("EVM Facilitator account: %s", addresses[0])
+		log.Printf("Connected to chain ID: %s", chainID.String())
 
-	// Register batch-settlement EVM scheme. The facilitator key is advertised as
-	// receiverAuthorizer in /supported; servers may delegate to it or supply their own.
-	batchedAuthorizer, err := newBatchedAuthorizerSigner(evmPrivateKey)
-	if err != nil {
-		log.Fatalf("Failed to create batch-settlement authorizer: %v", err)
+		evmConfig := &exactevm.ExactEvmSchemeConfig{}
+		facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, exactevm.NewExactEvmScheme(evmSigner, evmConfig))
+		facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, uptoevm.NewUptoEvmScheme(evmSigner, nil))
+
+		batchedAuthorizer, err := newBatchedAuthorizerSigner(evmPrivateKey)
+		if err != nil {
+			log.Fatalf("Failed to create batch-settlement authorizer: %v", err)
+		}
+		log.Printf("EVM Receiver Authorizer (batch-settlement): %s", batchedAuthorizer.Address())
+		facilitator.Register(
+			[]x402.Network{x402.Network(evmNetwork)},
+			batchedevm.NewBatchSettlementEvmScheme(evmSigner, batchedAuthorizer),
+		)
+
+		evmV1Config := &exactevmv1.ExactEvmSchemeV1Config{}
+		facilitator.RegisterV1(
+			[]x402.Network{x402.Network(getV1EvmNetwork(evmNetwork))},
+			exactevmv1.NewExactEvmSchemeV1(evmSigner, evmV1Config),
+		)
+
+		facilitator.RegisterExtension(eip2612gassponsor.EIP2612GasSponsoring)
+		facilitator.RegisterExtension(&erc20approvalgassponsor.Erc20ApprovalFacilitatorExtension{Signer: evmSigner})
 	}
-	log.Printf("EVM Receiver Authorizer (batch-settlement): %s", batchedAuthorizer.Address())
-	batchedScheme := batchedevm.NewBatchSettlementEvmScheme(evmSigner, batchedAuthorizer)
-	facilitator.Register([]x402.Network{x402.Network(evmNetwork)}, batchedScheme)
 
-	evmV1Config := &exactevmv1.ExactEvmSchemeV1Config{}
-	evmFacilitatorV1Scheme := exactevmv1.NewExactEvmSchemeV1(evmSigner, evmV1Config)
-	facilitator.RegisterV1([]x402.Network{x402.Network(getV1EvmNetwork(evmNetwork))}, evmFacilitatorV1Scheme)
+	if svmPrivateKey != "" {
+		log.Printf("🌐 SVM Network: %s", svmNetwork)
+		svmRpcUrl := getSvmRpcUrl(svmNetwork)
+		log.Printf("🌐 SVM RPC URL: %s", svmRpcUrl)
+		svmSigner, err := newRealFacilitatorSvmSigner(svmPrivateKey, svmRpcUrl)
+		if err != nil {
+			log.Fatalf("Failed to create SVM signer: %v", err)
+		}
 
-	// Register SVM schemes with dynamic network
-	svmFacilitatorScheme := svm.NewExactSvmScheme(svmSigner)
-	facilitator.Register([]x402.Network{x402.Network(svmNetwork)}, svmFacilitatorScheme)
+		svmAddresses := svmSigner.GetAddresses(context.Background(), svmNetwork)
+		log.Printf("SVM Facilitator account: %s", svmAddresses[0].String())
 
-	svmFacilitatorV1Scheme := svmv1.NewExactSvmSchemeV1(svmSigner)
-	facilitator.RegisterV1([]x402.Network{x402.Network(getV1SvmNetwork(svmNetwork))}, svmFacilitatorV1Scheme)
+		facilitator.Register([]x402.Network{x402.Network(svmNetwork)}, svm.NewExactSvmScheme(svmSigner))
+		facilitator.RegisterV1(
+			[]x402.Network{x402.Network(getV1SvmNetwork(svmNetwork))},
+			svmv1.NewExactSvmSchemeV1(svmSigner),
+		)
+	}
 
 	// Register the Bazaar discovery extension
 	facilitator.RegisterExtension(exttypes.BAZAAR)
-
-	// Register the EIP-2612 Gas Sponsoring extension
-	facilitator.RegisterExtension(eip2612gassponsor.EIP2612GasSponsoring)
-
-	// Register the ERC-20 Approval Gas Sponsoring extension
-	erc20Ext := &erc20approvalgassponsor.Erc20ApprovalFacilitatorExtension{Signer: evmSigner}
-	facilitator.RegisterExtension(erc20Ext)
 
 	// Lifecycle hooks for payment tracking and discovery
 	facilitator.
@@ -1317,6 +1321,18 @@ func main() {
 	})
 
 	// Start the server
+	evmAddr := "(not configured)"
+	if evmSigner != nil {
+		evmAddr = evmSigner.GetAddresses()[0]
+	}
+	svmLabel := "(not configured)"
+	if svmPrivateKey != "" {
+		svmLabel = svmNetwork
+	}
+	evmLabel := "(not configured)"
+	if evmPrivateKey != "" {
+		evmLabel = evmNetwork
+	}
 	fmt.Printf(`
 ╔════════════════════════════════════════════════════════╗
 ║              x402 Go Facilitator                       ║
@@ -1335,7 +1351,7 @@ func main() {
 ║  • GET  /health              (health check)           ║
 ║  • POST /close               (shutdown server)        ║
 ╚════════════════════════════════════════════════════════╝
-`, port, evmNetwork, svmNetwork, evmSigner.GetAddresses()[0])
+`, port, evmLabel, svmLabel, evmAddr)
 
 	// Log that facilitator is ready (needed for e2e test discovery)
 	log.Println("Facilitator listening")

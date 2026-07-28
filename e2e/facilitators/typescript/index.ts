@@ -156,40 +156,59 @@ if (HEDERA_RPC_URL) console.log(`🌐 Hedera Node URL: ${HEDERA_RPC_URL}`);
 if (STELLAR_RPC_URL) console.log(`🌐 Stellar RPC URL: ${STELLAR_RPC_URL}`);
 console.log(`🌐 TVM Provider: ${TVM_PROVIDER}`);
 
-// Validate required environment variables
-if (!process.env.FACILITATOR_EVM_PRIVATE_KEY) {
-  console.error("❌ FACILITATOR_EVM_PRIVATE_KEY environment variable is required");
+const hasFacilitatorCredential = [
+  process.env.FACILITATOR_EVM_PRIVATE_KEY,
+  process.env.FACILITATOR_SVM_PRIVATE_KEY,
+  process.env.FACILITATOR_APTOS_PRIVATE_KEY,
+  process.env.FACILITATOR_AVM_PRIVATE_KEY,
+  process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
+  process.env.FACILITATOR_KEETA_MNEMONIC,
+  process.env.FACILITATOR_STELLAR_PRIVATE_KEY,
+  process.env.FACILITATOR_TVM_PRIVATE_KEY,
+  process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIVATE_KEY,
+  process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRESS,
+  process.env.XRPL_NETWORK, // keyless XRPL facilitator
+].some(Boolean);
+
+if (!hasFacilitatorCredential) {
+  console.error("❌ At least one facilitator network credential is required");
   process.exit(1);
 }
 
-if (!process.env.FACILITATOR_SVM_PRIVATE_KEY) {
-  console.error("❌ FACILITATOR_SVM_PRIVATE_KEY environment variable is required");
-  process.exit(1);
+// Initialize the EVM account from private key when configured
+const evmAccount = process.env.FACILITATOR_EVM_PRIVATE_KEY
+  ? privateKeyToAccount(process.env.FACILITATOR_EVM_PRIVATE_KEY as `0x${string}`, {
+      nonceManager,
+    })
+  : undefined;
+if (evmAccount) {
+  console.info(`EVM Facilitator account: ${evmAccount.address}`);
 }
-
-// Initialize the EVM account from private key
-const evmAccount = privateKeyToAccount(
-  process.env.FACILITATOR_EVM_PRIVATE_KEY as `0x${string}`,
-  { nonceManager },
-);
-console.info(`EVM Facilitator account: ${evmAccount.address}`);
 
 // Batch-settlement receiver authorizer advertised in /supported. Servers may
 // delegate to this address or supply their own (SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY).
-const authorizerSigner: AuthorizerSigner = {
-  address: evmAccount.address,
-  signTypedData: (params) =>
-    evmAccount.signTypedData(
-      params as Parameters<typeof evmAccount.signTypedData>[0],
-    ),
-};
-console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
+const authorizerSigner: AuthorizerSigner | undefined = evmAccount
+  ? {
+      address: evmAccount.address,
+      signTypedData: (params) =>
+        evmAccount.signTypedData(
+          params as Parameters<typeof evmAccount.signTypedData>[0],
+        ),
+    }
+  : undefined;
+if (authorizerSigner) {
+  console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
+}
 
-// Initialize the SVM account from private key
-const svmAccount = await createKeyPairSignerFromBytes(
-  base58.decode(process.env.FACILITATOR_SVM_PRIVATE_KEY as string),
-);
-console.info(`SVM Facilitator account: ${svmAccount.address}`);
+// Initialize the SVM account from private key when configured
+const svmAccount = process.env.FACILITATOR_SVM_PRIVATE_KEY
+  ? await createKeyPairSignerFromBytes(
+      base58.decode(process.env.FACILITATOR_SVM_PRIVATE_KEY as string),
+    )
+  : undefined;
+if (svmAccount) {
+  console.info(`SVM Facilitator account: ${svmAccount.address}`);
+}
 
 // Initialize the Aptos account from private key (format to AIP-80 compliant format) if provided
 let aptosAccount: Account | undefined;
@@ -300,61 +319,65 @@ if (process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRE
   console.info(`CCD Facilitator account: ${process.env.FACILITATOR_CCD_ADDRESS} on ${CCD_NETWORK} (private key)`);
 }
 
-// Create a Viem client with both wallet and public capabilities
+// Create a Viem client with both wallet and public capabilities when EVM is configured
 const evmChain = getEvmChain(EVM_NETWORK);
-const viemClient = createWalletClient({
-  account: evmAccount,
-  chain: evmChain,
-  transport: http(EVM_RPC_URL),
-}).extend(publicActions);
+const viemClient = evmAccount
+  ? createWalletClient({
+      account: evmAccount,
+      chain: evmChain,
+      transport: http(EVM_RPC_URL),
+    }).extend(publicActions)
+  : undefined;
 
-// Initialize the x402 Facilitator with EVM, SVM, Aptos, and optional Hedera support
-
-const evmSigner = toFacilitatorEvmSigner({
-  address: evmAccount.address,
-  readContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args?: readonly unknown[];
-  }) =>
-    viemClient.readContract({
-      ...args,
-      args: args.args || [],
-    }),
-  verifyTypedData: (args: {
-    address: `0x${string}`;
-    domain: Record<string, unknown>;
-    types: Record<string, unknown>;
-    primaryType: string;
-    message: Record<string, unknown>;
-    signature: `0x${string}`;
-  }) => viemClient.verifyTypedData(args as any),
-  writeContract: (args: {
-    address: `0x${string}`;
-    abi: readonly unknown[];
-    functionName: string;
-    args: readonly unknown[];
-    gas?: bigint;
-  }) =>
-    viemClient.writeContract({
-      ...args,
-      args: args.args || [],
-      gas: args.gas,
-    }),
-  sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
-    viemClient.sendTransaction(args),
-  waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
-    viemClient.waitForTransactionReceipt(args),
-  getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
-});
+const evmSigner = evmAccount && viemClient
+  ? toFacilitatorEvmSigner({
+      address: evmAccount.address,
+      readContract: (args: {
+        address: `0x${string}`;
+        abi: readonly unknown[];
+        functionName: string;
+        args?: readonly unknown[];
+      }) =>
+        viemClient.readContract({
+          ...args,
+          args: args.args || [],
+        }),
+      verifyTypedData: (args: {
+        address: `0x${string}`;
+        domain: Record<string, unknown>;
+        types: Record<string, unknown>;
+        primaryType: string;
+        message: Record<string, unknown>;
+        signature: `0x${string}`;
+      }) => viemClient.verifyTypedData(args as any),
+      writeContract: (args: {
+        address: `0x${string}`;
+        abi: readonly unknown[];
+        functionName: string;
+        args: readonly unknown[];
+        gas?: bigint;
+      }) =>
+        viemClient.writeContract({
+          ...args,
+          args: args.args || [],
+          gas: args.gas,
+        }),
+      sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
+        viemClient.sendTransaction(args),
+      waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
+        viemClient.waitForTransactionReceipt(args),
+      getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
+    })
+  : undefined;
 
 // Facilitator can now handle all Solana networks with automatic RPC creation
 // Pass custom RPC URL if provided
-const svmSigner = toFacilitatorSvmSigner(
-  svmAccount,
-  SVM_RPC_URL ? { defaultRpcUrl: SVM_RPC_URL } : undefined,
-);
+const svmSigner = svmAccount
+  ? toFacilitatorSvmSigner(
+      svmAccount,
+      SVM_RPC_URL ? { defaultRpcUrl: SVM_RPC_URL } : undefined,
+    )
+  : undefined;
 
 // Facilitator can handle all Aptos networks with automatic RPC creation
 // Pass custom RPC URL if provided
@@ -412,6 +435,9 @@ const channelsAbi = [
 ] as const;
 
 async function readChannelBalance(channelId: `0x${string}`): Promise<bigint> {
+  if (!viemClient) {
+    throw new Error("EVM facilitator not configured");
+  }
   const result = (await viemClient.readContract({
     address: BATCH_SETTLEMENT_ADDRESS,
     abi: channelsAbi,
@@ -498,22 +524,27 @@ async function waitForBatchSettlementDepositConfirmed(
 
 const facilitator = new x402Facilitator();
 
-// Register EVM, SVM, Aptos, and Hedera schemes (v2 + v1 where applicable)
-facilitator
-  .register(EVM_NETWORK as Network, new ExactEvmScheme(evmSigner))
-  .register(EVM_NETWORK as Network, new UptoEvmScheme(evmSigner))
-  .register(
-    EVM_NETWORK as Network,
-    new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
-  )
-  .registerV1(EVM_V1_NETWORKS as Network[], new ExactEvmSchemeV1(evmSigner))
-  .register(
-    SVM_NETWORK as Network,
-    new ExactSvmScheme(svmSigner, undefined, {
-      enableSmartWalletVerification: true,
-    }),
-  )
-  .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
+// Register each configured family (exact CAIP-2 from catalog / env)
+if (evmSigner && authorizerSigner) {
+  facilitator
+    .register(EVM_NETWORK as Network, new ExactEvmScheme(evmSigner))
+    .register(EVM_NETWORK as Network, new UptoEvmScheme(evmSigner))
+    .register(
+      EVM_NETWORK as Network,
+      new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
+    )
+    .registerV1(EVM_V1_NETWORKS as Network[], new ExactEvmSchemeV1(evmSigner));
+}
+if (svmSigner) {
+  facilitator
+    .register(
+      SVM_NETWORK as Network,
+      new ExactSvmScheme(svmSigner, undefined, {
+        enableSmartWalletVerification: true,
+      }),
+    )
+    .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
+}
 if (avmSigner) {
   facilitator.register(AVM_NETWORK as Network, new ExactAvmScheme(avmSigner));
 }
@@ -561,71 +592,74 @@ if (concordiumSigner) {
 }
 
 
-const erc20ApprovalSigner = {
-  ...evmSigner,
-  sendTransactions: async (
-    transactions: (
-      | `0x${string}`
-      | { to: `0x${string}`; data: `0x${string}`; gas?: bigint }
-    )[],
-  ): Promise<`0x${string}`[]> => {
-    const hashes: `0x${string}`[] = [];
-    for (const tx of transactions) {
-      let hash: `0x${string}`;
-      if (typeof tx === "string") {
-        // Parse the raw tx to extract sender and gas params for potential gas funding
-        const parsed = parseTransaction(tx);
-        const payerAddress = await recoverTransactionAddress({
-          serializedTransaction: tx as TransactionSerialized,
-        });
-        const gas = parsed.gas ?? 70_000n;
-        const maxFeePerGas = parsed.maxFeePerGas ?? 1_000_000_000n;
-        const gasCost = gas * maxFeePerGas;
+facilitator.registerExtension(BAZAAR);
 
-        // Check if the payer has enough ETH for gas
-        const payerBalance = await viemClient.getBalance({
-          address: payerAddress,
-        });
-        if (payerBalance < gasCost) {
-          const deficit = gasCost - payerBalance;
-          console.log(
-            `⛽ Funding payer ${payerAddress} with ${deficit} wei for gas`,
-          );
-          const fundHash = await viemClient.sendTransaction({
-            to: payerAddress,
-            value: deficit,
+if (evmSigner && viemClient) {
+  const erc20ApprovalSigner = {
+    ...evmSigner,
+    sendTransactions: async (
+      transactions: (
+        | `0x${string}`
+        | { to: `0x${string}`; data: `0x${string}`; gas?: bigint }
+      )[],
+    ): Promise<`0x${string}`[]> => {
+      const hashes: `0x${string}`[] = [];
+      for (const tx of transactions) {
+        let hash: `0x${string}`;
+        if (typeof tx === "string") {
+          // Parse the raw tx to extract sender and gas params for potential gas funding
+          const parsed = parseTransaction(tx);
+          const payerAddress = await recoverTransactionAddress({
+            serializedTransaction: tx as TransactionSerialized,
           });
-          const fundReceipt = await viemClient.waitForTransactionReceipt({
-            hash: fundHash,
+          const gas = parsed.gas ?? 70_000n;
+          const maxFeePerGas = parsed.maxFeePerGas ?? 1_000_000_000n;
+          const gasCost = gas * maxFeePerGas;
+
+          // Check if the payer has enough ETH for gas
+          const payerBalance = await viemClient.getBalance({
+            address: payerAddress,
           });
-          if (fundReceipt.status !== "success") {
-            throw new Error(`gas_funding_failed: ${fundHash}`);
+          if (payerBalance < gasCost) {
+            const deficit = gasCost - payerBalance;
+            console.log(
+              `⛽ Funding payer ${payerAddress} with ${deficit} wei for gas`,
+            );
+            const fundHash = await viemClient.sendTransaction({
+              to: payerAddress,
+              value: deficit,
+            });
+            const fundReceipt = await viemClient.waitForTransactionReceipt({
+              hash: fundHash,
+            });
+            if (fundReceipt.status !== "success") {
+              throw new Error(`gas_funding_failed: ${fundHash}`);
+            }
+            console.log(`⛽ Gas funding confirmed: ${fundHash}`);
           }
-          console.log(`⛽ Gas funding confirmed: ${fundHash}`);
-        }
 
-        hash = await viemClient.sendRawTransaction({
-          serializedTransaction: tx,
-        });
-      } else {
-        hash = await viemClient.sendTransaction(tx);
+          hash = await viemClient.sendRawTransaction({
+            serializedTransaction: tx,
+          });
+        } else {
+          hash = await viemClient.sendTransaction(tx);
+        }
+        const receipt = await viemClient.waitForTransactionReceipt({ hash });
+        if (receipt.status !== "success") {
+          throw new Error(`transaction_failed: ${hash}`);
+        }
+        hashes.push(hash);
       }
-      const receipt = await viemClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") {
-        throw new Error(`transaction_failed: ${hash}`);
-      }
-      hashes.push(hash);
-    }
-    return hashes;
-  },
-};
+      return hashes;
+    },
+  };
+
+  facilitator
+    .registerExtension(EIP2612_GAS_SPONSORING)
+    .registerExtension(createErc20ApprovalGasSponsoringExtension(erc20ApprovalSigner));
+}
 
 facilitator
-  .registerExtension(BAZAAR)
-  .registerExtension(EIP2612_GAS_SPONSORING)
-  .registerExtension(
-    createErc20ApprovalGasSponsoringExtension(erc20ApprovalSigner),
-  )
   // Lifecycle hooks for payment tracking and discovery
   .onAfterVerify(async (context) => {
     // Hook 1: Track verified payment for verify→settle flow validation
@@ -922,7 +956,7 @@ let server = app.listen(parseInt(PORT), () => {
 ║  NEAR Network: ${NEAR_NETWORK}                         ║
 ║  XRPL Network: ${XRPL_NETWORK}                         ║
 ║  CCD Network:  ${CCD_NETWORK}                          ║
-║  EVM Address:  ${evmAccount.address}                   ║
+║  EVM Address:  ${evmAccount?.address ?? "(not configured)"}                   ║
 ║  AVM Address:  ${avmSigner ? avmSigner.getAddresses()[0] : "(not configured)"}
 ║  Aptos Address: ${aptosAccount ? aptosAccount.accountAddress.toStringLong().slice(0, 20) + "..." : "(not configured)"}
 ║  Hedera Address: ${process.env.FACILITATOR_HEDERA_ACCOUNT_ID || "(not configured)"} ║

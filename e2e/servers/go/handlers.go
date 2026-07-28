@@ -2,10 +2,30 @@ package server
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
+
+// UnconfiguredErrorForPath returns a 501 payload when path is a catalog route
+// whose network has no payee configured (mirrors the TS e2e servers).
+func UnconfiguredErrorForPath(path string) map[string]string {
+	for _, route := range CatalogRoutes() {
+		if route.Path != path {
+			continue
+		}
+		envKey := ServerAddressEnvKey(route.Network)
+		if os.Getenv(envKey) != "" {
+			return nil
+		}
+		return map[string]string{
+			"error":   fmt.Sprintf("%s payments not configured", strings.ToUpper(route.Network)),
+			"message": fmt.Sprintf("%s environment variable is not set", envKey),
+		}
+	}
+	return nil
+}
 
 // RouteBody builds the JSON body a paid route's handler returns.
 func RouteBody() map[string]interface{} {

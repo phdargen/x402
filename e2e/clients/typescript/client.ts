@@ -16,7 +16,7 @@ import { Account, Ed25519PrivateKey, PrivateKey, PrivateKeyVariants } from "@apt
 import { createClientHederaSigner, PrivateKey as HederaPrivateKey } from "@x402/hedera";
 import { ExactHederaScheme } from "@x402/hedera/exact/client";
 import { ExactKeetaScheme } from "@x402/keeta/exact/client";
-import { toClientKeetaSigner, KEETA_TESTNET_CAIP2, type ClientKeetaSigner } from "@x402/keeta";
+import { toClientKeetaSigner, type ClientKeetaSigner } from "@x402/keeta";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
 import { createEd25519Signer, type Ed25519Signer } from "@x402/stellar";
 import { ExactTvmScheme } from "@x402/tvm/exact/client";
@@ -36,7 +36,7 @@ import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { keyPairFromSeed, type KeyPair } from "@ton/crypto";
 import { x402Client, type SchemeRegistration } from "@x402/core/client";
 import type { SettleResponse } from "@x402/core/types";
-import { resolveNetworkCaip2 } from "./catalog-network.ts";
+import { networkCaip2Pattern, resolveNetworkCaip2 } from "./catalog-network.ts";
 
 export type RequestResult = {
   success: boolean;
@@ -190,18 +190,28 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     : undefined;
 
   const schemes: SchemeRegistration[] = [
-    { network: "eip155:*", client: new ExactEvmScheme(evmSigner, evmSchemeOptions) },
-    { network: "eip155:*", client: new UptoEvmClientScheme(evmSigner, uptoSchemeOptions) },
-    { network: "eip155:*", client: batchSettlementScheme },
+    { network: networkCaip2Pattern("evm"), client: new ExactEvmScheme(evmSigner, evmSchemeOptions) },
+    {
+      network: networkCaip2Pattern("evm"),
+      client: new UptoEvmClientScheme(evmSigner, uptoSchemeOptions),
+    },
+    { network: networkCaip2Pattern("evm"), client: batchSettlementScheme },
     { network: "base-sepolia", client: new ExactEvmSchemeV1(evmSigner), x402Version: 1 },
     { network: "base", client: new ExactEvmSchemeV1(evmSigner), x402Version: 1 },
-    { network: "solana:*", client: new ExactSvmScheme(svmSigner, svmSchemeOptions) },
-    { network: "solana-devnet", client: new ExactSvmSchemeV1(svmSigner, svmSchemeOptions), x402Version: 1 },
+    {
+      network: networkCaip2Pattern("svm"),
+      client: new ExactSvmScheme(svmSigner, svmSchemeOptions),
+    },
+    {
+      network: "solana-devnet",
+      client: new ExactSvmSchemeV1(svmSigner, svmSchemeOptions),
+      x402Version: 1,
+    },
     { network: "solana", client: new ExactSvmSchemeV1(svmSigner, svmSchemeOptions), x402Version: 1 },
   ];
   if (ccdPrivateKey && ccdAddress) {
     schemes.push({
-      network: "ccd:*",
+      network: networkCaip2Pattern("ccd"),
       client: new ExactConcordiumScheme(
         {
           accountAddress: AccountAddress.fromBase58(ccdAddress),
@@ -212,22 +222,37 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     });
   }
   if (aptosAccount) {
-    schemes.push({ network: "aptos:*", client: new ExactAptosScheme(aptosAccount) });
+    schemes.push({
+      network: networkCaip2Pattern("aptos"),
+      client: new ExactAptosScheme(aptosAccount),
+    });
   }
   if (hederaClientSigner) {
-    schemes.push({ network: "hedera:*", client: new ExactHederaScheme(hederaClientSigner) });
+    schemes.push({
+      network: networkCaip2Pattern("hedera"),
+      client: new ExactHederaScheme(hederaClientSigner),
+    });
   }
   if (keetaSigner) {
-    schemes.push({ network: KEETA_TESTNET_CAIP2, client: new ExactKeetaScheme(keetaSigner) });
+    schemes.push({
+      network: networkCaip2Pattern("keeta"),
+      client: new ExactKeetaScheme(keetaSigner),
+    });
   }
   if (stellarSigner) {
-    schemes.push({ network: "stellar:*", client: new ExactStellarScheme(stellarSigner) });
+    schemes.push({
+      network: networkCaip2Pattern("stellar"),
+      client: new ExactStellarScheme(stellarSigner),
+    });
   }
   if (avmSigner) {
-    schemes.push({ network: "algorand:*", client: new ExactAvmClientScheme(avmSigner) });
+    schemes.push({
+      network: networkCaip2Pattern("avm"),
+      client: new ExactAvmClientScheme(avmSigner),
+    });
   }
   if (tvmScheme) {
-    schemes.push({ network: "tvm:*", client: tvmScheme });
+    schemes.push({ network: networkCaip2Pattern("tvm"), client: tvmScheme });
   }
   if (process.env.CLIENT_NEAR_ACCOUNT_ID && process.env.CLIENT_NEAR_PRIVATE_KEY) {
     const nearNetwork = resolveNetworkCaip2("near") as `${string}:${string}`;
@@ -236,13 +261,16 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       secretKey: process.env.CLIENT_NEAR_PRIVATE_KEY as ClientNearSignerConfig["secretKey"],
       rpcUrls: process.env.NEAR_RPC_URL ? { [nearNetwork]: process.env.NEAR_RPC_URL } : undefined,
     });
-    schemes.push({ network: nearNetwork, client: new ExactNearClientScheme(nearSigner) });
+    schemes.push({
+      network: networkCaip2Pattern("near"),
+      client: new ExactNearClientScheme(nearSigner),
+    });
   }
   if (process.env.CLIENT_XRPL_SEED) {
     const xrplNetwork = resolveNetworkCaip2("xrpl") as `xrpl:${number}`;
     const xrplSigner = createXrplWalletSigner(Wallet.fromSeed(process.env.CLIENT_XRPL_SEED));
     schemes.push({
-      network: xrplNetwork,
+      network: networkCaip2Pattern("xrpl"),
       client: new ExactXrplClientScheme(
         xrplSigner,
         process.env.XRPL_RPC_URL

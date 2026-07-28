@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { server } from "@/proxy";
-import {
-  createProxyRouteHandler,
-  createWithX402GetHandler,
-  isKnownCatalogPath,
-  resolveProxyCatalogPath,
-} from "@/lib/setup";
+import { server } from "@/server";
+import { createWithX402GetHandler, isKnownCatalogPath } from "@/lib/setup";
 
 export const runtime = "nodejs";
 
@@ -23,9 +18,5 @@ export async function GET(
     return createWithX402GetHandler(catalogPath, server)(req);
   }
 
-  const catalogPath = resolveProxyCatalogPath(segments);
-  if (!catalogPath) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-  return createProxyRouteHandler(catalogPath)();
+  return NextResponse.json({ error: "Not found" }, { status: 404 });
 }

@@ -391,6 +391,40 @@ func NetworkCaip2(networkID string) string {
 	return network.Networks["testnet"].Caip2
 }
 
+// Caip2Pattern derives a CAIP-2 namespace wildcard (eip155:*) from a concrete CAIP-2 id.
+func Caip2Pattern(caip2 string) string {
+	ns, _, ok := strings.Cut(caip2, ":")
+	if !ok || ns == "" {
+		fmt.Printf("❌ invalid caip2: %s\n", caip2)
+		os.Exit(1)
+	}
+	return ns + ":*"
+}
+
+// NetworkCaip2Pattern is the client/resource-server registration pattern for a catalog network.
+func NetworkCaip2Pattern(networkID string) string {
+	return Caip2Pattern(NetworkCaip2(networkID))
+}
+
+// CatalogNetworkIDs returns network ids that have at least one route for this SDK.
+func CatalogNetworkIDs() []string {
+	seen := map[string]bool{}
+	ids := []string{}
+	for _, route := range CatalogRoutes() {
+		if !seen[route.Network] {
+			seen[route.Network] = true
+			ids = append(ids, route.Network)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ServerAddressEnvKey is the exported form of serverAddressEnvKey.
+func ServerAddressEnvKey(networkID string) string {
+	return serverAddressEnvKey(networkID)
+}
+
 func networkMode(network catalogNetwork, caip2 string) catalogNetworkMode {
 	if mainnet, ok := network.Networks["mainnet"]; ok && mainnet.Caip2 == caip2 {
 		return mainnet
