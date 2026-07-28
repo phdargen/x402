@@ -145,10 +145,18 @@ class x402Facilitator(x402FacilitatorBase):
         try:
             while True:
                 phase, hook, ctx = gen.send(result)
-                if phase == "scheme_verify":
-                    result = await hook
+                try:
+                    if phase == "scheme_verify":
+                        result = await hook
+                    else:
+                        result = await self._execute_hook(hook, ctx)
+                except Exception as verify_error:
+                    result = None
+                    command = gen.throw(verify_error)
                 else:
-                    result = await self._execute_hook(hook, ctx)
+                    command = None
+                if command is not None:
+                    continue
         except StopIteration as e:
             return e.value
 
@@ -185,10 +193,18 @@ class x402Facilitator(x402FacilitatorBase):
         try:
             while True:
                 phase, hook, ctx = gen.send(result)
-                if phase == "scheme_settle":
-                    result = await hook
+                try:
+                    if phase == "scheme_settle":
+                        result = await hook
+                    else:
+                        result = await self._execute_hook(hook, ctx)
+                except Exception as settle_error:
+                    result = None
+                    command = gen.throw(settle_error)
                 else:
-                    result = await self._execute_hook(hook, ctx)
+                    command = None
+                if command is not None:
+                    continue
         except StopIteration as e:
             return e.value
 
@@ -306,15 +322,24 @@ class x402FacilitatorSync(x402FacilitatorBase):
         try:
             while True:
                 phase, hook, ctx = gen.send(result)
-                if phase == "scheme_verify":
-                    if asyncio.iscoroutine(hook):
-                        hook.close()
-                        raise TypeError(
-                            "Async scheme methods are not supported in x402FacilitatorSync. "
-                            "Use x402Facilitator for async scheme support."
-                        )
+                try:
+                    if phase == "scheme_verify":
+                        if asyncio.iscoroutine(hook):
+                            hook.close()
+                            raise TypeError(
+                                "Async scheme methods are not supported in x402FacilitatorSync. "
+                                "Use x402Facilitator for async scheme support."
+                            )
+                        result = hook
+                    else:
+                        result = self._execute_hook_sync(hook, ctx)
+                except Exception as verify_error:
+                    result = None
+                    command = gen.throw(verify_error)
                 else:
-                    result = self._execute_hook_sync(hook, ctx)
+                    command = None
+                if command is not None:
+                    continue
         except StopIteration as e:
             return e.value
 
@@ -352,15 +377,24 @@ class x402FacilitatorSync(x402FacilitatorBase):
         try:
             while True:
                 phase, hook, ctx = gen.send(result)
-                if phase == "scheme_settle":
-                    if asyncio.iscoroutine(hook):
-                        hook.close()
-                        raise TypeError(
-                            "Async scheme methods are not supported in x402FacilitatorSync. "
-                            "Use x402Facilitator for async scheme support."
-                        )
+                try:
+                    if phase == "scheme_settle":
+                        if asyncio.iscoroutine(hook):
+                            hook.close()
+                            raise TypeError(
+                                "Async scheme methods are not supported in x402FacilitatorSync. "
+                                "Use x402Facilitator for async scheme support."
+                            )
+                        result = hook
+                    else:
+                        result = self._execute_hook_sync(hook, ctx)
+                except Exception as settle_error:
+                    result = None
+                    command = gen.throw(settle_error)
                 else:
-                    result = self._execute_hook_sync(hook, ctx)
+                    command = None
+                if command is not None:
+                    continue
         except StopIteration as e:
             return e.value
 
