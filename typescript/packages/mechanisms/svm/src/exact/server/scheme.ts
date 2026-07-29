@@ -10,9 +10,10 @@ import { parseMoneyString } from "@x402/core/utils";
 import {
   convertToTokenAmount,
   createRpcClient,
-  getUsdcAddress,
+  getStablecoinAddress,
   numberToDecimalString,
 } from "../../utils";
+import type { SvmStablecoinSymbol } from "../../constants";
 
 /** Options for the server-side {@link ExactSvmScheme}. */
 export interface ExactSvmServerOptions {
@@ -23,6 +24,13 @@ export interface ExactSvmServerOptions {
    */
   rpcUrl?: string;
 }
+
+type ParsedMoney = {
+  amount: number;
+  stablecoin?: SvmStablecoinSymbol;
+};
+
+const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
 
 /**
  * SVM server implementation for the Exact payment scheme.
@@ -78,7 +86,7 @@ export class ExactSvmScheme implements SchemeNetworkServer {
     }
 
     // Parse Money to decimal number
-    const amount = this.parseMoneyToDecimal(price);
+    const { amount, stablecoin } = this.parseMoney(price);
 
     // Try each custom money parser in order
     for (const parser of this.moneyParsers) {
@@ -89,7 +97,7 @@ export class ExactSvmScheme implements SchemeNetworkServer {
     }
 
     // All custom parsers returned null, use default conversion
-    return this.defaultMoneyConversion(amount, network);
+    return this.defaultMoneyConversion(amount, network, stablecoin);
   }
 
   /**
@@ -149,29 +157,51 @@ export class ExactSvmScheme implements SchemeNetworkServer {
    * @param money - The money value to parse
    * @returns Decimal number
    */
-  private parseMoneyToDecimal(money: string | number): number {
+  private parseMoney(money: string | number): ParsedMoney {
     if (typeof money === "number") {
-      return money;
+      return { amount: money };
     }
 
-    return parseMoneyString(money.replace(/\s+(?:USD|USDC)$/i, ""));
+    // Detect an optional trailing currency suffix (USD/USDC or another
+    // supported stablecoin), strip it, then parse the numeric part via the
+    // shared core parser ($-prefix + plain-decimal validation).
+    const numeric = money.replace(/\s+[A-Za-z][A-Za-z0-9]*\s*$/, "");
+    const suffix = money
+      .trim()
+      .match(/[A-Za-z][A-Za-z0-9]*$/)?.[0]
+      ?.toUpperCase();
+    const amount = parseMoneyString(numeric);
+
+    if (suffix === "USD") {
+      return { amount, stablecoin: "USDC" };
+    }
+    if (suffix && PRICE_STABLECOINS.has(suffix)) {
+      return { amount, stablecoin: suffix as SvmStablecoinSymbol };
+    }
+
+    return { amount };
   }
 
   /**
    * Default money conversion implementation.
-   * Converts decimal amount to USDC on the specified network.
+   * Converts decimal amount to a supported stablecoin on the specified network.
    *
    * @param amount - The decimal amount (e.g., 1.50)
    * @param network - The network to use
-   * @returns The parsed asset amount in USDC
+   * @param stablecoin - Stablecoin symbol to use; defaults to USDC
+   * @returns The parsed asset amount
    */
-  private defaultMoneyConversion(amount: number, network: Network): AssetAmount {
-    // Convert decimal amount to token amount (USDC has 6 decimals)
+  private defaultMoneyConversion(
+    amount: number,
+    network: Network,
+    stablecoin: SvmStablecoinSymbol = "USDC",
+  ): AssetAmount {
+    // Supported stablecoins in this SDK use 6 decimals.
     const tokenAmount = convertToTokenAmount(numberToDecimalString(amount), 6);
 
     return {
       amount: tokenAmount,
-      asset: getUsdcAddress(network),
+      asset: getStablecoinAddress(stablecoin, network),
       extra: {},
     };
   }

@@ -10,8 +10,7 @@ export default [
     ignores: ["dist/**", "node_modules/**"],
   },
   {
-    files: ["**/*.ts", "**/*.tsx"],
-    ignores: ["**/*.test.ts", "test/**/*"],
+    files: ["**/*.ts"],
     languageOptions: {
       parser: tsParser,
       sourceType: "module",
@@ -22,6 +21,7 @@ export default [
         module: "readonly",
         require: "readonly",
         Buffer: "readonly",
+        console: "readonly",
         exports: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
@@ -68,38 +68,6 @@ export default [
       "jsdoc/require-returns-description": "error",
       "jsdoc/require-returns-type": "off",
       "jsdoc/require-hyphen-before-param-description": ["error", "always"],
-    },
-  },
-  {
-    files: ["**/*.test.ts", "test/**/*"],
-    languageOptions: {
-      parser: tsParser,
-      sourceType: "module",
-      ecmaVersion: 2020,
-    },
-    plugins: {
-      "@typescript-eslint": ts,
-      prettier: prettier,
-    },
-    rules: {
-      "prettier/prettier": "error",
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/member-ordering": "off",
-    },
-  },
-  {
-    // Vendored Codama client + ported payment-channel primitives. These mirror
-    // upstream generated/Rust code, so they are exempt from the hand-written
-    // JSDoc-completeness rules (correctness rules like check-param-names still apply).
-    files: ["src/payment-channels/**/*.ts"],
-    rules: {
-      "jsdoc/require-jsdoc": "off",
-      "jsdoc/require-description": "off",
-      "jsdoc/require-param": "off",
-      "jsdoc/require-param-description": "off",
-      "jsdoc/require-returns": "off",
-      "jsdoc/require-returns-description": "off",
     },
   },
 ];
