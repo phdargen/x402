@@ -30,3 +30,8 @@ debug/
 
 # Rust vanity-miner build artifacts
 vanity-miner/target/
+
+# SP1 zk attribution workspace
+zk/target/
+zk/**/target/
+zk/program/elf/

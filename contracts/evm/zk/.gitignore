@@ -1,0 +1,22 @@
+# Cargo build
+**/target
+
+# Cargo config
+.cargo
+
+# Profile-guided optimization
+/tmp
+pgo-data.profdata
+
+# MacOS
+.DS_Store
+
+# Proofs
+**/proof-with-pis.json
+**/proof-with-io.json
+
+# Env
+.env
+
+# Generated ELF artifacts (rebuilt by script/build.rs)
+program/elf/

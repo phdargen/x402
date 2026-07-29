@@ -1,0 +1,16 @@
+[workspace]
+members = ["lib", "program", "script"]
+resolver = "2"
+
+[workspace.dependencies]
+alloy-primitives = { version = "1.5", default-features = false, features = ["std", "serde"] }
+alloy-sol-types = { version = "1.5", default-features = false, features = ["std"] }
+k256 = { version = "0.13.4", features = ["ecdsa", "std"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+hex = "0.4.3"
+
+# Patches so the guest uses SP1 precompiles. Host builds fall back to software paths.
+[patch.crates-io]
+k256 = { git = "https://github.com/sp1-patches/elliptic-curves", tag = "patch-k256-13.4-sp1-6.0.0" }
+tiny-keccak = { git = "https://github.com/sp1-patches/tiny-keccak", tag = "patch-2.0.2-sp1-6.0.0" }

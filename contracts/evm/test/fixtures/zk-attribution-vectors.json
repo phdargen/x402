@@ -1,0 +1,56 @@
+{
+  "attributionTypehash": "0x921074aa3e2f9ca1017b751e5a14340d244425ce686ddc963991255e1777e80c",
+  "emptyRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "pairCount": 2,
+  "pairs": [
+    {
+      "payTo": "0x0000000000000000000000000000000000000001",
+      "cumulative": "60",
+      "leaf": "0xa3f0af13bbc24f9a599303045bb90dfcdb939abd7adcca60700cc08fa292f791"
+    },
+    {
+      "payTo": "0x0000000000000000000000000000000000000002",
+      "cumulative": "40",
+      "leaf": "0xd713ae4f394bfd6aef7af01a08d49ae9377aec9e97dc14f4e41ccaf8d3c793d9"
+    }
+  ],
+  "root": "0x16b8b123cd90e1f000f497eed0c20c6183430ef4946119d989de62c9180d1fb6",
+  "attributionDigest": {
+    "domainSeparator": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "channelId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "payTo": "0x0000000000000000000000000000000000000001",
+    "cumulative": "60",
+    "digest": "0xbb752c76b6de9524f0bdca8869091dc26e72fb345397d51616d596c5b52921d6"
+  },
+  "claimLeaf": {
+    "channelId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "payer": "0x00000000000000000000000000000000000000AA",
+    "payerAuthorizer": "0x58DA990A8F4A3a6ca7cb6315d68a140105917352",
+    "token": "0x00000000000000000000000000000000000000bb",
+    "priorClaimed": "0",
+    "totalClaimed": "100",
+    "oldRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "newRoot": "0x16b8b123cd90e1f000f497eed0c20c6183430ef4946119d989de62c9180d1fb6",
+    "leaf": "0x1d77a93b94e30f8d9234c9e4fa0a9c39ed286d8eeb159eea2d56a7e7c7a23d08"
+  },
+  "creditLeaf": {
+    "receiver": "0x0000000000000000000000000000000000000001",
+    "token": "0x00000000000000000000000000000000000000bb",
+    "amount": "60",
+    "leaf": "0xf48b154a229c6af8894a5fcf3d092675d43616a492c6a1ea15329ceef1fdbfa2"
+  },
+  "batch": {
+    "domainSeparator": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "claimLeafCount": 1,
+    "creditLeafCount": 2,
+    "claimLeaves": [
+      "0x1d77a93b94e30f8d9234c9e4fa0a9c39ed286d8eeb159eea2d56a7e7c7a23d08"
+    ],
+    "creditLeaves": [
+      "0xf48b154a229c6af8894a5fcf3d092675d43616a492c6a1ea15329ceef1fdbfa2",
+      "0x43bf1f11fd7c7175642165839a8accf966812824643d1f0d93ee5f48996f2565"
+    ],
+    "batchCommitment": "0x0011f1fcbf3354e7ac57df6169fb0aae418a14016dd356975f8540a7238da887",
+    "witnessCommitment": "0x0011f1fcbf3354e7ac57df6169fb0aae418a14016dd356975f8540a7238da887"
+  }
+}

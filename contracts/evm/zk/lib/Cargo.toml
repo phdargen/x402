@@ -1,0 +1,15 @@
+[package]
+name = "x402-attribution-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
+k256 = { workspace = true }
+serde = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
