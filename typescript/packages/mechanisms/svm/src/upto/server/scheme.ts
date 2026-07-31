@@ -1,3 +1,5 @@
+import type { MessagePartialSigner } from "@solana/kit";
+import type { SettleContext } from "@x402/core/server";
 import type {
   AssetAmount,
   MoneyParser,
@@ -5,25 +7,34 @@ import type {
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
+  SupportedKind,
 } from "@x402/core/types";
 import type { SvmStablecoinSymbol } from "../../constants";
+import { DEFAULT_GRACE_PERIOD_SECONDS } from "../../payment-channels/open";
+import { signVoucher } from "../../payment-channels/voucher";
+import { isUptoSvmPayload } from "../../types";
 import {
   convertToTokenAmount,
   createRpcClient,
   getStablecoinAddress,
   getStablecoinTokenProgram,
   numberToDecimalString,
+  validateSvmAddress,
 } from "../../utils";
 
 /** Options for the server-side {@link UptoSvmScheme}. */
 export interface UptoSvmServerOptions {
+  /** Server hot key set as the channel `authorized_signer`; signs settlement vouchers. */
+  receiverAuthorizerSigner: MessagePartialSigner;
+  /**
+   * Channel `grace_period`; defaults to
+   * `max(DEFAULT_GRACE_PERIOD_SECONDS, maxTimeoutSeconds)`.
+   */
+  withdrawDelay?: number;
   /**
    * RPC endpoint used to fetch a recent blockhash + slot to embed in the 402
-   * challenge (`extra.recentBlockhash`, `extra.recentSlot`). The blockhash is
-   * optional for clients (they can fetch their own), but `recentSlot` is
-   * REQUIRED by `upto` payment-channel clients: it anchors the channel PDA
-   * (`open_slot` seed) and clients must take it from the challenge, never
-   * from their own RPC.
+   * challenge (`extra.recentBlockhash`, `extra.recentSlot`). Both are optional
+   * for clients (they can fetch their own).
    */
   rpcUrl?: string;
 }
@@ -39,24 +50,30 @@ const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
  * SVM server implementation for the `upto` payment scheme.
  *
  * Price parsing matches the exact scheme (stablecoin → 6-decimal atomic units);
- * `enhancePaymentRequirements` folds the facilitator's `getExtra`
- * (`feePayer`, `receiverAuthorizer`, and `withdrawDelay`) into the requirement
- * so the client can build the channel open, and — when an `rpcUrl` is configured
- * — embeds a fresh `recentBlockhash`/`recentSlot` pair in the challenge. The
- * `amount` is phase-dependent:
- * the authorized maximum at verification, the actual charge at settlement.
+ * `enhancePaymentRequirements` folds the facilitator's `feePayer`, declares the
+ * server-owned `receiverAuthorizer` / `withdrawDelay`, and — when an `rpcUrl`
+ * is configured — embeds a fresh `recentBlockhash`/`recentSlot` pair.
+ * `enrichSettlementPayload` attaches the receiver-authorizer voucher signature
+ * at settle time. The `amount` is phase-dependent: the authorized maximum at
+ * verification, the actual charge at settlement.
  */
 export class UptoSvmScheme implements SchemeNetworkServer {
   readonly scheme = "upto";
   private moneyParsers: MoneyParser[] = [];
+  private readonly receiverAuthorizerSigner: MessagePartialSigner;
+  private readonly withdrawDelay: number | undefined;
+  private readonly rpcUrl: string | undefined;
 
   /**
    * Construct the server-side upto scheme.
    *
-   * @param options - Optional server configuration (e.g. an `rpcUrl` to embed
-   *   the challenge `recentBlockhash`/`recentSlot`).
+   * @param options - Server configuration including the voucher-signing key
    */
-  constructor(private readonly options: UptoSvmServerOptions = {}) {}
+  constructor(options: UptoSvmServerOptions) {
+    this.receiverAuthorizerSigner = options.receiverAuthorizerSigner;
+    this.withdrawDelay = options.withdrawDelay;
+    this.rpcUrl = options.rpcUrl;
+  }
 
   /**
    * Register a custom money parser in the parser chain (tried in order).
@@ -67,6 +84,37 @@ export class UptoSvmScheme implements SchemeNetworkServer {
   registerMoneyParser(parser: MoneyParser): UptoSvmScheme {
     this.moneyParsers.push(parser);
     return this;
+  }
+
+  /**
+   * Return the decimal precision used for settlement amount overrides.
+   *
+   * @returns Always `6` for supported SVM stablecoins
+   */
+  getAssetDecimals(): number {
+    return 6;
+  }
+
+  /**
+   * Fail server startup when the facilitator does not advertise a usable `feePayer`.
+   *
+   * @param network - The network identifier being validated
+   * @param supportedKind - The facilitator's advertised kind for this scheme/network
+   * @param _ - Extensions advertised by the facilitator (unused)
+   * @returns A problem message when misconfigured, or void when valid
+   */
+  validateFacilitatorSupport(
+    network: Network,
+    supportedKind: SupportedKind,
+    _: string[],
+  ): string | void {
+    const feePayer = supportedKind.extra?.feePayer;
+    if (typeof feePayer !== "string" || !validateSvmAddress(feePayer)) {
+      return (
+        `facilitator does not advertise a valid feePayer for upto on ${network}; ` +
+        `a base58 Solana address is required`
+      );
+    }
   }
 
   /**
@@ -103,22 +151,16 @@ export class UptoSvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Fold the facilitator's `getExtra` payload into the requirement so the
-   * client can build the channel open against the advertised fee payer and
-   * receiver authorizer.
-   *
-   * When an RPC is configured, a single `getLatestBlockhash` call also embeds
-   * `extra.recentBlockhash` + `extra.lastValidBlockHeight` (transaction
-   * lifetime) and `extra.recentSlot` (from the response context — the
-   * channel-PDA `open_slot` anchor). Clients derive the channel PDA from
-   * `recentSlot` and must not substitute their own slot.
+   * Fold the facilitator's `feePayer` into the requirement, declare the
+   * server-owned `receiverAuthorizer` / `withdrawDelay`, and optionally embed
+   * a fresh blockhash/slot pair for the client open.
    *
    * @param paymentRequirements - The base payment requirements
    * @param supportedKind - The supported kind from the facilitator's /supported endpoint
    * @param supportedKind.x402Version - The x402 version
    * @param supportedKind.scheme - The payment scheme
    * @param supportedKind.network - The network identifier
-   * @param supportedKind.extra - Facilitator extra (`feePayer`, `receiverAuthorizer`, `withdrawDelay`)
+   * @param supportedKind.extra - Facilitator extra (`feePayer` only)
    * @param extensionKeys - Extension keys supported by the facilitator (unused)
    * @returns Enhanced payment requirements
    */
@@ -133,9 +175,14 @@ export class UptoSvmScheme implements SchemeNetworkServer {
     extensionKeys: string[],
   ): Promise<PaymentRequirements> {
     void extensionKeys;
+    const withdrawDelay =
+      this.withdrawDelay ??
+      Math.max(DEFAULT_GRACE_PERIOD_SECONDS, paymentRequirements.maxTimeoutSeconds);
     const extra: Record<string, unknown> = {
       ...paymentRequirements.extra,
       ...supportedKind.extra,
+      receiverAuthorizer: this.receiverAuthorizerSigner.address,
+      withdrawDelay,
     };
     extra.tokenProgram ??= getStablecoinTokenProgram(
       paymentRequirements.asset,
@@ -145,22 +192,46 @@ export class UptoSvmScheme implements SchemeNetworkServer {
     // Fetch the blockhash and the slot from the SAME response: the RPC result
     // context carries the slot the blockhash was produced at, so no separate
     // `getSlot` round-trip is needed and the two values are consistent.
-    // Best-effort like the exact scheme — but note that without `recentSlot`
-    // the upto client cannot build the channel open.
-    if (this.options.rpcUrl) {
+    // Best-effort — clients can fetch their own when these hints are absent.
+    if (this.rpcUrl) {
       try {
-        const rpc = createRpcClient(supportedKind.network, this.options.rpcUrl);
+        const rpc = createRpcClient(supportedKind.network, this.rpcUrl);
         const { context, value } = await rpc.getLatestBlockhash().send();
         extra.recentBlockhash = value.blockhash;
         extra.lastValidBlockHeight = value.lastValidBlockHeight.toString();
         extra.recentSlot = context.slot.toString();
       } catch {
-        // Leave the fields out; the client fails fast on the missing slot.
+        // Leave the fields out; the client falls back to its own RPC.
       }
     }
 
     return { ...paymentRequirements, extra };
   }
+
+  /**
+   * Attach the receiver-authorizer voucher signature before facilitator settle.
+   *
+   * @param ctx - Settlement context (requirements.amount is the actual charge)
+   * @returns Additive `voucherSignature` field for the settle payload
+   */
+  enrichSettlementPayload = async (ctx: SettleContext): Promise<Record<string, unknown> | void> => {
+    const raw = ctx.paymentPayload.payload as Record<string, unknown>;
+    if (!isUptoSvmPayload(raw)) return;
+
+    if (raw.receiverAuthorizer !== this.receiverAuthorizerSigner.address) {
+      throw new Error(
+        `payload.receiverAuthorizer ${raw.receiverAuthorizer} != configured ` +
+          `receiverAuthorizer ${this.receiverAuthorizerSigner.address}`,
+      );
+    }
+
+    const voucherSignature = await signVoucher(this.receiverAuthorizerSigner, {
+      channelId: raw.channelId,
+      cumulativeAmount: BigInt(ctx.requirements.amount),
+      expiresAt: BigInt(raw.expiresAt),
+    });
+    return { voucherSignature };
+  };
 
   /**
    * Parse Money (string | number) to a decimal number, recognizing a trailing

@@ -12,11 +12,8 @@ import {
   buildSettleAndSealInstructions,
   type ServerInstruction,
 } from "../../payment-channels/onchain";
-import {
-  DEFAULT_GRACE_PERIOD_SECONDS,
-  parseU64,
-  verifyOpenTransaction,
-} from "../../payment-channels/open";
+import { parseU64, verifyOpenTransaction } from "../../payment-channels/open";
+import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { isUptoSvmPayload, type UptoSvmPayloadV2 } from "../../types";
 import { createRpcClient, getStablecoinTokenProgram } from "../../utils";
 import { resolveUptoSvmPaymentChannelConfig } from "../shared";
@@ -24,7 +21,7 @@ import {
   broadcastOpen,
   channelExists,
   fetchAndVerifyOpenChannel,
-  signVoucher,
+  simulateZeroChargeSettle,
   submitSettle,
   type UptoSvmSigner,
   type VerifiedOpenChannel,
@@ -37,8 +34,6 @@ export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlemen
 export interface UptoSvmFacilitatorConfig {
   /** Custom RPC URL (per-network defaults are used when omitted). */
   rpcUrl?: string;
-  /** Forced-close grace period advertised as `extra.withdrawDelay`. */
-  withdrawDelay?: number;
 }
 
 interface VerifiedSettlementChannel extends VerifiedOpenChannel {
@@ -52,26 +47,25 @@ interface VerifiedSettlementChannel extends VerifiedOpenChannel {
  * SVM facilitator for the `upto` payment scheme.
  *
  * `verify` validates the client authorization and broadcasts the channel `open`
- * (escrowing the ceiling before the resource is served); `settle` signs a single
- * receiver-authorizer voucher for the actual metered amount (`actual ≤ max`),
- * then `settle_and_seal` + `distribute`, refunding the remainder to the payer.
+ * (escrowing the ceiling before resource execution); `settle` verifies the
+ * server-supplied voucher for the actual metered amount (`actual ≤ max`), then
+ * `settle_and_seal` + `distribute`, refunding the remainder to the payer.
  *
  * The fee payer holds the channel `payee` seat with a zero distribution share:
  * it signs `settle_and_seal` (lifecycle authority) and can always seal an
  * abandoned channel with `has_voucher = 0` to recover its rent, while any
- * nonzero settlement still requires the receiver authorizer's voucher
+ * nonzero settlement still requires the server's receiver-authorizer voucher
  * (payment authority).
  *
- * Unlike the exact scheme's minimal `FacilitatorSvmSigner`, this facilitator
- * needs a fee-payer signer for transactions/close authorization and a
- * receiver-authorizer signer for vouchers, so it takes Solana signers directly.
+ * Fee-payer selection matches the exact SVM facilitator: `getExtra` randomly
+ * picks one of the configured signers so load is distributed across keys.
  */
 export class UptoSvmScheme implements SchemeNetworkFacilitator {
   readonly scheme = "upto";
   readonly caipFamily = "solana:*";
 
-  private readonly feePayer: UptoSvmSigner;
-  private readonly receiverAuthorizer: UptoSvmSigner;
+  private readonly feePayers: ReadonlyMap<string, UptoSvmSigner>;
+  private readonly feePayerAddresses: readonly string[];
   private readonly config: UptoSvmFacilitatorConfig;
   private readonly inFlightChannels = new Set<string>();
   private readonly verifiedChannels = new Map<string, VerifiedSettlementChannel>();
@@ -80,42 +74,47 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   /**
    * Create the upto SVM facilitator.
    *
-   * @param feePayer - Transaction fee payer, channel rent payer, and zero-share channel payee
-   * @param receiverAuthorizer - Voucher signer. Defaults to `feePayer` for self-facilitation.
+   * @param feePayers - One or more transaction fee payers (also channel rent
+   *   payers and zero-share channel payees). `getExtra` randomly selects among them.
    * @param config - Optional RPC configuration
    */
   constructor(
-    feePayer: UptoSvmSigner,
-    receiverAuthorizer?: UptoSvmSigner,
+    feePayers: UptoSvmSigner | readonly UptoSvmSigner[],
     config: UptoSvmFacilitatorConfig = {},
   ) {
-    this.feePayer = feePayer;
-    this.receiverAuthorizer = receiverAuthorizer ?? feePayer;
+    const list = Array.isArray(feePayers) ? feePayers : [feePayers];
+    if (list.length === 0) {
+      throw new Error("UptoSvmScheme requires at least one fee payer signer");
+    }
+    const byAddress = new Map<string, UptoSvmSigner>();
+    for (const signer of list) {
+      byAddress.set(signer.address, signer);
+    }
+    this.feePayers = byAddress;
+    this.feePayerAddresses = [...byAddress.keys()];
     this.config = config;
   }
 
   /**
-   * Advertise the fee payer and receiver authorizer for payment-channel opens.
+   * Advertise a randomly selected fee payer for payment-channel opens.
+   * Random selection distributes load across multiple signers (same as exact).
    *
    * @param _ - The network identifier (unused)
    * @returns Extra metadata folded into the requirement's `extra`
    */
   getExtra(_: Network): Record<string, unknown> | undefined {
-    return {
-      feePayer: this.feePayer.address,
-      receiverAuthorizer: this.receiverAuthorizer.address,
-      withdrawDelay: this.config.withdrawDelay ?? DEFAULT_GRACE_PERIOD_SECONDS,
-    };
+    const randomIndex = Math.floor(Math.random() * this.feePayerAddresses.length);
+    return { feePayer: this.feePayerAddresses[randomIndex] };
   }
 
   /**
    * Signer addresses managed by this facilitator.
    *
    * @param _ - The network identifier (unused)
-   * @returns Unique signer addresses
+   * @returns Unique fee-payer addresses
    */
   getSigners(_: string): string[] {
-    return [...new Set([this.feePayer.address, this.receiverAuthorizer.address])];
+    return [...this.feePayerAddresses];
   }
 
   /**
@@ -156,22 +155,16 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       };
     }
 
-    const feePayer = this.feePayer.address;
-    const receiverAuthorizer = this.receiverAuthorizer.address;
-    if (channelConfig.feePayer !== feePayer) {
+    const feePayer = channelConfig.feePayer;
+    const feePayerSigner = this.resolveFeePayer(feePayer);
+    if (!feePayerSigner) {
       return { isValid: false, invalidReason: "facilitator_mismatch", payer: p.from };
     }
-    if (channelConfig.receiverAuthorizer !== receiverAuthorizer) {
+    const receiverAuthorizer = channelConfig.receiverAuthorizer;
+    if (p.receiverAuthorizer !== receiverAuthorizer) {
       return {
         isValid: false,
-        invalidReason: "invalid_upto_svm_receiver_authorizer_mismatch",
-        payer: p.from,
-      };
-    }
-    if (p.authorizedSigner !== receiverAuthorizer) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_authorized_signer",
+        invalidReason: "invalid_upto_svm_payload_receiver_authorizer",
         payer: p.from,
       };
     }
@@ -199,16 +192,22 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         payer: p.from,
       };
     }
+
+    const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
     let openSlot: bigint;
     let recentSlot: bigint;
     let nonce: bigint;
     try {
       openSlot = parseU64(p.openSlot, "payload.openSlot");
-      recentSlot = parseU64(
-        requirements.extra?.recentSlot as bigint | number | string,
-        "requirements.extra.recentSlot",
-      );
       nonce = parseU64(p.nonce, "payload.nonce");
+      if (requirements.extra?.recentSlot !== undefined && requirements.extra?.recentSlot !== null) {
+        recentSlot = parseU64(
+          requirements.extra.recentSlot as bigint | number | string,
+          "requirements.extra.recentSlot",
+        );
+      } else {
+        recentSlot = await rpc.getSlot().send();
+      }
     } catch {
       return {
         isValid: false,
@@ -229,20 +228,23 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       return { isValid: false, invalidReason: "invalid_upto_svm_payload_expired", payer: p.from };
     }
 
+    const tokenProgram =
+      (requirements.extra?.tokenProgram as string | undefined) ??
+      getStablecoinTokenProgram(requirements.asset, requirements.network);
+
     // Validate the open instruction against the pinned requirements.
     try {
       const open = await verifyOpenTransaction(p.openTransaction, {
         authorizedSigner: receiverAuthorizer,
         feePayer,
+        from: p.from,
         maxCap: maxAmount,
         mint: requirements.asset,
         openSlot,
         payee: feePayer,
         recentSlot,
         recipients: channelConfig.splits,
-        tokenProgram:
-          (requirements.extra?.tokenProgram as string | undefined) ??
-          getStablecoinTokenProgram(requirements.asset, requirements.network),
+        tokenProgram,
         withdrawDelay: channelConfig.withdrawDelay,
       });
       if (open.channelId !== p.channelId) {
@@ -291,16 +293,13 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     }
     this.inFlightChannels.add(p.channelId);
 
-    // Escrow the ceiling before the resource is served: broadcast the open
-    // when needed, then bind the confirmed onchain account to the challenge.
+    // Escrow the ceiling before resource execution: broadcast the open when
+    // needed, then bind the confirmed onchain account to the challenge and
+    // simulate the zero-charge settlement path.
     try {
-      const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
       if (!(await channelExists(rpc, p.channelId))) {
-        await broadcastOpen(this.feePayer, rpc, p.openTransaction);
+        await broadcastOpen(feePayerSigner, rpc, p.openTransaction);
       }
-      const tokenProgram =
-        (requirements.extra?.tokenProgram as string | undefined) ??
-        getStablecoinTokenProgram(requirements.asset, requirements.network);
       const channel = await fetchAndVerifyOpenChannel(rpc, p.channelId, {
         authorizedSigner: receiverAuthorizer,
         deposit: maxAmount,
@@ -310,6 +309,15 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         payer: p.from,
         rentPayer: feePayer,
         splits: channelConfig.splits,
+      });
+      await simulateZeroChargeSettle(feePayerSigner, rpc, {
+        channelId: channel.channelId,
+        mint: channel.mint,
+        payee: channel.payee,
+        payer: channel.payer,
+        rentPayer: channel.rentPayer,
+        splits: channel.splits,
+        tokenProgram,
       });
       const verifiedChannel = {
         ...channel,
@@ -335,8 +343,9 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
 
   /**
    * Settle the actual metered amount (`requirements.amount`) against the open
-   * channel: receiver-authorizer voucher + settle_and_seal + distribute,
-   * refunding the remainder. `actual === 0` still seals (full refund).
+   * channel: verify the server voucher + settle_and_seal + distribute,
+   * refunding the remainder. `actual === 0` still seals (full refund) after
+   * verifying the zero-amount voucher authenticates the settle request.
    *
    * @param payload - The payment payload
    * @param requirements - The payment requirements (amount = actual charge)
@@ -418,21 +427,104 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       };
     }
 
+    let channelConfig: ReturnType<typeof resolveUptoSvmPaymentChannelConfig>;
     try {
+      channelConfig = resolveUptoSvmPaymentChannelConfig(requirements);
+    } catch (error) {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_payment_requirements",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        payer: p.from,
+      };
+    }
+
+    if (
+      p.receiverAuthorizer !== channelConfig.receiverAuthorizer ||
+      p.receiverAuthorizer !== verifiedChannel.authorizedSigner
+    ) {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_payload_receiver_authorizer",
+        payer: p.from,
+      };
+    }
+
+    if (typeof p.voucherSignature !== "string" || p.voucherSignature.length === 0) {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_payload_missing_voucher",
+        payer: p.from,
+      };
+    }
+
+    const voucherMessage = encodeVoucherMessageBytes({
+      channelId: verifiedChannel.channelId,
+      cumulativeAmount: actual,
+      expiresAt: verifiedChannel.expiresAt,
+    });
+    let voucherOk: boolean;
+    try {
+      voucherOk = await verifyVoucherSignature({
+        message: voucherMessage,
+        signatureBase58: p.voucherSignature,
+        signerBase58: p.receiverAuthorizer,
+      });
+    } catch {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_payload_voucher_signature",
+        payer: p.from,
+      };
+    }
+    if (!voucherOk) {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_payload_voucher_signature",
+        payer: p.from,
+      };
+    }
+
+    const feePayerSigner = this.resolveFeePayer(verifiedChannel.payee);
+    if (!feePayerSigner) {
+      this.inFlightChannels.delete(p.channelId);
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "facilitator_mismatch",
+        payer: p.from,
+      };
+    }
+
+    try {
+      // Program requires settled < cumulative_amount, so has_voucher only when actual > 0.
+      // The zero-amount voucher still authenticated the settle request above.
       const settle = buildSettleAndSealInstructions({
         channelId: verifiedChannel.channelId,
-        payeeSigner: this.feePayer,
+        payeeSigner: feePayerSigner,
         voucher:
           actual > 0n
             ? {
-                authorizedSigner: this.receiverAuthorizer.address,
+                authorizedSigner: verifiedChannel.authorizedSigner,
                 cumulativeAmount: actual,
                 expiresAt: verifiedChannel.expiresAt,
-                signatureBase58: await signVoucher(this.receiverAuthorizer, {
-                  channelId: verifiedChannel.channelId,
-                  cumulativeAmount: actual,
-                  expiresAt: verifiedChannel.expiresAt,
-                }),
+                signatureBase58: p.voucherSignature,
               }
             : undefined,
       });
@@ -449,7 +541,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
 
       const instructions: ServerInstruction[] = [...settle, distribute];
       const rpc = createRpcClient(verifiedChannel.network, this.config.rpcUrl);
-      const signature = await submitSettle(this.feePayer, rpc, instructions);
+      const signature = await submitSettle(feePayerSigner, rpc, instructions);
 
       return {
         success: true,
@@ -470,6 +562,16 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     } finally {
       this.inFlightChannels.delete(p.channelId);
     }
+  }
+
+  /**
+   * Resolve the configured signer for a fee-payer address.
+   *
+   * @param address - Fee-payer address from the challenge
+   * @returns The matching signer, or undefined when not managed
+   */
+  private resolveFeePayer(address: string): UptoSvmSigner | undefined {
+    return this.feePayers.get(address);
   }
 
   /**
