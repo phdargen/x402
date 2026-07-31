@@ -588,7 +588,7 @@ describe("upto SVM scheme", () => {
         splits,
       };
       const channel = {
-        discriminator: 0,
+        discriminator: 1,
         version: 1,
         bump: 255,
         status: 0,
@@ -647,10 +647,10 @@ describe("upto SVM scheme", () => {
 
     it("selects the payment-channels treasury owner per network", () => {
       expect(getPaymentChannelsTreasuryOwner(SOLANA_DEVNET_CAIP2)).toBe(
-        "11111111111111111111111111111111",
+        "4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap",
       );
       expect(getPaymentChannelsTreasuryOwner("solana-devnet")).toBe(
-        "11111111111111111111111111111111",
+        "4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap",
       );
       expect(getPaymentChannelsTreasuryOwner(SOLANA_MAINNET_CAIP2)).toBe(
         "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP",

@@ -47,11 +47,11 @@ if (!evmPrivateKey && !svmPrivateKey) {
 }
 
 const rentCleanupIntervalSecs = Number.parseInt(
-  process.env.RENT_CLEANUP_INTERVAL_SECS ?? "300",
+  process.env.RENT_CLEANUP_INTERVAL_SECS ?? "30",
   10,
 );
 const abandonTimeoutSecs = Number.parseInt(
-  process.env.RENT_CLEANUP_ABANDON_TIMEOUT_SECS ?? "3600",
+  process.env.RENT_CLEANUP_ABANDON_TIMEOUT_SECS ?? "360",
   10,
 );
 

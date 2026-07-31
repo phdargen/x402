@@ -49,7 +49,8 @@ import type { ChannelSplit } from "../../payment-channels/open";
 import type { FacilitatorSvmSigner } from "../../signer";
 import { createRpcClient } from "../../utils";
 
-const CHANNEL_ACCOUNT_DISCRIMINATOR = 0;
+/** Payment-channels `AccountDiscriminator::Channel` (byte 0 is reserved for uninitialized accounts). */
+const CHANNEL_ACCOUNT_DISCRIMINATOR = 1;
 const CHANNEL_STATUS_OPEN = 0;
 /** Solana per-transaction compute-unit max; used only for facilitator-built sims. */
 const SIM_COMPUTE_UNIT_LIMIT = 1_400_000;
