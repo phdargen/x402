@@ -1085,13 +1085,19 @@ export class x402ResourceServer {
     // Apply settlement overrides (e.g., partial settlement for upto scheme)
     let effectiveRequirements = requirements;
     if (settlementOverrides?.amount !== undefined) {
-      const scheme = findByNetworkAndScheme(
-        this.registeredServerSchemes,
-        requirements.scheme,
-        requirements.network as Network,
-      );
-      const decimals =
-        scheme?.getAssetDecimals?.(requirements.asset ?? "", requirements.network as Network) ?? 6;
+      // Only `$…` overrides need asset decimals. Atomic and percent formats must
+      // not force a decimals lookup (unknown custom mints would otherwise fail).
+      let decimals = 6;
+      if (/^\$\d+(?:\.\d+)?$/.test(settlementOverrides.amount)) {
+        const scheme = findByNetworkAndScheme(
+          this.registeredServerSchemes,
+          requirements.scheme,
+          requirements.network as Network,
+        );
+        decimals =
+          scheme?.getAssetDecimals?.(requirements.asset ?? "", requirements.network as Network) ??
+          6;
+      }
       effectiveRequirements = {
         ...requirements,
         amount: resolveSettlementOverrideAmount(settlementOverrides.amount, requirements, decimals),
@@ -1526,6 +1532,9 @@ export class x402ResourceServer {
 
   /**
    * Notify hooks that verified work ended before settlement.
+   * After cleanup hooks, asks the matched scheme for {@link SchemeNetworkServer.settleOnCancel}
+   * requirements and settles once when provided. Settlement errors are warned, not thrown,
+   * so transports can preserve the original application failure.
    *
    * @param paymentPayload - Signed payment payload from the client
    * @param requirements - Requirements matched to the payload
@@ -1565,6 +1574,31 @@ export class x402ResourceServer {
       } catch (error) {
         this.warnResourceServerHookFailure("onVerifiedPaymentCanceled", label, error);
       }
+    }
+
+    const scheme = findByNetworkAndScheme(
+      this.registeredServerSchemes,
+      matchedScheme.scheme,
+      matchedScheme.network,
+    );
+    if (!scheme?.settleOnCancel) {
+      return;
+    }
+
+    const label = `scheme "${matchedScheme.scheme}" settleOnCancel`;
+    try {
+      const cancelRequirements = await scheme.settleOnCancel(context);
+      if (!cancelRequirements) {
+        return;
+      }
+      await this.settlePayment(
+        paymentPayload as PaymentPayload,
+        cancelRequirements,
+        declaredExtensions as Record<string, unknown>,
+        fallbackTransportContext,
+      );
+    } catch (error) {
+      this.warnResourceServerHookFailure("settleOnCancel", label, error);
     }
   }
 

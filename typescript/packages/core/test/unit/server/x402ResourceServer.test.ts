@@ -1212,6 +1212,94 @@ describe("x402ResourceServer", () => {
           "extension:handler_failed",
         ]);
       });
+
+      it("settles once when settleOnCancel returns requirements", async () => {
+        const settleClient = new MockFacilitatorClient(
+          buildSupportedResponse({
+            kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
+          }),
+          undefined,
+          buildSettleResponse({ success: true, amount: "0" }),
+        );
+        const server = new x402ResourceServer(settleClient);
+        const scheme = new MockSchemeNetworkServer("upto");
+        scheme.settleOnCancel = async context => ({ ...context.requirements, amount: "0" });
+        server.register("eip155:*" as Network, scheme);
+
+        const requirements = buildPaymentRequirements({
+          scheme: "upto",
+          network: "eip155:8453" as Network,
+          amount: "1000000",
+        });
+        const cancellation = server.createPaymentCancellationDispatcher(
+          buildPaymentPayload({ accepted: requirements }),
+          requirements,
+        );
+
+        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+        await cancellation.cancel({ reason: "handler_threw" });
+
+        expect(settleClient.settleCalls).toHaveLength(1);
+        expect(settleClient.settleCalls[0].requirements.amount).toBe("0");
+      });
+
+      it("skips settle when settleOnCancel returns void", async () => {
+        const settleClient = new MockFacilitatorClient(
+          buildSupportedResponse({
+            kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
+          }),
+          undefined,
+          buildSettleResponse({ success: true }),
+        );
+        const server = new x402ResourceServer(settleClient);
+        const scheme = new MockSchemeNetworkServer("upto");
+        scheme.settleOnCancel = async () => undefined;
+        server.register("eip155:*" as Network, scheme);
+
+        const cancellation = server.createPaymentCancellationDispatcher(
+          buildPaymentPayload({
+            accepted: buildPaymentRequirements({
+              scheme: "upto",
+              network: "eip155:8453" as Network,
+            }),
+          }),
+          buildPaymentRequirements({ scheme: "upto", network: "eip155:8453" as Network }),
+        );
+
+        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+        expect(settleClient.settleCalls).toHaveLength(0);
+      });
+
+      it("warns and preserves cancel when settleOnCancel settlement fails", async () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const settleClient = new MockFacilitatorClient(
+          buildSupportedResponse({
+            kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
+          }),
+          undefined,
+          new Error("facilitator unavailable"),
+        );
+        const server = new x402ResourceServer(settleClient);
+        const scheme = new MockSchemeNetworkServer("upto");
+        scheme.settleOnCancel = async context => ({ ...context.requirements, amount: "0" });
+        server.register("eip155:*" as Network, scheme);
+
+        const cancellation = server.createPaymentCancellationDispatcher(
+          buildPaymentPayload({
+            accepted: buildPaymentRequirements({
+              scheme: "upto",
+              network: "eip155:8453" as Network,
+            }),
+          }),
+          buildPaymentRequirements({ scheme: "upto", network: "eip155:8453" as Network }),
+        );
+
+        await expect(
+          cancellation.cancel({ reason: "after_verify_aborted" }),
+        ).resolves.toBeUndefined();
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("settleOnCancel"));
+        warnSpy.mockRestore();
+      });
     });
   });
 

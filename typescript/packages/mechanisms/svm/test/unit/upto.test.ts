@@ -120,9 +120,44 @@ describe("upto SVM scheme", () => {
       expect(problem).toMatch(/feePayer/);
     });
 
-    it("returns 6 asset decimals for settlement overrides", () => {
+    it("returns 6 asset decimals for registered stablecoin mints and symbols", () => {
       expect(server.getAssetDecimals?.(MINT, SOLANA_DEVNET_CAIP2)).toBe(6);
+      expect(server.getAssetDecimals?.("USDC", SOLANA_MAINNET_CAIP2)).toBe(6);
     });
+
+    it("throws for unknown assets instead of defaulting to 6", () => {
+      expect(() =>
+        server.getAssetDecimals?.("CustomMint1111111111111111111111111111", SOLANA_DEVNET_CAIP2),
+      ).toThrow(/not a registered stablecoin/);
+    });
+  });
+
+  describe("server.settleOnCancel", () => {
+    const baseRequirements = {
+      scheme: "upto",
+      network: SOLANA_DEVNET_CAIP2,
+      asset: MINT,
+      amount: "1000000",
+      payTo: PAY_TO,
+      maxTimeoutSeconds: 300,
+    };
+
+    it.each(["handler_failed", "handler_threw", "after_verify_aborted"] as const)(
+      "returns zero-amount requirements for %s",
+      reason => {
+        const requirements = server.settleOnCancel({
+          paymentPayload: {
+            x402Version: 2,
+            accepted: baseRequirements,
+            payload: {},
+          },
+          requirements: baseRequirements,
+          declaredExtensions: {},
+          reason,
+        });
+        expect(requirements).toEqual({ ...baseRequirements, amount: "0" });
+      },
+    );
   });
 
   describe("server.enrichSettlementPayload", () => {
@@ -170,6 +205,58 @@ describe("upto SVM scheme", () => {
           message: encodeVoucherMessageBytes({
             channelId,
             cumulativeAmount: 1858n,
+            expiresAt: BigInt(FAR_FUTURE),
+          }),
+          signatureBase58: (enrichment as { voucherSignature: string }).voucherSignature,
+          signerBase58: serverAuthorizer.address,
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it("signs a zero-amount refund voucher", async () => {
+      const channelId = USDC_MAINNET_ADDRESS;
+      const enrichment = await server.enrichSettlementPayload!({
+        paymentPayload: {
+          x402Version: 2,
+          accepted: {
+            scheme: "upto",
+            network: SOLANA_DEVNET_CAIP2,
+            asset: MINT,
+            amount: "1000000",
+            payTo: PAY_TO,
+            maxTimeoutSeconds: 300,
+          },
+          payload: {
+            from: PAY_TO,
+            maxAmount: "1000000",
+            deposit: "1000000",
+            channelId,
+            authorizedSigner: serverAuthorizer.address,
+            openTransaction: "unused",
+            openSlot: OPEN_SLOT.toString(),
+            expiresAt: FAR_FUTURE,
+            validAfter: 0,
+            nonce: "1",
+          },
+        },
+        requirements: {
+          scheme: "upto",
+          network: SOLANA_DEVNET_CAIP2,
+          asset: MINT,
+          amount: "0",
+          payTo: PAY_TO,
+          maxTimeoutSeconds: 300,
+        },
+        declaredExtensions: {},
+      });
+      expect(enrichment).toMatchObject({ voucherSignature: expect.any(String) });
+
+      const { verifyVoucherSignature } = await import("../../src/payment-channels/voucher");
+      await expect(
+        verifyVoucherSignature({
+          message: encodeVoucherMessageBytes({
+            channelId,
+            cumulativeAmount: 0n,
             expiresAt: BigInt(FAR_FUTURE),
           }),
           signatureBase58: (enrichment as { voucherSignature: string }).voucherSignature,
