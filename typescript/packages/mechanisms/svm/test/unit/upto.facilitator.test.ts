@@ -125,36 +125,9 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     return { facilitator, payload, requirements, receiverAuthorizer, uptoPayload };
   }
 
-  it("rejects concurrent channel replays and releases the reservation after settlement", async () => {
+  it("settles without a prior verify on the same instance when the channel is open", async () => {
     const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
       await buildFixture();
-
-    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
-      isValid: true,
-    });
-    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
-      isValid: false,
-      invalidReason: "invalid_upto_svm_payload_channel_in_flight",
-    });
-    expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(1);
-    expect(channelMocks.simulateZeroChargeSettle).toHaveBeenCalledTimes(1);
-    expect(channelMocks.simulateOpenSettleDistribute).not.toHaveBeenCalled();
-    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
-
-    const tamperedPayload: PaymentPayload = {
-      ...payload,
-      payload: { ...uptoPayload, maxAmount: "999999999" },
-    };
-    await expect(
-      facilitator.settle(tamperedPayload, { ...requirements, amount: "1000001" }),
-    ).resolves.toMatchObject({
-      success: false,
-      errorReason: "invalid_upto_svm_payload_settlement_exceeds_amount",
-    });
-
-    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
-      isValid: true,
-    });
 
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
@@ -169,12 +142,39 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
         },
         { ...requirements, amount: "0" },
       ),
-    ).resolves.toMatchObject({ success: true });
+    ).resolves.toMatchObject({ success: true, amount: "0" });
+
+    expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(1);
+    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
+    expect(channelMocks.simulateZeroChargeSettle).not.toHaveBeenCalled();
+    expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects settlement that exceeds the signed ceiling without touching the chain", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+
+    await expect(
+      facilitator.settle(payload, { ...requirements, amount: "1000001" }),
+    ).resolves.toMatchObject({
+      success: false,
+      errorReason: "invalid_upto_svm_payload_settlement_exceeds_amount",
+    });
+    expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+    expect(channelMocks.submitSettle).not.toHaveBeenCalled();
+  });
+
+  it("allows repeated verify for an already-open channel", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
 
     await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
       isValid: true,
     });
-    expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(3);
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: true,
+    });
+    expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(2);
+    expect(channelMocks.simulateZeroChargeSettle).toHaveBeenCalledTimes(2);
+    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
   });
 
   it("simulates open∥settle∥distribute before broadcasting a fresh open", async () => {
