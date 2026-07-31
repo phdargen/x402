@@ -32,6 +32,11 @@ describe("SVM Signer Converters", () => {
       expect(typeof result.getAddresses).toBe("function");
       expect(result.getAddresses()).toEqual([mockSigner.address]);
 
+      // Should have getSigner() method
+      expect(result.getSigner).toBeDefined();
+      expect(typeof result.getSigner).toBe("function");
+      expect(result.getSigner(mockSigner.address)).toBe(mockSigner);
+
       // Should have signTransaction() method
       expect(result.signTransaction).toBeDefined();
       expect(typeof result.signTransaction).toBe("function");
@@ -57,6 +62,10 @@ describe("SVM Signer Converters", () => {
       };
 
       const result = toFacilitatorSvmSigner(mockSigner as never);
+
+      expect(() => result.getSigner("UnknownAddress11111111111111111111" as never)).toThrow(
+        "No signer for feePayer",
+      );
 
       await expect(
         result.signTransaction(

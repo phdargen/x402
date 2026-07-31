@@ -6,6 +6,7 @@ const channelMocks = vi.hoisted(() => ({
   broadcastOpen: vi.fn(),
   channelExists: vi.fn(),
   fetchAndVerifyOpenChannel: vi.fn(),
+  simulateOpenSettleDistribute: vi.fn(),
   simulateZeroChargeSettle: vi.fn(),
   submitSettle: vi.fn(),
 }));
@@ -19,6 +20,7 @@ vi.mock("../../src/upto/facilitator/channel", async () => {
     broadcastOpen: channelMocks.broadcastOpen,
     channelExists: channelMocks.channelExists,
     fetchAndVerifyOpenChannel: channelMocks.fetchAndVerifyOpenChannel,
+    simulateOpenSettleDistribute: channelMocks.simulateOpenSettleDistribute,
     simulateZeroChargeSettle: channelMocks.simulateZeroChargeSettle,
     submitSettle: channelMocks.submitSettle,
   };
@@ -42,6 +44,7 @@ import {
 } from "../../src/constants";
 import { buildOpenPaymentChannelTransaction } from "../../src/payment-channels/open";
 import { signVoucher } from "../../src/payment-channels/voucher";
+import { toFacilitatorSvmSigner } from "../../src/signer";
 import { UptoSvmScheme } from "../../src/upto/facilitator/scheme";
 import type { UptoSvmPayloadV2 } from "../../src/types";
 
@@ -53,7 +56,9 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     channelMocks.channelExists.mockResolvedValue(true);
+    channelMocks.simulateOpenSettleDistribute.mockResolvedValue(undefined);
     channelMocks.simulateZeroChargeSettle.mockResolvedValue(undefined);
+    channelMocks.broadcastOpen.mockResolvedValue(USDC_MAINNET_ADDRESS);
     channelMocks.submitSettle.mockResolvedValue(USDC_MAINNET_ADDRESS);
   });
 
@@ -90,7 +95,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       },
     };
     const uptoPayload: UptoSvmPayloadV2 = {
-      receiverAuthorizer: receiverAuthorizer.address,
+      authorizedSigner: receiverAuthorizer.address,
       channelId: open.channelId,
       deposit: "1000000",
       expiresAt: FAR_FUTURE,
@@ -116,7 +121,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       rentPayer: feePayer.address,
       splits: [{ bps: 10_000, recipient: receiverAuthorizer.address }],
     });
-    const facilitator = new UptoSvmScheme(feePayer);
+    const facilitator = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer));
     return { facilitator, payload, requirements, receiverAuthorizer, uptoPayload };
   }
 
@@ -133,6 +138,8 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     });
     expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(1);
     expect(channelMocks.simulateZeroChargeSettle).toHaveBeenCalledTimes(1);
+    expect(channelMocks.simulateOpenSettleDistribute).not.toHaveBeenCalled();
+    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
 
     const tamperedPayload: PaymentPayload = {
       ...payload,
@@ -168,6 +175,54 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       isValid: true,
     });
     expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(3);
+  });
+
+  it("simulates open∥settle∥distribute before broadcasting a fresh open", async () => {
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
+    channelMocks.channelExists.mockResolvedValue(false);
+
+    const callOrder: string[] = [];
+    channelMocks.simulateOpenSettleDistribute.mockImplementation(async () => {
+      callOrder.push("simulateOpenSettleDistribute");
+    });
+    channelMocks.broadcastOpen.mockImplementation(async () => {
+      callOrder.push("broadcastOpen");
+      return USDC_MAINNET_ADDRESS as never;
+    });
+
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: true,
+    });
+
+    expect(callOrder).toEqual(["simulateOpenSettleDistribute", "broadcastOpen"]);
+    expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        openTransactionBase64: uptoPayload.openTransaction,
+        channel: expect.objectContaining({
+          channelId: uptoPayload.channelId,
+          payer: uptoPayload.from,
+        }),
+      }),
+    );
+    expect(channelMocks.simulateZeroChargeSettle).not.toHaveBeenCalled();
+  });
+
+  it("does not broadcast open when composite settlement simulation fails", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+    channelMocks.channelExists.mockResolvedValue(false);
+    channelMocks.simulateOpenSettleDistribute.mockRejectedValue(
+      new Error("zero-charge settlement simulation failed: missing treasury ATA"),
+    );
+
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: "upto_channel_open_failed",
+    });
+    expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledTimes(1);
+    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
+    expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
   });
 
   it("rejects a missing voucher signature at settle", async () => {

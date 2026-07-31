@@ -96,7 +96,7 @@ export class UptoSvmScheme implements SchemeNetworkClient {
       nonce: open.salt.toString(),
       openSlot: open.openSlot.toString(),
       openTransaction: open.transaction,
-      receiverAuthorizer: channelConfig.receiverAuthorizer,
+      authorizedSigner: channelConfig.receiverAuthorizer,
       validAfter,
     };
 

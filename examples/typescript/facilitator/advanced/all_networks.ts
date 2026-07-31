@@ -338,7 +338,7 @@ if (svmPrivateKey) {
   const svmSigner = toFacilitatorSvmSigner(svmAccount);
 
   facilitator.register(SVM_NETWORK, new ExactSvmScheme(svmSigner));
-  facilitator.register(SVM_NETWORK, new UptoSvmScheme(svmAccount));
+  facilitator.register(SVM_NETWORK, new UptoSvmScheme(svmSigner));
 }
 
 // Register Stellar scheme if private key is provided
