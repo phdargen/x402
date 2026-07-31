@@ -218,9 +218,9 @@ export class UptoSvmScheme implements SchemeNetworkServer {
     const raw = ctx.paymentPayload.payload as Record<string, unknown>;
     if (!isUptoSvmPayload(raw)) return;
 
-    if (raw.receiverAuthorizer !== this.receiverAuthorizerSigner.address) {
+    if (raw.authorizedSigner !== this.receiverAuthorizerSigner.address) {
       throw new Error(
-        `payload.receiverAuthorizer ${raw.receiverAuthorizer} != configured ` +
+        `payload.authorizedSigner ${raw.authorizedSigner} != configured ` +
           `receiverAuthorizer ${this.receiverAuthorizerSigner.address}`,
       );
     }

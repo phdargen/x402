@@ -17,7 +17,7 @@ export type ExactSvmPayloadV2 = ExactSvmPayloadV1;
  * Client authorization for the `upto` SVM scheme.
  *
  * The client opens a payment channel whose `deposit` is the authorized ceiling,
- * with `receiverAuthorizer` set as the channel `authorized_signer` so the server
+ * with `authorizedSigner` set as the channel `authorized_signer` so the server
  * can settle the actual metered amount with a single voucher. The client signs
  * only the `open` transaction; the fee payer broadcasts it. The `from`,
  * `maxAmount`, `validAfter`, and `expiresAt` fields mirror the network-agnostic
@@ -44,11 +44,11 @@ export type UptoSvmPayloadV2 = {
   /** Onchain escrow ceiling (base units); MUST equal `maxAmount`. */
   deposit: string;
   /** Voucher signer; MUST equal `extra.receiverAuthorizer` (base58). */
-  receiverAuthorizer: string;
+  authorizedSigner: string;
   /** Base64 client-signed `open` transaction for the fee payer to broadcast. */
   openTransaction: string;
   /**
-   * Base58 Ed25519 voucher signature by `receiverAuthorizer`. Present only on
+   * Base58 Ed25519 voucher signature by `authorizedSigner`. Present only on
    * settle requests (server-attached); verify-phase payloads omit it.
    */
   voucherSignature?: string;
@@ -66,7 +66,7 @@ export function isUptoSvmPayload(payload: Record<string, unknown>): payload is U
     typeof payload.maxAmount === "string" &&
     typeof payload.deposit === "string" &&
     typeof payload.channelId === "string" &&
-    typeof payload.receiverAuthorizer === "string" &&
+    typeof payload.authorizedSigner === "string" &&
     typeof payload.openTransaction === "string" &&
     typeof payload.openSlot === "string" &&
     typeof payload.expiresAt === "number" &&

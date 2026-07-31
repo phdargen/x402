@@ -121,6 +121,16 @@ export type FacilitatorSvmSigner = {
   getAddresses(): readonly Address[];
 
   /**
+   * Resolve the kit-native signer for a fee-payer address.
+   * Used by schemes that build transactions from instructions (e.g. upto).
+   *
+   * @param feePayer - Fee payer address
+   * @returns Kit TransactionSigner & MessagePartialSigner for that address
+   * @throws Error if no signer exists for feePayer
+   */
+  getSigner(feePayer: Address): FacilitatorSigningCapabilities;
+
+  /**
    * Sign a partially-signed transaction with the signer matching feePayer
    * Transaction is decoded, signed, and re-encoded internally
    *
@@ -412,6 +422,13 @@ export function toFacilitatorSvmSigner(
   return {
     getAddresses: () => {
       return [signer.address];
+    },
+
+    getSigner: (feePayer: Address) => {
+      if (feePayer !== signer.address) {
+        throw new Error(`No signer for feePayer ${feePayer}. Available: ${signer.address}`);
+      }
+      return signer;
     },
 
     signTransaction: async (transaction: string, feePayer: Address, _: string) => {

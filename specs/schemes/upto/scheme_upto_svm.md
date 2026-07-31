@@ -234,7 +234,7 @@ Example: server uses an external facilitator for fee/rent sponsorship:
 | `openSlot` | number | `u64` slot encoded in the `open` instruction and used as a channel PDA seed. |
 | `channelId` | string | Channel PDA (base58), derived before `open` from the fields below. |
 | `deposit` | string | Onchain escrow amount. MUST equal `maxAmount`. |
-| `receiverAuthorizer` | string | MUST equal `extra.receiverAuthorizer`; included for explicit payload validation. Maps to the onchain `authorized_signer` account. |
+| `authorizedSigner` | string | MUST equal `extra.receiverAuthorizer`; included for explicit payload validation. Maps to the onchain `authorized_signer` account. |
 | `openTransaction` | string | Base64 partially signed `open` transaction. The client signature is present; the `feePayer`/`rent_payer` signature is still required before broadcast. |
 
 `channelId` is the program-derived address:
@@ -456,7 +456,8 @@ The server/facilitator MUST, in order:
    authorizer, and `extra.withdrawDelay` is an integer greater than zero.
 4. Confirm the channel is open:
    - If it does not yet exist, validate `openTransaction` against the complete
-     acceptance policy above; then co-sign, broadcast, and wait until the
+     acceptance policy above; confirm settlement readiness (step 7) for the
+     expected post-open path; then co-sign, broadcast, and wait until the
      channel account is confirmed `Open`.
    - After the channel is open, confirm `channel.deposit == maxAmount` (exact,
      not `>=`: `top_up` can raise an open channel's deposit, so equality keeps
@@ -471,7 +472,21 @@ The server/facilitator MUST, in order:
    `extra.feePayer`, `asset`, `extra.receiverAuthorizer`, `nonce`, and
    `openSlot` under the canonical program id.
 6. Validate `validAfter <= now < expiresAt` and reject `expiresAt == 0`.
-7. Simulate the expected settlement instructions before accepting the payment.
+7. Confirm settlement readiness before accepting the payment. The facilitator
+   MUST confirm that the expected settlement path can succeed for the
+   challenge-bound mint, token program, payer, payee, treasury, and
+   distribution recipients — so verify fails without escrowing when settlement
+   accounts are unusable. When the channel does not yet exist, that check MUST
+   happen before co-signing/broadcasting `open`. When the channel already
+   exists, the check MUST happen before accepting the payment. This can be implemented through
+   - **Simulation:** a facilitator-built composite of `open`,
+     `settle_and_seal` with `has_voucher = 0`, and `distribute` before open
+     (when the channel does not yet exist); and/or settle∥distribute once the
+     channel is open; and/or
+   - **Targeted checks:** derive and inspect the settlement ATAs (payer
+     refund, payee, treasury, recipient tails) and other accounts the program
+     will require on `distribute`, rejecting when missing, wrong owner/mint,
+     frozen, or otherwise unusable per the program rules.
 
 On failure the server returns `402` (or `412` for the open precondition) without
 serving the resource.
@@ -555,7 +570,7 @@ execution):
       "deposit": "10000",
       "channelId": "<channel-pda>",
       "expiresAt": 1893456000,
-      "receiverAuthorizer": "<receiverAuthorizer>",
+      "authorizedSigner": "<receiverAuthorizer>",
       "openTransaction": "<base64>",
       "voucherSignature": "<base58 ed25519 receiverAuthorizer sig over (channelId, 1858, expiresAt)>"
     }
@@ -586,7 +601,7 @@ On a `settle` request the facilitator MUST:
 2. Assert `paymentRequirements.amount <= maxAmount`. On violation, fail with
    `invalid_upto_svm_payload_settlement_exceeds_amount`.
 3. Authenticate the request. Confirm
-   `payload.receiverAuthorizer == extra.receiverAuthorizer` and that both equal
+   `payload.authorizedSigner == extra.receiverAuthorizer` and that both equal
    the channel's onchain `authorized_signer` (committed at `open`). Verify
    `payload.voucherSignature` as a valid Ed25519 signature by that key over the
    section 4.2 voucher message, reconstructed from `channelId`,

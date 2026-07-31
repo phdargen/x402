@@ -133,7 +133,7 @@ facilitator.register(
 ); // Devnet
 facilitator.register(
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-  new UptoSvmScheme(svmAccount),
+  new UptoSvmScheme(svmSigner),
 );
 
 // Initialize Express app
