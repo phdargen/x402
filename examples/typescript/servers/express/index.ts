@@ -8,10 +8,10 @@ config();
 
 const evmAddress = process.env.EVM_ADDRESS as `0x${string}`;
 const svmAddress = process.env.SVM_ADDRESS;
-// if (!evmAddress || !svmAddress) {
-//   console.error("Missing required environment variables");
-//   process.exit(1);
-// }
+if (!evmAddress || !svmAddress) {
+  console.error("Missing required environment variables");
+  process.exit(1);
+}
 
 const facilitatorUrl = process.env.FACILITATOR_URL;
 if (!facilitatorUrl) {
@@ -33,12 +33,12 @@ app.use(
             network: "eip155:84532",
             payTo: evmAddress,
           },
-          // {
-          //   scheme: "exact",
-          //   price: "$0.001",
-          //   network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-          //   payTo: svmAddress,
-          // },
+          {
+            scheme: "exact",
+            price: "$0.001",
+            network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            payTo: svmAddress,
+          },
         ],
         description: "Weather data",
         mimeType: "application/json",
@@ -46,7 +46,7 @@ app.use(
     },
     new x402ResourceServer(facilitatorClient)
       .register("eip155:84532", new ExactEvmScheme())
-    // .register("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", new ExactSvmScheme()),
+      .register("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", new ExactSvmScheme()),
   ),
 );
 

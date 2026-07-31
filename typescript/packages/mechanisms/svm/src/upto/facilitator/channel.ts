@@ -1,6 +1,7 @@
 /**
- * Channel-flow glue for the `upto` facilitator: voucher signing, co-signing,
- * broadcasting the client `open` (idempotent), and submitting settle+distribute.
+ * Channel-flow glue for the `upto` facilitator: co-signing, broadcasting the
+ * client `open` (idempotent), simulating the zero-charge settlement path, and
+ * submitting settle+distribute.
  *
  * Kept separate from the scheme orchestration so the onchain mechanics stay
  * readable. All RPC access is threaded in by the caller.
@@ -11,9 +12,7 @@ import {
   address,
   appendTransactionMessageInstructions,
   type Blockhash,
-  createSignableMessage,
   createTransactionMessage,
-  getBase58Decoder,
   getBase58Encoder,
   getBase64Codec,
   getBase64EncodedWireTransaction,
@@ -28,9 +27,12 @@ import {
 } from "@solana/kit";
 
 import { fetchChannel, type Channel } from "../../payment-channels/generated/accounts/channel";
-import { type ServerInstruction } from "../../payment-channels/onchain";
+import {
+  buildDistributeInstruction,
+  buildSettleAndSealInstructions,
+  type ServerInstruction,
+} from "../../payment-channels/onchain";
 import type { ChannelSplit } from "../../payment-channels/open";
-import { encodeVoucherMessageBytes } from "../../payment-channels/voucher";
 import { createRpcClient } from "../../utils";
 
 const CHANNEL_ACCOUNT_DISCRIMINATOR = 0;
@@ -41,27 +43,6 @@ export type UptoSvmSigner = TransactionSigner & MessagePartialSigner;
 
 /** RPC client shape used by the channel helpers. */
 export type ChannelRpc = ReturnType<typeof createRpcClient>;
-
-/**
- * Sign a payment-channel voucher and return the base58 signature.
- *
- * @param receiverAuthorizer - The channel's authorized signer
- * @param voucher - The voucher fields
- * @param voucher.channelId - Channel PDA (base58)
- * @param voucher.cumulativeAmount - Cumulative settled amount (base units)
- * @param voucher.expiresAt - Voucher deadline (Unix seconds, i64)
- * @returns The base58-encoded 64-byte Ed25519 signature
- */
-export async function signVoucher(
-  receiverAuthorizer: UptoSvmSigner,
-  voucher: { channelId: string; cumulativeAmount: bigint; expiresAt: bigint },
-): Promise<string> {
-  const message = encodeVoucherMessageBytes(voucher);
-  const [dict] = await receiverAuthorizer.signMessages([createSignableMessage(message)]);
-  const signature = dict[receiverAuthorizer.address];
-  if (!signature) throw new Error("receiverAuthorizer did not return a voucher signature");
-  return getBase58Decoder().decode(signature as Uint8Array);
-}
 
 /**
  * Whether the channel account already exists onchain (open already broadcast).
@@ -89,6 +70,7 @@ export interface ExpectedOpenChannel {
 
 /** Onchain channel facts retained from verification through settlement. */
 export interface VerifiedOpenChannel {
+  authorizedSigner: string;
   channelId: string;
   deposit: bigint;
   mint: string;
@@ -99,7 +81,7 @@ export interface VerifiedOpenChannel {
 }
 
 /**
- * Fetch and bind the confirmed channel account before the resource is served.
+ * Fetch and bind the confirmed channel account before resource execution.
  *
  * @param rpc - RPC client used to read the channel
  * @param channelId - Channel PDA
@@ -159,6 +141,7 @@ export function verifyOpenChannelAccount(
   }
 
   return {
+    authorizedSigner: expected.authorizedSigner,
     channelId,
     deposit: channel.deposit,
     mint: channel.mint,
@@ -197,6 +180,51 @@ export async function broadcastOpen(
   const signature = await rpc.sendTransaction(wire, { encoding: "base64" }).send();
   await confirmSignature(rpc, signature);
   return signature;
+}
+
+/**
+ * Simulate the zero-charge settlement path (`settle_and_seal` with
+ * `has_voucher = 0` + `distribute`) so bad ATA/account derivations fail before
+ * resource execution.
+ *
+ * @param feePayer - The fee-payer / channel payee signer
+ * @param rpc - The RPC client
+ * @param channel - Verified open-channel facts
+ * @param channel.channelId - Channel PDA
+ * @param channel.mint - SPL mint
+ * @param channel.payee - Channel payee
+ * @param channel.payer - Channel payer
+ * @param channel.rentPayer - Channel rent payer
+ * @param channel.splits - Distribution splits
+ * @param channel.tokenProgram - Token program for the mint
+ */
+export async function simulateZeroChargeSettle(
+  feePayer: UptoSvmSigner,
+  rpc: ChannelRpc,
+  channel: {
+    channelId: string;
+    mint: string;
+    payee: string;
+    payer: string;
+    rentPayer: string;
+    splits: readonly ChannelSplit[];
+    tokenProgram: string;
+  },
+): Promise<void> {
+  const settle = buildSettleAndSealInstructions({
+    channelId: channel.channelId,
+    payeeSigner: feePayer,
+  });
+  const distribute = await buildDistributeInstruction({
+    channelId: channel.channelId,
+    mint: channel.mint,
+    payee: channel.payee,
+    payer: channel.payer,
+    rentPayer: channel.rentPayer,
+    splits: channel.splits,
+    tokenProgram: channel.tokenProgram,
+  });
+  await simulateInstructions(feePayer, rpc, [...settle, distribute]);
 }
 
 /**
@@ -301,4 +329,48 @@ export function getChannelDistributionHash(splits: readonly ChannelSplit[]): Uin
   }
 
   return hasher.digest();
+}
+
+/**
+ * Sign and simulate a facilitator-built instruction list without broadcasting.
+ *
+ * @param feePayer - The fee-payer signer
+ * @param rpc - The RPC client
+ * @param instructions - Instructions to simulate
+ */
+async function simulateInstructions(
+  feePayer: UptoSvmSigner,
+  rpc: ChannelRpc,
+  instructions: readonly ServerInstruction[],
+): Promise<void> {
+  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+  const message = pipe(
+    createTransactionMessage({ version: 0 }),
+    m => setTransactionMessageFeePayerSigner(feePayer, m),
+    m =>
+      setTransactionMessageLifetimeUsingBlockhash(
+        {
+          blockhash: latestBlockhash.blockhash as Blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        },
+        m,
+      ),
+    m => appendTransactionMessageInstructions(instructions, m),
+  );
+  const signed = await signTransactionMessageWithSigners(message);
+  const wire = getBase64EncodedWireTransaction(signed);
+  const result = await rpc
+    .simulateTransaction(wire, {
+      commitment: "confirmed",
+      encoding: "base64",
+      replaceRecentBlockhash: false,
+      sigVerify: true,
+    })
+    .send();
+  if (result.value.err) {
+    const errorStr = JSON.stringify(result.value.err, (_, v) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+    throw new Error(`zero-charge settlement simulation failed: ${errorStr}`);
+  }
 }
