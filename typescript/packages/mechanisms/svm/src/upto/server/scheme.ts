@@ -1,5 +1,5 @@
 import type { MessagePartialSigner } from "@solana/kit";
-import type { SettleContext } from "@x402/core/server";
+import type { SettleContext, VerifiedPaymentCanceledContext } from "@x402/core/server";
 import type {
   AssetAmount,
   MoneyParser,
@@ -9,7 +9,7 @@ import type {
   SchemeNetworkServer,
   SupportedKind,
 } from "@x402/core/types";
-import type { SvmStablecoinSymbol } from "../../constants";
+import { SVM_STABLECOIN_DECIMALS, type SvmStablecoinSymbol } from "../../constants";
 import { DEFAULT_GRACE_PERIOD_SECONDS } from "../../payment-channels/open";
 import { signVoucher } from "../../payment-channels/voucher";
 import { isUptoSvmPayload } from "../../types";
@@ -17,6 +17,7 @@ import {
   convertToTokenAmount,
   createRpcClient,
   getStablecoinAddress,
+  getStablecoinSymbol,
   getStablecoinTokenProgram,
   numberToDecimalString,
   validateSvmAddress,
@@ -76,6 +77,23 @@ export class UptoSvmScheme implements SchemeNetworkServer {
   }
 
   /**
+   * Settle canceled verified payments as a zero-amount refund so the facilitator
+   * can `settle_and_seal` + `distribute` and return the deposit to the client.
+   *
+   * @param ctx - Cancellation context from the resource server
+   * @returns Zero-amount requirements for prompt refund paths
+   */
+  settleOnCancel(ctx: VerifiedPaymentCanceledContext): PaymentRequirements | void {
+    if (
+      ctx.reason === "handler_failed" ||
+      ctx.reason === "handler_threw" ||
+      ctx.reason === "after_verify_aborted"
+    ) {
+      return { ...ctx.requirements, amount: "0" };
+    }
+  }
+
+  /**
    * Register a custom money parser in the parser chain (tried in order).
    *
    * @param parser - Custom function to convert an amount to an AssetAmount (or null to skip)
@@ -87,12 +105,21 @@ export class UptoSvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Return the decimal precision used for settlement amount overrides.
+   * Return the decimal precision used for `$…` settlement amount overrides.
+   * Only registered SVM stablecoins are accepted; unknown assets throw so
+   * callers must supply atomic units instead of relying on a USDC-shaped default.
    *
-   * @returns Always `6` for supported SVM stablecoins
+   * @param asset - Stablecoin symbol or mint address from payment requirements
+   * @param _ - Network identifier (unused; mints are looked up by address)
+   * @returns Decimal precision for the asset
    */
-  getAssetDecimals(): number {
-    return 6;
+  getAssetDecimals(asset: string, _: Network): number {
+    if (!getStablecoinSymbol(asset)) {
+      throw new Error(
+        `Token ${asset} is not a registered stablecoin; provide amount in atomic units`,
+      );
+    }
+    return SVM_STABLECOIN_DECIMALS;
   }
 
   /**
@@ -279,7 +306,10 @@ export class UptoSvmScheme implements SchemeNetworkServer {
     network: Network,
     stablecoin: SvmStablecoinSymbol = "USDC",
   ): AssetAmount {
-    const tokenAmount = convertToTokenAmount(numberToDecimalString(amount), 6);
+    const tokenAmount = convertToTokenAmount(
+      numberToDecimalString(amount),
+      SVM_STABLECOIN_DECIMALS,
+    );
     return {
       amount: tokenAmount,
       asset: getStablecoinAddress(stablecoin, network),

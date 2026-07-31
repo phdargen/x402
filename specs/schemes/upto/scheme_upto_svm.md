@@ -533,16 +533,13 @@ metering, and the resource server attaches it to the settle-time
   voucher is the facilitator's only proof that the request came from the server,
   and it authorizes both nonzero settlement and zero-amount refunds (see
   [Security Properties](#8-security-properties)).
-- A self-facilitating deployment whose facilitator also controls
-  `receiverAuthorizer` MAY sign the voucher in-process instead of transmitting
-  `voucherSignature`.
 
 The application result determines the settled amount:
 
 - **Resource executed successfully** (application status `< 400`): the resource
   server sets `paymentRequirements.amount` to the actual metered charge
   (`0 <= actual <= maxAmount`) and signs a `voucherSignature` for that amount.
-- **Resource execution failed** (application status `>= 400`): the server MUST
+- **Resource execution failed or aborted after verify**: the server MUST
   NOT charge for work it did not deliver. It settles the request as a refund by
   setting `paymentRequirements.amount` to `0` and signing a `voucherSignature`
   for `0`, which drives the zero-charge close path — `settle_and_seal` with
