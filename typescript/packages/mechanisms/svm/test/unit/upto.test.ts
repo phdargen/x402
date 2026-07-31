@@ -9,6 +9,7 @@ import {
   USDC_DEVNET_ADDRESS,
   USDC_MAINNET_ADDRESS,
 } from "../../src/constants";
+import { getPaymentChannelsTreasuryOwner } from "../../src/payment-channels/onchain";
 import {
   buildOpenPaymentChannelTransaction,
   findPaymentChannelPda,
@@ -644,6 +645,18 @@ describe("upto SVM scheme", () => {
       ]);
     });
 
+    it("selects the payment-channels treasury owner per network", () => {
+      expect(getPaymentChannelsTreasuryOwner(SOLANA_DEVNET_CAIP2)).toBe(
+        "11111111111111111111111111111111",
+      );
+      expect(getPaymentChannelsTreasuryOwner("solana-devnet")).toBe(
+        "11111111111111111111111111111111",
+      );
+      expect(getPaymentChannelsTreasuryOwner(SOLANA_MAINNET_CAIP2)).toBe(
+        "Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP",
+      );
+    });
+
     it("simulates open∥settle∥distribute with sigVerify disabled", async () => {
       const payer = await generateKeyPairSigner();
       const feePayer = await generateKeyPairSigner();
@@ -679,6 +692,7 @@ describe("upto SVM scheme", () => {
         channel: {
           channelId: open.channelId,
           mint: MINT,
+          network: SOLANA_DEVNET_CAIP2,
           payee: feePayer.address,
           payer: payer.address,
           rentPayer: feePayer.address,

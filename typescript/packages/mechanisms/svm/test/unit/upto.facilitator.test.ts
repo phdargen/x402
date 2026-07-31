@@ -116,6 +116,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       channelId: open.channelId,
       deposit: 1_000_000n,
       mint: requirements.asset,
+      openSlot: OPEN_SLOT,
       payee: feePayer.address,
       payer: payer.address,
       rentPayer: feePayer.address,
@@ -177,6 +178,39 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
   });
 
+  it("indexes the channel on verify and retains it after settle", async () => {
+    const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+      await buildFixture();
+
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: true,
+    });
+    const stored = await facilitator.getChannelStorage().get(uptoPayload.channelId);
+    expect(stored).toMatchObject({
+      channelId: uptoPayload.channelId,
+      payTo: requirements.payTo,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      network: requirements.network,
+    });
+    const firstSeenAt = stored!.firstSeenAt;
+
+    const voucherSignature = await signVoucher(receiverAuthorizer, {
+      channelId: uptoPayload.channelId,
+      cumulativeAmount: 0n,
+      expiresAt: BigInt(FAR_FUTURE),
+    });
+    await expect(
+      facilitator.settle(
+        { ...payload, payload: { ...uptoPayload, voucherSignature } },
+        { ...requirements, amount: "0" },
+      ),
+    ).resolves.toMatchObject({ success: true });
+
+    const afterSettle = await facilitator.getChannelStorage().get(uptoPayload.channelId);
+    expect(afterSettle).toBeDefined();
+    expect(afterSettle!.firstSeenAt).toBe(firstSeenAt);
+  });
+
   it("simulates open∥settle∥distribute before broadcasting a fresh open", async () => {
     const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
     channelMocks.channelExists.mockResolvedValue(false);
@@ -218,11 +252,58 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
 
     await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
       isValid: false,
-      invalidReason: "upto_channel_open_failed",
+      invalidReason: "invalid_upto_svm_settlement_simulation",
     });
     expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledTimes(1);
     expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
     expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+  });
+
+  it("returns broadcast_failed when open broadcast fails after a successful sim", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+    channelMocks.channelExists.mockResolvedValue(false);
+    channelMocks.broadcastOpen.mockRejectedValue(new Error("sendTransaction failed"));
+
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: "invalid_upto_svm_channel_broadcast",
+    });
+    expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledTimes(1);
+    expect(channelMocks.broadcastOpen).toHaveBeenCalledTimes(1);
+    expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+  });
+
+  it("returns state_mismatch when the confirmed channel does not bind", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+    channelMocks.fetchAndVerifyOpenChannel.mockRejectedValue(
+      new Error("channel deposit 0 != expected 1000000"),
+    );
+
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: "invalid_upto_svm_channel_state",
+    });
+  });
+
+  it("returns state_mismatch at settle when the channel cannot be rebound", async () => {
+    const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+      await buildFixture();
+    channelMocks.fetchAndVerifyOpenChannel.mockRejectedValue(new Error("channel is not open"));
+    const voucherSignature = await signVoucher(receiverAuthorizer, {
+      channelId: uptoPayload.channelId,
+      cumulativeAmount: 0n,
+      expiresAt: BigInt(FAR_FUTURE),
+    });
+
+    await expect(
+      facilitator.settle(
+        { ...payload, payload: { ...uptoPayload, voucherSignature } },
+        { ...requirements, amount: "0" },
+      ),
+    ).resolves.toMatchObject({
+      success: false,
+      errorReason: "invalid_upto_svm_channel_state",
+    });
   });
 
   it("rejects a missing voucher signature at settle", async () => {
