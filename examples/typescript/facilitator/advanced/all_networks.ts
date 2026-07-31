@@ -62,6 +62,7 @@ import {
 import { ExactNearScheme } from "@x402/near/exact/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
+import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
 import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { createEd25519Signer } from "@x402/stellar";
@@ -337,6 +338,7 @@ if (svmPrivateKey) {
   const svmSigner = toFacilitatorSvmSigner(svmAccount);
 
   facilitator.register(SVM_NETWORK, new ExactSvmScheme(svmSigner));
+  facilitator.register(SVM_NETWORK, new UptoSvmScheme(svmAccount));
 }
 
 // Register Stellar scheme if private key is provided
