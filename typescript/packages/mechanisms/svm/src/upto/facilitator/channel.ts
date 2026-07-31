@@ -90,6 +90,7 @@ export interface VerifiedOpenChannel {
   channelId: string;
   deposit: bigint;
   mint: string;
+  openSlot: bigint;
   payee: string;
   payer: string;
   rentPayer: string;
@@ -161,6 +162,7 @@ export function verifyOpenChannelAccount(
     channelId,
     deposit: channel.deposit,
     mint: channel.mint,
+    openSlot: channel.openSlot,
     payee: channel.payee,
     payer: channel.payer,
     rentPayer: channel.rentPayer,
@@ -200,6 +202,8 @@ export async function broadcastOpen(
 export interface SettlementSimChannel {
   channelId: string;
   mint: string;
+  /** CAIP-2 network; selects the payment-channels treasury owner. */
+  network: string;
   payee: string;
   payer: string;
   rentPayer: string;
@@ -266,6 +270,7 @@ export async function simulateOpenSettleDistribute(
   const distribute = await buildDistributeInstruction({
     channelId: channel.channelId,
     mint: channel.mint,
+    network: channel.network,
     payee: channel.payee,
     payer: channel.payer,
     rentPayer: channel.rentPayer,
@@ -305,6 +310,7 @@ export async function simulateZeroChargeSettle(
   const distribute = await buildDistributeInstruction({
     channelId: channel.channelId,
     mint: channel.mint,
+    network: channel.network,
     payee: channel.payee,
     payer: channel.payer,
     rentPayer: channel.rentPayer,

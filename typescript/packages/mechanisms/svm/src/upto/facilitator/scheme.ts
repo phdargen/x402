@@ -28,6 +28,12 @@ import {
   submitSettle,
   type UptoSvmSigner,
 } from "./channel";
+import {
+  InMemoryUptoChannelStorage,
+  type UptoChannelRecord,
+  type UptoChannelStorage,
+} from "./channelStorage";
+import { UptoSvmRentCleanupManager } from "./rentCleanupManager";
 
 /** Scheme-specific error returned when the settlement amount exceeds the ceiling. */
 export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exceeds_amount";
@@ -36,6 +42,11 @@ export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlemen
 export interface UptoSvmFacilitatorConfig {
   /** Custom RPC URL (per-network defaults are used when omitted). */
   rpcUrl?: string;
+  /**
+   * Channel storage for rent cleanup. Defaults to in-memory storage.
+   * Inject a durable implementation for multi-process facilitators.
+   */
+  channelStorage?: UptoChannelStorage;
 }
 
 /**
@@ -46,10 +57,6 @@ export interface UptoSvmFacilitatorConfig {
  * channel from chain, verifies the server-supplied voucher for the actual
  * metered amount (`actual ≤ max`), then `settle_and_seal` + `distribute`,
  * refunding the remainder to the payer.
- *
- * Verify and settle are independently re-validatable from payload +
- * requirements + RPC (no process-local reservation), so they work across
- * serverless isolates.
  *
  * The fee payer holds the channel `payee` seat with a zero distribution share:
  * it signs `settle_and_seal` (lifecycle authority) and can always seal an
@@ -65,6 +72,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   readonly caipFamily = "solana:*";
 
   private readonly config: UptoSvmFacilitatorConfig;
+  private readonly channelStorage: UptoChannelStorage;
 
   /**
    * Create the upto SVM facilitator.
@@ -72,7 +80,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
    * @param signer - Facilitator signer (fee payers / channel rent payers /
    *   zero-share channel payees). `getExtra` randomly selects among
    *   `signer.getAddresses()`.
-   * @param config - Optional RPC configuration for account reads and custom sims
+   * @param config - Optional RPC / channel-storage configuration
    */
   constructor(
     private readonly signer: FacilitatorSvmSigner,
@@ -82,6 +90,33 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       throw new Error("UptoSvmScheme requires at least one fee payer signer");
     }
     this.config = config;
+    this.channelStorage = config.channelStorage ?? new InMemoryUptoChannelStorage();
+  }
+
+  /**
+   * Channel storage used for async rent cleanup.
+   *
+   * @returns The configured {@link UptoChannelStorage}
+   */
+  getChannelStorage(): UptoChannelStorage {
+    return this.channelStorage;
+  }
+
+  /**
+   * Create a {@link UptoSvmRentCleanupManager} for the given network, wired to
+   * this scheme's signer pool and channel storage. Does not auto-start; call
+   * `manager.start(...)` or schedule `manager.cleanup()`.
+   *
+   * @param network - CAIP-2 network the manager should clean up
+   * @returns A rent cleanup manager for that network
+   */
+  createRentCleanupManager(network: Network): UptoSvmRentCleanupManager {
+    return new UptoSvmRentCleanupManager({
+      network,
+      rpcUrl: this.config.rpcUrl,
+      signer: this.signer,
+      storage: this.channelStorage,
+    });
   }
 
   /**
@@ -277,30 +312,52 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     // open∥settle∥distribute before broadcast so settlement-account failures
     // reject without locking the deposit. Already-open: settle-only sim after
     // binding the confirmed account (composite open is not in that path).
-    try {
-      const alreadyOpen = await channelExists(rpc, p.channelId);
-      const simChannel = {
-        channelId: p.channelId,
-        mint: requirements.asset,
-        payee: feePayer,
-        payer: p.from,
-        rentPayer: feePayer,
-        splits: channelConfig.splits,
-        tokenProgram,
-      };
-      if (!alreadyOpen) {
+    // Stage-specific codes (no extra RPC on the happy path): sim → broadcast → bind.
+    const alreadyOpen = await channelExists(rpc, p.channelId);
+    const simChannel = {
+      channelId: p.channelId,
+      mint: requirements.asset,
+      network: requirements.network,
+      payee: feePayer,
+      payer: p.from,
+      rentPayer: feePayer,
+      splits: channelConfig.splits,
+      tokenProgram,
+    };
+    if (!alreadyOpen) {
+      try {
         await simulateOpenSettleDistribute(feePayerSigner, rpc, {
           openTransactionBase64: p.openTransaction,
           channel: simChannel,
         });
+      } catch (error) {
+        return {
+          isValid: false,
+          invalidReason: "invalid_upto_svm_settlement_simulation",
+          invalidMessage: error instanceof Error ? error.message : String(error),
+          payer: p.from,
+        };
+      }
+      try {
         await broadcastOpen(
           this.signer,
           feePayer as Address,
           requirements.network,
           p.openTransaction,
         );
+      } catch (error) {
+        return {
+          isValid: false,
+          invalidReason: "invalid_upto_svm_channel_broadcast",
+          invalidMessage: error instanceof Error ? error.message : String(error),
+          payer: p.from,
+        };
       }
-      const channel = await fetchAndVerifyOpenChannel(rpc, p.channelId, {
+    }
+
+    let channel: Awaited<ReturnType<typeof fetchAndVerifyOpenChannel>>;
+    try {
+      channel = await fetchAndVerifyOpenChannel(rpc, p.channelId, {
         authorizedSigner: receiverAuthorizer,
         deposit: maxAmount,
         gracePeriod: channelConfig.withdrawDelay,
@@ -310,25 +367,43 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         rentPayer: feePayer,
         splits: channelConfig.splits,
       });
-      if (alreadyOpen) {
+    } catch (error) {
+      return {
+        isValid: false,
+        invalidReason: "invalid_upto_svm_channel_state",
+        invalidMessage: error instanceof Error ? error.message : String(error),
+        payer: p.from,
+      };
+    }
+
+    if (alreadyOpen) {
+      try {
         await simulateZeroChargeSettle(feePayerSigner, rpc, {
           channelId: channel.channelId,
           mint: channel.mint,
+          network: requirements.network,
           payee: channel.payee,
           payer: channel.payer,
           rentPayer: channel.rentPayer,
           splits: channel.splits,
           tokenProgram,
         });
+      } catch (error) {
+        return {
+          isValid: false,
+          invalidReason: "invalid_upto_svm_settlement_simulation",
+          invalidMessage: error instanceof Error ? error.message : String(error),
+          payer: p.from,
+        };
       }
-    } catch (error) {
-      return {
-        isValid: false,
-        invalidReason: "upto_channel_open_failed",
-        invalidMessage: error instanceof Error ? error.message : String(error),
-        payer: p.from,
-      };
     }
+
+    await this.upsertChannelStorage({
+      channelId: p.channelId,
+      network: requirements.network,
+      payTo: requirements.payTo,
+      tokenProgram,
+    });
 
     return { isValid: true, invalidReason: undefined, payer: p.from };
   }
@@ -534,7 +609,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         success: false,
         network: payload.accepted.network,
         transaction: "",
-        errorReason: "upto_channel_open_failed",
+        errorReason: "invalid_upto_svm_channel_state",
         errorMessage: error instanceof Error ? error.message : String(error),
         payer: p.from,
       };
@@ -560,6 +635,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       const distribute = await buildDistributeInstruction({
         channelId: channel.channelId,
         mint: channel.mint,
+        network,
         payee: channel.payee,
         payer: channel.payer,
         rentPayer: channel.rentPayer,
@@ -569,6 +645,14 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
 
       const instructions: ServerInstruction[] = [...settle, distribute];
       const signature = await submitSettle(feePayerSigner, rpc, instructions);
+
+      // Keep the storage entry until the PDA is gone (Distributed → reclaim).
+      await this.upsertChannelStorage({
+        channelId: channel.channelId,
+        network,
+        payTo: requirements.payTo,
+        tokenProgram,
+      });
 
       return {
         success: true,
@@ -600,5 +684,19 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       return undefined;
     }
     return this.signer.getSigner(feePayerAddress as Address);
+  }
+
+  /**
+   * Upsert a channel into rent-cleanup storage after verify/settle success.
+   *
+   * @param fields - Channel facts retained for cleanup (payTo included)
+   */
+  private async upsertChannelStorage(
+    fields: Omit<UptoChannelRecord, "firstSeenAt">,
+  ): Promise<void> {
+    await this.channelStorage.upsert({
+      ...fields,
+      firstSeenAt: Date.now(),
+    });
   }
 }

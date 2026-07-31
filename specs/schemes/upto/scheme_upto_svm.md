@@ -733,6 +733,12 @@ Standard x402 codes apply. Scheme-specific:
 
 - `invalid_upto_svm_payload_settlement_exceeds_amount` - actual amount exceeds
   the signed ceiling.
+- `invalid_upto_svm_settlement_simulation` - settlement-readiness simulation
+  (`open∥settle∥distribute` or settle-only) failed before accepting the payment.
+- `invalid_upto_svm_channel_broadcast` - co-sign, send, or confirm of the channel
+  `open` transaction failed.
+- `invalid_upto_svm_channel_state` - confirmed channel account is missing or does
+  not match challenge-bound terms (also returned from settle when re-bind fails).
 - `CHANNEL_REQUIRED` (with `412`) - no open channel and no valid
   `openTransaction` that can be co-signed, broadcast, and confirmed before
   serving the resource.

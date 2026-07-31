@@ -40,7 +40,14 @@ import { ASSOCIATED_TOKEN_PROGRAM_ID, PAYMENT_CHANNELS_PROGRAM_ID } from "./onch
 import { verifyEd25519Signature } from "./voucher";
 
 const U64_MAX = (1n << 64n) - 1n;
-const OPEN_SLOT_WINDOW = 1_500n;
+
+/**
+ * Slot freshness / reclaim gate window for payment-channel PDAs.
+ * `open` must land within this many slots of `open_slot`; `reclaim` (and
+ * distribute's PDA deallocation fast path) require
+ * `clock.slot > open_slot + OPEN_SLOT_WINDOW`.
+ */
+export const OPEN_SLOT_WINDOW = 1_500n;
 const SYSTEM_PROGRAM_ID =
   "11111111111111111111111111111111" as Address<"11111111111111111111111111111111">;
 const RENT_SYSVAR =

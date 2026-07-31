@@ -12,7 +12,6 @@ import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
-import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
 import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, http, publicActions } from "viem";
@@ -131,10 +130,6 @@ facilitator.register(
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
   new ExactSvmScheme(svmSigner),
 ); // Devnet
-facilitator.register(
-  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-  new UptoSvmScheme(svmSigner),
-);
 
 // Initialize Express app
 const app = express();
