@@ -191,8 +191,10 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       payTo: requirements.payTo,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       network: requirements.network,
+      expiresAt: FAR_FUTURE,
     });
     const firstSeenAt = stored!.firstSeenAt;
+    const expiresAt = stored!.expiresAt;
 
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
@@ -209,6 +211,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const afterSettle = await facilitator.getChannelStorage().get(uptoPayload.channelId);
     expect(afterSettle).toBeDefined();
     expect(afterSettle!.firstSeenAt).toBe(firstSeenAt);
+    expect(afterSettle!.expiresAt).toBe(expiresAt);
   });
 
   it("simulates open∥settle∥distribute before broadcasting a fresh open", async () => {

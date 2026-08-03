@@ -10,8 +10,8 @@
  *
  * Policy note (spec §8): sealing abandoned Open channels before the server
  * settles freezes the watermark and refunds the unsettled remainder to the
- * client. Keep `abandonTimeoutSecs` large enough that normal settle wins
- * (default 1h); treat unsettled voucher value as facilitator credit risk.
+ * client. Abandon timing uses `min(expiresAt + grace, firstSeenAt + max)` so
+ * normal vouchers expire cleanly while misconfigured long timeouts are capped.
  */
 
 import { address, type Address, type Signature } from "@solana/kit";
@@ -38,8 +38,11 @@ interface ReclaimCandidate {
   rentPayer: string;
 }
 
-/** Default notice before the facilitator abandon-closes an Open channel. */
-export const DEFAULT_ABANDON_TIMEOUT_SECS = 3_600;
+/** Default grace after voucher expiry before abandon-closing an Open channel. */
+export const DEFAULT_ABANDON_GRACE_SECS = 120;
+
+/** Default hard cap from first-seen before abandon-closing an Open channel. */
+export const DEFAULT_ABANDON_MAX_SECS = 3_600;
 
 /** Default reclaim instructions per cleanup transaction. */
 export const DEFAULT_MAX_RECLAIMS_PER_TX = 8;
@@ -66,10 +69,15 @@ export interface RentCleanupReclaimResult {
 /** Options for one-shot and interval cleanup. */
 export interface RentCleanupOptions {
   /**
-   * Seconds after `firstSeenAt` before an Open channel may be abandon-closed
-   * with `settle_and_seal(has_voucher=0)` + `distribute`. Default 3600 (1h).
+   * Seconds after client `expiresAt` before an Open channel may be
+   * abandon-closed. Default 120.
    */
-  abandonTimeoutSecs?: number;
+  abandonGraceSecs?: number;
+  /**
+   * Hard cap in seconds from `firstSeenAt` before abandon-close, even when
+   * `expiresAt` is far in the future. Default 3600 (1h).
+   */
+  abandonMaxSecs?: number;
   /** Max `reclaim` instructions packed into one transaction. */
   maxReclaimsPerTx?: number;
   /** Max cleanup transactions (closes + reclaim batches) per call. */
@@ -131,14 +139,15 @@ export class UptoSvmRentCleanupManager {
    * @param opts - Work caps and callbacks
    */
   async cleanup(opts: RentCleanupOptions = {}): Promise<void> {
-    const abandonTimeoutSecs = opts.abandonTimeoutSecs ?? DEFAULT_ABANDON_TIMEOUT_SECS;
+    const abandonGraceSecs = opts.abandonGraceSecs ?? DEFAULT_ABANDON_GRACE_SECS;
+    const abandonMaxSecs = opts.abandonMaxSecs ?? DEFAULT_ABANDON_MAX_SECS;
     const maxReclaimsPerTx = opts.maxReclaimsPerTx ?? DEFAULT_MAX_RECLAIMS_PER_TX;
     const maxTxsPerRun = opts.maxTxsPerRun ?? DEFAULT_MAX_TXS_PER_RUN;
     const maxClosesPerRun = opts.maxClosesPerRun ?? DEFAULT_MAX_CLOSES_PER_RUN;
 
     const rpc = createRpcClient(this.network, this.rpcUrl);
     const records = await this.storage.list();
-    const nowMs = Date.now();
+    const nowSecs = Math.floor(Date.now() / 1_000);
     let currentSlot: bigint | undefined;
     let txsUsed = 0;
     let closesUsed = 0;
@@ -164,8 +173,12 @@ export class UptoSvmRentCleanupManager {
 
         if (status === ChannelStatus.Open || status === ChannelStatus.Sealed) {
           if (status === ChannelStatus.Open) {
-            const ageSecs = (nowMs - record.firstSeenAt) / 1_000;
-            if (ageSecs < abandonTimeoutSecs) continue;
+            const firstSeenAtSecs = Math.floor(record.firstSeenAt / 1_000);
+            const readyAt = Math.min(
+              record.expiresAt + abandonGraceSecs,
+              firstSeenAtSecs + abandonMaxSecs,
+            );
+            if (nowSecs < readyAt) continue;
           }
           if (closesUsed >= maxClosesPerRun || txsUsed >= maxTxsPerRun) break;
 

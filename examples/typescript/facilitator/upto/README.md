@@ -43,7 +43,8 @@ Tune policy with:
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | `RENT_CLEANUP_INTERVAL_SECS` | `300` | Seconds between cleanup ticks |
-| `RENT_CLEANUP_ABANDON_TIMEOUT_SECS` | `3600` | Open channel age before abandon-close |
+| `RENT_CLEANUP_ABANDON_GRACE_SECS` | `120` | Grace after voucher expiry before abandon-close |
+| `RENT_CLEANUP_ABANDON_MAX_SECS` | `3600` | Hard cap from first-seen before abandon-close |
 
 For production, replace `InMemoryUptoChannelStorage` with a durable store so cleanup survives restarts and works across facilitator replicas.
 

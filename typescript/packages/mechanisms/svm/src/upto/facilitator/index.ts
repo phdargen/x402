@@ -4,7 +4,8 @@ export type { UptoSvmSigner } from "./channel";
 export { InMemoryUptoChannelStorage } from "./channelStorage";
 export type { UptoChannelRecord, UptoChannelStorage } from "./channelStorage";
 export {
-  DEFAULT_ABANDON_TIMEOUT_SECS,
+  DEFAULT_ABANDON_GRACE_SECS,
+  DEFAULT_ABANDON_MAX_SECS,
   DEFAULT_MAX_CLOSES_PER_RUN,
   DEFAULT_MAX_RECLAIMS_PER_TX,
   DEFAULT_MAX_TXS_PER_RUN,

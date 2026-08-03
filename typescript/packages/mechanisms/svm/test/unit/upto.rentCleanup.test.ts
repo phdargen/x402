@@ -23,6 +23,7 @@ const NETWORK = SOLANA_DEVNET_CAIP2 as Network;
 const OPEN_SLOT = 100n;
 const CURRENT_SLOT_READY = OPEN_SLOT + OPEN_SLOT_WINDOW + 1n;
 const CURRENT_SLOT_TOO_EARLY = OPEN_SLOT + OPEN_SLOT_WINDOW;
+const FAR_FUTURE = 4_102_444_800;
 
 const fetchMaybeChannelMock = vi.hoisted(() => vi.fn());
 const submitSettleMock = vi.hoisted(() => vi.fn());
@@ -103,6 +104,7 @@ describe("UptoChannelStorage + scheme wiring", () => {
       payTo: payTo.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       firstSeenAt: Date.now() - 10_000,
+      expiresAt: FAR_FUTURE,
       network: NETWORK,
     };
     await storage.upsert(record);
@@ -112,8 +114,9 @@ describe("UptoChannelStorage + scheme wiring", () => {
     });
 
     const firstSeenAt = (await storage.get(record.channelId))!.firstSeenAt;
-    await storage.upsert({ ...record, firstSeenAt: Date.now() });
+    await storage.upsert({ ...record, firstSeenAt: Date.now(), expiresAt: FAR_FUTURE - 100 });
     expect((await storage.get(record.channelId))!.firstSeenAt).toBe(firstSeenAt);
+    expect((await storage.get(record.channelId))!.expiresAt).toBe(FAR_FUTURE);
 
     const manager = scheme.createRentCleanupManager(NETWORK);
     fetchMaybeChannelMock.mockResolvedValue({ exists: false });
@@ -193,31 +196,40 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       payTo: overrides.payTo ?? payTo.address,
       tokenProgram: overrides.tokenProgram ?? TOKEN_PROGRAM_ADDRESS,
       firstSeenAt: overrides.firstSeenAt ?? Date.now() - 7_200_000,
+      expiresAt: overrides.expiresAt ?? FAR_FUTURE,
       network: overrides.network ?? NETWORK,
     };
     await storage.upsert(record);
     return record;
   }
 
-  it("does not abandon-close Open channels before abandonTimeoutSecs", async () => {
-    const record = await seed({ firstSeenAt: Date.now() - 60_000 });
+  it("does not abandon-close Open channels before expiry plus grace", async () => {
+    const nowSecs = Math.floor(Date.now() / 1_000);
+    const record = await seed({
+      firstSeenAt: Date.now() - 60_000,
+      expiresAt: nowSecs + 300,
+    });
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Open }));
 
     const onClose = vi.fn();
-    await manager.cleanup({ abandonTimeoutSecs: 3_600, onClose });
+    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
     expect(onClose).not.toHaveBeenCalled();
     expect(submitSettleMock).not.toHaveBeenCalled();
     expect(await storage.get(record.channelId)).toBeDefined();
   });
 
-  it("abandon-closes Open channels past abandonTimeoutSecs", async () => {
-    const record = await seed({ firstSeenAt: Date.now() - 7_200_000 });
+  it("abandon-closes Open channels after expiry plus grace", async () => {
+    const nowSecs = Math.floor(Date.now() / 1_000);
+    const record = await seed({
+      firstSeenAt: Date.now() - 60_000,
+      expiresAt: nowSecs - 200,
+    });
     fetchMaybeChannelMock
       .mockResolvedValueOnce(channelAccount({ status: ChannelStatus.Open }))
       .mockResolvedValueOnce({ exists: false });
 
     const onClose = vi.fn();
-    await manager.cleanup({ abandonTimeoutSecs: 3_600, onClose });
+    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
 
     expect(onClose).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
@@ -226,6 +238,24 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const instructions = submitSettleMock.mock.calls[0]![2] as unknown[];
     expect(instructions.length).toBeGreaterThanOrEqual(2);
     expect(await storage.get(record.channelId)).toBeUndefined();
+  });
+
+  it("abandon-closes Open channels when first-seen hard cap wins over far expiry", async () => {
+    const record = await seed({
+      firstSeenAt: Date.now() - 7_200_000,
+      expiresAt: FAR_FUTURE,
+    });
+    fetchMaybeChannelMock
+      .mockResolvedValueOnce(channelAccount({ status: ChannelStatus.Open }))
+      .mockResolvedValueOnce({ exists: false });
+
+    const onClose = vi.fn();
+    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
+
+    expect(onClose).toHaveBeenCalledWith(
+      expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
+    );
+    expect(submitSettleMock).toHaveBeenCalledTimes(1);
   });
 
   it("distributes Sealed channels", async () => {
@@ -315,12 +345,13 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
   });
 
   it("skips channels with missing payTo and surfaces onError", async () => {
-    await seed({ payTo: "", firstSeenAt: Date.now() - 7_200_000 });
+    const nowSecs = Math.floor(Date.now() / 1_000);
+    await seed({ payTo: "", firstSeenAt: Date.now() - 7_200_000, expiresAt: nowSecs - 200 });
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Open }));
 
     const onError = vi.fn();
     const onClose = vi.fn();
-    await manager.cleanup({ abandonTimeoutSecs: 3_600, onClose, onError });
+    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose, onError });
     expect(onClose).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("missing payTo") }),
@@ -329,8 +360,9 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
   });
 
   it("skips channels whose feePayer is not in the signer set", async () => {
+    const nowSecs = Math.floor(Date.now() / 1_000);
     const other = await generateKeyPairSigner();
-    await seed({ firstSeenAt: Date.now() - 7_200_000 });
+    await seed({ firstSeenAt: Date.now() - 7_200_000, expiresAt: nowSecs - 200 });
     fetchMaybeChannelMock.mockResolvedValue(
       channelAccount({
         status: ChannelStatus.Open,
@@ -340,7 +372,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     );
 
     const onError = vi.fn();
-    await manager.cleanup({ abandonTimeoutSecs: 3_600, onError });
+    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onError });
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
         message: expect.stringContaining("not in facilitator signer set"),

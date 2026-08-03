@@ -403,6 +403,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       network: requirements.network,
       payTo: requirements.payTo,
       tokenProgram,
+      expiresAt: p.expiresAt,
     });
 
     return { isValid: true, invalidReason: undefined, payer: p.from };
@@ -652,6 +653,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         network,
         payTo: requirements.payTo,
         tokenProgram,
+        expiresAt: p.expiresAt,
       });
 
       return {
