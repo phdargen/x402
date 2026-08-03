@@ -5,8 +5,8 @@ import type { Network } from "@x402/core/types";
  *
  * Only stores what the channel account refetch does not provide:
  * `payTo` (distribution preimage), `tokenProgram`, abandon-policy
- * `firstSeenAt`, and `network`. Payer/payee/mint/openSlot/status are
- * read live before acting.
+ * `firstSeenAt`, voucher `expiresAt`, and `network`. Payer/payee/mint/
+ * openSlot/status are read live before acting.
  *
  * Written on verify/settle success; deleted when the channel PDA is gone.
  */
@@ -17,6 +17,8 @@ export interface UptoChannelRecord {
   tokenProgram: string;
   /** Wall-clock ms when the facilitator first stored this channel. */
   firstSeenAt: number;
+  /** Client voucher expiry (Unix seconds). Never shrinks on later upserts. */
+  expiresAt: number;
   network: Network;
 }
 
@@ -29,8 +31,8 @@ export interface UptoChannelStorage {
 }
 
 /**
- * In-memory {@link UptoChannelStorage}. Preserves `firstSeenAt` across upserts
- * of the same `channelId`.
+ * In-memory {@link UptoChannelStorage}. Preserves `firstSeenAt` and the
+ * maximum `expiresAt` across upserts of the same `channelId`.
  */
 export class InMemoryUptoChannelStorage implements UptoChannelStorage {
   private readonly channels = new Map<string, UptoChannelRecord>();
@@ -55,8 +57,8 @@ export class InMemoryUptoChannelStorage implements UptoChannelStorage {
   }
 
   /**
-   * Insert or replace a record. Keeps the earlier `firstSeenAt` when the
-   * channel was already stored.
+   * Insert or replace a record. Keeps the earlier `firstSeenAt` and the
+   * later `expiresAt` when the channel was already stored.
    *
    * @param record - Full channel storage record
    */
@@ -65,6 +67,7 @@ export class InMemoryUptoChannelStorage implements UptoChannelStorage {
     this.channels.set(record.channelId, {
       ...record,
       firstSeenAt: existing?.firstSeenAt ?? record.firstSeenAt,
+      expiresAt: existing ? Math.max(existing.expiresAt, record.expiresAt) : record.expiresAt,
     });
   }
 

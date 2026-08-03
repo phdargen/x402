@@ -50,8 +50,12 @@ const rentCleanupIntervalSecs = Number.parseInt(
   process.env.RENT_CLEANUP_INTERVAL_SECS ?? "30",
   10,
 );
-const abandonTimeoutSecs = Number.parseInt(
-  process.env.RENT_CLEANUP_ABANDON_TIMEOUT_SECS ?? "360",
+const abandonGraceSecs = Number.parseInt(
+  process.env.RENT_CLEANUP_ABANDON_GRACE_SECS ?? "120",
+  10,
+);
+const abandonMaxSecs = Number.parseInt(
+  process.env.RENT_CLEANUP_ABANDON_MAX_SECS ?? "3600",
   10,
 );
 
@@ -150,7 +154,8 @@ if (svmPrivateKey) {
   rentCleanupManager = svmUptoScheme.createRentCleanupManager(SVM_NETWORK);
   rentCleanupManager.start({
     intervalSecs: rentCleanupIntervalSecs,
-    abandonTimeoutSecs,
+    abandonGraceSecs,
+    abandonMaxSecs,
     onClose: result => {
       console.info(
         `[rent-cleanup] ${result.action} channel=${result.channelId} tx=${result.transaction}`,
@@ -169,7 +174,7 @@ if (svmPrivateKey) {
     },
   });
   console.info(
-    `SVM rent cleanup started (interval=${rentCleanupIntervalSecs}s, abandonTimeout=${abandonTimeoutSecs}s)`,
+    `SVM rent cleanup started (interval=${rentCleanupIntervalSecs}s, abandonGrace=${abandonGraceSecs}s, abandonMax=${abandonMaxSecs}s)`,
   );
 }
 
