@@ -376,7 +376,10 @@ export async function confirmSignature(
     const status = value[0];
     if (status) {
       if (status.err) {
-        throw new Error(`tx ${signature} failed onchain: ${JSON.stringify(status.err)}`);
+        const errorStr = JSON.stringify(status.err, (_, v) =>
+          typeof v === "bigint" ? v.toString() : v,
+        );
+        throw new Error(`tx ${signature} failed onchain: ${errorStr}`);
       }
       const level = status.confirmationStatus;
       if (level === undefined || level === null || level === "confirmed" || level === "finalized") {
