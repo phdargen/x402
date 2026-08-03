@@ -364,4 +364,119 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     // Zero-charge path: no voucher is submitted onchain (has_voucher = 0).
     expect(channelMocks.submitSettle).toHaveBeenCalled();
   });
+
+  describe("duplicate settlement cache", () => {
+    async function settleWithAmount(
+      facilitator: UptoSvmScheme,
+      payload: PaymentPayload,
+      requirements: PaymentRequirements,
+      receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>,
+      uptoPayload: UptoSvmPayloadV2,
+      amount: string,
+    ) {
+      const voucherSignature = await signVoucher(receiverAuthorizer, {
+        channelId: uptoPayload.channelId,
+        cumulativeAmount: BigInt(amount),
+        expiresAt: BigInt(FAR_FUTURE),
+      });
+      return facilitator.settle(
+        { ...payload, payload: { ...uptoPayload, voucherSignature } },
+        { ...requirements, amount },
+      );
+    }
+
+    it("rejects a replayed settle for the same channel after the first claim", async () => {
+      const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+        await buildFixture();
+
+      await expect(
+        settleWithAmount(facilitator, payload, requirements, receiverAuthorizer, uptoPayload, "0"),
+      ).resolves.toMatchObject({ success: true, amount: "0" });
+      await expect(
+        settleWithAmount(facilitator, payload, requirements, receiverAuthorizer, uptoPayload, "0"),
+      ).resolves.toMatchObject({
+        success: false,
+        errorReason: "duplicate_settlement",
+      });
+      expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects concurrent settles with different valid amounts after one claim", async () => {
+      const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+        await buildFixture();
+
+      const results = await Promise.all([
+        settleWithAmount(
+          facilitator,
+          payload,
+          requirements,
+          receiverAuthorizer,
+          uptoPayload,
+          "100",
+        ),
+        settleWithAmount(
+          facilitator,
+          payload,
+          requirements,
+          receiverAuthorizer,
+          uptoPayload,
+          "200",
+        ),
+      ]);
+
+      const successes = results.filter(r => r.success);
+      const duplicates = results.filter(r => r.errorReason === "duplicate_settlement");
+      expect(successes).toHaveLength(1);
+      expect(duplicates).toHaveLength(1);
+      expect(["100", "200"]).toContain(successes[0]?.amount);
+      expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not claim the cache for an invalid voucher", async () => {
+      const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+        await buildFixture();
+      const forged = await signVoucher(receiverAuthorizer, {
+        channelId: uptoPayload.channelId,
+        cumulativeAmount: 1n,
+        expiresAt: BigInt(FAR_FUTURE),
+      });
+
+      await expect(
+        facilitator.settle(
+          { ...payload, payload: { ...uptoPayload, voucherSignature: forged } },
+          { ...requirements, amount: "0" },
+        ),
+      ).resolves.toMatchObject({
+        success: false,
+        errorReason: "invalid_upto_svm_payload_voucher_signature",
+      });
+      expect(channelMocks.submitSettle).not.toHaveBeenCalled();
+
+      await expect(
+        settleWithAmount(facilitator, payload, requirements, receiverAuthorizer, uptoPayload, "0"),
+      ).resolves.toMatchObject({ success: true, amount: "0" });
+      expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not claim the cache when the channel is not open", async () => {
+      const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+        await buildFixture();
+      channelMocks.fetchAndVerifyOpenChannel.mockRejectedValueOnce(
+        new Error("channel is not open"),
+      );
+
+      await expect(
+        settleWithAmount(facilitator, payload, requirements, receiverAuthorizer, uptoPayload, "0"),
+      ).resolves.toMatchObject({
+        success: false,
+        errorReason: "invalid_upto_svm_channel_state",
+      });
+      expect(channelMocks.submitSettle).not.toHaveBeenCalled();
+
+      await expect(
+        settleWithAmount(facilitator, payload, requirements, receiverAuthorizer, uptoPayload, "0"),
+      ).resolves.toMatchObject({ success: true, amount: "0" });
+      expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
+    });
+  });
 });

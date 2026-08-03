@@ -631,6 +631,40 @@ the confirmed transaction containing that final `distribute`. For the
 `actual == 0` refund path, `distribute` moves no funds to `payTo` and returns
 the full deposit to the client.
 
+### Duplicate Settlement Mitigation
+
+Exact SVM replays a client-built transfer transaction. Concurrent `/settle`
+calls with the same payload typically observe the same successful signature
+because Solana deduplicates identical transactions. `upto` is different: the
+facilitator builds `settle_and_seal` + `distribute` at settle time, so the
+outcome depends on whether the settlement inputs collide:
+
+- **Same voucher and blockhash:** Solana deduplicates the identical
+  transaction. Only one lands onchain, but every `/settle` caller can still
+  observe that success and release the protected resource more than once for
+  a single payment.
+- **Different vouchers (or a fresh blockhash):** each call builds a distinct
+  transaction. One seals the channel; the others fail after broadcast, wasting
+  facilitator fees. Onchain state is single-winner, but the failed attempts
+  still cost gas.
+
+Facilitators MUST therefore maintain a short-term, in-memory settlement cache
+of channels currently being settled. The canonical cache key is
+`upto:<network>:<channelId>`, where `<network>` is the CAIP-2 network from
+`paymentRequirements.network` and `<channelId>` is the Base58 channel PDA from
+the payload. Before broadcast:
+
+1. After voucher authentication and open-channel rebind succeed, derive the
+   canonical cache key.
+2. If the key is already present in the cache, reject with
+   `duplicate_settlement` and MUST NOT broadcast — regardless of metered
+   amount or voucher bytes.
+3. If the key is not present, insert it into the cache and proceed with
+   broadcast.
+4. Evict entries older than 120 seconds (approximately twice the Solana
+   blockhash lifetime of ~60–90 seconds). Invalid vouchers and failed
+   channel rebinds MUST NOT insert into the cache.
+
 ## 6. Asynchronous Recovery and Channel Discovery
 
 Channel discovery is onchain. A client can discover channels for which it
@@ -740,6 +774,9 @@ Standard x402 codes apply. Scheme-specific:
   `open` transaction failed.
 - `invalid_upto_svm_channel_state` - confirmed channel account is missing or does
   not match challenge-bound terms (also returned from settle when re-bind fails).
+- `duplicate_settlement` - the settlement cache already holds the channel; a
+  later settle (including a different valid amount or voucher) MUST NOT be
+  broadcast.
 - `CHANNEL_REQUIRED` (with `412`) - no open channel and no valid
   `openTransaction` that can be co-signed, broadcast, and confirmed before
   serving the resource.
