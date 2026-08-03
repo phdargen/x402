@@ -213,5 +213,63 @@ describe("SVM Signer Converters", () => {
         expect((error as Error).message).not.toContain("BigInt");
       }
     });
+
+    it("should reject confirmed transactions that failed onchain", async () => {
+      const mockSigner = {
+        address: "FacilitatorAddress1111111111111111111" as never,
+        signTransactions: vi.fn() as never,
+        signMessages: vi.fn().mockResolvedValue([{}]) as never,
+      };
+
+      const mockRpc = {
+        getBalance: vi.fn(),
+        getSlot: vi.fn(),
+        getSignatureStatuses: vi.fn().mockReturnValue({
+          send: vi.fn().mockResolvedValue({
+            value: [
+              {
+                confirmationStatus: "confirmed",
+                err: { InstructionError: [0, { Custom: 1 }] },
+              },
+            ],
+          }),
+        }),
+      } as never;
+
+      const facilitator = toFacilitatorSvmSigner(mockSigner as never, mockRpc);
+
+      await expect(
+        facilitator.confirmTransaction("failedSignature", SOLANA_DEVNET_CAIP2),
+      ).rejects.toThrow("Transaction failed onchain:");
+    });
+
+    it("should resolve when a transaction is confirmed without error", async () => {
+      const mockSigner = {
+        address: "FacilitatorAddress1111111111111111111" as never,
+        signTransactions: vi.fn() as never,
+        signMessages: vi.fn().mockResolvedValue([{}]) as never,
+      };
+
+      const mockRpc = {
+        getBalance: vi.fn(),
+        getSlot: vi.fn(),
+        getSignatureStatuses: vi.fn().mockReturnValue({
+          send: vi.fn().mockResolvedValue({
+            value: [
+              {
+                confirmationStatus: "finalized",
+                err: null,
+              },
+            ],
+          }),
+        }),
+      } as never;
+
+      const facilitator = toFacilitatorSvmSigner(mockSigner as never, mockRpc);
+
+      await expect(
+        facilitator.confirmTransaction("okSignature", SOLANA_DEVNET_CAIP2),
+      ).resolves.toBeUndefined();
+    });
   });
 });

@@ -15,6 +15,7 @@ import {
 } from "../../payment-channels/onchain";
 import { parseU64, verifyOpenTransaction } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
+import { SettlementCache } from "../../settlement-cache";
 import type { FacilitatorSvmSigner } from "../../signer";
 import { isUptoSvmPayload, type UptoSvmPayloadV2 } from "../../types";
 import { createRpcClient, getStablecoinTokenProgram } from "../../utils";
@@ -73,6 +74,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
 
   private readonly config: UptoSvmFacilitatorConfig;
   private readonly channelStorage: UptoChannelStorage;
+  private readonly settlementCache = new SettlementCache();
 
   /**
    * Create the upto SVM facilitator.
@@ -612,6 +614,22 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         transaction: "",
         errorReason: "invalid_upto_svm_channel_state",
         errorMessage: error instanceof Error ? error.message : String(error),
+        payer: p.from,
+      };
+    }
+
+    // Claim only after the open channel is rebound. Concurrent or replayed
+    // settles for the same channel — including different valid amounts /
+    // vouchers — must fail after the first claim so only one settle_and_seal +
+    // distribute is submitted. Failures above (invalid voucher / not open) do
+    // not insert into the cache.
+    const settlementKey = `upto:${network}:${p.channelId}`;
+    if (this.settlementCache.isDuplicate(settlementKey)) {
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "duplicate_settlement",
         payer: p.from,
       };
     }

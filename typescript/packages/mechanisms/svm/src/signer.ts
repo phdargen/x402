@@ -320,13 +320,20 @@ export function createRpcCapabilitiesFromRpc(
 
       while (!confirmed && attempts < maxAttempts) {
         const status = await rpc.getSignatureStatuses([signature as never]).send();
+        const entry = status.value[0];
 
         if (
-          status.value[0]?.confirmationStatus === "confirmed" ||
-          status.value[0]?.confirmationStatus === "finalized"
+          entry?.confirmationStatus === "confirmed" ||
+          entry?.confirmationStatus === "finalized"
         ) {
+          if (entry.err) {
+            const errorStr = JSON.stringify(entry.err, (_, v) =>
+              typeof v === "bigint" ? v.toString() : v,
+            );
+            throw new Error(`Transaction failed onchain: ${errorStr}`);
+          }
           confirmed = true;
-          return status.value[0];
+          return entry;
         }
 
         await new Promise(resolve => setTimeout(resolve, 1000));
