@@ -52,10 +52,9 @@ if (svmAddress) {
   });
 }
 
-const receiverAuthorizerSigner =
-  svmReceiverAuthorizerKey
-    ? await createKeyPairSignerFromBytes(base58.decode(svmReceiverAuthorizerKey))
-    : undefined;
+const receiverAuthorizerSigner = svmReceiverAuthorizerKey
+  ? await createKeyPairSignerFromBytes(base58.decode(svmReceiverAuthorizerKey))
+  : undefined;
 
 let resourceServer = new x402ResourceServer(facilitatorClient);
 if (evmAddress) resourceServer = resourceServer.register(EVM_NETWORK, new UptoEvmScheme());

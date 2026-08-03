@@ -42,7 +42,9 @@ const evmRpcUrl = process.env.EVM_RPC_URL;
 const svmRpcUrl = process.env.SVM_RPC_URL;
 
 if (!evmPrivateKey && !svmPrivateKey) {
-  console.error("❌ At least one of EVM_PRIVATE_KEY or SVM_PRIVATE_KEY is required");
+  console.error(
+    "❌ At least one of EVM_PRIVATE_KEY or SVM_PRIVATE_KEY is required",
+  );
   process.exit(1);
 }
 
@@ -141,7 +143,9 @@ if (evmPrivateKey) {
 }
 
 if (svmPrivateKey) {
-  const svmAccount = await createKeyPairSignerFromBytes(base58.decode(svmPrivateKey));
+  const svmAccount = await createKeyPairSignerFromBytes(
+    base58.decode(svmPrivateKey),
+  );
   console.info(`SVM Facilitator account: ${svmAccount.address}`);
 
   const svmSigner = toFacilitatorSvmSigner(svmAccount);
@@ -156,12 +160,12 @@ if (svmPrivateKey) {
     intervalSecs: rentCleanupIntervalSecs,
     abandonGraceSecs,
     abandonMaxSecs,
-    onClose: result => {
+    onClose: (result) => {
       console.info(
         `[rent-cleanup] ${result.action} channel=${result.channelId} tx=${result.transaction}`,
       );
     },
-    onReclaim: result => {
+    onReclaim: (result) => {
       console.info(
         `[rent-cleanup] reclaim channels=${result.channelIds.join(",")} tx=${result.transaction}`,
       );

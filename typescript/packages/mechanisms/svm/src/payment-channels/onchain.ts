@@ -64,30 +64,21 @@ export const PAYMENT_CHANNELS_PROGRAM_ID =
   "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX" as Address<"CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX">;
 
 /**
- * Treasury owner baked into the mainnet-beta payment-channels program:
+ * Treasury owner baked into mainnet payment-channels program:
  * `Cs2zdfUNonRdRGsiZUQQLdTxzxVvJZmgiX2mpLYKuEqP`. `distribute` validates the
  * treasury token account against `ATA(TREASURY_OWNER, mint, token_program)`,
  * so this must match the onchain constant exactly — otherwise settlement fails
  * with `TreasuryAccountMismatch` (0x961).
- *
- * The currentdevnet deployment of the same program id loads a different
- * `TREASURY_OWNER` (`4zTeC5m…`). Use {@link getPaymentChannelsTreasuryOwner}.
  */
 const MAINNET_TREASURY_OWNER_BYTES = new Uint8Array([
   0xb0, 0x41, 0xd9, 0xd3, 0x37, 0xb7, 0x21, 0xbe, 0x57, 0x89, 0x4e, 0xb6, 0x9c, 0x3b, 0x68, 0x09,
   0xa5, 0x3a, 0x0e, 0x2b, 0x6a, 0x23, 0x99, 0xfc, 0x7d, 0x5b, 0x7e, 0xda, 0x8c, 0xac, 0x89, 0xaa,
 ]);
 
-/**
- * Treasury owner loaded by the currentdevnet payment-channels binary
- * (`4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap`). Confirmed via the program's
- * relocated `lddw` of `TREASURY_OWNER` and a successful open∥settle∥distribute
- * simulation against ATA `BSMX9adNvtMHhBSbiuDeaPZZbF82cmPJkSHyptJSHecz`.
- */
+const MAINNET_TREASURY_OWNER = getBase58Decoder().decode(MAINNET_TREASURY_OWNER_BYTES) as Address;
+
 const DEVNET_TREASURY_OWNER =
   "4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap" as Address<"4zTeC5mVqWLruDexgU2mV66p9t5vCA9JyiZqdGDUspap">;
-
-const MAINNET_TREASURY_OWNER = getBase58Decoder().decode(MAINNET_TREASURY_OWNER_BYTES) as Address;
 
 /**
  * Payment-channels `TREASURY_OWNER` for the program binary on `network`.
