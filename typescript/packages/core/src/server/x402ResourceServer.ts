@@ -1457,9 +1457,19 @@ export class x402ResourceServer {
       case 2:
         // For v2, all server-declared requirements must match.
         // The client may include additive scheme-specific metadata under `accepted.extra`.
-        return availableRequirements.find(paymentRequirements =>
-          paymentRequirementsMatchAccepted(paymentRequirements, paymentPayload.accepted),
-        );
+        // Scheme-declared dynamicExtraFields are omitted from the extra comparison
+        return availableRequirements.find(paymentRequirements => {
+          const scheme = findByNetworkAndScheme(
+            this.registeredServerSchemes,
+            paymentRequirements.scheme,
+            paymentRequirements.network,
+          );
+          return paymentRequirementsMatchAccepted(
+            paymentRequirements,
+            paymentPayload.accepted,
+            scheme?.dynamicExtraFields,
+          );
+        });
       case 1:
         // For v1, match by scheme and network
         return availableRequirements.find(
@@ -1702,7 +1712,7 @@ export class x402ResourceServer {
       matchedScheme.scheme,
       matchedScheme.network,
     );
-    if (!scheme?.settleOnCancel) {
+    if (!scheme?.settleOnCancel || !settledPhases.includes("before-handler")) {
       return;
     }
 
@@ -1818,9 +1828,9 @@ function getExtensionInfo(value: unknown): unknown {
 }
 
 /**
- * Returns a copy of an extension info object without the named dynamic fields.
+ * Returns a copy of an object without the named dynamic fields.
  *
- * @param value - Extension info payload to filter.
+ * @param value - Object to filter (extension info or payment-requirements extra).
  * @param fields - Field names regenerated per response that must not be compared.
  * @returns The value unchanged when no fields apply; otherwise a copy without them.
  */
@@ -1864,14 +1874,17 @@ function extensionInfoMatchesAdvertised(
  *
  * Core payment terms and all server-declared `extra` fields must match exactly,
  * but clients may include additive scheme-specific metadata under `accepted.extra`.
+ * Fields listed in `dynamicExtraFields` are excluded from the extra comparison.
  *
  * @param required - Server-advertised payment requirement.
  * @param accepted - Client-selected payment requirement from the payment payload.
+ * @param dynamicExtraFields - Scheme-declared `extra` keys regenerated per PaymentRequired.
  * @returns True when `accepted` preserves every server-declared requirement.
  */
 function paymentRequirementsMatchAccepted(
   required: PaymentRequirements,
   accepted: PaymentRequirements,
+  dynamicExtraFields?: string[],
 ): boolean {
   const { extra: requiredExtra, ...requiredCore } = required;
   const { extra: acceptedExtra, ...acceptedCore } = accepted;
@@ -1884,7 +1897,10 @@ function paymentRequirementsMatchAccepted(
     return true;
   }
 
-  return objectContainsSubset(requiredExtra, acceptedExtra);
+  return objectContainsSubset(
+    omitFields(requiredExtra, dynamicExtraFields),
+    omitFields(acceptedExtra, dynamicExtraFields),
+  );
 }
 
 /**

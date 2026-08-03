@@ -226,6 +226,7 @@ export interface SchemeNetworkServer {
    */
   readonly paymentFlows: Readonly<Record<string, PaymentFlowConfig>>;
   readonly schemeHooks?: SchemeServerHooks;
+  readonly dynamicExtraFields?: string[];
   enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
   enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;

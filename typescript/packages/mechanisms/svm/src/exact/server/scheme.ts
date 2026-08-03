@@ -42,6 +42,7 @@ export class ExactSvmScheme implements SchemeNetworkServer {
   readonly paymentFlows = {
     default: { supported: ["authorization"], default: "authorization" },
   } as const satisfies Record<string, PaymentFlowConfig>;
+  readonly dynamicExtraFields = ["recentBlockhash", "lastValidBlockHeight"];
   private moneyParsers: MoneyParser[] = [];
 
   /**

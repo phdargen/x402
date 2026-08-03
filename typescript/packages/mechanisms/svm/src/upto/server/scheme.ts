@@ -60,6 +60,8 @@ const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
  */
 export class UptoSvmScheme implements SchemeNetworkServer {
   readonly scheme = "upto";
+  /** Blockhash/slot hints regenerated per PaymentRequired; omitted from accepted-echo matching. */
+  readonly dynamicExtraFields = ["recentBlockhash", "lastValidBlockHeight", "recentSlot"];
   private moneyParsers: MoneyParser[] = [];
   private readonly receiverAuthorizerSigner: MessagePartialSigner;
   private readonly withdrawDelay: number | undefined;

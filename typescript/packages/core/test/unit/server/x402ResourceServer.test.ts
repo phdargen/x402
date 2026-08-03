@@ -1327,6 +1327,9 @@ describe("x402ResourceServer", () => {
         const cancellation = server.createPaymentCancellationDispatcher(
           buildPaymentPayload({ accepted: requirements }),
           requirements,
+          undefined,
+          undefined,
+          ["before-handler"],
         );
 
         await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
@@ -1347,6 +1350,36 @@ describe("x402ResourceServer", () => {
         const server = new x402ResourceServer(settleClient);
         const scheme = new MockSchemeNetworkServer("upto");
         scheme.settleOnCancel = async () => undefined;
+        server.register("eip155:*" as Network, scheme);
+
+        const cancellation = server.createPaymentCancellationDispatcher(
+          buildPaymentPayload({
+            accepted: buildPaymentRequirements({
+              scheme: "upto",
+              network: "eip155:8453" as Network,
+            }),
+          }),
+          buildPaymentRequirements({ scheme: "upto", network: "eip155:8453" as Network }),
+          undefined,
+          undefined,
+          ["before-handler"],
+        );
+
+        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+        expect(settleClient.settleCalls).toHaveLength(0);
+      });
+
+      it("skips settleOnCancel when before-handler deposit did not complete", async () => {
+        const settleClient = new MockFacilitatorClient(
+          buildSupportedResponse({
+            kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
+          }),
+          undefined,
+          buildSettleResponse({ success: true, amount: "0" }),
+        );
+        const server = new x402ResourceServer(settleClient);
+        const scheme = new MockSchemeNetworkServer("upto");
+        scheme.settleOnCancel = async context => ({ ...context.requirements, amount: "0" });
         server.register("eip155:*" as Network, scheme);
 
         const cancellation = server.createPaymentCancellationDispatcher(
@@ -1385,6 +1418,9 @@ describe("x402ResourceServer", () => {
             }),
           }),
           buildPaymentRequirements({ scheme: "upto", network: "eip155:8453" as Network }),
+          undefined,
+          undefined,
+          ["before-handler"],
         );
 
         await expect(
@@ -2454,6 +2490,105 @@ describe("x402ResourceServer", () => {
       const result = server.findMatchingRequirements([req], payload);
 
       expect(result).toBeDefined();
+    });
+
+    it("matches when only declared dynamic extra fields differ", () => {
+      const server = new x402ResourceServer();
+      server.register(
+        "solana:mainnet" as Network,
+        Object.assign(new MockSchemeNetworkServer("exact"), {
+          dynamicExtraFields: ["recentBlockhash", "lastValidBlockHeight"],
+        }),
+      );
+
+      const req = buildPaymentRequirements({
+        scheme: "exact",
+        network: "solana:mainnet" as Network,
+        amount: "1000000",
+        asset: "USDC",
+        extra: {
+          feePayer: "FeePayer111111111111111111111111111111111",
+          recentBlockhash: "freshBlockhash",
+          lastValidBlockHeight: "200",
+        },
+      });
+
+      const payload = buildPaymentPayload({
+        x402Version: 2,
+        accepted: {
+          ...req,
+          extra: {
+            feePayer: "FeePayer111111111111111111111111111111111",
+            recentBlockhash: "staleBlockhash",
+            lastValidBlockHeight: "100",
+          },
+        },
+      });
+
+      expect(server.findMatchingRequirements([req], payload)).toEqual(req);
+    });
+
+    it("does not match when a static extra field differs despite declared dynamic fields", () => {
+      const server = new x402ResourceServer();
+      server.register(
+        "solana:mainnet" as Network,
+        Object.assign(new MockSchemeNetworkServer("exact"), {
+          dynamicExtraFields: ["recentBlockhash", "lastValidBlockHeight"],
+        }),
+      );
+
+      const req = buildPaymentRequirements({
+        scheme: "exact",
+        network: "solana:mainnet" as Network,
+        amount: "1000000",
+        asset: "USDC",
+        extra: {
+          feePayer: "FeePayer111111111111111111111111111111111",
+          recentBlockhash: "freshBlockhash",
+        },
+      });
+
+      const payload = buildPaymentPayload({
+        x402Version: 2,
+        accepted: {
+          ...req,
+          extra: {
+            feePayer: "OtherPayer1111111111111111111111111111111",
+            recentBlockhash: "staleBlockhash",
+          },
+        },
+      });
+
+      expect(server.findMatchingRequirements([req], payload)).toBeUndefined();
+    });
+
+    it("keeps strict extra comparison when no dynamicExtraFields are declared", () => {
+      const server = new x402ResourceServer();
+      server.register("solana:mainnet" as Network, new MockSchemeNetworkServer("exact"));
+
+      const req = buildPaymentRequirements({
+        scheme: "exact",
+        network: "solana:mainnet" as Network,
+        amount: "1000000",
+        asset: "USDC",
+        extra: {
+          feePayer: "FeePayer111111111111111111111111111111111",
+          recentBlockhash: "freshBlockhash",
+        },
+      });
+
+      const payload = buildPaymentPayload({
+        x402Version: 2,
+        accepted: {
+          ...req,
+          extra: {
+            feePayer: "FeePayer111111111111111111111111111111111",
+            recentBlockhash: "staleBlockhash",
+          },
+        },
+      });
+
+      expect(server.findMatchingRequirements([req], payload)).toBeUndefined();
     });
   });
 
