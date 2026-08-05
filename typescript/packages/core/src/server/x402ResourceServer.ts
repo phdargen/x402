@@ -35,7 +35,7 @@ import {
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
 } from "./hookPolicy";
-import { DEFAULT_PAYMENT_FLOW } from "./paymentFlow";
+import { DEFAULT_PAYMENT_FLOW, resolvePaymentFlowPhases } from "./paymentFlow";
 import { FacilitatorClient, HTTPFacilitatorClient } from "../http/httpFacilitatorClient";
 import { x402Version } from "..";
 
@@ -947,6 +947,12 @@ export class x402ResourceServer {
   /**
    * Verifies a payment against requirements, running manual and in-use extension hooks.
    *
+   * Resource-server `beforeVerify` hooks always run. Facilitator `/verify` runs only when
+   * the scheme's payment flow has `verifyBeforeHandler` (the `authorization` flow). For
+   * `upfront` / `escrow`, payment validity is established by settle; `afterVerify` /
+   * `onVerifyFailure` still run when a `VerifyResponse` exists (facilitator result or a
+   * beforeVerify skip).
+   *
    * @param paymentPayload - Signed payment payload from the client
    * @param requirements - Requirements matched to the payload
    * @param declaredExtensions - Optional per-extension declarations for the request
@@ -999,6 +1005,13 @@ export class x402ResourceServer {
       } catch (error) {
         this.warnResourceServerHookFailure("beforeVerify", label, error);
       }
+    }
+
+    const { verifyBeforeHandler } = resolvePaymentFlowPhases(
+      this.getPaymentFlow(paymentPayload, requirements),
+    );
+    if (!verifyBeforeHandler) {
+      return { isValid: true };
     }
 
     try {

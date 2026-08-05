@@ -713,6 +713,92 @@ describe("x402ResourceServer", () => {
 
         warnSpy.mockRestore();
       });
+
+      it("runs beforeVerify but skips facilitator /verify for upfront flow", async () => {
+        let beforeVerifyRan = false;
+        let afterVerifyRan = false;
+
+        server.register(
+          "test:network" as Network,
+          Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+            getPaymentFlow: () => "upfront" as const,
+          }),
+        );
+        await server.initialize();
+
+        server
+          .onBeforeVerify(async () => {
+            beforeVerifyRan = true;
+          })
+          .onAfterVerify(async () => {
+            afterVerifyRan = true;
+          });
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(beforeVerifyRan).toBe(true);
+        expect(afterVerifyRan).toBe(false);
+        expect(mockClient.verifyCalls.length).toBe(0);
+        expect(result).toEqual({ isValid: true });
+      });
+
+      it("aborts without facilitator /verify for upfront flow", async () => {
+        server.register(
+          "test:network" as Network,
+          Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+            getPaymentFlow: () => "upfront" as const,
+          }),
+        );
+        await server.initialize();
+
+        server.onBeforeVerify(async () => {
+          return { abort: true, reason: "gated" };
+        });
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result).toMatchObject({ isValid: false, invalidReason: "gated" });
+        expect(mockClient.verifyCalls.length).toBe(0);
+      });
+
+      it("runs afterVerify on beforeVerify skip for upfront flow", async () => {
+        const executionOrder: string[] = [];
+
+        server.register(
+          "test:network" as Network,
+          Object.assign(new MockSchemeNetworkServer("test-scheme"), {
+            getPaymentFlow: () => "upfront" as const,
+          }),
+        );
+        await server.initialize();
+
+        server
+          .onBeforeVerify(async () => {
+            executionOrder.push("before");
+            return {
+              skip: true,
+              result: buildVerifyResponse({ isValid: true, payer: "0xlocal" }),
+            };
+          })
+          .onAfterVerify(async () => {
+            executionOrder.push("after");
+          });
+
+        const result = await server.verifyPayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(mockClient.verifyCalls.length).toBe(0);
+        expect(executionOrder).toEqual(["before", "after"]);
+        expect(result).toMatchObject({ isValid: true, payer: "0xlocal" });
+      });
     });
 
     describe("onAfterVerify", () => {

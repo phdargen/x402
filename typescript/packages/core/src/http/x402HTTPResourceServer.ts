@@ -642,39 +642,37 @@ export class x402HTTPResourceServer {
       const flow = this.ResourceServer.getPaymentFlow(paymentPayload, matchingRequirements);
       const phases = resolvePaymentFlowPhases(flow);
 
-      if (phases.verifyBeforeHandler) {
-        const verifyResult = await this.ResourceServer.verifyPayment(
+      const verifyResult = await this.ResourceServer.verifyPayment(
+        paymentPayload,
+        matchingRequirements,
+        extensions,
+        transportContext,
+      );
+
+      if (!verifyResult.isValid) {
+        const errorResponse = await this.ResourceServer.createPaymentRequiredResponse(
+          requirements,
+          resourceInfo,
+          verifyResult.invalidReason,
+          extensions,
+          transportContext,
+          paymentPayload,
+        );
+        return {
+          type: "payment-error",
+          response: this.createHTTPResponse(errorResponse, false, paywallConfig),
+        };
+      }
+
+      // Bypass the resource handler
+      if (verifyResult.skipHandler) {
+        return await this.processSkipHandlerSettlement(
           paymentPayload,
           matchingRequirements,
           extensions,
           transportContext,
+          verifyResult.skipHandler,
         );
-
-        if (!verifyResult.isValid) {
-          const errorResponse = await this.ResourceServer.createPaymentRequiredResponse(
-            requirements,
-            resourceInfo,
-            verifyResult.invalidReason,
-            extensions,
-            transportContext,
-            paymentPayload,
-          );
-          return {
-            type: "payment-error",
-            response: this.createHTTPResponse(errorResponse, false, paywallConfig),
-          };
-        }
-
-        // Bypass the resource handler
-        if (verifyResult.skipHandler) {
-          return await this.processSkipHandlerSettlement(
-            paymentPayload,
-            matchingRequirements,
-            extensions,
-            transportContext,
-            verifyResult.skipHandler,
-          );
-        }
       }
 
       let beforeHandlerSettlement: CompletedSettlement | undefined;

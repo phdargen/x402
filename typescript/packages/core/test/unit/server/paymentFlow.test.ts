@@ -347,15 +347,25 @@ describe("payment flows", () => {
       expect(phases).toEqual(["after-handler"]);
     });
 
-    it("upfront: settles before handler and echoes after without a second settle", async () => {
+    it("upfront: runs beforeVerify hooks, skips facilitator /verify, settles before handler", async () => {
       const httpServer = await setup("upfront");
       const phases: SettlePhase[] = [];
+      let beforeVerifyRan = false;
+      let afterVerifyRan = false;
+      ResourceServer.onBeforeVerify(async () => {
+        beforeVerifyRan = true;
+      });
+      ResourceServer.onAfterVerify(async () => {
+        afterVerifyRan = true;
+      });
       ResourceServer.onBeforeSettle(async ctx => {
         phases.push(ctx.phase);
       });
 
       const result = await verifiedRequest(httpServer);
       expect(result.type).toBe("payment-verified");
+      expect(beforeVerifyRan).toBe(true);
+      expect(afterVerifyRan).toBe(false);
       expect(mockFacilitator.verifyCalls).toHaveLength(0);
       expect(mockFacilitator.settleCalls).toHaveLength(1);
       expect(phases).toEqual(["before-handler"]);
@@ -397,15 +407,32 @@ describe("payment flows", () => {
       expect(phases).toEqual(["before-handler"]);
     });
 
+    it("upfront: beforeVerify abort returns payment-error and never settles", async () => {
+      const httpServer = await setup("upfront");
+      ResourceServer.onBeforeVerify(async () => {
+        return { abort: true, reason: "extension_gate" };
+      });
+
+      const result = await verifiedRequest(httpServer);
+      expect(result.type).toBe("payment-error");
+      expect(mockFacilitator.verifyCalls).toHaveLength(0);
+      expect(mockFacilitator.settleCalls).toHaveLength(0);
+    });
+
     it("escrow: settles before and after handler with distinct phases", async () => {
       const httpServer = await setup("escrow");
       const phases: SettlePhase[] = [];
+      let beforeVerifyRan = false;
+      ResourceServer.onBeforeVerify(async () => {
+        beforeVerifyRan = true;
+      });
       ResourceServer.onBeforeSettle(async ctx => {
         phases.push(ctx.phase);
       });
 
       const result = await verifiedRequest(httpServer);
       expect(result.type).toBe("payment-verified");
+      expect(beforeVerifyRan).toBe(true);
       expect(mockFacilitator.verifyCalls).toHaveLength(0);
       expect(mockFacilitator.settleCalls).toHaveLength(1);
 

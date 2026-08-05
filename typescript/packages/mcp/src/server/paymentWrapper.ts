@@ -279,38 +279,36 @@ export function createPaymentWrapper(
         paymentPayload,
       };
 
-      if (phases.verifyBeforeHandler) {
-        const verifyResult = await resourceServer.verifyPayment(
+      const verifyResult = await resourceServer.verifyPayment(
+        paymentPayload,
+        paymentRequirements,
+        extMap,
+        transportContext,
+      );
+
+      if (!verifyResult.isValid) {
+        return createPaymentRequiredResult(
+          resourceServer,
+          toolName,
+          config,
+          verifyResult.invalidReason || "Payment verification failed",
+          transportContext,
+          paymentPayload,
+        );
+      }
+
+      if (verifyResult.skipHandler) {
+        return settlePaymentResult(
+          resourceServer,
+          toolName,
+          config,
+          hookContext,
           paymentPayload,
           paymentRequirements,
           extMap,
           transportContext,
+          createSkipHandlerResult(verifyResult.skipHandler.body),
         );
-
-        if (!verifyResult.isValid) {
-          return createPaymentRequiredResult(
-            resourceServer,
-            toolName,
-            config,
-            verifyResult.invalidReason || "Payment verification failed",
-            transportContext,
-            paymentPayload,
-          );
-        }
-
-        if (verifyResult.skipHandler) {
-          return settlePaymentResult(
-            resourceServer,
-            toolName,
-            config,
-            hookContext,
-            paymentPayload,
-            paymentRequirements,
-            extMap,
-            transportContext,
-            createSkipHandlerResult(verifyResult.skipHandler.body),
-          );
-        }
       }
 
       let beforeHandlerSettlement: CompletedSettlement | undefined;
