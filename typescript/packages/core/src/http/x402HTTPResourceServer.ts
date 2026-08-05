@@ -3,6 +3,9 @@ import {
   SettlementOverrides,
   SkipHandlerDirective,
   PaymentCancellationDispatcher,
+  CompletedSettlement,
+  SettlePhase,
+  resolvePaymentFlowPhases,
 } from "../server";
 import {
   decodePaymentSignatureHeader,
@@ -300,6 +303,8 @@ export type HTTPProcessResult =
   | {
       type: "payment-verified";
       cancellationDispatcher: PaymentCancellationDispatcher;
+      /** Before-handler settle result for success-path PAYMENT-RESPONSE echo (upfront). */
+      beforeHandlerSettlement?: CompletedSettlement;
       paymentPayload: PaymentPayload;
       paymentRequirements: PaymentRequirements;
       declaredExtensions?: Record<string, unknown>;
@@ -399,6 +404,7 @@ export class x402HTTPResourceServer {
   private routesConfig: RoutesConfig;
   private paywallProvider?: PaywallProvider;
   private protectedRequestHooks: ProtectedRequestHook[] = [];
+  private warnedMissingBeforeHandlerSettlement = false;
 
   /**
    * Creates a new x402HTTPResourceServer instance.
@@ -594,7 +600,7 @@ export class x402HTTPResourceServer {
       };
     }
 
-    // Verify payment
+    // Match requirements, resolve flow, then verify/settle per flow phases
     try {
       const matchingRequirements = this.ResourceServer.findMatchingRequirements(
         paymentRequired.accepts,
@@ -634,37 +640,64 @@ export class x402HTTPResourceServer {
         };
       }
 
-      const verifyResult = await this.ResourceServer.verifyPayment(
-        paymentPayload,
-        matchingRequirements,
-        extensions,
-        transportContext,
-      );
+      const flow = this.ResourceServer.getPaymentFlow(paymentPayload, matchingRequirements);
+      const phases = resolvePaymentFlowPhases(flow);
 
-      if (!verifyResult.isValid) {
-        const errorResponse = await this.ResourceServer.createPaymentRequiredResponse(
-          requirements,
-          resourceInfo,
-          verifyResult.invalidReason,
-          extensions,
-          transportContext,
-          paymentPayload,
-        );
-        return {
-          type: "payment-error",
-          response: this.createHTTPResponse(errorResponse, false, paywallConfig),
-        };
-      }
-
-      // Bypass the resource handler
-      if (verifyResult.skipHandler) {
-        return await this.processSkipHandlerSettlement(
+      if (phases.verifyBeforeHandler) {
+        const verifyResult = await this.ResourceServer.verifyPayment(
           paymentPayload,
           matchingRequirements,
           extensions,
           transportContext,
-          verifyResult.skipHandler,
         );
+
+        if (!verifyResult.isValid) {
+          const errorResponse = await this.ResourceServer.createPaymentRequiredResponse(
+            requirements,
+            resourceInfo,
+            verifyResult.invalidReason,
+            extensions,
+            transportContext,
+            paymentPayload,
+          );
+          return {
+            type: "payment-error",
+            response: this.createHTTPResponse(errorResponse, false, paywallConfig),
+          };
+        }
+
+        // Bypass the resource handler
+        if (verifyResult.skipHandler) {
+          return await this.processSkipHandlerSettlement(
+            paymentPayload,
+            matchingRequirements,
+            extensions,
+            transportContext,
+            verifyResult.skipHandler,
+          );
+        }
+      }
+
+      let beforeHandlerSettlement: CompletedSettlement | undefined;
+
+      if (phases.settleBeforeHandler) {
+        const beforeSettleResult = await this.processSettlement(
+          paymentPayload,
+          matchingRequirements,
+          extensions,
+          transportContext,
+          undefined,
+          undefined,
+          "before-handler",
+        );
+        if (!beforeSettleResult.success) {
+          return { type: "payment-error", response: beforeSettleResult.response };
+        }
+        beforeHandlerSettlement = {
+          phase: "before-handler",
+          result: beforeSettleResult,
+          requirements: beforeSettleResult.requirements,
+        };
       }
 
       const cancellationDispatcher = this.ResourceServer.createPaymentCancellationDispatcher(
@@ -672,12 +705,13 @@ export class x402HTTPResourceServer {
         matchingRequirements,
         extensions,
         transportContext,
+        beforeHandlerSettlement ? ["before-handler"] : [],
       );
 
-      // Payment is valid, return data needed for settlement
       return {
         type: "payment-verified",
         cancellationDispatcher,
+        beforeHandlerSettlement,
         paymentPayload,
         paymentRequirements: matchingRequirements,
         declaredExtensions: extensions,
@@ -708,6 +742,8 @@ export class x402HTTPResourceServer {
    * @param declaredExtensions - Optional declared extensions (for per-key enrichment)
    * @param transportContext - Optional HTTP transport context
    * @param settlementOverrides - Optional settlement overrides (e.g., partial settlement amount)
+   * @param beforeHandlerSettlement - Before-handler settle from processHTTPRequest (for PAYMENT-RESPONSE echo)
+   * @param phase - Explicit settle phase; omit to derive from the payment flow
    * @returns ProcessSettleResultResponse - SettleResponse with headers if success or errorReason if failure
    */
   async processSettlement(
@@ -716,6 +752,8 @@ export class x402HTTPResourceServer {
     declaredExtensions?: Record<string, unknown>,
     transportContext?: HTTPTransportContext,
     settlementOverrides?: SettlementOverrides,
+    beforeHandlerSettlement?: CompletedSettlement,
+    phase?: SettlePhase,
   ): Promise<ProcessSettleResultResponse> {
     if (transportContext?.request && !transportContext.request.method) {
       transportContext = {
@@ -726,6 +764,39 @@ export class x402HTTPResourceServer {
         },
       };
     }
+
+    const flow = this.ResourceServer.getPaymentFlow(paymentPayload, requirements);
+    const phases = resolvePaymentFlowPhases(flow);
+
+    // After-handler path for flows that do not settle again: echo before-handler settle or no-op.
+    if (phase !== "before-handler" && !phases.settleAfterHandler) {
+      if (beforeHandlerSettlement) {
+        return {
+          ...beforeHandlerSettlement.result,
+          success: true,
+          headers: this.createSettlementHeaders(beforeHandlerSettlement.result),
+          requirements: beforeHandlerSettlement.requirements,
+        };
+      }
+      if (phases.settleBeforeHandler && !beforeHandlerSettlement) {
+        if (!this.warnedMissingBeforeHandlerSettlement) {
+          this.warnedMissingBeforeHandlerSettlement = true;
+          console.warn(
+            `[x402] Payment flow "${flow}" settles before the handler, but processSettlement was called without beforeHandlerSettlement from processHTTPRequest. Skipping after-handler settle. Pass that settle result to echo the before-handler PAYMENT-RESPONSE.`,
+          );
+        }
+      }
+      return {
+        success: true,
+        transaction: "",
+        network: requirements.network as Network,
+        headers: {},
+        requirements,
+      };
+    }
+
+    const resolvedPhase: SettlePhase = phase ?? "after-handler";
+
     try {
       // Resolve overrides: explicit param takes precedence, fall back to response header
       let resolvedOverrides = settlementOverrides;
@@ -749,6 +820,7 @@ export class x402HTTPResourceServer {
         declaredExtensions,
         transportContext,
         resolvedOverrides,
+        resolvedPhase,
       );
 
       if (!settleResponse.success) {
@@ -850,6 +922,9 @@ export class x402HTTPResourceServer {
       requirements,
       declaredExtensions,
       transportContext,
+      undefined,
+      undefined,
+      "after-handler",
     );
 
     if (!settleResult.success) {

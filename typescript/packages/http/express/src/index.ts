@@ -207,8 +207,13 @@ export function paymentMiddlewareFromHTTPServer(
 
       case "payment-verified":
         // Payment is valid, need to wrap response for settlement
-        const { cancellationDispatcher, paymentPayload, paymentRequirements, declaredExtensions } =
-          result;
+        const {
+          cancellationDispatcher,
+          beforeHandlerSettlement,
+          paymentPayload,
+          paymentRequirements,
+          declaredExtensions,
+        } = result;
 
         // Intercept and buffer all core methods that can commit response to client
         const originalWriteHead = res.writeHead.bind(res);
@@ -329,6 +334,8 @@ export function paymentMiddlewareFromHTTPServer(
             paymentRequirements,
             declaredExtensions,
             { request: context, responseBody, responseHeaders },
+            undefined,
+            beforeHandlerSettlement,
           );
 
           // If settlement fails, return an error and do not send the buffered response

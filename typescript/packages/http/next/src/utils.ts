@@ -9,6 +9,7 @@ import {
   FacilitatorResponseError,
   getFacilitatorResponseError as getCoreFacilitatorResponseError,
   PaymentCancellationDispatcher,
+  CompletedSettlement,
   SETTLEMENT_OVERRIDES_HEADER,
   withPrivateCacheControl,
 } from "@x402/core/server";
@@ -160,8 +161,9 @@ export function handlePaymentError(response: HTTPResponseInstructions): NextResp
  * @param paymentPayload - The payment payload from the client
  * @param paymentRequirements - The payment requirements for the route
  * @param declaredExtensions - Optional declared extensions (for per-key enrichment)
- * @param cancellationDispatcher - Cancels verified payments that should not settle
+ * @param cancellationDispatcher - Cancels payments that should not settle after the handler
  * @param httpContext - HTTP request context for extensions
+ * @param beforeHandlerSettlement - Optional before-handler settle for PAYMENT-RESPONSE echo
  * @returns The response with settlement headers or an error response if settlement fails
  */
 export async function handleSettlement(
@@ -172,6 +174,7 @@ export async function handleSettlement(
   declaredExtensions: Record<string, unknown> | undefined,
   cancellationDispatcher: PaymentCancellationDispatcher,
   httpContext: HTTPRequestContext,
+  beforeHandlerSettlement?: CompletedSettlement,
 ): Promise<NextResponse> {
   // If the response from the protected route is >= 400, do not settle payment
   if (response.status >= 400) {
@@ -197,6 +200,8 @@ export async function handleSettlement(
       paymentRequirements,
       declaredExtensions,
       { request: httpContext, responseBody, responseHeaders },
+      undefined,
+      beforeHandlerSettlement,
     );
 
     if (!result.success) {

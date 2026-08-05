@@ -8,10 +8,12 @@ export type {
   SettleContext,
   SettleResultContext,
   SettleFailureContext,
+  SettlePhase,
   VerifiedPaymentCanceledContext,
   VerifiedPaymentCancellationReason,
   VerifiedPaymentCancelOptions,
   PaymentCancellationDispatcher,
+  CompletedSettlement,
   SettlementOverrides,
   ExtensionValidationResult,
   SkipHandlerDirective,
@@ -24,11 +26,14 @@ export type {
   OnSettleFailureHook,
   OnVerifiedPaymentCanceledHook,
 } from "./x402ResourceServer";
+export { DEFAULT_PAYMENT_FLOW, PAYMENT_FLOWS, resolvePaymentFlowPhases } from "./paymentFlow";
 export type {
   SchemeEnrichPaymentRequiredResponseHook,
   SchemePaymentRequiredContext,
   SchemeEnrichSettlementPayloadHook,
   SchemeEnrichSettlementResponseHook,
+  PaymentFlowName,
+  PaymentFlowPhases,
 } from "../types/mechanisms";
 
 export {

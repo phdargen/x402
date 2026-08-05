@@ -1578,16 +1578,16 @@ describe("x402ResourceServer", () => {
         }),
       );
 
-      await server.settlePayment(
-        buildPaymentPayload({ payload: { clientField: "client" } }),
-        buildPaymentRequirements(),
-      );
+      const payload = buildPaymentPayload({ payload: { clientField: "client" } });
+      await server.settlePayment(payload, buildPaymentRequirements());
 
       expect(order).toEqual(["payload"]);
       expect(mockClient.settleCalls[0].payload.payload).toEqual({
         clientField: "client",
         serverField: "server",
       });
+      // Enrichment must not mutate the caller's payload (multi-settle safety).
+      expect(payload.payload).toEqual({ clientField: "client" });
     });
 
     it("rejects payload enrichment that overwrites client payload fields", async () => {

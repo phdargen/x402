@@ -13,6 +13,7 @@ import {
   SettlementOverrides,
   checkIfBazaarNeeded,
   PaymentCancellationDispatcher,
+  CompletedSettlement,
   withPrivateCacheControl,
 } from "@x402/core/server";
 import {
@@ -37,6 +38,7 @@ export function setSettlementOverrides(reply: FastifyReply, overrides: Settlemen
 
 interface X402PaymentContext {
   cancellationDispatcher: PaymentCancellationDispatcher;
+  beforeHandlerSettlement?: CompletedSettlement;
   paymentPayload: PaymentPayload;
   paymentRequirements: PaymentRequirements;
   declaredExtensions?: Record<string, unknown>;
@@ -378,6 +380,7 @@ export function paymentMiddlewareFromHTTPServer(
       case "payment-verified": {
         request.x402Context = {
           cancellationDispatcher: result.cancellationDispatcher,
+          beforeHandlerSettlement: result.beforeHandlerSettlement,
           paymentPayload: result.paymentPayload,
           paymentRequirements: result.paymentRequirements,
           declaredExtensions: result.declaredExtensions,
@@ -451,6 +454,8 @@ export function paymentMiddlewareFromHTTPServer(
         x402Context.paymentRequirements,
         x402Context.declaredExtensions,
         { request: x402Context.requestContext, responseBody, responseHeaders },
+        undefined,
+        x402Context.beforeHandlerSettlement,
       );
 
       if (!settleResult.success) {

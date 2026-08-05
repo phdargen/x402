@@ -6,7 +6,11 @@
  */
 
 import type { PaymentPayload, PaymentRequirements, ResourceInfo } from "@x402/core/types";
-import { x402ResourceServer } from "@x402/core/server";
+import {
+  CompletedSettlement,
+  resolvePaymentFlowPhases,
+  x402ResourceServer,
+} from "@x402/core/server";
 
 import type {
   MCPToolContext,
@@ -264,23 +268,8 @@ export function createPaymentWrapper(
       }
 
       const extMap = config.extensions ?? {};
-      const verifyResult = await resourceServer.verifyPayment(
-        paymentPayload,
-        paymentRequirements,
-        extMap,
-        transportContext,
-      );
-
-      if (!verifyResult.isValid) {
-        return createPaymentRequiredResult(
-          resourceServer,
-          toolName,
-          config,
-          verifyResult.invalidReason || "Payment verification failed",
-          transportContext,
-          paymentPayload,
-        );
-      }
+      const flow = resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
+      const phases = resolvePaymentFlowPhases(flow);
 
       // Build hook context
       const hookContext: ServerHookContext = {
@@ -289,26 +278,85 @@ export function createPaymentWrapper(
         paymentRequirements,
         paymentPayload,
       };
+
+      if (phases.verifyBeforeHandler) {
+        const verifyResult = await resourceServer.verifyPayment(
+          paymentPayload,
+          paymentRequirements,
+          extMap,
+          transportContext,
+        );
+
+        if (!verifyResult.isValid) {
+          return createPaymentRequiredResult(
+            resourceServer,
+            toolName,
+            config,
+            verifyResult.invalidReason || "Payment verification failed",
+            transportContext,
+            paymentPayload,
+          );
+        }
+
+        if (verifyResult.skipHandler) {
+          return settlePaymentResult(
+            resourceServer,
+            toolName,
+            config,
+            hookContext,
+            paymentPayload,
+            paymentRequirements,
+            extMap,
+            transportContext,
+            createSkipHandlerResult(verifyResult.skipHandler.body),
+          );
+        }
+      }
+
+      let beforeHandlerSettlement: CompletedSettlement | undefined;
+
+      if (phases.settleBeforeHandler) {
+        try {
+          const beforeSettle = await resourceServer.settlePayment(
+            paymentPayload,
+            paymentRequirements,
+            extMap,
+            transportContext,
+            undefined,
+            "before-handler",
+          );
+          if (!beforeSettle.success) {
+            return createSettlementFailedResult(
+              resourceServer,
+              toolName,
+              config,
+              beforeSettle.errorReason || beforeSettle.errorMessage || "Settlement failed",
+              transportContext,
+            );
+          }
+          beforeHandlerSettlement = {
+            phase: "before-handler",
+            result: beforeSettle,
+            requirements: paymentRequirements,
+          };
+        } catch (settleError) {
+          return createSettlementFailedResult(
+            resourceServer,
+            toolName,
+            config,
+            settleError instanceof Error ? settleError.message : "Settlement failed",
+            transportContext,
+          );
+        }
+      }
+
       const cancellationDispatcher = resourceServer.createPaymentCancellationDispatcher(
         paymentPayload,
         paymentRequirements,
         extMap,
         transportContext,
+        beforeHandlerSettlement ? ["before-handler"] : [],
       );
-
-      if (verifyResult.skipHandler) {
-        return settlePaymentResult(
-          resourceServer,
-          toolName,
-          config,
-          hookContext,
-          paymentPayload,
-          paymentRequirements,
-          extMap,
-          transportContext,
-          createSkipHandlerResult(verifyResult.skipHandler.body),
-        );
-      }
 
       // Run onBeforeExecution hook if present
       if (config.hooks?.onBeforeExecution) {
@@ -364,6 +412,7 @@ export function createPaymentWrapper(
         extMap,
         transportContext,
         result,
+        beforeHandlerSettlement,
       );
     };
   };
@@ -404,6 +453,7 @@ function createSkipHandlerResult(body: unknown): WrappedToolResult {
  * @param extMap - Extension map forwarded to the settlement call.
  * @param transportContext - MCP payment transport context for this invocation.
  * @param result - Successful tool result to merge settlement metadata into.
+ * @param beforeHandlerSettlement - Optional before-handler settle for PAYMENT-RESPONSE echo.
  * @returns Tool result including `_meta` with settlement details, or a settlement-failure error result.
  */
 async function settlePaymentResult(
@@ -416,13 +466,47 @@ async function settlePaymentResult(
   extMap: Record<string, unknown>,
   transportContext: MCPPaymentTransportContext,
   result: WrappedToolResult | ToolResult,
+  beforeHandlerSettlement?: CompletedSettlement,
 ): Promise<WrappedToolResult> {
   try {
+    const flow = resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
+    const phases = resolvePaymentFlowPhases(flow);
+
+    if (!phases.settleAfterHandler) {
+      const settleResult = beforeHandlerSettlement?.result;
+      if (!settleResult) {
+        return {
+          ...result,
+          _meta: {
+            ...(result._meta as Record<string, unknown> | undefined),
+          },
+        };
+      }
+
+      if (config.hooks?.onAfterSettlement) {
+        const settlementContext: SettlementContext = {
+          ...hookContext,
+          settlement: settleResult,
+        };
+        await config.hooks.onAfterSettlement(settlementContext);
+      }
+
+      return {
+        ...result,
+        _meta: {
+          ...(result._meta as Record<string, unknown> | undefined),
+          [MCP_PAYMENT_RESPONSE_META_KEY]: settleResult,
+        },
+      };
+    }
+
     const settleResult = await resourceServer.settlePayment(
       paymentPayload,
       paymentRequirements,
       extMap,
       transportContext,
+      undefined,
+      "after-handler",
     );
 
     if (config.hooks?.onAfterSettlement) {

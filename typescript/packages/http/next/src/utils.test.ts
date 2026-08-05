@@ -372,6 +372,8 @@ describe("handleSettlement", () => {
         responseBody: expect.any(Buffer),
         responseHeaders: expect.any(Object),
       }),
+      undefined,
+      undefined,
     );
   });
 
@@ -420,6 +422,8 @@ describe("handleSettlement", () => {
           "settlement-overrides": JSON.stringify({ amount: "32%" }),
         }),
       }),
+      undefined,
+      undefined,
     );
   });
 

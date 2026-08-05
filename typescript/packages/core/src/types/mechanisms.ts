@@ -184,12 +184,43 @@ export type SchemeEnrichPaymentRequiredResponseHook = (
   ctx: SchemePaymentRequiredContext,
 ) => Promise<PaymentRequirements[] | void>;
 
+/**
+ * Named payment flow declared by a scheme. Controls whether core verifies and/or
+ * settles before the resource handler, and whether it settles after.
+ *
+ * Multi-settle flows (`escrow`) fire settle lifecycle hooks once per settle.
+ * Side-effecting hooks should branch on {@link SettleContext.phase}.
+ */
+export type PaymentFlowName = "authorize" | "upfront" | "escrow" | "validate";
+
+/**
+ * Phase flags for a {@link PaymentFlowName}.
+ */
+export interface PaymentFlowPhases {
+  verifyBeforeHandler: boolean;
+  settleBeforeHandler: boolean;
+  settleAfterHandler: boolean;
+}
+
 export interface SchemeNetworkServer {
   readonly scheme: string;
   readonly schemeHooks?: SchemeServerHooks;
   enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
   enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;
+
+  /**
+   * Optional: declare which payment flow this scheme uses for a given payload.
+   * Omit for the default `authorize` flow (verify → work → settle).
+   *
+   * @param payload - Client payment payload
+   * @param requirements - Matched payment requirements
+   * @returns Flow name from the closed {@link PaymentFlowName} set
+   */
+  getPaymentFlow?(
+    payload: DeepReadonly<PaymentPayload>,
+    requirements: DeepReadonly<PaymentRequirements>,
+  ): PaymentFlowName;
 
   /**
    * Convert a user-friendly price to the scheme's specific amount and asset format

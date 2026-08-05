@@ -18,6 +18,7 @@ import type {
 interface MockResourceServer {
   findMatchingRequirements: ReturnType<typeof vi.fn>;
   validateExtensions: ReturnType<typeof vi.fn>;
+  getPaymentFlow: ReturnType<typeof vi.fn>;
   verifyPayment: ReturnType<typeof vi.fn>;
   settlePayment: ReturnType<typeof vi.fn>;
   createPaymentRequiredResponse: ReturnType<typeof vi.fn>;
@@ -89,10 +90,13 @@ function createMockResourceServer(): MockResourceServer {
   return {
     findMatchingRequirements: vi.fn().mockReturnValue(mockPaymentRequirements),
     validateExtensions: vi.fn().mockReturnValue({ valid: true }),
+    getPaymentFlow: vi.fn().mockReturnValue("authorize"),
     verifyPayment: vi.fn().mockResolvedValue(mockVerifyResponse),
     settlePayment: vi.fn().mockResolvedValue(mockSettleResponse),
     createPaymentRequiredResponse: vi.fn().mockResolvedValue(mockPaymentRequired),
-    createPaymentCancellationDispatcher: vi.fn().mockReturnValue({ cancel }),
+    createPaymentCancellationDispatcher: vi.fn().mockReturnValue({
+      cancel,
+    }),
   };
 }
 
@@ -183,6 +187,8 @@ describe("createPaymentWrapper", () => {
           toolName: "paid_tool",
           arguments: { test: "arg" },
         }),
+        undefined,
+        "after-handler",
       );
     });
 
@@ -356,6 +362,7 @@ describe("createPaymentWrapper", () => {
         mockPaymentRequirements,
         {},
         expectedContext,
+        [],
       );
       expect(mockResourceServer.settlePayment).toHaveBeenCalledWith(
         mockPaymentPayload,
@@ -367,6 +374,8 @@ describe("createPaymentWrapper", () => {
             content: [{ type: "text", text: "success" }],
           }),
         }),
+        undefined,
+        "after-handler",
       );
     });
 
