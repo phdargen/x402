@@ -90,7 +90,7 @@ function createMockResourceServer(): MockResourceServer {
   return {
     findMatchingRequirements: vi.fn().mockReturnValue(mockPaymentRequirements),
     validateExtensions: vi.fn().mockReturnValue({ valid: true }),
-    getPaymentFlow: vi.fn().mockReturnValue("authorize"),
+    getPaymentFlow: vi.fn().mockReturnValue("authorization"),
     verifyPayment: vi.fn().mockResolvedValue(mockVerifyResponse),
     settlePayment: vi.fn().mockResolvedValue(mockSettleResponse),
     createPaymentRequiredResponse: vi.fn().mockResolvedValue(mockPaymentRequired),

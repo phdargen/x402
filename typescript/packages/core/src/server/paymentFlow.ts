@@ -4,7 +4,7 @@ import type { PaymentFlowName, PaymentFlowPhases } from "../types/mechanisms";
  * Default flow when a scheme omits {@link SchemeNetworkServer.getPaymentFlow}.
  * Matches today's verify → work → settle orchestration for all existing schemes.
  */
-export const DEFAULT_PAYMENT_FLOW: PaymentFlowName = "authorize";
+export const DEFAULT_PAYMENT_FLOW: PaymentFlowName = "authorization";
 
 /**
  * Closed set of payment-flow phase tables.
@@ -14,7 +14,7 @@ export const DEFAULT_PAYMENT_FLOW: PaymentFlowName = "authorize";
  * {@link SettleContext.phase} when used with those flows.
  */
 export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
-  authorize: {
+  authorization: {
     verifyBeforeHandler: true,
     settleBeforeHandler: false,
     settleAfterHandler: true,
@@ -29,7 +29,7 @@ export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
     settleBeforeHandler: true,
     settleAfterHandler: true,
   },
-  validate: {
+  validation: {
     verifyBeforeHandler: true,
     settleBeforeHandler: false,
     settleAfterHandler: false,

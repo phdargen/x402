@@ -191,7 +191,7 @@ export type SchemeEnrichPaymentRequiredResponseHook = (
  * Multi-settle flows (`escrow`) fire settle lifecycle hooks once per settle.
  * Side-effecting hooks should branch on {@link SettleContext.phase}.
  */
-export type PaymentFlowName = "authorize" | "upfront" | "escrow" | "validate";
+export type PaymentFlowName = "authorization" | "upfront" | "escrow" | "validation";
 
 /**
  * Phase flags for a {@link PaymentFlowName}.
@@ -211,7 +211,7 @@ export interface SchemeNetworkServer {
 
   /**
    * Optional: declare which payment flow this scheme uses for a given payload.
-   * Omit for the default `authorize` flow (verify → work → settle).
+   * Omit for the default `authorization` flow (verify → work → settle).
    *
    * @param payload - Client payment payload
    * @param requirements - Matched payment requirements

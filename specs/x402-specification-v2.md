@@ -42,7 +42,7 @@ The x402 protocol follows a standard request-response cycle with payment integra
 3. **Payment Authorization Request**: Client submits a signed payment authorization in the subsequent request
 4. **Settlement Response**: Server verifies the payment authorization and initiates blockchain settlement
 
-This cycle describes the default `authorize` payment flow, in which the payment is verified before the resource executes and settled afterward. Schemes may declare other flows that settle before execution; see section 6.1 Payment Flow Models.
+This cycle describes the default `authorization` payment flow, in which the payment is verified before the resource executes and settled afterward. Schemes may declare other flows that settle before execution; see section 6.1 Payment Flow Models.
 
 **3. Protocol Components**
 
@@ -281,13 +281,13 @@ Individual schemes and their per-network bindings — including `exact`, `upto`,
 
 Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism (a scheme on a specific network) declares its payment flow by name. The flow determines the ordering of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) around the resource server's execution of the protected request.
 
-When a mechanism does not declare a flow, the default is `authorize`. A mechanism selecting a non-default flow MUST signal it to the client on the wire via `extra.paymentFlow`, so the client can reason about the trust model before paying — in particular, whether payment becomes final before the resource executes: if the resource handler fails, an `authorize` payment flow is never settled, whereas an `upfront` payment flow has already been committed.
+When a mechanism does not declare a flow, the default is `authorization`. A mechanism selecting a non-default flow MUST signal it to the client on the wire via `extra.paymentFlow`, so the client can reason about the trust model before paying — in particular, whether payment becomes final before the resource executes: if the resource handler fails, an `authorization` payment flow is never settled, whereas an `upfront` payment flow has already been committed.
 
 The following flows are defined:
 
 | Flow                  | Ordering                                        | Description                                                                                                                              |
 | --------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `authorize` (default) | verify → resource → settle → respond            | Read-only verify before the resource executes; funds move only after it completes successfully. |
+| `authorization` (default) | verify → resource → settle → respond        | Read-only verify before the resource executes; funds move only after it completes successfully. |
 | `upfront`             | settle → resource → respond                     | Payment is durably committed before the resource executes, giving the server finality first. Required by networks with no pull-settlement primitive. |
 | `escrow`              | settle → resource → settle → respond            | A first settle commits a deposit or ceiling, the resource executes, and a second settle records the final charge. |
 

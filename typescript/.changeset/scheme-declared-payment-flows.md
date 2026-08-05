@@ -7,6 +7,6 @@
 "@x402/mcp": minor
 ---
 
-Add scheme-declared payment flows (`authorize`, `upfront`, `escrow`, `validate`) so core can verify and settle before and/or after the resource handler. Existing schemes keep the default `authorize` flow (verify → work → settle) with no behavior change.
+Add scheme-declared payment flows (`authorization`, `upfront`, `escrow`, `validation`) so core can verify and settle before and/or after the resource handler. Existing schemes keep the default `authorization` flow (verify → work → settle) with no behavior change.
 
 `SettleContext.phase` identifies which settle invocation is running. Multi-settle flows (`escrow`) fire settle lifecycle hooks once per settle — side-effecting `beforeSettle` / `afterSettle` / enrichment hooks should branch on `phase` when used with those flows.

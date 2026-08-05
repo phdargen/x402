@@ -101,16 +101,16 @@ describe("payment flows", () => {
   });
 
   describe("vocabulary", () => {
-    it("defaults to authorize", () => {
-      expect(DEFAULT_PAYMENT_FLOW).toBe("authorize");
-      expect(PAYMENT_FLOWS.authorize).toEqual({
+    it("defaults to authorization", () => {
+      expect(DEFAULT_PAYMENT_FLOW).toBe("authorization");
+      expect(PAYMENT_FLOWS.authorization).toEqual({
         verifyBeforeHandler: true,
         settleBeforeHandler: false,
         settleAfterHandler: true,
       });
     });
 
-    it("getPaymentFlow returns authorize when scheme omits the hook", async () => {
+    it("getPaymentFlow returns authorization when scheme omits the hook", async () => {
       const mockClient = new MockFacilitatorClient(
         buildSupportedResponse({
           kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
@@ -125,7 +125,7 @@ describe("payment flows", () => {
           buildPaymentPayload(),
           buildPaymentRequirements({ scheme: "exact", network: "eip155:8453" as Network }),
         ),
-      ).toBe("authorize");
+      ).toBe("authorization");
     });
   });
 
@@ -321,8 +321,8 @@ describe("payment flows", () => {
       });
     }
 
-    it("authorize: verifies before handler and settles after with phase after-handler", async () => {
-      const httpServer = await setup("authorize");
+    it("authorization: verifies before handler and settles after with phase after-handler", async () => {
+      const httpServer = await setup("authorization");
       const phases: SettlePhase[] = [];
       ResourceServer.onBeforeSettle(async ctx => {
         phases.push(ctx.phase);
@@ -406,8 +406,8 @@ describe("payment flows", () => {
       expect(phases).toEqual(["before-handler", "after-handler"]);
     });
 
-    it("validate: verifies before handler and returns success with no PAYMENT-RESPONSE", async () => {
-      const httpServer = await setup("validate");
+    it("validation: verifies before handler and returns success with no PAYMENT-RESPONSE", async () => {
+      const httpServer = await setup("validation");
       const phases: SettlePhase[] = [];
       ResourceServer.onBeforeSettle(async ctx => {
         phases.push(ctx.phase);

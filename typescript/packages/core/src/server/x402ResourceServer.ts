@@ -43,7 +43,7 @@ import { x402Version } from "..";
  * Which settle invocation is running for a payment.
  *
  * - `before-handler` — settle before the resource handler (e.g. escrow deposit)
- * - `after-handler` — settle after the resource handler (authorize charge, escrow charge)
+ * - `after-handler` — settle after the resource handler (authorization charge, escrow charge)
  * - `cancel` — refund/close settle from verified-payment cancellation
  *
  * Settle lifecycle hooks (`beforeSettle`, `afterSettle`, `onSettleFailure`,
