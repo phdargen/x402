@@ -23,8 +23,8 @@ export type ExactSvmPayloadV2 = ExactSvmPayloadV1;
  * `maxAmount`, `validAfter`, and `expiresAt` fields mirror the network-agnostic
  * `UptoPayload`; the channel fields are the SVM specialization.
  *
- * `voucherSignature` is absent at verify time and attached by the resource
- * server at settle time.
+ * `voucherSignature` is server-owned and settle-only; verify rejects the field
+ * if present on the client payload.
  */
 export type UptoSvmPayloadV2 = {
   /** Payer wallet (base58). */
@@ -48,8 +48,8 @@ export type UptoSvmPayloadV2 = {
   /** Base64 client-signed `open` transaction for the fee payer to broadcast. */
   openTransaction: string;
   /**
-   * Base58 Ed25519 voucher signature by `authorizedSigner`. Present only on
-   * settle requests (server-attached); verify-phase payloads omit it.
+   * Base58 Ed25519 voucher signature by `authorizedSigner`. Settle-only;
+   * verify rejects any client-supplied value (including empty string).
    */
   voucherSignature?: string;
 };

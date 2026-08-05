@@ -122,13 +122,14 @@ export type FacilitatorSvmSigner = {
 
   /**
    * Resolve the kit-native signer for a fee-payer address.
-   * Used by schemes that build transactions from instructions (e.g. upto).
+   * Required by schemes that build transactions from instructions (e.g. upto);
+   * wire-level schemes such as exact omit this.
    *
    * @param feePayer - Fee payer address
    * @returns Kit TransactionSigner & MessagePartialSigner for that address
    * @throws Error if no signer exists for feePayer
    */
-  getSigner(feePayer: Address): FacilitatorSigningCapabilities;
+  getSigner?(feePayer: Address): FacilitatorSigningCapabilities;
 
   /**
    * Sign a partially-signed transaction with the signer matching feePayer

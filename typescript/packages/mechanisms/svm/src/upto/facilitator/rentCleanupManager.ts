@@ -26,7 +26,7 @@ import {
   type ServerInstruction,
 } from "../../payment-channels/onchain";
 import { OPEN_SLOT_WINDOW } from "../../payment-channels/open";
-import type { FacilitatorSvmSigner } from "../../signer";
+import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../../signer";
 import { createRpcClient } from "../../utils";
 import type { ChannelRpc, UptoSvmSigner } from "./channel";
 import { submitSettle } from "./channel";
@@ -110,6 +110,7 @@ export interface UptoSvmRentCleanupManagerConfig {
  */
 export class UptoSvmRentCleanupManager {
   private readonly signer: FacilitatorSvmSigner;
+  private readonly getKitSigner: (feePayer: Address) => FacilitatorSigningCapabilities;
   private readonly storage: UptoChannelStorage;
   private readonly network: Network;
   private readonly rpcUrl: string | undefined;
@@ -125,6 +126,13 @@ export class UptoSvmRentCleanupManager {
    * @param config - Signer pool, channel storage, and network/RPC
    */
   constructor(config: UptoSvmRentCleanupManagerConfig) {
+    if (typeof config.signer.getSigner !== "function") {
+      throw new Error(
+        "UptoSvmRentCleanupManager requires getSigner on the signer. " +
+          "Use toFacilitatorSvmSigner() which provides all required methods.",
+      );
+    }
+    this.getKitSigner = config.signer.getSigner.bind(config.signer);
     this.signer = config.signer;
     this.storage = config.storage;
     this.network = config.network;
@@ -440,6 +448,6 @@ export class UptoSvmRentCleanupManager {
     if (!this.signer.getAddresses().includes(feePayerAddress as Address)) {
       return undefined;
     }
-    return this.signer.getSigner(feePayerAddress as Address);
+    return this.getKitSigner(feePayerAddress as Address);
   }
 }
