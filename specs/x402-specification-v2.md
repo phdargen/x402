@@ -42,6 +42,8 @@ The x402 protocol follows a standard request-response cycle with payment integra
 3. **Payment Authorization Request**: Client submits a signed payment authorization in the subsequent request
 4. **Settlement Response**: Server verifies the payment authorization and initiates blockchain settlement
 
+This cycle describes the default `authorize` payment flow, in which the payment is verified before the resource executes and settled afterward. Schemes may declare other flows that settle before execution; see section 6.1 Payment Flow Models.
+
 **3. Protocol Components**
 
 The x402 protocol involves three primary components:
@@ -273,53 +275,23 @@ Each scheme defines:
 - Settlement and validation procedures
 - Scheme-specific requirements in the `extra` field of `PaymentRequirements`
 
-**6.1 Exact Scheme (EVM overview)**
+Individual schemes and their per-network bindings — including `exact`, `upto`, `batch-settlement`, and `auth-capture` — are specified under [`specs/schemes/`](./schemes/).
 
-The "exact" scheme uses EIP-3009 (Transfer with Authorization) to enable secure, gasless transfers of specific amounts of ERC-20 tokens.
+**6.1 Payment Flow Models**
 
-**6.1.1 EIP-3009 Authorization**
+Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism (a scheme on a specific network) declares its payment flow by name. The flow determines the ordering of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) around the resource server's execution of the protected request.
 
-The authorization follows the EIP-3009 standard for `transferWithAuthorization`:
+When a mechanism does not declare a flow, the default is `authorize`. A mechanism selecting a non-default flow MUST signal it to the client on the wire via `extra.paymentFlow`, so the client can reason about the trust model before paying — in particular, whether payment becomes final before the resource executes: if the resource handler fails, an `authorize` payment flow is never settled, whereas an `upfront` payment flow has already been committed.
 
-```javascript
-const authorizationTypes = {
-  TransferWithAuthorization: [
-    { name: "from", type: "address" },
-    { name: "to", type: "address" },
-    { name: "value", type: "uint256" },
-    { name: "validAfter", type: "uint256" },
-    { name: "validBefore", type: "uint256" },
-    { name: "nonce", type: "bytes32" },
-  ],
-};
-```
+The following flows are defined:
 
-**6.1.2 Verification Steps**
+| Flow                  | Ordering                                        | Description                                                                                                                              |
+| --------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `authorize` (default) | verify → resource → settle → respond            | Read-only verify before the resource executes; funds move only after it completes successfully. |
+| `upfront`             | settle → resource → respond                     | Payment is durably committed before the resource executes, giving the server finality first. Required by networks with no pull-settlement primitive. |
+| `escrow`              | settle → resource → settle → respond            | A first settle commits a deposit or ceiling, the resource executes, and a second settle records the final charge. |
 
-The facilitator performs the following verification steps:
-
-1. **Signature Validation**: Verify the EIP-712 signature is valid and properly signed by the payer
-2. **Balance Verification**: Confirm the payer has sufficient token balance for the transfer
-3. **Amount Validation**: Ensure the payment amount exactly matches the required amount
-4. **Time Window Check**: Verify the authorization is within its valid time range
-5. **Parameter Matching**: Confirm authorization parameters match the original payment requirements
-6. **Transaction Simulation**: Simulate the `transferWithAuthorization` transaction to ensure it would succeed
-
-**6.1.3 Settlement**
-
-Settlement is performed by calling the `transferWithAuthorization` function on the ERC-20 contract with the signature and authorization parameters provided in the payment payload.
-
-**6.2 Exact Scheme (SVM overview)**
-
-For Solana (SVM), the `exact` scheme is implemented using `TransferChecked` for SPL tokens. Critical verification requirements include:
-
-- Enforcing a strict instruction layout (Compute Unit Limit, Compute Unit Price, TransferChecked)
-- Ensuring the facilitator fee payer does not appear in any instruction accounts and is not the transfer `authority` or `source`
-- Bounding compute unit price to mitigate gas abuse
-- Verifying the destination ATA matches the `payTo`/`asset` PDA and account existence rules
-- Requiring the transfer `amount` to exactly equal the `amount` specified in PaymentRequirements
-
-Full SVM details are specified in `specs/schemes/exact/scheme_exact_svm.md`.
+Invariant: at least one check — a verify before the resource or a settle before the resource — MUST run before the resource executes. The resource never executes with nothing checked.
 
 **7. Facilitator Interface**
 
@@ -327,7 +299,7 @@ The facilitator provides HTTP REST APIs for payment verification and settlement.
 
 **7.1 POST /verify**
 
-Verifies a payment authorization without executing the transaction on the blockchain.
+Verifies a payment authorization without executing the transaction on the blockchain. `/verify` is **read-only**: it validates payment state but MUST NOT commit payment state or write onchain state.
 
 **Request (Exact Scheme):**
 
@@ -415,11 +387,13 @@ Example with actual data:
 
 **7.2 POST /settle**
 
-Executes a verified payment by broadcasting the transaction to the blockchain.
+Durably commits payment state, typically by broadcasting a transaction to the blockchain. A settle need not be the final charge: it MAY establish an escrow, record a charge, or transfer funds, depending on the scheme and payment flow (see section 6.1 Payment Flow Models).
 
 **Request:** Same structure as `/verify` endpoint (contains `paymentPayload` and `paymentRequirements`).
 
 > **Note**: While the request structure is identical, some payment schemes may assign different semantics to fields at settlement time versus verification time. For example, in the `upto` scheme, the `amount` field in `paymentRequirements` represents the maximum authorized amount at verification time, but the actual amount to settle at settlement time. See individual scheme specifications for details.
+
+> **Note**: `/settle` MAY be invoked more than once for a single payment (for example, the `escrow` flow settles a deposit before the resource executes and the final charge after). A scheme defining multiple settles MUST specify how the facilitator distinguishes them from payload content.
 
 **Successful Response:**
 

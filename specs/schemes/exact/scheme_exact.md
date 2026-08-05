@@ -11,7 +11,11 @@ amount of funds they need to be transferred.
 - Purchasing digital credits
 - An LLM paying to use a tool
 
-## Appendix
+## Payment Flow
+
+By default, `exact` uses the `authorize` payment flow (verify → resource → settle): the payment is verified before the resource executes and settled afterward. See [Payment Flow Models](../../x402-specification-v2.md) (section 6.1) in the core specification.
+
+Some networks and use cases require settlement to become final **before** the resource executes — for example networks without a pull-settlement primitive, or servers that need payment finality before performing irreversible or expensive work. Such variants use the `upfront` flow (settle → resource) and MUST declare `extra.paymentFlow: "upfront"` in `PaymentRequirements`, so clients recognize that payment is final before the resource executes. Per-network specifications declare which flows they support.
 
 ## Critical Validation Requirements
 

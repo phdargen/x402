@@ -303,7 +303,6 @@ export type HTTPProcessResult =
   | {
       type: "payment-verified";
       cancellationDispatcher: PaymentCancellationDispatcher;
-      /** Before-handler settle result for success-path PAYMENT-RESPONSE echo (upfront). */
       beforeHandlerSettlement?: CompletedSettlement;
       paymentPayload: PaymentPayload;
       paymentRequirements: PaymentRequirements;
