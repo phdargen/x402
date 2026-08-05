@@ -694,6 +694,7 @@ export class x402HTTPResourceServer {
         }
         beforeHandlerSettlement = {
           phase: "before-handler",
+          flow,
           result: beforeSettleResult,
           requirements: beforeSettleResult.requirements,
         };
@@ -764,7 +765,9 @@ export class x402HTTPResourceServer {
       };
     }
 
-    const flow = this.ResourceServer.getPaymentFlow(paymentPayload, requirements);
+    const flow =
+      beforeHandlerSettlement?.flow ??
+      this.ResourceServer.getPaymentFlow(paymentPayload, requirements);
     const phases = resolvePaymentFlowPhases(flow);
 
     // After-handler path for flows that do not settle again: echo before-handler settle or no-op.

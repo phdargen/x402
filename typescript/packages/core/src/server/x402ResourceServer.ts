@@ -155,6 +155,7 @@ export interface VerifiedPaymentCancelOptions {
 
 export interface CompletedSettlement {
   phase: SettlePhase;
+  flow: PaymentFlowName;
   result: SettleResponse;
   requirements: PaymentRequirements;
 }

@@ -29,11 +29,6 @@ export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
     settleBeforeHandler: true,
     settleAfterHandler: true,
   },
-  validation: {
-    verifyBeforeHandler: true,
-    settleBeforeHandler: false,
-    settleAfterHandler: false,
-  },
 };
 
 /**
@@ -41,7 +36,14 @@ export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
  *
  * @param flow - Declared or default payment flow name
  * @returns Phase flags for verify/settle orchestration
+ * @throws Error when `flow` is not one of the defined payment flows
  */
 export function resolvePaymentFlowPhases(flow: PaymentFlowName): PaymentFlowPhases {
-  return PAYMENT_FLOWS[flow];
+  const phases: PaymentFlowPhases | undefined = PAYMENT_FLOWS[flow];
+  if (!phases) {
+    throw new Error(
+      `[x402] Unknown payment flow "${flow}". getPaymentFlow must return one of: ${Object.keys(PAYMENT_FLOWS).join(", ")}.`,
+    );
+  }
+  return phases;
 }

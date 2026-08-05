@@ -406,35 +406,6 @@ describe("payment flows", () => {
       expect(phases).toEqual(["before-handler", "after-handler"]);
     });
 
-    it("validation: verifies before handler and returns success with no PAYMENT-RESPONSE", async () => {
-      const httpServer = await setup("validation");
-      const phases: SettlePhase[] = [];
-      ResourceServer.onBeforeSettle(async ctx => {
-        phases.push(ctx.phase);
-      });
-
-      const result = await verifiedRequest(httpServer);
-      expect(result.type).toBe("payment-verified");
-      expect(mockFacilitator.verifyCalls).toHaveLength(1);
-      expect(mockFacilitator.settleCalls).toHaveLength(0);
-
-      if (result.type !== "payment-verified") return;
-      const settle = await httpServer.processSettlement(
-        result.paymentPayload,
-        result.paymentRequirements,
-        result.declaredExtensions,
-        undefined,
-        undefined,
-        result.beforeHandlerSettlement,
-      );
-      expect(settle.success).toBe(true);
-      if (settle.success) {
-        expect(settle.headers).toEqual({});
-      }
-      expect(mockFacilitator.settleCalls).toHaveLength(0);
-      expect(phases).toEqual([]);
-    });
-
     it("warns once when settleBeforeHandler flow is settled without beforeHandlerSettlement", async () => {
       const httpServer = await setup("upfront");
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);

@@ -336,6 +336,7 @@ export function createPaymentWrapper(
           }
           beforeHandlerSettlement = {
             phase: "before-handler",
+            flow,
             result: beforeSettle,
             requirements: paymentRequirements,
           };
@@ -469,7 +470,9 @@ async function settlePaymentResult(
   beforeHandlerSettlement?: CompletedSettlement,
 ): Promise<WrappedToolResult> {
   try {
-    const flow = resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
+    const flow =
+      beforeHandlerSettlement?.flow ??
+      resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
     const phases = resolvePaymentFlowPhases(flow);
 
     if (!phases.settleAfterHandler) {
