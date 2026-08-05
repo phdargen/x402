@@ -16,7 +16,7 @@ import {
 import { parseU64, verifyOpenTransaction } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { SettlementCache } from "../../settlement-cache";
-import type { FacilitatorSvmSigner } from "../../signer";
+import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../../signer";
 import { isUptoSvmPayload, type UptoSvmPayloadV2 } from "../../types";
 import { createRpcClient, getStablecoinTokenProgram } from "../../utils";
 import { resolveUptoSvmPaymentChannelConfig } from "../shared";
@@ -39,6 +39,15 @@ import { UptoSvmRentCleanupManager } from "./rentCleanupManager";
 /** Scheme-specific error returned when the settlement amount exceeds the ceiling. */
 export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exceeds_amount";
 
+/** Client-supplied voucher at verify time (settle-only field). */
+export const ERR_UNEXPECTED_VOUCHER = "invalid_upto_svm_payload_unexpected_voucher";
+
+/** Context passed to {@link UptoSvmFacilitatorConfig.onStorageError}. */
+export type UptoChannelStorageErrorContext = {
+  channelId: string;
+  phase: "verify" | "settle";
+};
+
 /** Optional configuration for the upto SVM facilitator. */
 export interface UptoSvmFacilitatorConfig {
   /** Custom RPC URL (per-network defaults are used when omitted). */
@@ -48,6 +57,12 @@ export interface UptoSvmFacilitatorConfig {
    * Inject a durable implementation for multi-process facilitators.
    */
   channelStorage?: UptoChannelStorage;
+  /**
+   * Called when channel storage upsert fails after a successful verify or
+   * settle. Payment results are unchanged; only rent-cleanup indexing is
+   * affected. Defaults to `console.warn`.
+   */
+  onStorageError?: (error: unknown, context: UptoChannelStorageErrorContext) => void;
 }
 
 /**
@@ -76,18 +91,27 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   private readonly channelStorage: UptoChannelStorage;
   private readonly settlementCache = new SettlementCache();
 
+  private readonly getKitSigner: (feePayer: Address) => FacilitatorSigningCapabilities;
+
   /**
    * Create the upto SVM facilitator.
    *
    * @param signer - Facilitator signer (fee payers / channel rent payers /
    *   zero-share channel payees). `getExtra` randomly selects among
-   *   `signer.getAddresses()`.
+   *   `signer.getAddresses()`. Must provide {@link FacilitatorSvmSigner.getSigner}.
    * @param config - Optional RPC / channel-storage configuration
    */
   constructor(
     private readonly signer: FacilitatorSvmSigner,
     config: UptoSvmFacilitatorConfig = {},
   ) {
+    if (typeof signer.getSigner !== "function") {
+      throw new Error(
+        "UptoSvmScheme requires getSigner on the signer. " +
+          "Use toFacilitatorSvmSigner() which provides all required methods.",
+      );
+    }
+    this.getKitSigner = signer.getSigner.bind(signer);
     if (this.signer.getAddresses().length === 0) {
       throw new Error("UptoSvmScheme requires at least one fee payer signer");
     }
@@ -168,6 +192,17 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     }
     if (payload.accepted.network !== requirements.network) {
       return { isValid: false, invalidReason: "network_mismatch", payer: p.from };
+    }
+
+    // `voucherSignature` is server-owned and settle-only. Reject on presence, not
+    // on value: core's additive-enrichment policy keys off hasOwnProperty, so a
+    // client-set key (even "" or undefined) blocks the real voucher at settle.
+    if (Object.prototype.hasOwnProperty.call(raw, "voucherSignature")) {
+      return {
+        isValid: false,
+        invalidReason: ERR_UNEXPECTED_VOUCHER,
+        payer: p.from,
+      };
     }
 
     let channelConfig: ReturnType<typeof resolveUptoSvmPaymentChannelConfig>;
@@ -400,7 +435,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       }
     }
 
-    await this.upsertChannelStorage({
+    await this.upsertChannelStorage("verify", {
       channelId: p.channelId,
       network: requirements.network,
       payTo: requirements.payTo,
@@ -665,8 +700,9 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       const instructions: ServerInstruction[] = [...settle, distribute];
       const signature = await submitSettle(feePayerSigner, rpc, instructions);
 
-      // Keep the storage entry until the PDA is gone (Distributed → reclaim).
-      await this.upsertChannelStorage({
+      // Settlement is confirmed onchain past this point; storage is cleanup
+      // bookkeeping and must never turn a charged payment into a failure.
+      await this.upsertChannelStorage("settle", {
         channelId: channel.channelId,
         network,
         payTo: requirements.payTo,
@@ -703,20 +739,36 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     if (!this.signer.getAddresses().includes(feePayerAddress as Address)) {
       return undefined;
     }
-    return this.signer.getSigner(feePayerAddress as Address);
+    return this.getKitSigner(feePayerAddress as Address);
   }
 
   /**
    * Upsert a channel into rent-cleanup storage after verify/settle success.
+   * Storage failures are reported via {@link UptoSvmFacilitatorConfig.onStorageError}
+   * and never propagate to the caller.
    *
+   * @param phase - Whether verify or settle succeeded before the upsert
    * @param fields - Channel facts retained for cleanup (payTo included)
    */
   private async upsertChannelStorage(
+    phase: UptoChannelStorageErrorContext["phase"],
     fields: Omit<UptoChannelRecord, "firstSeenAt">,
   ): Promise<void> {
-    await this.channelStorage.upsert({
-      ...fields,
-      firstSeenAt: Date.now(),
-    });
+    try {
+      await this.channelStorage.upsert({
+        ...fields,
+        firstSeenAt: Date.now(),
+      });
+    } catch (error) {
+      const context = { channelId: fields.channelId, phase };
+      if (this.config.onStorageError) {
+        this.config.onStorageError(error, context);
+      } else {
+        console.warn(`[x402] upto svm: channel storage upsert failed after ${phase}`, {
+          channelId: fields.channelId,
+          error,
+        });
+      }
+    }
   }
 }

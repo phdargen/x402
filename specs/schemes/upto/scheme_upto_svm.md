@@ -449,6 +449,10 @@ distribution, and rederived channel PDA.
 
 The server/facilitator MUST, in order:
 
+0. Reject any client-supplied `payload.voucherSignature`. The field is
+   settle-only and server-owned; presence at verify time (including an empty
+   string or `undefined` value) MUST fail with
+   `invalid_upto_svm_payload_unexpected_voucher`.
 1. Confirm `payload.maxAmount` equals verification-phase `requirements.amount`.
 2. Confirm `network`, `asset` (mint), `tokenProgram`, and `payTo` match the
    selected requirements.
@@ -766,6 +770,8 @@ on a guess.
 
 Standard x402 codes apply. Scheme-specific:
 
+- `invalid_upto_svm_payload_unexpected_voucher` - client supplied
+  `voucherSignature` at verify time (settle-only field).
 - `invalid_upto_svm_payload_settlement_exceeds_amount` - actual amount exceeds
   the signed ceiling.
 - `invalid_upto_svm_settlement_simulation` - settlement-readiness simulation

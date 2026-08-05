@@ -1,5 +1,5 @@
-export { ERR_SETTLEMENT_EXCEEDS_AMOUNT, UptoSvmScheme } from "./scheme";
-export type { UptoSvmFacilitatorConfig } from "./scheme";
+export { ERR_SETTLEMENT_EXCEEDS_AMOUNT, ERR_UNEXPECTED_VOUCHER, UptoSvmScheme } from "./scheme";
+export type { UptoChannelStorageErrorContext, UptoSvmFacilitatorConfig } from "./scheme";
 export type { UptoSvmSigner } from "./channel";
 export { InMemoryUptoChannelStorage } from "./channelStorage";
 export type { UptoChannelRecord, UptoChannelStorage } from "./channelStorage";
