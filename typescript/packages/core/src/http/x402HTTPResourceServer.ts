@@ -690,12 +690,15 @@ export class x402HTTPResourceServer {
         if (!beforeSettleResult.success) {
           return { type: "payment-error", response: beforeSettleResult.response };
         }
-        // Store SettleResponse only — omit SDK-only headers/requirements from the wire payload.
-        const { headers: _headers, requirements, ...settleResult } = beforeSettleResult;
+        // Store SettleResponse only — omit SDK-only headers from CompletedSettlement.
+        const { result, requirements } = (({ headers: _, requirements, ...result }) => ({
+          result,
+          requirements,
+        }))(beforeSettleResult);
         beforeHandlerSettlement = {
           phase: "before-handler",
           flow,
-          result: settleResult,
+          result,
           requirements,
         };
       }
@@ -895,6 +898,26 @@ export class x402HTTPResourceServer {
   requiresPayment(context: HTTPRequestContext): boolean {
     const method = context.method || context.adapter.getMethod();
     return this.getRouteConfig(context.path, method) !== undefined;
+  }
+
+  /**
+   * Headers for echoing a completed before-handler settle onto a response.
+   * Merges `private` into Cache-Control so shared caches do not store settlement metadata.
+   *
+   * Used when the resource handler fails after payment was already committed (e.g. `upfront`).
+   *
+   * @param settlement - Completed before-handler settle
+   * @param existingCacheControl - Existing Cache-Control value, if any
+   * @returns PAYMENT-RESPONSE and Cache-Control headers
+   */
+  createCompletedSettlementHeaders(
+    settlement: CompletedSettlement,
+    existingCacheControl?: string | null,
+  ): Record<string, string> {
+    return {
+      ...this.createSettlementHeaders(settlement.result),
+      "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
+    };
   }
 
   /**
@@ -1221,26 +1244,6 @@ export class x402HTTPResourceServer {
   private createSettlementHeaders(settleResponse: SettleResponse): Record<string, string> {
     const encoded = encodePaymentResponseHeader(settleResponse);
     return { "PAYMENT-RESPONSE": encoded };
-  }
-
-  /**
-   * Headers for echoing a completed before-handler settle onto a response.
-   * Merges `private` into Cache-Control so shared caches do not store settlement metadata.
-   *
-   * Used when the resource handler fails after payment was already committed (e.g. `upfront`).
-   *
-   * @param settlement - Completed before-handler settle
-   * @param existingCacheControl - Existing Cache-Control value, if any
-   * @returns PAYMENT-RESPONSE and Cache-Control headers
-   */
-  createCompletedSettlementHeaders(
-    settlement: CompletedSettlement,
-    existingCacheControl?: string | null,
-  ): Record<string, string> {
-    return {
-      ...this.createSettlementHeaders(settlement.result),
-      "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
-    };
   }
 
   /**

@@ -308,6 +308,211 @@ describe("createPaymentWrapper", () => {
       );
       expect(result._meta?.traceId).toBe("trace_err");
       expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual(mockSettleResponse);
+      expect(mockResourceServer.createPaymentCancellationDispatcher).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        ["before-handler"],
+      );
+      const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
+        .value as { cancel: ReturnType<typeof vi.fn> };
+      expect(dispatcher.cancel).toHaveBeenCalledWith({ reason: "handler_failed" });
+    });
+
+    it("should return 402 when before-handler settlement fails under upfront", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("upfront");
+      mockResourceServer.settlePayment.mockResolvedValue({
+        success: false,
+        errorReason: "insufficient_funds",
+        transaction: "",
+        network: "eip155:84532",
+      });
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "success" }],
+      });
+
+      const wrappedHandler = paid(handler);
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledTimes(1);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        "before-handler",
+      );
+      expect(mockResourceServer.createPaymentRequiredResponse).toHaveBeenCalledWith(
+        [mockPaymentRequirements],
+        expect.any(Object),
+        "Payment settlement failed: insufficient_funds",
+        undefined,
+        expect.any(Object),
+        undefined,
+      );
+      expect(mockResourceServer.createPaymentCancellationDispatcher).not.toHaveBeenCalled();
+    });
+
+    it("should return 402 when before-handler settlement throws under upfront", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("upfront");
+      mockResourceServer.settlePayment.mockRejectedValue(new Error("facilitator unavailable"));
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "success" }],
+      });
+
+      const wrappedHandler = paid(handler);
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(mockResourceServer.createPaymentRequiredResponse).toHaveBeenCalledWith(
+        [mockPaymentRequirements],
+        expect.any(Object),
+        "Payment settlement failed: facilitator unavailable",
+        undefined,
+        expect.any(Object),
+        undefined,
+      );
+      expect(mockResourceServer.createPaymentCancellationDispatcher).not.toHaveBeenCalled();
+    });
+
+    it("should settle before and after handler under escrow", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("escrow");
+      mockResourceServer.settlePayment
+        .mockResolvedValueOnce({
+          ...mockSettleResponse,
+          transaction: "0xdeposit",
+        })
+        .mockResolvedValueOnce({
+          ...mockSettleResponse,
+          transaction: "0xcharge",
+        });
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "success" }],
+      });
+
+      const wrappedHandler = paid(handler);
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(handler).toHaveBeenCalled();
+      expect(mockResourceServer.verifyPayment).toHaveBeenCalled();
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledTimes(2);
+      expect(mockResourceServer.settlePayment).toHaveBeenNthCalledWith(
+        1,
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        "before-handler",
+      );
+      expect(mockResourceServer.settlePayment).toHaveBeenNthCalledWith(
+        2,
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        "after-handler",
+      );
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual({
+        ...mockSettleResponse,
+        transaction: "0xcharge",
+      });
+      expect(mockResourceServer.createPaymentCancellationDispatcher).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        ["before-handler"],
+      );
+    });
+
+    it("should cancel with before-handler settledPhases and echo receipt when escrow tool errors", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("escrow");
+      mockResourceServer.settlePayment.mockResolvedValue({
+        ...mockSettleResponse,
+        transaction: "0xdeposit",
+      });
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "error" }],
+        isError: true,
+        _meta: { traceId: "trace_escrow_err" },
+      });
+
+      const wrappedHandler = paid(handler);
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledTimes(1);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        "before-handler",
+      );
+      expect(result._meta?.traceId).toBe("trace_escrow_err");
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual({
+        ...mockSettleResponse,
+        transaction: "0xdeposit",
+      });
+      expect(mockResourceServer.createPaymentCancellationDispatcher).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        ["before-handler"],
+      );
       const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
         .value as { cancel: ReturnType<typeof vi.fn> };
       expect(dispatcher.cancel).toHaveBeenCalledWith({ reason: "handler_failed" });

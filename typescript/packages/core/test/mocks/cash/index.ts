@@ -6,12 +6,14 @@ import {
   VerifyResponse,
 } from "../../../../src/types/facilitator";
 import {
+  PaymentFlowName,
   SchemeNetworkClient,
   SchemeNetworkFacilitator,
   SchemeNetworkServer,
 } from "../../../../src/types/mechanisms";
 import { PaymentPayload, PaymentRequirements } from "../../../../src/types/payments";
 import { Price, AssetAmount, Network } from "../../../../src/types";
+import type { DeepReadonly } from "../../../../src/types/readonly";
 
 /**
  *
@@ -234,6 +236,66 @@ export class CashSchemeNetworkServer implements SchemeNetworkServer {
     void supportedKind;
     void facilitatorExtensions;
     return paymentRequirements;
+  }
+}
+
+/**
+ * Cash server that declares the default `authorization` payment flow.
+ * Used by integration tests to prove verify → work → settle wiring.
+ */
+export class MockAuthorizeSchemeNetworkServer extends CashSchemeNetworkServer {
+  /**
+   * @param _payload - Unused; flow is fixed for this mock
+   * @param _requirements - Unused; flow is fixed for this mock
+   * @returns `authorization`
+   */
+  getPaymentFlow(
+    _payload: DeepReadonly<PaymentPayload>,
+    _requirements: DeepReadonly<PaymentRequirements>,
+  ): PaymentFlowName {
+    void _payload;
+    void _requirements;
+    return "authorization";
+  }
+}
+
+/**
+ * Cash server that declares the `upfront` payment flow.
+ * Used by integration tests to prove settle → work wiring without a real prepaid scheme.
+ */
+export class MockUpfrontSchemeNetworkServer extends CashSchemeNetworkServer {
+  /**
+   * @param _payload - Unused; flow is fixed for this mock
+   * @param _requirements - Unused; flow is fixed for this mock
+   * @returns `upfront`
+   */
+  getPaymentFlow(
+    _payload: DeepReadonly<PaymentPayload>,
+    _requirements: DeepReadonly<PaymentRequirements>,
+  ): PaymentFlowName {
+    void _payload;
+    void _requirements;
+    return "upfront";
+  }
+}
+
+/**
+ * Cash server that declares the `escrow` payment flow.
+ * Used by integration tests to prove settle → work → settle wiring without a real escrow scheme.
+ */
+export class MockEscrowSchemeNetworkServer extends CashSchemeNetworkServer {
+  /**
+   * @param _payload - Unused; flow is fixed for this mock
+   * @param _requirements - Unused; flow is fixed for this mock
+   * @returns `escrow`
+   */
+  getPaymentFlow(
+    _payload: DeepReadonly<PaymentPayload>,
+    _requirements: DeepReadonly<PaymentRequirements>,
+  ): PaymentFlowName {
+    void _payload;
+    void _requirements;
+    return "escrow";
   }
 }
 

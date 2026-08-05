@@ -451,6 +451,65 @@ describe("payment flows", () => {
       expect(phases).toEqual(["before-handler", "after-handler"]);
     });
 
+    it.each(["upfront", "escrow"] as const)(
+      "%s: before-handler settle failure returns payment-error",
+      async flow => {
+        const httpServer = await setup(flow);
+        mockFacilitator.setSettleResponse(
+          buildSettleResponse({
+            success: false,
+            errorReason: "insufficient_funds",
+            transaction: "",
+          }),
+        );
+
+        const result = await verifiedRequest(httpServer);
+        expect(result.type).toBe("payment-error");
+        expect(mockFacilitator.verifyCalls).toHaveLength(0);
+        expect(mockFacilitator.settleCalls).toHaveLength(1);
+        if (result.type !== "payment-error") return;
+        expect(result.response.status).toBe(402);
+      },
+    );
+
+    it("escrow: cancel after before-handler settle exposes settledPhases and deposit receipt", async () => {
+      const httpServer = await setup("escrow");
+      mockFacilitator.setSettleResponse(
+        buildSettleResponse({ success: true, transaction: "0xdeposit" }),
+      );
+
+      let settledPhases: readonly SettlePhase[] | undefined;
+      ResourceServer.onVerifiedPaymentCanceled(async ctx => {
+        settledPhases = ctx.settledPhases;
+        expect(ctx.phase).toBe("cancel");
+        expect(ctx.reason).toBe("handler_failed");
+      });
+
+      const result = await verifiedRequest(httpServer);
+      expect(result.type).toBe("payment-verified");
+      if (result.type !== "payment-verified") return;
+
+      expect(result.beforeHandlerSettlement?.phase).toBe("before-handler");
+      expect(result.beforeHandlerSettlement?.result.transaction).toBe("0xdeposit");
+      expect(mockFacilitator.settleCalls).toHaveLength(1);
+
+      await result.cancellationDispatcher.cancel({
+        reason: "handler_failed",
+        responseStatus: 500,
+      });
+      expect(settledPhases).toEqual(["before-handler"]);
+
+      // No after-handler settle on cancel
+      expect(mockFacilitator.settleCalls).toHaveLength(1);
+
+      const receiptHeaders = httpServer.createCompletedSettlementHeaders(
+        result.beforeHandlerSettlement!,
+      );
+      expect(decodePaymentResponseHeader(receiptHeaders["PAYMENT-RESPONSE"])).toEqual(
+        expect.objectContaining({ success: true, transaction: "0xdeposit" }),
+      );
+    });
+
     it("warns once when settleBeforeHandler flow is settled without beforeHandlerSettlement", async () => {
       const httpServer = await setup("upfront");
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
