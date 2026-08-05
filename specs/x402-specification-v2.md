@@ -291,7 +291,7 @@ The following flows are defined:
 | `upfront`             | settle → resource → respond                     | Payment is durably committed before the resource executes, giving the server finality first. Required by networks with no pull-settlement primitive. |
 | `escrow`              | settle → resource → settle → respond            | A first settle commits a deposit or ceiling, the resource executes, and a second settle records the final charge. |
 
-Invariant: at least one check — a verify before the resource or a settle before the resource — MUST run before the resource executes. The resource never executes with nothing checked.
+Invariant: at least one check — a verify or settle before the resource — MUST run before the resource executes. The resource never executes with nothing checked.
 
 **7. Facilitator Interface**
 
@@ -387,13 +387,13 @@ Example with actual data:
 
 **7.2 POST /settle**
 
-Durably commits payment state, typically by broadcasting a transaction to the blockchain. A settle need not be the final charge: it MAY establish an escrow, record a charge, or transfer funds, depending on the scheme and payment flow (see section 6.1 Payment Flow Models).
+Durably commits payment state, typically by updating a network ledger (for example, broadcasting a transaction). A settle need not be the final charge: it MAY establish an escrow, record a charge, or transfer funds, depending on the scheme and payment flow (see section 6.1 Payment Flow Models).
 
 **Request:** Same structure as `/verify` endpoint (contains `paymentPayload` and `paymentRequirements`).
 
 > **Note**: While the request structure is identical, some payment schemes may assign different semantics to fields at settlement time versus verification time. For example, in the `upto` scheme, the `amount` field in `paymentRequirements` represents the maximum authorized amount at verification time, but the actual amount to settle at settlement time. See individual scheme specifications for details.
 
-> **Note**: `/settle` MAY be invoked more than once for a single payment (for example, the `escrow` flow settles a deposit before the resource executes and the final charge after). A scheme defining multiple settles MUST specify how the facilitator distinguishes them from payload content.
+> **Note**: `/settle` MAY be invoked more than once for a single payment (for example, the `escrow` flow settles a deposit before the resource executes and the final charge after). A scheme defining multiple settles MUST specify how the facilitator distinguishes them from payload content. Because the client typically signs a single payload, that distinction is usually server-led (for example, a scheme-specific `step` field), though a facilitator MAY instead infer the step from network-ledger state.
 
 **Successful Response:**
 
