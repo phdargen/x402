@@ -18,7 +18,7 @@ import {
 } from "../../mocks";
 import { Network, PaymentFlowName } from "../../../src/types";
 import type { HTTPAdapter } from "../../../src/http/x402HTTPResourceServer";
-import { encodePaymentSignatureHeader } from "../../../src/http";
+import { decodePaymentResponseHeader, encodePaymentSignatureHeader } from "../../../src/http";
 
 /**
  *
@@ -362,6 +362,24 @@ describe("payment flows", () => {
 
       if (result.type !== "payment-verified") return;
       expect(result.beforeHandlerSettlement?.phase).toBe("before-handler");
+      // Wire payload must be SettleResponse only (no SDK-only headers/requirements)
+      expect(result.beforeHandlerSettlement?.result).toEqual(
+        expect.objectContaining({ success: true, transaction: "0xtx" }),
+      );
+      expect(result.beforeHandlerSettlement?.result).not.toHaveProperty("headers");
+      expect(result.beforeHandlerSettlement?.result).not.toHaveProperty("requirements");
+
+      const failureReceiptHeaders = httpServer.createCompletedSettlementHeaders(
+        result.beforeHandlerSettlement!,
+      );
+      expect(failureReceiptHeaders["Cache-Control"]).toBe("private");
+      expect(decodePaymentResponseHeader(failureReceiptHeaders["PAYMENT-RESPONSE"])).toEqual(
+        expect.objectContaining({ success: true, transaction: "0xtx" }),
+      );
+      expect(
+        decodePaymentResponseHeader(failureReceiptHeaders["PAYMENT-RESPONSE"]),
+      ).not.toHaveProperty("headers");
+
       const settle = await httpServer.processSettlement(
         result.paymentPayload,
         result.paymentRequirements,

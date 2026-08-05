@@ -36,6 +36,7 @@ const mockPaymentRequirements = {
 // --- Mock setup ---
 let mockProcessHTTPRequest: ReturnType<typeof vi.fn>;
 let mockProcessSettlement: ReturnType<typeof vi.fn>;
+let mockCreateCompletedSettlementHeaders: ReturnType<typeof vi.fn>;
 let mockRegisterPaywallProvider: ReturnType<typeof vi.fn>;
 let mockRequiresPayment: ReturnType<typeof vi.fn>;
 
@@ -93,6 +94,7 @@ vi.mock("@x402/core/server", async importOriginal => {
       initialize: vi.fn().mockResolvedValue(undefined),
       processHTTPRequest: mockProcessHTTPRequest,
       processSettlement: mockProcessSettlement,
+      createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
       registerPaywallProvider: mockRegisterPaywallProvider,
       requiresPayment: mockRequiresPayment,
       routes: routes,
@@ -267,6 +269,10 @@ describe("paymentMiddleware", () => {
     vi.clearAllMocks();
     mockProcessHTTPRequest = vi.fn();
     mockProcessSettlement = vi.fn();
+    mockCreateCompletedSettlementHeaders = vi.fn((_settlement, existingCacheControl) => ({
+      "PAYMENT-RESPONSE": "before-handler-receipt",
+      "Cache-Control": existingCacheControl ? `${existingCacheControl}, private` : "private",
+    }));
     mockRegisterPaywallProvider = vi.fn();
     mockRequiresPayment = vi.fn().mockReturnValue(true);
 
@@ -276,6 +282,7 @@ describe("paymentMiddleware", () => {
           initialize: vi.fn().mockResolvedValue(undefined),
           processHTTPRequest: mockProcessHTTPRequest,
           processSettlement: mockProcessSettlement,
+          createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
           registerPaywallProvider: mockRegisterPaywallProvider,
           requiresPayment: mockRequiresPayment,
           routes: routes,
@@ -346,6 +353,7 @@ describe("paymentMiddleware", () => {
             initialize,
             processHTTPRequest: mockProcessHTTPRequest,
             processSettlement: mockProcessSettlement,
+            createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
             registerPaywallProvider: mockRegisterPaywallProvider,
             requiresPayment: mockRequiresPayment,
             routes,
@@ -645,6 +653,7 @@ describe("paymentMiddleware", () => {
     const result = await hooks.onSend[0](request, reply, payload);
 
     expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(mockCreateCompletedSettlementHeaders).not.toHaveBeenCalled();
     expect(reply.removeHeader).toHaveBeenCalledWith("Settlement-Overrides");
     expect(reply._headers["Settlement-Overrides"]).toBeUndefined();
     expect(request.x402Context?.cancellationDispatcher.cancel).toHaveBeenCalledWith(
@@ -653,6 +662,56 @@ describe("paymentMiddleware", () => {
         responseStatus: 500,
       }),
     );
+    expect(result).toBe(payload);
+  });
+
+  it("echoes before-handler PAYMENT-RESPONSE when handler returns >= 400", async () => {
+    const beforeHandlerSettlement = {
+      phase: "before-handler" as const,
+      flow: "upfront" as const,
+      result: {
+        success: true,
+        transaction: "0xdeposit",
+        network: "eip155:84532" as const,
+      },
+      requirements: mockPaymentRequirements,
+    };
+    setupMockHttpServer(
+      {
+        type: "payment-verified",
+        paymentPayload: mockPaymentPayload,
+        paymentRequirements: mockPaymentRequirements,
+        beforeHandlerSettlement,
+      },
+      { success: true, headers: {} },
+    );
+
+    const { app, hooks } = createMockApp();
+    paymentMiddleware(
+      app,
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+
+    const request = createMockRequest();
+    const reply = createMockReply();
+
+    await hooks.onRequest[0](request, reply);
+
+    reply.statusCode = 500;
+    const payload = JSON.stringify({ error: "Server error" });
+    const result = await hooks.onSend[0](request, reply, payload);
+
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(mockCreateCompletedSettlementHeaders).toHaveBeenCalledWith(
+      beforeHandlerSettlement,
+      null,
+    );
+    expect(reply.header).toHaveBeenCalledWith("PAYMENT-RESPONSE", "before-handler-receipt");
+    expect(reply.header).toHaveBeenCalledWith("Cache-Control", "private");
     expect(result).toBe(payload);
   });
 
@@ -791,6 +850,7 @@ describe("paymentMiddlewareFromConfig", () => {
           initialize: vi.fn().mockResolvedValue(undefined),
           processHTTPRequest: mockProcessHTTPRequest,
           processSettlement: mockProcessSettlement,
+          createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
           registerPaywallProvider: mockRegisterPaywallProvider,
           requiresPayment: mockRequiresPayment,
           routes: routes,
@@ -859,6 +919,7 @@ describe("FastifyAdapter integration", () => {
           initialize: vi.fn().mockResolvedValue(undefined),
           processHTTPRequest: mockProcessHTTPRequest,
           processSettlement: mockProcessSettlement,
+          createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
           registerPaywallProvider: mockRegisterPaywallProvider,
           requiresPayment: mockRequiresPayment,
           routes: routes,

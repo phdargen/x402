@@ -400,7 +400,17 @@ export function createPaymentWrapper(
       // If the tool handler returned an error, don't proceed to settlement
       if (result.isError) {
         await cancellationDispatcher.cancel({ reason: "handler_failed" });
-        return result;
+        // Echo before-handler receipt (e.g. upfront) so the payer still gets the tx hash
+        if (!beforeHandlerSettlement) {
+          return result;
+        }
+        return {
+          ...result,
+          _meta: {
+            ...(result._meta as Record<string, unknown> | undefined),
+            [MCP_PAYMENT_RESPONSE_META_KEY]: beforeHandlerSettlement.result,
+          },
+        };
       }
 
       return settlePaymentResult(

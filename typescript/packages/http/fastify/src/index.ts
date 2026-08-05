@@ -436,6 +436,21 @@ export function paymentMiddlewareFromHTTPServer(
         responseStatus: reply.statusCode,
       });
       reply.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
+      // Echo before-handler receipt (e.g. upfront) so the payer still gets the tx hash
+      if (x402Context.beforeHandlerSettlement) {
+        const existingCacheControl =
+          reply.getHeader("Cache-Control") != null
+            ? String(reply.getHeader("Cache-Control"))
+            : null;
+        for (const [key, value] of Object.entries(
+          httpServer.createCompletedSettlementHeaders(
+            x402Context.beforeHandlerSettlement,
+            existingCacheControl,
+          ),
+        )) {
+          reply.header(key, value);
+        }
+      }
       return effectivePayload;
     }
 

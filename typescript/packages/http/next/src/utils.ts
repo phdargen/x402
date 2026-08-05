@@ -183,6 +183,17 @@ export async function handleSettlement(
       responseStatus: response.status,
     });
     response.headers.delete(SETTLEMENT_OVERRIDES_HEADER);
+    // Echo before-handler receipt (e.g. upfront) so the payer still gets the tx hash
+    if (beforeHandlerSettlement) {
+      Object.entries(
+        httpServer.createCompletedSettlementHeaders(
+          beforeHandlerSettlement,
+          response.headers.get("Cache-Control"),
+        ),
+      ).forEach(([key, value]) => {
+        response.headers.set(key, value);
+      });
+    }
     return response;
   }
 

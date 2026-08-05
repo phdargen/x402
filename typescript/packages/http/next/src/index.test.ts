@@ -148,6 +148,10 @@ function createMockHttpServer(
   return {
     processHTTPRequest: vi.fn().mockResolvedValue(normalizedResult),
     processSettlement: vi.fn().mockResolvedValue(settlementResult),
+    createCompletedSettlementHeaders: vi.fn((_settlement, existingCacheControl) => ({
+      "PAYMENT-RESPONSE": "before-handler-receipt",
+      "Cache-Control": existingCacheControl ? `${existingCacheControl}, private` : "private",
+    })),
     registerPaywallProvider: vi.fn(),
     initialize: vi.fn().mockResolvedValue(undefined),
     requiresPayment: vi.fn().mockReturnValue(true),

@@ -300,6 +300,21 @@ export function paymentMiddlewareFromHTTPServer(
             responseStatus: res.statusCode,
           });
           res.removeHeader(SETTLEMENT_OVERRIDES_HEADER);
+          // Echo before-handler receipt (e.g. upfront) so the payer still gets the tx hash
+          if (beforeHandlerSettlement) {
+            const existingCacheControl =
+              res.getHeader("Cache-Control") != null
+                ? String(res.getHeader("Cache-Control"))
+                : null;
+            Object.entries(
+              httpServer.createCompletedSettlementHeaders(
+                beforeHandlerSettlement,
+                existingCacheControl,
+              ),
+            ).forEach(([key, value]) => {
+              res.setHeader(key, value);
+            });
+          }
           restoreResponseMethods();
           // Replay all buffered calls in order
           for (const [method, args] of bufferedCalls) {

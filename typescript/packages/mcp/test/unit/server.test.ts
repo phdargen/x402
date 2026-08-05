@@ -266,6 +266,48 @@ describe("createPaymentWrapper", () => {
 
       expect(result.isError).toBe(true);
       expect(mockResourceServer.settlePayment).not.toHaveBeenCalled();
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toBeUndefined();
+      const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
+        .value as { cancel: ReturnType<typeof vi.fn> };
+      expect(dispatcher.cancel).toHaveBeenCalledWith({ reason: "handler_failed" });
+    });
+
+    it("should echo before-handler settlement when tool returns error under upfront", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("upfront");
+      // verify is skipped for upfront; settle runs before handler
+      mockResourceServer.settlePayment.mockResolvedValue(mockSettleResponse);
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "error" }],
+        isError: true,
+        _meta: { traceId: "trace_err" },
+      });
+
+      const wrappedHandler = paid(handler);
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledTimes(1);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledWith(
+        mockPaymentPayload,
+        mockPaymentRequirements,
+        expect.anything(),
+        expect.anything(),
+        undefined,
+        "before-handler",
+      );
+      expect(result._meta?.traceId).toBe("trace_err");
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual(mockSettleResponse);
       const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
         .value as { cancel: ReturnType<typeof vi.fn> };
       expect(dispatcher.cancel).toHaveBeenCalledWith({ reason: "handler_failed" });
