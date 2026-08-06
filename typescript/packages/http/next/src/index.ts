@@ -19,6 +19,7 @@ import {
   handlePaymentError,
   handleSettlement,
   createFacilitatorErrorResponse,
+  createInternalErrorResponse,
   getFacilitatorResponseError,
 } from "./utils";
 
@@ -115,7 +116,7 @@ export function paymentProxyFromHTTPServer(
       if (facilitatorError) {
         return createFacilitatorErrorResponse(facilitatorError);
       }
-      throw error;
+      return createInternalErrorResponse(error);
     }
 
     // Await bazaar extension loading if needed
@@ -132,7 +133,7 @@ export function paymentProxyFromHTTPServer(
       if (error instanceof FacilitatorResponseError) {
         return createFacilitatorErrorResponse(error);
       }
-      throw error;
+      return createInternalErrorResponse(error);
     }
 
     // Handle the different result types
@@ -307,7 +308,15 @@ export function withX402FromHTTPServer<T = unknown>(
 
   return async (request: NextRequest): Promise<NextResponse<T>> => {
     // Only initialize when processing a protected route
-    await init();
+    try {
+      await init();
+    } catch (error) {
+      const facilitatorError = getFacilitatorResponseError(error);
+      if (facilitatorError) {
+        return createFacilitatorErrorResponse(facilitatorError) as NextResponse<T>;
+      }
+      return createInternalErrorResponse(error) as NextResponse<T>;
+    }
 
     // Await bazaar extension loading if needed
     if (bazaarPromise) {
@@ -318,7 +327,15 @@ export function withX402FromHTTPServer<T = unknown>(
     const context = createRequestContext(request);
 
     // Process payment requirement check
-    const result = await httpServer.processHTTPRequest(context, paywallConfig);
+    let result: Awaited<ReturnType<x402HTTPResourceServer["processHTTPRequest"]>>;
+    try {
+      result = await httpServer.processHTTPRequest(context, paywallConfig);
+    } catch (error) {
+      if (error instanceof FacilitatorResponseError) {
+        return createFacilitatorErrorResponse(error) as NextResponse<T>;
+      }
+      return createInternalErrorResponse(error) as NextResponse<T>;
+    }
 
     // Handle the different result types
     switch (result.type) {

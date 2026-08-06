@@ -54,6 +54,17 @@ function sendFacilitatorError(res: Response, error: FacilitatorResponseError): v
 }
 
 /**
+ * Logs an unexpected error and sends a generic 500 without leaking internals.
+ *
+ * @param res - The Express response to write to
+ * @param error - The unexpected error
+ */
+function sendInternalError(res: Response, error: unknown): void {
+  console.error(error);
+  res.status(500).json({ error: "Internal Server Error" });
+}
+
+/**
  * Express payment middleware for x402 protocol (direct HTTP server instance).
  *
  * Use this when you need to configure HTTP-level hooks.
@@ -163,7 +174,8 @@ export function paymentMiddlewareFromHTTPServer(
           sendFacilitatorError(res, facilitatorError);
           return;
         }
-        return next(error);
+        sendInternalError(res, error);
+        return;
       }
     }
 
@@ -182,7 +194,8 @@ export function paymentMiddlewareFromHTTPServer(
         sendFacilitatorError(res, error);
         return;
       }
-      return next(error);
+      sendInternalError(res, error);
+      return;
     }
 
     // Handle the different result types

@@ -127,7 +127,7 @@ Each `PaymentRequirements` object in the `accepts` array contains:
 | `asset`             | `string` | Required | Token contract address or ISO 4217 currency code for fiat     |
 | `payTo`             | `string` | Required | Recipient wallet address or role constant (e.g., "merchant")                                                              |
 | `maxTimeoutSeconds` | `number` | Required | Maximum time allowed for payment completion                                                                               |
-| `extra`             | `object` | Optional | Scheme-specific additional information                                                                                    |
+| `extra`             | `object` | Optional | Additional information. Reserved protocol keys: `assetTransferMethod`, `paymentFlow` (section 6.1); other keys are scheme-specific |
 
 The `ResourceInfo` object contains:
 
@@ -273,15 +273,17 @@ Each scheme defines:
 
 - How to construct the `payload` field within `PaymentPayload`
 - Settlement and validation procedures
-- Scheme-specific requirements in the `extra` field of `PaymentRequirements`
+- Requirements in the `extra` field of `PaymentRequirements` (reserved protocol keys in section 6.1; remaining keys are scheme-specific)
 
 Individual schemes and their per-network bindings — including `exact`, `upto`, `batch-settlement`, and `auth-capture` — are specified under [`specs/schemes/`](./schemes/).
 
-**6.1 Payment Flow Models**
+**6.1 Asset Transfer Methods and Payment Flow Models**
 
-Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism (a scheme on a specific network) declares its payment flow by name. The flow determines the ordering of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) around the resource server's execution of the protected request.
+An `assetTransferMethod` identifies **how** value is authorized or moved for a mechanism (a scheme on a specific network) — for example `eip3009` vs `permit2` on EVM `exact`, or `sequence` vs `ticketSequence` on XRPL `exact`. Allowed `assetTransferMethod` string values are mechanism-defined. `extra.assetTransferMethod` and `extra.paymentFlow` are protocol-reserved keys in `PaymentRequirements.extra`: clients and servers MUST interpret them as defined here rather than as opaque scheme-private fields.
 
-When a mechanism does not declare a flow, the default is `authorization`. A mechanism selecting a non-default flow MUST signal it to the client on the wire via `extra.paymentFlow`, so the client can reason about the trust model before paying — in particular, whether payment becomes final before the resource executes: if the resource handler fails, an `authorization` payment flow is never settled, whereas an `upfront` payment flow has already been committed.
+Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism declares supported payment flows **per `assetTransferMethod`**, each with a default flow, plus a scheme-level default `assetTransferMethod` used when `extra.assetTransferMethod` is omitted. The resolved flow determines the ordering of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) around the resource server's execution of the protected request.
+
+Omitting `extra.assetTransferMethod` or `extra.paymentFlow` means the mechanism default when resolving. When the resolved payment flow is not `authorization`, `PaymentRequired` `accepts[].extra.paymentFlow` MUST be present so clients can reason about pre-handler fund commitment without scheme-specific knowledge (for example, distinguishing an SVM upto `escrow` default from an EVM upto `authorization` default). `authorization` MAY be omitted or explicit. Resource servers MUST reject unsupported `assetTransferMethod` / payment flow combinations.
 
 The following flows are defined:
 

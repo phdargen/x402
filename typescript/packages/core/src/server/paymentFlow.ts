@@ -1,10 +1,12 @@
-import type { PaymentFlowName, PaymentFlowPhases } from "../types/mechanisms";
+import type { PaymentFlowName, PaymentFlowPhases, SchemeNetworkServer } from "../types/mechanisms";
+import type { PaymentRequirements } from "../types/payments";
+import type { DeepReadonly } from "../types/readonly";
 
 /**
- * Default flow when a scheme omits {@link SchemeNetworkServer.getPaymentFlow}.
- * Matches today's verify → work → settle orchestration for all existing schemes.
+ * SDK-only ATM key for schemes with no on-wire assetTransferMethod.
+ * Never emit `assetTransferMethod: "default"` on the 402 wire.
  */
-export const DEFAULT_PAYMENT_FLOW: PaymentFlowName = "authorization";
+export const SDK_DEFAULT_ASSET_TRANSFER_METHOD = "default";
 
 /**
  * Closed set of payment-flow phase tables.
@@ -32,6 +34,81 @@ export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
 };
 
 /**
+ * Resolve assetTransferMethod and paymentFlow from a scheme table and requirements.
+ *
+ * Omit ATM → `scheme.defaultAssetTransferMethod`. Omit paymentFlow → that ATM's table default.
+ * Unsupported ATM or flow throws.
+ *
+ * @param scheme - Scheme declaring default ATM and per-ATM paymentFlows
+ * @param requirements - Payment requirements (possibly omitting ATM / paymentFlow)
+ * @returns Resolved ATM and payment flow
+ */
+export function resolvePaymentFlow(
+  scheme: Pick<SchemeNetworkServer, "defaultAssetTransferMethod" | "paymentFlows" | "scheme">,
+  requirements: DeepReadonly<PaymentRequirements>,
+): { assetTransferMethod: string; paymentFlow: PaymentFlowName } {
+  const atm =
+    typeof requirements.extra?.assetTransferMethod === "string"
+      ? requirements.extra.assetTransferMethod
+      : scheme.defaultAssetTransferMethod;
+
+  const config = scheme.paymentFlows[atm];
+  if (!config) {
+    throw new Error(
+      `[x402] Scheme "${scheme.scheme}" does not support assetTransferMethod "${atm}". ` +
+        `Supported: ${Object.keys(scheme.paymentFlows).join(", ")}.`,
+    );
+  }
+  if (!config.supported.includes(config.default)) {
+    throw new Error(
+      `[x402] Scheme "${scheme.scheme}" paymentFlows["${atm}"].default is not in supported.`,
+    );
+  }
+
+  const requested = requirements.extra?.paymentFlow;
+  const flow: PaymentFlowName =
+    requested === undefined || requested === null ? config.default : (requested as PaymentFlowName);
+
+  if (!config.supported.includes(flow)) {
+    throw new Error(
+      `[x402] Scheme "${scheme.scheme}" assetTransferMethod "${atm}" does not support paymentFlow "${String(requested)}". ` +
+        `Supported: ${config.supported.join(", ")} (default: ${config.default}).`,
+    );
+  }
+
+  return { assetTransferMethod: atm, paymentFlow: flow };
+}
+
+/**
+ * Apply resolved payment-flow rules to 402 `extra`:
+ * - Strip the SDK ATM sentinel `"default"` (never on the wire).
+ * - When resolved flow is not `authorization`, set `extra.paymentFlow` so clients
+ *   can distinguish trust models without scheme-specific knowledge.
+ *
+ * @param extra - Current requirements extra
+ * @param resolved - Result of {@link resolvePaymentFlow}
+ * @param resolved.assetTransferMethod - Resolved asset transfer method
+ * @param resolved.paymentFlow - Resolved payment flow name
+ * @returns New extra object with wire rules applied
+ */
+export function applyPaymentFlowWireExtra(
+  extra: Record<string, unknown>,
+  resolved: { assetTransferMethod: string; paymentFlow: PaymentFlowName },
+): Record<string, unknown> {
+  const next = { ...extra };
+  if (
+    resolved.assetTransferMethod === SDK_DEFAULT_ASSET_TRANSFER_METHOD ||
+    next.assetTransferMethod === SDK_DEFAULT_ASSET_TRANSFER_METHOD
+  ) {
+    delete next.assetTransferMethod;
+  }
+  if (resolved.paymentFlow !== "authorization") {
+    next.paymentFlow = resolved.paymentFlow;
+  }
+  return next;
+}
+
+/**
  * Resolve the phase table for a payment flow name.
  *
  * @param flow - Declared or default payment flow name
@@ -42,7 +119,7 @@ export function resolvePaymentFlowPhases(flow: PaymentFlowName): PaymentFlowPhas
   const phases: PaymentFlowPhases | undefined = PAYMENT_FLOWS[flow];
   if (!phases) {
     throw new Error(
-      `[x402] Unknown payment flow "${flow}". getPaymentFlow must return one of: ${Object.keys(PAYMENT_FLOWS).join(", ")}.`,
+      `[x402] Unknown payment flow "${flow}". Expected one of: ${Object.keys(PAYMENT_FLOWS).join(", ")}.`,
     );
   }
   return phases;

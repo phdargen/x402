@@ -1,5 +1,16 @@
 ---
 "@x402/core": minor
+"@x402/evm": minor
+"@x402/svm": minor
+"@x402/avm": minor
+"@x402/xrpl": minor
+"@x402/tvm": minor
+"@x402/stellar": minor
+"@x402/near": minor
+"@x402/keeta": minor
+"@x402/hedera": minor
+"@x402/concordium": minor
+"@x402/aptos": minor
 "@x402/express": minor
 "@x402/hono": minor
 "@x402/fastify": minor
@@ -7,6 +18,4 @@
 "@x402/mcp": minor
 ---
 
-Add scheme-declared payment flows (`authorization`, `upfront`, `escrow`) so core can verify and settle before and/or after the resource handler. Existing schemes keep the default `authorization` flow (verify → work → settle) with no behavior change.
-
-`SettleContext.phase` identifies which settle invocation is running. Multi-settle flows (`escrow`) fire settle lifecycle hooks once per settle — side-effecting `beforeSettle` / `afterSettle` / enrichment hooks should branch on `phase` when used with those flows.
+Require ATM-keyed `paymentFlows` (and `defaultAssetTransferMethod`) on every `SchemeNetworkServer`. Core resolves ATM/flow from the table, rejects unsupported combinations, and always signals non-`authorization` `paymentFlow` on the 402 wire. All schemes currently declare `authorization` only.

@@ -627,9 +627,14 @@ describe("paymentMiddleware", () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(unhandled).toHaveLength(0);
 
-      await expect(middleware(createMockContext(), vi.fn())).rejects.toThrow(
-        "facilitator request timed out",
-      );
+      const firstResult = await middleware(createMockContext(), vi.fn());
+      expect(firstResult).toBeInstanceOf(Response);
+      expect((firstResult as Response).status).toBe(500);
+      await expect((firstResult as Response).json()).resolves.toEqual({
+        error: "Internal Server Error",
+      });
+      expect(mockProcessHTTPRequest).not.toHaveBeenCalled();
+
       await middleware(createMockContext(), vi.fn().mockResolvedValue(undefined));
       expect(initializeCalls).toBe(2);
     } finally {

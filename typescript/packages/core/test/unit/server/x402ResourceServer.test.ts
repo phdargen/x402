@@ -554,6 +554,7 @@ describe("x402ResourceServer", () => {
         buildSettleResponse({ success: true }),
       );
       server = new x402ResourceServer(mockClient);
+      server.register("test:network" as Network, new MockSchemeNetworkServer("test-scheme"));
     });
 
     describe("onBeforeVerify", () => {
@@ -721,7 +722,9 @@ describe("x402ResourceServer", () => {
         server.register(
           "test:network" as Network,
           Object.assign(new MockSchemeNetworkServer("test-scheme"), {
-            getPaymentFlow: () => "upfront" as const,
+            paymentFlows: {
+              default: { supported: ["upfront"], default: "upfront" },
+            },
           }),
         );
         await server.initialize();
@@ -749,7 +752,9 @@ describe("x402ResourceServer", () => {
         server.register(
           "test:network" as Network,
           Object.assign(new MockSchemeNetworkServer("test-scheme"), {
-            getPaymentFlow: () => "upfront" as const,
+            paymentFlows: {
+              default: { supported: ["upfront"], default: "upfront" },
+            },
           }),
         );
         await server.initialize();
@@ -773,7 +778,9 @@ describe("x402ResourceServer", () => {
         server.register(
           "test:network" as Network,
           Object.assign(new MockSchemeNetworkServer("test-scheme"), {
-            getPaymentFlow: () => "upfront" as const,
+            paymentFlows: {
+              default: { supported: ["upfront"], default: "upfront" },
+            },
           }),
         );
         await server.initialize();
@@ -1311,6 +1318,7 @@ describe("x402ResourceServer", () => {
       );
 
       const server = new x402ResourceServer(mockClient);
+      server.register("eip155:8453" as Network, new MockSchemeNetworkServer("exact"));
 
       const payload = buildPaymentPayload();
       const requirements = buildPaymentRequirements({
@@ -1332,6 +1340,7 @@ describe("x402ResourceServer", () => {
       );
 
       const server = new x402ResourceServer(mockClient);
+      server.register("eip155:8453" as Network, new MockSchemeNetworkServer("exact"));
 
       await expect(
         async () =>
@@ -2548,12 +2557,21 @@ describe("x402ResourceServer", () => {
   });
 
   describe("registerExtension lifecycle hooks", () => {
+    /**
+     * @param mockClient - Facilitator client for the server under test
+     */
+    function serverWithScheme(mockClient: MockFacilitatorClient): x402ResourceServer {
+      const server = new x402ResourceServer(mockClient);
+      server.register("test:network" as Network, new MockSchemeNetworkServer("test-scheme"));
+      return server;
+    }
+
     it("runs extension onBeforeVerify only when extension key is in declaredExtensions", async () => {
       const mockClient = new MockFacilitatorClient(
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let extCalls = 0;
       server.registerExtension({
         key: "extA",
@@ -2576,7 +2594,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let extCalls = 0;
       server.registerExtension({
         key: "extB",
@@ -2604,7 +2622,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       const order: string[] = [];
       server.onBeforeVerify(async () => {
         order.push("manual");
@@ -2627,7 +2645,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let callsA = 0;
       let callsB = 0;
       server.registerExtension({
@@ -2657,7 +2675,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let afterCalls = 0;
       server.registerExtension({
         key: "afterExt",
@@ -2682,7 +2700,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       mockClient.setVerifyResponse(new Error("verify boom"));
       let failCalls = 0;
       server.registerExtension({
@@ -2711,7 +2729,7 @@ describe("x402ResourceServer", () => {
         buildVerifyResponse({ isValid: true }),
         buildSettleResponse({ success: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let beforeCalls = 0;
       let afterCalls = 0;
       server.registerExtension({
@@ -2743,7 +2761,7 @@ describe("x402ResourceServer", () => {
         buildVerifyResponse({ isValid: true }),
         buildSettleResponse({ success: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       mockClient.setSettleResponse(new Error("settle boom"));
       let failCalls = 0;
       server.registerExtension({
@@ -2773,7 +2791,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       mockClient.setVerifyResponse(new Error("verify boom"));
       let manualCalls = 0;
       server.onVerifyFailure(async () => {
@@ -2799,7 +2817,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let calls = 0;
       server.registerExtension({
         key: "reReg",
@@ -2822,7 +2840,7 @@ describe("x402ResourceServer", () => {
         buildSupportedResponse(),
         buildVerifyResponse({ isValid: true }),
       );
-      const server = new x402ResourceServer(mockClient);
+      const server = serverWithScheme(mockClient);
       let calls = 0;
       server.registerExtension({
         key: "noHooks",

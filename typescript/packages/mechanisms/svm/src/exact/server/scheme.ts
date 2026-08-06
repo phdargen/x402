@@ -1,6 +1,7 @@
 import type {
   AssetAmount,
   Network,
+  PaymentFlowConfig,
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
@@ -29,6 +30,10 @@ export interface ExactSvmServerOptions {
  */
 export class ExactSvmScheme implements SchemeNetworkServer {
   readonly scheme = "exact";
+  readonly defaultAssetTransferMethod = "default";
+  readonly paymentFlows = {
+    default: { supported: ["authorization"], default: "authorization" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
   private moneyParsers: MoneyParser[] = [];
 
   /**
@@ -37,7 +42,7 @@ export class ExactSvmScheme implements SchemeNetworkServer {
    * @param options - Optional server configuration (e.g. an `rpcUrl` to embed a
    *   recent blockhash in the challenge).
    */
-  constructor(private readonly options: ExactSvmServerOptions = {}) {}
+  constructor(private readonly options: ExactSvmServerOptions = {}) { }
 
   /**
    * Register a custom money parser in the parser chain.

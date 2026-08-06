@@ -40,6 +40,20 @@ export function createFacilitatorErrorResponse(error: FacilitatorResponseError):
 }
 
 /**
+ * Logs an unexpected error and builds a generic 500 without leaking internals.
+ *
+ * @param error - The unexpected error
+ * @returns A JSON 500 response
+ */
+export function createInternalErrorResponse(error: unknown): NextResponse {
+  console.error(error);
+  return new NextResponse(JSON.stringify({ error: "Internal Server Error" }), {
+    status: 500,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
  * Prepares an existing x402HTTPResourceServer with initialization logic
  *
  * @param httpServer - Pre-configured x402HTTPResourceServer instance

@@ -35,7 +35,11 @@ import {
   snapshotPaymentRequirementsList,
   snapshotSettleResponseCore,
 } from "./hookPolicy";
-import { DEFAULT_PAYMENT_FLOW, resolvePaymentFlowPhases } from "./paymentFlow";
+import {
+  applyPaymentFlowWireExtra,
+  resolvePaymentFlow,
+  resolvePaymentFlowPhases,
+} from "./paymentFlow";
 import { FacilitatorClient, HTTPFacilitatorClient } from "../http/httpFacilitatorClient";
 import { x402Version } from "..";
 
@@ -392,6 +396,17 @@ export class x402ResourceServer {
    */
   hasRegisteredScheme(network: Network, scheme: string): boolean {
     return !!findByNetworkAndScheme(this.registeredServerSchemes, scheme, network);
+  }
+
+  /**
+   * Get the registered scheme implementation for a network and scheme name.
+   *
+   * @param network - The network identifier
+   * @param scheme - The payment scheme name
+   * @returns The registered scheme, or undefined if none is registered
+   */
+  getRegisteredScheme(network: Network, scheme: string): SchemeNetworkServer | undefined {
+    return findByNetworkAndScheme(this.registeredServerSchemes, scheme, network);
   }
 
   /**
@@ -788,6 +803,9 @@ export class x402ResourceServer {
       facilitatorExtensions,
     );
 
+    const resolved = resolvePaymentFlow(SchemeNetworkServer, requirement);
+    requirement.extra = applyPaymentFlowWireExtra(requirement.extra ?? {}, resolved);
+
     requirements.push(requirement);
     return requirements;
   }
@@ -1082,15 +1100,15 @@ export class x402ResourceServer {
   }
 
   /**
-   * Resolve the payment flow name for a payload/requirements pair.
-   * Returns {@link DEFAULT_PAYMENT_FLOW} when the scheme omits `getPaymentFlow`.
+   * Resolve the payment flow name for a payload/requirements pair from the
+   * scheme's ATM-keyed {@link SchemeNetworkServer.paymentFlows} table.
    *
-   * @param payload - Client payment payload
+   * @param _payload - Client payment payload (unused; flow is requirements-driven)
    * @param requirements - Matched payment requirements
-   * @returns Declared or default payment flow name
+   * @returns Resolved payment flow name
    */
   getPaymentFlow(
-    payload: DeepReadonly<PaymentPayload>,
+    _payload: DeepReadonly<PaymentPayload>,
     requirements: DeepReadonly<PaymentRequirements>,
   ): PaymentFlowName {
     const scheme = findByNetworkAndScheme(
@@ -1098,7 +1116,12 @@ export class x402ResourceServer {
       requirements.scheme,
       requirements.network as Network,
     );
-    return scheme?.getPaymentFlow?.(payload, requirements) ?? DEFAULT_PAYMENT_FLOW;
+    if (!scheme) {
+      throw new Error(
+        `[x402] No server implementation registered for scheme: ${requirements.scheme}, network: ${requirements.network}`,
+      );
+    }
+    return resolvePaymentFlow(scheme, requirements).paymentFlow;
   }
 
   /**

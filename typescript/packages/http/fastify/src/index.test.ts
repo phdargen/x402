@@ -371,9 +371,12 @@ describe("paymentMiddleware", () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(unhandled).toHaveLength(0);
 
-      await expect(hooks.onRequest[0](createMockRequest(), createMockReply())).rejects.toThrow(
-        "facilitator request timed out",
-      );
+      const firstReply = createMockReply();
+      await hooks.onRequest[0](createMockRequest(), firstReply);
+      expect(firstReply.status).toHaveBeenCalledWith(500);
+      expect(firstReply.send).toHaveBeenCalledWith({ error: "Internal Server Error" });
+      expect(mockProcessHTTPRequest).not.toHaveBeenCalled();
+
       await hooks.onRequest[0](createMockRequest(), createMockReply());
       expect(initializeCalls).toBe(2);
     } finally {

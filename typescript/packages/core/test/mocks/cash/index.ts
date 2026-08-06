@@ -6,14 +6,13 @@ import {
   VerifyResponse,
 } from "../../../../src/types/facilitator";
 import {
-  PaymentFlowName,
+  PaymentFlowConfig,
   SchemeNetworkClient,
   SchemeNetworkFacilitator,
   SchemeNetworkServer,
 } from "../../../../src/types/mechanisms";
 import { PaymentPayload, PaymentRequirements } from "../../../../src/types/payments";
 import { Price, AssetAmount, Network } from "../../../../src/types";
-import type { DeepReadonly } from "../../../../src/types/readonly";
 
 /**
  *
@@ -164,6 +163,10 @@ export function buildCashPaymentRequirements(
  */
 export class CashSchemeNetworkServer implements SchemeNetworkServer {
   readonly scheme = "cash";
+  readonly defaultAssetTransferMethod = "default";
+  readonly paymentFlows: Readonly<Record<string, PaymentFlowConfig>> = {
+    default: { supported: ["authorization"], default: "authorization" },
+  };
 
   /**
    * Parses a price into asset amount format.
@@ -243,40 +246,16 @@ export class CashSchemeNetworkServer implements SchemeNetworkServer {
  * Cash server that declares the default `authorization` payment flow.
  * Used by integration tests to prove verify → work → settle wiring.
  */
-export class MockAuthorizeSchemeNetworkServer extends CashSchemeNetworkServer {
-  /**
-   * @param _payload - Unused; flow is fixed for this mock
-   * @param _requirements - Unused; flow is fixed for this mock
-   * @returns `authorization`
-   */
-  getPaymentFlow(
-    _payload: DeepReadonly<PaymentPayload>,
-    _requirements: DeepReadonly<PaymentRequirements>,
-  ): PaymentFlowName {
-    void _payload;
-    void _requirements;
-    return "authorization";
-  }
-}
+export class MockAuthorizeSchemeNetworkServer extends CashSchemeNetworkServer {}
 
 /**
  * Cash server that declares the `upfront` payment flow.
  * Used by integration tests to prove settle → work wiring without a real prepaid scheme.
  */
 export class MockUpfrontSchemeNetworkServer extends CashSchemeNetworkServer {
-  /**
-   * @param _payload - Unused; flow is fixed for this mock
-   * @param _requirements - Unused; flow is fixed for this mock
-   * @returns `upfront`
-   */
-  getPaymentFlow(
-    _payload: DeepReadonly<PaymentPayload>,
-    _requirements: DeepReadonly<PaymentRequirements>,
-  ): PaymentFlowName {
-    void _payload;
-    void _requirements;
-    return "upfront";
-  }
+  override readonly paymentFlows = {
+    default: { supported: ["upfront"], default: "upfront" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
 }
 
 /**
@@ -284,19 +263,9 @@ export class MockUpfrontSchemeNetworkServer extends CashSchemeNetworkServer {
  * Used by integration tests to prove settle → work → settle wiring without a real escrow scheme.
  */
 export class MockEscrowSchemeNetworkServer extends CashSchemeNetworkServer {
-  /**
-   * @param _payload - Unused; flow is fixed for this mock
-   * @param _requirements - Unused; flow is fixed for this mock
-   * @returns `escrow`
-   */
-  getPaymentFlow(
-    _payload: DeepReadonly<PaymentPayload>,
-    _requirements: DeepReadonly<PaymentRequirements>,
-  ): PaymentFlowName {
-    void _payload;
-    void _requirements;
-    return "escrow";
-  }
+  override readonly paymentFlows = {
+    default: { supported: ["escrow"], default: "escrow" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
 }
 
 /**

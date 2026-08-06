@@ -218,6 +218,17 @@ function sendFacilitatorError(reply: FastifyReply, error: FacilitatorResponseErr
 }
 
 /**
+ * Logs an unexpected error and sends a generic 500 without leaking internals.
+ *
+ * @param reply - The Fastify reply to write to
+ * @param error - The unexpected error
+ */
+function sendInternalError(reply: FastifyReply, error: unknown): void {
+  console.error(error);
+  reply.status(500).send({ error: "Internal Server Error" });
+}
+
+/**
  * Configuration for registering a payment scheme with a specific network.
  */
 export interface SchemeRegistration {
@@ -342,7 +353,7 @@ export function paymentMiddlewareFromHTTPServer(
         if (facilitatorError) {
           return sendFacilitatorError(reply, facilitatorError);
         }
-        throw error;
+        return sendInternalError(reply, error);
       }
     }
 
@@ -358,7 +369,7 @@ export function paymentMiddlewareFromHTTPServer(
       if (error instanceof FacilitatorResponseError) {
         return sendFacilitatorError(reply, error);
       }
-      throw error;
+      return sendInternalError(reply, error);
     }
 
     switch (result.type) {

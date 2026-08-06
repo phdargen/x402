@@ -55,6 +55,18 @@ function facilitatorErrorResponse(c: Context, error: FacilitatorResponseError): 
 }
 
 /**
+ * Logs an unexpected error and builds a generic 500 without leaking internals.
+ *
+ * @param c - The current Hono context
+ * @param error - The unexpected error
+ * @returns A JSON 500 response
+ */
+function internalErrorResponse(c: Context, error: unknown): Response {
+  console.error(error);
+  return c.json({ error: "Internal Server Error" }, 500);
+}
+
+/**
  * Hono payment middleware for x402 protocol (direct HTTP server instance).
  *
  * Use this when you need to configure HTTP-level hooks.
@@ -163,7 +175,7 @@ export function paymentMiddlewareFromHTTPServer(
         if (facilitatorError) {
           return facilitatorErrorResponse(c, facilitatorError);
         }
-        throw error;
+        return internalErrorResponse(c, error);
       }
     }
 
@@ -181,7 +193,7 @@ export function paymentMiddlewareFromHTTPServer(
       if (error instanceof FacilitatorResponseError) {
         return facilitatorErrorResponse(c, error);
       }
-      throw error;
+      return internalErrorResponse(c, error);
     }
 
     // Handle the different result types

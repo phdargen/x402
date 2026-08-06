@@ -26,7 +26,13 @@ export type {
   OnSettleFailureHook,
   OnVerifiedPaymentCanceledHook,
 } from "./x402ResourceServer";
-export { DEFAULT_PAYMENT_FLOW, PAYMENT_FLOWS, resolvePaymentFlowPhases } from "./paymentFlow";
+export {
+  SDK_DEFAULT_ASSET_TRANSFER_METHOD,
+  PAYMENT_FLOWS,
+  resolvePaymentFlow,
+  applyPaymentFlowWireExtra,
+  resolvePaymentFlowPhases,
+} from "./paymentFlow";
 export type {
   SchemeEnrichPaymentRequiredResponseHook,
   SchemePaymentRequiredContext,
@@ -34,6 +40,7 @@ export type {
   SchemeEnrichSettlementResponseHook,
   PaymentFlowName,
   PaymentFlowPhases,
+  PaymentFlowConfig,
 } from "../types/mechanisms";
 
 export {

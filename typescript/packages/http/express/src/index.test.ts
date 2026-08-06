@@ -722,9 +722,12 @@ describe("paymentMiddleware", () => {
       await new Promise(resolve => setTimeout(resolve, 0));
       expect(unhandled).toHaveLength(0);
 
+      const firstRes = createMockResponse();
       const firstNext = vi.fn();
-      await middleware(createMockRequest(), createMockResponse(), firstNext);
-      expect(firstNext).toHaveBeenCalledWith(initializationError);
+      await middleware(createMockRequest(), firstRes, firstNext);
+      expect(firstRes.status).toHaveBeenCalledWith(500);
+      expect(firstRes.json).toHaveBeenCalledWith({ error: "Internal Server Error" });
+      expect(firstNext).not.toHaveBeenCalled();
 
       const secondNext = vi.fn();
       await middleware(createMockRequest(), createMockResponse(), secondNext);
@@ -758,6 +761,32 @@ describe("paymentMiddleware", () => {
       error: "Facilitator verify returned invalid JSON: not-json",
     });
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns a generic 500 when processHTTPRequest throws an unexpected error", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockProcessHTTPRequest.mockRejectedValue(
+      new Error('[x402] Scheme "exact" does not support paymentFlow "escrow"'),
+    );
+
+    const middleware = paymentMiddleware(
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    const req = createMockRequest();
+    const res = createMockResponse();
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: "Internal Server Error" });
+    expect(next).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
   it("returns 502 when settlement surfaces FacilitatorResponseError", async () => {

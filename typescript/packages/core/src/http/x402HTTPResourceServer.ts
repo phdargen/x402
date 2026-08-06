@@ -5,6 +5,7 @@ import {
   PaymentCancellationDispatcher,
   CompletedSettlement,
   SettlePhase,
+  resolvePaymentFlow,
   resolvePaymentFlowPhases,
 } from "../server";
 import {
@@ -342,7 +343,11 @@ export interface RouteValidationError {
   /** The network that failed validation */
   network: Network;
   /** The type of validation failure */
-  reason: "missing_scheme" | "missing_facilitator";
+  reason:
+    | "missing_scheme"
+    | "missing_facilitator"
+    | "unsupported_asset_transfer_method"
+    | "unsupported_payment_flow";
   /** Human-readable error message */
   message: string;
 }
@@ -410,6 +415,8 @@ export class x402HTTPResourceServer {
    *
    * @param ResourceServer - The core x402ResourceServer instance to use
    * @param routes - Route configuration for payment-protected endpoints
+   * @throws RouteConfigurationError if a registered scheme does not support the
+   *         declared paymentFlow / assetTransferMethod
    */
   constructor(ResourceServer: x402ResourceServer, routes: RoutesConfig) {
     this.ResourceServer = ResourceServer;
@@ -429,6 +436,14 @@ export class x402HTTPResourceServer {
         config,
         pattern: parsed.path,
       });
+    }
+
+    const paymentFlowErrors = this.validateRouteConfiguration({
+      includeMissingScheme: false,
+      includeFacilitator: false,
+    });
+    if (paymentFlowErrors.length > 0) {
+      throw new RouteConfigurationError(paymentFlowErrors);
     }
   }
 
@@ -1045,12 +1060,19 @@ export class x402HTTPResourceServer {
   }
 
   /**
-   * Validates that all payment options in routes have corresponding registered schemes
-   * and facilitator support.
+   * Validates that all payment options in routes have corresponding registered schemes,
+   * supported paymentFlow / assetTransferMethod, and (optionally) facilitator support.
    *
+   * @param options - Validation options
+   * @param options.includeMissingScheme - When true (default), report unregistered schemes
+   * @param options.includeFacilitator - When true (default), also check facilitator kinds
    * @returns Array of validation errors (empty if all routes are valid)
    */
-  private validateRouteConfiguration(): RouteValidationError[] {
+  private validateRouteConfiguration(
+    options: { includeMissingScheme?: boolean; includeFacilitator?: boolean } = {},
+  ): RouteValidationError[] {
+    const includeMissingScheme = options.includeMissingScheme !== false;
+    const includeFacilitator = options.includeFacilitator !== false;
     const errors: RouteValidationError[] = [];
 
     // Normalize routes to array of [pattern, config] pairs
@@ -1079,19 +1101,67 @@ export class x402HTTPResourceServer {
 
       for (const option of paymentOptions) {
         // Check 1: Is scheme registered?
-        if (!this.ResourceServer.hasRegisteredScheme(option.network, option.scheme)) {
+        const schemeServer = this.ResourceServer.getRegisteredScheme(option.network, option.scheme);
+        if (!schemeServer) {
+          if (includeMissingScheme) {
+            errors.push({
+              routePattern: pattern,
+              scheme: option.scheme,
+              network: option.network,
+              reason: "missing_scheme",
+              message: `Route "${pattern}": No scheme implementation registered for "${option.scheme}" on network "${option.network}"`,
+            });
+          }
+          // Skip further checks if scheme isn't registered
+          continue;
+        }
+
+        // Check 2: Does the scheme support the declared ATM / paymentFlow?
+        const atm =
+          typeof option.extra?.assetTransferMethod === "string"
+            ? option.extra.assetTransferMethod
+            : schemeServer.defaultAssetTransferMethod;
+        if (!schemeServer.paymentFlows[atm]) {
           errors.push({
             routePattern: pattern,
             scheme: option.scheme,
             network: option.network,
-            reason: "missing_scheme",
-            message: `Route "${pattern}": No scheme implementation registered for "${option.scheme}" on network "${option.network}"`,
+            reason: "unsupported_asset_transfer_method",
+            message:
+              `Route "${pattern}": [x402] Scheme "${schemeServer.scheme}" does not support ` +
+              `assetTransferMethod "${atm}". Supported: ${Object.keys(schemeServer.paymentFlows).join(", ")}.`,
           });
-          // Skip facilitator check if scheme isn't registered
           continue;
         }
 
-        // Check 2: Does facilitator support this scheme/network combination?
+        try {
+          resolvePaymentFlow(schemeServer, {
+            scheme: option.scheme,
+            network: option.network,
+            asset: "",
+            amount: "0",
+            payTo: "",
+            maxTimeoutSeconds: 0,
+            extra: option.extra ?? {},
+          });
+        } catch (error) {
+          errors.push({
+            routePattern: pattern,
+            scheme: option.scheme,
+            network: option.network,
+            reason: "unsupported_payment_flow",
+            message:
+              error instanceof Error
+                ? `Route "${pattern}": ${error.message}`
+                : `Route "${pattern}": Unsupported paymentFlow`,
+          });
+        }
+
+        if (!includeFacilitator) {
+          continue;
+        }
+
+        // Check 3: Does facilitator support this scheme/network combination?
         const supportedKind = this.ResourceServer.getSupportedKind(
           x402Version,
           option.network,

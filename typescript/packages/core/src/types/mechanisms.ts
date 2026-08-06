@@ -202,25 +202,32 @@ export interface PaymentFlowPhases {
   settleAfterHandler: boolean;
 }
 
+/**
+ * Supported payment flows for one assetTransferMethod, plus the default when
+ * `extra.paymentFlow` is omitted.
+ */
+export interface PaymentFlowConfig {
+  readonly supported: readonly PaymentFlowName[];
+  /** Must be a member of {@link PaymentFlowConfig.supported}. */
+  readonly default: PaymentFlowName;
+}
+
 export interface SchemeNetworkServer {
   readonly scheme: string;
+  /**
+   * ATM used when `requirements.extra.assetTransferMethod` is absent.
+   * Use `"default"` only as SDK plumbing when the scheme has no on-wire ATM.
+   */
+  readonly defaultAssetTransferMethod: string;
+  /**
+   * Payment flows supported per assetTransferMethod.
+   * Every ATM the scheme accepts must appear here.
+   */
+  readonly paymentFlows: Readonly<Record<string, PaymentFlowConfig>>;
   readonly schemeHooks?: SchemeServerHooks;
   enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
   enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
   enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;
-
-  /**
-   * Optional: declare which payment flow this scheme uses for a given payload.
-   * Omit for the default `authorization` flow (verify → work → settle).
-   *
-   * @param payload - Client payment payload
-   * @param requirements - Matched payment requirements
-   * @returns Flow name from the closed {@link PaymentFlowName} set
-   */
-  getPaymentFlow?(
-    payload: DeepReadonly<PaymentPayload>,
-    requirements: DeepReadonly<PaymentRequirements>,
-  ): PaymentFlowName;
 
   /**
    * Convert a user-friendly price to the scheme's specific amount and asset format

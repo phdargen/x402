@@ -3,6 +3,7 @@ import type {
   Money,
   MoneyParser,
   Network,
+  PaymentFlowConfig,
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
@@ -37,6 +38,10 @@ export type HederaServerConfig = {
  */
 export class ExactHederaScheme implements SchemeNetworkServer {
   readonly scheme = "exact";
+  readonly defaultAssetTransferMethod = "default";
+  readonly paymentFlows = {
+    default: { supported: ["authorization"], default: "authorization" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
   private moneyParsers: MoneyParser[] = [];
 
   /**
@@ -44,7 +49,7 @@ export class ExactHederaScheme implements SchemeNetworkServer {
    *
    * @param config - Optional server config
    */
-  constructor(private readonly config: HederaServerConfig = {}) {}
+  constructor(private readonly config: HederaServerConfig = {}) { }
 
   /**
    * Register a custom money parser in order.

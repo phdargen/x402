@@ -4,7 +4,9 @@ import {
   SettleContext,
   SettlePhase,
   PAYMENT_FLOWS,
-  DEFAULT_PAYMENT_FLOW,
+  SDK_DEFAULT_ASSET_TRANSFER_METHOD,
+  applyPaymentFlowWireExtra,
+  resolvePaymentFlow,
 } from "../../../src/server";
 import { x402HTTPResourceServer } from "../../../src/http/x402HTTPResourceServer";
 import {
@@ -90,19 +92,112 @@ function schemeWithFlow(flow: PaymentFlowName): MockSchemeNetworkServer {
       extra: {},
     }),
     {
-      getPaymentFlow: () => flow,
+      paymentFlows: {
+        default: { supported: [flow], default: flow },
+      },
     },
   );
 }
+
+const exactEvmLikeScheme = {
+  scheme: "exact",
+  defaultAssetTransferMethod: "eip3009",
+  paymentFlows: {
+    eip3009: {
+      supported: ["authorization", "upfront"] as const,
+      default: "authorization" as const,
+    },
+    permit2: {
+      supported: ["authorization", "upfront"] as const,
+      default: "authorization" as const,
+    },
+  },
+};
 
 describe("payment flows", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
+  describe("resolvePaymentFlow", () => {
+    it("omits ATM and paymentFlow to scheme defaults", () => {
+      expect(
+        resolvePaymentFlow(exactEvmLikeScheme, buildPaymentRequirements({ extra: {} })),
+      ).toEqual({ assetTransferMethod: "eip3009", paymentFlow: "authorization" });
+    });
+
+    it("resolves explicit defaults the same as omitted", () => {
+      expect(
+        resolvePaymentFlow(
+          exactEvmLikeScheme,
+          buildPaymentRequirements({
+            extra: { assetTransferMethod: "eip3009", paymentFlow: "authorization" },
+          }),
+        ),
+      ).toEqual({ assetTransferMethod: "eip3009", paymentFlow: "authorization" });
+    });
+
+    it("resolves upfront and permit2 ATM", () => {
+      expect(
+        resolvePaymentFlow(
+          exactEvmLikeScheme,
+          buildPaymentRequirements({
+            extra: { assetTransferMethod: "permit2", paymentFlow: "upfront" },
+          }),
+        ),
+      ).toEqual({ assetTransferMethod: "permit2", paymentFlow: "upfront" });
+    });
+
+    it("throws on unknown ATM", () => {
+      expect(() =>
+        resolvePaymentFlow(
+          exactEvmLikeScheme,
+          buildPaymentRequirements({ extra: { assetTransferMethod: "unknown" } }),
+        ),
+      ).toThrow(/does not support assetTransferMethod "unknown"/);
+    });
+
+    it("throws on unsupported flow", () => {
+      expect(() =>
+        resolvePaymentFlow(
+          exactEvmLikeScheme,
+          buildPaymentRequirements({ extra: { paymentFlow: "escrow" } }),
+        ),
+      ).toThrow(/does not support paymentFlow "escrow"/);
+    });
+  });
+
+  describe("applyPaymentFlowWireExtra", () => {
+    it("leaves authorization alone", () => {
+      expect(
+        applyPaymentFlowWireExtra(
+          { name: "USDC" },
+          { assetTransferMethod: "eip3009", paymentFlow: "authorization" },
+        ),
+      ).toEqual({ name: "USDC" });
+    });
+
+    it("forces non-authorization paymentFlow onto extra", () => {
+      expect(
+        applyPaymentFlowWireExtra({}, { assetTransferMethod: "eip3009", paymentFlow: "upfront" }),
+      ).toEqual({ paymentFlow: "upfront" });
+      expect(
+        applyPaymentFlowWireExtra({}, { assetTransferMethod: "default", paymentFlow: "escrow" }),
+      ).toEqual({ paymentFlow: "escrow" });
+    });
+
+    it("strips SDK ATM sentinel", () => {
+      expect(
+        applyPaymentFlowWireExtra(
+          { assetTransferMethod: SDK_DEFAULT_ASSET_TRANSFER_METHOD, name: "USDC" },
+          { assetTransferMethod: SDK_DEFAULT_ASSET_TRANSFER_METHOD, paymentFlow: "authorization" },
+        ),
+      ).toEqual({ name: "USDC" });
+    });
+  });
+
   describe("vocabulary", () => {
-    it("defaults to authorization", () => {
-      expect(DEFAULT_PAYMENT_FLOW).toBe("authorization");
+    it("authorization phase table", () => {
       expect(PAYMENT_FLOWS.authorization).toEqual({
         verifyBeforeHandler: true,
         settleBeforeHandler: false,
@@ -110,7 +205,7 @@ describe("payment flows", () => {
       });
     });
 
-    it("getPaymentFlow returns authorization when scheme omits the hook", async () => {
+    it("getPaymentFlow returns table default when requirements omit paymentFlow", async () => {
       const mockClient = new MockFacilitatorClient(
         buildSupportedResponse({
           kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
@@ -126,6 +221,54 @@ describe("payment flows", () => {
           buildPaymentRequirements({ scheme: "exact", network: "eip155:8453" as Network }),
         ),
       ).toBe("authorization");
+    });
+
+    it("buildPaymentRequirements rejects unsupported escrow for ExactEvm-like table", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse({
+          kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
+        }),
+      );
+      const server = new x402ResourceServer(mockClient);
+      server.register(
+        "eip155:8453" as Network,
+        Object.assign(new MockSchemeNetworkServer("exact"), {
+          defaultAssetTransferMethod: "eip3009",
+          paymentFlows: exactEvmLikeScheme.paymentFlows,
+        }),
+      );
+      await server.initialize();
+
+      await expect(
+        server.buildPaymentRequirements({
+          scheme: "exact",
+          payTo: "0xabc",
+          price: "$1.00",
+          network: "eip155:8453" as Network,
+          extra: { paymentFlow: "escrow" },
+        }),
+      ).rejects.toThrow(/does not support paymentFlow "escrow"/);
+    });
+
+    it("buildPaymentRequirements emits paymentFlow for escrow-default mock", async () => {
+      const mockClient = new MockFacilitatorClient(
+        buildSupportedResponse({
+          kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
+        }),
+      );
+      const server = new x402ResourceServer(mockClient);
+      server.register("eip155:8453" as Network, schemeWithFlow("escrow"));
+      await server.initialize();
+
+      const [requirement] = await server.buildPaymentRequirements({
+        scheme: "exact",
+        payTo: "0xabc",
+        price: "$1.00",
+        network: "eip155:8453" as Network,
+      });
+
+      expect(requirement.extra?.paymentFlow).toBe("escrow");
+      expect(requirement.extra).not.toHaveProperty("assetTransferMethod");
     });
   });
 
@@ -299,14 +442,16 @@ describe("payment flows", () => {
     /**
      *
      * @param httpServer
+     * @param flow - Payment flow used when building accepted requirements to match the 402 wire
      */
-    async function verifiedRequest(httpServer: x402HTTPResourceServer) {
+    async function verifiedRequest(httpServer: x402HTTPResourceServer, flow: PaymentFlowName) {
       const requirements = buildPaymentRequirements({
         scheme: "exact",
         network: "eip155:8453" as Network,
         payTo: "0xabc",
         amount: "1000000",
         asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        extra: flow === "authorization" ? {} : { paymentFlow: flow },
       });
       const payload = buildPaymentPayload({
         accepted: requirements,
@@ -328,7 +473,7 @@ describe("payment flows", () => {
         phases.push(ctx.phase);
       });
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "authorization");
       expect(result.type).toBe("payment-verified");
       expect(mockFacilitator.verifyCalls).toHaveLength(1);
       expect(mockFacilitator.settleCalls).toHaveLength(0);
@@ -362,7 +507,7 @@ describe("payment flows", () => {
         phases.push(ctx.phase);
       });
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "upfront");
       expect(result.type).toBe("payment-verified");
       expect(beforeVerifyRan).toBe(true);
       expect(afterVerifyRan).toBe(false);
@@ -413,7 +558,7 @@ describe("payment flows", () => {
         return { abort: true, reason: "extension_gate" };
       });
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "upfront");
       expect(result.type).toBe("payment-error");
       expect(mockFacilitator.verifyCalls).toHaveLength(0);
       expect(mockFacilitator.settleCalls).toHaveLength(0);
@@ -430,7 +575,7 @@ describe("payment flows", () => {
         phases.push(ctx.phase);
       });
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "escrow");
       expect(result.type).toBe("payment-verified");
       expect(beforeVerifyRan).toBe(true);
       expect(mockFacilitator.verifyCalls).toHaveLength(0);
@@ -463,7 +608,7 @@ describe("payment flows", () => {
           }),
         );
 
-        const result = await verifiedRequest(httpServer);
+        const result = await verifiedRequest(httpServer, flow);
         expect(result.type).toBe("payment-error");
         expect(mockFacilitator.verifyCalls).toHaveLength(0);
         expect(mockFacilitator.settleCalls).toHaveLength(1);
@@ -485,7 +630,7 @@ describe("payment flows", () => {
         expect(ctx.reason).toBe("handler_failed");
       });
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "escrow");
       expect(result.type).toBe("payment-verified");
       if (result.type !== "payment-verified") return;
 
@@ -514,7 +659,7 @@ describe("payment flows", () => {
       const httpServer = await setup("upfront");
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-      const result = await verifiedRequest(httpServer);
+      const result = await verifiedRequest(httpServer, "upfront");
       expect(result.type).toBe("payment-verified");
       if (result.type !== "payment-verified") return;
 

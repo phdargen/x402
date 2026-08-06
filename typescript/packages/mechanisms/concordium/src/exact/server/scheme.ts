@@ -1,6 +1,7 @@
 import type {
   AssetAmount,
   Network,
+  PaymentFlowConfig,
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
@@ -21,6 +22,10 @@ import { parseMoneyString } from "@x402/core/utils";
  */
 export class ExactConcordiumScheme implements SchemeNetworkServer {
   readonly scheme = "exact";
+  readonly defaultAssetTransferMethod = "default";
+  readonly paymentFlows = {
+    default: { supported: ["authorization"], default: "authorization" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
 
   /** Custom money parser chain — tried in registration order */
   private moneyParsers: MoneyParser[] = [];
@@ -85,8 +90,8 @@ export class ExactConcordiumScheme implements SchemeNetworkServer {
     // No parser matched — throw, no silent CCD fallback
     throw new Error(
       `Cannot resolve price "${String(price)}" to a Concordium asset. ` +
-        `Register a money parser via registerMoneyParser() to map prices ` +
-        `to a specific token (e.g., EURR, USDR).`,
+      `Register a money parser via registerMoneyParser() to map prices ` +
+      `to a specific token (e.g., EURR, USDR).`,
     );
   }
 

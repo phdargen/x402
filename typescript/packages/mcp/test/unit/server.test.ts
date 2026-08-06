@@ -18,12 +18,24 @@ import type {
 interface MockResourceServer {
   findMatchingRequirements: ReturnType<typeof vi.fn>;
   validateExtensions: ReturnType<typeof vi.fn>;
+  getRegisteredScheme: ReturnType<typeof vi.fn>;
   getPaymentFlow: ReturnType<typeof vi.fn>;
   verifyPayment: ReturnType<typeof vi.fn>;
   settlePayment: ReturnType<typeof vi.fn>;
   createPaymentRequiredResponse: ReturnType<typeof vi.fn>;
   createPaymentCancellationDispatcher: ReturnType<typeof vi.fn>;
 }
+
+const mockSchemeServer = {
+  scheme: "exact",
+  defaultAssetTransferMethod: "default",
+  paymentFlows: {
+    default: {
+      supported: ["authorization", "upfront", "escrow"] as const,
+      default: "authorization" as const,
+    },
+  },
+};
 
 // ============================================================================
 // Test Fixtures
@@ -90,6 +102,7 @@ function createMockResourceServer(): MockResourceServer {
   return {
     findMatchingRequirements: vi.fn().mockReturnValue(mockPaymentRequirements),
     validateExtensions: vi.fn().mockReturnValue({ valid: true }),
+    getRegisteredScheme: vi.fn().mockReturnValue(mockSchemeServer),
     getPaymentFlow: vi.fn().mockReturnValue("authorization"),
     verifyPayment: vi.fn().mockResolvedValue(mockVerifyResponse),
     settlePayment: vi.fn().mockResolvedValue(mockSettleResponse),
@@ -394,7 +407,7 @@ describe("createPaymentWrapper", () => {
       expect(mockResourceServer.createPaymentRequiredResponse).toHaveBeenCalledWith(
         [mockPaymentRequirements],
         expect.any(Object),
-        "Payment settlement failed: facilitator unavailable",
+        "Payment settlement failed: Settlement failed",
         undefined,
         expect.any(Object),
         undefined,
@@ -671,6 +684,34 @@ describe("createPaymentWrapper", () => {
           {} as Parameters<typeof createPaymentWrapper>[1],
         ),
       ).toThrow("PaymentWrapperConfig.accepts must have at least one payment requirement");
+    });
+
+    it("should throw at creation for unsupported paymentFlow", () => {
+      expect(() =>
+        createPaymentWrapper(
+          mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+          {
+            accepts: [
+              {
+                ...mockPaymentRequirements,
+                extra: { paymentFlow: "not-a-real-flow" },
+              },
+            ],
+          },
+        ),
+      ).toThrow(/does not support paymentFlow/);
+    });
+
+    it("should throw at creation when scheme is not registered", () => {
+      mockResourceServer.getRegisteredScheme.mockReturnValueOnce(undefined);
+      expect(() =>
+        createPaymentWrapper(
+          mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+          {
+            accepts: [mockPaymentRequirements],
+          },
+        ),
+      ).toThrow(/No scheme implementation registered/);
     });
   });
 
@@ -967,6 +1008,34 @@ describe("createPaymentWrapper", () => {
       expect(handler).toHaveBeenCalled(); // Handler executed
       expect(result.isError).toBe(true); // But error returned due to settlement failure
       expect(result.structuredContent).toBeDefined();
+    });
+  });
+
+  describe("unexpected errors", () => {
+    it("returns a generic Internal Server Error without leaking internals", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockResourceServer.getPaymentFlow.mockImplementationOnce(() => {
+        throw new Error('[x402] Scheme "exact" does not support paymentFlow "escrow"');
+      });
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+
+      const handler = vi.fn();
+      const result = await paid(handler)(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "Internal Server Error" }]);
+      expect(JSON.stringify(result)).not.toContain("does not support paymentFlow");
+      expect(consoleError).toHaveBeenCalled();
+      consoleError.mockRestore();
     });
   });
 });
