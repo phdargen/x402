@@ -279,19 +279,19 @@ Individual schemes and their per-network bindings — including `exact`, `upto`,
 
 **6.1 Asset Transfer Methods and Payment Flow Models**
 
-An `assetTransferMethod` identifies **how** value is authorized or moved for a mechanism (a scheme on a specific network) — for example `eip3009` vs `permit2` on EVM `exact`, or `sequence` vs `ticketSequence` on XRPL `exact`. Allowed `assetTransferMethod` string values are mechanism-defined. `extra.assetTransferMethod` and `extra.paymentFlow` are protocol-reserved keys in `PaymentRequirements.extra`: clients and servers MUST interpret them as defined here rather than as opaque scheme-private fields.
+An `assetTransferMethod` identifies **how** value is authorized or moved for a mechanism (a scheme on a specific network) — for example `eip3009` vs `permit2` on EVM `exact`, or `sequence` vs `ticketSequence` on XRPL `exact`. Allowed `assetTransferMethod` string values are mechanism-defined; this protocol reserves the key name, not a global ATM vocabulary. Mechanisms MAY reuse the same ATM string across networks when semantics align. `extra.assetTransferMethod` and `extra.paymentFlow` are protocol-reserved keys in `PaymentRequirements.extra`: clients and servers MUST interpret them as defined here rather than as opaque scheme-private fields.
 
-Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism declares supported payment flows **per `assetTransferMethod`**, each with a default flow, plus a scheme-level default `assetTransferMethod` used when `extra.assetTransferMethod` is omitted. The resolved flow determines the ordering of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) around the resource server's execution of the protected request.
+Schemes differ not only in how a payment is formed and validated, but in **when** settlement occurs relative to resource execution. A mechanism declares supported payment flows **per `assetTransferMethod`**, each with a default flow, plus a scheme-level default `assetTransferMethod` used when `extra.assetTransferMethod` is omitted. The resolved flow determines which of the facilitator's read-only `/verify` (section 7.1) and state-committing `/settle` (section 7.2) run, and in what order, around the resource server's execution of the protected request. A flow's ordering MAY omit `/verify` (see `upfront` and `escrow` below).
 
-Omitting `extra.assetTransferMethod` or `extra.paymentFlow` means the mechanism default when resolving. When the resolved payment flow is not `authorization`, `PaymentRequired` `accepts[].extra.paymentFlow` MUST be present so clients can reason about pre-handler fund commitment without scheme-specific knowledge (for example, distinguishing an SVM upto `escrow` default from an EVM upto `authorization` default). `authorization` MAY be omitted or explicit. Resource servers MUST reject unsupported `assetTransferMethod` / payment flow combinations.
+Omitting `extra.assetTransferMethod` or `extra.paymentFlow` means the mechanism default when resolving. When the resolved payment flow is not `authorization`, `PaymentRequired` `accepts[].extra.paymentFlow` MUST be present so clients can reason about pre-handler fund commitment without scheme-specific knowledge (for example, distinguishing an SVM upto `escrow` default from an EVM upto `authorization` default). `authorization` MAY be omitted or explicit. Resource servers MUST reject unsupported `assetTransferMethod` / payment flow combinations. Clients MUST NOT construct a payment for a `paymentFlow` they do not recognize, and SHOULD skip such `accepts[]` entries when selecting. When a resource offers both `authorization` (post-handler settlement) and a pre-handler-settlement flow (`upfront` or `escrow`) for the same request, clients SHOULD prefer `authorization`.
 
 The following flows are defined:
 
 | Flow                  | Ordering                                        | Description                                                                                                                              |
 | --------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `authorization` (default) | verify → resource → settle → respond        | Read-only verify before the resource executes; funds move only after it completes successfully. |
-| `upfront`             | settle → resource → respond                     | Payment is durably committed before the resource executes, giving the server finality first. Required by networks with no pull-settlement primitive. |
-| `escrow`              | settle → resource → settle → respond            | A first settle commits a deposit or ceiling, the resource executes, and a second settle records the final charge. |
+| `upfront`             | settle → resource → respond                     | Payment is durably committed before the resource executes, giving the server finality first. Facilitator `/verify` is not part of this ordering; validity is established by settle. Required by networks with no pull-settlement primitive. |
+| `escrow`              | settle → resource → settle → respond            | A first settle commits a deposit or ceiling, the resource executes, and a second settle records the final charge. Facilitator `/verify` is not part of this ordering; the first settle is the pre-resource check. |
 
 Invariant: at least one check — a verify or settle before the resource — MUST run before the resource executes. The resource never executes with nothing checked.
 
@@ -301,7 +301,7 @@ The facilitator provides HTTP REST APIs for payment verification and settlement.
 
 **7.1 POST /verify**
 
-Verifies a payment authorization without executing the transaction on the blockchain. `/verify` is **read-only**: it validates payment state but MUST NOT commit payment state or write onchain state.
+Verifies a payment authorization without executing the transaction on the blockchain. `/verify` is **read-only**: it validates payment state but MUST NOT commit payment state or write onchain state. Resource servers invoke `/verify` only when the resolved payment flow's ordering includes it (section 6.1); `upfront` and `escrow` omit it.
 
 **Request (Exact Scheme):**
 
@@ -389,7 +389,7 @@ Example with actual data:
 
 **7.2 POST /settle**
 
-Durably commits payment state, typically by updating a network ledger (for example, broadcasting a transaction). A settle need not be the final charge: it MAY establish an escrow, record a charge, or transfer funds, depending on the scheme and payment flow (see section 6.1 Payment Flow Models).
+Durably commits payment state for the request — establishing finality from the resource server's perspective — typically by updating a network ledger (for example, broadcasting a transaction). Commitment need not be an onchain write: for client-prepaid methods, settle MAY bind a payment proof to the request (for example, consuming a challenge or marking a transaction as used) after read-only observation of ledger or backend state. A settle need not be the final charge: it MAY establish an escrow, record a charge, or transfer funds, depending on the scheme and payment flow (see section 6.1 Payment Flow Models).
 
 **Request:** Same structure as `/verify` endpoint (contains `paymentPayload` and `paymentRequirements`).
 

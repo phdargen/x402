@@ -49,7 +49,7 @@ export class ExactHederaScheme implements SchemeNetworkServer {
    *
    * @param config - Optional server config
    */
-  constructor(private readonly config: HederaServerConfig = {}) { }
+  constructor(private readonly config: HederaServerConfig = {}) {}
 
   /**
    * Register a custom money parser in order.

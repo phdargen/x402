@@ -302,13 +302,13 @@ export interface HTTPResponseInstructions {
 export type HTTPProcessResult =
   | { type: "no-payment-required" }
   | {
-      type: "payment-verified";
-      cancellationDispatcher: PaymentCancellationDispatcher;
-      beforeHandlerSettlement?: CompletedSettlement;
-      paymentPayload: PaymentPayload;
-      paymentRequirements: PaymentRequirements;
-      declaredExtensions?: Record<string, unknown>;
-    }
+    type: "payment-verified";
+    cancellationDispatcher: PaymentCancellationDispatcher;
+    beforeHandlerSettlement?: CompletedSettlement;
+    paymentPayload: PaymentPayload;
+    paymentRequirements: PaymentRequirements;
+    declaredExtensions?: Record<string, unknown>;
+  }
   | { type: "payment-error"; response: HTTPResponseInstructions };
 
 /**
@@ -344,10 +344,10 @@ export interface RouteValidationError {
   network: Network;
   /** The type of validation failure */
   reason:
-    | "missing_scheme"
-    | "missing_facilitator"
-    | "unsupported_asset_transfer_method"
-    | "unsupported_payment_flow";
+  | "missing_scheme"
+  | "missing_facilitator"
+  | "unsupported_asset_transfer_method"
+  | "unsupported_payment_flow";
   /** Human-readable error message */
   message: string;
 }
@@ -1061,7 +1061,7 @@ export class x402HTTPResourceServer {
 
   /**
    * Validates that all payment options in routes have corresponding registered schemes,
-   * supported paymentFlow / assetTransferMethod, and (optionally) facilitator support.
+   * supported paymentFlow / assetTransferMethod and facilitator support.
    *
    * @param options - Validation options
    * @param options.includeMissingScheme - When true (default), report unregistered schemes
@@ -1092,8 +1092,8 @@ export class x402HTTPResourceServer {
       ) {
         console.warn(
           `[x402] Route "${pattern}": Wildcard (*) patterns with bazaar discovery extensions ` +
-            `will auto-generate parameter names (var1, var2, ...). ` +
-            `Consider using named parameters instead (e.g. /weather/:city) for better discovery metadata.`,
+          `will auto-generate parameter names (var1, var2, ...). ` +
+          `Consider using named parameters instead (e.g. /weather/:city) for better discovery metadata.`,
         );
       }
 
@@ -1326,14 +1326,13 @@ export class x402HTTPResourceServer {
     const [verb, path] = pattern.includes(" ") ? pattern.split(/\s+/) : ["*", pattern];
 
     const regex = new RegExp(
-      `^${
-        path
-          .replace(/\\/g, "\\\\") // Escape backslashes first
-          .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
-          .replace(/\*/g, ".*?") // Wildcards
-          .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters (Next.js style [param])
-          .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, "[^/]+") // Parameters (Express style :param)
-          .replace(/\//g, "\\/") // Escape slashes
+      `^${path
+        .replace(/\\/g, "\\\\") // Escape backslashes first
+        .replace(/[$()+.?^{|}]/g, "\\$&") // Escape regex special chars
+        .replace(/\*/g, ".*?") // Wildcards
+        .replace(/\[([^\]]+)\]/g, "[^/]+") // Parameters (Next.js style [param])
+        .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, "[^/]+") // Parameters (Express style :param)
+        .replace(/\//g, "\\/") // Escape slashes
       }$`,
       // "s" (dotAll): without it, "." can't match LF/CR/U+2028/U+2029, so a wildcard segment containing one fails to match.
       "is",

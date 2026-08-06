@@ -90,8 +90,8 @@ export class ExactConcordiumScheme implements SchemeNetworkServer {
     // No parser matched — throw, no silent CCD fallback
     throw new Error(
       `Cannot resolve price "${String(price)}" to a Concordium asset. ` +
-      `Register a money parser via registerMoneyParser() to map prices ` +
-      `to a specific token (e.g., EURR, USDR).`,
+        `Register a money parser via registerMoneyParser() to map prices ` +
+        `to a specific token (e.g., EURR, USDR).`,
     );
   }
 
