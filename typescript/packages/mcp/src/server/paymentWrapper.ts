@@ -435,7 +435,15 @@ async function processPaidToolCall<TArgs extends Record<string, unknown>>(
       reason: "handler_threw",
       error: error instanceof Error ? error : new Error(String(error)),
     });
-    throw error;
+    // Echo before-handler receipt so the payer still gets the tx hash
+    if (!beforeHandlerSettlement) {
+      throw error;
+    }
+    return {
+      content: [{ type: "text", text: "Internal Server Error" }],
+      isError: true,
+      _meta: { [MCP_PAYMENT_RESPONSE_META_KEY]: beforeHandlerSettlement.result },
+    };
   }
   transportContext.result = result;
 

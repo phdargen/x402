@@ -555,6 +555,37 @@ describe("createPaymentWrapper", () => {
       expect(mockResourceServer.settlePayment).not.toHaveBeenCalled();
     });
 
+    it("should echo before-handler settlement when tool handler throws under upfront", async () => {
+      mockResourceServer.getPaymentFlow.mockReturnValue("upfront");
+      mockResourceServer.settlePayment.mockResolvedValue(mockSettleResponse);
+
+      const paid = createPaymentWrapper(
+        mockResourceServer as unknown as Parameters<typeof createPaymentWrapper>[0],
+        {
+          accepts: [mockPaymentRequirements],
+        },
+      );
+      const error = new Error("handler failed");
+      const handler = vi.fn().mockRejectedValue(error);
+      const wrappedHandler = paid(handler);
+
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "Internal Server Error" }]);
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual(mockSettleResponse);
+      expect(mockResourceServer.settlePayment).toHaveBeenCalledTimes(1);
+      const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
+        .value as { cancel: ReturnType<typeof vi.fn> };
+      expect(dispatcher.cancel).toHaveBeenCalledWith({
+        reason: "handler_threw",
+        error,
+      });
+    });
+
     it("should settle skipHandler responses without executing the tool", async () => {
       mockResourceServer.verifyPayment.mockResolvedValueOnce({
         isValid: true,

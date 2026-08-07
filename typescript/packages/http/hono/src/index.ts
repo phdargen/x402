@@ -232,7 +232,22 @@ export function paymentMiddlewareFromHTTPServer(
             reason: "handler_threw",
             error,
           });
-          throw error;
+          // Echo before-handler receipt so the payer still gets the tx hash.
+          // Only reachable for non-Error throws; compose diverts Error/HTTPException to >= 400.
+          if (!beforeHandlerSettlement) {
+            throw error;
+          }
+          const res = internalErrorResponse(c, error);
+          Object.entries(
+            httpServer.createCompletedSettlementHeaders(
+              beforeHandlerSettlement,
+              res.headers.get("Cache-Control"),
+            ),
+          ).forEach(([key, value]) => {
+            res.headers.set(key, value);
+          });
+          c.res = res;
+          return;
         }
 
         // Get the current response

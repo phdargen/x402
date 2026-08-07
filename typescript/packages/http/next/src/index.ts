@@ -356,7 +356,20 @@ export function withX402FromHTTPServer<T = unknown>(
             reason: "handler_threw",
             error,
           });
-          throw error;
+          // Echo before-handler receipt so the payer still gets the tx hash
+          if (!result.beforeHandlerSettlement) {
+            throw error;
+          }
+          const response = createInternalErrorResponse(error);
+          Object.entries(
+            httpServer.createCompletedSettlementHeaders(
+              result.beforeHandlerSettlement,
+              response.headers.get("Cache-Control"),
+            ),
+          ).forEach(([key, value]) => {
+            response.headers.set(key, value);
+          });
+          return response as NextResponse<T>;
         }
         return handleSettlement(
           httpServer,

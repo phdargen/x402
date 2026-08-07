@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import type {
+  CompletedSettlement,
   HTTPProcessResult,
   x402HTTPResourceServer,
   PaywallProvider,
@@ -935,5 +938,149 @@ describe("HonoAdapter", () => {
       }),
       undefined,
     );
+  });
+});
+
+/**
+ * Real Hono app.fetch probes: whether the middleware's `handler_threw` catch or
+ * its `status >= 400` branch runs is decided by Hono's `compose`.
+ */
+describe("before-handler receipt survives a failing handler", () => {
+  const RECEIPT_HEADER = "PAYMENT-RESPONSE";
+  const BEFORE_HANDLER_RECEIPT = "before-handler-receipt";
+  const AFTER_HANDLER_RECEIPT = "after-handler-receipt";
+
+  const upfrontSettlement: CompletedSettlement = {
+    phase: "before-handler",
+    flow: "upfront",
+    result: { success: true, transaction: "0xdeposit", network: "eip155:84532" },
+    requirements: mockPaymentRequirements,
+  };
+
+  let beforeHandlerSettlement: CompletedSettlement | undefined;
+  let cancel: ReturnType<typeof vi.fn>;
+  let app: Hono;
+
+  beforeEach(() => {
+    beforeHandlerSettlement = upfrontSettlement;
+    cancel = vi.fn().mockResolvedValue(undefined);
+    mockProcessSettlement = vi.fn().mockResolvedValue({
+      success: true,
+      headers: { "PAYMENT-RESPONSE": AFTER_HANDLER_RECEIPT },
+    });
+    mockCreateCompletedSettlementHeaders = vi.fn(
+      (_settlement: CompletedSettlement, existingCacheControl?: string | null) => ({
+        "PAYMENT-RESPONSE": BEFORE_HANDLER_RECEIPT,
+        "Cache-Control": existingCacheControl ? `${existingCacheControl}, private` : "private",
+      }),
+    );
+    mockProcessHTTPRequest = vi.fn(async () => ({
+      type: "payment-verified" as const,
+      cancellationDispatcher: { cancel },
+      beforeHandlerSettlement,
+      paymentPayload: mockPaymentPayload,
+      paymentRequirements: mockPaymentRequirements,
+    }));
+    mockRegisterPaywallProvider = vi.fn();
+    mockRequiresPayment = vi.fn().mockReturnValue(true);
+
+    vi.mocked(HTTPResourceServer).mockImplementation(
+      (server, routes) =>
+        ({
+          initialize: vi.fn().mockResolvedValue(undefined),
+          processHTTPRequest: mockProcessHTTPRequest,
+          processSettlement: mockProcessSettlement,
+          createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
+          registerPaywallProvider: mockRegisterPaywallProvider,
+          requiresPayment: mockRequiresPayment,
+          routes,
+          server: server || {
+            hasExtension: vi.fn().mockReturnValue(false),
+            registerExtension: vi.fn(),
+          },
+        }) as unknown as x402HTTPResourceServer,
+    );
+
+    app = new Hono();
+    app.use(
+      "*",
+      paymentMiddleware(
+        mockRoutes,
+        {} as unknown as x402ResourceServer,
+        undefined,
+        undefined,
+        false,
+      ),
+    );
+    app.get("/api/throw-error", () => {
+      throw new Error("handler exploded");
+    });
+    app.get("/api/throw-http-exception", () => {
+      throw new HTTPException(503, { message: "upstream unavailable" });
+    });
+    app.get("/api/throw-non-error", () => {
+      throw "handler exploded";
+    });
+    app.get("/api/status-503", c => c.json({ error: "upstream unavailable" }, 503));
+    app.get("/api/ok", c => c.json({ data: "protected" }));
+  });
+
+  it("echoes the receipt when the handler throws an Error", async () => {
+    const response = await app.fetch(new Request("http://localhost/api/throw-error"));
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get(RECEIPT_HEADER)).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith({ reason: "handler_failed", responseStatus: 500 });
+  });
+
+  it("echoes the receipt when the handler throws an HTTPException", async () => {
+    const response = await app.fetch(new Request("http://localhost/api/throw-http-exception"));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get(RECEIPT_HEADER)).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith({ reason: "handler_failed", responseStatus: 503 });
+  });
+
+  it("echoes the receipt when the handler returns a 5xx", async () => {
+    const response = await app.fetch(new Request("http://localhost/api/status-503"));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get(RECEIPT_HEADER)).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith({ reason: "handler_failed", responseStatus: 503 });
+  });
+
+  it("settles after the handler when it succeeds", async () => {
+    const response = await app.fetch(new Request("http://localhost/api/ok"));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(RECEIPT_HEADER)).toBe(AFTER_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds no receipt for a flow that has not settled before the handler", async () => {
+    beforeHandlerSettlement = undefined;
+
+    const response = await app.fetch(new Request("http://localhost/api/throw-error"));
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get(RECEIPT_HEADER)).toBeNull();
+    expect(mockCreateCompletedSettlementHeaders).not.toHaveBeenCalled();
+  });
+
+  it("echoes the receipt when the handler throws a non-Error", async () => {
+    const response = await app.fetch(new Request("http://localhost/api/throw-non-error"));
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get(RECEIPT_HEADER)).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith({
+      reason: "handler_threw",
+      error: "handler exploded",
+    });
   });
 });

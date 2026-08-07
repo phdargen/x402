@@ -1,6 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import Fastify from "fastify";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type {
+  CompletedSettlement,
   HTTPProcessResult,
   x402HTTPResourceServer,
   PaywallProvider,
@@ -1085,5 +1087,131 @@ describe("FastifyAdapter integration", () => {
       }),
       undefined,
     );
+  });
+});
+
+/**
+ * Real Fastify inject probes: the receipt depends on onSend running after onError
+ * for a thrown handler, which only the real lifecycle can show.
+ */
+describe("before-handler receipt survives a failing handler", () => {
+  const RECEIPT_HEADER = "payment-response";
+  const BEFORE_HANDLER_RECEIPT = "before-handler-receipt";
+  const AFTER_HANDLER_RECEIPT = "after-handler-receipt";
+
+  const upfrontSettlement: CompletedSettlement = {
+    phase: "before-handler",
+    flow: "upfront",
+    result: { success: true, transaction: "0xdeposit", network: "eip155:84532" },
+    requirements: mockPaymentRequirements,
+  };
+
+  let beforeHandlerSettlement: CompletedSettlement | undefined;
+  let cancel: ReturnType<typeof vi.fn>;
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    beforeHandlerSettlement = upfrontSettlement;
+    cancel = vi.fn().mockResolvedValue(undefined);
+    mockProcessSettlement = vi.fn().mockResolvedValue({
+      success: true,
+      headers: { "PAYMENT-RESPONSE": AFTER_HANDLER_RECEIPT },
+    });
+    mockCreateCompletedSettlementHeaders = vi.fn(
+      (_settlement: CompletedSettlement, existingCacheControl?: string | null) => ({
+        "PAYMENT-RESPONSE": BEFORE_HANDLER_RECEIPT,
+        "Cache-Control": existingCacheControl ? `${existingCacheControl}, private` : "private",
+      }),
+    );
+    mockProcessHTTPRequest = vi.fn(async () => ({
+      type: "payment-verified" as const,
+      cancellationDispatcher: { cancel },
+      beforeHandlerSettlement,
+      paymentPayload: mockPaymentPayload,
+      paymentRequirements: mockPaymentRequirements,
+    }));
+    mockRegisterPaywallProvider = vi.fn();
+    mockRequiresPayment = vi.fn().mockReturnValue(true);
+
+    vi.mocked(HTTPResourceServer).mockImplementation(
+      (server, routes) =>
+        ({
+          initialize: vi.fn().mockResolvedValue(undefined),
+          processHTTPRequest: mockProcessHTTPRequest,
+          processSettlement: mockProcessSettlement,
+          createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
+          registerPaywallProvider: mockRegisterPaywallProvider,
+          requiresPayment: mockRequiresPayment,
+          routes,
+          server: server || {
+            hasExtension: vi.fn().mockReturnValue(false),
+            registerExtension: vi.fn(),
+          },
+        }) as unknown as x402HTTPResourceServer,
+    );
+
+    app = Fastify({ logger: false });
+    paymentMiddleware(
+      app,
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    app.get("/api/throw", async () => {
+      throw new Error("handler exploded");
+    });
+    app.get("/api/status-503", async (_request, reply) => {
+      reply.status(503);
+      return { error: "upstream unavailable" };
+    });
+    app.get("/api/ok", async () => ({ data: "protected" }));
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("echoes the receipt when the handler throws", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/throw" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.headers[RECEIPT_HEADER]).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenNthCalledWith(1, {
+      reason: "handler_threw",
+      error: expect.any(Error),
+    });
+  });
+
+  it("echoes the receipt when the handler returns a 5xx", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/status-503" });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers[RECEIPT_HEADER]).toBe(BEFORE_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith({ reason: "handler_failed", responseStatus: 503 });
+  });
+
+  it("settles after the handler when it succeeds", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/ok" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers[RECEIPT_HEADER]).toBe(AFTER_HANDLER_RECEIPT);
+    expect(mockProcessSettlement).toHaveBeenCalledTimes(1);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("adds no receipt for a flow that has not settled before the handler", async () => {
+    beforeHandlerSettlement = undefined;
+
+    const response = await app.inject({ method: "GET", url: "/api/throw" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.headers[RECEIPT_HEADER]).toBeUndefined();
+    expect(mockCreateCompletedSettlementHeaders).not.toHaveBeenCalled();
   });
 });

@@ -298,6 +298,21 @@ export function paymentMiddlewareFromHTTPServer(
             reason: "handler_threw",
             error,
           });
+          // Echo before-handler receipt so the payer still gets the tx hash
+          if (beforeHandlerSettlement) {
+            const existingCacheControl =
+              res.getHeader("Cache-Control") != null
+                ? String(res.getHeader("Cache-Control"))
+                : null;
+            Object.entries(
+              httpServer.createCompletedSettlementHeaders(
+                beforeHandlerSettlement,
+                existingCacheControl,
+              ),
+            ).forEach(([key, value]) => {
+              res.setHeader(key, value);
+            });
+          }
           bufferedCalls = [];
           restoreResponseMethods();
           return next(error);
