@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from starlette.datastructures import Headers, QueryParams
 
+from x402 import x402Facilitator, x402ResourceServer
 from x402.http.facilitator_client_base import FacilitatorResponseError
 from x402.http.middleware.fastapi import (
     FastAPIAdapter,
@@ -36,7 +37,6 @@ from ....mocks import (
     CashSchemeNetworkFacilitator,
     CashSchemeNetworkServer,
 )
-from x402 import x402Facilitator, x402ResourceServer
 
 # =============================================================================
 # Helpers
@@ -79,6 +79,7 @@ def make_mock_fastapi_request(
     mock_request.url.path = path
     mock_request.url.__str__ = lambda self: f"https://example.com{path}"
     mock_request.state = MagicMock()
+    mock_request.scope = {"raw_path": path.encode("ascii")}
     return mock_request
 
 

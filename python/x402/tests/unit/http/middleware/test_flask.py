@@ -15,6 +15,7 @@ pytest.importorskip("flask")
 from flask import Flask, redirect
 from werkzeug.datastructures import Headers, ImmutableMultiDict
 
+from x402 import x402FacilitatorSync, x402ResourceServerSync
 from x402.http.facilitator_client_base import FacilitatorResponseError
 from x402.http.middleware.flask import (
     FlaskAdapter,
@@ -38,7 +39,6 @@ from ....mocks import (
     CashSchemeNetworkFacilitator,
     CashSchemeNetworkServer,
 )
-from x402 import x402FacilitatorSync, x402ResourceServerSync
 
 # =============================================================================
 # Helpers
