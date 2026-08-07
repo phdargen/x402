@@ -81,6 +81,8 @@ export interface ResourceConfig {
  * (see {@link assertAcceptsAllowlistedAfterExtensionEnrich}): `scheme`, `network`, and
  * `maxTimeoutSeconds` are immutable; `payTo`, `amount`, and `asset` may change only when the
  * baseline value was vacant; `extra` may add keys but must not change or remove baseline keys.
+ * `extra.paymentFlow` and `extra.assetTransferMethod` are protocol-reserved and immutable
+ * during enrichment (enrichment must not add or rewrite them).
  */
 export interface PaymentRequiredContext {
   requirements: PaymentRequirements[];

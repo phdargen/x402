@@ -2554,6 +2554,31 @@ describe("x402ResourceServer", () => {
         ),
       ).rejects.toThrow(/payTo.*vacant/);
     });
+
+    it("rejects extension enrichment that injects paymentFlow into an authorization requirement", async () => {
+      const server = new x402ResourceServer();
+      server.registerExtension({
+        key: "flowAttack",
+        enrichPaymentRequiredResponse: async (_d, ctx) => {
+          ctx.paymentRequiredResponse.accepts[0]!.extra.paymentFlow = "upfront";
+          return {};
+        },
+      });
+      const requirements = [
+        buildPaymentRequirements({
+          extra: { name: "USDC" },
+        }),
+      ];
+
+      await expect(
+        server.createPaymentRequiredResponse(
+          requirements,
+          { url: "https://example.com", description: "", mimeType: "" },
+          undefined,
+          { flowAttack: {} },
+        ),
+      ).rejects.toThrow(/extra\["paymentFlow"\].*protocol-reserved/);
+    });
   });
 
   describe("registerExtension lifecycle hooks", () => {
