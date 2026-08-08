@@ -617,11 +617,15 @@ describe("payment flows", () => {
       },
     );
 
-    it("escrow: cancel after before-handler settle exposes settledPhases and deposit receipt", async () => {
+    it("escrow: cancel after before-handler settle returns refund receipt", async () => {
       const httpServer = await setup("escrow");
       mockFacilitator.setSettleResponse(
         buildSettleResponse({ success: true, transaction: "0xdeposit" }),
       );
+
+      const escrowScheme = schemeWithFlow("escrow");
+      escrowScheme.settleOnCancel = async context => ({ ...context.requirements, amount: "0" });
+      ResourceServer.register("eip155:8453" as Network, escrowScheme);
 
       let settledPhases: readonly SettlePhase[] | undefined;
       ResourceServer.onVerifiedPaymentCanceled(async ctx => {
@@ -638,20 +642,75 @@ describe("payment flows", () => {
       expect(result.beforeHandlerSettlement?.result.transaction).toBe("0xdeposit");
       expect(mockFacilitator.settleCalls).toHaveLength(1);
 
-      await result.cancellationDispatcher.cancel({
+      mockFacilitator.setSettleResponse(
+        buildSettleResponse({ success: true, amount: "0", transaction: "0xrefund" }),
+      );
+
+      const cancelResult = await result.cancellationDispatcher.cancel({
         reason: "handler_failed",
         responseStatus: 500,
       });
       expect(settledPhases).toEqual(["before-handler"]);
-
-      // No after-handler settle on cancel
-      expect(mockFacilitator.settleCalls).toHaveLength(1);
-
-      const receiptHeaders = httpServer.createCompletedSettlementHeaders(
-        result.beforeHandlerSettlement!,
+      expect(mockFacilitator.settleCalls).toHaveLength(2);
+      expect(cancelResult).toEqual(
+        expect.objectContaining({
+          success: true,
+          amount: "0",
+          transaction: "0xrefund",
+        }),
       );
-      expect(decodePaymentResponseHeader(receiptHeaders["PAYMENT-RESPONSE"])).toEqual(
-        expect.objectContaining({ success: true, transaction: "0xdeposit" }),
+
+      const receiptHeaders = httpServer.createFailurePathSettlementHeaders(
+        cancelResult,
+        result.beforeHandlerSettlement,
+        result.paymentPayload,
+      );
+      expect(decodePaymentResponseHeader(receiptHeaders!["PAYMENT-RESPONSE"])).toEqual(
+        expect.objectContaining({ success: true, amount: "0", transaction: "0xrefund" }),
+      );
+    });
+
+    it("builds failed cancel receipt with deposit recovery extra", async () => {
+      const httpServer = await setup("escrow");
+      const cancelSettlement = {
+        success: false,
+        errorReason: "refund_failed",
+        transaction: "should-not-appear",
+        network: "eip155:8453" as Network,
+      };
+      const beforeHandlerSettlement = {
+        phase: "before-handler" as const,
+        flow: "escrow" as const,
+        result: {
+          success: true,
+          amount: "100000",
+          transaction: "0xdeposit",
+          network: "eip155:8453" as Network,
+        },
+        requirements: buildPaymentRequirements({
+          scheme: "exact",
+          network: "eip155:8453" as Network,
+        }),
+      };
+      const paymentPayload = buildPaymentPayload({
+        payload: { channelId: "channel-123" },
+      });
+
+      const receiptHeaders = httpServer.createFailurePathSettlementHeaders(
+        cancelSettlement,
+        beforeHandlerSettlement,
+        paymentPayload,
+      );
+      const decoded = decodePaymentResponseHeader(receiptHeaders!["PAYMENT-RESPONSE"]);
+      expect(decoded.success).toBe(false);
+      expect(decoded.transaction).toBe("");
+      expect(decoded.amount).toBeUndefined();
+      expect(decoded.extra).toEqual(
+        expect.objectContaining({
+          depositTransaction: "0xdeposit",
+          depositAmount: "100000",
+          channelId: "channel-123",
+        }),
       );
     });
 

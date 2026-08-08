@@ -916,6 +916,17 @@ export class x402HTTPResourceServer {
   }
 
   /**
+   * Create settlement response headers
+   *
+   * @param settleResponse - Settlement response
+   * @returns Headers to add to response
+   */
+  createSettlementHeaders(settleResponse: SettleResponse): Record<string, string> {
+    const encoded = encodePaymentResponseHeader(settleResponse);
+    return { "PAYMENT-RESPONSE": encoded };
+  }
+
+  /**
    * Headers for echoing a completed before-handler settle onto a response.
    * Merges `private` into Cache-Control so shared caches do not store settlement metadata.
    *
@@ -932,6 +943,73 @@ export class x402HTTPResourceServer {
     return {
       ...this.createSettlementHeaders(settlement.result),
       "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
+    };
+  }
+
+  /**
+   * PAYMENT-RESPONSE headers when the resource handler fails after before-handler settle.
+   * Prefers cancel/refund settle when present; otherwise echoes the upfront deposit receipt.
+   *
+   * @param cancelSettlement - Result from {@link PaymentCancellationDispatcher.cancel}, if any
+   * @param beforeHandlerSettlement - Completed before-handler settle, when present
+   * @param paymentPayload - Client payment payload (for escrow deposit recovery fields)
+   * @param existingCacheControl - Existing Cache-Control value, if any
+   * @returns PAYMENT-RESPONSE and Cache-Control headers, or undefined when neither receipt applies
+   */
+  createFailurePathSettlementHeaders(
+    cancelSettlement: SettleResponse | void | undefined,
+    beforeHandlerSettlement?: CompletedSettlement,
+    paymentPayload?: PaymentPayload,
+    existingCacheControl?: string | null,
+  ): Record<string, string> | undefined {
+    if (cancelSettlement) {
+      const receipt = cancelSettlement.success
+        ? cancelSettlement
+        : this.buildFailedCancelReceipt(cancelSettlement, beforeHandlerSettlement, paymentPayload);
+      return {
+        ...this.createSettlementHeaders(receipt),
+        "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
+      };
+    }
+    if (beforeHandlerSettlement) {
+      return this.createCompletedSettlementHeaders(beforeHandlerSettlement, existingCacheControl);
+    }
+    return undefined;
+  }
+
+  /**
+   * Build a failed cancel receipt with deposit recovery facts in `extra`.
+   *
+   * @param cancelSettlement - Failed cancel settle from the facilitator
+   * @param beforeHandlerSettlement - Completed before-handler deposit, when present
+   * @param paymentPayload - Client payment payload
+   * @returns Normalized settle response for PAYMENT-RESPONSE encoding
+   */
+  private buildFailedCancelReceipt(
+    cancelSettlement: SettleResponse,
+    beforeHandlerSettlement?: CompletedSettlement,
+    paymentPayload?: PaymentPayload,
+  ): SettleResponse {
+    const payload = paymentPayload?.payload as Record<string, unknown> | undefined;
+    const channelId = payload?.channelId;
+    return {
+      success: false,
+      errorReason: cancelSettlement.errorReason,
+      errorMessage: cancelSettlement.errorMessage,
+      payer: cancelSettlement.payer,
+      transaction: "",
+      network: cancelSettlement.network,
+      extensions: cancelSettlement.extensions,
+      extra: {
+        ...cancelSettlement.extra,
+        ...(beforeHandlerSettlement
+          ? {
+              depositTransaction: beforeHandlerSettlement.result.transaction,
+              depositAmount: beforeHandlerSettlement.result.amount,
+            }
+          : {}),
+        ...(typeof channelId === "string" && channelId ? { channelId } : {}),
+      },
     };
   }
 
@@ -1303,17 +1381,6 @@ export class x402HTTPResourceServer {
         "Cache-Control": PAYMENT_REQUIRED_CACHE_CONTROL,
       },
     };
-  }
-
-  /**
-   * Create settlement response headers
-   *
-   * @param settleResponse - Settlement response
-   * @returns Headers to add to response
-   */
-  private createSettlementHeaders(settleResponse: SettleResponse): Record<string, string> {
-    const encoded = encodePaymentResponseHeader(settleResponse);
-    return { "PAYMENT-RESPONSE": encoded };
   }
 
   /**

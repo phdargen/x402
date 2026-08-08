@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   x402ResourceServer,
   resolveSettlementOverrideAmount,
+  type SettlePhase,
 } from "../../../src/server/x402ResourceServer";
 import {
   MockFacilitatorClient,
@@ -1312,7 +1313,7 @@ describe("x402ResourceServer", () => {
             kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
           }),
           undefined,
-          buildSettleResponse({ success: true, amount: "0" }),
+          buildSettleResponse({ success: true, amount: "0", transaction: "0xrefund" }),
         );
         const server = new x402ResourceServer(settleClient);
         const scheme = new MockSchemeNetworkServer("upto");
@@ -1332,9 +1333,25 @@ describe("x402ResourceServer", () => {
           ["before-handler"],
         );
 
-        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
+        let cancelPhase: SettlePhase | undefined;
+        server.onBeforeSettle(async ctx => {
+          cancelPhase = ctx.phase;
+        });
+
+        const cancelResult = await cancellation.cancel({
+          reason: "handler_failed",
+          responseStatus: 500,
+        });
         await cancellation.cancel({ reason: "handler_threw" });
 
+        expect(cancelPhase).toBe("cancel");
+        expect(cancelResult).toEqual(
+          expect.objectContaining({
+            success: true,
+            amount: "0",
+            transaction: "0xrefund",
+          }),
+        );
         expect(settleClient.settleCalls).toHaveLength(1);
         expect(settleClient.settleCalls[0].requirements.amount).toBe("0");
       });
@@ -1423,9 +1440,12 @@ describe("x402ResourceServer", () => {
           ["before-handler"],
         );
 
-        await expect(
-          cancellation.cancel({ reason: "after_verify_aborted" }),
-        ).resolves.toBeUndefined();
+        await expect(cancellation.cancel({ reason: "after_verify_aborted" })).resolves.toEqual(
+          expect.objectContaining({
+            success: false,
+            transaction: "",
+          }),
+        );
         expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("settleOnCancel"));
         warnSpy.mockRestore();
       });

@@ -19,7 +19,7 @@ import { SettlementCache } from "../../settlement-cache";
 import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../../signer";
 import { isUptoSvmPayload, type UptoSvmPayloadV2 } from "../../types";
 import { createRpcClient, getStablecoinTokenProgram } from "../../utils";
-import { resolveUptoSvmPaymentChannelConfig } from "../shared";
+import { resolveUptoSvmPaymentChannelConfig, type UptoSvmPaymentChannelConfig } from "../shared";
 import {
   broadcastOpen,
   channelExists,
@@ -39,7 +39,7 @@ import { UptoSvmRentCleanupManager } from "./rentCleanupManager";
 /** Scheme-specific error returned when the settlement amount exceeds the ceiling. */
 export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlement_exceeds_amount";
 
-/** Client-supplied voucher at verify time (settle-only field). */
+/** Client-supplied voucher at verify / deposit settle (claim-only field). */
 export const ERR_UNEXPECTED_VOUCHER = "invalid_upto_svm_payload_unexpected_voucher";
 
 /** Context passed to {@link UptoSvmFacilitatorConfig.onStorageError}. */
@@ -58,21 +58,35 @@ export interface UptoSvmFacilitatorConfig {
    */
   channelStorage?: UptoChannelStorage;
   /**
-   * Called when channel storage upsert fails after a successful verify or
-   * settle. Payment results are unchanged; only rent-cleanup indexing is
+   * Called when channel storage upsert fails after a successful deposit or
+   * claim settle. Payment results are unchanged; only rent-cleanup indexing is
    * affected. Defaults to `console.warn`.
    */
   onStorageError?: (error: unknown, context: UptoChannelStorageErrorContext) => void;
 }
 
+type OpenAuthFailure = {
+  reason: string;
+  message?: string;
+  payer: string;
+};
+
+type OpenAuthContext = {
+  p: UptoSvmPayloadV2;
+  channelConfig: UptoSvmPaymentChannelConfig;
+  feePayerSigner: UptoSvmSigner;
+  maxAmount: bigint;
+  tokenProgram: string;
+};
+
 /**
  * SVM facilitator for the `upto` payment scheme.
  *
- * `verify` validates the client authorization and broadcasts the channel `open`
- * (escrowing the ceiling before resource execution); `settle` re-binds the open
- * channel from chain, verifies the server-supplied voucher for the actual
- * metered amount (`actual ≤ max`), then `settle_and_seal` + `distribute`,
- * refunding the remainder to the payer.
+ * Escrow flow: `/settle` without `voucherSignature` and with
+ * `requirements.amount === payload.maxAmount` deposits (broadcasts `open`);
+ * `/settle` with a server voucher claims (`settle_and_seal` + `distribute`).
+ * `/verify` is an optional read-only preflight of the same static checks —
+ * it never broadcasts.
  *
  * The fee payer holds the channel `payee` seat with a zero distribution share:
  * it signs `settle_and_seal` (lifecycle authority) and can always seal an
@@ -169,9 +183,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Verify the authorization and broadcast the channel open (idempotently).
-   *
-   * `requirements.amount` is treated as the authorized ceiling here.
+   * Read-only preflight: validate the open authorization without broadcasting.
    *
    * @param payload - The payment payload
    * @param requirements - The payment requirements (amount = ceiling)
@@ -181,175 +193,107 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     payload: PaymentPayload,
     requirements: PaymentRequirements,
   ): Promise<VerifyResponse> {
+    const auth = await this.validateOpenAuthorization(payload, requirements, {
+      rejectVoucher: true,
+    });
+    if (!auth.ok) {
+      return {
+        isValid: false,
+        invalidReason: auth.failure.reason,
+        invalidMessage: auth.failure.message,
+        payer: auth.failure.payer,
+      };
+    }
+    return { isValid: true, invalidReason: undefined, payer: auth.ctx.p.from };
+  }
+
+  /**
+   * Deposit (open channel) or claim (settle_and_seal + distribute).
+   *
+   * Discrimination (no settle phase on the wire):
+   * - no `voucherSignature` and `requirements.amount === payload.maxAmount` → deposit
+   * - `voucherSignature` present → claim against the open channel
+   *
+   * @param payload - The payment payload
+   * @param requirements - Deposit: amount = ceiling; claim: amount = actual charge
+   * @returns The settlement response
+   */
+  async settle(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettleResponse> {
     const raw = payload.payload as Record<string, unknown>;
     if (!isUptoSvmPayload(raw)) {
-      return { isValid: false, invalidReason: "unsupported_payload_type", payer: "" };
+      return this.settleFailure(payload, "unsupported_payload_type", "");
     }
     const p: UptoSvmPayloadV2 = raw;
 
     if (payload.accepted.scheme !== "upto" || requirements.scheme !== "upto") {
-      return { isValid: false, invalidReason: "unsupported_scheme", payer: p.from };
+      return this.settleFailure(payload, "unsupported_scheme", p.from);
     }
     if (payload.accepted.network !== requirements.network) {
-      return { isValid: false, invalidReason: "network_mismatch", payer: p.from };
+      return this.settleFailure(payload, "network_mismatch", p.from);
     }
 
-    // `voucherSignature` is server-owned and settle-only. Reject on presence, not
-    // on value: core's additive-enrichment policy keys off hasOwnProperty, so a
-    // client-set key (even "" or undefined) blocks the real voucher at settle.
-    if (Object.prototype.hasOwnProperty.call(raw, "voucherSignature")) {
-      return {
-        isValid: false,
-        invalidReason: ERR_UNEXPECTED_VOUCHER,
-        payer: p.from,
-      };
-    }
-
-    let channelConfig: ReturnType<typeof resolveUptoSvmPaymentChannelConfig>;
+    let actual: bigint;
+    let payloadMaxAmount: bigint;
     try {
-      channelConfig = resolveUptoSvmPaymentChannelConfig(requirements);
-    } catch (error) {
+      actual = BigInt(requirements.amount);
+      payloadMaxAmount = BigInt(p.maxAmount);
+    } catch {
+      return this.settleFailure(payload, "invalid_upto_svm_payload_amount", p.from);
+    }
+    if (actual < 0n) {
+      return this.settleFailure(payload, "invalid_upto_svm_payload_amount", p.from);
+    }
+    if (actual > payloadMaxAmount) {
+      return this.settleFailure(payload, ERR_SETTLEMENT_EXCEEDS_AMOUNT, p.from);
+    }
+
+    const hasVoucher = Object.prototype.hasOwnProperty.call(raw, "voucherSignature");
+    if (hasVoucher) {
+      return this.settleClaim(payload, requirements, p, actual, payloadMaxAmount);
+    }
+    if (actual === payloadMaxAmount) {
+      return this.settleDeposit(payload, requirements);
+    }
+    return this.settleFailure(payload, "invalid_upto_svm_payload_missing_voucher", p.from);
+  }
+
+  /**
+   * Deposit path: validate open authorization, then sim → broadcast → bind
+   * (idempotent when the channel is already open).
+   *
+   * @param payload - The payment payload
+   * @param requirements - Requirements with amount = authorized ceiling
+   * @returns Deposit settlement response
+   */
+  private async settleDeposit(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+  ): Promise<SettleResponse> {
+    const auth = await this.validateOpenAuthorization(payload, requirements, {
+      rejectVoucher: true,
+    });
+    if (!auth.ok) {
       return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payment_requirements",
-        invalidMessage: error instanceof Error ? error.message : String(error),
-        payer: p.from,
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: auth.failure.reason,
+        errorMessage: auth.failure.message,
+        payer: auth.failure.payer,
       };
     }
 
+    const { p, channelConfig, feePayerSigner, maxAmount, tokenProgram } = auth.ctx;
     const feePayer = channelConfig.feePayer;
-    const feePayerSigner = this.resolveFeePayer(feePayer);
-    if (!feePayerSigner) {
-      return { isValid: false, invalidReason: "facilitator_mismatch", payer: p.from };
-    }
-    const receiverAuthorizer = channelConfig.receiverAuthorizer;
-    if (p.authorizedSigner !== receiverAuthorizer) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_receiver_authorizer",
-        payer: p.from,
-      };
-    }
-
-    // Ceiling: the signed maxAmount must equal the verification-phase amount.
-    let maxAmount: bigint;
-    let deposit: bigint;
-    try {
-      maxAmount = BigInt(p.maxAmount);
-      deposit = BigInt(p.deposit);
-    } catch {
-      return { isValid: false, invalidReason: "invalid_upto_svm_payload_amount", payer: p.from };
-    }
-    if (maxAmount !== BigInt(requirements.amount)) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_amount_mismatch",
-        payer: p.from,
-      };
-    }
-    if (deposit !== maxAmount) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_deposit_not_ceiling",
-        payer: p.from,
-      };
-    }
-
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
-    let openSlot: bigint;
-    let recentSlot: bigint;
-    let nonce: bigint;
-    try {
-      openSlot = parseU64(p.openSlot, "payload.openSlot");
-      nonce = parseU64(p.nonce, "payload.nonce");
-      if (requirements.extra?.recentSlot !== undefined && requirements.extra?.recentSlot !== null) {
-        recentSlot = parseU64(
-          requirements.extra.recentSlot as bigint | number | string,
-          "requirements.extra.recentSlot",
-        );
-      } else {
-        recentSlot = await rpc.getSlot().send();
-      }
-    } catch {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_channel_seed",
-        payer: p.from,
-      };
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    if (now < p.validAfter) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_not_yet_active",
-        payer: p.from,
-      };
-    }
-    if (p.expiresAt === 0 || now >= p.expiresAt) {
-      return { isValid: false, invalidReason: "invalid_upto_svm_payload_expired", payer: p.from };
-    }
-
-    const tokenProgram =
-      (requirements.extra?.tokenProgram as string | undefined) ??
-      getStablecoinTokenProgram(requirements.asset, requirements.network);
-
-    // Validate the open instruction against the pinned requirements.
-    try {
-      const open = await verifyOpenTransaction(p.openTransaction, {
-        authorizedSigner: receiverAuthorizer,
-        feePayer,
-        from: p.from,
-        maxCap: maxAmount,
-        mint: requirements.asset,
-        openSlot,
-        payee: feePayer,
-        recentSlot,
-        recipients: channelConfig.splits,
-        tokenProgram,
-        withdrawDelay: channelConfig.withdrawDelay,
-      });
-      if (open.channelId !== p.channelId) {
-        return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_payload_channel_id",
-          invalidMessage: `open channel ${open.channelId} != payload.channelId ${p.channelId}`,
-          payer: p.from,
-        };
-      }
-      if (open.salt !== nonce) {
-        return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_payload_nonce",
-          invalidMessage: `open salt ${open.salt} != payload.nonce ${p.nonce}`,
-          payer: p.from,
-        };
-      }
-      // Bind the channel payer to `payload.from`: settlement builds the
-      // distribute (refund) instruction from `p.from`, so a mismatch with the
-      // open transaction's payer would make settlement fail onchain.
-      if (open.payer !== p.from) {
-        return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_payload_payer_mismatch",
-          invalidMessage: `open payer ${open.payer} != payload.from ${p.from}`,
-          payer: p.from,
-        };
-      }
-    } catch (error) {
-      return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_payload_open_transaction",
-        invalidMessage: error instanceof Error ? error.message : String(error),
-        payer: p.from,
-      };
-    }
 
     // Escrow the ceiling before resource execution. Fresh opens: simulate
     // open∥settle∥distribute before broadcast so settlement-account failures
     // reject without locking the deposit. Already-open: settle-only sim after
     // binding the confirmed account (composite open is not in that path).
-    // Stage-specific codes (no extra RPC on the happy path): sim → broadcast → bind.
     const alreadyOpen = await channelExists(rpc, p.channelId);
     const simChannel = {
       channelId: p.channelId,
@@ -361,6 +305,8 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       splits: channelConfig.splits,
       tokenProgram,
     };
+
+    let openSignature = "";
     if (!alreadyOpen) {
       try {
         await simulateOpenSettleDistribute(feePayerSigner, rpc, {
@@ -369,14 +315,16 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         });
       } catch (error) {
         return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_settlement_simulation",
-          invalidMessage: error instanceof Error ? error.message : String(error),
+          success: false,
+          network: payload.accepted.network,
+          transaction: "",
+          errorReason: "invalid_upto_svm_settlement_simulation",
+          errorMessage: error instanceof Error ? error.message : String(error),
           payer: p.from,
         };
       }
       try {
-        await broadcastOpen(
+        openSignature = await broadcastOpen(
           this.signer,
           feePayer as Address,
           requirements.network,
@@ -384,9 +332,11 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         );
       } catch (error) {
         return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_channel_broadcast",
-          invalidMessage: error instanceof Error ? error.message : String(error),
+          success: false,
+          network: payload.accepted.network,
+          transaction: "",
+          errorReason: "invalid_upto_svm_channel_broadcast",
+          errorMessage: error instanceof Error ? error.message : String(error),
           payer: p.from,
         };
       }
@@ -395,7 +345,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     let channel: Awaited<ReturnType<typeof fetchAndVerifyOpenChannel>>;
     try {
       channel = await fetchAndVerifyOpenChannel(rpc, p.channelId, {
-        authorizedSigner: receiverAuthorizer,
+        authorizedSigner: channelConfig.receiverAuthorizer,
         deposit: maxAmount,
         gracePeriod: channelConfig.withdrawDelay,
         mint: requirements.asset,
@@ -406,9 +356,11 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       });
     } catch (error) {
       return {
-        isValid: false,
-        invalidReason: "invalid_upto_svm_channel_state",
-        invalidMessage: error instanceof Error ? error.message : String(error),
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_channel_state",
+        errorMessage: error instanceof Error ? error.message : String(error),
         payer: p.from,
       };
     }
@@ -427,15 +379,17 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         });
       } catch (error) {
         return {
-          isValid: false,
-          invalidReason: "invalid_upto_svm_settlement_simulation",
-          invalidMessage: error instanceof Error ? error.message : String(error),
+          success: false,
+          network: payload.accepted.network,
+          transaction: "",
+          errorReason: "invalid_upto_svm_settlement_simulation",
+          errorMessage: error instanceof Error ? error.message : String(error),
           payer: p.from,
         };
       }
     }
 
-    await this.upsertChannelStorage("verify", {
+    await this.upsertChannelStorage("settle", {
       channelId: p.channelId,
       network: requirements.network,
       payTo: requirements.payTo,
@@ -443,91 +397,38 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       expiresAt: p.expiresAt,
     });
 
-    return { isValid: true, invalidReason: undefined, payer: p.from };
+    return {
+      success: true,
+      transaction: openSignature,
+      network: requirements.network,
+      amount: maxAmount.toString(),
+      payer: p.from,
+    };
   }
 
   /**
-   * Settle the actual metered amount (`requirements.amount`) against the open
-   * channel: re-bind from chain, verify the server voucher + settle_and_seal +
-   * distribute, refunding the remainder. `actual === 0` still seals (full
-   * refund) after verifying the zero-amount voucher authenticates the settle
-   * request. Standalone from `verify` — safe across serverless isolates.
+   * Claim path: re-bind the open channel, verify the voucher, then
+   * settle_and_seal + distribute.
    *
    * @param payload - The payment payload
-   * @param requirements - The payment requirements (amount = actual charge)
-   * @returns The settlement response
+   * @param requirements - Requirements with amount = actual charge
+   * @param p - Typed upto payload
+   * @param actual - Actual charge in atomic units
+   * @param payloadMaxAmount - Signed ceiling from the payload
+   * @returns Claim settlement response
    */
-  async settle(
+  private async settleClaim(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
+    p: UptoSvmPayloadV2,
+    actual: bigint,
+    payloadMaxAmount: bigint,
   ): Promise<SettleResponse> {
-    const raw = payload.payload as Record<string, unknown>;
-    if (!isUptoSvmPayload(raw)) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "unsupported_payload_type",
-        payer: "",
-      };
-    }
-    const p: UptoSvmPayloadV2 = raw;
-
-    if (payload.accepted.scheme !== "upto" || requirements.scheme !== "upto") {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "unsupported_scheme",
-        payer: p.from,
-      };
-    }
-    if (payload.accepted.network !== requirements.network) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "network_mismatch",
-        payer: p.from,
-      };
+    if (typeof p.voucherSignature !== "string" || p.voucherSignature.length === 0) {
+      return this.settleFailure(payload, "invalid_upto_svm_payload_missing_voucher", p.from);
     }
 
-    // Enforce actual ≤ ceiling first, against the signed `maxAmount` (never the
-    // settlement-phase `amount`). Checked before any RPC work.
-    let actual: bigint;
-    let payloadMaxAmount: bigint;
-    try {
-      actual = BigInt(requirements.amount);
-      payloadMaxAmount = BigInt(p.maxAmount);
-    } catch {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_amount",
-        payer: p.from,
-      };
-    }
-    if (actual < 0n) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_amount",
-        payer: p.from,
-      };
-    }
-    if (actual > payloadMaxAmount) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: ERR_SETTLEMENT_EXCEEDS_AMOUNT,
-        payer: p.from,
-      };
-    }
-
-    let channelConfig: ReturnType<typeof resolveUptoSvmPaymentChannelConfig>;
+    let channelConfig: UptoSvmPaymentChannelConfig;
     try {
       channelConfig = resolveUptoSvmPaymentChannelConfig(requirements);
     } catch (error) {
@@ -542,54 +443,20 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (p.authorizedSigner !== channelConfig.receiverAuthorizer) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_receiver_authorizer",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "invalid_upto_svm_payload_receiver_authorizer", p.from);
     }
 
     const feePayerSigner = this.resolveFeePayer(channelConfig.feePayer);
     if (!feePayerSigner) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "facilitator_mismatch",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "facilitator_mismatch", p.from);
     }
 
     const now = Math.floor(Date.now() / 1000);
     if (now < p.validAfter) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_not_yet_active",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "invalid_upto_svm_payload_not_yet_active", p.from);
     }
     if (p.expiresAt === 0 || now >= p.expiresAt) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_expired",
-        payer: p.from,
-      };
-    }
-
-    if (typeof p.voucherSignature !== "string" || p.voucherSignature.length === 0) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_missing_voucher",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "invalid_upto_svm_payload_expired", p.from);
     }
 
     const expiresAt = BigInt(p.expiresAt);
@@ -606,22 +473,10 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         signerBase58: p.authorizedSigner,
       });
     } catch {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_voucher_signature",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "invalid_upto_svm_payload_voucher_signature", p.from);
     }
     if (!voucherOk) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "invalid_upto_svm_payload_voucher_signature",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "invalid_upto_svm_payload_voucher_signature", p.from);
     }
 
     const tokenProgram =
@@ -660,13 +515,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     // not insert into the cache.
     const settlementKey = `upto:${network}:${p.channelId}`;
     if (this.settlementCache.isDuplicate(settlementKey)) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "duplicate_settlement",
-        payer: p.from,
-      };
+      return this.settleFailure(payload, "duplicate_settlement", p.from);
     }
 
     try {
@@ -730,6 +579,221 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
+   * Static open-authorization checks shared by verify and deposit settle.
+   * Never broadcasts or mutates chain state.
+   *
+   * @param payload - The payment payload
+   * @param requirements - Payment requirements (amount must equal ceiling)
+   * @param options - Validation options
+   * @param options.rejectVoucher - Reject payloads that include `voucherSignature`
+   * @returns Open auth context or a structured failure
+   */
+  private async validateOpenAuthorization(
+    payload: PaymentPayload,
+    requirements: PaymentRequirements,
+    options: { rejectVoucher: boolean },
+  ): Promise<{ ok: true; ctx: OpenAuthContext } | { ok: false; failure: OpenAuthFailure }> {
+    const raw = payload.payload as Record<string, unknown>;
+    if (!isUptoSvmPayload(raw)) {
+      return {
+        ok: false,
+        failure: { reason: "unsupported_payload_type", payer: "" },
+      };
+    }
+    const p: UptoSvmPayloadV2 = raw;
+
+    if (payload.accepted.scheme !== "upto" || requirements.scheme !== "upto") {
+      return { ok: false, failure: { reason: "unsupported_scheme", payer: p.from } };
+    }
+    if (payload.accepted.network !== requirements.network) {
+      return { ok: false, failure: { reason: "network_mismatch", payer: p.from } };
+    }
+
+    // `voucherSignature` is server-owned and claim-only. Reject on presence, not
+    // on value: core's additive-enrichment policy keys off hasOwnProperty, so a
+    // client-set key (even "" or undefined) blocks the real voucher at claim.
+    if (options.rejectVoucher && Object.prototype.hasOwnProperty.call(raw, "voucherSignature")) {
+      return { ok: false, failure: { reason: ERR_UNEXPECTED_VOUCHER, payer: p.from } };
+    }
+
+    let channelConfig: UptoSvmPaymentChannelConfig;
+    try {
+      channelConfig = resolveUptoSvmPaymentChannelConfig(requirements);
+    } catch (error) {
+      return {
+        ok: false,
+        failure: {
+          reason: "invalid_upto_svm_payment_requirements",
+          message: error instanceof Error ? error.message : String(error),
+          payer: p.from,
+        },
+      };
+    }
+
+    const feePayer = channelConfig.feePayer;
+    const feePayerSigner = this.resolveFeePayer(feePayer);
+    if (!feePayerSigner) {
+      return { ok: false, failure: { reason: "facilitator_mismatch", payer: p.from } };
+    }
+    const receiverAuthorizer = channelConfig.receiverAuthorizer;
+    if (p.authorizedSigner !== receiverAuthorizer) {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_receiver_authorizer", payer: p.from },
+      };
+    }
+
+    let maxAmount: bigint;
+    let deposit: bigint;
+    try {
+      maxAmount = BigInt(p.maxAmount);
+      deposit = BigInt(p.deposit);
+    } catch {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_amount", payer: p.from },
+      };
+    }
+    if (maxAmount !== BigInt(requirements.amount)) {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_amount_mismatch", payer: p.from },
+      };
+    }
+    if (deposit !== maxAmount) {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_deposit_not_ceiling", payer: p.from },
+      };
+    }
+
+    const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
+    let openSlot: bigint;
+    let recentSlot: bigint;
+    let nonce: bigint;
+    try {
+      openSlot = parseU64(p.openSlot, "payload.openSlot");
+      nonce = parseU64(p.nonce, "payload.nonce");
+      if (requirements.extra?.recentSlot !== undefined && requirements.extra?.recentSlot !== null) {
+        recentSlot = parseU64(
+          requirements.extra.recentSlot as bigint | number | string,
+          "requirements.extra.recentSlot",
+        );
+      } else {
+        recentSlot = await rpc.getSlot().send();
+      }
+    } catch {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_channel_seed", payer: p.from },
+      };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (now < p.validAfter) {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_not_yet_active", payer: p.from },
+      };
+    }
+    if (p.expiresAt === 0 || now >= p.expiresAt) {
+      return {
+        ok: false,
+        failure: { reason: "invalid_upto_svm_payload_expired", payer: p.from },
+      };
+    }
+
+    const tokenProgram =
+      (requirements.extra?.tokenProgram as string | undefined) ??
+      getStablecoinTokenProgram(requirements.asset, requirements.network);
+
+    try {
+      const open = await verifyOpenTransaction(p.openTransaction, {
+        authorizedSigner: receiverAuthorizer,
+        feePayer,
+        from: p.from,
+        maxCap: maxAmount,
+        mint: requirements.asset,
+        openSlot,
+        payee: feePayer,
+        recentSlot,
+        recipients: channelConfig.splits,
+        tokenProgram,
+        withdrawDelay: channelConfig.withdrawDelay,
+      });
+      if (open.channelId !== p.channelId) {
+        return {
+          ok: false,
+          failure: {
+            reason: "invalid_upto_svm_payload_channel_id",
+            message: `open channel ${open.channelId} != payload.channelId ${p.channelId}`,
+            payer: p.from,
+          },
+        };
+      }
+      if (open.salt !== nonce) {
+        return {
+          ok: false,
+          failure: {
+            reason: "invalid_upto_svm_payload_nonce",
+            message: `open salt ${open.salt} != payload.nonce ${p.nonce}`,
+            payer: p.from,
+          },
+        };
+      }
+      // Bind the channel payer to `payload.from`: settlement builds the
+      // distribute (refund) instruction from `p.from`, so a mismatch with the
+      // open transaction's payer would make settlement fail onchain.
+      if (open.payer !== p.from) {
+        return {
+          ok: false,
+          failure: {
+            reason: "invalid_upto_svm_payload_payer_mismatch",
+            message: `open payer ${open.payer} != payload.from ${p.from}`,
+            payer: p.from,
+          },
+        };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        failure: {
+          reason: "invalid_upto_svm_payload_open_transaction",
+          message: error instanceof Error ? error.message : String(error),
+          payer: p.from,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      ctx: { p, channelConfig, feePayerSigner, maxAmount, tokenProgram },
+    };
+  }
+
+  /**
+   * Build a failed settle response.
+   *
+   * @param payload - Payment payload (for network)
+   * @param errorReason - Error reason code
+   * @param payer - Payer address when known
+   * @returns Failed settle response
+   */
+  private settleFailure(
+    payload: PaymentPayload,
+    errorReason: string,
+    payer: string,
+  ): SettleResponse {
+    return {
+      success: false,
+      network: payload.accepted.network,
+      transaction: "",
+      errorReason,
+      payer,
+    };
+  }
+
+  /**
    * Resolve the configured signer for a fee-payer address.
    *
    * @param feePayerAddress - Fee-payer address from the challenge
@@ -743,7 +807,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Upsert a channel into rent-cleanup storage after verify/settle success.
+   * Upsert a channel into rent-cleanup storage after deposit/claim success.
    * Storage failures are reported via {@link UptoSvmFacilitatorConfig.onStorageError}
    * and never propagate to the caller.
    *

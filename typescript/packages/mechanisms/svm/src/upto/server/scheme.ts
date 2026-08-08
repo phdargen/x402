@@ -4,6 +4,7 @@ import type {
   AssetAmount,
   MoneyParser,
   Network,
+  PaymentFlowConfig,
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
@@ -50,16 +51,21 @@ const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
 /**
  * SVM server implementation for the `upto` payment scheme.
  *
- * Price parsing matches the exact scheme (stablecoin → 6-decimal atomic units);
- * `enhancePaymentRequirements` folds the facilitator's `feePayer`, declares the
- * server-owned `receiverAuthorizer` / `withdrawDelay`, and — when an `rpcUrl`
- * is configured — embeds a fresh `recentBlockhash`/`recentSlot` pair.
- * `enrichSettlementPayload` attaches the receiver-authorizer voucher signature
- * at settle time. The `amount` is phase-dependent: the authorized maximum at
- * verification, the actual charge at settlement.
+ * Declares the `escrow` payment flow: deposit settle before the handler, claim
+ * (or zero-amount cancel) settle after. Price parsing matches the exact scheme
+ * (stablecoin → 6-decimal atomic units); `enhancePaymentRequirements` folds the
+ * facilitator's `feePayer`, declares the server-owned `receiverAuthorizer` /
+ * `withdrawDelay`, and — when an `rpcUrl` is configured — embeds a fresh
+ * `recentBlockhash`/`recentSlot` pair. `enrichSettlementPayload` attaches the
+ * receiver-authorizer voucher only on claim/cancel settle (`after-handler` /
+ * `cancel`); deposit settle (`before-handler`) leaves the payload unchanged.
  */
 export class UptoSvmScheme implements SchemeNetworkServer {
   readonly scheme = "upto";
+  readonly defaultAssetTransferMethod = "channel";
+  readonly paymentFlows = {
+    channel: { supported: ["escrow"], default: "escrow" },
+  } as const satisfies Record<string, PaymentFlowConfig>;
   /** Blockhash/slot hints regenerated per PaymentRequired; omitted from accepted-echo matching. */
   readonly dynamicExtraFields = ["recentBlockhash", "lastValidBlockHeight", "recentSlot"];
   private moneyParsers: MoneyParser[] = [];
@@ -238,12 +244,15 @@ export class UptoSvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Attach the receiver-authorizer voucher signature before facilitator settle.
+   * Attach the receiver-authorizer voucher signature on claim/cancel settle.
+   * Deposit settle (`before-handler`) must not add `voucherSignature`.
    *
-   * @param ctx - Settlement context (requirements.amount is the actual charge)
-   * @returns Additive `voucherSignature` field for the settle payload
+   * @param ctx - Settlement context (`requirements.amount` is the charge or `0`)
+   * @returns Additive `voucherSignature` field, or void for deposit settle
    */
   enrichSettlementPayload = async (ctx: SettleContext): Promise<Record<string, unknown> | void> => {
+    if (ctx.phase === "before-handler") return;
+
     const raw = ctx.paymentPayload.payload as Record<string, unknown>;
     if (!isUptoSvmPayload(raw)) return;
 

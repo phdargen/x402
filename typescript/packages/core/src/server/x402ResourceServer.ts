@@ -173,7 +173,7 @@ export interface CompletedSettlement {
  * `beforeHandlerSettlement` into settlement separately when echoing PAYMENT-RESPONSE.
  */
 export interface PaymentCancellationDispatcher {
-  cancel(options: VerifiedPaymentCancelOptions): Promise<void>;
+  cancel(options: VerifiedPaymentCancelOptions): Promise<SettleResponse | void>;
 }
 
 export type BeforeVerifyHook = (
@@ -1145,7 +1145,7 @@ export class x402ResourceServer {
   ): PaymentCancellationDispatcher {
     const resolvedDeclaredExtensions = declaredExtensions ?? {};
     const resolvedSettledPhases = settledPhases;
-    let cancelPromise: Promise<void> | undefined;
+    let cancelPromise: Promise<SettleResponse | void> | undefined;
 
     return {
       cancel: (options: VerifiedPaymentCancelOptions) => {
@@ -1669,6 +1669,7 @@ export class x402ResourceServer {
    * @param options - Cancellation reason and optional diagnostics
    * @param fallbackTransportContext - Optional transport-specific context
    * @param settledPhases - Settle phases that already completed for this payment
+   * @returns Cancel settle response when the scheme provides settleOnCancel requirements, otherwise undefined
    */
   private async dispatchVerifiedPaymentCanceled(
     paymentPayload: DeepReadonly<PaymentPayload>,
@@ -1677,7 +1678,7 @@ export class x402ResourceServer {
     options: VerifiedPaymentCancelOptions,
     fallbackTransportContext?: unknown,
     settledPhases: readonly SettlePhase[] = [],
-  ): Promise<void> {
+  ): Promise<SettleResponse | void> {
     const extensionKeysInUse = Object.keys(declaredExtensions);
     const matchedScheme = {
       network: requirements.network as Network,
@@ -1722,14 +1723,25 @@ export class x402ResourceServer {
       if (!cancelRequirements) {
         return;
       }
-      await this.settlePayment(
+      return await this.settlePayment(
         paymentPayload as PaymentPayload,
         cancelRequirements,
         declaredExtensions as Record<string, unknown>,
         fallbackTransportContext,
+        undefined,
+        "cancel",
       );
     } catch (error) {
       this.warnResourceServerHookFailure("settleOnCancel", label, error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        success: false,
+        errorReason:
+          error instanceof SettleError ? (error.errorReason ?? errorMessage) : errorMessage,
+        errorMessage: error instanceof SettleError ? error.errorMessage : undefined,
+        transaction: "",
+        network: requirements.network as Network,
+      };
     }
   }
 
