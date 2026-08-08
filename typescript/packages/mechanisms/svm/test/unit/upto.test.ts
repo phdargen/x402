@@ -135,9 +135,9 @@ describe("upto SVM scheme", () => {
 
   describe("server payment flow", () => {
     it("declares escrow as the only supported payment flow", () => {
-      expect(server.defaultAssetTransferMethod).toBe("default");
+      expect(server.defaultAssetTransferMethod).toBe("channel");
       expect(server.paymentFlows).toEqual({
-        default: { supported: ["escrow"], default: "escrow" },
+        channel: { supported: ["escrow"], default: "escrow" },
       });
     });
   });
