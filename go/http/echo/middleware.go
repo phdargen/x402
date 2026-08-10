@@ -399,6 +399,14 @@ func handlePaymentVerified(c echo.Context, next echo.HandlerFunc, server *x402ht
 							Err:    perr,
 						})
 					}
+					if result.BeforeHandlerSettlement != nil {
+						for key, value := range server.CreateCompletedSettlementHeaders(
+							result.BeforeHandlerSettlement,
+							origWriter.Header().Get("Cache-Control"),
+						) {
+							origWriter.Header().Set(key, value)
+						}
+					}
 					panic(rec)
 				}
 			}()
@@ -418,6 +426,14 @@ func handlePaymentVerified(c echo.Context, next echo.HandlerFunc, server *x402ht
 				Err:    err,
 			})
 		}
+		if result.BeforeHandlerSettlement != nil {
+			for key, value := range server.CreateCompletedSettlementHeaders(
+				result.BeforeHandlerSettlement,
+				origWriter.Header().Get("Cache-Control"),
+			) {
+				origWriter.Header().Set(key, value)
+			}
+		}
 		return err
 	}
 
@@ -428,6 +444,14 @@ func handlePaymentVerified(c echo.Context, next echo.HandlerFunc, server *x402ht
 				Reason:         x402.CancellationReasonHandlerFailed,
 				ResponseStatus: capture.statusCode,
 			})
+		}
+		if result.BeforeHandlerSettlement != nil {
+			for key, value := range server.CreateCompletedSettlementHeaders(
+				result.BeforeHandlerSettlement,
+				capture.Header().Get("Cache-Control"),
+			) {
+				origWriter.Header().Set(key, value)
+			}
 		}
 		// Write captured error response
 		origWriter.WriteHeader(capture.statusCode)
@@ -446,6 +470,8 @@ func handlePaymentVerified(c echo.Context, next echo.HandlerFunc, server *x402ht
 			ResponseHeaders: capture.Header(),
 		},
 		result.DeclaredExtensions,
+		result.BeforeHandlerSettlement,
+		"",
 	)
 
 	// Check settlement success

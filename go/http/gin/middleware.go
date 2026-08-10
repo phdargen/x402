@@ -454,6 +454,14 @@ func handlePaymentVerified(c *gin.Context, server *x402http.HTTPServer, ctx cont
 							Err:    err,
 						})
 					}
+					if result.BeforeHandlerSettlement != nil {
+						for key, value := range server.CreateCompletedSettlementHeaders(
+							result.BeforeHandlerSettlement,
+							writer.Header().Get("Cache-Control"),
+						) {
+							c.Header(key, value)
+						}
+					}
 					panic(rec)
 				}
 			}()
@@ -469,6 +477,14 @@ func handlePaymentVerified(c *gin.Context, server *x402http.HTTPServer, ctx cont
 				ResponseStatus: writer.statusCode,
 			})
 		}
+		if result.BeforeHandlerSettlement != nil {
+			for key, value := range server.CreateCompletedSettlementHeaders(
+				result.BeforeHandlerSettlement,
+				writer.Header().Get("Cache-Control"),
+			) {
+				c.Header(key, value)
+			}
+		}
 		return
 	}
 
@@ -482,6 +498,14 @@ func handlePaymentVerified(c *gin.Context, server *x402http.HTTPServer, ctx cont
 				Reason:         x402.CancellationReasonHandlerFailed,
 				ResponseStatus: writer.statusCode,
 			})
+		}
+		if result.BeforeHandlerSettlement != nil {
+			for key, value := range server.CreateCompletedSettlementHeaders(
+				result.BeforeHandlerSettlement,
+				writer.Header().Get("Cache-Control"),
+			) {
+				c.Header(key, value)
+			}
 		}
 		// Write captured response
 		c.Writer.WriteHeader(writer.statusCode)
@@ -500,6 +524,8 @@ func handlePaymentVerified(c *gin.Context, server *x402http.HTTPServer, ctx cont
 			ResponseHeaders: writer.Header(),
 		},
 		result.DeclaredExtensions,
+		result.BeforeHandlerSettlement,
+		"",
 	)
 
 	// Check settlement success

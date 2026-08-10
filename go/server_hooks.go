@@ -3,6 +3,8 @@ package x402
 import (
 	"context"
 	"sync"
+
+	"github.com/x402-foundation/x402/go/v2/types"
 )
 
 // ============================================================================
@@ -60,6 +62,33 @@ type AfterVerifyResult struct {
 	Response    *SkipHandlerDirective
 }
 
+// SettlePhase identifies which settle invocation is running.
+//
+// - before-handler — settle before the resource handler (upfront / escrow auth)
+// - after-handler — settle after the resource handler (authorization charge, escrow charge)
+// - cancel — refund/close settle from verified-payment cancellation
+//
+// Settle lifecycle hooks (beforeSettle, afterSettle, onSettleFailure,
+// enrichSettlementPayload, enrichSettlementResponse) fire once per settle.
+// Multi-settle flows (escrow) therefore invoke them more than once; branch on
+// this field when a hook has side effects that must not double-run.
+type SettlePhase string
+
+const (
+	SettlePhaseBeforeHandler SettlePhase = "before-handler"
+	SettlePhaseAfterHandler  SettlePhase = "after-handler"
+	SettlePhaseCancel        SettlePhase = "cancel"
+)
+
+// CompletedSettlement stores a settle that already ran (typically before-handler)
+// so adapters can echo PAYMENT-RESPONSE after the resource handler.
+type CompletedSettlement struct {
+	Phase        SettlePhase
+	Flow         PaymentFlowName
+	Result       *SettleResponse
+	Requirements types.PaymentRequirements
+}
+
 // SettleContext contains information passed to settle hooks
 // Uses view interfaces for version-agnostic hooks
 // PayloadBytes and RequirementsBytes provide escape hatch for extensions (e.g., Bazaar)
@@ -71,6 +100,7 @@ type SettleContext struct {
 	// route. Extension hooks gate on `DeclaredExtensions[extKey]` being set
 	// before firing — mirrors TS `ctx.declaredExtensions[extensionKey]`.
 	DeclaredExtensions map[string]interface{}
+	Phase              SettlePhase
 	PayloadBytes       []byte // Raw bytes for extensions needing full data
 	RequirementsBytes  []byte // Raw bytes for extensions needing full data
 }
@@ -109,6 +139,7 @@ type VerifiedPaymentCanceledContext struct {
 	Reason         VerifiedPaymentCancellationReason
 	Err            error
 	ResponseStatus int
+	SettledPhases  []SettlePhase
 }
 
 // VerifiedPaymentCancelOptions describes a single cancellation event.

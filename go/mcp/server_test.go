@@ -51,6 +51,22 @@ func (m *mockSchemeNetworkServer) Scheme() string {
 	return m.scheme
 }
 
+func (m *mockSchemeNetworkServer) DefaultAssetTransferMethod() string {
+	return x402.SDKDefaultAssetTransferMethod
+}
+
+func (m *mockSchemeNetworkServer) PaymentFlows() map[string]x402.PaymentFlowConfig {
+	auth := x402.PaymentFlowConfig{
+		Supported: []x402.PaymentFlowName{x402.PaymentFlowAuthorization},
+		Default:   x402.PaymentFlowAuthorization,
+	}
+	return map[string]x402.PaymentFlowConfig{
+		x402.SDKDefaultAssetTransferMethod: auth,
+		"eip3009":                          auth,
+		"permit2":                          auth,
+	}
+}
+
 func (m *mockSchemeNetworkServer) ParsePrice(price x402.Price, network x402.Network) (x402.AssetAmount, error) {
 	return x402.AssetAmount{
 		Asset:  "USD",
@@ -206,7 +222,10 @@ func TestNewPaymentWrapper_NoPayment(t *testing.T) {
 }
 
 func TestNewPaymentWrapper_VerificationFailure(t *testing.T) {
-	server := x402.Newx402ResourceServer()
+	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+	server := x402.Newx402ResourceServer(
+		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+	)
 
 	config := PaymentWrapperConfig{
 		Accepts: []types.PaymentRequirements{
@@ -504,7 +523,10 @@ func TestNewPaymentWrapper_HookErrors_NonFatal(t *testing.T) {
 }
 
 func TestNewPaymentWrapper_ExtensionsIncludedIn402(t *testing.T) {
-	server := x402.Newx402ResourceServer()
+	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+	server := x402.Newx402ResourceServer(
+		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+	)
 
 	extensions := map[string]interface{}{
 		"bazaar": map[string]interface{}{
@@ -587,7 +609,10 @@ func TestNewPaymentWrapper_ExtensionsIncludedIn402(t *testing.T) {
 }
 
 func TestNewPaymentWrapper_NilExtensionsOmitted(t *testing.T) {
-	server := x402.Newx402ResourceServer()
+	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+	server := x402.Newx402ResourceServer(
+		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+	)
 
 	config := PaymentWrapperConfig{
 		Accepts: []types.PaymentRequirements{

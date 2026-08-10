@@ -221,6 +221,8 @@ func TestHTTPIntegration(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
+			"",
 		)
 		if !settlementResult.Success {
 			t.Fatalf("Failed to process settlement: %v", settlementResult.ErrorReason)

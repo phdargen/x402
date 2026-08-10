@@ -21,6 +21,22 @@ func (m *mockSchemeNetworkServer) Scheme() string {
 	return m.scheme
 }
 
+func (m *mockSchemeNetworkServer) DefaultAssetTransferMethod() string {
+	return SDKDefaultAssetTransferMethod
+}
+
+func (m *mockSchemeNetworkServer) PaymentFlows() map[string]PaymentFlowConfig {
+	auth := PaymentFlowConfig{
+		Supported: []PaymentFlowName{PaymentFlowAuthorization},
+		Default:   PaymentFlowAuthorization,
+	}
+	return map[string]PaymentFlowConfig{
+		SDKDefaultAssetTransferMethod: auth,
+		"eip3009":                     auth,
+		"permit2":                     auth,
+	}
+}
+
 func (m *mockSchemeNetworkServer) ParsePrice(price Price, network Network) (AssetAmount, error) {
 	if m.parsePrice != nil {
 		return m.parsePrice(price, network)
@@ -355,6 +371,20 @@ type stubEnricherScheme struct {
 }
 
 func (s *stubEnricherScheme) Scheme() string { return "stub-enricher" }
+func (s *stubEnricherScheme) DefaultAssetTransferMethod() string {
+	return SDKDefaultAssetTransferMethod
+}
+func (s *stubEnricherScheme) PaymentFlows() map[string]PaymentFlowConfig {
+	auth := PaymentFlowConfig{
+		Supported: []PaymentFlowName{PaymentFlowAuthorization},
+		Default:   PaymentFlowAuthorization,
+	}
+	return map[string]PaymentFlowConfig{
+		SDKDefaultAssetTransferMethod: auth,
+		"eip3009":                     auth,
+		"permit2":                     auth,
+	}
+}
 func (s *stubEnricherScheme) ParsePrice(_ Price, _ Network) (AssetAmount, error) {
 	return AssetAmount{}, nil
 }

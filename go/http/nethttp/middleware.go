@@ -331,6 +331,14 @@ func handlePaymentVerified(w http.ResponseWriter, r *http.Request, next http.Han
 							Err:    err,
 						})
 					}
+					if result.BeforeHandlerSettlement != nil {
+						for key, value := range server.CreateCompletedSettlementHeaders(
+							result.BeforeHandlerSettlement,
+							w.Header().Get("Cache-Control"),
+						) {
+							w.Header().Set(key, value)
+						}
+					}
 					panic(rec)
 				}
 			}()
@@ -345,6 +353,14 @@ func handlePaymentVerified(w http.ResponseWriter, r *http.Request, next http.Han
 				Reason:         x402.CancellationReasonHandlerFailed,
 				ResponseStatus: capture.statusCode,
 			})
+		}
+		if result.BeforeHandlerSettlement != nil {
+			for key, value := range server.CreateCompletedSettlementHeaders(
+				result.BeforeHandlerSettlement,
+				capture.Header().Get("Cache-Control"),
+			) {
+				w.Header().Set(key, value)
+			}
 		}
 		w.WriteHeader(capture.statusCode)
 		_, _ = w.Write(capture.body.Bytes())
@@ -362,6 +378,8 @@ func handlePaymentVerified(w http.ResponseWriter, r *http.Request, next http.Han
 			ResponseHeaders: capture.Header(),
 		},
 		result.DeclaredExtensions,
+		result.BeforeHandlerSettlement,
+		"",
 	)
 
 	if !settleResult.Success {

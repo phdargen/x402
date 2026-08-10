@@ -635,7 +635,7 @@ func TestProcessSettlement(t *testing.T) {
 	}
 
 	// Test settlement processing
-	result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil)
+	result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil, nil, "")
 	if !result.Success {
 		t.Fatalf("Unexpected failure: %v", result.ErrorReason)
 	}
@@ -684,7 +684,7 @@ func TestProcessSettlement_Failure(t *testing.T) {
 		Payload:     map[string]interface{}{},
 	}
 
-	result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil)
+	result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil, nil, "")
 	if result.Success {
 		t.Fatal("Expected settlement failure")
 	}
@@ -745,7 +745,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			ResponseHeaders: h,
 		}
 
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -768,7 +768,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 		}
 		explicit := &x402.SettlementOverrides{Amount: "200"}
 
-		result := server.ProcessSettlement(ctx, payload, requirements, explicit, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, explicit, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -790,7 +790,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			ResponseHeaders: h,
 		}
 
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -812,7 +812,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			ResponseHeaders: h,
 		}
 
-		server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 
 		if tc.ResponseHeaders.Get(SettlementOverridesHeader) != "" {
 			t.Error("expected settlement-overrides header to be deleted from transport context")
@@ -823,7 +823,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 	})
 
 	t.Run("nil transport context is safe", func(t *testing.T) {
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -834,7 +834,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			Request:         &HTTPRequestContext{Path: "/test", Method: "GET"},
 			ResponseHeaders: nil,
 		}
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -848,7 +848,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			ResponseHeaders: h,
 		}
 
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -871,7 +871,7 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 			ResponseHeaders: h,
 		}
 
-		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil)
+		result := server.ProcessSettlement(ctx, payload, requirements, nil, tc, nil, nil, "")
 		if !result.Success {
 			t.Fatalf("unexpected failure: %v", result.ErrorReason)
 		}
@@ -1352,6 +1352,22 @@ type mockSchemeServer struct {
 
 func (m *mockSchemeServer) Scheme() string {
 	return m.scheme
+}
+
+func (m *mockSchemeServer) DefaultAssetTransferMethod() string {
+	return x402.SDKDefaultAssetTransferMethod
+}
+
+func (m *mockSchemeServer) PaymentFlows() map[string]x402.PaymentFlowConfig {
+	auth := x402.PaymentFlowConfig{
+		Supported: []x402.PaymentFlowName{x402.PaymentFlowAuthorization},
+		Default:   x402.PaymentFlowAuthorization,
+	}
+	return map[string]x402.PaymentFlowConfig{
+		x402.SDKDefaultAssetTransferMethod: auth,
+		"eip3009":                          auth,
+		"permit2":                          auth,
+	}
 }
 
 func (m *mockSchemeServer) ParsePrice(price x402.Price, network x402.Network) (x402.AssetAmount, error) {

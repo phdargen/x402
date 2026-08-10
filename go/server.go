@@ -302,15 +302,34 @@ func (s *x402ResourceServer) findSupportedKind(network Network, scheme string) (
 
 // HasRegisteredScheme checks if a scheme is registered for a given network
 func (s *x402ResourceServer) HasRegisteredScheme(network Network, scheme string) bool {
+	return s.GetRegisteredScheme(network, scheme) != nil
+}
+
+// GetRegisteredScheme returns the scheme server registered for network/scheme, or nil.
+func (s *x402ResourceServer) GetRegisteredScheme(network Network, scheme string) SchemeNetworkServer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	networkSchemes, ok := s.schemes[network]
 	if !ok {
-		return false
+		return nil
 	}
-	_, exists := networkSchemes[scheme]
-	return exists
+	return networkSchemes[scheme]
+}
+
+// GetPaymentFlow resolves the payment flow name for requirements from the
+// scheme's ATM-keyed PaymentFlows table.
+//
+// When no scheme is registered for the pair, returns PaymentFlowAuthorization
+// (verify-before / settle-after). Route construction and MCP wrappers still
+// require registered schemes so unsupported ATM/flow combinations fail fast.
+func (s *x402ResourceServer) GetPaymentFlow(requirements types.PaymentRequirements) (PaymentFlowName, error) {
+	scheme := s.GetRegisteredScheme(Network(requirements.Network), requirements.Scheme)
+	if scheme == nil {
+		return PaymentFlowAuthorization, nil
+	}
+	_, flow, err := ResolvePaymentFlow(scheme, requirements)
+	return flow, err
 }
 
 // HasFacilitatorSupport checks if a facilitator client supports a given network/scheme combination
@@ -590,19 +609,22 @@ func orderedHooks[F any](
 
 // CreatePaymentCancellationDispatcher returns a dispatcher with no declared
 // extensions. Equivalent to CreatePaymentCancellationDispatcherWithExtensions(...,
-// nil). Kept for callers that don't track route extension declarations.
+// nil, nil). Kept for callers that don't track route extension declarations.
 func (s *x402ResourceServer) CreatePaymentCancellationDispatcher(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 ) *PaymentCancellationDispatcher {
-	return s.CreatePaymentCancellationDispatcherWithExtensions(ctx, payload, requirements, nil)
+	return s.CreatePaymentCancellationDispatcherWithExtensions(ctx, payload, requirements, nil, nil)
 }
 
 // CreatePaymentCancellationDispatcherWithExtensions returns a dispatcher
 // that, when Cancel'd, invokes onVerifiedPaymentCanceled hooks exactly once.
 // The HTTP transport calls this after a successful Verify but before/instead
 // of Settle when the resource handler errors or returns a non-2xx response.
+//
+// settledPhases lists settle phases already completed before the handler (for
+// settleOnCancel). Pass nil when none have completed.
 //
 // Hook execution order (mirrors verify/settle): manual → matched scheme →
 // declared extensions. Extension hooks gate on `declaredExtensions[key]`
@@ -612,6 +634,7 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	declaredExtensions map[string]interface{},
+	settledPhases []SettlePhase,
 ) *PaymentCancellationDispatcher {
 	payloadBytes, _ := json.Marshal(payload)
 	requirementsBytes, _ := json.Marshal(requirements)
@@ -620,9 +643,11 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 		Payload:            payload,
 		Requirements:       requirements,
 		DeclaredExtensions: declaredExtensions,
+		Phase:              SettlePhaseCancel,
 		PayloadBytes:       payloadBytes,
 		RequirementsBytes:  requirementsBytes,
 	}
+	resolvedSettledPhases := settledPhases
 	return &PaymentCancellationDispatcher{
 		fire: func(opts VerifiedPaymentCancelOptions) {
 			cancelCtx := VerifiedPaymentCanceledContext{
@@ -630,6 +655,7 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 				Reason:         opts.Reason,
 				Err:            opts.Err,
 				ResponseStatus: opts.ResponseStatus,
+				SettledPhases:  resolvedSettledPhases,
 			}
 			s.mu.RLock()
 			matchedScheme := s.matchedSchemeHooks(Network(requirements.Network), requirements.Scheme)
@@ -714,6 +740,12 @@ func (s *x402ResourceServer) BuildPaymentRequirements(
 	if err != nil {
 		return types.PaymentRequirements{}, err
 	}
+
+	atm, flow, err := ResolvePaymentFlow(schemeServer, enhanced)
+	if err != nil {
+		return types.PaymentRequirements{}, err
+	}
+	enhanced.Extra = ApplyPaymentFlowWireExtra(enhanced.Extra, atm, flow)
 
 	return enhanced, nil
 }
@@ -1021,6 +1053,18 @@ func (s *x402ResourceServer) VerifyPaymentWithExtensions(
 		return s.runAfterVerifyHooks(payload, requirements, declaredExtensions, hookCtx, afterVerifyHooks, skipVerifyResult)
 	}
 
+	flow, err := s.GetPaymentFlow(requirements)
+	if err != nil {
+		return nil, NewVerifyError(ErrCodeInvalidPayment, "", err.Error())
+	}
+	phases, err := ResolvePaymentFlowPhases(flow)
+	if err != nil {
+		return nil, NewVerifyError(ErrCodeInvalidPayment, "", err.Error())
+	}
+	if !phases.VerifyBeforeHandler {
+		return &VerifyResponse{IsValid: true}, nil
+	}
+
 	if facilitator == nil {
 		return nil, NewVerifyError(ErrNoFacilitatorForNetwork, "", fmt.Sprintf("no facilitator for scheme=%q network=%q", scheme, network))
 	}
@@ -1090,7 +1134,7 @@ func (s *x402ResourceServer) runAfterVerifyHooks(
 		}
 		if directive.Abort {
 			dispatcher := s.CreatePaymentCancellationDispatcherWithExtensions(
-				hookCtx.Ctx, payload, requirements, declaredExtensions,
+				hookCtx.Ctx, payload, requirements, declaredExtensions, nil,
 			)
 			dispatcher.Cancel(VerifiedPaymentCancelOptions{
 				Reason: CancellationReasonAfterVerifyAborted,
@@ -1115,26 +1159,30 @@ func (s *x402ResourceServer) runAfterVerifyHooks(
 }
 
 // SettlePayment settles a V2 payment with no declared extensions.
-// Equivalent to SettlePaymentWithExtensions(ctx, payload, requirements, overrides, nil).
+// Equivalent to SettlePaymentWithExtensions(ctx, payload, requirements, overrides, nil, SettlePhaseAfterHandler).
 func (s *x402ResourceServer) SettlePayment(ctx context.Context, payload types.PaymentPayload, requirements types.PaymentRequirements, overrides *SettlementOverrides) (*SettleResponse, error) {
-	return s.SettlePaymentWithExtensions(ctx, payload, requirements, overrides, nil)
+	return s.SettlePaymentWithExtensions(ctx, payload, requirements, overrides, nil, SettlePhaseAfterHandler)
 }
 
 // SettlePaymentWithExtensions settles a V2 payment, gating extension hooks on
 // the supplied `declaredExtensions` map (keys must be present for the
 // extension's hook to fire). Hook execution order: manual → matched scheme →
 // declared extensions. Mirrors TS `settlePayment(payload, requirements,
-// overrides, declaredExtensions)`.
+// overrides, declaredExtensions, phase)`.
 //
 // If overrides is non-nil and overrides.Amount is set, the effective
 // requirements amount is replaced before settlement (partial settlement for
 // upto scheme).
+//
+// phase identifies which settle invocation this is (before-handler,
+// after-handler, or cancel).
 func (s *x402ResourceServer) SettlePaymentWithExtensions(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	overrides *SettlementOverrides,
 	declaredExtensions map[string]interface{},
+	phase SettlePhase,
 ) (*SettleResponse, error) {
 	effectiveRequirements := requirements
 	if overrides != nil && overrides.Amount != "" {
@@ -1172,6 +1220,7 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 		Payload:            payload,
 		Requirements:       effectiveRequirements,
 		DeclaredExtensions: declaredExtensions,
+		Phase:              phase,
 		PayloadBytes:       payloadBytes,
 		RequirementsBytes:  requirementsBytes,
 	}
@@ -1214,11 +1263,14 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 
 	// Scheme-level settlement-payload enrichment. Mirrors TS
 	// `enrichSettlementPayload`: schemes return additive fields that the
-	// framework merges into payload.Payload after the additive policy has
-	// rejected any attempt to overwrite existing keys.
+	// framework merges into a settle-local payload copy after the additive
+	// policy has rejected any attempt to overwrite existing keys. Copying
+	// avoids mutating the caller's object so a second settle (escrow) can
+	// re-enrich the same keys.
 	s.mu.RLock()
 	matchedSchemeServer := s.schemes[network][scheme]
 	s.mu.RUnlock()
+	settlePayload := payload
 	if enricher, ok := matchedSchemeServer.(EnrichSettlementPayloadProvider); ok {
 		enrichment, err := enricher.EnrichSettlementPayload(hookCtx)
 		if err != nil {
@@ -1229,9 +1281,14 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 			if err := AssertAdditivePayloadEnrichment(rawPayload, enrichment, fmt.Sprintf(`scheme %q`, scheme)); err != nil {
 				return nil, NewSettleError("scheme_enrich_settlement_payload_policy_violation", "", network, "", err.Error())
 			}
-			for k, v := range enrichment {
-				rawPayload[k] = v
+			cloned := cloneStringAnyMap(rawPayload)
+			if cloned == nil {
+				cloned = make(map[string]interface{}, len(enrichment))
 			}
+			for k, v := range enrichment {
+				cloned[k] = v
+			}
+			settlePayload.Payload = cloned
 		}
 	}
 
@@ -1239,11 +1296,11 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 		return nil, NewSettleError("no_facilitator", "", network, "", fmt.Sprintf("no facilitator for scheme=%q network=%q", scheme, network))
 	}
 
-	// Re-marshal payload after hooks: BeforeSettle hooks AND scheme enrichment
-	// may have mutated payload.Payload (e.g., the batch-settlement refund
-	// enrich path adds the refund authorizer signatures). The pre-hook bytes
-	// would carry the original shape and the facilitator would reject it.
-	payloadBytes, err = json.Marshal(payload)
+	// Re-marshal settle-local payload after hooks: BeforeSettle hooks AND
+	// scheme enrichment may have contributed fields (e.g., the batch-settlement
+	// refund enrich path adds the refund authorizer signatures). The pre-hook
+	// bytes would carry the original shape and the facilitator would reject it.
+	payloadBytes, err = json.Marshal(settlePayload)
 	if err != nil {
 		return nil, NewSettleError("failed_to_marshal_payload", "", Network(effectiveRequirements.Network), "", err.Error())
 	}
