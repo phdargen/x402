@@ -706,6 +706,65 @@ func TestProcessSettlement_Failure(t *testing.T) {
 	}
 }
 
+func TestCreateFailurePathSettlementHeaders_FailedCancelReceipt(t *testing.T) {
+	server := Newx402HTTPResourceServer(RoutesConfig{})
+	cancelSettlement := &x402.SettleResponse{
+		Success:     false,
+		ErrorReason: "refund_failed",
+		Transaction: "should-not-appear",
+		Network:     "eip155:8453",
+	}
+	beforeHandlerSettlement := &x402.CompletedSettlement{
+		Phase: x402.SettlePhaseBeforeHandler,
+		Flow:  x402.PaymentFlowEscrow,
+		Result: &x402.SettleResponse{
+			Success:     true,
+			Amount:      "100000",
+			Transaction: "0xdeposit",
+			Network:     "eip155:8453",
+		},
+		Requirements: types.PaymentRequirements{
+			Scheme:  "exact",
+			Network: "eip155:8453",
+		},
+	}
+	paymentPayload := &types.PaymentPayload{
+		Payload: map[string]interface{}{"channelId": "channel-123"},
+	}
+
+	headers := server.CreateFailurePathSettlementHeaders(
+		cancelSettlement,
+		beforeHandlerSettlement,
+		paymentPayload,
+		"",
+	)
+	if headers == nil || headers["PAYMENT-RESPONSE"] == "" {
+		t.Fatal("expected PAYMENT-RESPONSE headers")
+	}
+	decoded, err := decodePaymentResponseHeader(headers["PAYMENT-RESPONSE"])
+	if err != nil {
+		t.Fatalf("decode PAYMENT-RESPONSE: %v", err)
+	}
+	if decoded.Success {
+		t.Fatal("expected failed cancel receipt")
+	}
+	if decoded.Transaction != "" {
+		t.Fatalf("expected empty transaction, got %q", decoded.Transaction)
+	}
+	if decoded.Amount != "" {
+		t.Fatalf("expected no amount on failed cancel receipt, got %q", decoded.Amount)
+	}
+	if decoded.Extra["depositTransaction"] != "0xdeposit" {
+		t.Fatalf("expected depositTransaction, got %#v", decoded.Extra)
+	}
+	if decoded.Extra["depositAmount"] != "100000" {
+		t.Fatalf("expected depositAmount, got %#v", decoded.Extra)
+	}
+	if decoded.Extra["channelId"] != "channel-123" {
+		t.Fatalf("expected channelId, got %#v", decoded.Extra)
+	}
+}
+
 func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 	ctx := context.Background()
 

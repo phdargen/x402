@@ -149,18 +149,23 @@ type VerifiedPaymentCancelOptions struct {
 	ResponseStatus int
 }
 
-// PaymentCancellationDispatcher fires onVerifiedPaymentCanceled hooks at most once.
+// PaymentCancellationDispatcher fires onVerifiedPaymentCanceled hooks at most once,
+// then optionally settles via SchemeNetworkServer SettleOnCancelProvider.
 type PaymentCancellationDispatcher struct {
 	once sync.Once
-	fire func(VerifiedPaymentCancelOptions)
+	fire func(VerifiedPaymentCancelOptions) *SettleResponse
 }
 
-// Cancel fires the underlying hooks. Safe to call multiple times — only the first call wins.
-func (d *PaymentCancellationDispatcher) Cancel(opts VerifiedPaymentCancelOptions) {
+// Cancel fires the underlying hooks (and optional cancel settle) at most once.
+// Returns the cancel settle response when the scheme provides settleOnCancel
+// requirements and settle runs; nil when cancel settle is skipped.
+func (d *PaymentCancellationDispatcher) Cancel(opts VerifiedPaymentCancelOptions) *SettleResponse {
 	if d == nil || d.fire == nil {
-		return
+		return nil
 	}
-	d.once.Do(func() { d.fire(opts) })
+	var result *SettleResponse
+	d.once.Do(func() { result = d.fire(opts) })
+	return result
 }
 
 // ============================================================================

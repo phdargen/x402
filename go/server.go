@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"regexp"
 	"strconv"
@@ -619,7 +620,11 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcher(
 }
 
 // CreatePaymentCancellationDispatcherWithExtensions returns a dispatcher
-// that, when Cancel'd, invokes onVerifiedPaymentCanceled hooks exactly once.
+// that, when Cancel'd, invokes onVerifiedPaymentCanceled hooks exactly once,
+// then asks the matched scheme for SettleOnCancel requirements and settles
+// once when provided. Settlement errors are warned, not thrown, so transports
+// can preserve the original application failure.
+//
 // The HTTP transport calls this after a successful Verify but before/instead
 // of Settle when the resource handler errors or returns a non-2xx response.
 //
@@ -649,7 +654,7 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 	}
 	resolvedSettledPhases := settledPhases
 	return &PaymentCancellationDispatcher{
-		fire: func(opts VerifiedPaymentCancelOptions) {
+		fire: func(opts VerifiedPaymentCancelOptions) *SettleResponse {
 			cancelCtx := VerifiedPaymentCanceledContext{
 				SettleContext:  settleCtx,
 				Reason:         opts.Reason,
@@ -662,12 +667,85 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 			hooks := orderedHooks(s, "onVerifiedPaymentCanceled", s.onVerifiedPaymentCanceledHooks, matchedScheme,
 				declaredExtensions, func(h *hookAdapterHandles) OnVerifiedPaymentCanceledHook { return h.OnVerifiedPaymentCanceled },
 				func(f OnVerifiedPaymentCanceledHook) bool { return f == nil })
+			scheme := findByNetworkAndScheme(s.schemes, requirements.Scheme, Network(requirements.Network))
 			s.mu.RUnlock()
 			for _, lh := range hooks {
 				_ = lh.Hook(cancelCtx)
 			}
+
+			return s.settleOnCancelAfterHooks(ctx, payload, requirements, declaredExtensions, resolvedSettledPhases, cancelCtx, scheme)
 		},
 	}
+}
+
+// settleOnCancelAfterHooks asks the matched scheme for cancel settle requirements
+// when before-handler settle completed. Settlement errors become a failed receipt.
+func (s *x402ResourceServer) settleOnCancelAfterHooks(
+	ctx context.Context,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	declaredExtensions map[string]interface{},
+	settledPhases []SettlePhase,
+	cancelCtx VerifiedPaymentCanceledContext,
+	scheme SchemeNetworkServer,
+) *SettleResponse {
+	provider, ok := scheme.(SettleOnCancelProvider)
+	if !ok || !settledPhasesContain(settledPhases, SettlePhaseBeforeHandler) {
+		return nil
+	}
+
+	label := fmt.Sprintf(`scheme %q settleOnCancel`, scheme.Scheme())
+	cancelRequirements, err := provider.SettleOnCancel(cancelCtx)
+	if err != nil {
+		log.Printf("[x402] Resource server settleOnCancel failed (%s): %v", label, err)
+		return failedCancelSettleResponse(requirements, err)
+	}
+	if cancelRequirements == nil {
+		return nil
+	}
+
+	settleResp, settleErr := s.SettlePaymentWithExtensions(
+		ctx, payload, *cancelRequirements, nil, declaredExtensions, SettlePhaseCancel,
+	)
+	if settleErr != nil {
+		log.Printf("[x402] Resource server settleOnCancel failed (%s): %v", label, settleErr)
+		return failedCancelSettleResponse(requirements, settleErr)
+	}
+	return settleResp
+}
+
+func settledPhasesContain(phases []SettlePhase, want SettlePhase) bool {
+	for _, p := range phases {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
+func failedCancelSettleResponse(requirements types.PaymentRequirements, err error) *SettleResponse {
+	resp := &SettleResponse{
+		Success:     false,
+		Transaction: "",
+		Network:     Network(requirements.Network),
+	}
+	var se *SettleError
+	if errors.As(err, &se) {
+		resp.ErrorReason = se.ErrorReason
+		if resp.ErrorReason == "" {
+			resp.ErrorReason = se.Error()
+		}
+		resp.ErrorMessage = se.ErrorMessage
+		if se.Payer != "" {
+			resp.Payer = se.Payer
+		}
+		if se.Network != "" {
+			resp.Network = se.Network
+		}
+	} else {
+		resp.ErrorReason = err.Error()
+	}
+	return resp
 }
 
 // ============================================================================
@@ -750,18 +828,85 @@ func (s *x402ResourceServer) BuildPaymentRequirements(
 	return enhanced, nil
 }
 
-// FindMatchingRequirements finds requirements that match a payment payload
+// FindMatchingRequirements finds requirements that match a payment payload.
+// For v2, core payment terms must match and server-declared extra must be a
+// subset of accepted.extra. Scheme-declared DynamicExtraFields are omitted from
+// the extra comparison.
 func (s *x402ResourceServer) FindMatchingRequirements(available []types.PaymentRequirements, payload types.PaymentPayload) *types.PaymentRequirements {
-	for _, req := range available {
-		if payload.Accepted.Scheme == req.Scheme &&
-			payload.Accepted.Network == req.Network &&
-			payload.Accepted.Amount == req.Amount &&
-			payload.Accepted.Asset == req.Asset &&
-			payload.Accepted.PayTo == req.PayTo {
-			return &req
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for i := range available {
+		req := &available[i]
+		var dynamicFields []string
+		if scheme := findByNetworkAndScheme(s.schemes, req.Scheme, Network(req.Network)); scheme != nil {
+			if dp, ok := scheme.(DynamicExtraFieldsProvider); ok {
+				dynamicFields = dp.DynamicExtraFields()
+			}
+		}
+		if paymentRequirementsMatchAccepted(*req, payload.Accepted, dynamicFields) {
+			return req
 		}
 	}
 	return nil
+}
+
+// paymentRequirementsMatchAccepted reports whether accepted preserves every
+// server-declared requirement.
+func paymentRequirementsMatchAccepted(
+	required types.PaymentRequirements,
+	accepted types.PaymentRequirements,
+	dynamicExtraFields []string,
+) bool {
+	requiredCore := required
+	requiredCore.Extra = nil
+	acceptedCore := accepted
+	acceptedCore.Extra = nil
+	if !DeepEqual(requiredCore, acceptedCore) {
+		return false
+	}
+	if required.Extra == nil {
+		return true
+	}
+	return objectContainsSubset(
+		omitFields(required.Extra, dynamicExtraFields),
+		omitFields(accepted.Extra, dynamicExtraFields),
+	)
+}
+
+// objectContainsSubset recursively checks that actual contains every field and
+// value from expected. Object values may contain additional fields; primitives
+// and arrays must match exactly via DeepEqual. Used for payment-requirements
+// extra matching (no additive-array path).
+func objectContainsSubset(expected, actual interface{}) bool {
+	expectedMap, expectedIsMap := asStringAnyMap(expected)
+	if !expectedIsMap {
+		return DeepEqual(expected, actual)
+	}
+	actualMap, actualIsMap := asStringAnyMap(actual)
+	if !actualIsMap {
+		return false
+	}
+	for key, value := range expectedMap {
+		actVal, has := actualMap[key]
+		if !has {
+			if value == nil {
+				continue
+			}
+			return false
+		}
+		if !objectContainsSubset(value, actVal) {
+			return false
+		}
+	}
+	return true
+}
+
+func asStringAnyMap(v interface{}) (map[string]interface{}, bool) {
+	if m, ok := v.(map[string]interface{}); ok {
+		return m, true
+	}
+	return nil, false
 }
 
 // ExtensionValidationResult is returned by ValidateExtensions. Valid is true
@@ -949,9 +1094,9 @@ func (s *x402ResourceServer) dynamicInfoFields(key string) []string {
 	return provider.DynamicInfoFields()
 }
 
-// omitFields returns a copy of an extension info object without the named
-// dynamic fields. The value is returned unchanged when no fields apply or when
-// it is not a JSON object. Mirrors TS `omitFields`.
+// omitFields returns a copy of an object without the named dynamic fields.
+// The value is returned unchanged when no fields apply or when it is not a
+// JSON object. Used for extension info and payment-requirements extra.
 func omitFields(value interface{}, fields []string) interface{} {
 	if len(fields) == 0 {
 		return value
@@ -1186,17 +1331,19 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 ) (*SettleResponse, error) {
 	effectiveRequirements := requirements
 	if overrides != nil && overrides.Amount != "" {
+		// Only `$…` overrides need asset decimals. Atomic and percent formats must
+		// not force a decimals lookup (unknown custom mints would otherwise fail).
 		decimals := 6
-		s.mu.RLock()
-		network := Network(requirements.Network)
-		if networkSchemes, ok := s.schemes[network]; ok {
-			if scheme, ok := networkSchemes[requirements.Scheme]; ok {
+		if dollarRegex.MatchString(overrides.Amount) {
+			s.mu.RLock()
+			network := Network(requirements.Network)
+			if scheme := findByNetworkAndScheme(s.schemes, requirements.Scheme, network); scheme != nil {
 				if dp, ok := scheme.(AssetDecimalsProvider); ok {
 					decimals = dp.GetAssetDecimals(requirements.Asset, network)
 				}
 			}
+			s.mu.RUnlock()
 		}
-		s.mu.RUnlock()
 		resolved, err := ResolveSettlementOverrideAmount(overrides.Amount, requirements, decimals)
 		if err != nil {
 			return nil, NewSettleError("invalid_settlement_override", "", Network(requirements.Network), "", err.Error())

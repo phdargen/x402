@@ -243,6 +243,21 @@ type AssetDecimalsProvider interface {
 	GetAssetDecimals(asset string, network Network) int
 }
 
+// SettleOnCancelProvider is an optional interface for schemes that settle once when a
+// verified payment is canceled (handler failure/throw or post-verify abort).
+// Core calls SettlePayment with the returned requirements and SettlePhaseCancel.
+// Return nil, nil to skip cancel settle.
+type SettleOnCancelProvider interface {
+	SettleOnCancel(ctx VerifiedPaymentCanceledContext) (*types.PaymentRequirements, error)
+}
+
+// DynamicExtraFieldsProvider is an optional interface for schemes that regenerate
+// per-response keys under PaymentRequirements.Extra (e.g. recentBlockhash).
+// FindMatchingRequirements omits these fields from the v2 extra comparison.
+type DynamicExtraFieldsProvider interface {
+	DynamicExtraFields() []string
+}
+
 // PaymentRequiredContext is passed to PaymentRequiredEnricher.EnrichPaymentRequiredResponse.
 // PaymentPayload is non-nil only on the verify-failure branch.
 type PaymentRequiredContext struct {

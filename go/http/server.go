@@ -955,7 +955,7 @@ func (s *x402HTTPResourceServer) ProcessSettlement(
 	// After-handler path for flows that do not settle again: echo before-handler settle or no-op.
 	if phase != x402.SettlePhaseBeforeHandler && !phases.SettleAfterHandler {
 		if beforeHandlerSettlement != nil && beforeHandlerSettlement.Result != nil {
-			headers, headerErr := s.createSettlementHeaders(beforeHandlerSettlement.Result)
+			headers, headerErr := s.CreateSettlementHeaders(beforeHandlerSettlement.Result)
 			if headerErr != nil {
 				return s.buildSettlementFailureResult(
 					fmt.Sprintf("failed to create settlement headers: %v", headerErr),
@@ -1021,7 +1021,7 @@ func (s *x402HTTPResourceServer) ProcessSettlement(
 		return s.buildSettlementFailureResult(settleResult.ErrorReason, settleResult.Network, settleResult.Payer, settleResult)
 	}
 
-	headers, err := s.createSettlementHeaders(settleResult)
+	headers, err := s.CreateSettlementHeaders(settleResult)
 	if err != nil {
 		return s.buildSettlementFailureResult(
 			fmt.Sprintf("failed to create settlement headers: %v", err),
@@ -1056,7 +1056,7 @@ func (s *x402HTTPResourceServer) CreateCompletedSettlementHeaders(
 			"Cache-Control": WithPrivateCacheControl(existingCacheControl),
 		}
 	}
-	headers, err := s.createSettlementHeaders(settlement.Result)
+	headers, err := s.CreateSettlementHeaders(settlement.Result)
 	if err != nil {
 		return map[string]string{
 			"Cache-Control": WithPrivateCacheControl(existingCacheControl),
@@ -1064,6 +1064,73 @@ func (s *x402HTTPResourceServer) CreateCompletedSettlementHeaders(
 	}
 	headers["Cache-Control"] = WithPrivateCacheControl(existingCacheControl)
 	return headers
+}
+
+// CreateFailurePathSettlementHeaders returns PAYMENT-RESPONSE headers when the
+// resource handler fails after before-handler settle. Prefers cancel/refund
+// settle when present; otherwise echoes the upfront deposit receipt.
+func (s *x402HTTPResourceServer) CreateFailurePathSettlementHeaders(
+	cancelSettlement *x402.SettleResponse,
+	beforeHandlerSettlement *x402.CompletedSettlement,
+	paymentPayload *types.PaymentPayload,
+	existingCacheControl string,
+) map[string]string {
+	if cancelSettlement != nil {
+		receipt := cancelSettlement
+		if !cancelSettlement.Success {
+			built := s.buildFailedCancelReceipt(cancelSettlement, beforeHandlerSettlement, paymentPayload)
+			receipt = &built
+		}
+		headers, err := s.CreateSettlementHeaders(receipt)
+		if err != nil {
+			return map[string]string{
+				"Cache-Control": WithPrivateCacheControl(existingCacheControl),
+			}
+		}
+		headers["Cache-Control"] = WithPrivateCacheControl(existingCacheControl)
+		return headers
+	}
+	if beforeHandlerSettlement != nil {
+		return s.CreateCompletedSettlementHeaders(beforeHandlerSettlement, existingCacheControl)
+	}
+	return nil
+}
+
+// buildFailedCancelReceipt builds a failed cancel receipt with deposit recovery
+// facts in extra (depositTransaction, depositAmount, channelId).
+func (s *x402HTTPResourceServer) buildFailedCancelReceipt(
+	cancelSettlement *x402.SettleResponse,
+	beforeHandlerSettlement *x402.CompletedSettlement,
+	paymentPayload *types.PaymentPayload,
+) x402.SettleResponse {
+	extra := map[string]interface{}{}
+	if cancelSettlement.Extra != nil {
+		for k, v := range cancelSettlement.Extra {
+			extra[k] = v
+		}
+	}
+	if beforeHandlerSettlement != nil && beforeHandlerSettlement.Result != nil {
+		extra["depositTransaction"] = beforeHandlerSettlement.Result.Transaction
+		extra["depositAmount"] = beforeHandlerSettlement.Result.Amount
+	}
+	if paymentPayload != nil && paymentPayload.Payload != nil {
+		if channelID, ok := paymentPayload.Payload["channelId"].(string); ok && channelID != "" {
+			extra["channelId"] = channelID
+		}
+	}
+	if len(extra) == 0 {
+		extra = nil
+	}
+	return x402.SettleResponse{
+		Success:      false,
+		ErrorReason:  cancelSettlement.ErrorReason,
+		ErrorMessage: cancelSettlement.ErrorMessage,
+		Payer:        cancelSettlement.Payer,
+		Transaction:  "",
+		Network:      cancelSettlement.Network,
+		Extensions:   cancelSettlement.Extensions,
+		Extra:        extra,
+	}
 }
 
 // buildSettlementFailureResult creates a ProcessSettleResult for settlement failure.
@@ -1082,7 +1149,7 @@ func (s *x402HTTPResourceServer) buildSettlementFailureResult(errorReason string
 		failureResponse.ErrorMessage = settleResult.ErrorMessage
 	}
 
-	headers, err := s.createSettlementHeaders(&failureResponse)
+	headers, err := s.CreateSettlementHeaders(&failureResponse)
 	if err != nil {
 		// Fallback: return minimal result without PAYMENT-RESPONSE if encoding fails
 		return &ProcessSettleResult{
@@ -1235,8 +1302,8 @@ func (s *x402HTTPResourceServer) createHTTPResponseV2(paymentRequired types.Paym
 	}, nil
 }
 
-// createSettlementHeaders creates settlement response headers
-func (s *x402HTTPResourceServer) createSettlementHeaders(response *x402.SettleResponse) (map[string]string, error) {
+// CreateSettlementHeaders creates settlement response headers.
+func (s *x402HTTPResourceServer) CreateSettlementHeaders(response *x402.SettleResponse) (map[string]string, error) {
 	encodedHeader, err := encodePaymentResponseHeader(*response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode payment response header: %w", err)

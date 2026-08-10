@@ -321,21 +321,24 @@ func handlePaymentVerified(w http.ResponseWriter, r *http.Request, next http.Han
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
+					var cancelSettlement *x402.SettleResponse
 					if result.CancellationDispatcher != nil {
 						err, ok := rec.(error)
 						if !ok {
 							err = fmt.Errorf("%v", rec)
 						}
-						result.CancellationDispatcher.Cancel(x402.VerifiedPaymentCancelOptions{
+						cancelSettlement = result.CancellationDispatcher.Cancel(x402.VerifiedPaymentCancelOptions{
 							Reason: x402.CancellationReasonHandlerThrew,
 							Err:    err,
 						})
 					}
-					if result.BeforeHandlerSettlement != nil {
-						for key, value := range server.CreateCompletedSettlementHeaders(
-							result.BeforeHandlerSettlement,
-							w.Header().Get("Cache-Control"),
-						) {
+					if headers := server.CreateFailurePathSettlementHeaders(
+						cancelSettlement,
+						result.BeforeHandlerSettlement,
+						result.PaymentPayload,
+						w.Header().Get("Cache-Control"),
+					); headers != nil {
+						for key, value := range headers {
 							w.Header().Set(key, value)
 						}
 					}
@@ -348,17 +351,20 @@ func handlePaymentVerified(w http.ResponseWriter, r *http.Request, next http.Han
 
 	// Don't settle if response failed
 	if capture.statusCode >= 400 {
+		var cancelSettlement *x402.SettleResponse
 		if result.CancellationDispatcher != nil {
-			result.CancellationDispatcher.Cancel(x402.VerifiedPaymentCancelOptions{
+			cancelSettlement = result.CancellationDispatcher.Cancel(x402.VerifiedPaymentCancelOptions{
 				Reason:         x402.CancellationReasonHandlerFailed,
 				ResponseStatus: capture.statusCode,
 			})
 		}
-		if result.BeforeHandlerSettlement != nil {
-			for key, value := range server.CreateCompletedSettlementHeaders(
-				result.BeforeHandlerSettlement,
-				capture.Header().Get("Cache-Control"),
-			) {
+		if headers := server.CreateFailurePathSettlementHeaders(
+			cancelSettlement,
+			result.BeforeHandlerSettlement,
+			result.PaymentPayload,
+			capture.Header().Get("Cache-Control"),
+		); headers != nil {
+			for key, value := range headers {
 				w.Header().Set(key, value)
 			}
 		}

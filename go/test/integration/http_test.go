@@ -164,12 +164,13 @@ func TestHTTPIntegration(t *testing.T) {
 		var acceptsV2 []types.PaymentRequirements
 		for _, acc := range paymentRequired.Accepts {
 			acceptsV2 = append(acceptsV2, types.PaymentRequirements{
-				Scheme:  acc.Scheme,
-				Network: string(acc.Network),
-				Asset:   acc.Asset,
-				Amount:  acc.Amount,
-				PayTo:   acc.PayTo,
-				Extra:   acc.Extra,
+				Scheme:            acc.Scheme,
+				Network:           string(acc.Network),
+				Asset:             acc.Asset,
+				Amount:            acc.Amount,
+				PayTo:             acc.PayTo,
+				MaxTimeoutSeconds: acc.MaxTimeoutSeconds,
+				Extra:             acc.Extra,
 			})
 		}
 
