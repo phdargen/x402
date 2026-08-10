@@ -69,8 +69,8 @@ export function isUptoSvmPayload(payload: Record<string, unknown>): payload is U
     typeof payload.authorizedSigner === "string" &&
     typeof payload.openTransaction === "string" &&
     typeof payload.openSlot === "string" &&
-    typeof payload.expiresAt === "number" &&
-    typeof payload.validAfter === "number" &&
+    Number.isSafeInteger(payload.expiresAt) &&
+    Number.isSafeInteger(payload.validAfter) &&
     typeof payload.nonce === "string" &&
     (payload.voucherSignature === undefined || typeof payload.voucherSignature === "string")
   );

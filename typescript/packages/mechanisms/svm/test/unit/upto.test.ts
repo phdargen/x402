@@ -910,6 +910,23 @@ describe("upto SVM scheme", () => {
       expect(result.invalidReason).toBe("unsupported_payload_type");
     });
 
+    it("rejects a fractional expiresAt before open", async () => {
+      const payload = {
+        ...basePayload,
+        expiresAt: Math.floor(Date.now() / 1000) + 300.5,
+      };
+      const result = await facilitator.verify(wrap(payload, requirements()), requirements());
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("unsupported_payload_type");
+    });
+
+    it("rejects a fractional validAfter before open", async () => {
+      const payload = { ...basePayload, validAfter: 0.5 };
+      const result = await facilitator.verify(wrap(payload, requirements()), requirements());
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("unsupported_payload_type");
+    });
+
     it("rejects a network mismatch", async () => {
       const req = requirements();
       const result = await facilitator.verify(
