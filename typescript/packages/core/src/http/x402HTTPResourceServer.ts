@@ -7,6 +7,7 @@ import {
   SettlePhase,
   resolvePaymentFlow,
   resolvePaymentFlowPhases,
+  resolveFailurePathSettlement,
 } from "../server";
 import {
   decodePaymentSignatureHeader,
@@ -962,54 +963,17 @@ export class x402HTTPResourceServer {
     paymentPayload?: PaymentPayload,
     existingCacheControl?: string | null,
   ): Record<string, string> | undefined {
-    if (cancelSettlement) {
-      const receipt = cancelSettlement.success
-        ? cancelSettlement
-        : this.buildFailedCancelReceipt(cancelSettlement, beforeHandlerSettlement, paymentPayload);
-      return {
-        ...this.createSettlementHeaders(receipt),
-        "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
-      };
+    const receipt = resolveFailurePathSettlement(
+      cancelSettlement,
+      beforeHandlerSettlement,
+      paymentPayload,
+    );
+    if (!receipt) {
+      return undefined;
     }
-    if (beforeHandlerSettlement) {
-      return this.createCompletedSettlementHeaders(beforeHandlerSettlement, existingCacheControl);
-    }
-    return undefined;
-  }
-
-  /**
-   * Build a failed cancel receipt with deposit recovery facts in `extra`.
-   *
-   * @param cancelSettlement - Failed cancel settle from the facilitator
-   * @param beforeHandlerSettlement - Completed before-handler deposit, when present
-   * @param paymentPayload - Client payment payload
-   * @returns Normalized settle response for PAYMENT-RESPONSE encoding
-   */
-  private buildFailedCancelReceipt(
-    cancelSettlement: SettleResponse,
-    beforeHandlerSettlement?: CompletedSettlement,
-    paymentPayload?: PaymentPayload,
-  ): SettleResponse {
-    const payload = paymentPayload?.payload as Record<string, unknown> | undefined;
-    const channelId = payload?.channelId;
     return {
-      success: false,
-      errorReason: cancelSettlement.errorReason,
-      errorMessage: cancelSettlement.errorMessage,
-      payer: cancelSettlement.payer,
-      transaction: "",
-      network: cancelSettlement.network,
-      extensions: cancelSettlement.extensions,
-      extra: {
-        ...cancelSettlement.extra,
-        ...(beforeHandlerSettlement
-          ? {
-              depositTransaction: beforeHandlerSettlement.result.transaction,
-              depositAmount: beforeHandlerSettlement.result.amount,
-            }
-          : {}),
-        ...(typeof channelId === "string" && channelId ? { channelId } : {}),
-      },
+      ...this.createSettlementHeaders(receipt),
+      "Cache-Control": withPrivateCacheControl(existingCacheControl ?? null),
     };
   }
 

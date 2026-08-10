@@ -7,6 +7,7 @@ import {
   SDK_DEFAULT_ASSET_TRANSFER_METHOD,
   applyPaymentFlowWireExtra,
   resolvePaymentFlow,
+  resolveFailurePathSettlement,
 } from "../../../src/server";
 import { x402HTTPResourceServer } from "../../../src/http/x402HTTPResourceServer";
 import {
@@ -164,6 +165,94 @@ describe("payment flows", () => {
           buildPaymentRequirements({ extra: { paymentFlow: "escrow" } }),
         ),
       ).toThrow(/does not support paymentFlow "escrow"/);
+    });
+  });
+
+  describe("resolveFailurePathSettlement", () => {
+    const network = "eip155:8453" as Network;
+
+    it("prefers successful cancel receipt over before-handler deposit", () => {
+      const cancelSettlement = buildSettleResponse({
+        success: true,
+        amount: "0",
+        transaction: "0xrefund",
+        network,
+      });
+      const beforeHandlerSettlement = {
+        result: buildSettleResponse({
+          success: true,
+          amount: "100000",
+          transaction: "0xdeposit",
+          network,
+        }),
+      };
+
+      expect(
+        resolveFailurePathSettlement(
+          cancelSettlement,
+          beforeHandlerSettlement,
+          buildPaymentPayload(),
+        ),
+      ).toEqual(cancelSettlement);
+    });
+
+    it("builds failed cancel receipt with deposit recovery extra", () => {
+      const cancelSettlement = buildSettleResponse({
+        success: false,
+        errorReason: "refund_failed",
+        transaction: "should-not-appear",
+        network,
+      });
+      const beforeHandlerSettlement = {
+        result: buildSettleResponse({
+          success: true,
+          amount: "100000",
+          transaction: "0xdeposit",
+          network,
+        }),
+      };
+      const paymentPayload = buildPaymentPayload({
+        payload: { channelId: "channel-123" },
+      });
+
+      expect(
+        resolveFailurePathSettlement(cancelSettlement, beforeHandlerSettlement, paymentPayload),
+      ).toEqual({
+        success: false,
+        errorReason: "refund_failed",
+        errorMessage: undefined,
+        payer: cancelSettlement.payer,
+        transaction: "",
+        network,
+        extensions: cancelSettlement.extensions,
+        extra: {
+          depositTransaction: "0xdeposit",
+          depositAmount: "100000",
+          channelId: "channel-123",
+        },
+      });
+    });
+
+    it("echoes before-handler deposit when cancel returns undefined", () => {
+      const beforeHandlerSettlement = {
+        result: buildSettleResponse({
+          success: true,
+          amount: "100000",
+          transaction: "0xdeposit",
+          network,
+        }),
+      };
+
+      expect(resolveFailurePathSettlement(undefined, beforeHandlerSettlement)).toEqual(
+        beforeHandlerSettlement.result,
+      );
+    });
+
+    it("returns undefined when neither cancel nor before-handler settlement applies", () => {
+      expect(resolveFailurePathSettlement(undefined)).toBeUndefined();
+      expect(
+        resolveFailurePathSettlement(undefined, undefined, buildPaymentPayload()),
+      ).toBeUndefined();
     });
   });
 
