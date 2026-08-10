@@ -1,0 +1,10 @@
+{
+  "mock_authorize_plain_operator": "252486",
+  "mock_authorize_with_authorizer": "267790",
+  "mock_capture_authorize_first": "267790",
+  "mock_capture_authorize_subsequent": "82579",
+  "mock_capture_capture": "74369",
+  "mock_capture_plain_operator": "60256",
+  "mock_capture_with_authorizer": "74369",
+  "mock_exact_eip3009_transfer": "30367"
+}
