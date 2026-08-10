@@ -1,3 +1,3 @@
 kind: Changed
-body: Validate unsupported paymentFlow / assetTransferMethod at HTTP server Initialize and MCP NewPaymentWrapper when the scheme is registered, and return a generic internal error from HTTP and MCP wrappers for unexpected failures instead of leaking internal error details to clients
+body: Validate unsupported paymentFlow / assetTransferMethod at HTTP server Initialize and MCP NewPaymentWrapper when the scheme is registered; return a generic internal error from HTTP and MCP wrappers for unexpected failures; and bring MCP PaymentWrapper to HTTP-equivalent cancel/settleOnCancel, SkipHandler, CreatePaymentRequiredResponse, and extension-gated verify/settle with failure-path payment-response in _meta
 time: 2026-08-10T14:27:35.000000-07:00

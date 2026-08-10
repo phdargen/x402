@@ -882,6 +882,73 @@ func TestSettleOnCancel_WarnsAndReturnsFailedReceipt(t *testing.T) {
 	}
 }
 
+func TestBuildFailurePathSettlementResponse_PrefersSuccessfulCancel(t *testing.T) {
+	cancel := &SettleResponse{
+		Success:     true,
+		Transaction: "0xrefund",
+		Network:     "eip155:8453",
+	}
+	before := &CompletedSettlement{
+		Result: &SettleResponse{Success: true, Transaction: "0xdeposit", Amount: "100"},
+	}
+	got := BuildFailurePathSettlementResponse(cancel, before, nil)
+	if got == nil || got.Transaction != "0xrefund" {
+		t.Fatalf("expected cancel receipt, got %+v", got)
+	}
+}
+
+func TestBuildFailurePathSettlementResponse_FailedCancelRecoveryExtras(t *testing.T) {
+	cancel := &SettleResponse{
+		Success:     false,
+		ErrorReason: "refund_failed",
+		Transaction: "should-clear",
+		Network:     "eip155:8453",
+	}
+	before := &CompletedSettlement{
+		Result: &SettleResponse{
+			Success:     true,
+			Transaction: "0xdeposit",
+			Amount:      "100000",
+		},
+	}
+	payload := &types.PaymentPayload{
+		Payload: map[string]interface{}{"channelId": "channel-123"},
+	}
+
+	got := BuildFailurePathSettlementResponse(cancel, before, payload)
+	if got == nil || got.Success {
+		t.Fatalf("expected failed receipt, got %+v", got)
+	}
+	if got.Transaction != "" {
+		t.Fatalf("expected empty transaction, got %q", got.Transaction)
+	}
+	if got.Extra["depositTransaction"] != "0xdeposit" {
+		t.Fatalf("expected depositTransaction, got %#v", got.Extra)
+	}
+	if got.Extra["depositAmount"] != "100000" {
+		t.Fatalf("expected depositAmount, got %#v", got.Extra)
+	}
+	if got.Extra["channelId"] != "channel-123" {
+		t.Fatalf("expected channelId, got %#v", got.Extra)
+	}
+}
+
+func TestBuildFailurePathSettlementResponse_EchoesBeforeHandler(t *testing.T) {
+	before := &CompletedSettlement{
+		Result: &SettleResponse{Success: true, Transaction: "0xdeposit"},
+	}
+	got := BuildFailurePathSettlementResponse(nil, before, nil)
+	if got == nil || got.Transaction != "0xdeposit" {
+		t.Fatalf("expected before-handler echo, got %+v", got)
+	}
+}
+
+func TestBuildFailurePathSettlementResponse_NilWhenNothing(t *testing.T) {
+	if got := BuildFailurePathSettlementResponse(nil, nil, nil); got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
 func TestFindMatchingRequirements_DynamicExtraFields(t *testing.T) {
 	scheme := &mockSettleOnCancelScheme{
 		mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "exact"},

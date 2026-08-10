@@ -1075,12 +1075,12 @@ func (s *x402HTTPResourceServer) CreateFailurePathSettlementHeaders(
 	paymentPayload *types.PaymentPayload,
 	existingCacheControl string,
 ) map[string]string {
-	if cancelSettlement != nil {
-		receipt := cancelSettlement
-		if !cancelSettlement.Success {
-			built := s.buildFailedCancelReceipt(cancelSettlement, beforeHandlerSettlement, paymentPayload)
-			receipt = &built
-		}
+	receipt := x402.BuildFailurePathSettlementResponse(
+		cancelSettlement,
+		beforeHandlerSettlement,
+		paymentPayload,
+	)
+	if receipt != nil {
 		headers, err := s.CreateSettlementHeaders(receipt)
 		if err != nil {
 			return map[string]string{
@@ -1090,47 +1090,11 @@ func (s *x402HTTPResourceServer) CreateFailurePathSettlementHeaders(
 		headers["Cache-Control"] = WithPrivateCacheControl(existingCacheControl)
 		return headers
 	}
+	// Preserve Cache-Control even when the before-handler settle has no result body.
 	if beforeHandlerSettlement != nil {
 		return s.CreateCompletedSettlementHeaders(beforeHandlerSettlement, existingCacheControl)
 	}
 	return nil
-}
-
-// buildFailedCancelReceipt builds a failed cancel receipt with deposit recovery
-// facts in extra (depositTransaction, depositAmount, channelId).
-func (s *x402HTTPResourceServer) buildFailedCancelReceipt(
-	cancelSettlement *x402.SettleResponse,
-	beforeHandlerSettlement *x402.CompletedSettlement,
-	paymentPayload *types.PaymentPayload,
-) x402.SettleResponse {
-	extra := map[string]interface{}{}
-	if cancelSettlement.Extra != nil {
-		for k, v := range cancelSettlement.Extra {
-			extra[k] = v
-		}
-	}
-	if beforeHandlerSettlement != nil && beforeHandlerSettlement.Result != nil {
-		extra["depositTransaction"] = beforeHandlerSettlement.Result.Transaction
-		extra["depositAmount"] = beforeHandlerSettlement.Result.Amount
-	}
-	if paymentPayload != nil && paymentPayload.Payload != nil {
-		if channelID, ok := paymentPayload.Payload["channelId"].(string); ok && channelID != "" {
-			extra["channelId"] = channelID
-		}
-	}
-	if len(extra) == 0 {
-		extra = nil
-	}
-	return x402.SettleResponse{
-		Success:      false,
-		ErrorReason:  cancelSettlement.ErrorReason,
-		ErrorMessage: cancelSettlement.ErrorMessage,
-		Payer:        cancelSettlement.Payer,
-		Transaction:  "",
-		Network:      cancelSettlement.Network,
-		Extensions:   cancelSettlement.Extensions,
-		Extra:        extra,
-	}
 }
 
 // buildSettlementFailureResult creates a ProcessSettleResult for settlement failure.
