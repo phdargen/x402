@@ -1,7 +1,7 @@
 import { createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia } from "viem/chains";
-import { ExactEvmScheme, type ExactEvmSchemeOptions } from "@x402/evm/exact/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
 import {
   UptoEvmScheme as UptoEvmClientScheme,
   type UptoEvmSchemeOptions,
@@ -103,7 +103,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
 
   const evmSigner = toClientEvmSigner(evmAccount, publicClient);
 
-  const evmSchemeOptions: ExactEvmSchemeOptions | undefined = process.env.EVM_RPC_URL
+  const evmSchemeOptions = process.env.EVM_RPC_URL
     ? { rpcUrl: process.env.EVM_RPC_URL }
     : undefined;
 

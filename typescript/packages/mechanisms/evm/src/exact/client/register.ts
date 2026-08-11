@@ -3,7 +3,7 @@ import { Network } from "@x402/core/types";
 import { networkMatchesPattern } from "@x402/core/utils";
 import { ClientEvmSigner } from "../../signer";
 import { ExactEvmScheme } from "./scheme";
-import { ExactEvmSchemeOptions } from "./rpc";
+import type { EvmSchemeOptions } from "../../shared/rpc";
 import { ExactEvmSchemeV1 } from "../v1/client/scheme";
 import { NETWORKS, getEvmChainIdV1 } from "../../v1";
 
@@ -32,7 +32,7 @@ export interface EvmClientConfig {
    * Supports either a single config ({ rpcUrl }) or per-chain configs
    * keyed by EVM chain ID ({ 8453: { rpcUrl: "..." } }).
    */
-  schemeOptions?: ExactEvmSchemeOptions;
+  schemeOptions?: EvmSchemeOptions;
 
   /**
    * Optional specific networks to register.

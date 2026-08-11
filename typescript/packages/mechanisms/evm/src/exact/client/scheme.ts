@@ -13,7 +13,7 @@ import {
   trySignErc20ApprovalExtension,
 } from "../../shared/extensions";
 import { findDefaultAsset } from "../../defaultAssets";
-import { ExactEvmSchemeOptions } from "./rpc";
+import type { EvmSchemeOptions } from "../../shared/rpc";
 
 /**
  * EVM client implementation for the Exact payment scheme.
@@ -42,7 +42,7 @@ export class ExactEvmScheme implements SchemeNetworkClient {
    */
   constructor(
     private readonly signer: ClientEvmSigner,
-    private readonly options?: ExactEvmSchemeOptions,
+    private readonly options?: EvmSchemeOptions,
   ) {}
 
   /**
