@@ -150,40 +150,47 @@ const routes = {
 
 ## Client Configuration
 
-Use `fromConfig()` for declarative setup:
+Use `fromConfig()` for declarative setup. Accept selection runs in three stages: **`spendControls`** enforce built-in safety caps, **`policies`** filter the remaining list, and **`paymentRequirementsSelector`** picks one accept (default: first remaining).
 
 ```typescript
+const TRUSTED_PAY_TO = '0xYourServerAddress';
+
 const client = x402Client.fromConfig({
   schemes: [
     { network: 'eip155:8453', client: new ExactEvmScheme(evmSigner) },
     { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', client: new ExactSvmScheme(svmSigner) },
   ],
-  policies: [
-    // Filter by max price
-    (version, reqs) => reqs.filter(r => BigInt(r.amount) < BigInt('1000000')),
-  ],
   spendControls: {
-    // Default USD cap is $1; raise, lower, or disable with false
-    maxAmountPerPayment: '$5',
-    // Per-asset atomic cap on a specific network
-    maxAssetAmountPerPayment: [
-      { network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '2000000' },
-    ],
-    // Allowlist (omit for no allowlist). defaultAssets defaults to true.
-    allowedAssets: {
-      defaultAssets: true, // any asset findDefaultAsset recognizes (no addresses needed)
-      assets: [
-        // optional extras; with defaultAssets: false these are the only allowed assets
-        { network: 'eip155:8453', asset: '0xCustomToken' },
-      ],
-    },
+    maxAmountPerPayment: '$5', // default "$1"; false to disable
   },
+  policies: [
+    // Filter: drop accepts that pay an unexpected recipient
+    (version, reqs) => reqs.filter(r => r.payTo.toLowerCase() === TRUSTED_PAY_TO.toLowerCase()),
+  ],
+  paymentRequirementsSelector: (version, reqs) =>
+    // Pick one: prefer Base when still available after filtering
+    reqs.find(r => r.network === 'eip155:8453') ?? reqs[0],
 });
 ```
 
+For per-asset caps and asset allowlists, see spend controls below.
+
 ### Spend controls
 
-`x402Client` applies three optional spend controls before creating a payment:
+Built-in safety rails applied before policies. Use these for amount and asset bounds—not for network preference.
+
+```typescript
+spendControls: {
+  maxAmountPerPayment: '$5', // USD cap on recognized pegged assets; false to remove
+  maxAssetAmountPerPayment: [
+    { network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '2000000' },
+  ],
+  allowedAssets: {
+    defaultAssets: true, // any asset findDefaultAsset recognizes
+    assets: [{ network: 'eip155:8453', asset: '0xCustomToken' }],
+  },
+},
+```
 
 | Control | Purpose |
 |---------|---------|
@@ -192,6 +199,22 @@ const client = x402Client.fromConfig({
 | `allowedAssets` | Optional allowlist. Omit for no allowlist. When set, `{ defaultAssets: true }` (the default) allows recognized default assets without listing addresses; `assets` adds (or, with `defaultAssets: false`, exclusively lists) `{ network, asset }` entries. |
 
 Network scoping is separate: register only the networks you intend to pay on (e.g. `registerExactEvmScheme(client, { signer, networks: ['eip155:8453'] })`). Unregistered networks are never selected regardless of spend controls.
+
+### Policies
+
+`PaymentPolicy` functions shrink the accept list: `(version, reqs) => reqs`. They run after spend controls and before the selector. Use them for custom exclusion rules (trusted `payTo`, required scheme, environment-specific filters). Do not use policies for USD caps or asset allowlists—that is what `spendControls` is for.
+
+### Payment requirements selector
+
+`SelectPaymentRequirements` picks exactly one accept from what policies leave: `(version, reqs) => req`. Pass it to `fromConfig({ paymentRequirementsSelector })` or `new x402Client(selector)`. Default behavior is `reqs[0]`. Use it for preference and ranking (cheapest option, preferred network, wallet default)—not for hard safety limits.
+
+```typescript
+// Prefer the cheapest remaining accept
+paymentRequirementsSelector: (version, reqs) =>
+  [...reqs].sort((a, b) => (BigInt(a.amount) < BigInt(b.amount) ? -1 : 1))[0],
+```
+
+For interactive approval before signing, use [`onBeforePaymentCreation`](#client-hooks) hooks instead.
 
 ## Lifecycle Hooks
 

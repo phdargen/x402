@@ -5,7 +5,8 @@ import { registerExactSvmScheme } from "../../src/exact/client/register";
 import { NETWORKS } from "../../src/v1";
 import type { ClientSvmSigner } from "../../src/signer";
 import type { Network, PaymentRequirements } from "@x402/core/types";
-import { USDC_DEVNET_ADDRESS, SOLANA_DEVNET_CAIP2 } from "../../src/constants";
+import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
+import { USDC_DEVNET_ADDRESS } from "../../src/defaultAssets";
 import { resolveBlockhash } from "../../src/utils";
 
 type ClientInternals = {

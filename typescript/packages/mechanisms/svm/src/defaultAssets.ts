@@ -9,19 +9,94 @@ import {
   SOLANA_DEVNET_CAIP2,
   SOLANA_MAINNET_CAIP2,
   SOLANA_TESTNET_CAIP2,
-  USDC_DEVNET_ADDRESS,
-  USDC_MAINNET_ADDRESS,
-  USDC_TESTNET_ADDRESS,
+  TOKEN_2022_PROGRAM_ADDRESS,
+  TOKEN_PROGRAM_ADDRESS,
 } from "./constants";
 import { normalizeNetwork } from "./constants";
 
-export type SvmDefaultAsset = DefaultAsset;
+export type SvmDefaultAsset = DefaultAsset & {
+  /** Program owning the mint: SPL Token or Token-2022. */
+  tokenProgram: string;
+};
+
+export const USDC_MAINNET_ADDRESS = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+export const USDC_DEVNET_ADDRESS = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+export const USDC_TESTNET_ADDRESS = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 /** Default USD-pegged assets by CAIP-2 network; index 0 is the `"$0.10"` default. */
 export const DEFAULT_ASSETS: DefaultAssetTable<SvmDefaultAsset> = {
-  [SOLANA_MAINNET_CAIP2]: [{ asset: USDC_MAINNET_ADDRESS, decimals: 6, symbol: "USDC" }],
-  [SOLANA_DEVNET_CAIP2]: [{ asset: USDC_DEVNET_ADDRESS, decimals: 6, symbol: "USDC" }],
-  [SOLANA_TESTNET_CAIP2]: [{ asset: USDC_TESTNET_ADDRESS, decimals: 6, symbol: "USDC" }],
+  [SOLANA_MAINNET_CAIP2]: [
+    {
+      asset: USDC_MAINNET_ADDRESS,
+      decimals: 6,
+      symbol: "USDC",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+      decimals: 6,
+      symbol: "USDT",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+      decimals: 6,
+      symbol: "USDG",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
+      decimals: 6,
+      symbol: "PYUSD",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
+      decimals: 6,
+      symbol: "CASH",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+  ],
+  [SOLANA_DEVNET_CAIP2]: [
+    {
+      asset: USDC_DEVNET_ADDRESS,
+      decimals: 6,
+      symbol: "USDC",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
+      decimals: 6,
+      symbol: "USDG",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
+      decimals: 6,
+      symbol: "PYUSD",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+  ],
+  [SOLANA_TESTNET_CAIP2]: [
+    {
+      asset: USDC_TESTNET_ADDRESS,
+      decimals: 6,
+      symbol: "USDC",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "4F6PM96JJxngmHnZLBh9n58RH4aTVNWvDs2nuwrT5BP7",
+      decimals: 6,
+      symbol: "USDG",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+    {
+      asset: "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
+      decimals: 6,
+      symbol: "PYUSD",
+      tokenProgram: TOKEN_2022_PROGRAM_ADDRESS,
+    },
+  ],
 };
 
 /**

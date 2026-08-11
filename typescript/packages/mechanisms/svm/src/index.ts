@@ -50,5 +50,8 @@ export {
   DEFAULT_ASSETS,
   getDefaultAsset,
   findDefaultAsset,
+  USDC_MAINNET_ADDRESS,
+  USDC_DEVNET_ADDRESS,
+  USDC_TESTNET_ADDRESS,
   type SvmDefaultAsset,
 } from "./defaultAssets";
