@@ -45,3 +45,10 @@ export * from "./constants";
 
 // Export utilities
 export * from "./utils";
+
+export {
+  DEFAULT_ASSETS,
+  getDefaultAsset,
+  findDefaultAsset,
+  type SvmDefaultAsset,
+} from "./defaultAssets";

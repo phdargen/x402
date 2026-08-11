@@ -122,3 +122,25 @@ export const V1_TO_V2_NETWORK_MAP: Record<string, string> = {
   "solana-devnet": SOLANA_DEVNET_CAIP2,
   "solana-testnet": SOLANA_TESTNET_CAIP2,
 };
+
+/**
+ * Normalize v1 or CAIP-2 SVM network id to CAIP-2.
+ *
+ * @param network - V1 name or CAIP-2 id
+ * @returns CAIP-2 network identifier
+ */
+export function normalizeNetwork(network: string): string {
+  if (network.includes(":")) {
+    const supported = [SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2, SOLANA_TESTNET_CAIP2];
+    if (!supported.includes(network)) {
+      throw new Error(`Unsupported SVM network: ${network}`);
+    }
+    return network;
+  }
+
+  const caip2Network = V1_TO_V2_NETWORK_MAP[network];
+  if (!caip2Network) {
+    throw new Error(`Unsupported SVM network: ${network}`);
+  }
+  return caip2Network;
+}

@@ -30,35 +30,13 @@ import {
   SOLANA_MAINNET_CAIP2,
   SOLANA_DEVNET_CAIP2,
   SOLANA_TESTNET_CAIP2,
-  V1_TO_V2_NETWORK_MAP,
+  normalizeNetwork,
 } from "./constants";
 import type { SvmStablecoinSymbol } from "./constants";
+import { getDefaultAsset } from "./defaultAssets";
 import type { ExactSvmPayloadV1 } from "./types";
 
-/**
- * Normalize network identifier to CAIP-2 format
- * Handles both V1 names (solana, solana-devnet) and V2 CAIP-2 format
- *
- * @param network - Network identifier (V1 or V2 format)
- * @returns CAIP-2 network identifier
- */
-export function normalizeNetwork(network: Network): string {
-  // If it's already CAIP-2 format (contains ":"), validate it's supported
-  if (network.includes(":")) {
-    const supported = [SOLANA_MAINNET_CAIP2, SOLANA_DEVNET_CAIP2, SOLANA_TESTNET_CAIP2];
-    if (!supported.includes(network)) {
-      throw new Error(`Unsupported SVM network: ${network}`);
-    }
-    return network;
-  }
-
-  // Otherwise, it's a V1 network name, convert to CAIP-2
-  const caip2Network = V1_TO_V2_NETWORK_MAP[network];
-  if (!caip2Network) {
-    throw new Error(`Unsupported SVM network: ${network}`);
-  }
-  return caip2Network;
-}
+export { normalizeNetwork } from "./constants";
 
 /**
  * Validate Solana address format
@@ -264,9 +242,7 @@ export async function resolveOpenSlot(
  * @returns USDC mint address for the network
  */
 export function getUsdcAddress(network: Network): string {
-  const address = getStablecoinAddress("USDC", network);
-  if (!address) throw new Error(`No USDC address configured for network: ${network}`);
-  return address;
+  return getDefaultAsset(network).asset;
 }
 
 type StablecoinNetworkKey = "mainnet" | "devnet" | "testnet";

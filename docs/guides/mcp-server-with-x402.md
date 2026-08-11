@@ -216,7 +216,7 @@ At minimum, compare the selected requirement against your expected tool call:
 
 #### Using spend policies (recommended)
 
-Pass `policies` directly to `createx402MCPClient` to filter payment requirements before any payment is created. Policies run before the wallet signs, so they are the safest place to cap spend:
+Pass `policies` directly to `createx402MCPClient` to filter payment requirements before any payment is created. Policies run before the wallet signs, so they are the safest place to cap spend. The underlying `x402Client` also applies a default **$1 USD spend cap** on recognized stablecoins unless you override `spendControls.maxAmountPerPayment`:
 
 ```typescript
 import { createx402MCPClient } from "@x402/mcp";

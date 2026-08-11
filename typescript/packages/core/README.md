@@ -156,14 +156,42 @@ Use `fromConfig()` for declarative setup:
 const client = x402Client.fromConfig({
   schemes: [
     { network: 'eip155:8453', client: new ExactEvmScheme(evmSigner) },
-    { network: 'solana:mainnet', client: new ExactSvmScheme(svmSigner) },
+    { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', client: new ExactSvmScheme(svmSigner) },
   ],
   policies: [
     // Filter by max price
     (version, reqs) => reqs.filter(r => BigInt(r.amount) < BigInt('1000000')),
   ],
+  spendControls: {
+    // Default USD cap is $1; raise, lower, or disable with false
+    maxAmountPerPayment: '$5',
+    // Per-asset atomic cap on a specific network
+    maxAssetAmountPerPayment: [
+      { network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '2000000' },
+    ],
+    // Allowlist (omit for no allowlist). defaultAssets defaults to true.
+    allowedAssets: {
+      defaultAssets: true, // any asset findDefaultAsset recognizes (no addresses needed)
+      assets: [
+        // optional extras; with defaultAssets: false these are the only allowed assets
+        { network: 'eip155:8453', asset: '0xCustomToken' },
+      ],
+    },
+  },
 });
 ```
+
+### Spend controls
+
+`x402Client` applies three optional spend controls before creating a payment:
+
+| Control | Purpose |
+|---------|---------|
+| `maxAmountPerPayment` | USD ceiling on payments in recognized USD-pegged assets (default **`$1`**). Applies to every default asset the registered scheme's `findDefaultAsset` knows about, on any network the client supports. Set a higher `Money` value to raise the cap, or **`false`** to remove it. |
+| `maxAssetAmountPerPayment` | Per-asset override in atomic units, scoped by `network` + `asset`. |
+| `allowedAssets` | Optional allowlist. Omit for no allowlist. When set, `{ defaultAssets: true }` (the default) allows recognized default assets without listing addresses; `assets` adds (or, with `defaultAssets: false`, exclusively lists) `{ network, asset }` entries. |
+
+Network scoping is separate: register only the networks you intend to pay on (e.g. `registerExactEvmScheme(client, { signer, networks: ['eip155:8453'] })`). Unregistered networks are never selected regardless of spend controls.
 
 ## Lifecycle Hooks
 

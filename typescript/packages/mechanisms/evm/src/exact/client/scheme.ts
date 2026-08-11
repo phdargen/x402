@@ -12,6 +12,7 @@ import {
   trySignEip2612PermitExtension,
   trySignErc20ApprovalExtension,
 } from "../../shared/extensions";
+import { findDefaultAsset } from "../../defaultAssets";
 import { ExactEvmSchemeOptions } from "./rpc";
 
 /**
@@ -28,6 +29,7 @@ import { ExactEvmSchemeOptions } from "./rpc";
  */
 export class ExactEvmScheme implements SchemeNetworkClient {
   readonly scheme = "exact";
+  findDefaultAsset = findDefaultAsset;
 
   /**
    * Creates a new ExactEvmClient instance.

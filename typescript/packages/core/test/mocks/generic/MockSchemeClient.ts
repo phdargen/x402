@@ -1,4 +1,9 @@
-import { SchemeClientHooks, SchemeNetworkClient } from "../../../src/types/mechanisms";
+import {
+  DefaultAsset,
+  FindDefaultAsset,
+  SchemeClientHooks,
+  SchemeNetworkClient,
+} from "../../../src/types/mechanisms";
 import { PaymentPayload, PaymentRequirements } from "../../../src/types/payments";
 
 /**
@@ -7,6 +12,7 @@ import { PaymentPayload, PaymentRequirements } from "../../../src/types/payments
 export class MockSchemeNetworkClient implements SchemeNetworkClient {
   public readonly scheme: string;
   public readonly schemeHooks?: SchemeClientHooks;
+  public findDefaultAsset?: FindDefaultAsset;
   private payloadResult: Pick<PaymentPayload, "x402Version" | "payload"> | Error;
 
   // Call tracking
@@ -31,6 +37,15 @@ export class MockSchemeNetworkClient implements SchemeNetworkClient {
       payload: { signature: "mock_signature", from: "mock_address" },
     };
     this.schemeHooks = schemeHooks;
+  }
+
+  /** Set `findDefaultAsset` for spend-control tests. */
+  setFindDefaultAsset(lookup: FindDefaultAsset | DefaultAsset): void {
+    if (typeof lookup === "function") {
+      this.findDefaultAsset = lookup;
+    } else {
+      this.findDefaultAsset = () => lookup;
+    }
   }
 
   /**
