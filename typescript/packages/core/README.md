@@ -161,7 +161,7 @@ const client = x402Client.fromConfig({
     { network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', client: new ExactSvmScheme(svmSigner) },
   ],
   spendControls: {
-    maxAmountPerPayment: '$5', // default "$1"; false to disable
+    maxAmountPerPayment: '$5', // default "$1" on default assets; false to disable
   },
   policies: [
     // Filter: drop accepts that pay an unexpected recipient
@@ -179,24 +179,29 @@ For per-asset caps and asset allowlists, see spend controls below.
 
 Built-in safety rails applied before policies. Use these for amount and asset bounds—not for network preference.
 
+By default only assets `findDefaultAsset` recognizes are allowed, with a **`$1`** USD ceiling. Opt into other tokens via `allowedAssets`, or pass `spendControls: false` to disable all spend controls.
+
 ```typescript
 spendControls: {
-  maxAmountPerPayment: '$5', // USD cap on recognized pegged assets; false to remove
-  maxAssetAmountPerPayment: [
-    { network: 'eip155:8453', asset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', amount: '2000000' },
+  maxAmountPerPayment: '$5', // USD cap on default assets; false to remove
+  allowedAssets: [
+    // opt-in non-default with atomic cap
+    { network: 'eip155:8453', asset: '0xCustomToken', maxAmountPerPayment: '2000000' },
+    // opt-in non-default uncapped
+    { network: 'eip155:8453', asset: '0xOtherToken' },
+    // override USD cap for a default asset by ticker (or on-chain id)
+    { network: 'eip155:8453', asset: 'PYUSD', maxAmountPerPayment: '500000' },
   ],
-  allowedAssets: {
-    defaultAssets: true, // any asset findDefaultAsset recognizes
-    assets: [{ network: 'eip155:8453', asset: '0xCustomToken' }],
-  },
+  // or: allowedAssets: true  // allow any asset (USD cap still applies to defaults)
 },
+// or: spendControls: false  // disable all spend controls (any asset, no caps)
 ```
 
 | Control | Purpose |
 |---------|---------|
-| `maxAmountPerPayment` | USD ceiling on payments in recognized USD-pegged assets (default **`$1`**). Applies to every default asset the registered scheme's `findDefaultAsset` knows about, on any network the client supports. Set a higher `Money` value to raise the cap, or **`false`** to remove it. |
-| `maxAssetAmountPerPayment` | Per-asset override in atomic units, scoped by `network` + `asset`. |
-| `allowedAssets` | Optional allowlist. Omit for no allowlist. When set, `{ defaultAssets: true }` (the default) allows recognized default assets without listing addresses; `assets` adds (or, with `defaultAssets: false`, exclusively lists) `{ network, asset }` entries. |
+| `spendControls: false` | Disable all spend controls (any asset, no caps). Useful for UI-confirmed flows (paywall) and tests. |
+| `maxAmountPerPayment` | USD ceiling on payments in recognized USD-pegged assets (default **`$1`**). Applies to every default asset the registered scheme's `findDefaultAsset` knows about. Set a higher `Money` value to raise the cap, or **`false`** to remove it. |
+| `allowedAssets` | Opt-in for non-default tokens. Omit for default assets only; `true` to allow any asset; or a list of `{ network, asset }` (optional atomic `maxAmountPerPayment` per entry). `asset` may be an on-chain id or a default-asset symbol (e.g. `"PYUSD"`). |
 
 Network scoping is separate: register only the networks you intend to pay on (e.g. `registerExactEvmScheme(client, { signer, networks: ['eip155:8453'] })`). Unregistered networks are never selected regardless of spend controls.
 

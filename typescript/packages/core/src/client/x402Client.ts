@@ -2,7 +2,6 @@ import { x402Version } from "..";
 import { SchemeNetworkClient } from "../types/mechanisms";
 import { PaymentPayload, PaymentRequirements } from "../types/payments";
 import {
-  AssetAmount,
   Money,
   Network,
   PaymentRequired,
@@ -158,41 +157,40 @@ export type PaymentPolicy = (x402Version: number, paymentRequirements: PaymentRe
 export const DEFAULT_MAX_AMOUNT_PER_PAYMENT: Money = "$1";
 
 /**
- * Client spend controls (enforced before policies).
- * Network scoping is scheme registration, not a control here.
+ * Opt-in asset for {@link SpendControls.allowedAssets}.
+ * Default assets are always allowed; list non-default tokens here (and optional atomic caps).
  */
-/**
- * Asset allowlist for {@link SpendControls.allowedAssets}.
- * Omit the whole control for no allowlist. When set, `defaultAssets` defaults to true.
- */
-export interface AllowedAssets {
-  /**
-   * Accept any asset `findDefaultAsset` recognizes.
-   *
-   * @default true
-   */
-  defaultAssets?: boolean;
-  /** Extra (or sole, when `defaultAssets: false`) `{ network, asset }` entries. */
-  assets?: Array<{ asset: string; network: Network }>;
+export interface SpendControlAsset {
+  network: Network;
+  /** On-chain asset id, or a default-asset symbol (e.g. `"PYUSD"`). */
+  asset: string;
+  /** Optional atomic per-payment cap. Omit to allow uncapped. */
+  maxAmountPerPayment?: string;
 }
 
+/**
+ * Client spend controls (enforced before policies).
+ * Network scoping is scheme registration, not a control here.
+ *
+ * By default only assets `findDefaultAsset` recognizes are allowed, capped at
+ * {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}. Pass `spendControls: false` to disable
+ * all spend controls (any asset, no caps).
+ */
 export interface SpendControls {
   /**
    * Per-payment USD cap on assets `findDefaultAsset` recognizes.
-   * `false` disables. Cap other assets with `maxAssetAmountPerPayment`.
+   * `false` disables. Override per asset with `allowedAssets[].maxAmountPerPayment`.
    *
    * @default "$1"
    */
   maxAmountPerPayment?: Money | false;
   /**
-   * Per-asset atomic caps; overrides `maxAmountPerPayment` for listed assets.
+   * Opt-in non-default assets.
+   * - omit: default assets only
+   * - `true`: allow any asset (USD cap still applies to defaults)
+   * - list: defaults plus listed entries; optional atomic `maxAmountPerPayment` per entry
    */
-  maxAssetAmountPerPayment?: Array<AssetAmount & { network: Network }>;
-  /**
-   * Asset allowlist. Omit for no allowlist (any scheme-supported asset).
-   * When set, recognized default assets are allowed unless `defaultAssets: false`.
-   */
-  allowedAssets?: AllowedAssets;
+  allowedAssets?: true | SpendControlAsset[];
 }
 
 /**
@@ -231,8 +229,11 @@ export interface x402ClientConfig {
    */
   policies?: PaymentPolicy[];
 
-  /** Spend controls; default USD cap is {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}. */
-  spendControls?: SpendControls;
+  /**
+   * Spend controls; default is default assets only + {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}.
+   * Pass `false` to disable all spend controls (any asset, no caps).
+   */
+  spendControls?: SpendControls | false;
 
   /**
    * Custom payment requirements selector function
@@ -253,7 +254,7 @@ export class x402Client {
   private readonly schemeClientHookAdapters: Map<number, Map<string, Map<string, ClientHookAdapterHandles>>> = new Map();
   private readonly policies: PaymentPolicy[] = [];
   private readonly registeredExtensions: Map<string, ClientExtension> = new Map();
-  private spendControls: SpendControls = {};
+  private spendControls: SpendControls | false = {};
 
   private beforePaymentCreationHooks: BeforePaymentCreationHook[] = [];
   private afterPaymentCreationHooks: AfterPaymentCreationHook[] = [];
@@ -287,7 +288,7 @@ export class x402Client {
     config.policies?.forEach(policy => {
       client.registerPolicy(policy);
     });
-    if (config.spendControls) {
+    if (config.spendControls !== undefined) {
       client.setSpendControls(config.spendControls);
     }
     return client;
@@ -343,13 +344,14 @@ export class x402Client {
   }
 
   /**
-   * Replace spend controls. Omitted `maxAmountPerPayment` still defaults to
-   * {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}; pass `false` to disable the USD cap.
+   * Replace spend controls. Pass `false` to disable all spend controls.
+   * When an object is passed, omitted `maxAmountPerPayment` still defaults to
+   * {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}.
    *
-   * @param controls - Spend control configuration
+   * @param controls - Spend control configuration, or `false` to disable
    * @returns This client for chaining
    */
-  setSpendControls(controls: SpendControls): x402Client {
+  setSpendControls(controls: SpendControls | false): x402Client {
     this.spendControls = controls;
     return this;
   }
@@ -765,8 +767,8 @@ export class x402Client {
   }
 
   /**
-   * Filter by spend controls (allowlist → asset caps → USD cap). Keeps any
-   * accept that fits so a mixed offer can still pay the affordable option.
+   * Filter by spend controls (default-asset allowlist → opt-in assets → caps).
+   * Keeps any accept that fits so a mixed offer can still pay the affordable option.
    *
    * @param x402Version - Protocol version (v1 uses `maxAmountRequired`)
    * @param requirements - Post scheme/flow filter
@@ -779,48 +781,60 @@ export class x402Client {
     clientSchemesByNetwork: Map<string, Map<string, SchemeNetworkClient>>,
   ): PaymentRequirements[] {
     const controls = this.spendControls;
+    if (controls === false) {
+      return requirements;
+    }
+
     const amountOf = (requirement: PaymentRequirements) =>
       BigInt(
         x402Version === 1
           ? (requirement as unknown as PaymentRequirementsV1).maxAmountRequired
           : requirement.amount,
       );
-    const matches = (
-      entry: { asset: string; network: Network },
+    const schemeFor = (requirement: PaymentRequirements) =>
+      findByNetworkAndScheme(
+        clientSchemesByNetwork,
+        requirement.scheme,
+        requirement.network,
+      );
+    const defaultAssetFor = (requirement: PaymentRequirements) =>
+      schemeFor(requirement)?.findDefaultAsset?.(requirement.asset, requirement.network);
+    const matchesAssetEntry = (
+      entry: SpendControlAsset,
       requirement: PaymentRequirements,
-    ) =>
-      entry.asset.toLowerCase() === requirement.asset.toLowerCase() &&
-      networkMatchesPattern(entry.network, requirement.network);
-
-    let filtered = requirements;
-
-    if (controls.allowedAssets) {
-      const allow = controls.allowedAssets;
-      const includeDefaults = allow.defaultAssets !== false;
-      filtered = filtered.filter(requirement => {
-        if (
-          allow.assets?.some(entry => matches(entry, requirement))
-        ) {
-          return true;
-        }
-        if (!includeDefaults) {
-          return false;
-        }
-        const schemeClient = findByNetworkAndScheme(
-          clientSchemesByNetwork,
-          requirement.scheme,
-          requirement.network,
-        );
-        return (
-          schemeClient?.findDefaultAsset?.(requirement.asset, requirement.network) != null
-        );
-      });
-      if (filtered.length === 0) {
-        throw new Error(
-          `All payment requirements were rejected by spendControls.allowedAssets. ` +
-            `Set defaultAssets: true (the default), add assets entries, or omit allowedAssets.`,
-        );
+    ) => {
+      if (!networkMatchesPattern(entry.network, requirement.network)) {
+        return false;
       }
+      if (entry.asset.toLowerCase() === requirement.asset.toLowerCase()) {
+        return true;
+      }
+      const defaultAsset = defaultAssetFor(requirement);
+      return (
+        defaultAsset != null &&
+        defaultAsset.symbol.toLowerCase() === entry.asset.toLowerCase()
+      );
+    };
+    const assetEntries =
+      controls.allowedAssets === true ? undefined : controls.allowedAssets;
+    const allowAnyAsset = controls.allowedAssets === true;
+    const findAssetEntry = (requirement: PaymentRequirements) =>
+      assetEntries?.find(entry => matchesAssetEntry(entry, requirement));
+
+    let filtered = allowAnyAsset
+      ? requirements
+      : requirements.filter(requirement => {
+          if (defaultAssetFor(requirement) != null) {
+            return true;
+          }
+          return findAssetEntry(requirement) != null;
+        });
+    if (filtered.length === 0) {
+      throw new Error(
+        `All payment requirements were rejected by spendControls: only default assets ` +
+          `or entries in spendControls.allowedAssets are allowed. Add an allowedAssets ` +
+          `entry for non-default tokens, set allowedAssets: true, or set spendControls: false.`,
+      );
     }
 
     const usdLimit =
@@ -833,29 +847,20 @@ export class x402Client {
     let rejectedUsdSymbol: string | undefined;
 
     filtered = filtered.filter(requirement => {
-      const assetCap = controls.maxAssetAmountPerPayment?.find(entry =>
-        matches(entry, requirement),
-      );
-      if (assetCap) {
-        const ok = amountOf(requirement) <= BigInt(assetCap.amount);
+      const assetEntry = findAssetEntry(requirement);
+      if (assetEntry?.maxAmountPerPayment != null) {
+        const ok = amountOf(requirement) <= BigInt(assetEntry.maxAmountPerPayment);
         if (!ok) rejectedByAssetCap = true;
         return ok;
       }
 
-      if (usdLimit === false) {
+      const defaultAsset = defaultAssetFor(requirement);
+      if (!defaultAsset) {
+        // Opt-in non-default asset without a per-entry cap: uncapped.
         return true;
       }
 
-      const schemeClient = findByNetworkAndScheme(
-        clientSchemesByNetwork,
-        requirement.scheme,
-        requirement.network,
-      );
-      const defaultAsset = schemeClient?.findDefaultAsset?.(
-        requirement.asset,
-        requirement.network,
-      );
-      if (!defaultAsset) {
+      if (usdLimit === false) {
         return true;
       }
 
@@ -871,19 +876,25 @@ export class x402Client {
     });
 
     if (filtered.length === 0) {
-      if (rejectedByAssetCap && beforeAmountCaps.every(requirement =>
-        controls.maxAssetAmountPerPayment?.some(entry => matches(entry, requirement)),
-      )) {
+      if (
+        rejectedByAssetCap &&
+        beforeAmountCaps.every(requirement => {
+          const entry = findAssetEntry(requirement);
+          return entry?.maxAmountPerPayment != null;
+        })
+      ) {
         throw new Error(
-          `All payment requirements were rejected by spendControls.maxAssetAmountPerPayment. ` +
-            `Raise the per-asset cap, or remove the entry to fall back to maxAmountPerPayment.`,
+          `All payment requirements were rejected by spendControls.allowedAssets maxAmountPerPayment. ` +
+            `Raise the per-asset cap, or omit maxAmountPerPayment to allow uncapped ` +
+            `(default assets then fall back to the top-level USD cap).`,
         );
       }
       throw new Error(
         `All payment requirements were rejected by spendControls.maxAmountPerPayment ` +
           `(${String(usdLimit)}${rejectedUsdSymbol ? `, including ${rejectedUsdSymbol}` : ""}). ` +
           `Raise maxAmountPerPayment, set it to false to disable, ` +
-          `or use maxAssetAmountPerPayment for a per-asset atomic cap.`,
+          `set allowedAssets[].maxAmountPerPayment for a per-asset atomic cap, ` +
+          `or set spendControls: false to disable all spend controls.`,
       );
     }
 

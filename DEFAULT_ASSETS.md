@@ -41,7 +41,7 @@ The **first** asset in each network's array is what a bare `"$0.10"` resolves to
 
 ### USD-peg invariant
 
-All entries in `DEFAULT_ASSETS` are treated as **USD-pegged**. The client's default spend cap (`maxAmountPerPayment`, currently `$1`) applies to every asset the registered scheme's `findDefaultAsset` recognizes on any network the client supports.
+All entries in `DEFAULT_ASSETS` are treated as **USD-pegged**. By default the client only allows assets `findDefaultAsset` recognizes, with a `$1` USD spend cap (`maxAmountPerPayment`). Opt into other tokens via `spendControls.allowedAssets` (list or `true`), or pass `spendControls: false` to disable all spend controls.
 
 Adding non-USD denominations (EUR, JPY, etc.) would require:
 

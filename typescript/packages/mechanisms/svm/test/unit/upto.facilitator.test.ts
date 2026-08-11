@@ -36,10 +36,7 @@ vi.mock("../../src/utils", async () => {
   };
 });
 
-import {
-  TOKEN_PROGRAM_ADDRESS,
-  SOLANA_DEVNET_CAIP2,
-} from "../../src/constants";
+import { TOKEN_PROGRAM_ADDRESS, SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 import { buildOpenPaymentChannelTransaction } from "../../src/payment-channels/open";
 import { signVoucher } from "../../src/payment-channels/voucher";

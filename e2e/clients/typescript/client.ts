@@ -285,7 +285,12 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     });
   }
 
-  const client = x402Client.fromConfig({ schemes });
+  // E2e exercises custom assets and amounts above the default $1 USD cap.
+  const client = x402Client.fromConfig({
+    schemes,
+    spendControls: false,
+  });
+
   const batchSettlementPhase = process.env.EVM_BATCH_SETTLEMENT_PHASE as BatchSettlementPhase | undefined;
 
   return { url, client, schemes, batchSettlementScheme, batchSettlementPhase };

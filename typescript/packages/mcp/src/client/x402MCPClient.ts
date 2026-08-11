@@ -910,8 +910,8 @@ export interface x402MCPClientConfig {
    */
   policies?: PaymentPolicy[];
 
-  /** Forwarded to x402Client (default USD cap `$1`). */
-  spendControls?: SpendControls;
+  /** Forwarded to x402Client (default assets only + `$1` USD cap; `false` disables all). */
+  spendControls?: SpendControls | false;
 
   /**
    * Custom selector for which accept entry to pay.

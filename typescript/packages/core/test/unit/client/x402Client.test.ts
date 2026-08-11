@@ -100,10 +100,13 @@ describe("x402Client", () => {
       const paymentRequired = buildPaymentRequired({
         x402Version: 1,
         accepts: [
-          buildPaymentRequirements({
-            scheme: "v1-scheme",
-            network: "base-sepolia" as Network,
-          }),
+          {
+            ...buildPaymentRequirements({
+              scheme: "v1-scheme",
+              network: "base-sepolia" as Network,
+            }),
+            maxAmountRequired: "1000000",
+          } as unknown as PaymentRequirements,
         ],
       });
 
@@ -1319,7 +1322,7 @@ describe("x402Client", () => {
       );
       const client = new x402Client();
       client.register(network, mockClient);
-      if (controls) {
+      if (controls !== undefined) {
         client.setSpendControls(controls);
       }
       return { client, mockClient };
@@ -1410,15 +1413,87 @@ describe("x402Client", () => {
       ).rejects.toThrow(/maxAmountPerPayment/);
     });
 
-    it("leaves unrecognized assets and schemes without findDefaultAsset uncapped by the USD cap", async () => {
-      const { client, mockClient } = clientWithDefaultAsset();
+    it("rejects unrecognized assets by default and schemes without findDefaultAsset", async () => {
+      const { client } = clientWithDefaultAsset();
+      await expect(
+        client.createPaymentPayload(
+          buildPaymentRequired({
+            accepts: [
+              buildPaymentRequirements({
+                scheme: "exact",
+                network,
+                asset: "0xCustomUnknownToken",
+                amount: "1",
+              }),
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/spendControls\.allowedAssets/);
+
+      const bare = new MockSchemeNetworkClient("exact");
+      bare.clearFindDefaultAsset();
+      const bareClient = new x402Client();
+      bareClient.register(network, bare);
+      await expect(
+        bareClient.createPaymentPayload(
+          buildPaymentRequired({
+            accepts: [
+              buildPaymentRequirements({
+                scheme: "exact",
+                network,
+                asset: usdc.asset,
+                amount: "1",
+              }),
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/spendControls\.allowedAssets/);
+    });
+
+    it("spendControls: false disables allowlist and USD cap", async () => {
+      const custom = "0xCustomUnknownToken";
+      const { client, mockClient } = clientWithDefaultAsset(usdc, false);
+
       await client.createPaymentPayload(
         buildPaymentRequired({
           accepts: [
             buildPaymentRequirements({
               scheme: "exact",
               network,
-              asset: "0xCustomUnknownToken",
+              asset: custom,
+              amount: "999999999999",
+            }),
+          ],
+        }),
+      );
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "5000000",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls).toHaveLength(2);
+    });
+
+    it("allowedAssets: true allows any asset while still applying the USD cap to defaults", async () => {
+      const custom = "0xCustomUnknownToken";
+      const { client, mockClient } = clientWithDefaultAsset(usdc, {
+        allowedAssets: true,
+      });
+
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: custom,
               amount: "999999999999",
             }),
           ],
@@ -1426,22 +1501,20 @@ describe("x402Client", () => {
       );
       expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
 
-      const bare = new MockSchemeNetworkClient("exact");
-      const bareClient = new x402Client();
-      bareClient.register(network, bare);
-      await bareClient.createPaymentPayload(
-        buildPaymentRequired({
-          accepts: [
-            buildPaymentRequirements({
-              scheme: "exact",
-              network,
-              asset: usdc.asset,
-              amount: "999999999999",
-            }),
-          ],
-        }),
-      );
-      expect(bare.createPaymentPayloadCalls).toHaveLength(1);
+      await expect(
+        client.createPaymentPayload(
+          buildPaymentRequired({
+            accepts: [
+              buildPaymentRequirements({
+                scheme: "exact",
+                network,
+                asset: usdc.asset,
+                amount: "1000001",
+              }),
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/maxAmountPerPayment/);
     });
 
     it("scales the USD cap for an 18-decimal default asset", async () => {
@@ -1538,17 +1611,14 @@ describe("x402Client", () => {
       expect(mockNum.createPaymentPayloadCalls).toHaveLength(1);
     });
 
-    it("applies maxAssetAmountPerPayment over the USD cap in both directions", async () => {
+    it("allows opt-in assets uncapped or with an atomic maxAmountPerPayment", async () => {
       const customAsset = "0xCustomToken";
-      const { client, mockClient } = clientWithDefaultAsset(usdc, {
-        maxAssetAmountPerPayment: [
-          { asset: customAsset, network, amount: "10000" },
-          { asset: usdc.asset, network, amount: "500000" }, // $0.50 override below $1
-        ],
+      const { client: cappedClient } = clientWithDefaultAsset(usdc, {
+        allowedAssets: [{ asset: customAsset, network, maxAmountPerPayment: "10000" }],
       });
 
       await expect(
-        client.createPaymentPayload(
+        cappedClient.createPaymentPayload(
           buildPaymentRequired({
             accepts: [
               buildPaymentRequirements({
@@ -1560,24 +1630,47 @@ describe("x402Client", () => {
             ],
           }),
         ),
-      ).rejects.toThrow(/maxAssetAmountPerPayment/);
+      ).rejects.toThrow(/allowedAssets maxAmountPerPayment/);
+
+      const { client: uncappedClient, mockClient } = clientWithDefaultAsset(usdc, {
+        allowedAssets: [{ asset: customAsset.toLowerCase(), network: "eip155:*" as Network }],
+      });
+      await uncappedClient.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: customAsset,
+              amount: "999999999999",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
+    });
+
+    it("overrides the USD cap for default assets by id or symbol", async () => {
+      const { client: byId, mockClient: mockById } = clientWithDefaultAsset(usdc, {
+        allowedAssets: [{ asset: usdc.asset, network, maxAmountPerPayment: "500000" }],
+      });
 
       await expect(
-        client.createPaymentPayload(
+        byId.createPaymentPayload(
           buildPaymentRequired({
             accepts: [
               buildPaymentRequirements({
                 scheme: "exact",
                 network,
                 asset: usdc.asset,
-                amount: "600000", // under $1 but over per-asset cap
+                amount: "600000",
               }),
             ],
           }),
         ),
-      ).rejects.toThrow(/maxAssetAmountPerPayment/);
+      ).rejects.toThrow(/allowedAssets maxAmountPerPayment/);
 
-      await client.createPaymentPayload(
+      await byId.createPaymentPayload(
         buildPaymentRequired({
           accepts: [
             buildPaymentRequirements({
@@ -1589,53 +1682,54 @@ describe("x402Client", () => {
           ],
         }),
       );
-      expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
-    });
+      expect(mockById.createPaymentPayloadCalls).toHaveLength(1);
 
-    it("allowedAssets defaults-only rejects unrecognized assets", async () => {
-      const { client, mockClient } = clientWithDefaultAsset(usdc, {
-        maxAmountPerPayment: false,
-        allowedAssets: {}, // defaultAssets defaults to true
+      const pyusd = {
+        asset: "0xPayPalUsdAsset000000000000000000000001",
+        decimals: 6,
+        symbol: "PYUSD",
+      };
+      const mockPyusd = new MockSchemeNetworkClient("exact");
+      mockPyusd.setFindDefaultAsset((asset, _network) =>
+        asset.toLowerCase() === pyusd.asset.toLowerCase() ? pyusd : undefined,
+      );
+      const clientBySymbol = new x402Client().register(network, mockPyusd).setSpendControls({
+        allowedAssets: [{ asset: "pyusd", network, maxAmountPerPayment: "500000" }],
       });
 
       await expect(
-        client.createPaymentPayload(
+        clientBySymbol.createPaymentPayload(
           buildPaymentRequired({
             accepts: [
               buildPaymentRequirements({
                 scheme: "exact",
                 network,
-                asset: "0xOtherToken",
-                amount: "1",
+                asset: pyusd.asset,
+                amount: "600000",
               }),
             ],
           }),
         ),
-      ).rejects.toThrow(/allowedAssets/);
+      ).rejects.toThrow(/allowedAssets maxAmountPerPayment/);
 
-      await client.createPaymentPayload(
+      await clientBySymbol.createPaymentPayload(
         buildPaymentRequired({
           accepts: [
             buildPaymentRequirements({
               scheme: "exact",
               network,
-              asset: usdc.asset,
-              amount: "1",
+              asset: pyusd.asset,
+              amount: "400000",
             }),
           ],
         }),
       );
-      expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
+      expect(mockPyusd.createPaymentPayloadCalls).toHaveLength(1);
     });
 
-    it("allowedAssets assets list honors wildcards and mixed-case with defaultAssets false", async () => {
-      const custom = "0xCustomToken";
-      const { client, mockClient } = clientWithDefaultAsset(usdc, {
-        maxAmountPerPayment: false,
-        allowedAssets: {
-          defaultAssets: false,
-          assets: [{ asset: custom.toLowerCase(), network: "eip155:*" as Network }],
-        },
+    it("keeps the USD cap when a default asset is listed without a per-entry cap", async () => {
+      const { client } = clientWithDefaultAsset(usdc, {
+        allowedAssets: [{ asset: usdc.symbol, network }],
       });
 
       await expect(
@@ -1646,35 +1740,19 @@ describe("x402Client", () => {
                 scheme: "exact",
                 network,
                 asset: usdc.asset,
-                amount: "1",
+                amount: "1000001",
               }),
             ],
           }),
         ),
-      ).rejects.toThrow(/allowedAssets/);
-
-      await client.createPaymentPayload(
-        buildPaymentRequired({
-          accepts: [
-            buildPaymentRequirements({
-              scheme: "exact",
-              network,
-              asset: custom,
-              amount: "1",
-            }),
-          ],
-        }),
-      );
-      expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
+      ).rejects.toThrow(/maxAmountPerPayment/);
     });
 
-    it("allowedAssets includes defaults plus listed custom assets", async () => {
+    it("allows defaults plus listed custom assets", async () => {
       const custom = "0xCustomToken";
       const { client, mockClient } = clientWithDefaultAsset(usdc, {
         maxAmountPerPayment: false,
-        allowedAssets: {
-          assets: [{ asset: custom, network }],
-        },
+        allowedAssets: [{ asset: custom, network }],
       });
 
       await client.createPaymentPayload(

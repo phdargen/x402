@@ -37,6 +37,13 @@ export class MockSchemeNetworkClient implements SchemeNetworkClient {
       payload: { signature: "mock_signature", from: "mock_address" },
     };
     this.schemeHooks = schemeHooks;
+    // Treat any asset as a recognized default so non-spend-control tests pass
+    // the default allowlist (USD cap still applies unless overridden).
+    this.findDefaultAsset = (asset: string) => ({
+      asset,
+      decimals: 6,
+      symbol: "MOCK",
+    });
   }
 
   /** Set `findDefaultAsset` for spend-control tests. */
@@ -46,6 +53,11 @@ export class MockSchemeNetworkClient implements SchemeNetworkClient {
     } else {
       this.findDefaultAsset = () => lookup;
     }
+  }
+
+  /** Clear `findDefaultAsset` (scheme does not participate in default-asset spend controls). */
+  clearFindDefaultAsset(): void {
+    this.findDefaultAsset = undefined;
   }
 
   /**
