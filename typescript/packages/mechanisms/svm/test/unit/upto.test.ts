@@ -662,7 +662,7 @@ describe("upto SVM scheme", () => {
       );
     });
 
-    it("simulates open∥settle∥distribute with sigVerify disabled", async () => {
+    it("simulates open + settle + distribute with sigVerify disabled", async () => {
       const payer = await generateKeyPairSigner();
       const feePayer = await generateKeyPairSigner();
       const receiverAuthorizer = await generateKeyPairSigner();

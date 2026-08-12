@@ -25,7 +25,6 @@ import {
   channelExists,
   fetchAndVerifyOpenChannel,
   simulateOpenSettleDistribute,
-  simulateZeroChargeSettle,
   submitSettle,
   type UptoSvmSigner,
 } from "./channel";
@@ -41,6 +40,9 @@ export const ERR_SETTLEMENT_EXCEEDS_AMOUNT = "invalid_upto_svm_payload_settlemen
 
 /** Client-supplied voucher at verify / deposit settle (claim-only field). */
 export const ERR_UNEXPECTED_VOUCHER = "invalid_upto_svm_payload_unexpected_voucher";
+
+/** Deposit settle when the channel PDA already exists (one request, one open). */
+export const ERR_CHANNEL_ALREADY_OPEN = "invalid_upto_svm_channel_already_open";
 
 /** Context passed to {@link UptoSvmFacilitatorConfig.onStorageError}. */
 export type UptoChannelStorageErrorContext = {
@@ -261,8 +263,8 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Deposit path: validate open authorization, then sim → broadcast → bind
-   * (idempotent when the channel is already open).
+   * Deposit path: validate open authorization, then sim → broadcast → bind.
+   * Rejects when the channel already exists (one request, one open).
    *
    * @param payload - The payment payload
    * @param requirements - Requirements with amount = authorized ceiling
@@ -290,61 +292,69 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     const feePayer = channelConfig.feePayer;
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
 
-    // Escrow the ceiling before resource execution. Fresh opens: simulate
-    // open∥settle∥distribute before broadcast so settlement-account failures
-    // reject without locking the deposit. Already-open: settle-only sim after
-    // binding the confirmed account (composite open is not in that path).
-    const alreadyOpen = await channelExists(rpc, p.channelId);
-    const simChannel = {
-      channelId: p.channelId,
-      mint: requirements.asset,
-      network: requirements.network,
-      payee: feePayer,
-      payer: p.from,
-      rentPayer: feePayer,
-      splits: channelConfig.splits,
-      tokenProgram,
-    };
-
-    let openSignature = "";
-    if (!alreadyOpen) {
-      try {
-        await simulateOpenSettleDistribute(feePayerSigner, rpc, {
-          openTransactionBase64: p.openTransaction,
-          channel: simChannel,
-        });
-      } catch (error) {
-        return {
-          success: false,
-          network: payload.accepted.network,
-          transaction: "",
-          errorReason: "invalid_upto_svm_settlement_simulation",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          payer: p.from,
-        };
-      }
-      try {
-        openSignature = await broadcastOpen(
-          this.signer,
-          feePayer as Address,
-          requirements.network,
-          p.openTransaction,
-        );
-      } catch (error) {
-        return {
-          success: false,
-          network: payload.accepted.network,
-          transaction: "",
-          errorReason: "invalid_upto_svm_channel_broadcast",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          payer: p.from,
-        };
-      }
+    // One authorization → one deposit open. A confirmed channel is replay or a
+    // stranded prior open, not a supported re-bind path; handler failure after
+    // a successful deposit uses the zero-amount cancel/refund settle instead.
+    if (await channelExists(rpc, p.channelId)) {
+      return this.settleFailure(payload, ERR_CHANNEL_ALREADY_OPEN, p.from);
     }
 
-    let channel: Awaited<ReturnType<typeof fetchAndVerifyOpenChannel>>;
+    // Race: two deposit settles can both see "channel missing", broadcast the
+    // same open, and both get success back from RPC. Dedup here so only one
+    // proceeds. Key is deposit-scoped so this does not block the later claim.
+    const depositKey = `upto:deposit:${requirements.network}:${p.channelId}`;
+    if (this.settlementCache.isDuplicate(depositKey)) {
+      return this.settleFailure(payload, "duplicate_settlement", p.from);
+    }
+
+    // Simulate open + settle + distribute before broadcast so settlement-account
+    // failures reject without locking the deposit.
     try {
-      channel = await fetchAndVerifyOpenChannel(rpc, p.channelId, {
+      await simulateOpenSettleDistribute(feePayerSigner, rpc, {
+        openTransactionBase64: p.openTransaction,
+        channel: {
+          channelId: p.channelId,
+          mint: requirements.asset,
+          network: requirements.network,
+          payee: feePayer,
+          payer: p.from,
+          rentPayer: feePayer,
+          splits: channelConfig.splits,
+          tokenProgram,
+        },
+      });
+    } catch (error) {
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_settlement_simulation",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        payer: p.from,
+      };
+    }
+
+    let openSignature: string;
+    try {
+      openSignature = await broadcastOpen(
+        this.signer,
+        feePayer as Address,
+        requirements.network,
+        p.openTransaction,
+      );
+    } catch (error) {
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "invalid_upto_svm_channel_broadcast",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        payer: p.from,
+      };
+    }
+
+    try {
+      await fetchAndVerifyOpenChannel(rpc, p.channelId, {
         authorizedSigner: channelConfig.receiverAuthorizer,
         deposit: maxAmount,
         gracePeriod: channelConfig.withdrawDelay,
@@ -363,30 +373,6 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         errorMessage: error instanceof Error ? error.message : String(error),
         payer: p.from,
       };
-    }
-
-    if (alreadyOpen) {
-      try {
-        await simulateZeroChargeSettle(feePayerSigner, rpc, {
-          channelId: channel.channelId,
-          mint: channel.mint,
-          network: requirements.network,
-          payee: channel.payee,
-          payer: channel.payer,
-          rentPayer: channel.rentPayer,
-          splits: channel.splits,
-          tokenProgram,
-        });
-      } catch (error) {
-        return {
-          success: false,
-          network: payload.accepted.network,
-          transaction: "",
-          errorReason: "invalid_upto_svm_settlement_simulation",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          payer: p.from,
-        };
-      }
     }
 
     await this.upsertChannelStorage("settle", {

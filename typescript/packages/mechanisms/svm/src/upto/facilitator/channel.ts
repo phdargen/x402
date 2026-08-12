@@ -1,8 +1,7 @@
 /**
  * Channel-flow glue for the `upto` facilitator: co-signing, broadcasting the
- * client `open` (idempotent), simulating settlement readiness (atomic
- * open∥settle∥distribute before open; settle-only once open), and submitting
- * settle+distribute.
+ * client `open`, simulating settlement readiness (atomic open + settle +
+ * distribute before open), and submitting settle+distribute.
  *
  * Kept separate from the scheme orchestration so the onchain mechanics stay
  * readable. All RPC access is threaded in by the caller.
@@ -213,7 +212,7 @@ export interface SettlementSimChannel {
 }
 
 /**
- * Simulate `open ∥ settle_and_seal(has_voucher=0) ∥ distribute` against live
+ * Simulate `open` + `settle_and_seal(has_voucher=0)` + `distribute` against live
  * state before broadcasting open, so settlement-account failures reject without
  * escrowing the deposit. Never broadcast — only the original open-only tx is.
  *

@@ -46,7 +46,11 @@ import { buildOpenPaymentChannelTransaction } from "../../src/payment-channels/o
 import { signVoucher } from "../../src/payment-channels/voucher";
 import { toFacilitatorSvmSigner } from "../../src/signer";
 import type { FacilitatorSvmSigner } from "../../src/signer";
-import { ERR_UNEXPECTED_VOUCHER, UptoSvmScheme } from "../../src/upto/facilitator/scheme";
+import {
+  ERR_CHANNEL_ALREADY_OPEN,
+  ERR_UNEXPECTED_VOUCHER,
+  UptoSvmScheme,
+} from "../../src/upto/facilitator/scheme";
 import type { UptoChannelStorage } from "../../src/upto/facilitator/channelStorage";
 import { UptoSvmRentCleanupManager } from "../../src/upto/facilitator/rentCleanupManager";
 import type { UptoSvmPayloadV2 } from "../../src/types";
@@ -58,7 +62,7 @@ const FAR_FUTURE = 4_102_444_800;
 describe("UptoSvmScheme facilitator channel lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    channelMocks.channelExists.mockResolvedValue(true);
+    channelMocks.channelExists.mockResolvedValue(false);
     channelMocks.simulateOpenSettleDistribute.mockResolvedValue(undefined);
     channelMocks.simulateZeroChargeSettle.mockResolvedValue(undefined);
     channelMocks.broadcastOpen.mockResolvedValue(USDC_MAINNET_ADDRESS);
@@ -184,20 +188,54 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(channelMocks.simulateZeroChargeSettle).not.toHaveBeenCalled();
   });
 
-  it("deposit settle is idempotent for an already-open channel", async () => {
+  it("rejects deposit settle when the channel already exists", async () => {
     const { facilitator, payload, requirements } = await buildFixture();
+    channelMocks.channelExists.mockResolvedValue(true);
+
+    await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
+      success: false,
+      errorReason: ERR_CHANNEL_ALREADY_OPEN,
+    });
+    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
+    expect(channelMocks.simulateOpenSettleDistribute).not.toHaveBeenCalled();
+    expect(channelMocks.simulateZeroChargeSettle).not.toHaveBeenCalled();
+    expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+  });
+
+  it("rejects concurrent deposit settles for the same channel", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+
+    const results = await Promise.all([
+      facilitator.settle(payload, requirements),
+      facilitator.settle(payload, requirements),
+    ]);
+
+    const successes = results.filter(r => r.success);
+    const duplicates = results.filter(r => r.errorReason === "duplicate_settlement");
+    expect(successes).toHaveLength(1);
+    expect(duplicates).toHaveLength(1);
+    expect(channelMocks.broadcastOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a successful deposit claim-cache-block the later claim settle", async () => {
+    const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+      await buildFixture();
 
     await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
       success: true,
-      amount: "1000000",
     });
-    await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
-      success: true,
-      amount: "1000000",
+    const voucherSignature = await signVoucher(receiverAuthorizer, {
+      channelId: uptoPayload.channelId,
+      cumulativeAmount: 0n,
+      expiresAt: BigInt(FAR_FUTURE),
     });
-    expect(channelMocks.fetchAndVerifyOpenChannel).toHaveBeenCalledTimes(2);
-    expect(channelMocks.simulateZeroChargeSettle).toHaveBeenCalledTimes(2);
-    expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
+    await expect(
+      facilitator.settle(
+        { ...payload, payload: { ...uptoPayload, voucherSignature } },
+        { ...requirements, amount: "0" },
+      ),
+    ).resolves.toMatchObject({ success: true, amount: "0" });
+    expect(channelMocks.submitSettle).toHaveBeenCalledTimes(1);
   });
 
   it("indexes the channel on deposit settle and retains it after claim", async () => {
@@ -236,7 +274,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(afterSettle!.expiresAt).toBe(expiresAt);
   });
 
-  it("simulates open∥settle∥distribute before broadcasting a fresh open on deposit settle", async () => {
+  it("simulates open + settle + distribute before broadcasting a fresh open on deposit settle", async () => {
     const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
     channelMocks.channelExists.mockResolvedValue(false);
 

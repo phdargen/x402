@@ -64,7 +64,7 @@ See [Security Properties](#8-security-properties).
 
 | Requirement (generic spec) | SVM mechanism |
 |---|---|
-| Single-use authorization | The x402 authorization is a one-request channel. Settlement uses `settle_and_seal` followed by a final `distribute`; after sealing and final distribution, the authorization cannot be used again for `upto`. |
+| Single-use authorization | The x402 authorization is a one-request channel. Deposit settle MUST open that channel itself and MUST reject if the channel account already exists. Settlement uses `settle_and_seal` followed by a final `distribute`; after sealing and final distribution, the authorization cannot be used again for `upto`. |
 | Time-bound validity (`validAfter`, `expiresAt`) | `expiresAt` is signed by `receiverAuthorizer` into the voucher and enforced by the program (`now < expiresAt`). Although the program supports `expires_at == 0` as no expiry, SVM `upto` MUST reject `expiresAt == 0`. `validAfter` is offchain verify-time policy. Neither value is client-bound; the client signs only `open`. |
 | Recipient binding | The `open` transaction fixes `distribution_hash`. For this scheme the distribution is always the single explicit entry `[{ recipient: payTo, bps: 10000 }]`; the channel payee (the facilitator) holds the implicit remainder, which is zero. The program re-checks the distribution at `distribute`. |
 | Maximum amount enforcement | Onchain `deposit` is the ceiling and vouchers must satisfy `settled < cumulative_amount <= deposit`; the verifier pins `deposit == maxAmount` so the x402 ceiling is exact, not advisory. |
@@ -366,8 +366,8 @@ same static checks below without co-signing or broadcasting `open`.
 The facilitator distinguishes deposit vs claim settles from payload and channel
 state ([x402 v2 §7.2](../../x402-specification-v2.md)): no
 `payload.voucherSignature` and `paymentRequirements.amount == payload.maxAmount`
-→ deposit (broadcast `open` if needed, else idempotent re-bind); voucher present
-→ claim (Phase 4); otherwise reject.
+→ deposit (broadcast a fresh `open`; reject if the channel already exists);
+voucher present → claim (Phase 4); otherwise reject.
 
 #### Client-supplied `openTransaction` acceptance policy
 
@@ -476,39 +476,38 @@ The server/facilitator MUST, in order:
 3. Confirm `extra.feePayer` is the sponsor key that will co-sign the
    transaction, `extra.receiverAuthorizer` is the server's configured receiver
    authorizer, and `extra.withdrawDelay` is an integer greater than zero.
-4. Confirm the channel is open:
-   - If it does not yet exist, validate `openTransaction` against the complete
-     acceptance policy above; confirm settlement readiness (step 7) for the
-     expected post-open path; then co-sign, broadcast, and wait until the
-     channel account is confirmed `Open`.
-   - After the channel is open, confirm `channel.deposit == maxAmount` (exact,
-     not `>=`: `top_up` can raise an open channel's deposit, so equality keeps
-     the x402 ceiling enforced), `channel.status == Open`,
-     `channel.mint == asset`,
-     `channel.payee == channel.rent_payer == extra.feePayer`,
-     `channel.authorized_signer == extra.receiverAuthorizer`,
-     `channel.grace_period == extra.withdrawDelay`,
-     `channel.open_slot == payload.openSlot`, and `distribution_hash` matches
-     the intended `payTo` distribution.
+4. Confirm the channel account does not already exist. If it does, reject with
+   `invalid_upto_svm_channel_already_open`. Deposit settle MUST open the
+   channel itself for this authorization; out-of-band opens, prior deposits,
+   and replay of an already-opened `channelId` MUST NOT succeed. Handler
+   failure after a successful deposit is recovered by the zero-amount cancel /
+   refund claim settle (Phase 4), not by re-accepting the same deposit.
 5. Confirm `payload.channelId` equals the PDA derived from `from`,
    `extra.feePayer`, `asset`, `extra.receiverAuthorizer`, `nonce`, and
    `openSlot` under the canonical program id.
-6. Validate `validAfter <= now < expiresAt` and reject `expiresAt == 0`.
-7. Confirm settlement readiness before accepting the payment. The facilitator
-   MUST confirm that the expected settlement path can succeed for the
-   challenge-bound mint, token program, payer, payee, treasury, and
-   distribution recipients — so verify fails without escrowing when settlement
-   accounts are unusable. When the channel does not yet exist, that check MUST
-   happen before co-signing/broadcasting `open`. When the channel already
-   exists, the check MUST happen before accepting the payment. This can be implemented through
+6. Validate `openTransaction` against the complete acceptance policy above.
+7. Validate `validAfter <= now < expiresAt` and reject `expiresAt == 0`.
+8. Confirm settlement readiness before co-signing/broadcasting `open`. The
+   facilitator MUST confirm that the expected settlement path can succeed for
+   the challenge-bound mint, token program, payer, payee, treasury, and
+   distribution recipients — so deposit fails without escrowing when
+   settlement accounts are unusable. This can be implemented through
    - **Simulation:** a facilitator-built composite of `open`,
-     `settle_and_seal` with `has_voucher = 0`, and `distribute` before open
-     (when the channel does not yet exist); and/or settle∥distribute once the
-     channel is open; and/or
+     `settle_and_seal` with `has_voucher = 0`, and `distribute`; and/or
    - **Targeted checks:** derive and inspect the settlement ATAs (payer
      refund, payee, treasury, recipient tails) and other accounts the program
      will require on `distribute`, rejecting when missing, wrong owner/mint,
      frozen, or otherwise unusable per the program rules.
+9. Co-sign, broadcast, and wait until the channel account is confirmed `Open`.
+10. Confirm the freshly opened channel binds the challenge:
+    `channel.deposit == maxAmount` (exact, not `>=`: `top_up` can raise an open
+    channel's deposit, so equality keeps the x402 ceiling enforced),
+    `channel.status == Open`, `channel.mint == asset`,
+    `channel.payee == channel.rent_payer == extra.feePayer`,
+    `channel.authorized_signer == extra.receiverAuthorizer`,
+    `channel.grace_period == extra.withdrawDelay`,
+    `channel.open_slot == payload.openSlot`, and `distribution_hash` matches
+    the intended `payTo` distribution.
 
 On failure the server returns `402` (or `412` for the open precondition) without
 serving the resource.
@@ -655,35 +654,46 @@ the full deposit to the client.
 
 Exact SVM replays a client-built transfer transaction. Concurrent `/settle`
 calls with the same payload typically observe the same successful signature
-because Solana deduplicates identical transactions. `upto` is different: the
-facilitator builds `settle_and_seal` + `distribute` at settle time, so the
-outcome depends on whether the settlement inputs collide:
+because Solana deduplicates identical transactions. `upto` has the same
+HTTP-vs-ledger gap on both escrow settles:
 
-- **Same voucher and blockhash:** Solana deduplicates the identical
-  transaction. Only one lands onchain, but every `/settle` caller can still
-  observe that success and release the protected resource more than once for
-  a single payment.
-- **Different vouchers (or a fresh blockhash):** each call builds a distinct
-  transaction. One seals the channel; the others fail after broadcast, wasting
-  facilitator fees. Onchain state is single-winner, but the failed attempts
-  still cost gas.
+- **Deposit (`open`):** concurrent deposit settles can all observe
+  `channelExists == false`, co-sign the same client `openTransaction`, and each
+  observe Solana's idempotent success for that open — unlocking the protected
+  resource more than once against a single deposit. Separately, a later deposit
+  settle after the channel account is confirmed MUST fail with
+  `invalid_upto_svm_channel_already_open` (Phase 3); the cache alone is not
+  durable across restarts, replicas, or the cache TTL.
+- **Claim (`settle_and_seal` + `distribute`):** the facilitator builds the
+  settlement transaction at settle time. Same voucher and blockhash → Solana
+  deduplicates, but every `/settle` caller can still observe success. Different
+  vouchers or a fresh blockhash → one seals; the others fail after broadcast and
+  waste facilitator fees.
 
 Facilitators MUST therefore maintain a short-term, in-memory settlement cache
-of channels currently being settled. The canonical cache key is
-`upto:<network>:<channelId>`, where `<network>` is the CAIP-2 network from
+keyed by settle phase and channel. `<network>` is the CAIP-2 network from
 `paymentRequirements.network` and `<channelId>` is the Base58 channel PDA from
-the payload. Before broadcast:
+the payload:
 
-1. After voucher authentication and open-channel rebind succeed, derive the
-   canonical cache key.
+| Settle | Cache key | When to check |
+|---|---|---|
+| Deposit | `upto:deposit:<network>:<channelId>` | After the channel-does-not-exist check succeeds, before simulating or broadcasting `open` |
+| Claim | `upto:<network>:<channelId>` | After voucher authentication and open-channel rebind succeed, before broadcasting settlement |
+
+Deposit and claim MUST use distinct keys so a successful deposit does not block
+the later claim settle for the same channel.
+
+Before the phase's broadcast:
+
+1. Derive the phase's canonical cache key.
 2. If the key is already present in the cache, reject with
-   `duplicate_settlement` and MUST NOT broadcast — regardless of metered
-   amount or voucher bytes.
+   `duplicate_settlement` and MUST NOT broadcast.
 3. If the key is not present, insert it into the cache and proceed with
    broadcast.
 4. Evict entries older than 120 seconds (approximately twice the Solana
-   blockhash lifetime of ~60–90 seconds). Invalid vouchers and failed
-   channel rebinds MUST NOT insert into the cache.
+   blockhash lifetime of ~60–90 seconds). Deposit settles that fail the
+   already-open check, and claim settles that fail voucher authentication or
+   channel rebind, MUST NOT insert into the cache.
 
 ## 6. Asynchronous Recovery and Channel Discovery
 
@@ -791,13 +801,17 @@ Standard x402 codes apply. Scheme-specific:
 - `invalid_upto_svm_payload_settlement_exceeds_amount` - actual amount exceeds
   the signed ceiling.
 - `invalid_upto_svm_settlement_simulation` - settlement-readiness simulation
-  (`open∥settle∥distribute` or settle-only) failed before accepting the payment.
+  (`open` + settle + distribute, or settle-only) failed before accepting the payment.
 - `invalid_upto_svm_channel_broadcast` - co-sign, send, or confirm of the channel
   `open` transaction failed.
 - `invalid_upto_svm_channel_state` - confirmed channel account is missing or does
-  not match challenge-bound terms (also returned from settle when re-bind fails).
-- `duplicate_settlement` - the settlement cache already holds the channel; a
-  later settle (including a different valid amount or voucher) MUST NOT be
+  not match challenge-bound terms (also returned from claim settle when re-bind
+  fails).
+- `invalid_upto_svm_channel_already_open` - deposit settle found an existing
+  channel account for `payload.channelId`; the authorization is already in use
+  or was opened outside this deposit settle.
+- `duplicate_settlement` - the settlement cache already holds this settle phase
+  for the channel; a concurrent or replayed deposit or claim settle MUST NOT
   broadcast.
 - `CHANNEL_REQUIRED` (with `412`) - no open channel and no valid
   `openTransaction` that can be co-signed, broadcast, and confirmed before
@@ -834,10 +848,15 @@ Standard x402 codes apply. Scheme-specific:
   unsettled voucher value as facilitator credit risk. During a
   client-initiated `Closing` grace period, only the facilitator can commit
   the final voucher.
-- **No replay.** Vouchers are scoped to `channelId`, monotonic in
+- **No replay.** Each authorization is one request and one channel. Deposit
+  settle MUST reject an already-existing channel account
+  (`invalid_upto_svm_channel_already_open`) and MUST dedup in-flight deposit
+  settles via the short-term cache so concurrent opens cannot each observe
+  success against one deposit. Vouchers are scoped to `channelId`, monotonic in
   `cumulativeAmount`, and the x402 flow seals and distributes the channel once
   for the request. `openSlot` is part of the channel PDA derivation for the
-  current program version.
+  current program version. See
+  [Duplicate Settlement Mitigation](#duplicate-settlement-mitigation).
 - **Client gaslessness.** The client supplies the stablecoin deposit and signs
   `open`; `feePayer` signs the transaction and funds SOL fees/rent. The
   verifier MUST enforce the Phase 3 `openTransaction` acceptance policy so the

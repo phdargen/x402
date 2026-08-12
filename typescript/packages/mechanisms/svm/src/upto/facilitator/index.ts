@@ -1,4 +1,9 @@
-export { ERR_SETTLEMENT_EXCEEDS_AMOUNT, ERR_UNEXPECTED_VOUCHER, UptoSvmScheme } from "./scheme";
+export {
+  ERR_CHANNEL_ALREADY_OPEN,
+  ERR_SETTLEMENT_EXCEEDS_AMOUNT,
+  ERR_UNEXPECTED_VOUCHER,
+  UptoSvmScheme,
+} from "./scheme";
 export type { UptoChannelStorageErrorContext, UptoSvmFacilitatorConfig } from "./scheme";
 export type { UptoSvmSigner } from "./channel";
 export { InMemoryUptoChannelStorage } from "./channelStorage";
