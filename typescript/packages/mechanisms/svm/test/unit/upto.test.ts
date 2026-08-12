@@ -1,4 +1,16 @@
-import { address, generateKeyPairSigner, getBase58Decoder, getBase58Encoder } from "@solana/kit";
+import {
+  address,
+  generateKeyPairSigner,
+  getBase58Decoder,
+  getBase58Encoder,
+  getBase64Codec,
+  getBase64EncodedWireTransaction,
+  getCompiledTransactionMessageDecoder,
+  getCompiledTransactionMessageEncoder,
+  getTransactionDecoder,
+  partiallySignTransaction,
+  type KeyPairSigner,
+} from "@solana/kit";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -39,6 +51,64 @@ const FAR_FUTURE = 4_102_444_800; // 2100-01-01
 // Challenge-bound open slot (`extra.recentSlot`), a channel-PDA seed.
 const OPEN_SLOT = 123_456_789n;
 const WITHDRAW_DELAY = 900;
+
+type MutableCompiledMessage = {
+  header: {
+    numReadonlyNonSignerAccounts: number;
+    numReadonlySignerAccounts: number;
+    numSignerAccounts: number;
+  };
+  instructions: {
+    accountIndices?: number[];
+    data?: Uint8Array;
+    programAddressIndex: number;
+  }[];
+  staticAccounts: string[];
+};
+
+/**
+ * Decode an open wire transaction, apply a compiled-message mutation, and
+ * re-sign with the payer so `verifyOpenTransaction` still sees a valid
+ * `payload.from` signature over the tampered bytes.
+ *
+ * @param payer - Payer keypair that originally signed the open
+ * @param transactionBase64 - Base64 wire transaction to mutate
+ * @param mutate - In-place compiled-message mutation
+ * @returns Base64 wire transaction with the payer signature refreshed
+ */
+async function resignMutatedOpen(
+  payer: KeyPairSigner,
+  transactionBase64: string,
+  mutate: (compiled: MutableCompiledMessage) => void,
+): Promise<string> {
+  const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transactionBase64));
+  const compiled = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
+  const mutable: MutableCompiledMessage = {
+    header: { ...compiled.header },
+    instructions: compiled.instructions.map(ix => ({
+      accountIndices: ix.accountIndices ? [...ix.accountIndices] : undefined,
+      data: ix.data ? new Uint8Array(ix.data) : undefined,
+      programAddressIndex: ix.programAddressIndex,
+    })),
+    staticAccounts: [...compiled.staticAccounts],
+  };
+  mutate(mutable);
+  const messageBytes = getCompiledTransactionMessageEncoder().encode({
+    ...compiled,
+    header: mutable.header,
+    instructions: mutable.instructions,
+    staticAccounts: mutable.staticAccounts as typeof compiled.staticAccounts,
+  });
+  // Refresh only the payer signature; the fee-payer slot stays empty (as in
+  // a client-submitted open awaiting sponsor co-sign).
+  const signed = await partiallySignTransaction([payer.keyPair], {
+    messageBytes,
+    signatures: Object.fromEntries(
+      Object.keys(decoded.signatures).map(addr => [addr, null]),
+    ),
+  } as never);
+  return getBase64EncodedWireTransaction(signed);
+}
 
 describe("upto SVM scheme", () => {
   let serverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
@@ -372,6 +442,117 @@ describe("upto SVM scheme", () => {
       expect(result.deposit).toBe(1_000_000n);
       expect(result.openSlot).toBe(OPEN_SLOT);
       expect(result.payer).toBe(payer.address);
+    });
+
+    it("verifyOpenTransaction accepts payee==feePayer privilege union (upto profile)", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const result = await verifyOpenTransaction(open.transaction, {
+        authorizedSigner: receiverAuthorizer.address,
+        feePayer: feePayer.address,
+        from: payer.address,
+        maxCap: 1_000_000n,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      expect(result.channelId).toBe(open.channelId);
+    });
+
+    it("verifyOpenTransaction rejects remaining accounts beyond the 14 pinned slots", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const ix = compiled.instructions[0];
+        if (!ix?.accountIndices || ix.accountIndices.length === 0) {
+          throw new Error("expected open account indices");
+        }
+        ix.accountIndices.push(ix.accountIndices[0]!);
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/exactly 14 accounts/);
+    });
+
+    it("verifyOpenTransaction rejects an unexpected writable static account", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      // Distinct payee so elevating a readonly nonsigner is not an allowed privilege union.
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: receiverAuthorizer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        // Move the writable/readonly nonsigner boundary one slot left so a
+        // formerly read-only account becomes writable in the header.
+        if (compiled.header.numReadonlyNonSignerAccounts < 1) {
+          throw new Error("expected readonly nonsigner accounts to elevate");
+        }
+        compiled.header.numReadonlyNonSignerAccounts -= 1;
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: receiverAuthorizer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/writable but is not among the open instruction's writable roles/);
     });
 
     it("verifyOpenTransaction accepts a cold payTo distribution", async () => {

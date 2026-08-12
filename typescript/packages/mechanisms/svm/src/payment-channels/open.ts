@@ -7,6 +7,7 @@
  */
 
 import {
+  AccountRole,
   appendTransactionMessageInstructions,
   type Address,
   address,
@@ -22,6 +23,8 @@ import {
   getTransactionDecoder,
   getU64Encoder,
   getUtf8Encoder,
+  isSignerRole,
+  isWritableRole,
   partiallySignTransactionMessageWithSigners,
   pipe,
   setTransactionMessageFeePayer,
@@ -296,6 +299,8 @@ export interface VerifyOpenResult {
  * Decode and validate a client-submitted open transaction (base64).
  *
  * Asserts the embedded open instruction targets the payment-channels program,
+ * has exactly the 14 pinned accounts (no remaining accounts), carries the
+ * required writable/signer privileges (with Solana key-dedup privilege union),
  * that `feePayer`, `payee`, `mint`, `tokenProgram`, `authorizedSigner`,
  * `withdrawDelay`, and `openSlot` match expectations, that `deposit == maxCap`,
  * and that the channel PDA matches the recomputed value.
@@ -316,7 +321,11 @@ export async function verifyOpenTransaction(
     decoded.messageBytes,
   ) as unknown as {
     addressTableLookups?: readonly unknown[];
-    header: { numSignerAccounts: number };
+    header: {
+      numReadonlyNonSignerAccounts: number;
+      numReadonlySignerAccounts: number;
+      numSignerAccounts: number;
+    };
     instructions: readonly {
       accountIndices?: readonly number[];
       data?: Uint8Array | undefined;
@@ -401,9 +410,10 @@ export async function verifyOpenTransaction(
   };
 
   const indices = openIx.accountIndices;
-  if (indices.length < 14) {
+  // Spec: exactly 14 pinned slots and no remaining accounts.
+  if (indices.length !== 14) {
     throw new Error(
-      `verifyOpenTransaction: open instruction has too few accounts (${indices.length})`,
+      `verifyOpenTransaction: open instruction must have exactly 14 accounts, found ${indices.length}`,
     );
   }
   const accountAt = (slot: number, label: string): string => {
@@ -429,6 +439,53 @@ export async function verifyOpenTransaction(
   const eventAuthorityAddr = accountAt(12, "eventAuthority");
   const selfProgramAddr = accountAt(13, "selfProgram");
   const feePayerAddr = message.staticAccounts[0];
+
+  // Message-header privileges for each static account index. Solana unions
+  // privileges across deduplicated keys, so a read-only role (payee /
+  // authorizedSigner) MAY be writable/signer when it equals a writable or
+  // signer role — that expected union must not cause rejection. Any address
+  // outside the writable roles in the open table must not be writable.
+  const accountRole = (accountIndex: number) =>
+    staticAccountRole(message.header, message.staticAccounts.length, accountIndex);
+  const requirePrivileges = (
+    slot: number,
+    label: string,
+    required: { signer?: boolean; writable?: boolean },
+  ): void => {
+    const idx = indices[slot];
+    if (idx === undefined) {
+      throw new Error(`verifyOpenTransaction: missing account index at slot ${slot} (${label})`);
+    }
+    const role = accountRole(idx);
+    if (required.signer && !isSignerRole(role)) {
+      throw new Error(`verifyOpenTransaction: ${label} at slot ${slot} must be a signer`);
+    }
+    if (required.writable && !isWritableRole(role)) {
+      throw new Error(`verifyOpenTransaction: ${label} at slot ${slot} must be writable`);
+    }
+  };
+  requirePrivileges(0, "payer", { signer: true, writable: true });
+  requirePrivileges(1, "rentPayer", { signer: true, writable: true });
+  requirePrivileges(5, "channel", { writable: true });
+  requirePrivileges(6, "payerTokenAccount", { writable: true });
+  requirePrivileges(7, "channelTokenAccount", { writable: true });
+
+  const writableRoleAddresses = new Set([
+    payerAddr,
+    rentPayerAddr,
+    channelAddr,
+    payerTokenAccountAddr,
+    channelTokenAccountAddr,
+  ]);
+  for (let i = 0; i < message.staticAccounts.length; i += 1) {
+    const addr = message.staticAccounts[i];
+    if (!addr) continue;
+    if (isWritableRole(accountRole(i)) && !writableRoleAddresses.has(addr)) {
+      throw new Error(
+        `verifyOpenTransaction: account ${addr} is writable but is not among the open instruction's writable roles`,
+      );
+    }
+  }
 
   if (payerAddr !== expected.from) {
     throw new Error(
@@ -573,6 +630,36 @@ export async function verifyOpenTransaction(
     })),
     salt,
   };
+}
+
+/**
+ * Resolve the compiled-message {@link AccountRole} for a static account index
+ * from the Solana message header partitioning:
+ * `[writable signers | readonly signers | writable nonsigners | readonly nonsigners]`.
+ *
+ * @param header - Compiled message header
+ * @param staticAccountCount - Length of `staticAccounts`
+ * @param accountIndex - Index into `staticAccounts`
+ * @returns The account role at that index
+ */
+function staticAccountRole(
+  header: {
+    numReadonlyNonSignerAccounts: number;
+    numReadonlySignerAccounts: number;
+    numSignerAccounts: number;
+  },
+  staticAccountCount: number,
+  accountIndex: number,
+): AccountRole {
+  const numWritableSigners = header.numSignerAccounts - header.numReadonlySignerAccounts;
+  const numWritableNonSigners =
+    staticAccountCount - header.numSignerAccounts - header.numReadonlyNonSignerAccounts;
+  if (accountIndex < numWritableSigners) return AccountRole.WRITABLE_SIGNER;
+  if (accountIndex < header.numSignerAccounts) return AccountRole.READONLY_SIGNER;
+  if (accountIndex < header.numSignerAccounts + numWritableNonSigners) {
+    return AccountRole.WRITABLE;
+  }
+  return AccountRole.READONLY;
 }
 
 /**
