@@ -8,7 +8,7 @@ import type { Network } from "@x402/core/types";
  * `firstSeenAt`, voucher `expiresAt`, and `network`. Payer/payee/mint/
  * openSlot/status are read live before acting.
  *
- * Written on verify/settle success; deleted when the channel PDA is gone.
+ * Written on deposit (pre-broadcast) and claim settle; deleted when the PDA is gone.
  */
 export interface UptoChannelRecord {
   channelId: string;

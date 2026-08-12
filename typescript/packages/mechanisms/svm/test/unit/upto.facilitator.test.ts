@@ -309,7 +309,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
   });
 
   it("does not broadcast open when composite settlement simulation fails on deposit", async () => {
-    const { facilitator, payload, requirements } = await buildFixture();
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
     channelMocks.channelExists.mockResolvedValue(false);
     channelMocks.simulateOpenSettleDistribute.mockRejectedValue(
       new Error("zero-charge settlement simulation failed: missing treasury ATA"),
@@ -322,12 +322,13 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledTimes(1);
     expect(channelMocks.broadcastOpen).not.toHaveBeenCalled();
     expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+    expect(await facilitator.getChannelStorage().get(uptoPayload.channelId)).toBeUndefined();
   });
 
-  it("returns broadcast_failed when open broadcast fails after a successful sim", async () => {
-    const { facilitator, payload, requirements } = await buildFixture();
+  it("indexes the channel before broadcast and releases the deposit cache on broadcast failure", async () => {
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
     channelMocks.channelExists.mockResolvedValue(false);
-    channelMocks.broadcastOpen.mockRejectedValue(new Error("sendTransaction failed"));
+    channelMocks.broadcastOpen.mockRejectedValueOnce(new Error("sendTransaction failed"));
 
     await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
       success: false,
@@ -336,17 +337,34 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(channelMocks.simulateOpenSettleDistribute).toHaveBeenCalledTimes(1);
     expect(channelMocks.broadcastOpen).toHaveBeenCalledTimes(1);
     expect(channelMocks.fetchAndVerifyOpenChannel).not.toHaveBeenCalled();
+    expect(await facilitator.getChannelStorage().get(uptoPayload.channelId)).toMatchObject({
+      channelId: uptoPayload.channelId,
+      payTo: requirements.payTo,
+    });
+
+    channelMocks.broadcastOpen.mockResolvedValue(USDC_MAINNET_ADDRESS as never);
+    await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
+      success: true,
+    });
+    expect(channelMocks.broadcastOpen).toHaveBeenCalledTimes(2);
   });
 
-  it("returns state_mismatch when the confirmed channel does not bind on deposit", async () => {
-    const { facilitator, payload, requirements } = await buildFixture();
-    channelMocks.fetchAndVerifyOpenChannel.mockRejectedValue(
+  it("keeps the channel indexed when post-open rebind fails and allows deposit retry", async () => {
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
+    channelMocks.fetchAndVerifyOpenChannel.mockRejectedValueOnce(
       new Error("channel deposit 0 != expected 1000000"),
     );
 
     await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
       success: false,
       errorReason: "invalid_upto_svm_channel_state",
+    });
+    expect(await facilitator.getChannelStorage().get(uptoPayload.channelId)).toMatchObject({
+      channelId: uptoPayload.channelId,
+    });
+
+    await expect(facilitator.settle(payload, requirements)).resolves.toMatchObject({
+      success: true,
     });
   });
 
@@ -721,6 +739,31 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
         errorReason: "transaction_failed",
         transaction: "",
       });
+    });
+
+    it("releases the claim cache when submitSettle fails so a retry can proceed", async () => {
+      const { facilitator, payload, requirements, receiverAuthorizer, uptoPayload } =
+        await buildFixture();
+      channelMocks.submitSettle
+        .mockRejectedValueOnce(new Error("rpc send failed"))
+        .mockResolvedValueOnce(USDC_MAINNET_ADDRESS as never);
+      const voucherSignature = await signVoucher(receiverAuthorizer, {
+        channelId: uptoPayload.channelId,
+        cumulativeAmount: 0n,
+        expiresAt: BigInt(FAR_FUTURE),
+      });
+      const claimPayload = { ...payload, payload: { ...uptoPayload, voucherSignature } };
+      const claimRequirements = { ...requirements, amount: "0" };
+
+      await expect(facilitator.settle(claimPayload, claimRequirements)).resolves.toMatchObject({
+        success: false,
+        errorReason: "transaction_failed",
+      });
+      await expect(facilitator.settle(claimPayload, claimRequirements)).resolves.toMatchObject({
+        success: true,
+        amount: "0",
+      });
+      expect(channelMocks.submitSettle).toHaveBeenCalledTimes(2);
     });
 
     it("returns success when channel storage upsert fails after deposit settle", async () => {

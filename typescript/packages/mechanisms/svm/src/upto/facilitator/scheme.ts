@@ -68,9 +68,8 @@ export interface UptoSvmFacilitatorConfig {
    */
   channelStorage?: UptoChannelStorage;
   /**
-   * Called when channel storage upsert fails after a successful deposit or
-   * claim settle. Payment results are unchanged; only rent-cleanup indexing is
-   * affected. Defaults to `console.warn`.
+   * Called when channel storage upsert fails. Payment results are unchanged;
+   * only rent-cleanup indexing is affected. Defaults to `console.warn`.
    */
   onStorageError?: (error: unknown, context: UptoChannelStorageErrorContext) => void;
   /**
@@ -360,6 +359,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         },
       });
     } catch (error) {
+      this.settlementCache.delete(depositKey);
       return {
         success: false,
         network: payload.accepted.network,
@@ -370,6 +370,15 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       };
     }
 
+    // Before broadcast so confirm timeout / rebind failure still indexes the PDA.
+    await this.upsertChannelStorage("settle", {
+      channelId: p.channelId,
+      network: requirements.network,
+      payTo: requirements.payTo,
+      tokenProgram,
+      expiresAt: p.expiresAt,
+    });
+
     let openSignature: string;
     try {
       openSignature = await broadcastOpen(
@@ -379,6 +388,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         p.openTransaction,
       );
     } catch (error) {
+      this.settlementCache.delete(depositKey);
       return {
         success: false,
         network: payload.accepted.network,
@@ -401,6 +411,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         splits: channelConfig.splits,
       });
     } catch (error) {
+      this.settlementCache.delete(depositKey);
       return {
         success: false,
         network: payload.accepted.network,
@@ -410,14 +421,6 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         payer: p.from,
       };
     }
-
-    await this.upsertChannelStorage("settle", {
-      channelId: p.channelId,
-      network: requirements.network,
-      payTo: requirements.payTo,
-      tokenProgram,
-      expiresAt: p.expiresAt,
-    });
 
     return {
       success: true,
@@ -589,6 +592,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         payer: channel.payer,
       };
     } catch (error) {
+      this.settlementCache.delete(settlementKey);
       return {
         success: false,
         network: payload.accepted.network,
@@ -833,9 +837,8 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Upsert a channel into rent-cleanup storage after deposit/claim success.
-   * Storage failures are reported via {@link UptoSvmFacilitatorConfig.onStorageError}
-   * and never propagate to the caller.
+   * Upsert a channel into rent-cleanup storage. Failures go to
+   * {@link UptoSvmFacilitatorConfig.onStorageError} and never propagate.
    *
    * @param phase - Whether verify or settle succeeded before the upsert
    * @param fields - Channel facts retained for cleanup (payTo included)
