@@ -859,6 +859,132 @@ func (m *mockEnricherScheme) EnrichPaymentRequiredResponse(ctx x402.PaymentRequi
 	}
 }
 
+// mockPayToEnricherScheme fills vacant payTo during 402 enrichment (match-path test).
+type mockPayToEnricherScheme struct {
+	mockSchemeNetworkServer
+}
+
+func (m *mockPayToEnricherScheme) EnrichPaymentRequiredResponse(ctx x402.PaymentRequiredContext) {
+	for i := range ctx.Requirements {
+		if x402.IsVacantStringField(ctx.Requirements[i].PayTo) {
+			ctx.Requirements[i].PayTo = "enriched-recipient"
+		}
+	}
+}
+
+func TestPaymentWrapper_MatchesEnrichedAccept(t *testing.T) {
+	verifyCalled := false
+	mockFacilitator := &mockFacilitatorClient{
+		verifyFunc: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*x402.VerifyResponse, error) {
+			verifyCalled = true
+			var reqs types.PaymentRequirements
+			_ = json.Unmarshal(requirementsBytes, &reqs)
+			if reqs.PayTo != "enriched-recipient" {
+				t.Fatalf("expected verify against enriched payTo, got %q", reqs.PayTo)
+			}
+			return &x402.VerifyResponse{IsValid: true, Payer: "test-payer"}, nil
+		},
+	}
+	scheme := &mockPayToEnricherScheme{mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "cash"}}
+	server := x402.Newx402ResourceServer(
+		x402.WithFacilitatorClient(mockFacilitator),
+		x402.WithSchemeServer("x402:cash", scheme),
+	)
+	ctx := context.Background()
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	originalPayTo := ""
+	config := PaymentWrapperConfig{
+		Accepts: []types.PaymentRequirements{
+			{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: originalPayTo},
+		},
+	}
+	wrapper := NewPaymentWrapper(server, config)
+	wrapped := wrapper.Wrap(func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	})
+
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    types.PaymentRequirements{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "enriched-recipient"},
+		Payload:     map[string]interface{}{"signature": "~test-payer"},
+	}
+	result, err := wrapped(ctx, makeCallToolRequest(nil, mcp.Meta{MCP_PAYMENT_META_KEY: payload}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("expected success when payload matches enriched accept")
+	}
+	if !verifyCalled {
+		t.Fatal("expected facilitator verify after enriched match")
+	}
+	if config.Accepts[0].PayTo != originalPayTo {
+		t.Fatalf("config.Accepts must not be mutated by match path, got payTo=%q", config.Accepts[0].PayTo)
+	}
+}
+
+func TestPaymentWrapper_ExtensionEchoMismatchSkipsVerify(t *testing.T) {
+	verifyCalled := false
+	mockFacilitator := &mockFacilitatorClient{
+		verifyFunc: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*x402.VerifyResponse, error) {
+			verifyCalled = true
+			return &x402.VerifyResponse{IsValid: true, Payer: "test-payer"}, nil
+		},
+	}
+	scheme := &mockSchemeNetworkServer{scheme: "cash"}
+	server := x402.Newx402ResourceServer(
+		x402.WithFacilitatorClient(mockFacilitator),
+		x402.WithSchemeServer("x402:cash", scheme),
+	)
+	ctx := context.Background()
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	extensions := map[string]interface{}{
+		"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 1}},
+	}
+	config := PaymentWrapperConfig{
+		Accepts: []types.PaymentRequirements{
+			{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		},
+		Extensions: extensions,
+	}
+	wrapper := NewPaymentWrapper(server, config)
+	wrapped := wrapper.Wrap(func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    types.PaymentRequirements{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		Payload:     map[string]interface{}{"signature": "~test-payer"},
+		Extensions: map[string]interface{}{
+			"bazaar": map[string]interface{}{"info": map[string]interface{}{"tool": "search", "version": 2}},
+		},
+	}
+	result, err := wrapped(ctx, makeCallToolRequest(nil, mcp.Meta{MCP_PAYMENT_META_KEY: payload}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for extension echo mismatch")
+	}
+	if verifyCalled {
+		t.Fatal("verify must not run on extension echo mismatch")
+	}
+	sc, ok := result.StructuredContent.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected structuredContent map, got %T", result.StructuredContent)
+	}
+	if errMsg, _ := sc["error"].(string); errMsg != "extension_echo_mismatch" {
+		t.Fatalf("expected extension_echo_mismatch error, got %q", errMsg)
+	}
+}
+
 func TestPaymentWrapper_CancelOnHandlerIsError(t *testing.T) {
 	var cancelCalled bool
 	var settlePhases []x402.SettlePhase

@@ -41,6 +41,11 @@ func (s *ExactSvmScheme) DefaultAssetTransferMethod() string {
 	return x402.SDKDefaultAssetTransferMethod
 }
 
+// DynamicExtraFields returns extra keys regenerated on each PaymentRequired response.
+func (s *ExactSvmScheme) DynamicExtraFields() []string {
+	return []string{"recentBlockhash", "lastValidBlockHeight"}
+}
+
 // PaymentFlows returns ATM-keyed payment flow support for exact SVM.
 func (s *ExactSvmScheme) PaymentFlows() map[string]x402.PaymentFlowConfig {
 	return map[string]x402.PaymentFlowConfig{

@@ -102,13 +102,21 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 			return w.paymentRequiredResult(toolName, fmt.Sprintf("Invalid payment payload: %v", err), nil), nil
 		}
 
-		// Match the payload against the advertised accepts
-		matched := w.server.FindMatchingRequirements(w.config.Accepts, payload)
+		resource := w.buildToolResourceInfo(toolName)
+		clonedAccepts := x402.SnapshotPaymentRequirementsList(w.config.Accepts)
+		paymentRequiredForMatch := w.server.CreatePaymentRequiredResponse(
+			clonedAccepts, resource, "", w.config.Extensions,
+		)
+		matched := w.server.FindMatchingRequirements(paymentRequiredForMatch.Accepts, payload)
 		if matched == nil {
 			return w.paymentRequiredResult(toolName, "No matching payment requirements found", &payload), nil
 		}
 		requirements := *matched
 		declaredExtensions := w.config.Extensions
+
+		if result := w.server.ValidateExtensions(paymentRequiredForMatch.Extensions, payload); !result.Valid {
+			return w.paymentRequiredResult(toolName, result.InvalidReason, &payload), nil
+		}
 
 		flow, err := w.server.GetPaymentFlow(requirements)
 		if err != nil {
