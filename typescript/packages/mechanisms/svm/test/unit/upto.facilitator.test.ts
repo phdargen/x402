@@ -48,6 +48,8 @@ import { toFacilitatorSvmSigner } from "../../src/signer";
 import type { FacilitatorSvmSigner } from "../../src/signer";
 import {
   ERR_CHANNEL_ALREADY_OPEN,
+  ERR_EXPIRES_AT_MISMATCH,
+  ERR_CHANNEL_LIFETIME_EXCEEDED,
   ERR_UNEXPECTED_VOUCHER,
   UptoSvmScheme,
 } from "../../src/upto/facilitator/scheme";
@@ -57,7 +59,12 @@ import type { UptoSvmPayloadV2 } from "../../src/types";
 
 const OPEN_SLOT = 123_456_789n;
 const WITHDRAW_DELAY = 900;
-const FAR_FUTURE = 4_102_444_800;
+const MAX_TIMEOUT_SECONDS = 300;
+
+/** Challenge-bound expiry used by facilitator lifecycle tests. */
+function challengeExpiresAt(maxTimeoutSeconds = MAX_TIMEOUT_SECONDS): number {
+  return Math.floor(Date.now() / 1000) + maxTimeoutSeconds;
+}
 
 describe("UptoSvmScheme facilitator channel lifecycle", () => {
   beforeEach(() => {
@@ -69,7 +76,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     channelMocks.submitSettle.mockResolvedValue(USDC_MAINNET_ADDRESS);
   });
 
-  async function buildFixture() {
+  async function buildFixture(config: ConstructorParameters<typeof UptoSvmScheme>[1] = {}) {
     const payer = await generateKeyPairSigner();
     const feePayer = await generateKeyPairSigner();
     const receiverAuthorizer = await generateKeyPairSigner();
@@ -92,7 +99,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       asset: USDC_DEVNET_ADDRESS,
       amount: "1000000",
       payTo: receiverAuthorizer.address,
-      maxTimeoutSeconds: 300,
+      maxTimeoutSeconds: MAX_TIMEOUT_SECONDS,
       extra: {
         feePayer: feePayer.address,
         recentSlot: OPEN_SLOT.toString(),
@@ -105,7 +112,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       authorizedSigner: receiverAuthorizer.address,
       channelId: open.channelId,
       deposit: "1000000",
-      expiresAt: FAR_FUTURE,
+      expiresAt: challengeExpiresAt(),
       from: payer.address,
       maxAmount: "1000000",
       nonce: open.salt.toString(),
@@ -129,7 +136,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       rentPayer: feePayer.address,
       splits: [{ bps: 10_000, recipient: receiverAuthorizer.address }],
     });
-    const facilitator = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer));
+    const facilitator = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer), config);
     return { facilitator, payload, requirements, receiverAuthorizer, uptoPayload };
   }
 
@@ -140,7 +147,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 0n,
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
     await expect(
       facilitator.settle(
@@ -188,6 +195,61 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     expect(channelMocks.simulateZeroChargeSettle).not.toHaveBeenCalled();
   });
 
+  it("rejects maxTimeoutSeconds above maxChannelLifetimeSecs", async () => {
+    const { facilitator, payload, requirements } = await buildFixture();
+    await expect(
+      facilitator.verify(payload, { ...requirements, maxTimeoutSeconds: 7_200 }),
+    ).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: ERR_CHANNEL_LIFETIME_EXCEEDED,
+    });
+  });
+
+  it("rejects expiresAt remaining above maxChannelLifetimeSecs", async () => {
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
+    await expect(
+      facilitator.verify(
+        {
+          ...payload,
+          payload: { ...uptoPayload, expiresAt: challengeExpiresAt(4_000) },
+        },
+        requirements,
+      ),
+    ).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: ERR_CHANNEL_LIFETIME_EXCEEDED,
+    });
+  });
+
+  it("rejects expiresAt beyond maxTimeoutSeconds", async () => {
+    const { facilitator, payload, requirements, uptoPayload } = await buildFixture();
+    await expect(
+      facilitator.verify(
+        {
+          ...payload,
+          payload: {
+            ...uptoPayload,
+            expiresAt: challengeExpiresAt(MAX_TIMEOUT_SECONDS + 600),
+          },
+        },
+        requirements,
+      ),
+    ).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: ERR_EXPIRES_AT_MISMATCH,
+    });
+  });
+
+  it("rejects when maxTimeoutSeconds exceeds a tighter maxChannelLifetimeSecs", async () => {
+    const { facilitator, payload, requirements } = await buildFixture({
+      maxChannelLifetimeSecs: 120,
+    });
+    await expect(facilitator.verify(payload, requirements)).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: ERR_CHANNEL_LIFETIME_EXCEEDED,
+    });
+  });
+
   it("rejects deposit settle when the channel already exists", async () => {
     const { facilitator, payload, requirements } = await buildFixture();
     channelMocks.channelExists.mockResolvedValue(true);
@@ -227,7 +289,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 0n,
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
     await expect(
       facilitator.settle(
@@ -251,7 +313,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       payTo: requirements.payTo,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       network: requirements.network,
-      expiresAt: FAR_FUTURE,
+      expiresAt: uptoPayload.expiresAt,
     });
     const firstSeenAt = stored!.firstSeenAt;
     const expiresAt = stored!.expiresAt;
@@ -259,7 +321,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 0n,
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
     await expect(
       facilitator.settle(
@@ -375,7 +437,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 0n,
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
 
     await expect(
@@ -407,7 +469,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const forged = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 1n, // wrong amount vs settle requirements
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
     await expect(
       facilitator.settle(
@@ -426,7 +488,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
     const voucherSignature = await signVoucher(receiverAuthorizer, {
       channelId: uptoPayload.channelId,
       cumulativeAmount: 0n,
-      expiresAt: BigInt(FAR_FUTURE),
+      expiresAt: BigInt(uptoPayload.expiresAt),
     });
     await expect(
       facilitator.settle(
@@ -450,7 +512,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const voucherSignature = await signVoucher(receiverAuthorizer, {
         channelId: uptoPayload.channelId,
         cumulativeAmount: BigInt(amount),
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(uptoPayload.expiresAt),
       });
       return facilitator.settle(
         { ...payload, payload: { ...uptoPayload, voucherSignature } },
@@ -511,7 +573,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const forged = await signVoucher(receiverAuthorizer, {
         channelId: uptoPayload.channelId,
         cumulativeAmount: 1n,
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(uptoPayload.expiresAt),
       });
 
       await expect(
@@ -586,7 +648,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const voucherSignature = await signVoucher(receiverAuthorizer, {
         channelId: uptoPayload.channelId,
         cumulativeAmount: 0n,
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(uptoPayload.expiresAt),
       });
       await expect(
         facilitator.verify(
@@ -660,7 +722,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
           authorizedSigner: receiverAuthorizer.address,
           channelId: open.channelId,
           deposit: "1000000",
-          expiresAt: FAR_FUTURE,
+          expiresAt: challengeExpiresAt(),
           from: payer.address,
           maxAmount: "1000000",
           nonce: open.salt.toString(),
@@ -698,7 +760,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const voucherSignature = await signVoucher(fixture.receiverAuthorizer, {
         channelId: fixture.uptoPayload.channelId,
         cumulativeAmount: 0n,
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(fixture.uptoPayload.expiresAt),
       });
 
       await expect(
@@ -727,7 +789,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const voucherSignature = await signVoucher(receiverAuthorizer, {
         channelId: uptoPayload.channelId,
         cumulativeAmount: 0n,
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(uptoPayload.expiresAt),
       });
       await expect(
         facilitator.settle(
@@ -750,7 +812,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       const voucherSignature = await signVoucher(receiverAuthorizer, {
         channelId: uptoPayload.channelId,
         cumulativeAmount: 0n,
-        expiresAt: BigInt(FAR_FUTURE),
+        expiresAt: BigInt(uptoPayload.expiresAt),
       });
       const claimPayload = { ...payload, payload: { ...uptoPayload, voucherSignature } };
       const claimRequirements = { ...requirements, amount: "0" };
@@ -809,7 +871,7 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
         authorizedSigner: receiverAuthorizer.address,
         channelId: open.channelId,
         deposit: "1000000",
-        expiresAt: FAR_FUTURE,
+        expiresAt: challengeExpiresAt(),
         from: payer.address,
         maxAmount: "1000000",
         nonce: open.salt.toString(),

@@ -44,13 +44,31 @@ export const ERR_UNEXPECTED_VOUCHER = "invalid_upto_svm_payload_unexpected_vouch
 /** Deposit settle when the channel PDA already exists (one request, one open). */
 export const ERR_CHANNEL_ALREADY_OPEN = "invalid_upto_svm_channel_already_open";
 
+/** `maxTimeoutSeconds` or `expiresAt` exceeds facilitator `maxChannelLifetimeSecs`. */
+export const ERR_CHANNEL_LIFETIME_EXCEEDED = "invalid_upto_svm_payload_channel_lifetime_exceeded";
+
+/** Payload `expiresAt` later than `now + maxTimeoutSeconds` (+ skew). */
+export const ERR_EXPIRES_AT_MISMATCH = "invalid_upto_svm_payload_expires_at_mismatch";
+
+/** Default facilitator `maxChannelLifetimeSecs` (1 hour). */
+export const DEFAULT_MAX_CHANNEL_LIFETIME_SECS = 3_600;
+
+/** Client/facilitator clock skew allowance for `expiresAt` checks. */
+const EXPIRES_AT_CLOCK_SKEW_SECS = 60;
+
 /** Context passed to {@link UptoSvmFacilitatorConfig.onStorageError}. */
 export type UptoChannelStorageErrorContext = {
   channelId: string;
   phase: "verify" | "settle";
 };
 
-/** Rejects non-integer / out-of-range operator caps at construction. */
+/**
+ * Rejects non-integer / out-of-range operator caps at construction.
+ *
+ * @param name - Config field name for the error message
+ * @param value - Cap value to validate (skipped when undefined)
+ * @param min - Inclusive lower bound
+ */
 function assertLimit(name: string, value: number | undefined, min: number): void {
   if (value === undefined) return;
   if (!Number.isSafeInteger(value) || value < min) {
@@ -72,6 +90,11 @@ export interface UptoSvmFacilitatorConfig {
    * only rent-cleanup indexing is affected. Defaults to `console.warn`.
    */
   onStorageError?: (error: unknown, context: UptoChannelStorageErrorContext) => void;
+  /**
+   * Max channel lifetime (seconds) accepted at verify/deposit.
+   * Default: {@link DEFAULT_MAX_CHANNEL_LIFETIME_SECS} (3600).
+   */
+  maxChannelLifetimeSecs?: number;
   /**
    * Maximum compute unit price in microlamports accepted on the open
    * transaction. The facilitator is the fee payer, so the payer chooses a
@@ -163,6 +186,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     if (this.signer.getAddresses().length === 0) {
       throw new Error("UptoSvmScheme requires at least one fee payer signer");
     }
+    assertLimit("maxChannelLifetimeSecs", config.maxChannelLifetimeSecs, 1);
     assertLimit("maxPriorityFeeMicroLamports", config.maxPriorityFeeMicroLamports, 0);
     assertLimit("maxComputeUnits", config.maxComputeUnits, 1);
     assertLimit("maxRequiredSignatures", config.maxRequiredSignatures, 1);
@@ -726,6 +750,56 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
       return {
         ok: false,
         failure: { reason: "invalid_upto_svm_payload_expired", payer: p.from },
+      };
+    }
+
+    const maxTimeoutSeconds = requirements.maxTimeoutSeconds;
+    if (!Number.isSafeInteger(maxTimeoutSeconds) || maxTimeoutSeconds < 1) {
+      return {
+        ok: false,
+        failure: {
+          reason: "invalid_upto_svm_payment_requirements",
+          message: `maxTimeoutSeconds must be a safe integer >= 1, received ${maxTimeoutSeconds}`,
+          payer: p.from,
+        },
+      };
+    }
+    const maxChannelLifetimeSecs =
+      this.config.maxChannelLifetimeSecs ?? DEFAULT_MAX_CHANNEL_LIFETIME_SECS;
+    if (maxTimeoutSeconds > maxChannelLifetimeSecs) {
+      return {
+        ok: false,
+        failure: {
+          reason: ERR_CHANNEL_LIFETIME_EXCEEDED,
+          message:
+            `maxTimeoutSeconds ${maxTimeoutSeconds} exceeds maxChannelLifetimeSecs ` +
+            `${maxChannelLifetimeSecs}`,
+          payer: p.from,
+        },
+      };
+    }
+    if (p.expiresAt > now + maxChannelLifetimeSecs + EXPIRES_AT_CLOCK_SKEW_SECS) {
+      return {
+        ok: false,
+        failure: {
+          reason: ERR_CHANNEL_LIFETIME_EXCEEDED,
+          message:
+            `expiresAt remaining ${p.expiresAt - now}s exceeds maxChannelLifetimeSecs ` +
+            `${maxChannelLifetimeSecs}`,
+          payer: p.from,
+        },
+      };
+    }
+    if (p.expiresAt > now + maxTimeoutSeconds + EXPIRES_AT_CLOCK_SKEW_SECS) {
+      return {
+        ok: false,
+        failure: {
+          reason: ERR_EXPIRES_AT_MISMATCH,
+          message:
+            `expiresAt ${p.expiresAt} exceeds now + maxTimeoutSeconds ` +
+            `(${now + maxTimeoutSeconds})`,
+          payer: p.from,
+        },
       };
     }
 

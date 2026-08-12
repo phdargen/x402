@@ -212,7 +212,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Open }));
 
     const onClose = vi.fn();
-    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
+    await manager.cleanup({ abandonGraceSecs: 120, onClose });
     expect(onClose).not.toHaveBeenCalled();
     expect(submitSettleMock).not.toHaveBeenCalled();
     expect(await storage.get(record.channelId)).toBeDefined();
@@ -229,7 +229,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       .mockResolvedValueOnce({ exists: false });
 
     const onClose = vi.fn();
-    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
+    await manager.cleanup({ abandonGraceSecs: 120, onClose });
 
     expect(onClose).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
@@ -240,22 +240,20 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(await storage.get(record.channelId)).toBeUndefined();
   });
 
-  it("abandon-closes Open channels when first-seen hard cap wins over far expiry", async () => {
+  it("does not abandon-close Open channels before expiresAt even when firstSeen is old", async () => {
+    const nowSecs = Math.floor(Date.now() / 1_000);
     const record = await seed({
       firstSeenAt: Date.now() - 7_200_000,
-      expiresAt: FAR_FUTURE,
+      expiresAt: nowSecs + 300,
     });
-    fetchMaybeChannelMock
-      .mockResolvedValueOnce(channelAccount({ status: ChannelStatus.Open }))
-      .mockResolvedValueOnce({ exists: false });
+    fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Open }));
 
     const onClose = vi.fn();
-    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose });
+    await manager.cleanup({ abandonGraceSecs: 120, onClose });
 
-    expect(onClose).toHaveBeenCalledWith(
-      expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
-    );
-    expect(submitSettleMock).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(await storage.get(record.channelId)).toBeDefined();
   });
 
   it("distributes Sealed channels", async () => {
@@ -351,7 +349,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
 
     const onError = vi.fn();
     const onClose = vi.fn();
-    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onClose, onError });
+    await manager.cleanup({ abandonGraceSecs: 120, onClose, onError });
     expect(onClose).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.stringContaining("missing payTo") }),
@@ -372,7 +370,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     );
 
     const onError = vi.fn();
-    await manager.cleanup({ abandonGraceSecs: 120, abandonMaxSecs: 3_600, onError });
+    await manager.cleanup({ abandonGraceSecs: 120, onError });
     expect(onError).toHaveBeenCalledWith(
       expect.objectContaining({
         message: expect.stringContaining("not in facilitator signer set"),

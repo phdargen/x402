@@ -40,11 +40,11 @@ When `SVM_PRIVATE_KEY` is set, the example:
 
 Tune policy with:
 
-| Env var                           | Default | Purpose                                         |
-| --------------------------------- | ------- | ----------------------------------------------- |
-| `RENT_CLEANUP_INTERVAL_SECS`      | `300`   | Seconds between cleanup ticks                   |
-| `RENT_CLEANUP_ABANDON_GRACE_SECS` | `120`   | Grace after voucher expiry before abandon-close |
-| `RENT_CLEANUP_ABANDON_MAX_SECS`   | `3600`  | Hard cap from first-seen before abandon-close   |
+| Env var                           | Default | Purpose                                                 |
+| --------------------------------- | ------- | ------------------------------------------------------- |
+| `RENT_CLEANUP_INTERVAL_SECS`      | `300`   | Seconds between cleanup ticks                           |
+| `RENT_CLEANUP_ABANDON_GRACE_SECS` | `120`   | Grace after voucher expiry before abandon-close         |
+| `MAX_CHANNEL_LIFETIME_SECS`       | `3600`  | Max `maxTimeoutSeconds` / `expiresAt` at verify/deposit |
 
 For production, replace `InMemoryUptoChannelStorage` with a durable store so cleanup survives restarts and works across facilitator replicas.
 

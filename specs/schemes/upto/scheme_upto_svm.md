@@ -502,6 +502,10 @@ The server/facilitator MUST, in order:
    `openSlot` under the canonical program id.
 6. Validate `openTransaction` against the complete acceptance policy above.
 7. Validate `validAfter <= now < expiresAt` and reject `expiresAt == 0`.
+   Reject when `maxTimeoutSeconds` or remaining `expiresAt - now` exceeds the
+   facilitator's `maxChannelLifetimeSecs`, or when `expiresAt` is later than
+   `now + maxTimeoutSeconds` (plus clock skew). After acceptance, abandon-close
+   MUST NOT run before `expiresAt`.
 8. Confirm settlement readiness before co-signing/broadcasting `open`. The
    facilitator MUST confirm that the expected settlement path can succeed for
    the challenge-bound mint, token program, payer, payee, treasury, and
@@ -783,10 +787,10 @@ restart, MUST perform the following flow:
    `receiverAuthorizer` voucher. Otherwise it MUST NOT invent a nonzero
    charge. The facilitator, as payee, may perform the no-voucher, zero-charge
    close path (`settle_and_seal` with `has_voucher = 0`, then `distribute`,
-   then `reclaim`) on its own; before doing so it SHOULD apply a
-   policy-defined notice or timeout that gives the server a chance to submit
-   a final voucher. The client may instead begin its `request_close` escape
-   hatch.
+   then `reclaim`) on its own; before doing so it SHOULD wait until
+   `expiresAt` (plus optional grace). Abandon MUST NOT run before the
+   `expiresAt` accepted at deposit (`maxChannelLifetimeSecs` is verify/deposit only).
+   The client may instead begin its `request_close` escape hatch.
 4. For a `Closing` channel, schedule a recheck when the recorded grace period
    expires. The facilitator can still `settle_and_seal` during that period,
    carrying the server's final voucher if one exists; after it, the normal
@@ -825,6 +829,10 @@ Standard x402 codes apply. Scheme-specific:
 - `invalid_upto_svm_channel_already_open` - deposit settle found an existing
   channel account for `payload.channelId`; the authorization is already in use
   or was opened outside this deposit settle.
+- `invalid_upto_svm_payload_channel_lifetime_exceeded` - `maxTimeoutSeconds` or remaining
+  payload `expiresAt` exceeds the facilitator's `maxChannelLifetimeSecs`.
+- `invalid_upto_svm_payload_expires_at_mismatch` - payload `expiresAt` is later
+  than `now + maxTimeoutSeconds` (plus allowed clock skew).
 - `duplicate_settlement` - the settlement cache already holds this settle phase
   for the channel; a concurrent or replayed deposit or claim settle MUST NOT
   broadcast.
@@ -884,6 +892,8 @@ Standard x402 codes apply. Scheme-specific:
 - **Time-bounded settlement.** `expiresAt` is enforced by the program for
   nonzero vouchers; `validAfter` is offchain verification policy. These bound
   when a metered settlement may land, but they are not client-signed terms.
+  Facilitators MAY reject verify/deposit above `maxChannelLifetimeSecs`; after
+  acceptance, abandon-close SHOULD wait until that `expiresAt` (plus grace).
 - **Metering trust.** As in the generic `upto` spec, the client trusts the
   server to meter honestly within the ceiling. The ceiling, recipient, and
   replay properties are enforced by signatures and the onchain program.

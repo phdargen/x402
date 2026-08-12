@@ -41,9 +41,6 @@ interface ReclaimCandidate {
 /** Default grace after voucher expiry before abandon-closing an Open channel. */
 export const DEFAULT_ABANDON_GRACE_SECS = 120;
 
-/** Default hard cap from first-seen before abandon-closing an Open channel. */
-export const DEFAULT_ABANDON_MAX_SECS = 3_600;
-
 /** Default reclaim instructions per cleanup transaction. */
 export const DEFAULT_MAX_RECLAIMS_PER_TX = 8;
 
@@ -68,16 +65,8 @@ export interface RentCleanupReclaimResult {
 
 /** Options for one-shot and interval cleanup. */
 export interface RentCleanupOptions {
-  /**
-   * Seconds after client `expiresAt` before an Open channel may be
-   * abandon-closed. Default 120.
-   */
+  /** Seconds after `expiresAt` before abandon-close. Default 120. */
   abandonGraceSecs?: number;
-  /**
-   * Hard cap in seconds from `firstSeenAt` before abandon-close, even when
-   * `expiresAt` is far in the future. Default 3600 (1h).
-   */
-  abandonMaxSecs?: number;
   /** Max `reclaim` instructions packed into one transaction. */
   maxReclaimsPerTx?: number;
   /** Max cleanup transactions (closes + reclaim batches) per call. */
@@ -148,7 +137,6 @@ export class UptoSvmRentCleanupManager {
    */
   async cleanup(opts: RentCleanupOptions = {}): Promise<void> {
     const abandonGraceSecs = opts.abandonGraceSecs ?? DEFAULT_ABANDON_GRACE_SECS;
-    const abandonMaxSecs = opts.abandonMaxSecs ?? DEFAULT_ABANDON_MAX_SECS;
     const maxReclaimsPerTx = opts.maxReclaimsPerTx ?? DEFAULT_MAX_RECLAIMS_PER_TX;
     const maxTxsPerRun = opts.maxTxsPerRun ?? DEFAULT_MAX_TXS_PER_RUN;
     const maxClosesPerRun = opts.maxClosesPerRun ?? DEFAULT_MAX_CLOSES_PER_RUN;
@@ -181,11 +169,7 @@ export class UptoSvmRentCleanupManager {
 
         if (status === ChannelStatus.Open || status === ChannelStatus.Sealed) {
           if (status === ChannelStatus.Open) {
-            const firstSeenAtSecs = Math.floor(record.firstSeenAt / 1_000);
-            const readyAt = Math.min(
-              record.expiresAt + abandonGraceSecs,
-              firstSeenAtSecs + abandonMaxSecs,
-            );
+            const readyAt = record.expiresAt + abandonGraceSecs;
             if (nowSecs < readyAt) continue;
           }
           if (closesUsed >= maxClosesPerRun || txsUsed >= maxTxsPerRun) break;

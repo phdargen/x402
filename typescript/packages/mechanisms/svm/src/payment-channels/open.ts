@@ -433,10 +433,7 @@ export async function verifyOpenTransaction(
     expected.feePayer === expected.from ? [expected.from] : [expected.feePayer, expected.from],
   );
   const numSigners = message.header.numSignerAccounts;
-  if (
-    expected.maxRequiredSignatures !== undefined &&
-    numSigners > expected.maxRequiredSignatures
-  ) {
+  if (expected.maxRequiredSignatures !== undefined && numSigners > expected.maxRequiredSignatures) {
     throw new Error(
       `verifyOpenTransaction: required-signer count ${numSigners} exceeds maxRequiredSignatures ${expected.maxRequiredSignatures}`,
     );
@@ -856,6 +853,8 @@ function findCanonicalOpenInstruction(
  * account or as the invoked program (sponsor isolation outside `open` slots).
  *
  * @param ix - Compiled instruction
+ * @param ix.accountIndices - Account indices in the instruction
+ * @param ix.programAddressIndex - Program address index
  * @param staticAccounts - Message static account keys
  * @param feePayer - Expected fee payer
  * @param label - Instruction region label for errors
@@ -886,6 +885,9 @@ function rejectFeePayerOutsideOpen(
  * `[writable signers | readonly signers | writable nonsigners | readonly nonsigners]`.
  *
  * @param header - Compiled message header
+ * @param header.numReadonlyNonSignerAccounts - Readonly nonsigner count
+ * @param header.numReadonlySignerAccounts - Readonly signer count
+ * @param header.numSignerAccounts - Total signer count
  * @param staticAccountCount - Length of `staticAccounts`
  * @param accountIndex - Index into `staticAccounts`
  * @returns The account role at that index

@@ -100,7 +100,10 @@ import { toFacilitatorSvmSigner } from "@x402/svm";
 import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
 
 const svmSigner = toFacilitatorSvmSigner(keypair);
-const scheme = new UptoSvmScheme(svmSigner, { rpcUrl: process.env.SVM_RPC_URL });
+const scheme = new UptoSvmScheme(svmSigner, {
+  rpcUrl: process.env.SVM_RPC_URL,
+  maxChannelLifetimeSecs: 3600,
+});
 
 // Optional: reclaim PDA rent from sealed/distributed channels
 const rentCleanup = scheme.createRentCleanupManager(network);

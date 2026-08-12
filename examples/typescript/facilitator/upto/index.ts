@@ -56,8 +56,8 @@ const abandonGraceSecs = Number.parseInt(
   process.env.RENT_CLEANUP_ABANDON_GRACE_SECS ?? "120",
   10,
 );
-const abandonMaxSecs = Number.parseInt(
-  process.env.RENT_CLEANUP_ABANDON_MAX_SECS ?? "3600",
+const maxChannelLifetimeSecs = Number.parseInt(
+  process.env.MAX_CHANNEL_LIFETIME_SECS ?? "3600",
   10,
 );
 
@@ -151,6 +151,7 @@ if (svmPrivateKey) {
   const svmSigner = toFacilitatorSvmSigner(svmAccount);
   const svmUptoScheme = new UptoSvmScheme(svmSigner, {
     channelStorage,
+    maxChannelLifetimeSecs,
     rpcUrl: svmRpcUrl,
   });
   facilitator.register(SVM_NETWORK, svmUptoScheme);
@@ -159,7 +160,6 @@ if (svmPrivateKey) {
   rentCleanupManager.start({
     intervalSecs: rentCleanupIntervalSecs,
     abandonGraceSecs,
-    abandonMaxSecs,
     onClose: (result) => {
       console.info(
         `[rent-cleanup] ${result.action} channel=${result.channelId} tx=${result.transaction}`,
@@ -178,7 +178,7 @@ if (svmPrivateKey) {
     },
   });
   console.info(
-    `SVM rent cleanup started (interval=${rentCleanupIntervalSecs}s, abandonGrace=${abandonGraceSecs}s, abandonMax=${abandonMaxSecs}s)`,
+    `SVM rent cleanup started (interval=${rentCleanupIntervalSecs}s, abandonGrace=${abandonGraceSecs}s, maxChannelLifetime=${maxChannelLifetimeSecs}s)`,
   );
 }
 
@@ -283,6 +283,9 @@ app.listen(parseInt(PORT), () => {
   console.log();
 });
 
+/**
+ * Stop rent cleanup and exit the process on SIGINT/SIGTERM.
+ */
 function shutdown(): void {
   rentCleanupManager?.stop();
   process.exit(0);

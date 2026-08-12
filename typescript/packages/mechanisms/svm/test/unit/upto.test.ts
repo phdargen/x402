@@ -109,9 +109,7 @@ async function resignMutatedOpen(
   // a client-submitted open awaiting sponsor co-sign).
   const signed = await partiallySignTransaction([payer.keyPair], {
     messageBytes,
-    signatures: Object.fromEntries(
-      Object.keys(decoded.signatures).map(addr => [addr, null]),
-    ),
+    signatures: Object.fromEntries(Object.keys(decoded.signatures).map(addr => [addr, null])),
   } as never);
   return getBase64EncodedWireTransaction(signed);
 }
@@ -1066,9 +1064,16 @@ describe("upto SVM scheme", () => {
       expect(
         () =>
           new UptoFacilitatorScheme(mockSigner as never, {
+            maxChannelLifetimeSecs: 0,
+          }),
+      ).toThrow(/maxChannelLifetimeSecs/);
+      expect(
+        () =>
+          new UptoFacilitatorScheme(mockSigner as never, {
             maxPriorityFeeMicroLamports: 0,
             maxComputeUnits: 1,
             maxRequiredSignatures: 1,
+            maxChannelLifetimeSecs: 1,
           }),
       ).not.toThrow();
     });
@@ -1678,7 +1683,7 @@ describe("upto SVM scheme", () => {
         authorizedSigner: receiverAuthorizer.address,
         channelId: open.channelId,
         deposit: "1000000",
-        expiresAt: FAR_FUTURE,
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
         from: payer.address,
         maxAmount: "1000000",
         nonce: open.salt.toString(),
