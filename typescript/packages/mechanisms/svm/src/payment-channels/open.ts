@@ -34,6 +34,13 @@ import {
 import { findAssociatedTokenPda } from "@solana-program/token-2022";
 
 import {
+  COMPUTE_BUDGET_PROGRAM_ADDRESS,
+  LIGHTHOUSE_PROGRAM_ADDRESS,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  MAX_MEMO_BYTES,
+  MEMO_PROGRAM_ADDRESS,
+} from "../constants";
+import {
   getOpenInstruction,
   getOpenInstructionDataDecoder,
   OPEN_DISCRIMINATOR,
@@ -43,6 +50,12 @@ import { ASSOCIATED_TOKEN_PROGRAM_ID, PAYMENT_CHANNELS_PROGRAM_ID } from "./onch
 import { verifyEd25519Signature } from "./voucher";
 
 const U64_MAX = (1n << 64n) - 1n;
+/** Spec ceiling for `SetComputeUnitLimit` on an open transaction. */
+export const OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000;
+/** Spec ceiling for optional Phantom/Solflare Lighthouse assertions after `open`. */
+const OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS = 3;
+/** Max optional suffix length after `open` (3 Lighthouse + 1 Memo). */
+const OPEN_MAX_OPTIONAL_SUFFIX = 4;
 
 /**
  * Slot freshness / reclaim gate window for payment-channel PDAs.
@@ -97,6 +110,11 @@ export interface BuildOpenArgs {
   programId?: string | undefined;
   /** Optional distribution splits sealed into the channel at open. */
   recipients?: readonly ChannelSplit[] | undefined;
+  /**
+   * Optional seller memo (`extra.memo`). When set, used as Memo instruction
+   * data; otherwise a random hex nonce is emitted for uniqueness.
+   */
+  memo?: string | undefined;
 }
 
 /** Result of {@link buildOpenPaymentChannelTransaction}. */
@@ -227,6 +245,26 @@ export async function buildOpenPaymentChannelTransaction(args: BuildOpenArgs): P
     { programAddress },
   );
 
+  let memoData: Uint8Array;
+  if (args.memo !== undefined) {
+    memoData = new TextEncoder().encode(args.memo);
+    if (memoData.byteLength > MAX_MEMO_BYTES) {
+      throw new Error(`extra.memo exceeds maximum ${MAX_MEMO_BYTES} bytes`);
+    }
+  } else {
+    const nonce = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    memoData = new TextEncoder().encode(
+      Array.from(nonce)
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join(""),
+    );
+  }
+  const memoIx = {
+    programAddress: MEMO_PROGRAM_ADDRESS as Address,
+    accounts: [] as const,
+    data: memoData,
+  };
+
   const message = pipe(
     createTransactionMessage({ version: 0 }),
     msg => setTransactionMessageFeePayer(feePayer, msg),
@@ -238,7 +276,7 @@ export async function buildOpenPaymentChannelTransaction(args: BuildOpenArgs): P
         },
         msg,
       ),
-    msg => appendTransactionMessageInstructions([instruction], msg),
+    msg => appendTransactionMessageInstructions([instruction, memoIx], msg),
   );
   const signed = await partiallySignTransactionMessageWithSigners(message);
 
@@ -281,6 +319,27 @@ export interface VerifyOpenExpected {
   programId?: string | undefined;
   /** Expected distribution splits sealed into the channel. */
   recipients?: readonly ChannelSplit[] | undefined;
+  /**
+   * Seller-required memo (`extra.memo`). When set, exactly one suffix Memo
+   * instruction MUST match this UTF-8 value.
+   */
+  memo?: string | undefined;
+  /**
+   * Operator ceiling for `SetComputeUnitLimit`. Clamped to the spec max
+   * ({@link OPEN_MAX_COMPUTE_UNIT_LIMIT}); unset uses the spec max.
+   */
+  maxComputeUnits?: number | undefined;
+  /**
+   * Operator ceiling for `SetComputeUnitPrice` (microlamports). Clamped to
+   * {@link MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}; unset uses that default.
+   */
+  maxPriorityFeeMicroLamports?: number | undefined;
+  /**
+   * Operator ceiling for required signatures. When set, rejects when
+   * `numSignerAccounts` exceeds this value (exact `{from, feePayer}` set
+   * check still applies).
+   */
+  maxRequiredSignatures?: number | undefined;
 }
 
 /** Channel facts extracted from a verified open transaction. */
@@ -295,13 +354,30 @@ export interface VerifyOpenResult {
   salt: bigint;
 }
 
+type CompiledOpenMessage = {
+  addressTableLookups?: readonly unknown[];
+  header: {
+    numReadonlyNonSignerAccounts: number;
+    numReadonlySignerAccounts: number;
+    numSignerAccounts: number;
+  };
+  instructions: readonly {
+    accountIndices?: readonly number[];
+    data?: Uint8Array | undefined;
+    programAddressIndex: number;
+  }[];
+  staticAccounts: readonly string[];
+};
+
 /**
  * Decode and validate a client-submitted open transaction (base64).
  *
- * Asserts the embedded open instruction targets the payment-channels program,
- * has exactly the 14 pinned accounts (no remaining accounts), carries the
- * required writable/signer privileges (with Solana key-dedup privilege union),
- * that `feePayer`, `payee`, `mint`, `tokenProgram`, `authorizedSigner`,
+ * Asserts the top-level layout is an optional Compute Budget prefix, exactly
+ * one payment-channels `open`, and an optional Lighthouse/Memo suffix (Phantom /
+ * Solflare + uniqueness memo), that the open instruction has exactly the 14
+ * pinned accounts (no remaining accounts), carries the required
+ * writable/signer privileges (with Solana key-dedup privilege union), that
+ * `feePayer`, `payee`, `mint`, `tokenProgram`, `authorizedSigner`,
  * `withdrawDelay`, and `openSlot` match expectations, that `deposit == maxCap`,
  * and that the channel PDA matches the recomputed value.
  *
@@ -319,39 +395,37 @@ export async function verifyOpenTransaction(
   const decoded = getTransactionDecoder().decode(txBytes);
   const message = getCompiledTransactionMessageDecoder().decode(
     decoded.messageBytes,
-  ) as unknown as {
-    addressTableLookups?: readonly unknown[];
-    header: {
-      numReadonlyNonSignerAccounts: number;
-      numReadonlySignerAccounts: number;
-      numSignerAccounts: number;
-    };
-    instructions: readonly {
-      accountIndices?: readonly number[];
-      data?: Uint8Array | undefined;
-      programAddressIndex: number;
-    }[];
-    staticAccounts: readonly string[];
-  };
+  ) as unknown as CompiledOpenMessage;
 
   // The fee payer co-signs this client-supplied transaction, so a malicious
   // client could otherwise smuggle a fee-payer-authorized instruction (e.g.
   // `SystemProgram.transfer { from: feePayer }`) alongside the open and drain
-  // the sponsor. Two defenses, before any account binding:
+  // the sponsor. Defenses before account binding:
   //   1. Reject Address Lookup Tables — they hide instruction programs/accounts
   //      from `staticAccounts`. The in-SDK open builder never uses them.
-  //   2. Require exactly one payment-channels `open` instruction. Nothing else
-  //      gets the fee payer's signature or expands its fee exposure.
+  //   2. Allow only the spec's top-level layout: optional ComputeBudget prefix,
+  //      exactly one payment-channels `open`, optional Lighthouse/Memo suffix.
+  //      Wallets like Phantom/Solflare inject Lighthouse around the client open.
   if (message.addressTableLookups && message.addressTableLookups.length > 0) {
     throw new Error(
       "verifyOpenTransaction: address lookup tables are not permitted in an open transaction",
     );
   }
-  if (message.instructions.length !== 1) {
-    throw new Error(
-      `verifyOpenTransaction: expected exactly one open instruction, found ${message.instructions.length}`,
-    );
-  }
+
+  const maxComputeUnits = Math.min(
+    expected.maxComputeUnits ?? OPEN_MAX_COMPUTE_UNIT_LIMIT,
+    OPEN_MAX_COMPUTE_UNIT_LIMIT,
+  );
+  const maxPriorityFeeMicroLamports = Math.min(
+    expected.maxPriorityFeeMicroLamports ?? MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+    MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  );
+
+  const openIx = findCanonicalOpenInstruction(message, programIdStr, expected.feePayer, {
+    maxComputeUnits,
+    maxPriorityFeeMicroLamports,
+    expectedMemo: expected.memo,
+  });
 
   // Required-signer set must equal the distinct addresses in
   // `{ payload.from, extra.feePayer }` — no other signature may be required.
@@ -359,6 +433,14 @@ export async function verifyOpenTransaction(
     expected.feePayer === expected.from ? [expected.from] : [expected.feePayer, expected.from],
   );
   const numSigners = message.header.numSignerAccounts;
+  if (
+    expected.maxRequiredSignatures !== undefined &&
+    numSigners > expected.maxRequiredSignatures
+  ) {
+    throw new Error(
+      `verifyOpenTransaction: required-signer count ${numSigners} exceeds maxRequiredSignatures ${expected.maxRequiredSignatures}`,
+    );
+  }
   const signerAddresses = message.staticAccounts.slice(0, numSigners);
   if (signerAddresses.length !== expectedSigners.size) {
     throw new Error(
@@ -387,27 +469,6 @@ export async function verifyOpenTransaction(
   if (!fromSigValid) {
     throw new Error(`verifyOpenTransaction: invalid signature for payload.from ${expected.from}`);
   }
-  const instruction = message.instructions[0];
-  if (!instruction) {
-    throw new Error("verifyOpenTransaction: no payment-channels open instruction found");
-  }
-  const program = message.staticAccounts[instruction.programAddressIndex];
-  if (program !== programIdStr) {
-    throw new Error(
-      `verifyOpenTransaction: unexpected instruction program ${program}; only the channel open may be co-signed`,
-    );
-  }
-  if (
-    !instruction.data ||
-    instruction.data.length < 1 ||
-    instruction.data[0] !== OPEN_DISCRIMINATOR
-  ) {
-    throw new Error("verifyOpenTransaction: payment-channels instruction is not `open`");
-  }
-  const openIx = {
-    accountIndices: instruction.accountIndices ?? [],
-    data: instruction.data,
-  };
 
   const indices = openIx.accountIndices;
   // Spec: exactly 14 pinned slots and no remaining accounts.
@@ -630,6 +691,193 @@ export async function verifyOpenTransaction(
     })),
     salt,
   };
+}
+
+type OpenLayoutLimits = {
+  maxComputeUnits: number;
+  maxPriorityFeeMicroLamports: number;
+  expectedMemo?: string | undefined;
+};
+
+/**
+ * Locate the canonical payment-channels `open` in a compiled message and enforce
+ * the upto SVM top-level layout:
+ * optional ComputeBudget prefix → exactly one `open` → optional Lighthouse/Memo suffix.
+ *
+ * @param message - Compiled transaction message
+ * @param programIdStr - Expected payment-channels program id
+ * @param feePayer - Expected fee payer; must not appear outside `open` accounts
+ * @param limits - Operator/spec compute caps and optional seller memo
+ * @returns The open instruction's accounts + data
+ */
+function findCanonicalOpenInstruction(
+  message: CompiledOpenMessage,
+  programIdStr: string,
+  feePayer: string,
+  limits: OpenLayoutLimits,
+): { accountIndices: readonly number[]; data: Uint8Array } {
+  const { instructions, staticAccounts } = message;
+  if (instructions.length === 0) {
+    throw new Error("verifyOpenTransaction: no payment-channels open instruction found");
+  }
+
+  let i = 0;
+  let seenLimit = false;
+  let seenPrice = false;
+  while (i < instructions.length) {
+    const ix = instructions[i];
+    if (!ix) break;
+    const program = staticAccounts[ix.programAddressIndex];
+    if (program !== COMPUTE_BUDGET_PROGRAM_ADDRESS) break;
+    rejectFeePayerOutsideOpen(ix, staticAccounts, feePayer, "ComputeBudget");
+    const data = ix.data;
+    if (!data || data.length < 1) {
+      throw new Error("verifyOpenTransaction: malformed ComputeBudget instruction");
+    }
+    if (data[0] === 2) {
+      // SetComputeUnitLimit: discriminator + u32 LE units
+      if (seenLimit) {
+        throw new Error("verifyOpenTransaction: duplicate SetComputeUnitLimit instruction");
+      }
+      if (seenPrice) {
+        throw new Error(
+          "verifyOpenTransaction: SetComputeUnitLimit must precede SetComputeUnitPrice",
+        );
+      }
+      if (data.length !== 5) {
+        throw new Error("verifyOpenTransaction: SetComputeUnitLimit must be exactly 5 bytes");
+      }
+      const units = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(1, true);
+      if (units > limits.maxComputeUnits) {
+        throw new Error(
+          `verifyOpenTransaction: SetComputeUnitLimit ${units} exceeds ${limits.maxComputeUnits}`,
+        );
+      }
+      seenLimit = true;
+    } else if (data[0] === 3) {
+      // SetComputeUnitPrice: discriminator + u64 LE microlamports
+      if (seenPrice) {
+        throw new Error("verifyOpenTransaction: duplicate SetComputeUnitPrice instruction");
+      }
+      if (data.length !== 9) {
+        throw new Error("verifyOpenTransaction: SetComputeUnitPrice must be exactly 9 bytes");
+      }
+      const microLamports = new DataView(
+        data.buffer,
+        data.byteOffset,
+        data.byteLength,
+      ).getBigUint64(1, true);
+      if (microLamports > BigInt(limits.maxPriorityFeeMicroLamports)) {
+        throw new Error(
+          `verifyOpenTransaction: SetComputeUnitPrice ${microLamports} exceeds ${limits.maxPriorityFeeMicroLamports}`,
+        );
+      }
+      seenPrice = true;
+    } else {
+      throw new Error(
+        `verifyOpenTransaction: unsupported ComputeBudget instruction type ${data[0]}`,
+      );
+    }
+    i += 1;
+  }
+
+  const openInstruction = instructions[i];
+  if (!openInstruction) {
+    throw new Error("verifyOpenTransaction: no payment-channels open instruction found");
+  }
+  const openProgram = staticAccounts[openInstruction.programAddressIndex];
+  if (openProgram !== programIdStr) {
+    throw new Error(
+      `verifyOpenTransaction: unexpected instruction program ${openProgram}; expected payment-channels open after the ComputeBudget prefix`,
+    );
+  }
+  if (
+    !openInstruction.data ||
+    openInstruction.data.length < 1 ||
+    openInstruction.data[0] !== OPEN_DISCRIMINATOR
+  ) {
+    throw new Error("verifyOpenTransaction: payment-channels instruction is not `open`");
+  }
+  i += 1;
+
+  let lighthouseCount = 0;
+  let optionalCount = 0;
+  const memoDatas: Uint8Array[] = [];
+  while (i < instructions.length) {
+    const ix = instructions[i];
+    if (!ix) break;
+    const program = staticAccounts[ix.programAddressIndex];
+    optionalCount += 1;
+    if (optionalCount > OPEN_MAX_OPTIONAL_SUFFIX) {
+      throw new Error(
+        `verifyOpenTransaction: at most ${OPEN_MAX_OPTIONAL_SUFFIX} optional instructions are allowed after open`,
+      );
+    }
+    if (program === LIGHTHOUSE_PROGRAM_ADDRESS) {
+      lighthouseCount += 1;
+      if (lighthouseCount > OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS) {
+        throw new Error(
+          `verifyOpenTransaction: at most ${OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS} Lighthouse instructions are allowed after open`,
+        );
+      }
+      rejectFeePayerOutsideOpen(ix, staticAccounts, feePayer, "Lighthouse");
+    } else if (program === MEMO_PROGRAM_ADDRESS) {
+      rejectFeePayerOutsideOpen(ix, staticAccounts, feePayer, "Memo");
+      if (ix.data) memoDatas.push(ix.data);
+      else memoDatas.push(new Uint8Array());
+    } else {
+      throw new Error(
+        `verifyOpenTransaction: unexpected instruction program ${program}; only Lighthouse or Memo are allowed after open`,
+      );
+    }
+    i += 1;
+  }
+
+  if (limits.expectedMemo !== undefined) {
+    if (memoDatas.length !== 1) {
+      throw new Error(
+        `verifyOpenTransaction: expected exactly one Memo instruction matching extra.memo, found ${memoDatas.length}`,
+      );
+    }
+    const actualMemo = new TextDecoder().decode(memoDatas[0]!);
+    if (actualMemo !== limits.expectedMemo) {
+      throw new Error("verifyOpenTransaction: Memo instruction data does not match extra.memo");
+    }
+  }
+
+  return {
+    accountIndices: openInstruction.accountIndices ?? [],
+    data: openInstruction.data,
+  };
+}
+
+/**
+ * Reject optional-wrapper instructions that reference the fee payer as an
+ * account or as the invoked program (sponsor isolation outside `open` slots).
+ *
+ * @param ix - Compiled instruction
+ * @param staticAccounts - Message static account keys
+ * @param feePayer - Expected fee payer
+ * @param label - Instruction region label for errors
+ */
+function rejectFeePayerOutsideOpen(
+  ix: { accountIndices?: readonly number[]; programAddressIndex: number },
+  staticAccounts: readonly string[],
+  feePayer: string,
+  label: string,
+): void {
+  if (staticAccounts[ix.programAddressIndex] === feePayer) {
+    throw new Error(
+      `verifyOpenTransaction: feePayer must not be the invoked program of a ${label} instruction`,
+    );
+  }
+  for (const accountIndex of ix.accountIndices ?? []) {
+    if (staticAccounts[accountIndex] === feePayer) {
+      throw new Error(
+        `verifyOpenTransaction: feePayer must not appear in ${label} instruction accounts`,
+      );
+    }
+  }
 }
 
 /**

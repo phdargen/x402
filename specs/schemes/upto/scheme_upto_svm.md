@@ -154,6 +154,7 @@ from `exact`.
 | `receiverAuthorizer` | string | yes | Server-defined Base58 key set as channel `authorized_signer`; signs settlement vouchers. |
 | `withdrawDelay` | number | yes | Server-defined `grace_period` in seconds. The client MUST encode this exact value in `open`; the facilitator MUST reject any other value. MUST be an integer greater than zero. SHOULD be `>= maxTimeoutSeconds`. |
 | `tokenProgram` | string | yes | `Tokenkeg...` or `TokenzQ...` (Token-2022); the client SHOULD verify it against the onchain mint owner. |
+| `memo` | string | no | Seller-defined UTF-8 string for the transaction's Memo instruction. When present, the client MUST use this value as the Memo instruction data instead of a random nonce. Maximum 256 bytes. Enables payment references (e.g. invoice IDs) without unique deposit addresses. |
 | `recentBlockhash` | string | no | Pre-fetched blockhash so the client can build `openTransaction` without an RPC round trip. |
 | `lastValidBlockHeight` | string | no | Last block height at which `recentBlockhash` is valid, as a decimal string. Informational; MAY be ignored by the client. Ignored when `recentBlockhash` is absent. |
 | `recentSlot` | number | no | Recent slot the client MAY use as `openSlot` when it does not fetch its own slot. The `open` instruction still enforces the program's slot window. |
@@ -407,12 +408,19 @@ The top-level instructions MUST consist only of the following ordered regions:
    instruction. If both are present, `SetComputeUnitLimit` MUST precede
    `SetComputeUnitPrice`.
 2. Exactly one payment-channels `open` instruction.
-3. An optional suffix of at most three Lighthouse instructions, each invoking
-   `L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95`.
+3. An optional suffix of at most four instructions, each invoking either
+   Lighthouse (`L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95`) or SPL Memo
+   (`MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`). The suffix MUST contain
+   at most three Lighthouse instructions. Phantom injects up to three
+   Lighthouse assertions; Solflare injects two. The Memo instruction ensures
+   transaction uniqueness across concurrent opens with identical parameters.
+   Clients MUST include a Memo instruction containing either the value of
+   `extra.memo` (when present) or a random nonce (at least 16 bytes,
+   hex-encoded for UTF-8 compliance).
 
 No other top-level instruction or program is allowed. In particular, another
-payment-channels instruction, an SPL Memo instruction, an arbitrary wallet
-program, or a duplicate `open` MUST cause rejection.
+payment-channels instruction, an arbitrary wallet program, or a duplicate
+`open` MUST cause rejection.
 
 When present, Compute Budget instructions:
 
@@ -423,11 +431,18 @@ When present, Compute Budget instructions:
 - MUST set a compute-unit price no greater than `5000000` microlamports per
   compute unit (5 lamports per compute unit).
 
-Lighthouse instructions are allowed only for Phantom/Solflare transaction
-assertions and MUST NOT reference `extra.feePayer` as an account. A sponsor MAY
-apply a stricter local policy, including rejecting all optional instructions,
-but MUST NOT admit instructions outside this allowlist or relax the limits
-above.
+A sponsor MAY apply a stricter local policy for compute-unit limit, compute-unit
+price, and required-signature count (operator-configurable caps), but MUST NOT
+admit a compute-unit limit above `400000` or a compute-unit price above
+`5000000` microlamports.
+
+Lighthouse and Memo instructions are allowed only in the optional suffix and
+MUST NOT reference `extra.feePayer` as an account or as the invoked program.
+If `extra.memo` is present, the facilitator MUST verify that exactly one Memo
+instruction exists in the suffix and that its data matches `extra.memo`
+encoded as UTF-8. A sponsor MAY apply a stricter local policy, including
+rejecting all optional instructions, but MUST NOT admit instructions outside
+this allowlist or relax the absolute compute-budget ceilings above.
 
 ##### Canonical `open` instruction
 

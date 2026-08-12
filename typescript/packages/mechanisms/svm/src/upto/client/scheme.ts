@@ -75,6 +75,7 @@ export class UptoSvmScheme implements SchemeNetworkClient {
       deposit: maxAmount,
       feePayer: channelConfig.feePayer,
       gracePeriod: channelConfig.withdrawDelay,
+      memo: paymentRequirements.extra?.memo as string | undefined,
       mint: paymentRequirements.asset,
       openSlot,
       payee: channelConfig.feePayer,

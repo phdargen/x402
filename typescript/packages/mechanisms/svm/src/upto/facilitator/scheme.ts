@@ -50,6 +50,14 @@ export type UptoChannelStorageErrorContext = {
   phase: "verify" | "settle";
 };
 
+/** Rejects non-integer / out-of-range operator caps at construction. */
+function assertLimit(name: string, value: number | undefined, min: number): void {
+  if (value === undefined) return;
+  if (!Number.isSafeInteger(value) || value < min) {
+    throw new Error(`${name} must be a safe integer >= ${min}, received ${value}`);
+  }
+}
+
 /** Optional configuration for the upto SVM facilitator. */
 export interface UptoSvmFacilitatorConfig {
   /** Custom RPC URL (per-network defaults are used when omitted). */
@@ -65,6 +73,31 @@ export interface UptoSvmFacilitatorConfig {
    * affected. Defaults to `console.warn`.
    */
   onStorageError?: (error: unknown, context: UptoChannelStorageErrorContext) => void;
+  /**
+   * Maximum compute unit price in microlamports accepted on the open
+   * transaction. The facilitator is the fee payer, so the payer chooses a
+   * priority fee the facilitator pays. Clamped to the upto spec ceiling
+   * (`MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS` = 5,000,000).
+   *
+   * Default: 5,000,000
+   */
+  maxPriorityFeeMicroLamports?: number;
+  /**
+   * Maximum compute unit limit accepted on the open transaction. Clamped to
+   * the upto spec ceiling (`OPEN_MAX_COMPUTE_UNIT_LIMIT` = 400,000).
+   *
+   * Default: 400,000
+   */
+  maxComputeUnits?: number;
+  /**
+   * Maximum number of required signatures. Every signature adds 5,000 lamports
+   * of base fee, paid by the facilitator. A typical upto open needs two
+   * (payer + fee payer). The exact `{from, feePayer}` signer-set check still
+   * applies independently.
+   *
+   * Default: unset (no additional ceiling beyond the exact signer-set rule)
+   */
+  maxRequiredSignatures?: number;
 }
 
 type OpenAuthFailure = {
@@ -131,6 +164,9 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     if (this.signer.getAddresses().length === 0) {
       throw new Error("UptoSvmScheme requires at least one fee payer signer");
     }
+    assertLimit("maxPriorityFeeMicroLamports", config.maxPriorityFeeMicroLamports, 0);
+    assertLimit("maxComputeUnits", config.maxComputeUnits, 1);
+    assertLimit("maxRequiredSignatures", config.maxRequiredSignatures, 1);
     this.config = config;
     this.channelStorage = config.channelStorage ?? new InMemoryUptoChannelStorage();
   }
@@ -699,6 +735,10 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
         feePayer,
         from: p.from,
         maxCap: maxAmount,
+        maxComputeUnits: this.config.maxComputeUnits,
+        maxPriorityFeeMicroLamports: this.config.maxPriorityFeeMicroLamports,
+        maxRequiredSignatures: this.config.maxRequiredSignatures,
+        memo: requirements.extra?.memo as string | undefined,
         mint: requirements.asset,
         openSlot,
         payee: feePayer,

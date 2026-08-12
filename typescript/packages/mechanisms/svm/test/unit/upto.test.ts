@@ -15,6 +15,11 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  COMPUTE_BUDGET_PROGRAM_ADDRESS,
+  LIGHTHOUSE_PROGRAM_ADDRESS,
+  MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  MAX_MEMO_BYTES,
+  MEMO_PROGRAM_ADDRESS,
   SOLANA_DEVNET_CAIP2,
   SOLANA_MAINNET_CAIP2,
   TOKEN_PROGRAM_ADDRESS,
@@ -25,6 +30,7 @@ import { getPaymentChannelsTreasuryOwner } from "../../src/payment-channels/onch
 import {
   buildOpenPaymentChannelTransaction,
   findPaymentChannelPda,
+  OPEN_MAX_COMPUTE_UNIT_LIMIT,
   verifyOpenTransaction,
 } from "../../src/payment-channels/open";
 import { encodeVoucherMessageBytes, VOUCHER_MAGIC } from "../../src/payment-channels/voucher";
@@ -108,6 +114,40 @@ async function resignMutatedOpen(
     ),
   } as never);
   return getBase64EncodedWireTransaction(signed);
+}
+
+/** Encodes SetComputeUnitLimit: discriminator(2) + units u32 LE. */
+function makeComputeLimitData(units: number): Uint8Array {
+  const buf = new ArrayBuffer(5);
+  const view = new DataView(buf);
+  view.setUint8(0, 2);
+  view.setUint32(1, units, true);
+  return new Uint8Array(buf);
+}
+
+/** Encodes SetComputeUnitPrice: discriminator(3) + microlamports u64 LE. */
+function makeComputePriceData(microLamports: bigint): Uint8Array {
+  const buf = new ArrayBuffer(9);
+  const view = new DataView(buf);
+  view.setUint8(0, 3);
+  view.setBigUint64(1, microLamports, true);
+  return new Uint8Array(buf);
+}
+
+/**
+ * Ensure `program` is among `staticAccounts` (as a readonly nonsigner) and
+ * return its index. Matches how wallets inject ComputeBudget / Lighthouse.
+ *
+ * @param compiled - Mutable compiled message
+ * @param program - Program address to locate or append
+ * @returns Index into `staticAccounts`
+ */
+function ensureReadonlyProgramIndex(compiled: MutableCompiledMessage, program: string): number {
+  const existing = compiled.staticAccounts.indexOf(program);
+  if (existing >= 0) return existing;
+  compiled.staticAccounts.push(program);
+  compiled.header.numReadonlyNonSignerAccounts += 1;
+  return compiled.staticAccounts.length - 1;
 }
 
 describe("upto SVM scheme", () => {
@@ -442,6 +482,595 @@ describe("upto SVM scheme", () => {
       expect(result.deposit).toBe(1_000_000n);
       expect(result.openSlot).toBe(OPEN_SLOT);
       expect(result.payer).toBe(payer.address);
+    });
+
+    it("verifyOpenTransaction accepts ComputeBudget prefix + Lighthouse suffix (Phantom/Solflare)", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const wrapped = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const computeBudgetIdx = ensureReadonlyProgramIndex(
+          compiled,
+          COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        );
+        const lighthouseIdx = ensureReadonlyProgramIndex(compiled, LIGHTHOUSE_PROGRAM_ADDRESS);
+        compiled.instructions = [
+          {
+            accountIndices: [],
+            data: makeComputeLimitData(200_000),
+            programAddressIndex: computeBudgetIdx,
+          },
+          {
+            accountIndices: [],
+            data: makeComputePriceData(1n),
+            programAddressIndex: computeBudgetIdx,
+          },
+          ...compiled.instructions,
+          { accountIndices: [], data: new Uint8Array([0]), programAddressIndex: lighthouseIdx },
+          { accountIndices: [], data: new Uint8Array([1]), programAddressIndex: lighthouseIdx },
+        ];
+      });
+
+      const result = await verifyOpenTransaction(wrapped, {
+        authorizedSigner: receiverAuthorizer.address,
+        feePayer: feePayer.address,
+        from: payer.address,
+        maxCap: 1_000_000n,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      expect(result.channelId).toBe(open.channelId);
+    });
+
+    it("verifyOpenTransaction rejects a non-allowlisted instruction after open", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        // Reuse system program already present in the open accounts as a smuggled ix.
+        const systemIdx = compiled.staticAccounts.indexOf("11111111111111111111111111111111");
+        if (systemIdx < 0) throw new Error("expected system program in open static accounts");
+        compiled.instructions.push({
+          accountIndices: [0],
+          data: new Uint8Array([2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]),
+          programAddressIndex: systemIdx,
+        });
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/only Lighthouse or Memo are allowed after open/);
+    });
+
+    it("verifyOpenTransaction rejects Lighthouse that references the fee payer", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const lighthouseIdx = ensureReadonlyProgramIndex(compiled, LIGHTHOUSE_PROGRAM_ADDRESS);
+        // Fee payer is always staticAccounts[0].
+        compiled.instructions.push({
+          accountIndices: [0],
+          data: new Uint8Array([0]),
+          programAddressIndex: lighthouseIdx,
+        });
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/feePayer must not appear in Lighthouse instruction accounts/);
+    });
+
+    it("verifyOpenTransaction rejects SetComputeUnitPrice above the spec cap", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const computeBudgetIdx = ensureReadonlyProgramIndex(
+          compiled,
+          COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        );
+        compiled.instructions = [
+          {
+            accountIndices: [],
+            data: makeComputePriceData(BigInt(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) + 1n),
+            programAddressIndex: computeBudgetIdx,
+          },
+          ...compiled.instructions,
+        ];
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/SetComputeUnitPrice .* exceeds/);
+    });
+
+    it("verifyOpenTransaction accepts open + 3 Lighthouse + Memo", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        memo: "order-12345",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const wrapped = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const lighthouseIdx = ensureReadonlyProgramIndex(compiled, LIGHTHOUSE_PROGRAM_ADDRESS);
+        compiled.instructions.push(
+          { accountIndices: [], data: new Uint8Array([0]), programAddressIndex: lighthouseIdx },
+          { accountIndices: [], data: new Uint8Array([1]), programAddressIndex: lighthouseIdx },
+          { accountIndices: [], data: new Uint8Array([2]), programAddressIndex: lighthouseIdx },
+        );
+      });
+
+      const result = await verifyOpenTransaction(wrapped, {
+        authorizedSigner: receiverAuthorizer.address,
+        feePayer: feePayer.address,
+        from: payer.address,
+        maxCap: 1_000_000n,
+        memo: "order-12345",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      expect(result.channelId).toBe(open.channelId);
+    });
+
+    it("verifyOpenTransaction rejects a fourth Lighthouse instruction", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const lighthouseIdx = ensureReadonlyProgramIndex(compiled, LIGHTHOUSE_PROGRAM_ADDRESS);
+        for (let n = 0; n < 4; n += 1) {
+          compiled.instructions.push({
+            accountIndices: [],
+            data: new Uint8Array([n]),
+            programAddressIndex: lighthouseIdx,
+          });
+        }
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/at most 3 Lighthouse instructions|at most 4 optional instructions/);
+    });
+
+    it("verifyOpenTransaction rejects Memo that references the fee payer", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const tampered = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const memoIdx = ensureReadonlyProgramIndex(compiled, MEMO_PROGRAM_ADDRESS);
+        // Replace the client memo with one that references the fee payer.
+        const memoIxIndex = compiled.instructions.findIndex(
+          ix => compiled.staticAccounts[ix.programAddressIndex] === MEMO_PROGRAM_ADDRESS,
+        );
+        if (memoIxIndex < 0) throw new Error("expected memo instruction from builder");
+        compiled.instructions[memoIxIndex] = {
+          accountIndices: [0],
+          data: new TextEncoder().encode("tampered"),
+          programAddressIndex: memoIdx,
+        };
+      });
+
+      await expect(
+        verifyOpenTransaction(tampered, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/feePayer must not appear in Memo instruction accounts/);
+    });
+
+    it("verifyOpenTransaction enforces extra.memo match and count", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        memo: "order-12345",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      await expect(
+        verifyOpenTransaction(open.transaction, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          memo: "different-memo",
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/does not match extra\.memo/);
+
+      const missingMemo = await resignMutatedOpen(payer, open.transaction, compiled => {
+        compiled.instructions = compiled.instructions.filter(
+          ix => compiled.staticAccounts[ix.programAddressIndex] !== MEMO_PROGRAM_ADDRESS,
+        );
+      });
+      await expect(
+        verifyOpenTransaction(missingMemo, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          memo: "order-12345",
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/expected exactly one Memo instruction/);
+    });
+
+    it("verifyOpenTransaction enforces lowered operator compute caps", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+      const open = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+
+      const withBudget = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const computeBudgetIdx = ensureReadonlyProgramIndex(
+          compiled,
+          COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        );
+        compiled.instructions = [
+          {
+            accountIndices: [],
+            data: makeComputeLimitData(100_000),
+            programAddressIndex: computeBudgetIdx,
+          },
+          {
+            accountIndices: [],
+            data: makeComputePriceData(1_000n),
+            programAddressIndex: computeBudgetIdx,
+          },
+          ...compiled.instructions,
+        ];
+      });
+
+      await expect(
+        verifyOpenTransaction(withBudget, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          maxComputeUnits: 50_000,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/SetComputeUnitLimit 100000 exceeds 50000/);
+
+      await expect(
+        verifyOpenTransaction(withBudget, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          maxPriorityFeeMicroLamports: 500,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(/SetComputeUnitPrice 1000 exceeds 500/);
+
+      // Operator cannot raise above the normative ceilings.
+      const overSpec = await resignMutatedOpen(payer, open.transaction, compiled => {
+        const computeBudgetIdx = ensureReadonlyProgramIndex(
+          compiled,
+          COMPUTE_BUDGET_PROGRAM_ADDRESS,
+        );
+        compiled.instructions = [
+          {
+            accountIndices: [],
+            data: makeComputeLimitData(OPEN_MAX_COMPUTE_UNIT_LIMIT + 1),
+            programAddressIndex: computeBudgetIdx,
+          },
+          ...compiled.instructions,
+        ];
+      });
+      await expect(
+        verifyOpenTransaction(overSpec, {
+          authorizedSigner: receiverAuthorizer.address,
+          feePayer: feePayer.address,
+          from: payer.address,
+          maxCap: 1_000_000n,
+          maxComputeUnits: OPEN_MAX_COMPUTE_UNIT_LIMIT * 2,
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+          withdrawDelay: WITHDRAW_DELAY,
+        }),
+      ).rejects.toThrow(
+        new RegExp(`SetComputeUnitLimit .* exceeds ${OPEN_MAX_COMPUTE_UNIT_LIMIT}`),
+      );
+    });
+
+    it("buildOpenPaymentChannelTransaction emits Memo (seller or random nonce)", async () => {
+      const payer = await generateKeyPairSigner();
+      const feePayer = await generateKeyPairSigner();
+      const receiverAuthorizer = await generateKeyPairSigner();
+
+      const withSellerMemo = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        memo: "pi_invoice_1",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const sellerCompiled = getCompiledTransactionMessageDecoder().decode(
+        getTransactionDecoder().decode(getBase64Codec().encode(withSellerMemo.transaction))
+          .messageBytes,
+      );
+      const sellerMemoIx = sellerCompiled.instructions.find(
+        ix => sellerCompiled.staticAccounts[ix.programAddressIndex] === MEMO_PROGRAM_ADDRESS,
+      );
+      expect(sellerMemoIx).toBeDefined();
+      expect(new TextDecoder().decode(new Uint8Array(sellerMemoIx!.data!))).toBe("pi_invoice_1");
+
+      const randomA = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const randomB = await buildOpenPaymentChannelTransaction({
+        authorizedSigner: receiverAuthorizer.address,
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+        deposit: 1_000_000n,
+        feePayer: feePayer.address,
+        gracePeriod: WITHDRAW_DELAY,
+        mint: MINT,
+        openSlot: OPEN_SLOT + 1n,
+        payee: feePayer.address,
+        payer,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      });
+      const decodeMemo = (tx: string): string => {
+        const compiled = getCompiledTransactionMessageDecoder().decode(
+          getTransactionDecoder().decode(getBase64Codec().encode(tx)).messageBytes,
+        );
+        const memoIx = compiled.instructions.find(
+          ix => compiled.staticAccounts[ix.programAddressIndex] === MEMO_PROGRAM_ADDRESS,
+        );
+        return new TextDecoder().decode(new Uint8Array(memoIx!.data!));
+      };
+      const memoA = decodeMemo(randomA.transaction);
+      const memoB = decodeMemo(randomB.transaction);
+      expect(memoA).toMatch(/^[0-9a-f]{32}$/);
+      expect(memoB).toMatch(/^[0-9a-f]{32}$/);
+      expect(memoA).not.toBe(memoB);
+
+      await expect(
+        buildOpenPaymentChannelTransaction({
+          authorizedSigner: receiverAuthorizer.address,
+          blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 0n },
+          deposit: 1_000_000n,
+          feePayer: feePayer.address,
+          gracePeriod: WITHDRAW_DELAY,
+          memo: "x".repeat(MAX_MEMO_BYTES + 1),
+          mint: MINT,
+          openSlot: OPEN_SLOT,
+          payee: feePayer.address,
+          payer,
+          tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        }),
+      ).rejects.toThrow(/extra\.memo exceeds maximum/);
+    });
+
+    it("UptoSvmFacilitatorConfig rejects invalid limit options", () => {
+      const feePayer = address(USDC_MAINNET_ADDRESS);
+      const mockSigner = {
+        getAddresses: () => [feePayer],
+        getSigner: () => ({}),
+      };
+      expect(
+        () =>
+          new UptoFacilitatorScheme(mockSigner as never, {
+            maxPriorityFeeMicroLamports: Number.NaN,
+          }),
+      ).toThrow(/maxPriorityFeeMicroLamports/);
+      expect(
+        () =>
+          new UptoFacilitatorScheme(mockSigner as never, {
+            maxComputeUnits: 0,
+          }),
+      ).toThrow(/maxComputeUnits/);
+      expect(
+        () =>
+          new UptoFacilitatorScheme(mockSigner as never, {
+            maxRequiredSignatures: 0,
+          }),
+      ).toThrow(/maxRequiredSignatures/);
+      expect(
+        () =>
+          new UptoFacilitatorScheme(mockSigner as never, {
+            maxPriorityFeeMicroLamports: 0,
+            maxComputeUnits: 1,
+            maxRequiredSignatures: 1,
+          }),
+      ).not.toThrow();
     });
 
     it("verifyOpenTransaction accepts payee==feePayer privilege union (upto profile)", async () => {
