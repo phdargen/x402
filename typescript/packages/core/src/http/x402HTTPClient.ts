@@ -50,7 +50,7 @@ export class x402HTTPClient {
    *
    * @param client - The underlying x402Client for payment logic
    */
-  constructor(private readonly client: x402Client) { }
+  constructor(private readonly client: x402Client) {}
 
   /**
    * Register a hook to handle 402 responses before payment.
@@ -68,6 +68,7 @@ export class x402HTTPClient {
    * Run hooks and return headers if any hook provides them.
    *
    * @param paymentRequired - The payment required response from the server
+   * @param requestUrl - The URL of the request that received the payment required response
    * @returns Headers to use for retry, or null to proceed to payment
    */
   async handlePaymentRequired(

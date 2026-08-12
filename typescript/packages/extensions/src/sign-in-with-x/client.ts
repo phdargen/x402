@@ -23,9 +23,12 @@ export type CompleteSIWxInfo = SIWxExtensionInfo & {
 /**
  * Verifies that a SIWX challenge is bound to the origin of the resource that issued the 402.
  *
+ * Checks `domain` and `uri` only. EIP-4361 `resources` may be cross-origin URIs and are not
+ * validated here (matching server-side validateSIWxMessage).
+ *
  * @param info - Server extension info from the 402 response
  * @param responseUrl - Final URL of the 402 response (after redirects)
- * @throws Error when domain, uri origin, or any resource origin does not match
+ * @throws Error when domain or uri origin does not match
  */
 export function assertSIWxChallengeBoundToOrigin(
   info: SIWxExtensionInfo,
@@ -50,23 +53,6 @@ export function assertSIWxChallengeBoundToOrigin(
     throw new Error(
       `SIWX challenge uri origin "${uriOrigin}" does not match response origin "${origin.origin}"`,
     );
-  }
-
-  if (info.resources) {
-    for (const resource of info.resources) {
-      let resourceOrigin: string;
-      try {
-        resourceOrigin = new URL(resource).origin;
-      } catch {
-        throw new Error(`SIWX challenge resource "${resource}" is not a valid URL`);
-      }
-
-      if (resourceOrigin !== origin.origin) {
-        throw new Error(
-          `SIWX challenge resource origin "${resourceOrigin}" does not match response origin "${origin.origin}"`,
-        );
-      }
-    }
   }
 }
 

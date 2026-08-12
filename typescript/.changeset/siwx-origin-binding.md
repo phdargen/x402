@@ -7,4 +7,4 @@
 
 Require SIWX client origin binding before signing. `x402HTTPClient.handlePaymentRequired` now accepts the response URL and passes it to hooks via `PaymentRequiredContext.requestUrl`.
 
-**`createSIWxPayload(serverExtension, signer, requestUrl)`** — new required third argument: the final URL of the 402 response (after redirects). Callers that previously invoked `createSIWxPayload(info, signer)` must pass the response URL; signing is refused when challenge `domain`, `uri` origin, or any `resources` entry does not match that URL's origin.
+**`createSIWxPayload(serverExtension, signer, requestUrl)`** — new required third argument: the final URL of the 402 response (after redirects). Callers that previously invoked `createSIWxPayload(info, signer)` must pass the response URL; signing is refused when challenge `domain` or `uri` origin does not match that URL's origin.

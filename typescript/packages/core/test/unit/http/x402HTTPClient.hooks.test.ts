@@ -33,7 +33,10 @@ describe("x402HTTPClient", () => {
       const httpClient = new x402HTTPClient(client);
       const paymentRequired = buildPaymentRequired();
 
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toBeNull();
     });
@@ -46,7 +49,10 @@ describe("x402HTTPClient", () => {
       httpClient.onPaymentRequired(hook);
 
       const paymentRequired = buildPaymentRequired();
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toEqual(expectedHeaders);
     });
@@ -58,7 +64,10 @@ describe("x402HTTPClient", () => {
       httpClient.onPaymentRequired(hook);
 
       const paymentRequired = buildPaymentRequired();
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toBeNull();
     });
@@ -80,7 +89,10 @@ describe("x402HTTPClient", () => {
       httpClient.onPaymentRequired(hook1).onPaymentRequired(hook2);
 
       const paymentRequired = buildPaymentRequired();
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toEqual({ "X-Hook": "first" });
       expect(executionOrder).toEqual([1]); // Second hook should not be called
@@ -103,7 +115,10 @@ describe("x402HTTPClient", () => {
       httpClient.onPaymentRequired(hook1).onPaymentRequired(hook2);
 
       const paymentRequired = buildPaymentRequired();
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toEqual({ "X-Hook": "second" });
       expect(executionOrder).toEqual([1, 2]);
@@ -141,7 +156,10 @@ describe("x402HTTPClient", () => {
       httpClient.onPaymentRequired(hook1).onPaymentRequired(hook2);
 
       const paymentRequired = buildPaymentRequired();
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toBeNull();
     });
@@ -170,7 +188,10 @@ describe("x402HTTPClient", () => {
       const paymentRequired = buildPaymentRequired({
         extensions: { httpExtension: { enabled: true } },
       });
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toEqual({ "X-Extension": "yes" });
       expect(order).toEqual(["manual", "extension"]);
@@ -193,7 +214,10 @@ describe("x402HTTPClient", () => {
         },
       });
 
-      const result = await httpClient.handlePaymentRequired(buildPaymentRequired(), "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        buildPaymentRequired(),
+        "https://api.example.com/",
+      );
 
       expect(result).toBeNull();
       expect(extensionCalled).toBe(false);
@@ -220,7 +244,10 @@ describe("x402HTTPClient", () => {
       const paymentRequired = buildPaymentRequired({
         extensions: { httpExtension: {} },
       });
-      const result = await httpClient.handlePaymentRequired(paymentRequired, "https://api.example.com/");
+      const result = await httpClient.handlePaymentRequired(
+        paymentRequired,
+        "https://api.example.com/",
+      );
 
       expect(result).toEqual({ "X-Manual": "yes" });
       expect(extensionCalled).toBe(false);

@@ -296,7 +296,7 @@ Note: Smart wallet verification requires RPC calls, while EOA verification is pu
 
 ### `createSIWxPayload(serverInfo, signer, requestUrl)`
 
-Client helper that verifies origin binding and creates a signed payload. `requestUrl` must be the final URL of the 402 response (after redirects). Signing is refused when the challenge `domain`, `uri` origin, or any `resources` entry does not match that URL's origin.
+Client helper that verifies origin binding and creates a signed payload. `requestUrl` must be the final URL of the 402 response (after redirects). Signing is refused when the challenge `domain` or `uri` origin does not match that URL's origin. EIP-4361 `resources` may be cross-origin and are not checked.
 
 ### `assertSIWxChallengeBoundToOrigin(info, responseUrl)`
 
