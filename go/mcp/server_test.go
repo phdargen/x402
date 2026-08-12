@@ -347,11 +347,11 @@ func TestNewPaymentWrapper_Hooks(t *testing.T) {
 
 func TestNewPaymentWrapper_AbortOnBeforeExecution(t *testing.T) {
 	mockFacilitator := &mockFacilitatorClient{}
-	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+	scheme := &recordingEnricherScheme{mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "cash"}}
 
 	server := x402.Newx402ResourceServer(
 		x402.WithFacilitatorClient(mockFacilitator),
-		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+		x402.WithSchemeServer("x402:cash", scheme),
 	)
 
 	ctx := context.Background()
@@ -407,6 +407,65 @@ func TestNewPaymentWrapper_AbortOnBeforeExecution(t *testing.T) {
 	if !result.IsError {
 		t.Error("Expected error result when hook aborts")
 	}
+	if scheme.calls < 2 {
+		t.Fatalf("expected match + abort enricher calls, got %d", scheme.calls)
+	}
+	if scheme.lastPayload != nil {
+		t.Fatal("hook-abort 402 must not pass the payment payload to enrichers")
+	}
+}
+
+func TestNewPaymentWrapper_BeforeExecutionHookError_OmitsPayload(t *testing.T) {
+	mockFacilitator := &mockFacilitatorClient{}
+	scheme := &recordingEnricherScheme{mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "cash"}}
+
+	server := x402.Newx402ResourceServer(
+		x402.WithFacilitatorClient(mockFacilitator),
+		x402.WithSchemeServer("x402:cash", scheme),
+	)
+
+	ctx := context.Background()
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Failed to initialize server: %v", err)
+	}
+
+	var errHook BeforeExecutionHook = func(context ServerHookContext) (bool, error) {
+		return false, fmt.Errorf("hook boom")
+	}
+
+	config := PaymentWrapperConfig{
+		Accepts: []types.PaymentRequirements{
+			{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		},
+		Hooks: &PaymentWrapperHooks{
+			OnBeforeExecution: &errHook,
+		},
+	}
+
+	wrapper := NewPaymentWrapper(server, config)
+	wrapped := wrapper.Wrap(func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		t.Fatal("handler should not run")
+		return &mcp.CallToolResult{}, nil
+	})
+
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    types.PaymentRequirements{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		Payload:     map[string]interface{}{"signature": "~test-payer"},
+	}
+	result, err := wrapped(ctx, makeCallToolRequest(nil, mcp.Meta{MCP_PAYMENT_META_KEY: payload}))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when before-execution hook errors")
+	}
+	if scheme.calls < 2 {
+		t.Fatalf("expected match + hook-error enricher calls, got %d", scheme.calls)
+	}
+	if scheme.lastPayload != nil {
+		t.Fatal("hook-error 402 must not pass the payment payload to enrichers")
+	}
 }
 
 func TestNewPaymentWrapper_ToolHandlerError_NoSettlement(t *testing.T) {
@@ -460,6 +519,108 @@ func TestNewPaymentWrapper_ToolHandlerError_NoSettlement(t *testing.T) {
 	}
 	if settleCalled {
 		t.Error("Settlement should NOT be called when handler returns an error")
+	}
+}
+
+func TestNewPaymentWrapper_OnAfterExecution_OnHandlerIsError(t *testing.T) {
+	afterCalled := false
+	mockFacilitator := &mockFacilitatorClient{}
+	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+
+	server := x402.Newx402ResourceServer(
+		x402.WithFacilitatorClient(mockFacilitator),
+		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+	)
+
+	ctx := context.Background()
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Failed to initialize server: %v", err)
+	}
+
+	var afterHook AfterExecutionHook = func(context AfterExecutionContext) error {
+		afterCalled = true
+		if !context.Result.IsError {
+			t.Error("OnAfterExecution should see the handler IsError result")
+		}
+		return nil
+	}
+
+	config := PaymentWrapperConfig{
+		Accepts: []types.PaymentRequirements{
+			{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		},
+		Hooks: &PaymentWrapperHooks{
+			OnAfterExecution: &afterHook,
+		},
+	}
+
+	wrapper := NewPaymentWrapper(server, config)
+	wrapped := wrapper.Wrap(func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "tool error"}},
+			IsError: true,
+		}, nil
+	})
+
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    types.PaymentRequirements{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		Payload:     map[string]interface{}{"signature": "~test-payer"},
+	}
+	result, err := wrapped(ctx, makeCallToolRequest(nil, mcp.Meta{MCP_PAYMENT_META_KEY: payload}))
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result from handler")
+	}
+	if !afterCalled {
+		t.Fatal("expected OnAfterExecution to run when handler returns IsError")
+	}
+}
+
+func TestNewPaymentWrapper_OnAfterExecution_SkippedOnHandlerThrow(t *testing.T) {
+	afterCalled := false
+	mockFacilitator := &mockFacilitatorClient{}
+	mockSchemeServer := &mockSchemeNetworkServer{scheme: "cash"}
+
+	server := x402.Newx402ResourceServer(
+		x402.WithFacilitatorClient(mockFacilitator),
+		x402.WithSchemeServer("x402:cash", mockSchemeServer),
+	)
+
+	ctx := context.Background()
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Failed to initialize server: %v", err)
+	}
+
+	var afterHook AfterExecutionHook = func(context AfterExecutionContext) error {
+		afterCalled = true
+		return nil
+	}
+
+	config := PaymentWrapperConfig{
+		Accepts: []types.PaymentRequirements{
+			{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		},
+		Hooks: &PaymentWrapperHooks{
+			OnAfterExecution: &afterHook,
+		},
+	}
+
+	wrapper := NewPaymentWrapper(server, config)
+	wrapped := wrapper.Wrap(func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return nil, fmt.Errorf("boom")
+	})
+
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    types.PaymentRequirements{Scheme: "cash", Network: "x402:cash", Amount: "1000", PayTo: "test-recipient"},
+		Payload:     map[string]interface{}{"signature": "~test-payer"},
+	}
+	_, _ = wrapped(ctx, makeCallToolRequest(nil, mcp.Meta{MCP_PAYMENT_META_KEY: payload}))
+	if afterCalled {
+		t.Fatal("OnAfterExecution must not run when the handler returns a Go error")
 	}
 }
 
@@ -843,14 +1004,29 @@ func (m *mockEscrowScheme) SettleOnCancel(ctx x402.VerifiedPaymentCanceledContex
 	return nil, nil
 }
 
+// recordingEnricherScheme records the payload passed to 402 enrichers without
+// mutating Extra (so matching still succeeds).
+type recordingEnricherScheme struct {
+	mockSchemeNetworkServer
+	calls       int
+	lastPayload *types.PaymentPayload
+}
+
+func (m *recordingEnricherScheme) EnrichPaymentRequiredResponse(ctx x402.PaymentRequiredContext) {
+	m.calls++
+	m.lastPayload = ctx.PaymentPayload
+}
+
 // mockEnricherScheme records EnrichPaymentRequiredResponse for 402 path tests.
 type mockEnricherScheme struct {
 	mockSchemeNetworkServer
-	calls int
+	calls       int
+	lastPayload *types.PaymentPayload
 }
 
 func (m *mockEnricherScheme) EnrichPaymentRequiredResponse(ctx x402.PaymentRequiredContext) {
 	m.calls++
+	m.lastPayload = ctx.PaymentPayload
 	for i := range ctx.Requirements {
 		if ctx.Requirements[i].Extra == nil {
 			ctx.Requirements[i].Extra = map[string]interface{}{}

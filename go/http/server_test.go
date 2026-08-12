@@ -617,6 +617,7 @@ func TestProcessSettlement(t *testing.T) {
 	server := Newx402HTTPResourceServer(
 		RoutesConfig{},
 		x402.WithFacilitatorClient(mockClient),
+		x402.WithSchemeServer("eip155:1", &mockSchemeServer{scheme: "exact"}),
 	)
 	_ = server.Initialize(ctx)
 
@@ -667,6 +668,7 @@ func TestProcessSettlement_Failure(t *testing.T) {
 	server := Newx402HTTPResourceServer(
 		RoutesConfig{},
 		x402.WithFacilitatorClient(mockClient),
+		x402.WithSchemeServer("eip155:1", &mockSchemeServer{scheme: "exact"}),
 	)
 	_ = server.Initialize(ctx)
 
@@ -781,7 +783,11 @@ func TestProcessSettlement_OverridesFromTransportContext(t *testing.T) {
 		},
 	}
 
-	server := Newx402HTTPResourceServer(RoutesConfig{}, x402.WithFacilitatorClient(mockClient))
+	server := Newx402HTTPResourceServer(
+		RoutesConfig{},
+		x402.WithFacilitatorClient(mockClient),
+		x402.WithSchemeServer("eip155:1", &mockSchemeServer{scheme: "exact"}),
+	)
 	_ = server.Initialize(ctx)
 
 	requirements := types.PaymentRequirements{

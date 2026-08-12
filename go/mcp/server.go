@@ -72,8 +72,8 @@ func NewPaymentWrapper(server *x402.X402ResourceServer, config PaymentWrapperCon
 //  6. Creates a cancellation dispatcher for settleOnCancel / cancel hooks
 //  7. OnBeforeExecution hook (if configured)
 //  8. Executes the original handler
-//  9. On handler throw / IsError, Cancel and attach failure-path payment-response
-//  10. OnAfterExecution hook (if configured)
+//  9. OnAfterExecution hook (if configured), including IsError results
+//  10. On handler throw / IsError, Cancel and attach failure-path payment-response
 //  11. Settles after the handler when the flow requires it (else echoes before-handler settle)
 //  12. OnAfterSettlement hook (if configured)
 //  13. Returns result with settlement info in _meta
@@ -187,10 +187,10 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 		if w.config.Hooks != nil && w.config.Hooks.OnBeforeExecution != nil {
 			ok, err := (*w.config.Hooks.OnBeforeExecution)(hookCtx)
 			if err != nil {
-				return w.paymentRequiredResult(toolName, fmt.Sprintf("before execution hook error: %v", err), &payload), nil
+				return w.paymentRequiredResult(toolName, fmt.Sprintf("before execution hook error: %v", err), nil), nil
 			}
 			if !ok {
-				return w.paymentRequiredResult(toolName, "Execution aborted by OnBeforeExecution hook", &payload), nil
+				return w.paymentRequiredResult(toolName, "Execution aborted by OnBeforeExecution hook", nil), nil
 			}
 		}
 
@@ -210,6 +210,16 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 			return nil, err
 		}
 
+		// OnAfterExecution hook (including IsError results; skipped on handler throw)
+		if w.config.Hooks != nil && w.config.Hooks.OnAfterExecution != nil {
+			mcpResult := callToolResultToMCPToolResult(result)
+			afterCtx := AfterExecutionContext{
+				ServerHookContext: hookCtx,
+				Result:            mcpResult,
+			}
+			_ = (*w.config.Hooks.OnAfterExecution)(afterCtx) // Non-fatal
+		}
+
 		// If handler returned an error result, don't settle after-handler;
 		// cancel and attach failure-path payment-response when present.
 		if result.IsError {
@@ -226,16 +236,6 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 				result.Meta[PaymentResponseMetaKey] = receipt
 			}
 			return result, nil
-		}
-
-		// OnAfterExecution hook
-		if w.config.Hooks != nil && w.config.Hooks.OnAfterExecution != nil {
-			mcpResult := callToolResultToMCPToolResult(result)
-			afterCtx := AfterExecutionContext{
-				ServerHookContext: hookCtx,
-				Result:            mcpResult,
-			}
-			_ = (*w.config.Hooks.OnAfterExecution)(afterCtx) // Non-fatal
 		}
 
 		return w.settlePaymentResult(

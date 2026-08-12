@@ -321,13 +321,16 @@ func (s *x402ResourceServer) GetRegisteredScheme(network Network, scheme string)
 // GetPaymentFlow resolves the payment flow name for requirements from the
 // scheme's ATM-keyed PaymentFlows table.
 //
-// When no scheme is registered for the pair, returns PaymentFlowAuthorization
-// (verify-before / settle-after). Route construction and MCP wrappers still
-// require registered schemes so unsupported ATM/flow combinations fail fast.
+// When no scheme is registered for the pair, returns an error. Route
+// construction and MCP wrappers also require registered schemes so unsupported
+// ATM/flow combinations fail fast.
 func (s *x402ResourceServer) GetPaymentFlow(requirements types.PaymentRequirements) (PaymentFlowName, error) {
 	scheme := s.GetRegisteredScheme(Network(requirements.Network), requirements.Scheme)
 	if scheme == nil {
-		return PaymentFlowAuthorization, nil
+		return "", fmt.Errorf(
+			`[x402] No scheme implementation registered for %q on network %q`,
+			requirements.Scheme, requirements.Network,
+		)
 	}
 	_, flow, err := ResolvePaymentFlow(scheme, requirements)
 	return flow, err

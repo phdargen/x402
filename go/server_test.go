@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,6 +197,7 @@ func TestServerInitializeWithMultipleFacilitators(t *testing.T) {
 	server := Newx402ResourceServer(
 		WithFacilitatorClient(mockClient1),
 		WithFacilitatorClient(mockClient2),
+		WithSchemeServer("eip155:1", &mockSchemeNetworkServer{scheme: "exact"}),
 	)
 
 	err := server.Initialize(ctx)
@@ -317,6 +319,20 @@ func TestServerBuildPaymentRequirementsNoScheme(t *testing.T) {
 	var paymentErr *PaymentError
 	if !errors.As(err, &paymentErr) || paymentErr.Code != ErrCodeUnsupportedScheme {
 		t.Fatal("Expected UnsupportedScheme error")
+	}
+}
+
+func TestGetPaymentFlow_UnregisteredScheme(t *testing.T) {
+	server := Newx402ResourceServer()
+	_, err := server.GetPaymentFlow(types.PaymentRequirements{
+		Scheme:  "exact",
+		Network: "eip155:1",
+	})
+	if err == nil {
+		t.Fatal("Expected error for unregistered scheme")
+	}
+	if !strings.Contains(err.Error(), `No scheme implementation registered for "exact" on network "eip155:1"`) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -466,7 +482,10 @@ func TestServerVerifyPayment(t *testing.T) {
 		},
 	}
 
-	server := Newx402ResourceServer(WithFacilitatorClient(mockClient))
+	server := Newx402ResourceServer(
+		WithFacilitatorClient(mockClient),
+		WithSchemeServer("eip155:1", &mockSchemeNetworkServer{scheme: "exact"}),
+	)
 	if err := server.Initialize(ctx); err != nil {
 		t.Fatalf("Failed to initialize server: %v", err)
 	}
@@ -530,7 +549,10 @@ func TestServerVerifyPayment_InvalidFacilitatorResponse(t *testing.T) {
 				},
 			}
 
-			server := Newx402ResourceServer(WithFacilitatorClient(mockClient))
+			server := Newx402ResourceServer(
+				WithFacilitatorClient(mockClient),
+				WithSchemeServer("eip155:1", &mockSchemeNetworkServer{scheme: "exact"}),
+			)
 			if err := server.Initialize(ctx); err != nil {
 				t.Fatalf("Failed to initialize server: %v", err)
 			}
