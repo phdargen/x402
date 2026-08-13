@@ -37,7 +37,7 @@ Which operations a payment can undergo follows from its payment flow:
 | `authorization`     | verify → resource → settle | `charge` after the resource runs, and `refund` later. No hold, therefore no `capture`, `void`, or `reclaim`.                                                                                           |
 
 
-`extra.paymentFlow` is REQUIRED in every `auth-capture` entry, with its value written out in both cases. The client's authorization looks the same either way, so this field is the only thing that says whether those funds will be held or spent outright. The default is `escrow`.
+The scheme default is `escrow`. 
 
 ## Lifecycle operations are `/settle` calls
 
