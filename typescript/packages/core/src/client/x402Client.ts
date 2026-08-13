@@ -785,12 +785,12 @@ export class x402Client {
       return requirements;
     }
 
-    const amountOf = (requirement: PaymentRequirements) =>
-      BigInt(
-        x402Version === 1
-          ? (requirement as unknown as PaymentRequirementsV1).maxAmountRequired
-          : requirement.amount,
-      );
+    const rawAmountOf = (requirement: PaymentRequirements) =>
+      x402Version === 1
+        ? (requirement as unknown as PaymentRequirementsV1).maxAmountRequired
+        : requirement.amount;
+    const isAtomicAmount = (amount: string) => /^\d+$/.test(amount);
+    const amountOf = (requirement: PaymentRequirements) => BigInt(rawAmountOf(requirement));
     const schemeFor = (requirement: PaymentRequirements) =>
       findByNetworkAndScheme(
         clientSchemesByNetwork,
@@ -862,6 +862,21 @@ export class x402Client {
 
       if (usdLimit === false) {
         return true;
+      }
+
+      const rawAmount = rawAmountOf(requirement);
+      if (!isAtomicAmount(rawAmount)) {
+        // Decimal ledger value (e.g. XRPL IOU "0.01") — 1:1 USD vs the Money cap.
+        const valueScaled = BigInt(convertToTokenAmount(rawAmount, 18));
+        const capScaled = BigInt(
+          convertToTokenAmount(
+            numberToDecimalString(parseMoneyString(String(usdLimit))),
+            18,
+          ),
+        );
+        const ok = valueScaled <= capScaled;
+        if (!ok) rejectedUsdSymbol = defaultAsset.symbol;
+        return ok;
       }
 
       const maxAtomic = BigInt(

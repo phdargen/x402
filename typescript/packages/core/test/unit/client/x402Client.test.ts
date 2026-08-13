@@ -1840,5 +1840,46 @@ describe("x402Client", () => {
       expect(seen).toEqual(["250000"]);
       expect(mockClient.createPaymentPayloadCalls[0].requirements.amount).toBe("250000");
     });
+
+    it("compares non-integer decimal amounts to the USD cap directly", async () => {
+      const rlusd = {
+        asset: "524C555344000000000000000000000000000000",
+        decimals: 15,
+        symbol: "RLUSD",
+      };
+      const mockClient = new MockSchemeNetworkClient("exact");
+      mockClient.setFindDefaultAsset(rlusd);
+      const xrpl = "xrpl:1" as Network;
+      const client = new x402Client().register(xrpl, mockClient);
+
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network: xrpl,
+              asset: rlusd.asset,
+              amount: "1.0",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls).toHaveLength(1);
+
+      await expect(
+        client.createPaymentPayload(
+          buildPaymentRequired({
+            accepts: [
+              buildPaymentRequirements({
+                scheme: "exact",
+                network: xrpl,
+                asset: rlusd.asset,
+                amount: "1.01",
+              }),
+            ],
+          }),
+        ),
+      ).rejects.toThrow(/maxAmountPerPayment/);
+    });
   });
 });

@@ -288,8 +288,8 @@ export interface SchemeNetworkServer {
   parsePrice(price: Price, network: Network): Promise<AssetAmount>;
 
   /**
-   * Optional asset decimals for settlement overrides. Core falls back to 6
-   * when missing or undefined.
+   * Optional asset decimals for `$…` settlement overrides. Core throws when
+   * this is missing or returns undefined
    *
    * @param asset - Asset address or symbol
    * @param network - Network identifier

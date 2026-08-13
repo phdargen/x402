@@ -24,7 +24,7 @@ export const DEFAULT_ASSETS: DefaultAssetTable<MyAssetInfo> = {
 };
 ```
 
-Each entry uses the `asset` field (not `address`) for the on-chain identifier. Family-specific fields (e.g. EIP-712 `name`/`version` on EVM) extend the base `DefaultAsset` type.
+Each entry uses the `asset` field (not `address`) for the on-chain identifier. Family-specific fields (e.g. EIP-712 `name`/`version` on EVM, `issuer` on XRPL) extend the base `DefaultAsset` type. XRPL copies `issuer` into payment-requirements `extra` at parse time; the client scheme requires that value to match the table before signing RLUSD.
 
 ### Two lookups
 
@@ -51,11 +51,6 @@ Adding non-USD denominations (EUR, JPY, etc.) would require:
 
 Until that exists, only list tokens intended to track USD.
 
-### Families with no defaults
-
-Some mechanism packages intentionally declare **nothing** in `defaultAssets.ts` (or omit the file):
-
-- **Keeta**, **XRPL**, **Concordium** — no canonical USD stablecoin is registered yet; use explicit `AssetAmount` pricing or a custom `registerMoneyParser()`.
 
 ### Go and Python
 
