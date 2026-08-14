@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -191,30 +190,4 @@ func (s *UptoEvmScheme) EnhancePaymentRequirements(
 	}
 
 	return requirements, nil
-}
-
-// ValidatePaymentRequirements validates that requirements are valid for this scheme.
-func (s *UptoEvmScheme) ValidatePaymentRequirements(requirements x402.PaymentRequirements) error {
-	if !evm.IsValidAddress(requirements.PayTo) {
-		return fmt.Errorf(ErrInvalidPayToAddress+": %s", requirements.PayTo)
-	}
-
-	if requirements.Amount == "" {
-		return errors.New(ErrAmountRequired)
-	}
-
-	amount, ok := new(big.Int).SetString(requirements.Amount, 10)
-	if !ok || amount.Sign() <= 0 {
-		return fmt.Errorf(ErrInvalidAmount+": %s", requirements.Amount)
-	}
-
-	if requirements.Asset != "" && !evm.IsValidAddress(requirements.Asset) {
-		networkStr := string(requirements.Network)
-		_, err := evm.GetAssetInfo(networkStr, requirements.Asset)
-		if err != nil {
-			return fmt.Errorf(ErrInvalidAsset+": %s", requirements.Asset)
-		}
-	}
-
-	return nil
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -246,81 +245,4 @@ func (s *ExactEvmScheme) EnhancePaymentRequirements(
 	}
 
 	return requirements, nil
-}
-
-// GetDisplayAmount formats an amount for display
-func (s *ExactEvmScheme) GetDisplayAmount(amount string, network string, asset string) (string, error) {
-	// Get asset info
-	assetInfo, err := evm.GetAssetInfo(network, asset)
-	if err != nil {
-		return "", err
-	}
-
-	// Parse amount
-	amountBig, ok := new(big.Int).SetString(amount, 10)
-	if !ok {
-		return "", fmt.Errorf("invalid amount: %s", amount)
-	}
-
-	// Format with decimals
-	formatted := evm.FormatAmount(amountBig, assetInfo.Decimals)
-
-	// Add currency symbol
-	return "$" + formatted + " USDC", nil
-}
-
-// ValidatePaymentRequirements validates that requirements are valid for this scheme.
-// All EVM networks are supported - this validates required fields only.
-func (s *ExactEvmScheme) ValidatePaymentRequirements(requirements x402.PaymentRequirements) error {
-	networkStr := string(requirements.Network)
-
-	// Check PayTo is a valid address
-	if !evm.IsValidAddress(requirements.PayTo) {
-		return fmt.Errorf(ErrInvalidPayToAddress+": %s", requirements.PayTo)
-	}
-
-	// Check amount is valid
-	if requirements.Amount == "" {
-		return errors.New(ErrAmountRequired)
-	}
-
-	amount, ok := new(big.Int).SetString(requirements.Amount, 10)
-	if !ok || amount.Sign() <= 0 {
-		return fmt.Errorf(ErrInvalidAmount+": %s", requirements.Amount)
-	}
-
-	// Check asset is valid if specified
-	if requirements.Asset != "" && !evm.IsValidAddress(requirements.Asset) {
-		// Try to look it up (only works for networks with default assets)
-		_, err := evm.GetAssetInfo(networkStr, requirements.Asset)
-		if err != nil {
-			return fmt.Errorf(ErrInvalidAsset+": %s", requirements.Asset)
-		}
-	}
-
-	return nil
-}
-
-// ConvertFromTokenAmount converts from token smallest unit to decimal
-func (s *ExactEvmScheme) ConvertFromTokenAmount(tokenAmount string, network string) (string, error) {
-	config, err := evm.GetNetworkConfig(network)
-	if err != nil {
-		return "", err
-	}
-
-	amount, ok := new(big.Int).SetString(tokenAmount, 10)
-	if !ok {
-		return "", fmt.Errorf(ErrInvalidTokenAmount+": %s", tokenAmount)
-	}
-
-	return evm.FormatAmount(amount, config.DefaultAsset.Decimals), nil
-}
-
-// GetSupportedNetworks returns the list of supported networks
-func (s *ExactEvmScheme) GetSupportedNetworks() []string {
-	networks := make([]string, 0, len(evm.NetworkConfigs))
-	for network := range evm.NetworkConfigs {
-		networks = append(networks, network)
-	}
-	return networks
 }
