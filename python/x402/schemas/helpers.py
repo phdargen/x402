@@ -1,9 +1,10 @@
 """Utility functions for the x402 Python SDK."""
 
 import json
-from typing import Any, TypeVar
+import re
+from typing import Any, TypedDict, TypeVar
 
-from .base import Network
+from .base import Money, Network
 from .payments import PaymentPayload, PaymentRequired, PaymentRequirements
 from .v1 import PaymentPayloadV1, PaymentRequiredV1, PaymentRequirementsV1
 
@@ -272,3 +273,52 @@ def find_schemes_by_network(
             return scheme_map
 
     return None
+
+
+class ParsedMoney(TypedDict, total=False):
+    """Result of :func:`parse_money`."""
+
+    amount: float
+    symbol: str
+
+
+def parse_money_string(money: str) -> float:
+    """Parse a money string into a finite, non-negative decimal number.
+
+    Accepts plain decimal strings with an optional leading dollar sign.
+    Rejects ticker suffixes — use :func:`parse_money` when a symbol may be present.
+    """
+    cleaned = re.sub(r"^\$", "", money).strip()
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", cleaned) or re.search(r"[eE]", cleaned):
+        raise ValueError(f"Invalid money format: {money}")
+
+    amount = float(cleaned)
+    if amount != amount or amount < 0:  # NaN or negative
+        raise ValueError(f"Invalid money format: {money}")
+    return amount
+
+
+def parse_money(money: Money) -> ParsedMoney:
+    """Parse money into ``{amount, symbol?}``.
+
+    ``"1.50 USDT"`` → symbol; ``"1.50 USD"`` and bare amounts have none.
+    Glued tickers (``"1.50USDT"``) are rejected.
+    """
+    if isinstance(money, int | float):
+        if money != money or money < 0:  # NaN or negative
+            raise ValueError(f"Invalid money format: {money}")
+        return {"amount": float(money)}
+
+    trimmed = money.strip()
+    match = re.fullmatch(
+        r"\$?\s*(-?\d+(?:\.\d+)?)(?:\s+([A-Za-z][A-Za-z0-9.]*))?",
+        trimmed,
+    )
+    if not match:
+        raise ValueError(f"Invalid money format: {money}")
+
+    amount = parse_money_string(match.group(1))
+    raw_symbol = match.group(2)
+    if not raw_symbol or raw_symbol.upper() == "USD":
+        return {"amount": amount}
+    return {"amount": amount, "symbol": raw_symbol.upper()}

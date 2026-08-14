@@ -30,13 +30,13 @@ from x402.mechanisms.evm import (
     is_valid_tx_hash,
     normalize_address,
     parse_amount,
-    parse_money_to_decimal,
 )
 from x402.mechanisms.evm.exact import (
     ExactEvmClientScheme,
     ExactEvmFacilitatorScheme,
     ExactEvmServerScheme,
 )
+from x402.schemas.helpers import parse_money, parse_money_string
 
 
 class TestExports:
@@ -347,37 +347,38 @@ class TestBytesToHex:
         assert result == "0x"
 
 
-class TestParseMoneyToDecimal:
-    """Test parse_money_to_decimal function."""
+class TestParseMoney:
+    """Test parse_money (TS parseMoney port)."""
 
-    def test_should_parse_dollar_string_prices(self):
-        """Should parse dollar string prices."""
-        assert parse_money_to_decimal("$1.50") == 1.5
-        assert parse_money_to_decimal("$0.10") == 0.1
-        assert parse_money_to_decimal("$100") == 100.0
+    def test_parses_bare_and_dollar_amounts(self):
+        assert parse_money("$1.50") == {"amount": 1.5}
+        assert parse_money("1.50") == {"amount": 1.5}
+        assert parse_money(1.5) == {"amount": 1.5}
 
-    def test_should_parse_simple_number_strings(self):
-        """Should parse simple number strings."""
-        assert parse_money_to_decimal("1.50") == 1.5
-        assert parse_money_to_decimal("0.10") == 0.1
-        assert parse_money_to_decimal("100") == 100.0
+    def test_parses_suffixed_ticker(self):
+        assert parse_money("1.50 USDT") == {"amount": 1.5, "symbol": "USDT"}
+        assert parse_money("1.50 usdt") == {"amount": 1.5, "symbol": "USDT"}
 
-    def test_should_parse_numbers(self):
-        """Should parse numbers."""
-        assert parse_money_to_decimal(1.5) == 1.5
-        assert parse_money_to_decimal(100) == 100.0
+    def test_strips_usd_to_no_symbol(self):
+        assert parse_money("1.50 USD") == {"amount": 1.5}
 
-    def test_should_strip_usd_usdc_suffixes(self):
-        """Should strip USD/USDC suffixes."""
-        assert parse_money_to_decimal("1.50 USD") == 1.5
-        assert parse_money_to_decimal("1.50 USDC") == 1.5
-        assert parse_money_to_decimal("1.50 usd") == 1.5
-        assert parse_money_to_decimal("1.50 usdc") == 1.5
+    def test_rejects_glued_tickers(self):
+        with pytest.raises(ValueError, match="Invalid money format"):
+            parse_money("1.50USDT")
 
-    def test_should_raise_for_invalid_formats(self):
-        """Should raise ValueError for invalid formats."""
-        with pytest.raises(ValueError):
-            parse_money_to_decimal("not-a-number")
+    def test_rejects_negatives(self):
+        with pytest.raises(ValueError, match="Invalid money format: -5"):
+            parse_money(-5)
+        with pytest.raises(ValueError, match="Invalid money format"):
+            parse_money("-1.50")
+        with pytest.raises(ValueError, match="Invalid money format"):
+            parse_money("-$1.50")
+        with pytest.raises(ValueError, match="Invalid money format"):
+            parse_money_string("-1.50")
+
+    def test_keeps_parse_money_string_rejecting_suffixes(self):
+        with pytest.raises(ValueError, match="Invalid money format"):
+            parse_money_string("1.50 USDT")
 
 
 class TestConstants:

@@ -3,12 +3,12 @@
 from collections.abc import Callable
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
+from ....schemas.helpers import parse_money
 from ..constants import SCHEME_EXACT
+from ..default_assets import find_default_asset, get_default_asset
 from ..utils import (
     get_asset_info,
-    get_network_config,
     parse_amount,
-    parse_money_to_decimal,
 )
 
 # Type alias for money parser (sync)
@@ -50,6 +50,11 @@ class ExactEvmScheme:
         self._money_parsers.append(parser)
         return self
 
+    def get_asset_decimals(self, asset: str, network: Network) -> int | None:
+        """Decimals for a known default asset, or ``None``."""
+        found = find_default_asset(asset, str(network))
+        return found["decimals"] if found is not None else None
+
     def parse_price(self, price: Price, network: Network) -> AssetAmount:
         """Parse price into asset amount.
 
@@ -84,7 +89,9 @@ class ExactEvmScheme:
             return price
 
         # Parse Money to decimal
-        decimal_amount = parse_money_to_decimal(price)
+        parsed = parse_money(price)
+        decimal_amount = parsed["amount"]
+        symbol = parsed.get("symbol")
 
         # Try custom parsers (sync)
         for parser in self._money_parsers:
@@ -92,8 +99,8 @@ class ExactEvmScheme:
             if result is not None:
                 return result
 
-        # Default: convert to USDC
-        return self._default_money_conversion(decimal_amount, str(network))
+        # Default: convert using the network (or ticker) default asset
+        return self._default_money_conversion(decimal_amount, str(network), symbol)
 
     def enhance_payment_requirements(
         self,
@@ -116,17 +123,9 @@ class ExactEvmScheme:
         Returns:
             Enhanced payment requirements.
         """
-        config = get_network_config(str(requirements.network))
-
         # Default asset
         if not requirements.asset:
-            default = config.get("default_asset")
-            if not default or not default.get("address"):
-                raise ValueError(
-                    f"No default stablecoin configured for network {requirements.network}; "
-                    "use register_money_parser or specify an explicit asset address"
-                )
-            requirements.asset = default["address"]
+            requirements.asset = get_default_asset(str(requirements.network))["asset"]
 
         try:
             asset_info = get_asset_info(str(requirements.network), requirements.asset)
@@ -159,7 +158,9 @@ class ExactEvmScheme:
 
         return requirements
 
-    def _default_money_conversion(self, amount: float, network: str) -> AssetAmount:
+    def _default_money_conversion(
+        self, amount: float, network: str, symbol: str | None = None
+    ) -> AssetAmount:
         """Convert decimal amount to network's default stablecoin AssetAmount.
 
         Args:
@@ -172,16 +173,12 @@ class ExactEvmScheme:
         Raises:
             ValueError: If no default stablecoin is configured for the network.
         """
-        config = get_network_config(network)
-        asset = config.get("default_asset")
+        from decimal import Decimal
 
-        if not asset or not asset.get("address"):
-            raise ValueError(
-                f"No default stablecoin configured for network {network}; "
-                "use register_money_parser or specify an explicit AssetAmount"
-            )
+        from ..default_assets import ExactDefaultAssetInfo
 
-        token_amount = int(amount * (10 ** asset["decimals"]))
+        asset: ExactDefaultAssetInfo = get_default_asset(network, symbol)
+        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
 
         atm = asset.get("asset_transfer_method")
         include_eip712_domain = not atm or asset.get("supports_eip2612", False)
@@ -195,6 +192,6 @@ class ExactEvmScheme:
 
         return AssetAmount(
             amount=str(token_amount),
-            asset=asset["address"],
+            asset=asset["asset"],
             extra=extra,
         )

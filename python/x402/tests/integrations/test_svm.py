@@ -157,9 +157,13 @@ class TestSvmIntegrationV2:
         self.facilitator_address = self.facilitator_signer.get_addresses()[0]
 
         # Create client with SVM scheme
-        self.client = x402ClientSync().register(
-            SOLANA_DEVNET_CAIP2,
-            ExactSvmClientScheme(self.client_signer, rpc_url=RPC_URL),
+        self.client = (
+            x402ClientSync()
+            .register(
+                SOLANA_DEVNET_CAIP2,
+                ExactSvmClientScheme(self.client_signer, rpc_url=RPC_URL),
+            )
+            .set_spend_controls(False)
         )
 
         # Create facilitator with SVM scheme

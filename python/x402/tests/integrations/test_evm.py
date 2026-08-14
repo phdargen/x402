@@ -213,9 +213,13 @@ class TestEvmIntegrationV2:
         self.facilitator_address = self.facilitator_signer.address
 
         # Create client with EVM scheme using EthAccountSigner
-        self.client = x402ClientSync().register(
-            "eip155:84532",
-            ExactEvmClientScheme(self.client_signer),
+        self.client = (
+            x402ClientSync()
+            .register(
+                "eip155:84532",
+                ExactEvmClientScheme(self.client_signer),
+            )
+            .set_spend_controls(False)
         )
 
         # Create facilitator with EVM scheme using FacilitatorWeb3Signer
@@ -763,6 +767,7 @@ class TestEvmUptoIntegrationV2:
         # Register both exact and upto
         self.client = x402ClientSync()
         self.client.register("eip155:84532", UptoEvmClientScheme(self.client_signer))
+        self.client.set_spend_controls(False)
 
         self.facilitator = x402FacilitatorSync()
         self.facilitator.register(

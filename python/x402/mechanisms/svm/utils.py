@@ -141,15 +141,25 @@ def get_asset_info(network: str, asset_address: str | None = None) -> AssetInfo:
         Asset information.
 
     Raises:
-        ValueError: If the address does not match the registered asset for the network.
+        ValueError: If the address does not match a registered asset for the network.
     """
-    config = get_network_config(network)
-    default_asset = config["default_asset"]
+    from .default_assets import find_default_asset, get_default_asset
 
-    if not asset_address or asset_address == default_asset["address"]:
-        return default_asset
+    if not asset_address:
+        entry = get_default_asset(network)
+    else:
+        found = find_default_asset(asset_address, network)
+        if found is None:
+            raise ValueError(
+                f"Token {asset_address} is not a registered asset for network {network}."
+            )
+        entry = found
 
-    raise ValueError(f"Token {asset_address} is not a registered asset for network {network}.")
+    return {
+        "address": entry["asset"],
+        "name": entry["symbol"],
+        "decimals": entry["decimals"],
+    }
 
 
 def convert_to_token_amount(decimal_amount: str, decimals: int) -> str:
@@ -203,29 +213,6 @@ def format_amount(amount: int, decimals: int) -> str:
     d = Decimal(amount)
     divisor = Decimal(10**decimals)
     return str(d / divisor)
-
-
-def parse_money_to_decimal(money: str | float | int) -> float:
-    """Parse Money to decimal.
-
-    Handles formats like "$1.50", "1.50", 1.50.
-
-    Args:
-        money: Money value in various formats.
-
-    Returns:
-        Decimal amount as float.
-    """
-    if isinstance(money, int | float):
-        return float(money)
-
-    # Clean string
-    clean = money.strip()
-    clean = clean.lstrip("$")
-    clean = re.sub(r"\s*(USD|USDC|usd|usdc)\s*$", "", clean)
-    clean = clean.strip()
-
-    return float(clean)
 
 
 def transaction_message_hash(tx: VersionedTransaction) -> str:

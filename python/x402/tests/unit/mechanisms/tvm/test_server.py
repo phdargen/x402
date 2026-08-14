@@ -12,6 +12,7 @@ from x402.mechanisms.tvm import (
     USDT_MAINNET_MINTER,
     USDT_TESTNET_MINTER,
 )
+from x402.mechanisms.tvm.default_assets import get_default_asset
 from x402.mechanisms.tvm.exact import ExactTvmServerScheme
 from x402.schemas import AssetAmount, SupportedKind
 
@@ -149,7 +150,7 @@ class TestParsePrice:
         def test_should_raise_when_network_has_no_default_asset(self):
             server = ExactTvmServerScheme()
 
-            with pytest.raises(ValueError, match="No default stablecoin configured"):
+            with pytest.raises(ValueError, match="No default asset configured"):
                 server.parse_price("1.00", "tvm:123")
 
 
@@ -236,15 +237,19 @@ class TestEnhancePaymentRequirements:
 
     class TestInternalHelpers:
         def test_get_default_asset_should_raise_for_unknown_network(self):
-            server = ExactTvmServerScheme()
-
-            with pytest.raises(ValueError, match="No default stablecoin configured"):
-                server._get_default_asset("tvm:123")
+            with pytest.raises(ValueError, match="No default asset configured"):
+                get_default_asset("tvm:123")
 
         def test_get_asset_decimals_should_return_default_for_usdt(self):
             server = ExactTvmServerScheme()
 
-            assert server._get_asset_decimals(_make_requirements(network=TVM_TESTNET)) == 6
+            assert (
+                server.get_asset_decimals(
+                    _make_requirements(network=TVM_TESTNET).asset,
+                    TVM_TESTNET,
+                )
+                == 6
+            )
 
 
 class TestRegisterMoneyParser:

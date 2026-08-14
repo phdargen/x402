@@ -6,8 +6,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
-from ..constants import DEFAULT_DECIMALS, SCHEME_EXACT
-from ..utils import get_network_config, get_usdc_address, parse_money_to_decimal
+from ....schemas.helpers import parse_money
+from ..constants import SCHEME_EXACT
+from ..default_assets import find_default_asset, get_default_asset
 
 if TYPE_CHECKING:
     from solana.rpc.api import Client as SolanaClient
@@ -64,6 +65,10 @@ class ExactSvmScheme:
         self._money_parsers.append(parser)
         return self
 
+    def get_asset_decimals(self, asset: str, network: Network) -> int | None:
+        found = find_default_asset(asset, str(network))
+        return found["decimals"] if found is not None else None
+
     def parse_price(self, price: Price, network: Network) -> AssetAmount:
         """Parse price into asset amount.
 
@@ -97,8 +102,9 @@ class ExactSvmScheme:
                 raise ValueError(f"Asset address required for AssetAmount on {network}")
             return price
 
-        # Parse Money to decimal
-        decimal_amount = parse_money_to_decimal(price)
+        parsed = parse_money(price)
+        decimal_amount = parsed["amount"]
+        symbol = parsed.get("symbol")
 
         # Try custom parsers (sync)
         for parser in self._money_parsers:
@@ -106,8 +112,7 @@ class ExactSvmScheme:
             if result is not None:
                 return result
 
-        # Default: convert to USDC
-        return self._default_money_conversion(decimal_amount, str(network))
+        return self._default_money_conversion(decimal_amount, str(network), symbol)
 
     def enhance_payment_requirements(
         self,
@@ -130,11 +135,8 @@ class ExactSvmScheme:
         # Mark unused parameters to satisfy linter
         _ = extension_keys
 
-        config = get_network_config(str(requirements.network))
-
-        # Default asset
         if not requirements.asset:
-            requirements.asset = config["default_asset"]["address"]
+            requirements.asset = get_default_asset(str(requirements.network))["asset"]
 
         # Add feePayer from supportedKind.extra to payment requirements
         # The facilitator provides its address as the fee payer for transaction fees
@@ -156,21 +158,16 @@ class ExactSvmScheme:
 
         return requirements
 
-    def _default_money_conversion(self, amount: float, network: str) -> AssetAmount:
-        """Convert decimal amount to USDC AssetAmount.
+    def _default_money_conversion(
+        self, amount: float, network: str, symbol: str | None = None
+    ) -> AssetAmount:
+        from decimal import Decimal
 
-        Args:
-            amount: Decimal amount (e.g., 1.50).
-            network: Network identifier.
-
-        Returns:
-            AssetAmount in USDC.
-        """
-        # Convert to smallest unit (6 decimals for USDC)
-        token_amount = int(amount * (10**DEFAULT_DECIMALS))
+        asset = get_default_asset(network, symbol)
+        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
 
         return AssetAmount(
             amount=str(token_amount),
-            asset=get_usdc_address(network),
+            asset=asset["asset"],
             extra={},
         )

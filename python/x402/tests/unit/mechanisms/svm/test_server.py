@@ -519,19 +519,21 @@ class TestRegisterMoneyParser:
             server.parse_price(999999999.99, SOLANA_MAINNET_CAIP2)
             assert received_amount == 999999999.99
 
-        def test_should_handle_negative_amounts_parser_can_validate(self):
-            """Should handle negative amounts (parser can validate)."""
+        def test_should_reject_negative_amounts_before_custom_parsers_run(self):
+            """Should reject negative amounts before custom parsers run."""
             server = ExactSvmServerScheme()
+            parser_called = False
 
             def validate_parser(amount: float, network: str) -> AssetAmount | None:
-                if amount < 0:
-                    raise ValueError("Negative amounts not supported")
+                nonlocal parser_called
+                parser_called = True
                 return None
 
             server.register_money_parser(validate_parser)
 
-            with pytest.raises(ValueError, match="Negative amounts not supported"):
+            with pytest.raises(ValueError, match="Invalid money format: -10"):
                 server.parse_price(-10, SOLANA_MAINNET_CAIP2)
+            assert parser_called is False
 
     class TestRealWorldUseCases:
         """Test real-world use cases."""

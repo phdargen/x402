@@ -52,6 +52,8 @@ from .helpers import (
     get_scheme_and_network,
     match_payload_to_requirements,
     matches_network_pattern,
+    parse_money,
+    parse_money_string,
     parse_payment_payload,
     parse_payment_required,
     parse_payment_requirements,
@@ -164,6 +166,8 @@ __all__ = [
     "parse_payment_payload",
     "parse_payment_requirements",
     "matches_network_pattern",
+    "parse_money",
+    "parse_money_string",
     "derive_network_pattern",
     "find_schemes_by_network",
     # Hooks

@@ -568,6 +568,7 @@ def create_x402_mcp_client_from_config(
             - schemes: List of scheme registrations (required)
             - auto_payment: Whether to automatically create and submit payment (default: True)
             - on_payment_requested: Optional callback for payment approval
+            - spend_controls: Optional spend controls forwarded to ``x402Client``
 
     Returns:
         x402MCPClient instance
@@ -598,6 +599,8 @@ def create_x402_mcp_client_from_config(
 
     payment_client = x402ClientAsync()
     register_schemes(payment_client, schemes)
+    if "spend_controls" in config:
+        payment_client.set_spend_controls(config["spend_controls"])
 
     return x402MCPClient(
         mcp_client,
