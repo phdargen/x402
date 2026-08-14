@@ -538,9 +538,9 @@ class x402ClientBase:
             ]
         if not filtered:
             raise NoMatchingRequirementsError(
-                "All payment requirements were rejected by spendControls: only default assets "
-                "or entries in spendControls.allowedAssets are allowed. Add an allowedAssets "
-                "entry for non-default tokens, set allowedAssets: true, or set spendControls: false."
+                "All payment requirements were rejected by spend_controls: only default assets "
+                "or entries in spend_controls.allowed_assets are allowed. Add an allowed_assets "
+                "entry for non-default tokens, set allowed_assets: True, or set spend_controls: False."
             )
 
         usd_limit: Money | Literal[False]
@@ -646,17 +646,17 @@ class x402ClientBase:
                 for requirement in before_amount_caps
             ):
                 raise NoMatchingRequirementsError(
-                    "All payment requirements were rejected by spendControls.allowedAssets "
-                    "maxAmountPerPayment. Raise the per-asset cap, or omit maxAmountPerPayment "
+                    "All payment requirements were rejected by spend_controls.allowed_assets "
+                    "max_amount_per_payment. Raise the per-asset cap, or omit max_amount_per_payment "
                     "to allow uncapped (default assets then fall back to the top-level USD cap)."
                 )
             symbol_note = f", including {rejected_usd_symbol}" if rejected_usd_symbol else ""
             raise NoMatchingRequirementsError(
-                f"All payment requirements were rejected by spendControls.maxAmountPerPayment "
+                f"All payment requirements were rejected by spend_controls.max_amount_per_payment "
                 f"({usd_limit}{symbol_note}). "
-                "Raise maxAmountPerPayment, set it to false to disable, "
-                "set allowedAssets[].maxAmountPerPayment for a per-asset atomic cap, "
-                "or set spendControls: false to disable all spend controls."
+                "Raise max_amount_per_payment, set it to False to disable, "
+                "set allowed_assets[].max_amount_per_payment for a per-asset atomic cap, "
+                "or set spend_controls: False to disable all spend controls."
             )
 
         return filtered

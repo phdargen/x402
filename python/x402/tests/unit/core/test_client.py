@@ -740,7 +740,7 @@ class TestSpendControls:
     @pytest.mark.asyncio
     async def test_rejects_payment_above_default_usd_cap(self):
         client, _ = self._client_with_default_asset()
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(
                 self._required(self._req(asset=self.usdc["asset"], amount="1000001"))
             )
@@ -773,7 +773,7 @@ class TestSpendControls:
         client = x402Client()
         client.register(self.network, mock_client)
 
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(
                 self._required(self._req(asset=usdt["asset"], amount="2000000"))
             )
@@ -781,7 +781,7 @@ class TestSpendControls:
     @pytest.mark.asyncio
     async def test_rejects_unrecognized_assets_and_schemes_without_find_default_asset(self):
         client, _ = self._client_with_default_asset()
-        with pytest.raises(Exception, match=r"spendControls\.allowedAssets"):
+        with pytest.raises(Exception, match=r"spend_controls\.allowed_assets"):
             await client.create_payment_payload(
                 self._required(self._req(asset="0xCustomUnknownToken", amount="1"))
             )
@@ -790,7 +790,7 @@ class TestSpendControls:
         bare.clear_find_default_asset()
         bare_client = x402Client()
         bare_client.register(self.network, bare)
-        with pytest.raises(Exception, match=r"spendControls\.allowedAssets"):
+        with pytest.raises(Exception, match=r"spend_controls\.allowed_assets"):
             await bare_client.create_payment_payload(
                 self._required(self._req(asset=self.usdc["asset"], amount="1"))
             )
@@ -818,7 +818,7 @@ class TestSpendControls:
         )
         assert len(mock_client.create_calls) == 1
 
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(
                 self._required(self._req(asset=self.usdc["asset"], amount="1000001"))
             )
@@ -830,7 +830,7 @@ class TestSpendControls:
         mezo = "eip155:31611"
         client18 = x402Client().register(mezo, mock_client)
 
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client18.create_payment_payload(
                 self._required(
                     self._req(
@@ -903,7 +903,7 @@ class TestSpendControls:
             },
         )
 
-        with pytest.raises(Exception, match="allowedAssets maxAmountPerPayment"):
+        with pytest.raises(Exception, match="allowed_assets max_amount_per_payment"):
             await capped_client.create_payment_payload(
                 self._required(self._req(asset=custom_asset, amount="10001"))
             )
@@ -932,7 +932,7 @@ class TestSpendControls:
             },
         )
 
-        with pytest.raises(Exception, match="allowedAssets maxAmountPerPayment"):
+        with pytest.raises(Exception, match="allowed_assets max_amount_per_payment"):
             await by_id.create_payment_payload(
                 self._required(self._req(asset=self.usdc["asset"], amount="600000"))
             )
@@ -967,7 +967,7 @@ class TestSpendControls:
             )
         )
 
-        with pytest.raises(Exception, match="allowedAssets maxAmountPerPayment"):
+        with pytest.raises(Exception, match="allowed_assets max_amount_per_payment"):
             await client_by_symbol.create_payment_payload(
                 self._required(self._req(asset=pyusd["asset"], amount="600000"))
             )
@@ -984,7 +984,7 @@ class TestSpendControls:
             {"allowed_assets": [{"asset": self.usdc["symbol"], "network": self.network}]},
         )
 
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(
                 self._required(self._req(asset=self.usdc["asset"], amount="1000001"))
             )
@@ -1024,7 +1024,7 @@ class TestSpendControls:
             mime_type="",
             resource="https://example.com",
         )
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(PaymentRequiredV1(x402_version=1, accepts=[v1_req]))
 
     @pytest.mark.asyncio
@@ -1060,7 +1060,7 @@ class TestSpendControls:
         )
         assert len(mock_client.create_calls) == 1
 
-        with pytest.raises(Exception, match="maxAmountPerPayment"):
+        with pytest.raises(Exception, match="max_amount_per_payment"):
             await client.create_payment_payload(
                 self._required(self._req(asset=rlusd["asset"], amount="1.01", network=xrpl))
             )
