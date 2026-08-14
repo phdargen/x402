@@ -27,7 +27,9 @@ type X402MCPClient struct {
 	onAfterPay    AfterPaymentHook
 }
 
-// NewX402MCPClient creates an x402-aware MCP client.
+// NewX402MCPClient creates an x402-aware MCP client wrapping an existing payment client.
+// Options.SpendControls and Options.DisableSpendControls are ignored; configure
+// spend controls on paymentClient before wrapping.
 func NewX402MCPClient(caller MCPCaller, paymentClient *x402.X402Client, options Options) *X402MCPClient {
 	return &X402MCPClient{
 		caller:        caller,
@@ -37,6 +39,8 @@ func NewX402MCPClient(caller MCPCaller, paymentClient *x402.X402Client, options 
 }
 
 // NewX402MCPClientFromConfig creates an x402-aware MCP client from scheme registrations.
+// Options.SpendControls and Options.DisableSpendControls are applied to the constructed
+// payment client. nil SpendControls means the default $1 cap and default-asset allowlist.
 func NewX402MCPClientFromConfig(caller MCPCaller, schemes []SchemeRegistration, options Options) *X402MCPClient {
 	paymentClient := x402.Newx402Client()
 	for _, reg := range schemes {

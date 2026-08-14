@@ -748,14 +748,9 @@ func (s *BatchSettlementEvmScheme) DeleteSession(channelId string) error {
 // Helper functions
 
 func defaultMoneyConversion(amount float64, network x402.Network, symbol string) (x402.AssetAmount, error) {
-	assetInfo, err := evm.GetDefaultAsset(string(network), symbol)
+	assetInfo, tokenAmount, err := evm.ConvertDefaultMoney(amount, string(network), symbol)
 	if err != nil {
 		return x402.AssetAmount{}, err
-	}
-
-	tokenAmount, err := x402.ConvertToTokenAmount(x402.NumberToDecimalString(amount), assetInfo.Decimals)
-	if err != nil {
-		return x402.AssetAmount{}, fmt.Errorf(ErrFailedToConvertAmt+": %w", err)
 	}
 
 	extra := map[string]interface{}{

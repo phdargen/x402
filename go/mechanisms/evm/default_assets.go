@@ -3,6 +3,8 @@ package evm
 import (
 	"fmt"
 	"strings"
+
+	x402 "github.com/x402-foundation/x402/go/v2"
 )
 
 // DefaultAssetInfo is a USD-pegged EVM asset used for money strings and spend caps.
@@ -121,6 +123,20 @@ func resolveNetworkKey(network string) string {
 		return fmt.Sprintf("eip155:%d", chainID)
 	}
 	return network
+}
+
+// ConvertDefaultMoney looks up the network's default (or ticker-matched) asset
+// and converts a decimal amount to token smallest units.
+func ConvertDefaultMoney(amount float64, network string, symbol string) (*DefaultAssetInfo, string, error) {
+	assetInfo, err := GetDefaultAsset(network, symbol)
+	if err != nil {
+		return nil, "", err
+	}
+	tokenAmount, err := x402.ConvertToTokenAmount(x402.NumberToDecimalString(amount), assetInfo.Decimals)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to convert amount: %w", err)
+	}
+	return assetInfo, tokenAmount, nil
 }
 
 // GetDefaultAsset looks up a default asset by network and optional ticker.
