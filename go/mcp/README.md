@@ -99,7 +99,10 @@ Creates an x402 MCP client from an MCP session (MCPCaller) and payment client.
 paymentClient := x402.Newx402Client()
 paymentClient.Register("eip155:84532", evmClientScheme)
 
-x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{})
+x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
+    // SpendControls: &x402.SpendControls{MaxAmountPerPayment: "$5"},
+    // DisableSpendControls: true,
+})
 ```
 
 #### `NewX402MCPClientFromConfig`
@@ -181,7 +184,7 @@ if mcp.IsObject(value) {
 ### Client Types
 
 - `X402MCPClient` - x402-enabled MCP client
-- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true; `SpendControls` and `DisableSpendControls` are consumed by `NewX402MCPClientFromConfig` only)
+- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true; `SpendControls` and `DisableSpendControls` are applied by both constructors)
 - `SchemeRegistration` - Payment scheme registration for factory functions
 - `MCPToolCallResult` - Result of a tool call with payment metadata
 - `PaymentRequiredContext` - Context provided to payment required hooks

@@ -146,7 +146,7 @@ x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
 })
 ```
 
-When using `NewX402MCPClientFromConfig`, configure spend controls via `Options`:
+Configure spend controls via `Options` for either constructor:
 
 ```go
 x402Mcp := mcp.NewX402MCPClientFromConfig(session, schemes, mcp.Options{
@@ -161,7 +161,7 @@ x402Mcp := mcp.NewX402MCPClientFromConfig(session, schemes, mcp.Options{
 })
 ```
 
-When wrapping an existing client with `NewX402MCPClient`, configure spend controls on `paymentClient` before wrapping (`SetSpendControls` / `DisableSpendControls`). `Options.SpendControls` is not applied in that path.
+When wrapping an existing client with `NewX402MCPClient`, `Options.SpendControls` / `DisableSpendControls` overwrite the wrapped client's controls when set. If both are unset, the payment client's existing spend controls are left as-is.
 
 ### Hooks
 

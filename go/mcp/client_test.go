@@ -1035,7 +1035,7 @@ func TestX402MCPClientFromConfig_AllowAnyAssetSucceeds(t *testing.T) {
 	}
 }
 
-func TestX402MCPClient_WrapExistingClientHonoursSpendControls(t *testing.T) {
+func TestX402MCPClient_WrapExistingClientHonoursSpendControlsWhenUnset(t *testing.T) {
 	mockMCP := &mockMCPCaller{
 		callToolResults: []MCPToolResult{
 			mcp402Result(t, types.PaymentRequired{
@@ -1051,14 +1051,71 @@ func TestX402MCPClient_WrapExistingClientHonoursSpendControls(t *testing.T) {
 	paymentClient := x402.Newx402Client()
 	paymentClient.Register("eip155:84532", &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true})
 	paymentClient.SetSpendControls(x402.SpendControls{})
-	client := NewX402MCPClient(mockMCP, paymentClient, Options{
-		AutoPayment:          BoolPtr(true),
-		DisableSpendControls: true, // must not overwrite the wrapped client
-	})
+	client := NewX402MCPClient(mockMCP, paymentClient, Options{AutoPayment: BoolPtr(true)})
 
 	_, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
 	if err == nil || !strings.Contains(err.Error(), "spendControls") {
 		t.Fatalf("expected wrapped client controls to reject, got %v", err)
+	}
+}
+
+func TestX402MCPClient_WrapAppliesDisableSpendControls(t *testing.T) {
+	mockMCP := &mockMCPCaller{
+		callToolResults: []MCPToolResult{
+			mcp402Result(t, types.PaymentRequired{
+				X402Version: 2,
+				Accepts: []types.PaymentRequirements{{
+					Scheme: "exact", Network: "eip155:84532",
+					Asset: "0xCustomUnknownToken", Amount: "2000000",
+					PayTo: "0xrecipient", MaxTimeoutSeconds: 300,
+				}},
+			}),
+			mcpPaidResult(),
+		},
+	}
+	paymentClient := x402.Newx402Client()
+	paymentClient.Register("eip155:84532", &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true})
+	client := NewX402MCPClient(mockMCP, paymentClient, Options{
+		AutoPayment:          BoolPtr(true),
+		DisableSpendControls: true,
+	})
+
+	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.PaymentMade {
+		t.Fatal("expected payment to be made")
+	}
+}
+
+func TestX402MCPClient_WrapAppliesSpendControls(t *testing.T) {
+	mockMCP := &mockMCPCaller{
+		callToolResults: []MCPToolResult{
+			mcp402Result(t, types.PaymentRequired{
+				X402Version: 2,
+				Accepts: []types.PaymentRequirements{{
+					Scheme: "exact", Network: "eip155:84532",
+					Asset: "0xCustomUnknownToken", Amount: "1",
+					PayTo: "0xrecipient", MaxTimeoutSeconds: 300,
+				}},
+			}),
+			mcpPaidResult(),
+		},
+	}
+	paymentClient := x402.Newx402Client()
+	paymentClient.Register("eip155:84532", &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true})
+	client := NewX402MCPClient(mockMCP, paymentClient, Options{
+		AutoPayment:   BoolPtr(true),
+		SpendControls: &x402.SpendControls{AllowAnyAsset: true},
+	})
+
+	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.PaymentMade {
+		t.Fatal("expected payment to be made")
 	}
 }
 
