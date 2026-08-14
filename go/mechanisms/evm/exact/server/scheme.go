@@ -301,21 +301,6 @@ func (s *ExactEvmScheme) ValidatePaymentRequirements(requirements x402.PaymentRe
 	return nil
 }
 
-// ConvertToTokenAmount converts a decimal amount to token smallest unit
-func (s *ExactEvmScheme) ConvertToTokenAmount(decimalAmount string, network string) (string, error) {
-	config, err := evm.GetNetworkConfig(network)
-	if err != nil {
-		return "", err
-	}
-
-	amount, err := evm.ParseAmount(decimalAmount, config.DefaultAsset.Decimals)
-	if err != nil {
-		return "", err
-	}
-
-	return amount.String(), nil
-}
-
 // ConvertFromTokenAmount converts from token smallest unit to decimal
 func (s *ExactEvmScheme) ConvertFromTokenAmount(tokenAmount string, network string) (string, error) {
 	config, err := evm.GetNetworkConfig(network)
