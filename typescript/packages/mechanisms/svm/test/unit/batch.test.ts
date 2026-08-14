@@ -1,0 +1,522 @@
+import { generateKeyPairSigner, getTransactionDecoder, getBase64Codec } from "@solana/kit";
+import type { PaymentRequirements } from "@x402/core/types";
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { BatchError } from "../../src/batch-settlement/errors";
+import {
+  BatchChannelTracker,
+  buildDepositPayload,
+  buildRefundPayload,
+  signBatchVoucher,
+} from "../../src/batch-settlement/client/channel";
+import {
+  BatchSvmScheme as BatchFacilitatorScheme,
+  calculateDistributionAmount,
+  isClaimExpiryValid,
+} from "../../src/batch-settlement/facilitator/scheme";
+import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
+import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
+import {
+  isBatchPayload,
+  isBatchFacilitatorPayload,
+  isBatchVoucher,
+  type BatchChannelConfig,
+  type BatchVoucher,
+} from "../../src/batch-settlement/types";
+import {
+  SOLANA_DEVNET_CAIP2,
+  SOLANA_MAINNET_CAIP2,
+  TOKEN_PROGRAM_ADDRESS,
+} from "../../src/constants";
+import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
+import {
+  buildRequestCloseTransaction,
+  verifyRequestCloseTransaction,
+} from "../../src/payment-channels/close";
+import { SEAL_DISCRIMINATOR } from "../../src/payment-channels/generated/instructions/seal";
+import { SETTLE_DISCRIMINATOR } from "../../src/payment-channels/generated/instructions/settle";
+import { buildSealInstruction, buildSettleInstructions } from "../../src/payment-channels/onchain";
+import { verifyOpenTransaction } from "../../src/payment-channels/open";
+import {
+  encodeVoucherMessageBytes,
+  verifyVoucherSignature,
+} from "../../src/payment-channels/voucher";
+import { toFacilitatorSvmSigner } from "../../src/signer";
+
+const DUMMY_BLOCKHASH = USDC_MAINNET_ADDRESS;
+const MINT = USDC_DEVNET_ADDRESS;
+const RECEIVER = USDC_MAINNET_ADDRESS;
+const OPEN_SLOT = 123_456_789n;
+const WITHDRAW_DELAY = 900;
+
+let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let channelId: string;
+let channelConfig: BatchChannelConfig;
+
+beforeAll(async () => {
+  payer = await generateKeyPairSigner();
+  feePayer = await generateKeyPairSigner();
+  const built = await buildDepositPayload({
+    blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
+    depositAmount: 10_000n,
+    feePayer: feePayer.address,
+    firstCharge: 1_000n,
+    mint: MINT,
+    openSlot: OPEN_SLOT,
+    payer,
+    receiver: RECEIVER,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    withdrawDelay: WITHDRAW_DELAY,
+  });
+  channelId = built.channelId;
+  channelConfig = built.payload.channelConfig;
+});
+
+function requirements(amount = "1000"): PaymentRequirements {
+  return {
+    amount,
+    asset: MINT,
+    extra: {
+      feePayer: feePayer.address,
+      paymentFlow: "escrow",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      withdrawDelay: WITHDRAW_DELAY,
+    },
+    maxTimeoutSeconds: 300,
+    network: SOLANA_DEVNET_CAIP2,
+    payTo: RECEIVER,
+    scheme: "batch-settlement",
+  };
+}
+
+function serverState(overrides: Partial<ChannelState> = {}): ChannelState {
+  return {
+    channelConfig,
+    channelId,
+    chargedCumulativeAmount: 0n,
+    deposit: 10_000n,
+    feePayer: feePayer.address,
+    mint: MINT,
+    openSlot: OPEN_SLOT,
+    payer: payer.address,
+    payerAuthorizer: payer.address,
+    payoutWatermark: 0n,
+    receiver: RECEIVER,
+    salt: BigInt(channelConfig.salt),
+    settled: 0n,
+    signedMaxClaimable: 0n,
+    status: "open",
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    withdrawDelay: WITHDRAW_DELAY,
+    ...overrides,
+  };
+}
+
+async function signedVoucher(maxClaimableAmount: bigint, expiresAt = 0): Promise<BatchVoucher> {
+  return signBatchVoucher(payer, { channelId, expiresAt, maxClaimableAmount });
+}
+
+describe("batch-settlement SVM", () => {
+  describe("resource server", () => {
+    it("parses stablecoin prices", async () => {
+      const server = new BatchServerScheme();
+      expect(await server.parsePrice("$0.001", SOLANA_MAINNET_CAIP2)).toMatchObject({
+        amount: "1000",
+        asset: USDC_MAINNET_ADDRESS,
+      });
+      expect(await server.parsePrice("1.00", SOLANA_DEVNET_CAIP2)).toMatchObject({
+        amount: "1000000",
+        asset: USDC_DEVNET_ADDRESS,
+      });
+    });
+
+    it("publishes the escrow/channel requirements", async () => {
+      const server = new BatchServerScheme({ withdrawDelay: 1_200 });
+      const enhanced = await server.enhancePaymentRequirements(
+        requirements(),
+        {
+          extra: { feePayer: feePayer.address, paymentFlow: "escrow" },
+          network: SOLANA_DEVNET_CAIP2,
+          scheme: "batch-settlement",
+          x402Version: 2,
+        },
+        [],
+      );
+      expect(server.defaultAssetTransferMethod).toBe("channel");
+      expect(server.paymentFlows.channel.default).toBe("escrow");
+      expect(enhanced.extra).toMatchObject({
+        feePayer: feePayer.address,
+        paymentFlow: "escrow",
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: 1_200,
+      });
+    });
+
+    it("commits the first voucher only after the handler succeeds", async () => {
+      const store = new MemoryChannelStore();
+      const server = new BatchServerScheme({ store });
+      const voucher = await signedVoucher(1_000n);
+      const payment = {
+        accepted: requirements(),
+        payload: {
+          channelConfig,
+          deposit: { amount: "10000", transaction: "setup-transaction" },
+          type: "deposit" as const,
+          voucher,
+        },
+        x402Version: 2,
+      };
+      const verifyContext = {
+        declaredExtensions: {},
+        paymentPayload: payment,
+        requirements: requirements(),
+      };
+      const beforeVerify = await server.schemeHooks.onBeforeVerify!(verifyContext);
+      expect(beforeVerify).toMatchObject({ skip: true, result: { isValid: true } });
+      await server.schemeHooks.onAfterVerify!({
+        ...verifyContext,
+        result: (beforeVerify as { result: { isValid: true; payer: string } }).result,
+      });
+
+      expect(await store.get(channelId)).toMatchObject({
+        chargedCumulativeAmount: 0n,
+        pendingRequest: { maxClaimableAmount: 1_000n },
+      });
+      await server.schemeHooks.onAfterSettle!({
+        ...verifyContext,
+        phase: "before-handler",
+        result: {
+          extra: { channelState: { totalClaimed: "0", withdrawRequestedAt: 0 } },
+          network: SOLANA_DEVNET_CAIP2,
+          success: true,
+          transaction: "open-signature",
+        },
+      });
+      expect(await store.get(channelId)).toMatchObject({
+        chargedCumulativeAmount: 0n,
+        openSignature: "open-signature",
+      });
+
+      const settled = await server.schemeHooks.onBeforeSettle!({
+        ...verifyContext,
+        phase: "after-handler",
+      });
+      expect(settled).toMatchObject({
+        result: {
+          extra: {
+            channelState: { chargedCumulativeAmount: "1000" },
+            chargedAmount: "1000",
+          },
+          success: true,
+          transaction: "",
+        },
+        skip: true,
+      });
+      expect(await store.get(channelId)).toMatchObject({
+        chargedCumulativeAmount: 1_000n,
+        pendingRequest: undefined,
+        signedMaxClaimable: 1_000n,
+      });
+    });
+
+    it("releases a reservation without charging when the handler fails", async () => {
+      const store = new MemoryChannelStore();
+      const server = new BatchServerScheme({ store });
+      const voucher = await signedVoucher(1_000n);
+      const payment = {
+        accepted: requirements(),
+        payload: {
+          channelConfig,
+          deposit: { amount: "10000", transaction: "setup-transaction" },
+          type: "deposit" as const,
+          voucher,
+        },
+        x402Version: 2,
+      };
+      const context = {
+        declaredExtensions: {},
+        paymentPayload: payment,
+        requirements: requirements(),
+      };
+      const verified = await server.schemeHooks.onBeforeVerify!(context);
+      await server.schemeHooks.onAfterVerify!({
+        ...context,
+        result: (verified as { result: { isValid: true; payer: string } }).result,
+      });
+      await server.schemeHooks.onVerifiedPaymentCanceled!({
+        ...context,
+        reason: "handler_threw",
+        settledPhases: ["before-handler"],
+      });
+      expect(await store.get(channelId)).toMatchObject({
+        chargedCumulativeAmount: 0n,
+        pendingRequest: undefined,
+      });
+    });
+
+    it("re-serves an exact replay only through the application response cache", async () => {
+      const store = new MemoryChannelStore();
+      const voucher = await signedVoucher(1_000n);
+      await store.put(
+        serverState({
+          chargedCumulativeAmount: 1_000n,
+          highestVoucherExpiresAt: voucher.expiresAt,
+          highestVoucherSignature: voucher.signature,
+          signedMaxClaimable: 1_000n,
+        }),
+      );
+      const server = new BatchServerScheme({
+        getReplayResponse: async commitment => ({ body: { commitment, replay: true } }),
+        store,
+      });
+      const payment = {
+        accepted: requirements(),
+        payload: { channelConfig, type: "voucher" as const, voucher },
+        x402Version: 2,
+      };
+      const context = {
+        declaredExtensions: {},
+        paymentPayload: payment,
+        requirements: requirements(),
+      };
+      const verified = await server.schemeHooks.onBeforeVerify!(context);
+      const replay = await server.schemeHooks.onAfterVerify!({
+        ...context,
+        result: (verified as { result: { isValid: true; payer: string } }).result,
+      });
+      expect(replay).toMatchObject({
+        response: {
+          body: {
+            commitment: { channelId, commitmentId: `${channelId}:1000` },
+            replay: true,
+          },
+        },
+        skipHandler: true,
+      });
+    });
+  });
+
+  describe("wire types", () => {
+    it("accepts only the current nested wire shapes", async () => {
+      const voucher = await signedVoucher(1_000n);
+      expect(isBatchVoucher(voucher)).toBe(true);
+      expect(isBatchVoucher({ ...voucher, maxClaimableAmount: 1_000 })).toBe(false);
+      expect(isBatchPayload({ channelConfig, type: "voucher", voucher })).toBe(true);
+      expect(
+        isBatchPayload({
+          channelConfig,
+          deposit: { amount: "10000", transaction: "tx" },
+          type: "deposit",
+          voucher,
+        }),
+      ).toBe(true);
+      expect(isBatchPayload({ channelConfig, transaction: "tx", type: "refund" })).toBe(true);
+      expect(isBatchPayload({ channelId, type: "voucher", voucher })).toBe(false);
+      expect(
+        isBatchFacilitatorPayload({
+          claims: [
+            {
+              signature: voucher.signature,
+              voucher: {
+                channelConfig,
+                channelId,
+                expiresAt: voucher.expiresAt,
+                maxClaimableAmount: voucher.maxClaimableAmount,
+              },
+            },
+          ],
+          type: "claim",
+        }),
+      ).toBe(true);
+      expect(isBatchFacilitatorPayload({ claims: [], type: "claim" })).toBe(false);
+    });
+  });
+
+  describe("client construction", () => {
+    it("signs the canonical 50-byte voucher message", async () => {
+      const voucher = await signedVoucher(5_000n);
+      expect(voucher.maxClaimableAmount).toBe("5000");
+      await expect(
+        verifyVoucherSignature({
+          message: encodeVoucherMessageBytes({
+            channelId,
+            cumulativeAmount: 5_000n,
+            expiresAt: 0n,
+          }),
+          signatureBase58: voucher.signature,
+          signerBase58: payer.address,
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it("tracks cumulative charges and carries the full channelConfig", async () => {
+      const tracker = new BatchChannelTracker(channelId, channelConfig, payer);
+      expect((await tracker.voucher(1_000n)).maxClaimableAmount).toBe("1000");
+      expect((await tracker.voucher(1_500n)).maxClaimableAmount).toBe("2500");
+      expect(tracker.channelConfig).toEqual(channelConfig);
+    });
+
+    it("builds an open that binds the sponsor as payee/rent payer and receiver at 100%", async () => {
+      const built = await buildDepositPayload({
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
+        depositAmount: 10_000n,
+        feePayer: feePayer.address,
+        firstCharge: 1_000n,
+        memo: "invoice-42",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payer,
+        receiver: RECEIVER,
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      const open = await verifyOpenTransaction(built.payload.deposit.transaction, {
+        authorizedSigner: payer.address,
+        feePayer: feePayer.address,
+        from: payer.address,
+        maxCap: 10_000n,
+        memo: "invoice-42",
+        mint: MINT,
+        openSlot: OPEN_SLOT,
+        payee: feePayer.address,
+        recipients: [{ bps: 10_000, recipient: RECEIVER }],
+        tokenProgram: TOKEN_PROGRAM_ADDRESS,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      expect(open.channelId).toBe(built.channelId);
+      expect(built.payload.channelConfig).toMatchObject({
+        openSlot: Number(OPEN_SLOT),
+        payer: payer.address,
+        payerAuthorizer: payer.address,
+        receiver: RECEIVER,
+        token: MINT,
+        withdrawDelay: WITHDRAW_DELAY,
+      });
+      expect(built.payload.voucher.maxClaimableAmount).toBe("1000");
+    });
+
+    it("builds and verifies the payer-signed forced-close transaction", async () => {
+      const payload = await buildRefundPayload({
+        blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
+        channelConfig,
+        channelId,
+        feePayer: feePayer.address,
+        memo: "invoice-42",
+        payer,
+      });
+      await expect(
+        verifyRequestCloseTransaction(payload.transaction, {
+          channelId,
+          feePayer: feePayer.address,
+          memo: "invoice-42",
+          payer: payer.address,
+        }),
+      ).resolves.toBeUndefined();
+      await expect(
+        verifyRequestCloseTransaction(payload.transaction, {
+          channelId: RECEIVER,
+          feePayer: feePayer.address,
+          payer: payer.address,
+        }),
+      ).rejects.toThrow("account binding mismatch");
+    });
+  });
+
+  describe("onchain builders", () => {
+    it("builds settle and seal with canonical discriminators", async () => {
+      const voucher = await signedVoucher(1_000n);
+      const settle = buildSettleInstructions({
+        channelId,
+        voucher: {
+          authorizedSigner: payer.address,
+          cumulativeAmount: 1_000n,
+          expiresAt: 0n,
+          signatureBase58: voucher.signature,
+        },
+      });
+      expect(settle).toHaveLength(2);
+      expect(settle[1]?.data[0]).toBe(SETTLE_DISCRIMINATOR);
+      expect(buildSealInstruction(channelId).data[0]).toBe(SEAL_DISCRIMINATOR);
+    });
+  });
+
+  describe("facilitator registration surface", () => {
+    it("advertises only the escrow flow and one managed fee payer", () => {
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      expect(facilitator.getExtra(SOLANA_DEVNET_CAIP2)).toEqual({
+        feePayer: feePayer.address,
+        paymentFlow: "escrow",
+      });
+      expect(facilitator.getSigners(SOLANA_DEVNET_CAIP2)).toEqual([feePayer.address]);
+    });
+
+    it("rejects legacy payload shapes before touching RPC", async () => {
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const result = await facilitator.verify(
+        {
+          accepted: requirements(),
+          payload: { channelId, type: "voucher", voucher: await signedVoucher(1_000n) },
+          x402Version: 2,
+        },
+        requirements(),
+      );
+      expect(result).toMatchObject({
+        invalidReason: BatchError.PAYLOAD_TYPE,
+        isValid: false,
+      });
+    });
+
+    it("rejects cooperative-close fields without a trusted server binding", async () => {
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const result = await facilitator.verify(
+        {
+          accepted: requirements(),
+          payload: {
+            channelConfig,
+            closeAuthorization: { signature: "signature", validBefore: 2_000_000_000 },
+            transaction: "request-close",
+            type: "refund",
+            voucher: await signedVoucher(1_000n),
+          },
+          x402Version: 2,
+        },
+        requirements(),
+      );
+      expect(result).toMatchObject({
+        invalidReason: BatchError.CLOSE_AUTHORIZATION,
+        isValid: false,
+      });
+    });
+
+    it("checks only onchain expiry at claim redemption", () => {
+      expect(isClaimExpiryValid(0, 1_000)).toBe(true);
+      expect(isClaimExpiryValid(1_001, 1_000)).toBe(true);
+      expect(isClaimExpiryValid(1_000, 1_000)).toBe(false);
+    });
+
+    it("sums only undistributed settled amounts", () => {
+      expect(
+        calculateDistributionAmount([
+          { payoutWatermark: 1_000n, settled: 3_000n },
+          { payoutWatermark: 500n, settled: 4_000n },
+        ]),
+      ).toBe(5_500n);
+      expect(() => calculateDistributionAmount([{ payoutWatermark: 2n, settled: 1n }])).toThrow(
+        BatchError.CHANNEL_STATE,
+      );
+    });
+  });
+
+  it("request-close transaction keeps the sponsor signature slot empty", async () => {
+    const transaction = await buildRequestCloseTransaction({
+      blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
+      channelId,
+      feePayer: feePayer.address,
+      payer,
+    });
+    const decoded = getTransactionDecoder().decode(getBase64Codec().encode(transaction));
+    expect(decoded.signatures[payer.address]).not.toBeNull();
+    expect(decoded.signatures[feePayer.address]).toBeNull();
+  });
+});

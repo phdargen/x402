@@ -10,6 +10,7 @@ import { address, type Address, type Base58EncodedBytes } from "@solana/kit";
 
 import type { FacilitatorSvmSigner } from "../signer";
 import type { Channel } from "./generated/accounts/channel";
+import { AccountDiscriminator } from "./generated/types/accountDiscriminator";
 import { getChannelDecoder } from "./generated/accounts/channel";
 import { PAYMENT_CHANNELS_PROGRAM_ID } from "./onchain";
 import { findPaymentChannelPda } from "./open";
@@ -111,7 +112,7 @@ async function validateDiscoveredAccount(
   } catch {
     return undefined;
   }
-  if (channel.discriminator !== 1) return undefined;
+  if (channel.discriminator !== AccountDiscriminator.Channel) return undefined;
 
   const derived = await findPaymentChannelPda({
     authorizedSigner: channel.authorizedSigner,

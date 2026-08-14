@@ -474,7 +474,7 @@ export async function verifyOpenTransaction(
   //      Wallets like Phantom/Solflare inject Lighthouse around the client open.
   if (message.addressTableLookups && message.addressTableLookups.length > 0) {
     throw new Error(
-      "verifyOpenTransaction: address lookup tables are not permitted in an open transaction",
+      "verifyOpenTransaction: address-lookup tables are not permitted in an open transaction — all accounts must be static so the fee-payer guard can validate them",
     );
   }
 
