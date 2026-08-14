@@ -43,6 +43,8 @@ import {
   DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
 } from "../../constants";
 import { fetchMaybeChannel, type Channel } from "../../payment-channels/generated/accounts/channel";
+import { AccountDiscriminator } from "../../payment-channels/generated/types/accountDiscriminator";
+import { ChannelStatus } from "../../payment-channels/generated/types/channelStatus";
 import {
   buildDistributeInstruction,
   buildSettleAndSealInstructions,
@@ -54,9 +56,6 @@ import { TransactionOnchainFailureError } from "../../utils";
 import { STATE_COMMITMENT } from "../shared";
 import type { UptoFacilitatorSigner } from "./signer";
 
-/** Payment-channels `AccountDiscriminator::Channel` (byte 0 is reserved for uninitialized accounts). */
-const CHANNEL_ACCOUNT_DISCRIMINATOR = 1;
-const CHANNEL_STATUS_OPEN = 0;
 /** Solana per-transaction compute-unit maximum. */
 const MAX_TRANSACTION_COMPUTE_UNITS = 1_400_000;
 /** Compute-unit limit for facilitator-built sims; sims raise the limit to the
@@ -230,10 +229,10 @@ export function verifyOpenChannelAccount(
   channel: Channel,
   expected: ExpectedOpenChannel,
 ): VerifiedOpenChannel {
-  if (channel.discriminator !== CHANNEL_ACCOUNT_DISCRIMINATOR) {
+  if (channel.discriminator !== AccountDiscriminator.Channel) {
     throw new Error(`channel ${channelId} has an invalid account discriminator`);
   }
-  if (channel.status !== CHANNEL_STATUS_OPEN) {
+  if (channel.status !== ChannelStatus.Open) {
     throw new Error(`channel ${channelId} is not open`);
   }
 
