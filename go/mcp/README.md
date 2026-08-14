@@ -98,11 +98,10 @@ Creates an x402 MCP client from an MCP session (MCPCaller) and payment client.
 ```go
 paymentClient := x402.Newx402Client()
 paymentClient.Register("eip155:84532", evmClientScheme)
+// paymentClient.SetSpendControls(x402.SpendControls{MaxAmountPerPayment: "$5"})
+// paymentClient.DisableSpendControls()
 
-x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
-    // SpendControls: &x402.SpendControls{MaxAmountPerPayment: "$5"},
-    // DisableSpendControls: true,
-})
+x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{})
 ```
 
 #### `NewX402MCPClientFromConfig`
@@ -113,12 +112,10 @@ Pass `*mcp.ClientSession` from the official MCP SDK.
 ```go
 x402Mcp := mcp.NewX402MCPClientFromConfig(session, []mcp.SchemeRegistration{
     {Network: "eip155:84532", Client: evmClientScheme},
-}, mcp.Options{
-    // Spend controls (default: recognized pegged assets only, $1 USD cap)
-    SpendControls: &x402.SpendControls{MaxAmountPerPayment: "$5"},
-    // DisableSpendControls: true, // disable all spend controls (any asset, no caps)
-})
+}, mcp.Options{})
 ```
+
+FromConfig uses the payment client's default `$1` USD cap and default-asset allowlist. For custom spend controls, configure `*x402.X402Client` then wrap with `NewX402MCPClient`.
 
 ### Server
 
@@ -184,7 +181,7 @@ if mcp.IsObject(value) {
 ### Client Types
 
 - `X402MCPClient` - x402-enabled MCP client
-- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true; `SpendControls` and `DisableSpendControls` are applied by both constructors)
+- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true)
 - `SchemeRegistration` - Payment scheme registration for factory functions
 - `MCPToolCallResult` - Result of a tool call with payment metadata
 - `PaymentRequiredContext` - Context provided to payment required hooks

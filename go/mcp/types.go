@@ -55,10 +55,6 @@ type AfterPaymentContext struct {
 }
 
 // Options configures x402MCPClient behavior.
-//
-// SpendControls and DisableSpendControls are applied by both NewX402MCPClient and
-// NewX402MCPClientFromConfig. When both are unset, NewX402MCPClient leaves the
-// wrapped payment client's existing spend controls unchanged.
 type Options struct {
 	// AutoPayment enables automatic payment handling when a tool requires payment.
 	// Defaults to true. When nil, defaults to true. Set to BoolPtr(false) to disable.
@@ -67,13 +63,6 @@ type Options struct {
 	// OnPaymentRequested is called before creating a payment, allowing the caller
 	// to approve or deny. Return (true, nil) to approve, (false, nil) to deny.
 	OnPaymentRequested func(context PaymentRequiredContext) (bool, error)
-
-	// SpendControls, when non-nil, is applied to the payment client.
-	// nil means leave existing controls (wrap) or use the default $1 + default-asset
-	// allowlist (FromConfig / Newx402Client).
-	SpendControls *x402.SpendControls
-	// DisableSpendControls disables all spend controls (TS spendControls: false).
-	DisableSpendControls bool
 }
 
 // BoolPtr returns a pointer to the given bool value.

@@ -978,63 +978,6 @@ func TestX402MCPClientFromConfig_SpendControlsDefaultRejectsOverCap(t *testing.T
 	}
 }
 
-func TestX402MCPClientFromConfig_DisableSpendControlsAllowsOverCap(t *testing.T) {
-	mockMCP := &mockMCPCaller{
-		callToolResults: []MCPToolResult{
-			mcp402Result(t, types.PaymentRequired{
-				X402Version: 2,
-				Accepts: []types.PaymentRequirements{{
-					Scheme: "exact", Network: "eip155:84532",
-					Asset: "0xCustomUnknownToken", Amount: "2000000",
-					PayTo: "0xrecipient", MaxTimeoutSeconds: 300,
-				}},
-			}),
-			mcpPaidResult(),
-		},
-	}
-	client := NewX402MCPClientFromConfig(mockMCP, []SchemeRegistration{
-		{Network: "eip155:84532", Client: &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true}},
-	}, Options{AutoPayment: BoolPtr(true), DisableSpendControls: true})
-
-	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.PaymentMade {
-		t.Fatal("expected payment to be made")
-	}
-}
-
-func TestX402MCPClientFromConfig_AllowAnyAssetSucceeds(t *testing.T) {
-	mockMCP := &mockMCPCaller{
-		callToolResults: []MCPToolResult{
-			mcp402Result(t, types.PaymentRequired{
-				X402Version: 2,
-				Accepts: []types.PaymentRequirements{{
-					Scheme: "exact", Network: "eip155:84532",
-					Asset: "0xCustomUnknownToken", Amount: "1",
-					PayTo: "0xrecipient", MaxTimeoutSeconds: 300,
-				}},
-			}),
-			mcpPaidResult(),
-		},
-	}
-	client := NewX402MCPClientFromConfig(mockMCP, []SchemeRegistration{
-		{Network: "eip155:84532", Client: &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true}},
-	}, Options{
-		AutoPayment:   BoolPtr(true),
-		SpendControls: &x402.SpendControls{AllowAnyAsset: true},
-	})
-
-	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.PaymentMade {
-		t.Fatal("expected payment to be made")
-	}
-}
-
 func TestX402MCPClient_WrapExistingClientHonoursSpendControlsWhenUnset(t *testing.T) {
 	mockMCP := &mockMCPCaller{
 		callToolResults: []MCPToolResult{
@@ -1059,7 +1002,7 @@ func TestX402MCPClient_WrapExistingClientHonoursSpendControlsWhenUnset(t *testin
 	}
 }
 
-func TestX402MCPClient_WrapAppliesDisableSpendControls(t *testing.T) {
+func TestX402MCPClient_WrapUsesPaymentClientDisableSpendControls(t *testing.T) {
 	mockMCP := &mockMCPCaller{
 		callToolResults: []MCPToolResult{
 			mcp402Result(t, types.PaymentRequired{
@@ -1075,10 +1018,8 @@ func TestX402MCPClient_WrapAppliesDisableSpendControls(t *testing.T) {
 	}
 	paymentClient := x402.Newx402Client()
 	paymentClient.Register("eip155:84532", &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true})
-	client := NewX402MCPClient(mockMCP, paymentClient, Options{
-		AutoPayment:          BoolPtr(true),
-		DisableSpendControls: true,
-	})
+	paymentClient.DisableSpendControls()
+	client := NewX402MCPClient(mockMCP, paymentClient, Options{AutoPayment: BoolPtr(true)})
 
 	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
 	if err != nil {
@@ -1089,7 +1030,7 @@ func TestX402MCPClient_WrapAppliesDisableSpendControls(t *testing.T) {
 	}
 }
 
-func TestX402MCPClient_WrapAppliesSpendControls(t *testing.T) {
+func TestX402MCPClient_WrapUsesPaymentClientSpendControls(t *testing.T) {
 	mockMCP := &mockMCPCaller{
 		callToolResults: []MCPToolResult{
 			mcp402Result(t, types.PaymentRequired{
@@ -1105,10 +1046,8 @@ func TestX402MCPClient_WrapAppliesSpendControls(t *testing.T) {
 	}
 	paymentClient := x402.Newx402Client()
 	paymentClient.Register("eip155:84532", &mockSchemeNetworkClient{scheme: "exact", noFindDefaultAsset: true})
-	client := NewX402MCPClient(mockMCP, paymentClient, Options{
-		AutoPayment:   BoolPtr(true),
-		SpendControls: &x402.SpendControls{AllowAnyAsset: true},
-	})
+	paymentClient.SetSpendControls(x402.SpendControls{AllowAnyAsset: true})
+	client := NewX402MCPClient(mockMCP, paymentClient, Options{AutoPayment: BoolPtr(true)})
 
 	result, err := client.CallTool(context.Background(), "paid_tool", map[string]interface{}{})
 	if err != nil {

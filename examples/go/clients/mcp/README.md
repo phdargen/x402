@@ -146,22 +146,25 @@ x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
 })
 ```
 
-Configure spend controls via `Options` for either constructor:
+Configure spend controls on the payment client, then wrap:
 
 ```go
-x402Mcp := mcp.NewX402MCPClientFromConfig(session, schemes, mcp.Options{
-    AutoPayment: mcp.BoolPtr(true),
-    SpendControls: &x402.SpendControls{
+paymentClient := x402.Newx402Client().
+    Register("eip155:84532", evmClientScheme).
+    SetSpendControls(x402.SpendControls{
         MaxAmountPerPayment: "$5",
         AllowedAssets: []x402.SpendControlAsset{
             {Network: "eip155:84532", Asset: "0xCustomToken"},
         },
-    },
-    // DisableSpendControls: true, // equivalent to spendControls: false
+    })
+    // .DisableSpendControls() // any asset, no caps
+
+x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
+    AutoPayment: mcp.BoolPtr(true),
 })
 ```
 
-When wrapping an existing client with `NewX402MCPClient`, `Options.SpendControls` / `DisableSpendControls` overwrite the wrapped client's controls when set. If both are unset, the payment client's existing spend controls are left as-is.
+`NewX402MCPClientFromConfig` uses the default `$1` USD cap and default-asset allowlist from `Newx402Client()`.
 
 ### Hooks
 
