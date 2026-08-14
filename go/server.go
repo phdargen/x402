@@ -1337,15 +1337,28 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 		// Only `$…` overrides need asset decimals. Atomic and percent formats must
 		// not force a decimals lookup (unknown custom mints would otherwise fail).
 		decimals := 6
+		decimalsKnown := false
 		if dollarRegex.MatchString(overrides.Amount) {
 			s.mu.RLock()
 			network := Network(requirements.Network)
 			if scheme := findByNetworkAndScheme(s.schemes, requirements.Scheme, network); scheme != nil {
 				if dp, ok := scheme.(AssetDecimalsProvider); ok {
-					decimals = dp.GetAssetDecimals(requirements.Asset, network)
+					if d, found := dp.GetAssetDecimals(requirements.Asset, network); found {
+						decimals = d
+						decimalsKnown = true
+					}
 				}
 			}
 			s.mu.RUnlock()
+			if !decimalsKnown {
+				return nil, NewSettleError(
+					"invalid_settlement_override",
+					"",
+					Network(requirements.Network),
+					"",
+					fmt.Sprintf("cannot convert dollar settlement override %q to atomic units: asset decimals are unknown. Pass an atomic amount or register the asset", overrides.Amount),
+				)
+			}
 		}
 		resolved, err := ResolveSettlementOverrideAmount(overrides.Amount, requirements, decimals)
 		if err != nil {

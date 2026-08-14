@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strconv"
 	"strings"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -47,14 +46,14 @@ func (s *ExactEvmScheme) PaymentFlows() map[string]x402.PaymentFlowConfig {
 	}
 }
 
-// GetAssetDecimals implements AssetDecimalsProvider. Returns the decimal precision for the
-// given asset on the given network, falling back to 6 if the asset is not recognized.
-func (s *ExactEvmScheme) GetAssetDecimals(asset string, network x402.Network) int {
-	info, err := evm.GetAssetInfo(string(network), asset)
-	if err != nil || info == nil {
-		return 6
+// GetAssetDecimals implements AssetDecimalsProvider. Returns the decimal precision for a
+// known default asset. ok is false when the asset is unrecognized.
+func (s *ExactEvmScheme) GetAssetDecimals(asset string, network x402.Network) (int, bool) {
+	found := evm.FindDefaultAsset(asset, string(network))
+	if found == nil {
+		return 0, false
 	}
-	return info.Decimals
+	return found.Decimals, true
 }
 
 // RegisterMoneyParser registers a custom money parser in the parser chain.
@@ -138,7 +137,7 @@ func (s *ExactEvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 	}
 
 	// Parse Money to decimal number
-	decimalAmount, err := s.parseMoneyToDecimal(price)
+	decimalAmount, symbol, err := x402.ParseMoney(price)
 	if err != nil {
 		return x402.AssetAmount{}, err
 	}
@@ -158,91 +157,34 @@ func (s *ExactEvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 	}
 
 	// All custom parsers returned nil, use default conversion
-	return s.defaultMoneyConversion(decimalAmount, network)
+	return s.defaultMoneyConversion(decimalAmount, network, symbol)
 }
 
-// parseMoneyToDecimal converts Money (string | number) to decimal amount
-func (s *ExactEvmScheme) parseMoneyToDecimal(price x402.Price) (float64, error) {
-	switch v := price.(type) {
-	case string:
-		cleanPrice := strings.TrimSpace(v)
-		cleanPrice = strings.TrimPrefix(cleanPrice, "$")
-		cleanPrice = strings.TrimSpace(cleanPrice)
-
-		// Parse as float
-		amount, err := strconv.ParseFloat(cleanPrice, 64)
-		if err != nil {
-			return 0, fmt.Errorf(ErrFailedToParsePrice+": '%s': %w", v, err)
-		}
-		return amount, nil
-
-	case float64:
-		return v, nil
-
-	case int:
-		return float64(v), nil
-
-	case int64:
-		return float64(v), nil
-
-	default:
-		return 0, fmt.Errorf(ErrUnsupportedPriceType+": %T", price)
-	}
-}
-
-// defaultMoneyConversion converts decimal amount to USDC AssetAmount
-func (s *ExactEvmScheme) defaultMoneyConversion(amount float64, network x402.Network) (x402.AssetAmount, error) {
-	networkStr := string(network)
-
-	// Get network config to determine the asset
-	config, err := evm.GetNetworkConfig(networkStr)
+// defaultMoneyConversion converts a decimal amount to an AssetAmount using the default token.
+func (s *ExactEvmScheme) defaultMoneyConversion(amount float64, network x402.Network, symbol string) (x402.AssetAmount, error) {
+	assetInfo, err := evm.GetDefaultAsset(string(network), symbol)
 	if err != nil {
 		return x402.AssetAmount{}, err
 	}
 
-	if config.DefaultAsset.Address == "" {
-		return x402.AssetAmount{}, fmt.Errorf("no default stablecoin configured for network %s; use RegisterMoneyParser or specify an explicit AssetAmount", networkStr)
-	}
-
-	// EIP-3009 tokens always need name/version for their transferWithAuthorization domain.
-	// Permit2 tokens only need them if the token supports EIP-2612 (for gasless permit signing).
-	// Omitting name/version for permit2 tokens signals the client to skip EIP-2612 and use ERC-20 approval gas sponsoring instead.
-	extra := map[string]interface{}{}
-	includeEip712Domain := config.DefaultAsset.AssetTransferMethod == "" || config.DefaultAsset.SupportsEip2612
-	if includeEip712Domain {
-		extra["name"] = config.DefaultAsset.Name
-		extra["version"] = config.DefaultAsset.Version
-	}
-	if config.DefaultAsset.AssetTransferMethod != "" {
-		extra["assetTransferMethod"] = string(config.DefaultAsset.AssetTransferMethod)
-	}
-
-	// Check if amount appears to already be in smallest unit
-	// (e.g., 1500000 for $1.50 USDC is likely already in smallest unit, not $1.5M)
-	oneUnit := float64(1)
-	for i := 0; i < config.DefaultAsset.Decimals; i++ {
-		oneUnit *= 10
-	}
-
-	// If amount is >= 1 unit AND is a whole number, it's likely already in smallest unit
-	if amount >= oneUnit && amount == float64(int64(amount)) {
-		return x402.AssetAmount{
-			Asset:  config.DefaultAsset.Address,
-			Amount: fmt.Sprintf("%.0f", amount),
-			Extra:  extra,
-		}, nil
-	}
-
-	// Convert decimal to smallest unit (e.g., $1.50 -> 1500000 for USDC with 6 decimals)
-	amountStr := fmt.Sprintf("%.6f", amount)
-	parsedAmount, err := evm.ParseAmount(amountStr, config.DefaultAsset.Decimals)
+	tokenAmount, err := x402.ConvertToTokenAmount(x402.NumberToDecimalString(amount), assetInfo.Decimals)
 	if err != nil {
 		return x402.AssetAmount{}, fmt.Errorf(ErrFailedToConvertAmount+": %w", err)
 	}
 
+	extra := map[string]interface{}{}
+	includeEip712Domain := assetInfo.AssetTransferMethod == "" || assetInfo.SupportsEip2612
+	if includeEip712Domain {
+		extra["name"] = assetInfo.Name
+		extra["version"] = assetInfo.Version
+	}
+	if assetInfo.AssetTransferMethod != "" {
+		extra["assetTransferMethod"] = string(assetInfo.AssetTransferMethod)
+	}
+
 	return x402.AssetAmount{
-		Asset:  config.DefaultAsset.Address,
-		Amount: parsedAmount.String(),
+		Asset:  assetInfo.Asset,
+		Amount: tokenAmount,
 		Extra:  extra,
 	}, nil
 }

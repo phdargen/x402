@@ -47,6 +47,11 @@ func NewX402MCPClientFromConfig(caller MCPCaller, schemes []SchemeRegistration, 
 			paymentClient.RegisterV1(reg.Network, reg.ClientV1)
 		}
 	}
+	if options.DisableSpendControls {
+		paymentClient.DisableSpendControls()
+	} else if options.SpendControls != nil {
+		paymentClient.SetSpendControls(*options.SpendControls)
+	}
 	return NewX402MCPClient(caller, paymentClient, options)
 }
 
@@ -274,7 +279,12 @@ func (c *X402MCPClient) callToolWithV1Payment(
 		}
 	}
 
-	payload, err := c.paymentClient.CreatePaymentPayloadV1(ctx, paymentRequired.Accepts[0])
+	selected, err := c.paymentClient.SelectPaymentRequirementsV1(paymentRequired.Accepts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select v1 payment requirements: %w", err)
+	}
+
+	payload, err := c.paymentClient.CreatePaymentPayloadV1(ctx, selected)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create v1 payment: %w", err)
 	}
@@ -462,7 +472,11 @@ func CallPaidTool(
 			return buildResult(result, false), nil
 		}
 
-		payloadV1, err := x402Client.CreatePaymentPayloadV1(ctx, prV1.Accepts[0])
+		selected, err := x402Client.SelectPaymentRequirementsV1(prV1.Accepts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select v1 payment requirements: %w", err)
+		}
+		payloadV1, err := x402Client.CreatePaymentPayloadV1(ctx, selected)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create v1 payment: %w", err)
 		}

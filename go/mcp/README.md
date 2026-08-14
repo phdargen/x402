@@ -110,7 +110,11 @@ Pass `*mcp.ClientSession` from the official MCP SDK.
 ```go
 x402Mcp := mcp.NewX402MCPClientFromConfig(session, []mcp.SchemeRegistration{
     {Network: "eip155:84532", Client: evmClientScheme},
-}, mcp.Options{}) // AutoPayment defaults to true
+}, mcp.Options{
+    // Spend controls (default: recognized pegged assets only, $1 USD cap)
+    SpendControls: &x402.SpendControls{MaxAmountPerPayment: "$5"},
+    // DisableSpendControls: true, // disable all spend controls (any asset, no caps)
+})
 ```
 
 ### Server
@@ -177,7 +181,7 @@ if mcp.IsObject(value) {
 ### Client Types
 
 - `X402MCPClient` - x402-enabled MCP client
-- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true)
+- `Options` - Options for x402 MCP client behavior (AutoPayment defaults to true; `SpendControls` and `DisableSpendControls` are consumed by `NewX402MCPClientFromConfig` only)
 - `SchemeRegistration` - Payment scheme registration for factory functions
 - `MCPToolCallResult` - Result of a tool call with payment metadata
 - `PaymentRequiredContext` - Context provided to payment required hooks

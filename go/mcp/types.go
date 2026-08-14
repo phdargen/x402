@@ -63,6 +63,12 @@ type Options struct {
 	// OnPaymentRequested is called before creating a payment, allowing the caller
 	// to approve or deny. Return (true, nil) to approve, (false, nil) to deny.
 	OnPaymentRequested func(context PaymentRequiredContext) (bool, error)
+
+	// SpendControls is consumed by NewX402MCPClientFromConfig only.
+	// nil means default $1 + default-asset allowlist.
+	SpendControls *x402.SpendControls
+	// DisableSpendControls disables all spend controls (TS spendControls: false).
+	DisableSpendControls bool
 }
 
 // BoolPtr returns a pointer to the given bool value.

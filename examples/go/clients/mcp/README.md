@@ -146,6 +146,23 @@ x402Mcp := mcp.NewX402MCPClient(session, paymentClient, mcp.Options{
 })
 ```
 
+When using `NewX402MCPClientFromConfig`, configure spend controls via `Options`:
+
+```go
+x402Mcp := mcp.NewX402MCPClientFromConfig(session, schemes, mcp.Options{
+    AutoPayment: mcp.BoolPtr(true),
+    SpendControls: &x402.SpendControls{
+        MaxAmountPerPayment: "$5",
+        AllowedAssets: []x402.SpendControlAsset{
+            {Network: "eip155:84532", Asset: "0xCustomToken"},
+        },
+    },
+    // DisableSpendControls: true, // equivalent to spendControls: false
+})
+```
+
+When wrapping an existing client with `NewX402MCPClient`, configure spend controls on `paymentClient` before wrapping (`SetSpendControls` / `DisableSpendControls`). `Options.SpendControls` is not applied in that path.
+
 ### Hooks
 
 ```go

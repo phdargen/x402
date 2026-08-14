@@ -400,10 +400,10 @@ func TestSession_RoundTrip_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestGetAssetDecimals_DefaultsTo6(t *testing.T) {
+func TestGetAssetDecimals_UnknownAsset(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
-	if got := s.GetAssetDecimals("0xunknown", x402.Network("nope")); got != 6 {
-		t.Fatalf("got %d", got)
+	if _, ok := s.GetAssetDecimals("0xunknown", x402.Network("nope")); ok {
+		t.Fatal("expected ok=false for unknown asset")
 	}
 }
 
@@ -415,7 +415,7 @@ func TestCreateChannelManager_NotNil(t *testing.T) {
 	}
 }
 
-func TestParseMoneyToDecimal_AllNumericTypes(t *testing.T) {
+func TestParseMoney_AllNumericTypes(t *testing.T) {
 	cases := []struct {
 		in   x402.Price
 		want float64
@@ -427,7 +427,7 @@ func TestParseMoneyToDecimal_AllNumericTypes(t *testing.T) {
 		{int64(5), 5.0},
 	}
 	for _, c := range cases {
-		got, err := parseMoneyToDecimal(c.in)
+		got, _, err := x402.ParseMoney(c.in)
 		if err != nil {
 			t.Fatalf("err on %v: %v", c.in, err)
 		}
@@ -437,14 +437,14 @@ func TestParseMoneyToDecimal_AllNumericTypes(t *testing.T) {
 	}
 }
 
-func TestParseMoneyToDecimal_BadString(t *testing.T) {
-	if _, err := parseMoneyToDecimal("nope"); err == nil {
+func TestParseMoney_BadString(t *testing.T) {
+	if _, _, err := x402.ParseMoney("nope"); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestParseMoneyToDecimal_UnsupportedType(t *testing.T) {
-	if _, err := parseMoneyToDecimal(big.NewInt(1)); err == nil {
+func TestParseMoney_UnsupportedType(t *testing.T) {
+	if _, _, err := x402.ParseMoney(big.NewInt(1)); err == nil {
 		t.Fatal("expected error")
 	}
 }
