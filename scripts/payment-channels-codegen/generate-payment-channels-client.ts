@@ -113,6 +113,46 @@ export const PAYMENT_CHANNELS_PROGRAM_ADDRESS =
   );
 };
 
+/** Replace parser-only Kit 6 error constants so generated clients keep the package's Kit 5 peer. */
+const applyKit5Compatibility = (directory: string): void => {
+  const instructionsDir = path.join(directory, "instructions");
+  for (const entry of fs.readdirSync(instructionsDir, {
+    withFileTypes: true,
+  })) {
+    if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
+    const filename = path.join(instructionsDir, entry.name);
+    let source = fs.readFileSync(filename, "utf8");
+    if (
+      !source.includes(
+        "SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS",
+      )
+    ) {
+      continue;
+    }
+    source = source
+      .replace(
+        /^\s*SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,\n/m,
+        "",
+      )
+      .replace(/^\s*SolanaError,\n/m, "")
+      .replace(
+        /throw new SolanaError\(\s*SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,\s*\{\s*actualAccountMetas: instruction\.accounts\.length,\s*expectedAccountMetas: (\d+),\s*\},?\s*\);/g,
+        (_, expected: string) =>
+          `throw new Error(\`insufficient account metas: expected ${expected}, got \${instruction.accounts.length}\`);`,
+      );
+    if (
+      source.includes(
+        "SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS",
+      )
+    ) {
+      throw new Error(
+        `Kit 5 compatibility transform incomplete for ${filename}`,
+      );
+    }
+    fs.writeFileSync(filename, source);
+  }
+};
+
 try {
   await codama.accept(renderVisitor(temporaryPackage, { formatCode: true }));
   const rendered = path.join(temporaryPackage, "src", "generated");
@@ -123,6 +163,7 @@ try {
   const root = idl as unknown as CodamaRoot;
   applyEnumDiscriminants(rendered, root);
   renderProgramAddressOnly(rendered, root);
+  applyKit5Compatibility(rendered);
   fs.rmSync(outputDir, { force: true, recursive: true });
   fs.cpSync(rendered, outputDir, { recursive: true });
   await formatGeneratedTree(outputDir);

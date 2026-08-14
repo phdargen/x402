@@ -12,8 +12,6 @@ import {
   getStructEncoder,
   getU8Decoder,
   getU8Encoder,
-  SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS,
-  SolanaError,
   transformEncoder,
   type AccountMeta,
   type AccountSignerMeta,
@@ -144,10 +142,7 @@ export function parseRequestCloseInstruction<
     InstructionWithData<ReadonlyUint8Array>,
 ): ParsedRequestCloseInstruction<TProgram, TAccountMetas> {
   if (instruction.accounts.length < 2) {
-    throw new SolanaError(SOLANA_ERROR__PROGRAM_CLIENTS__INSUFFICIENT_ACCOUNT_METAS, {
-      actualAccountMetas: instruction.accounts.length,
-      expectedAccountMetas: 2,
-    });
+    throw new Error(`insufficient account metas: expected 2, got ${instruction.accounts.length}`);
   }
   let accountIndex = 0;
   const getNextAccount = () => {
