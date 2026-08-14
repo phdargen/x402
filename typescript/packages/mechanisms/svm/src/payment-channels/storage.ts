@@ -10,7 +10,7 @@ import type { Network } from "@x402/core/types";
  *
  * Written on deposit (pre-broadcast) and claim settle; deleted when the PDA is gone.
  */
-export interface UptoChannelRecord {
+export interface PaymentChannelRecord {
   channelId: string;
   /** Distribution recipient sealed at open (`requirements.payTo`). */
   payTo: string;
@@ -23,23 +23,23 @@ export interface UptoChannelRecord {
 }
 
 /** Pluggable storage of channels the facilitator sponsors rent for. */
-export interface UptoChannelStorage {
-  get(channelId: string): Promise<UptoChannelRecord | undefined>;
+export interface PaymentChannelStorage {
+  get(channelId: string): Promise<PaymentChannelRecord | undefined>;
   /**
    * Every stored record, in any order. The rent cleanup manager sorts by
    * channel id before scanning, so implementations do not have to.
    */
-  list(): Promise<UptoChannelRecord[]>;
-  upsert(record: UptoChannelRecord): Promise<void>;
+  list(): Promise<PaymentChannelRecord[]>;
+  upsert(record: PaymentChannelRecord): Promise<void>;
   delete(channelId: string): Promise<void>;
 }
 
 /**
- * In-memory {@link UptoChannelStorage}. Preserves `firstSeenAt` and the
+ * In-memory {@link PaymentChannelStorage}. Preserves `firstSeenAt` and the
  * maximum `expiresAt` across upserts of the same `channelId`.
  */
-export class InMemoryUptoChannelStorage implements UptoChannelStorage {
-  private readonly channels = new Map<string, UptoChannelRecord>();
+export class InMemoryPaymentChannelStorage implements PaymentChannelStorage {
+  private readonly channels = new Map<string, PaymentChannelRecord>();
 
   /**
    * Look up a single stored channel.
@@ -47,7 +47,7 @@ export class InMemoryUptoChannelStorage implements UptoChannelStorage {
    * @param channelId - Channel PDA
    * @returns Stored record, or undefined when absent
    */
-  async get(channelId: string): Promise<UptoChannelRecord | undefined> {
+  async get(channelId: string): Promise<PaymentChannelRecord | undefined> {
     return this.channels.get(channelId);
   }
 
@@ -56,7 +56,7 @@ export class InMemoryUptoChannelStorage implements UptoChannelStorage {
    *
    * @returns All stored channel records
    */
-  async list(): Promise<UptoChannelRecord[]> {
+  async list(): Promise<PaymentChannelRecord[]> {
     return [...this.channels.values()];
   }
 
@@ -66,7 +66,7 @@ export class InMemoryUptoChannelStorage implements UptoChannelStorage {
    *
    * @param record - Full channel storage record
    */
-  async upsert(record: UptoChannelRecord): Promise<void> {
+  async upsert(record: PaymentChannelRecord): Promise<void> {
     const existing = this.channels.get(record.channelId);
     this.channels.set(record.channelId, {
       ...record,

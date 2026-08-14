@@ -21,14 +21,12 @@ vi.mock("../../src/payment-channels/generated/accounts/channel", async importOri
 import {
   fetchAndVerifyOpenChannel,
   getChannelDistributionHash,
+  type ChannelRpc,
   type ExpectedOpenChannel,
-} from "../../src/upto/facilitator/channel";
-import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
-import type { UptoFacilitatorSigner } from "../../src/upto/facilitator/signer";
+} from "../../src/payment-channels/facilitator";
 
 const CHANNEL_ID = USDC_MAINNET_ADDRESS;
-const signer = {} as UptoFacilitatorSigner;
-const NETWORK = SOLANA_DEVNET_CAIP2;
+const rpc = {} as ChannelRpc;
 const PAYEE = USDC_DEVNET_ADDRESS;
 const PAYER = USDC_MAINNET_ADDRESS;
 const AUTHORIZED_SIGNER = USDC_DEVNET_ADDRESS;
@@ -89,7 +87,7 @@ describe("upto SVM channel reads", () => {
       .mockResolvedValueOnce(missingAccount)
       .mockResolvedValueOnce(existingAccount);
 
-    const result = fetchAndVerifyOpenChannel(signer, NETWORK, CHANNEL_ID, expected);
+    const result = fetchAndVerifyOpenChannel(rpc, CHANNEL_ID, expected);
     await vi.advanceTimersByTimeAsync(200);
 
     await expect(result).resolves.toMatchObject({ channelId: CHANNEL_ID });
@@ -100,7 +98,7 @@ describe("upto SVM channel reads", () => {
     vi.useFakeTimers();
     channelAccountMocks.fetchMaybeChannel.mockResolvedValue(missingAccount);
 
-    const result = fetchAndVerifyOpenChannel(signer, NETWORK, CHANNEL_ID, expected);
+    const result = fetchAndVerifyOpenChannel(rpc, CHANNEL_ID, expected);
     const assertion = expect(result).rejects.toThrow(`channel ${CHANNEL_ID} does not exist`);
     await vi.advanceTimersByTimeAsync(3_000);
 
@@ -114,7 +112,7 @@ describe("upto SVM channel reads", () => {
       data: { ...channel, status: 1 },
     });
 
-    await expect(fetchAndVerifyOpenChannel(signer, NETWORK, CHANNEL_ID, expected)).rejects.toThrow(
+    await expect(fetchAndVerifyOpenChannel(rpc, CHANNEL_ID, expected)).rejects.toThrow(
       `channel ${CHANNEL_ID} is not open`,
     );
     expect(channelAccountMocks.fetchMaybeChannel).toHaveBeenCalledTimes(1);

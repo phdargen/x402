@@ -45,7 +45,7 @@ import {
   simulateOpenSettleDistribute,
   submitSettle,
   verifyOpenChannelAccount,
-} from "../../src/upto/facilitator/channel";
+} from "../../src/payment-channels/facilitator";
 import {
   ERR_SETTLEMENT_EXCEEDS_AMOUNT,
   UptoSvmScheme as UptoFacilitatorScheme,
