@@ -66,9 +66,30 @@ Channels are long-lived. After a refund, the client can top up and reuse the sam
 
 ---
 
+## Voucher Custody
+
+The scheme has two voucher-custody modes, selected by `PaymentRequirements.extra.voucherStore`. The client echoes this flag and does not interpret it.
+
+| Mode | `extra.voucherStore` | Voucher `/settle` | Watermark and claim/settle schedule | Authoritative store |
+| ---- | -------------------- | ----------------- | ----------------------------------- | ------------------- |
+| **Self-managed** | omitted or `false` | No | Resource server | Server channel store |
+| **Facilitator-managed** | `true` | Yes — durable offchain write | Facilitator | Facilitator |
+
+**Facilitator-managed handshake.** The facilitator advertises `voucherStore: true` together with `receiverAuthorizer` and `withdrawDelay` on `/supported`. The server copies those fields onto the 402 and MUST NOT override `withdrawDelay`. A server MUST NOT set `voucherStore: true` unless the facilitator advertised it. Absence of the flag preserves self-managed behavior.
+
+In facilitator-managed mode the resource server is a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. The facilitator verifies every payload (no local EOA short-circuit), serializes per-channel requests at `/verify`, persists vouchers and `chargedCumulativeAmount` on `/settle`, and claims/settles on a schedule — including before a timed withdrawal finalizes.
+
+**Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation). The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. Out-of-band caller authentication is optional; the facilitator MUST still accept the signature path. Idle facilitator-initiated refunds are out of scope.
+
+**Optional replica.** A managed server MAY persist a copy of the latest voucher after successful `/settle`. The replica MUST NOT drive cumulative checks, locks, or corrective 402s. It only enables out-of-band `claim()` / `refund()` as `receiver`, or `type: "claim"` through the facilitator.
+
+---
+
 ## 402 Response (PaymentRequirements)
 
 The 402 response contains pricing terms and the server's channel parameters. The client maps `payTo` → `ChannelConfig.receiver`, `extra.receiverAuthorizer` → `ChannelConfig.receiverAuthorizer`, `asset` → `ChannelConfig.token`, and `extra.withdrawDelay` → `ChannelConfig.withdrawDelay`, then fills in its own `payer`, `payerAuthorizer`, and `salt` to construct the full config.
+
+Self-managed:
 
 ```json
 {
@@ -87,6 +108,27 @@ The 402 response contains pricing terms and the server's channel parameters. The
 }
 ```
 
+Facilitator-managed 402 (server copies `receiverAuthorizer`, `withdrawDelay`, and `voucherStore` from `/supported`):
+
+```json
+{
+  "scheme": "batch-settlement",
+  "network": "eip155:8453",
+  "amount": "100000",
+  "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "payTo": "0xServerReceiverAddress",
+  "maxTimeoutSeconds": 3600,
+  "extra": {
+    "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+    "withdrawDelay": 900,
+    "name": "USDC",
+    "version": "2",
+    "voucherStore": true,
+    "refundAuthorizer": "0xServerRefundAuthorizerAddress"
+  }
+}
+```
+
 | Field                       | Type     | Required | Description                                            |
 | --------------------------- | -------- | -------- | ------------------------------------------------------ |
 | `extra.receiverAuthorizer`  | `string` | yes      | Address that will authorize claims/refunds             |
@@ -94,6 +136,8 @@ The 402 response contains pricing terms and the server's channel parameters. The
 | `extra.assetTransferMethod` | `string` | optional | `"eip3009"` (default) or `"permit2"`                   |
 | `extra.name`                | `string` | yes      | EIP-712 domain name of the token contract              |
 | `extra.version`             | `string` | yes      | EIP-712 domain version of the token contract           |
+| `extra.voucherStore`        | `boolean` | optional | If `true`, facilitator-managed voucher custody         |
+| `extra.refundAuthorizer`    | `string` | managed refunds | Server EOA that consents to cooperative refunds. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) \|\| bytes20(refundAuthorizer)`. |
 | `extra.channelState`        | `object` | optional | Corrective-only server channel snapshot for cumulative amount resynchronization |
 | `extra.voucherState`        | `object` | optional | Corrective-only signed voucher proof for cumulative amount resynchronization |
 
@@ -159,6 +203,58 @@ The `deposit.authorization` field contains the token transfer authorization — 
 }
 ```
 
+Facilitator-managed deposit — `accepted.extra` matches the managed 402; `salt` uses the packed `refundAuthorizer` layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": {
+    "scheme": "batch-settlement",
+    "network": "eip155:8453",
+    "amount": "1000",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "payTo": "0xServerReceiverAddress",
+    "maxTimeoutSeconds": 3600,
+    "extra": {
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "withdrawDelay": 900,
+      "name": "USDC",
+      "version": "2",
+      "voucherStore": true,
+      "refundAuthorizer": "0xServerRefundAuthorizerAddress"
+    }
+  },
+  "payload": {
+    "type": "deposit",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "1000",
+      "signature": "0x...EIP-712 voucher signature"
+    },
+    "deposit": {
+      "amount": "100000",
+      "authorization": {
+        "erc3009Authorization": {
+          "validAfter": "0",
+          "validBefore": "1770000000",
+          "salt": "0x...authorization salt",
+          "signature": "0x...ERC-3009 signature"
+        }
+      }
+    }
+  }
+}
+```
+
 ### Voucher Payload
 
 ```json
@@ -175,6 +271,32 @@ The `deposit.authorization` field contains the token transfer authorization — 
       "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "withdrawDelay": 900,
       "salt": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "5000",
+      "signature": "0x...EIP-712 voucher signature"
+    }
+  }
+}
+```
+
+Facilitator-managed voucher — `accepted` echoes the managed 402; `salt` uses the packed layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": { "..." : "..." },
+  "payload": {
+    "type": "voucher",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
     },
     "voucher": {
       "channelId": "0xabc123...channelId",
@@ -214,11 +336,38 @@ The optional `amount` requests a partial refund; omit it for a full refund. The 
 }
 ```
 
+Facilitator-managed refund — `accepted` echoes the managed 402; `salt` uses the packed layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": { "..." : "..." },
+  "payload": {
+    "type": "refund",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "3200",
+      "signature": "0x...EIP-712 zero-charge voucher signature"
+    },
+    "amount": "1500"
+  }
+}
+```
+
 ---
 
 ## Server: State & Forwarding
 
-The server is the sole owner of per-channel state.
+In **self-managed** mode the server is the sole owner of per-channel state. In **facilitator-managed** mode the server is a pass-through (see Voucher Custody); the remainder of this section applies to self-managed mode except the payment-response contract, which is shared.
 
 ### Per-Channel State
 
@@ -253,6 +402,8 @@ The server must serialize request processing per channel and must not update vou
 4. **On failure**: State unchanged, client can retry the same voucher.
 
 ### Payment Response Contract
+
+Both custody modes produce this shape. In facilitator-managed mode the facilitator `/settle` response is the payment response.
 
 Successful paid responses distinguish onchain transfers from offchain charges:
 
@@ -324,6 +475,33 @@ After the server completes the refund payload, the facilitator receives:
 
 `refundAuthorizerSignature` and `claimAuthorizerSignature` are included when the server owns the receiver-authorizer key. If the channel delegates receiver authorization to the facilitator, the server omits them and the facilitator signs before submitting the transaction.
 
+Facilitator-managed refund `/settle` — the server attaches `refundAuthorizerSignature` from `extra.refundAuthorizer`; the facilitator supplies the onchain `Refund` and `ClaimBatch` signatures:
+
+```json
+{
+  "type": "refund",
+  "channelConfig": { "..." : "..." },
+  "voucher": {
+    "channelId": "0xabc123...channelId",
+    "maxClaimableAmount": "3200",
+    "signature": "0x...EIP-712 zero-charge voucher signature"
+  },
+  "amount": "1500",
+  "refundNonce": "1",
+  "claims": [
+    {
+      "voucher": {
+        "channel": { "..." : "..." },
+        "maxClaimableAmount": "3200"
+      },
+      "signature": "0x...EIP-712 zero-charge voucher signature",
+      "totalClaimed": "3200"
+    }
+  ],
+  "refundAuthorizerSignature": "0x...refundAuthorizer Refund signature"
+}
+```
+
 ---
 
 ## Facilitator Interface
@@ -348,14 +526,77 @@ Verifies a deposit, voucher, or refund payment payload. Returns the onchain chan
 }
 ```
 
+Facilitator-managed `/verify` also returns the offchain watermark. The facilitator MUST take a short-lived exclusive lock per `channelId`; a second in-flight request returns `invalid_batch_settlement_evm_channel_busy`. The lock is not a payment commit — watermark does not advance until `/settle`. `/settle` commits and releases; TTL releases on handler crash.
+
+```json
+{
+  "isValid": true,
+  "payer": "0xPayerAddress",
+  "extra": {
+    "channelId": "0xabc123...",
+    "balance": "100000",
+    "totalClaimed": "3200",
+    "withdrawRequestedAt": 0,
+    "refundNonce": "1",
+    "chargedCumulativeAmount": "3900"
+  }
+}
+```
+
+Facilitator-managed refund `/verify` additionally sets `extra.skipHandler` so the resource is bypassed and `/settle` still runs:
+
+```json
+{
+  "isValid": true,
+  "payer": "0xPayerAddress",
+  "extra": {
+    "channelId": "0xabc123...",
+    "balance": "100000",
+    "totalClaimed": "3200",
+    "withdrawRequestedAt": 0,
+    "refundNonce": "1",
+    "chargedCumulativeAmount": "3200",
+    "skipHandler": true
+  }
+}
+```
+
+On `invalid_batch_settlement_evm_cumulative_amount_mismatch`, managed `/verify` returns `extra.channelState` and `extra.voucherState` (same objects as the corrective 402). The resource server copies those onto `accepts[].extra`.
+
 ### POST /settle
 
 | `payload.type` | When Used                     | Onchain Effect                                        |
 | -------------- | ----------------------------- | ----------------------------------------------------- |
 | `"deposit"`    | First request or top-up       | Deposit via the canonical ERC-3009 or Permit2 collector |
+| `"voucher"`    | Facilitator-managed paid request | None — persist voucher; `chargedCumulativeAmount += actual` |
 | `"claim"`      | Server batches voucher claims | Validate vouchers, update accounting (no transfer)    |
 | `"settle"`     | Server transfers earned funds | Transfer unsettled amount to receiver                 |
 | `"refund"`     | Cooperative refund            | Return specified amount to payer, increment refund nonce |
+
+`type: "voucher"` is valid only in facilitator-managed mode (`extra.voucherStore === true`). Self-managed `/settle` rejects it with `invalid_batch_settlement_evm_payload_type`. The settle-time charge `actual` is `paymentRequirements.amount` on the settle call (verify saw the per-request maximum; settle MAY be lower). The facilitator MUST enforce `actual <=` the verified `amount` and `chargedCumulativeAmount + actual <= voucher.maxClaimableAmount`. Deposit `/settle` also persists the deposit's voucher and initializes the watermark.
+
+Facilitator-managed voucher `/settle` response (no onchain transaction):
+
+```json
+{
+  "success": true,
+  "transaction": "",
+  "network": "eip155:8453",
+  "payer": "0xClientAddress",
+  "amount": "",
+  "extra": {
+    "chargedAmount": "700",
+    "channelState": {
+      "channelId": "0xabc123...channelId",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1",
+      "chargedCumulativeAmount": "3900"
+    }
+  }
+}
+```
 
 Server-authored claim and settle payloads use the same `type` discriminator:
 
@@ -434,6 +675,30 @@ Example facilitator response for a deposit:
 }
 ```
 
+Facilitator-managed deposit `/settle` also persists the voucher and returns the payment-response extras:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "payer": "0xPayerAddress",
+  "amount": "100000",
+  "asset": "0xAssetAddress",
+  "extra": {
+    "chargedAmount": "700",
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1",
+      "chargedCumulativeAmount": "3900"
+    }
+  }
+}
+```
+
 Example facilitator response for a refund:
 
 ```json
@@ -457,6 +722,28 @@ Example facilitator response for a refund:
 
 `amount` is the amount returned to the payer.
 
+Facilitator-managed refund `/settle` response:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "payer": "0xPayerAddress",
+  "amount": "1500",
+  "extra": {
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "98500",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "2",
+      "chargedCumulativeAmount": "3200"
+    }
+  }
+}
+```
+
 ### GET /supported
 
 The facilitator MAY declare a receiver authorizer whose role is to produce EIP-712 signatures for claims and refunds. The server may delegate to this address as its channel's `receiverAuthorizer`, or supply its own. Any address in `signers` may relay the resulting transactions.
@@ -470,6 +757,32 @@ The facilitator MAY declare a receiver authorizer whose role is to produce EIP-7
       "network": "eip155:8453",
       "extra": {
         "receiverAuthorizer": "0xReceiverAuthorizerAddress"
+      }
+    }
+  ],
+  "extensions": [],
+  "signers": {
+    "eip155:*": [
+      "0xSignerAddress1",
+      "0xSignerAddress2"
+    ]
+  }
+}
+```
+
+Facilitator-managed:
+
+```json
+{
+  "kinds": [
+    {
+      "x402Version": 2,
+      "scheme": "batch-settlement",
+      "network": "eip155:8453",
+      "extra": {
+        "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+        "withdrawDelay": 900,
+        "voucherStore": true
       }
     }
   ],
@@ -498,12 +811,16 @@ A facilitator must enforce:
 9. **Deposit sufficiency**: `maxClaimableAmount` must be at most `balance` (or `balance + depositAmount` for deposit payloads).
 10. **Not below claimed**: `maxClaimableAmount` must exceed onchain `totalClaimed`. For refund payloads (`payload.type == "refund"`), this rule is relaxed to `maxClaimableAmount >= totalClaimed`, since refund vouchers are zero-charge and may match the already-claimed total exactly.
 11. **Signed refunds**: the refund nonce must equal the onchain `refundNonce` at the time of submission; the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`) must bind the same `amount` submitted in the transaction. The contract increments the nonce before computing the capped transfer amount, so the nonce advances even when no tokens move.
+12. **Managed watermark** (`extra.voucherStore === true`): `maxClaimableAmount` must equal `chargedCumulativeAmount + paymentRequirements.amount`. For refund payloads, `maxClaimableAmount` must equal `chargedCumulativeAmount`. On mismatch, return `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `extra.channelState` and `extra.voucherState`.
+13. **Refund authorizer bind** (when `extra.refundAuthorizer` is present): the address unpacked from `channelConfig.salt` must equal `extra.refundAuthorizer`.
 
-The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` response `extra` field and in every `/settle` response under `extra.channelState`. If `withdrawRequestedAt` is non-zero, the server should claim outstanding vouchers promptly before the withdraw delay elapses.
+The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` response `extra` field and in every `/settle` response under `extra.channelState`. In facilitator-managed mode those objects MUST also include `chargedCumulativeAmount`. If `withdrawRequestedAt` is non-zero, outstanding vouchers should be claimed promptly before the withdraw delay elapses.
 
 ---
 
 ## Claim & Settlement Strategy
+
+In self-managed mode the server runs this strategy. In facilitator-managed mode the facilitator does — including claiming before a timed withdrawal finalizes.
 
 `claim(voucherClaims)` validates payer voucher signatures and updates accounting for multiple channels; `msg.sender` must be `receiver` or `receiverAuthorizer` for every row. `claimWithSignature(claims, signature)` is the relay-friendly variant: anyone can submit it with a valid EIP-712 `ClaimBatch` signature from `receiverAuthorizer` covering all rows (all rows must share the same `receiverAuthorizer`). No token transfer occurs in either path.
 
@@ -515,7 +832,7 @@ The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `wi
 | **Threshold**     | Claim + settle when unclaimed amount exceeds T | Bounds server's risk exposure    |
 | **On withdrawal** | Claim + settle when withdrawal is initiated    | Minimum gas, maximum risk window |
 
-The server must claim all outstanding vouchers before the withdraw delay elapses. Unclaimed vouchers become unclaimable after `finalizeWithdraw()` reduces the channel balance.
+Outstanding vouchers must be claimed before the withdraw delay elapses. Unclaimed vouchers become unclaimable after `finalizeWithdraw()` reduces the channel balance.
 
 ---
 
@@ -543,9 +860,9 @@ The recovery baseline is:
 
 **Client cold start.** When the client has no local channel record, it reads onchain state and sets `chargedCumulativeAmount = totalClaimed`. If the next request would exceed the recovered `balance`, the client sends a deposit/top-up payload. Otherwise it signs a voucher for `totalClaimed + amount`.
 
-**Server state loss.** If the server has no local channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If the server lost unclaimed vouchers, those unclaimed charges are forfeited by the server.
+**Server state loss.** If the voucher custodian (server or facilitator) has no channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If it lost unclaimed vouchers, those unclaimed charges are forfeited.
 
-**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
+**Corrective 402.** If a paid payload (`deposit` or `voucher`) is rejected because the client's cumulative amount does not match the custodian's `chargedCumulativeAmount`, the 402 is `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`. The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
 
 ```json
 {
@@ -559,6 +876,40 @@ The recovery baseline is:
         "withdrawDelay": 900,
         "name": "USDC",
         "version": "2",
+        "channelState": {
+          "channelId": "0xabc123...channelId",
+          "balance": "100000",
+          "totalClaimed": "500",
+          "withdrawRequestedAt": 0,
+          "refundNonce": "1",
+          "chargedCumulativeAmount": "3200"
+        },
+        "voucherState": {
+          "signedMaxClaimable": "3200",
+          "signature": "0x...last voucher signature"
+        }
+      }
+    }
+  ]
+}
+```
+
+Facilitator-managed corrective 402 — same `channelState` / `voucherState`, plus the managed extra fields:
+
+```json
+{
+  "x402Version": 2,
+  "error": "invalid_batch_settlement_evm_cumulative_amount_mismatch",
+  "accepts": [
+    {
+      "scheme": "batch-settlement",
+      "extra": {
+        "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+        "withdrawDelay": 900,
+        "name": "USDC",
+        "version": "2",
+        "voucherStore": true,
+        "refundAuthorizer": "0xServerRefundAuthorizerAddress",
         "channelState": {
           "channelId": "0xabc123...channelId",
           "balance": "100000",
@@ -629,6 +980,8 @@ The recovery baseline is:
 | `invalid_batch_settlement_evm_receiver_authorizer_mismatch`              | Channel receiver authorizer does not match `extra.receiverAuthorizer`        |
 | `invalid_batch_settlement_evm_receiver_mismatch`                         | Channel receiver does not match `payTo`                                      |                         |
 | `invalid_batch_settlement_evm_refund_amount_invalid`                     | Refund `amount` is non-numeric or non-positive                               |
+| `invalid_batch_settlement_evm_refund_authorizer_mismatch`                | Address unpacked from `channelConfig.salt` does not match `extra.refundAuthorizer` |
+| `invalid_batch_settlement_evm_refund_authorizer_signature`               | `refundAuthorizerSignature` is missing or does not recover to `extra.refundAuthorizer` |
 | `invalid_batch_settlement_evm_refund_no_balance`                         | Cooperative refund requested but no refundable balance remains |
 | `invalid_batch_settlement_evm_refund_payload`                            | Refund payload is malformed                                                  |
 | `invalid_batch_settlement_evm_refund_simulation_failed`                  | Refund simulation failed                                                     |
@@ -660,7 +1013,7 @@ The recovery baseline is:
 
 4. **Voucher expiry via escrow depletion**: Vouchers carry no expiry field. A voucher remains claimable as long as `balance - totalClaimed > 0`; `finalizeWithdraw` and `refundWithSignature` close the claim window by draining available escrow. The ERC-3009 `validBefore`/`validAfter` fields bound only the deposit authorization, not the voucher.
 
-5. **Refund authorization when the facilitator is `receiverAuthorizer`**: A cooperative refund bypasses the timed-withdrawal delay, so it must carry receiver-side consent. When a server supplies its own `refundAuthorizerSignature` that signature is the consent. When the server delegates `receiverAuthorizer` to the facilitator, the faciltator MUST authenticate that each `refund` request originates from the service that created the channel (e.g. SIWX, JWT, or API credential bound at channel-creation time) and reject all others. A facilitator with no such authentication mechanism MUST NOT advertise a `receiverAuthorizer` in `/supported`.
+5. **Refund authorization**: A cooperative refund bypasses the timed-withdrawal delay and must carry receiver-side consent — the `refundAuthorizerSignature` on the settle payload (self-managed: receiver-authorizer key; facilitator-managed: `extra.refundAuthorizer`, see Voucher Custody).
 
 ---
 
@@ -681,4 +1034,5 @@ The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 tra
 
 | Version | Date       | Changes       | Authors                 |
 | ------- | ---------- | ------------- | ----------------------- |
+| v1.1    | 2026-08-15 | Facilitator-managed voucher custody (`voucherStore`) | @phdargen |
 | v1.0    | 2025-04-28 | Initial draft | @phdargen @CarsonRoscoen @ilikesymmetry |
