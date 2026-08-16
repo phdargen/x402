@@ -3,7 +3,8 @@
  */
 
 import { encodeAbiParameters, getAddress, keccak256, toHex, zeroAddress } from "viem";
-import type { ClientEvmSigner } from "../signer";
+import type { ClientEvmSigner, FacilitatorEvmSigner } from "../signer";
+import { verifyTypedDataSignature } from "../shared/verifySignature";
 import { PERMIT2_ADDRESS } from "../constants";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
@@ -131,6 +132,52 @@ export async function signERC3009(
 }
 
 /**
+ * Verify an ERC-3009 `ReceiveWithAuthorization` signature against the supplied
+ * authorization fields. Mirrors `signERC3009`: the EIP-712 domain is bound to
+ * the **token contract**, with `name`/`version` from `extra`.
+ *
+ * Routed through {@link verifyTypedDataSignature} rather than
+ * `signer.verifyTypedData` so pre-verify matches on-chain SignatureChecker
+ * semantics: no ECDSA fallback when EIP-1271 returns failure, which otherwise
+ * accepts signatures the token contract rejects for any payer with code.
+ *
+ * @param signer - Facilitator signer used for `eth_getCode` / `isValidSignature`.
+ * @param authorization - The ERC-3009 authorization to verify.
+ * @param signature - The signature blob from the payer.
+ * @param extra - Carries the token EIP-712 domain `name`, `version`, and the chain id.
+ * @param tokenAddress - Address of the token contract (verifyingContract in the domain).
+ * @returns True if the signature is valid for `authorization.from`; false otherwise.
+ */
+export async function verifyERC3009Signature(
+  signer: FacilitatorEvmSigner,
+  authorization: Eip3009Payload["authorization"],
+  signature: `0x${string}`,
+  extra: AuthCaptureExtra & { chainId: number },
+  tokenAddress: `0x${string}`,
+): Promise<boolean> {
+  return verifyTypedDataSignature(signer, {
+    address: getAddress(authorization.from),
+    domain: {
+      name: extra.name,
+      version: extra.version,
+      chainId: extra.chainId,
+      verifyingContract: getAddress(tokenAddress),
+    },
+    types: RECEIVE_AUTHORIZATION_TYPES,
+    primaryType: "ReceiveWithAuthorization",
+    message: {
+      from: getAddress(authorization.from),
+      to: getAddress(authorization.to),
+      value: BigInt(authorization.value),
+      validAfter: BigInt(authorization.validAfter),
+      validBefore: BigInt(authorization.validBefore),
+      nonce: authorization.nonce,
+    },
+    signature,
+  });
+}
+
+/**
  * Sign a Permit2 `PermitTransferFrom` over the supplied permit fields. Domain
  * is bound to the canonical Permit2 contract. No witness struct is needed —
  * the deterministic nonce (the payer-agnostic PaymentInfo hash, packed into
@@ -168,6 +215,46 @@ export async function signPermit2(
     types: PERMIT2_TRANSFER_FROM_TYPES,
     primaryType: "PermitTransferFrom",
     message,
+  });
+}
+
+/**
+ * Verify a Permit2 `PermitTransferFrom` signature against the supplied permit
+ * fields. Mirrors `signPermit2`: domain bound to the canonical Permit2
+ * contract. Routed through {@link verifyTypedDataSignature} so pre-verify
+ * matches Permit2's own `SignatureVerification` semantics.
+ *
+ * @param signer - Facilitator signer used for `eth_getCode` / `isValidSignature`.
+ * @param permit - The Permit2 PermitTransferFrom message to verify.
+ * @param signature - The signature blob from the payer.
+ * @param chainId - EVM chain id (chainId in the Permit2 domain).
+ * @returns True if the signature is valid for `permit.from`; false otherwise.
+ */
+export async function verifyPermit2Signature(
+  signer: FacilitatorEvmSigner,
+  permit: Permit2Payload["permit2Authorization"],
+  signature: `0x${string}`,
+  chainId: number,
+): Promise<boolean> {
+  return verifyTypedDataSignature(signer, {
+    address: getAddress(permit.from),
+    domain: {
+      name: "Permit2",
+      chainId,
+      verifyingContract: PERMIT2_ADDRESS,
+    },
+    types: PERMIT2_TRANSFER_FROM_TYPES,
+    primaryType: "PermitTransferFrom",
+    message: {
+      permitted: {
+        token: getAddress(permit.permitted.token),
+        amount: BigInt(permit.permitted.amount),
+      },
+      spender: getAddress(permit.spender),
+      nonce: BigInt(permit.nonce),
+      deadline: BigInt(permit.deadline),
+    },
+    signature,
   });
 }
 
