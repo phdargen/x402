@@ -2,7 +2,7 @@
 
 ## Summary
 
-This is the EVM binding of `[auth-capture](./scheme_auth_capture.md)`. It specifies the contracts, wire fields, signatures, and facilitator logic that realize the scheme on EVM chains.
+This is the EVM binding of [`auth-capture`](./scheme_auth_capture.md). It specifies the contracts, wire fields, signatures, and facilitator logic that realize the scheme on EVM chains.
 
 The binding builds on the [base/commerce-payments](https://github.com/base/commerce-payments) contract stack:
 
@@ -12,13 +12,13 @@ The binding builds on the [base/commerce-payments](https://github.com/base/comme
   - `PERMIT2_TOKEN_COLLECTOR_ADDRESS` — collects from the payer via Uniswap Permit2 `permitTransferFrom` (any ERC-20).
   - `OPERATOR_REFUND_COLLECTOR_ADDRESS` — collects refund liquidity from `paymentInfo.operator`.
 
-The client signs exactly one signature, an ERC-3009 or Permit2 authorization naming a collector as the recipient. Which later operations the facilitator also relays depends on `extra.operatorType`. Facilitator-relayed `charge`, `capture`, `void`, and `refund` each require an EIP-712 signature from the receiver authorizer; `authorize` does not — the client's token authorization is sufficient.
+The client produces exactly one signature: an ERC-3009 or Permit2 authorization naming a collector as the recipient. Which later operations the facilitator also relays depends on `extra.operatorType`. Facilitator-relayed `charge`, `capture`, `void`, and `refund` each require an EIP-712 signature from the receiver authorizer; `authorize` does not — the client's token authorization is sufficient.
 
 ## Operator types
 
 `extra.operatorType` names the kind of `extra.captureAuthorizer`. That address is committed onchain as `PaymentInfo.operator`.
 
-Two kinds are specified: `"delegated"`, where the facilitator is the operator, and `"custom"`, where a custom smart contract is. A third value, `"policy"`, is RESERVED for the contract operators in [Future operator type:](#future-operator-type-policy) `policy`; `extra.policy` is defined and bound into the payment's identity already, so that adding that type later changes no field and no derivation.
+Two kinds are specified: `"delegated"`, where the facilitator is the operator, and `"custom"`, where a custom smart contract is. A third value, `"policy"`, is RESERVED for the contract operators in [Future operator type: `policy`](#future-operator-type-policy); `extra.policy` is defined and bound into the payment's identity already, so that adding that type later changes no field and no derivation.
 
 The kinds are choices about who submits which calls. They are defined in terms of the escrow's own functions, referred to below as the **escrow ABI**. The **collect** operations are `authorize` and `charge` — whichever `extra.paymentFlow` selects for the client's payload. The **lifecycle** operations are `capture`, `void`, and `refund`.
 
@@ -34,33 +34,31 @@ The kinds are choices about who submits which calls. They are defined in terms o
 
 ### `"delegated"` — facilitator is the operator
 
-The facilitator is itself the operator and calls the escrow directly with the escrow ABI. `extra.captureAuthorizer` is an address the facilitator controls and submits from. It MAY be an EOA or a smart-contract account (for example an ERC-4337 account that is `msg.sender` via a user operation). The discriminator is control and submission, not the presence of bytecode.
+The facilitator is itself the operator and calls the escrow directly with the escrow ABI. `extra.captureAuthorizer` is an address the facilitator controls and submits from. It MAY be an EOA or a smart-contract account (for example an ERC-4337 account that is `msg.sender` via a user operation).
 
-When `extra.receiverAuthorizer` is a non-zero address, the facilitator relays collect and lifecycle operations. What the server gives up is enforcement. The facilitator's own verification is the only gate on every operation: nothing onchain requires an authorizer signature, checks it against the one the server holds, or stops a capture the server never asked for. A server choosing `"delegated"` with a receiver authorizer is trusting the facilitator to collect `authorize` from the client payload as written, and for `charge` and lifecycle to relay exactly what its authorizer signed, and nothing else. That trust is bounded by the escrow's client-side guarantees — the client-signed maximum, the fee bounds, and `reclaim` after the capture deadline — but within those bounds it is trust, not proof.
+When `extra.receiverAuthorizer` is a non-zero address, the facilitator relays collect and lifecycle operations. What the server gives up is enforcement: nothing onchain requires an authorizer signature, checks it against the one the server holds, or stops a capture the server never asked for, so the facilitator's own verification is the only gate. A server choosing `"delegated"` with a receiver authorizer is trusting the facilitator to relay exactly what the client payload and its own authorizer signed, and nothing else. That trust is bounded by the escrow's client-side guarantees — the client-signed maximum, the fee bounds, and `reclaim` after the capture deadline — but within those bounds it is trust, not proof.
 
-When `extra.receiverAuthorizer` is absent or the zero address, `"delegated"` is collect-only: the facilitator relays `authorize` or a full-amount `charge`, and MUST reject `payload.type` of `"capture"`, `"void"`, or `"refund"`. Later lifecycle operations run out of band under the operator's own rules (for example a self-facilitating server that submits capture from the same smart-contract account through its own API). 
+When `extra.receiverAuthorizer` is absent or the zero address, `"delegated"` is collect-only: the facilitator relays `authorize` or a full-amount `charge`, and MUST reject `payload.type` of `"capture"`, `"void"`, or `"refund"`. Later lifecycle operations run out of band under the operator's own rules (for example a self-facilitating server that submits capture from the same smart-contract account through its own API).
 
 ### `"custom"` — collect-only relay, lifecycle out of band
 
-`extra.captureAuthorizer` is a contract that is `PaymentInfo.operator`. It MUST expose the escrow ABI's collect entry points (`authorize` and `charge`) as permissionless — any caller, including the facilitator, MAY invoke them — and each MUST forward to the escrow. The facilitator relays only that collect call; it has no other way onto the operator, so an access-controlled collect entry point makes the kind unusable. The facilitator MUST reject `payload.type` of `"capture"`, `"void"`, or `"refund"` for a `"custom"` operator.
+`extra.captureAuthorizer` is a contract that is `PaymentInfo.operator`. It MUST expose the escrow ABI's collect entry points (`authorize` and `charge`) as permissionless — any caller, including the facilitator, MAY invoke them — and each MUST forward to the escrow. The facilitator relays only that collect call; it has no other way onto the operator, so an access-controlled collect entry point makes the kind unusable.
 
-`"custom"` is identified by those collect-wrapper selectors, not by the mere presence of bytecode. A smart-contract account the facilitator submits from is `"delegated"`, even though it has deployed code.
+`"custom"` is identified by its entry in the facilitator's operator allowlist and by exposing those collect wrappers, not by the mere presence of bytecode. A smart-contract account the facilitator submits from is `"delegated"`, even though it has deployed code.
 
-For the client, the payment ends where the protocol ends: it signs once, the collect settles, and it has paid. Everything after that is between the server and the operator — merchant, arbiter, payer, or any other party the operator's policy allows calls the operator or its periphery directly, with whatever ABI and authentication that operator defines. The server opts into that call path deliberately, typically through the operator's own SDK, and the facilitator is not involved in or aware of it.
+For the client, the payment ends where the protocol ends: it signs once, the collect settles, and it has paid. Everything after that is between the server and the operator — merchant, arbiter, payer, or any other party the operator's policy allows calls the operator or its periphery directly, with whatever ABI and authentication that operator defines, typically through the operator's own SDK. The facilitator is not involved in or aware of that call path.
 
 Because lifecycle is out of band, the operator MAY impose additional rules — time locks, freeze windows, role-gated capture or void, arbitration, streaming release, or a surface that does not match `capture`/`void`/`refund` — without changing the escrow, the facilitator, or the scheme. Those rules are neither relayed nor validated by the facilitator.
 
 ### Validation before relaying
 
-The facilitator MUST establish, at verification time:
+At verification time the facilitator branches on `extra.operatorType` and applies the rules of the branch it lands in:
 
-- `extra.operatorType` is `"delegated"` or `"custom"` (default `"delegated"` when omitted). A facilitator that does not implement the appendix's `"policy"` type MUST reject it as unsupported rather than treat it as one of these two.
-- `extra.policy` is absent or the zero address. It is only meaningful for `"policy"`.
-- For `"delegated"`: `extra.captureAuthorizer` is an address the facilitator controls and submits from. It MUST NOT expose the `"custom"` or `"policy"` collect-wrapper selectors.
-- For `"custom"`: `extra.captureAuthorizer` exposes the permissionless collect wrappers and is admitted by the facilitator's operator policy (see `[/supported](#supported)`).
-- For `"custom"`: the payload is a collect settle (`authorize` or `charge` from `extra.paymentFlow`), not a lifecycle payload.
-- For `"delegated"` without a non-zero `receiverAuthorizer`: the payload is a collect settle, not a lifecycle payload.
-- `extra.receiverAuthorizer` is optional. Treat absent as the zero address. It MUST be non-zero when the facilitator relays `charge` for less than `requirements.amount`, or relays `capture`, `void`, or `refund`. It MAY be zero for collect-only `"delegated"` and for `"custom"` with `"escrow"` (facilitator-relayed settles never use it, or a non-zero address the custom operator binds for out-of-band lifecycle). It MAY equal `extra.captureAuthorizer`. A non-zero `receiverAuthorizer` or `policy` turns [salt binding](#payment-identity) on.
+- **`"custom"`** — `extra.captureAuthorizer` exposes the permissionless collect wrappers and is admitted by the facilitator's operator allowlist (see [`/supported`](#supported)), otherwise `invalid_auth_capture_evm_operator_type_mismatch` or `invalid_auth_capture_evm_operator_not_admitted`. `extra.policy` is absent or the zero address. The payload is a collect settle (`authorize` or `charge` per `extra.paymentFlow`), never a lifecycle payload.
+- **`"policy"`** — the appendix's rules apply, in [Future operator type: `policy`](#future-operator-type-policy). A facilitator that does not implement that type MUST reject it with `invalid_auth_capture_evm_unsupported_operator_type` rather than treat it as one of the other two.
+- **default** — the value MUST be `"delegated"` or absent, otherwise `invalid_auth_capture_evm_unsupported_operator_type`. `extra.captureAuthorizer` MUST be an address the facilitator controls and submits from, otherwise `invalid_auth_capture_evm_operator_not_admitted`. That lookup against its own submitters is the whole test: the facilitator calls the escrow directly here, so an address it does not control is refused whether or not it is somebody else's operator contract. `extra.policy` is absent or the zero address. Without a non-zero `receiverAuthorizer` the payload is a collect settle, not a lifecycle payload.
+
+In every branch `extra.receiverAuthorizer` is optional, with absent read as the zero address, under the rules its [`extra` entry](#extra-fields) gives. It MAY be zero for collect-only `"delegated"` and for `"custom"`, since no facilitator-relayed settle reads it in either case. A `"custom"` server MAY still name one, so that the payment commits to the authorizer its operator will check out of band.
 
 ## PaymentRequirements
 
@@ -104,26 +102,26 @@ The facilitator MUST establish, at verification time:
 | `version`             | Yes      | `string`                       | EIP-712 token-domain version (e.g. `"2"`).                                                                                                                                                                                                                                     |
 | `captureAuthorizer`   | Yes      | `address`                      | The operator, committed onchain as `PaymentInfo.operator`.                                                                                                                                                                                                                     |
 | `receiverAuthorizer`  | No       | `address`                      | Signer of every `authorizerSignature` on facilitator-relayed `charge` and lifecycle settles. Absent or zero means collect-only (no facilitator-relayed lifecycle; `charge` is the full client-signed amount). Non-zero turns [salt binding](#payment-identity) on. MUST be non-zero to relay `charge` for less than the maximum, or to relay `capture` / `void` / `refund`. MAY equal `captureAuthorizer`. |
-| `policy`              | No       | `address`                      | Policy contract governing the payment. Absent or zero for `"delegated"` and `"custom"`. A non-zero value is only permitted for `"policy"` and turns [salt binding](#payment-identity) on alongside `receiverAuthorizer`. See [Future operator type:](#future-operator-type-policy) `policy`. |
+| `policy`              | No       | `address`                      | Policy contract governing the payment. Absent or zero for `"delegated"` and `"custom"`. A non-zero value is only permitted for `"policy"` and turns [salt binding](#payment-identity) on alongside `receiverAuthorizer`. See [Future operator type: `policy`](#future-operator-type-policy). |
 | `captureDeadline`     | Yes      | `uint48`                       | Absolute Unix seconds; capture must occur before this. Onchain `authorizationExpiry`.                                                                                                                                                                                          |
 | `refundDeadline`      | Yes      | `uint48`                       | Absolute Unix seconds; refunds are allowed until this. Onchain `refundExpiry`.                                                                                                                                                                                                 |
 | `feeRecipient`        | Yes      | `address`                      | Fee recipient, onchain `feeReceiver`.                                                                                                                                                                                                                                          |
 | `minFeeBps`           | Yes      | `uint16`                       | Fee floor in basis points; `0` for none.                                                                                                                                                                                                                                       |
 | `maxFeeBps`           | Yes      | `uint16`                       | Fee ceiling in basis points.                                                                                                                                                                                                                                                   |
-| `paymentFlow`         | No       | `"escrow"` \| `"authorization"` | Which lifecycle applies, and with it whether the client's payload settles as `authorize` or `charge`. Default `"escrow"`. New servers SHOULD write `"escrow"` out. `autoCapture: true` is a deprecated alias for `"authorization"`; `autoCapture: false` for `"escrow"`.       |
+| `paymentFlow`         | No       | `"escrow"` \| `"authorization"` | Which lifecycle applies, and with it whether the client's payload settles as `authorize` or `charge`. Default `"escrow"`. New servers SHOULD write `"escrow"` out. A server that captures automatically after its own `authorize` is still `"escrow"`; `"authorization"` means the client's payload itself settles as a terminal `charge`. |
 | `operatorType`        | No       | `"delegated"` \| `"custom"`    | Kind of `extra.captureAuthorizer`: an address the facilitator controls and submits from (`"delegated"`, EOA or smart-contract account) or a contract with permissionless collect and an out-of-band lifecycle surface (`"custom"`). Default `"delegated"`. `"policy"` is reserved for the appendix's future type. |
 | `assetTransferMethod` | No       | `"eip3009"` \| `"permit2"`     | Which canonical token collector the client authorizes. Default `"eip3009"`. A server MAY list several `accepts[]` entries differing only here, so clients can pick the method matching their token approvals. The collector address is not carried on `extra`.                  |
 
 
-Where a description above names an onchain field, that is the `AuthCaptureEscrow` struct field the value becomes; the [PaymentInfo struct](#paymentinfo-struct) appendix gives the full derivation and explains why the two sets of names differ.
+Where a description above names an onchain field, that is the `AuthCaptureEscrow` struct field the value becomes; the [PaymentInfo struct](#paymentinfo-struct) appendix gives the full derivation.
 
 ## Client payment payload
 
-The client signs one token authorization and sends it with a fresh random 32-byte value. From that plus the payment requirements, the facilitator reconstructs the whole `PaymentInfo` with no stored state of its own, field by field as the [PaymentInfo struct](#paymentinfo-struct) appendix sets out.
+The client signs one token authorization and sends it with a fresh random 32-byte value. From that plus the payment requirements, the facilitator reconstructs the whole `PaymentInfo` with no stored state of its own, field by field as the [PaymentInfo struct](#paymentinfo-struct) appendix sets out. Whether the payload settles as an `authorize` or a `charge` follows from `extra.paymentFlow`, so the client names no operation of its own.
 
-Whether this payload settles as an `authorize` or a `charge` follows from `extra.paymentFlow`, so the client names no operation of its own.
+The collect payload always carries `salt`, which is `PaymentInfo.salt`. It is **unbound** when `receiverAuthorizer` and `policy` are both absent or zero, and **bound** when either is non-zero, in which case it **adds** `saltNonce`, the client's random contribution to the commitment in `salt`. See [Payment identity](#payment-identity).
 
-The collect payload always carries `salt`, which is `PaymentInfo.salt`. If `receiverAuthorizer` and `policy` are both absent or the zero address, the payload is **unbound** and that is the only salt field. If either is non-zero, the payload is **bound** and **adds** `saltPreimage` as the preimage of the commitment in `salt`. See [Payment identity](#payment-identity).
+`salt` and `saltNonce` are 0x-prefixed 32-byte hex strings on the wire, zero-padded to their full width, and are the `uint256` those 32 bytes denote wherever the scheme hashes or encodes them. The same spelling applies to `paymentInfo.salt` on a [lifecycle payload](#lifecycle-payloads). Pinning one spelling matters because the value is also a database key for async servers: `"0x1"` and `"0x00…01"` are one `uint256` but two distinct strings.
 
 ### EIP-3009 (default)
 
@@ -149,7 +147,7 @@ Unbound (v1.0 wire):
 }
 ```
 
-Bound — same envelope, `salt` is the commitment and `saltPreimage` is added as the preimage:
+Bound — same envelope, `salt` is the commitment and `saltNonce` is added beside it:
 
 ```json
 {
@@ -157,7 +155,7 @@ Bound — same envelope, `salt` is the commitment and `saltPreimage` is added as
     "authorization": { "...": "..." },
     "signature": "0x2d6a...571c",
     "salt": "0x1f0e...9c3a",
-    "saltPreimage": "0x0000000000000000000000000000000000000000000000000000000000000abc"
+    "saltNonce": "0x0000000000000000000000000000000000000000000000000000000000000abc"
   }
 }
 ```
@@ -172,13 +170,11 @@ Bound — same envelope, `salt` is the commitment and `saltPreimage` is added as
 | `authorization.validBefore` | `now + requirements.maxTimeoutSeconds`, which is also `PaymentInfo.preApprovalExpiry`                |
 | `authorization.nonce`       | The payment's `signatureNonce`, see [Payment identity](#payment-identity)                            |
 | `salt`                      | Always. `PaymentInfo.salt`: the client's random 32 bytes when unbound, or the keccak commitment when bound |
-| `saltPreimage`                | Bound only, **added**. Fresh 32-byte preimage of that commitment; see [Payment identity](#payment-identity) |
+| `saltNonce`                 | Bound only, **added**. Fresh 32 random bytes, one of the values hashed into that commitment; see [Payment identity](#payment-identity) |
 | EIP-712 domain              | `{ name, version }` from `extra`; `chainId` from `network`; `verifyingContract = requirements.asset` |
 
 
 ### Permit2
-
-Unbound carries `salt` only; bound carries `salt` plus `saltPreimage`, as for EIP-3009.
 
 ```json
 {
@@ -211,7 +207,7 @@ Unbound carries `salt` only; bound carries `salt` plus `saltPreimage`, as for EI
 | `permit2Authorization.spender`          | `PERMIT2_TOKEN_COLLECTOR_ADDRESS`                                                        |
 | `permit2Authorization.nonce`            | The payment's `signatureNonce` as a `uint256`, see [Payment identity](#payment-identity) |
 | `permit2Authorization.deadline`         | `now + requirements.maxTimeoutSeconds`, which is also `PaymentInfo.preApprovalExpiry`    |
-| `salt` / `saltPreimage`                   | `salt` always (`PaymentInfo.salt`); `saltPreimage` added when bound, as for EIP-3009       |
+| `salt` / `saltNonce`                    | `salt` always (`PaymentInfo.salt`); `saltNonce` added when bound, as for EIP-3009        |
 | EIP-712 domain                          | Canonical Permit2 contract; `chainId` from `network`                                     |
 
 
@@ -219,28 +215,24 @@ No witness struct is needed: the receiver is bound through the deterministic non
 
 ### Payment identity
 
-Treat absent `receiverAuthorizer` and `policy` as the zero address. `payload.salt` is always `PaymentInfo.salt`. When the bind is on, `payload.saltPreimage` is **added** as the preimage:
+Treat absent `receiverAuthorizer` and `policy` as the zero address. `payload.salt` is always `PaymentInfo.salt`. When the bind is on, `payload.saltNonce` is **added** as the client's contribution to it:
 
 ```
 # unbound — both addresses zero
 payload.salt = PaymentInfo.salt                    # client's random 32 bytes
-# no saltPreimage
+# no saltNonce
 
 # bound — receiverAuthorizer and/or policy non-zero
-payload.saltPreimage                                 # client's random 32 bytes (preimage)
+payload.saltNonce                                  # client's random 32 bytes
 payload.salt = PaymentInfo.salt
-             = uint256(keccak256(abi.encode(receiverAuthorizer, policy, saltPreimage)))
+             = uint256(keccak256(abi.encode(SALT_BINDING_TYPEHASH, receiverAuthorizer, policy, saltNonce)))
+
+SALT_BINDING_TYPEHASH = keccak256("x402AuthCaptureSaltBinding(address receiverAuthorizer,address policy,uint256 saltNonce)")
 ```
 
-Unbound is the v1.0 collect path: the wire `salt` is the onchain salt. Bound is a commitment to the two addresses that govern facilitator-relayed `charge` and lifecycle. The keccak is one-way — `PaymentInfo.salt` does not contain those addresses — so the payload **adds** `saltPreimage` beside `salt`. Reopening the commitment means verifying
+Unbound is the v1.0 collect path: the wire `salt` is the onchain salt. Bound is a commitment to the two addresses that govern facilitator-relayed `charge` and lifecycle. The keccak is one-way — `PaymentInfo.salt` does not contain those addresses — so the payload **adds** `saltNonce` beside `salt`, never in place of it. Reopening the commitment means recomputing the hash over all four encoded words, taking the addresses from `extra` and the nonce from `payload.saltNonce`, and requiring the result to equal `payload.salt`, and, for `"policy"`, passing `saltNonce` into the operator ABI. Reconstructing `PaymentInfo` from `payload.salt` matches the signature nonce; this extra check is what proves the embedding, so a collected bound payment cannot be re-pointed at a different authorizer or policy. Async servers MUST persist `saltNonce` with `paymentInfo` whenever the bind is on; `paymentInfo` alone is not enough to re-check the bind or to call the policy operator.
 
-```
-payload.salt == keccak256(abi.encode(receiverAuthorizer, policy, saltPreimage))
-```
-
-and, for `"policy"`, passing `saltPreimage` into the operator ABI. A collected bound payment cannot be re-pointed at a different authorizer or a different policy. Reconstructing `PaymentInfo` from `payload.salt` matches the signature nonce; the extra `saltPreimage` check is what proves the embedding. Async servers MUST persist `saltPreimage` with `paymentInfo` whenever the bind is on; `paymentInfo` alone is not enough to re-check the bind or to call the policy operator.
-
-Do not put the preimage in `salt` on the bound path: that name is the onchain field, which is then the hash.
+`SALT_BINDING_TYPEHASH` is a domain tag, and it is REQUIRED. Without it the commitment would be an untagged three-word keccak, the same shape as the `signatureNonce` encoding below, and nothing would establish that a value produced as one can never be read as the other. It also names the derivation, so the four encoded words — the typehash, both addresses, and the nonce — are the whole preimage and there is no shorter one. Encode them as four left-padded 32-byte words with `abi.encode`, never `abi.encodePacked`.
 
 Two hashes derive from the struct, and they are not interchangeable:
 
@@ -253,23 +245,51 @@ paymentInfoHash   = AuthCaptureEscrow.getHash(paymentInfo)
 
 `signatureNonce` is the nonce inside the client's token authorization, computed with `payer` zeroed and every other field holding the value it will have onchain. `paymentInfoHash` is the escrow's canonical payment identifier, computed over the real payer; it keys the escrow's `paymentState` and appears in every authorizer signature. Both commit to the chain id and the escrow address, so neither crosses chains or deployments.
 
-The client's random 32 bytes (`payload.salt` when unbound, `payload.saltPreimage` when bound) are what keep `signatureNonce` fresh: two payers signing concurrently, or one payer buying the same resource twice, produce distinct nonces with no collision risk.
+The client's random 32 bytes (`payload.salt` when unbound, `payload.saltNonce` when bound) are what keep `signatureNonce` fresh: two payers signing concurrently, or one payer buying the same resource twice, produce distinct nonces with no collision risk.
 
-### EIP-6492 support
+### Smart-wallet signatures
 
-A smart-wallet client's signature may be EIP-6492 wrapped, carrying deployment bytecode. The facilitator extracts the inner signature to verify it, and the `ERC6492SignatureHandler` inside the token collector deploys the wallet during settlement.
+A payer MAY be a contract account, so a facilitator MUST verify all three signature forms rather than ECDSA alone: a 65-byte ECDSA signature recovered against the payload's `from`, an ERC-1271 signature checked with `isValidSignature` on a deployed wallet, and an EIP-6492 envelope for a wallet that does not exist yet. An EIP-6492 signature carries the wallet's deployment bytecode: the facilitator extracts the inner signature to verify it, and the `ERC6492SignatureHandler` inside the token collector deploys the wallet during settlement.
 
 ### Completing the payload for settlement
 
 - `authorize` **MUST collect the full** `requirements.amount`. The server adds no amount and no `authorizerSignature`: the client's token authorization is the consent for this settle. Collecting less is destructive rather than thrifty — that authorization is single-use, so a smaller collection consumes it and permanently caps the payment below the ceiling the client agreed to.
-- `charge` without a non-zero `receiverAuthorizer` **MUST collect the full** `requirements.amount` (the v1.0 `autoCapture: true` behavior). There is no authorizer signature.
+- `charge` without a non-zero `receiverAuthorizer` **MUST collect the full** `requirements.amount`. There is no authorizer signature, so the `feeBps` and `feeReceiver` submitted with it come from `extra` under [Fee system](#fee-system) rather than from the payload.
 - `charge` with a non-zero `receiverAuthorizer` **may name any** `amount` greater than zero and at most `requirements.amount`, carried alongside the `feeBps` and `feeReceiver` the escrow requires whenever funds are distributed, plus an `authorizerSignature` over that exact charge. Charging less than the maximum is safe because charge is terminal: the difference simply never leaves the payer.
 
-The choice of amount is not lost under `escrow`, only postponed. `capture` and `refund` each name their own amount and each may be called repeatedly, bounded by the hold and by the amount already captured. That is what makes holding the full ceiling costless — `capture` takes only what is owed and `void` returns the rest — while a hold set too low can never be raised.
+That last case is the only one where the server adds fields to the client's payload. It leaves the client's own fields untouched and appends four, and the payload is always bound, because a receiver authorizer is what turns the bind on:
+
+```json
+{
+  "payload": {
+    "authorization": { "...": "..." },
+    "signature": "0x2d6a...571c",
+    "salt": "0x1f0e...9c3a",
+    "saltNonce": "0x0000000000000000000000000000000000000000000000000000000000000abc",
+    "amount": "750000",
+    "feeBps": 100,
+    "feeReceiver": "0xFeeRecipientAddress",
+    "authorizerSignature": "0x9b1c...44ef"
+  }
+}
+```
+
+
+| Added field           | Type      | Description                                                                          |
+| --------------------- | --------- | ------------------------------------------------------------------------------------ |
+| `amount`              | `uint256` | The amount to charge, greater than zero and at most `requirements.amount`.           |
+| `feeBps`              | `uint16`  | Fee submitted with the call, per [Fee system](#fee-system).                          |
+| `feeReceiver`         | `address` | Fee recipient submitted with the call, per [Fee system](#fee-system).                |
+| `authorizerSignature` | `bytes`   | EIP-712 `Charge` signature by `extra.receiverAuthorizer` over exactly these values.  |
+
+
+All four are absent on `authorize` and on a `charge` with no receiver authorizer, where the client's payload settles as it arrived.
+
+Under `escrow` the choice of amount is postponed rather than lost: `capture` and `refund` each name their own amount and each may repeat, bounded by the hold and by the amount already captured. Holding the full ceiling is therefore costless — `capture` takes only what is owed and `void` returns the rest — while a hold set too low can never be raised.
 
 ## Authorizer signatures
 
-`authorizerSignature` is an EIP-712 signature by `extra.receiverAuthorizer` over the parameters of the operation being requested. Both ECDSA and ERC-1271 signatures are valid, so the authorizer MAY itself be a contract. It is required on facilitator-relayed `charge` for less than the maximum and on lifecycle settles for `"delegated"` (and `"policy"`). It is never required on `authorize`, nor on a full-amount `charge` with no receiver authorizer.
+`authorizerSignature` is an EIP-712 signature by `extra.receiverAuthorizer` over the parameters of the operation being requested. Both ECDSA and ERC-1271 signatures are valid, so the authorizer MAY itself be a contract. It is required on any facilitator-relayed `charge` with a non-zero `receiverAuthorizer`, whatever the amount, and on lifecycle settles for `"delegated"` (and `"policy"`). It is never required on `authorize`, nor on a `charge` with no receiver authorizer.
 
 ### Domain
 
@@ -279,11 +299,11 @@ Every operator type shares one domain, with the capture authorizer as `verifying
 { name: "x402 Auth Capture Operator", version: "1", chainId, verifyingContract: extra.captureAuthorizer }
 ```
 
-`verifyingContract` has to be the operator rather than one address for the whole scheme. A contract that verifies an EIP-712 signature binds its own address into the domain it checks against, so an operator that does verify these digests onchain has its domain fixed by where it is deployed, and two such operators cannot share one. Neither `"delegated"` nor `"custom"` has an onchain verifier for facilitator-relayed calls — the facilitator is the only verifier of those digests — but both follow the same rule anyway, so that one formula covers every type and a signature is bound to its operator by the domain as well as by `paymentInfoHash`.
+`verifyingContract` is the operator rather than one address for the whole scheme because a contract that verifies an EIP-712 signature binds its own address into the domain it checks against: an operator that does verify these digests onchain has its domain fixed by where it is deployed, and two such operators cannot share one. Neither `"delegated"` nor `"custom"` has an onchain verifier for facilitator-relayed calls, but both follow the same rule anyway, so that one formula covers every type and a signature is bound to its operator by the domain as well as by `paymentInfoHash`.
 
 ### Types
 
-The two repeatable lifecycle operations carry the single-use element `[auth-capture](./scheme_auth_capture.md#core-properties)` requires by binding both escrow balances the authorizer expects to find.
+The two repeatable lifecycle operations carry the single-use element [`auth-capture`](./scheme_auth_capture.md#core-properties) requires by binding both escrow balances the authorizer expects to find.
 
 
 | Operation | Signed type                                                                                                                                           |
@@ -311,19 +331,19 @@ For `operatorType: "delegated"` this check runs only at the facilitator, so onch
 Whether the post-resource finalize runs during the paid request or afterwards is a resource-server choice; the wire format does not name a mode.
 
 - **Sync.** The in-request `/settle` after the resource runs is a `capture`, a partial `capture` with `void` of the remaining balance, or a `void`. No durable payment state is required.
-- **Async.** That second in-request settle does not call the facilitator or broadcast a transaction. The server instead commits enough payment info into durable storage to author lifecycle settles later — at least `paymentInfo`, and when the bind is on the client `saltPreimage`.
+- **Async.** That second in-request settle does not call the facilitator or broadcast a transaction. The server instead commits enough payment info into durable storage to author lifecycle settles later — at least `paymentInfo`, and when the bind is on the client `saltNonce`.
 
-A later facilitator-relayed `refund` always requires durable state, including after a sync finalize. `operatorType: "delegated"` with a non-zero `receiverAuthorizer`, and the appendix's `"policy"` type, support both patterns. `"custom"` is async only: collect is the only facilitator-relayed settle, and lifecycle always runs out of band against the stored payment. `"delegated"` without a receiver authorizer is likewise async and out of band for lifecycle.
+A later facilitator-relayed `refund` always requires durable state, including after a sync finalize. Both patterns are open to the types that relay lifecycle: `"delegated"` with a non-zero `receiverAuthorizer`, and the appendix's `"policy"` type. The collect-only cases — `"custom"`, and `"delegated"` with no receiver authorizer — are async only, since lifecycle always runs out of band against the stored payment.
 
 ## Lifecycle payloads
 
 `capture`, `void`, and `refund` have no client payload to build on, so the resource server authors them outright and passes them to `POST /settle` with `payload.type` naming the operation. `payload.type` appears only on these three; nothing else in the scheme carries it. Each payload gives the payment as the exact `paymentInfo` struct the onchain call takes, rather than leaving the facilitator to reconstruct it.
 
-These payloads apply only to facilitator-relayed lifecycle under `operatorType: "delegated"` with a non-zero `receiverAuthorizer` (and the appendix's `"policy"` type). For `operatorType: "custom"`, and for `"delegated"` without a receiver authorizer, lifecycle settles are out of band and MUST NOT be submitted to the facilitator.
+They apply only where the facilitator relays lifecycle: `operatorType: "delegated"` with a non-zero `receiverAuthorizer`, and the appendix's `"policy"` type. The collect-only cases run lifecycle out of band and MUST NOT submit these payloads to the facilitator.
 
 Two fields share the name `feeReceiver` without being the same thing: `paymentInfo.feeReceiver` is the recipient the client committed to, and `payload.feeReceiver` is the one submitted with the call. See [Fee system](#fee-system) for when they may differ.
 
-Lifecycle payloads are bind-on: they carry `saltPreimage` next to `paymentInfo.salt` (the commitment) so the facilitator can reopen the embedding.
+Lifecycle payloads are bind-on: they carry `saltNonce` next to `paymentInfo.salt` (the commitment) so the facilitator can reopen the embedding.
 
 ### `capture`
 
@@ -347,7 +367,7 @@ Lifecycle payloads are bind-on: they carry `saltPreimage` next to `paymentInfo.s
       "feeReceiver": "0xFeeRecipientAddress",
       "salt": "0x1f0e...9c3a"
     },
-    "saltPreimage": "0x0000000000000000000000000000000000000000000000000000000000000abc",
+    "saltNonce": "0x0000000000000000000000000000000000000000000000000000000000000abc",
     "amount": "750000",
     "feeBps": 100,
     "feeReceiver": "0xFeeRecipientAddress",
@@ -372,7 +392,7 @@ Lifecycle payloads are bind-on: they carry `saltPreimage` next to `paymentInfo.s
   "payload": {
     "type": "void",
     "paymentInfo": { "...": "..." },
-    "saltPreimage": "0x0000000000000000000000000000000000000000000000000000000000000abc",
+    "saltNonce": "0x0000000000000000000000000000000000000000000000000000000000000abc",
     "authorizerSignature": "0x9b1c...44ef"
   }
 }
@@ -387,7 +407,7 @@ Lifecycle payloads are bind-on: they carry `saltPreimage` next to `paymentInfo.s
   "payload": {
     "type": "refund",
     "paymentInfo": { "...": "..." },
-    "saltPreimage": "0x0000000000000000000000000000000000000000000000000000000000000abc",
+    "saltNonce": "0x0000000000000000000000000000000000000000000000000000000000000abc",
     "amount": "250000",
     "expectedCapturableAmount": "250000",
     "expectedRefundableAmount": "750000",
@@ -402,56 +422,56 @@ Lifecycle payloads are bind-on: they carry `saltPreimage` next to `paymentInfo.s
 
 ### Client payment payload
 
-The operation is `authorize` or `charge` according to `extra.paymentFlow` (omit or `autoCapture: false` means `"escrow"`; `autoCapture: true` means `"authorization"`). The facilitator performs these checks in order:
+The operation is `authorize` or `charge` according to `extra.paymentFlow`, which defaults to `"escrow"` when omitted. The facilitator performs these checks in order:
 
-1. **Shape guard**: the payload matches the EIP-3009 or Permit2 shape above, with `signature` and `salt` always present, and `saltPreimage` present if and only if the bind is on.
+1. **Shape guard**: the payload matches the EIP-3009 or Permit2 shape above, with `signature` and `salt` always present, and `saltNonce` present if and only if the bind is on. A `charge` with a non-zero `receiverAuthorizer` also carries `amount`, `feeBps`, `feeReceiver`, and `authorizerSignature`, and every other settle carries none of the four (see [Completing the payload for settlement](#completing-the-payload-for-settlement)). A server that nonce-probes for v1.0 clients is the one exception to the `saltNonce` rule, accepting a bound payment whose `saltNonce` is absent under [Compatibility with v1.0](#compatibility-with-v10).
 2. **Scheme match**: `requirements.scheme` and `payload.accepted.scheme` are both `auth-capture`.
 3. **Network match**: `payload.accepted.network === requirements.network`, in `eip155:<chainId>` form.
 4. **Extra validation**: `requirements.extra` carries `captureAuthorizer`, `captureDeadline`, `refundDeadline`, `feeRecipient`, `minFeeBps`, `maxFeeBps`, `name`, and `version`; resolved `paymentFlow` is one of the two defined values, and the fee fields satisfy [Fee system](#fee-system).
 5. **Operator**: `extra.operatorType`, `extra.policy`, and `extra.receiverAuthorizer` pass the validation in [Operator types](#validation-before-relaying).
 6. **Method routing**: `extra.assetTransferMethod` (default `"eip3009"`) matches the payload shape.
-7. **Deadline ordering**: `refundDeadline >= captureDeadline`, `captureDeadline > now + 6s` (the 6s figure is a floor; implementations MAY use a larger skew), and `validBefore` (EIP-3009) or `deadline` (Permit2) `<= captureDeadline`.
+7. **Deadline ordering**: `refundDeadline >= captureDeadline`, `now + maxTimeoutSeconds <= captureDeadline` so the whole window a client may sign for fits inside the hold, `captureDeadline > now + 6s` (the 6s figure is a floor; implementations MAY use a larger skew), and `validBefore` (EIP-3009) or `deadline` (Permit2) `<= captureDeadline`.
 8. **Time window**: `validBefore` / `deadline` `> now + 6s` (floor, as in step 7), and `validAfter <= now` (EIP-3009 only).
 9. **Collector match**: `authorization.to === EIP3009_TOKEN_COLLECTOR_ADDRESS`, or `permit2Authorization.spender === PERMIT2_TOKEN_COLLECTOR_ADDRESS`. Do not read a collector from `extra`.
 10. **Token match**: `permitted.token === requirements.asset` (Permit2 only; EIP-3009 binds the token through its signing domain).
-11. **Client signature**: recover the signer of the `ReceiveWithAuthorization` or `PermitTransferFrom` digest; it is the payer.
-12. **Amount and fee**: `authorization.value` or `permitted.amount` equals `requirements.amount`, and for `charge`, either there is no receiver authorizer and the charged amount is `requirements.amount`, or `0 < payload.amount <= requirements.amount` with an authorizer signature and fee parameters satisfying [Fee system](#fee-system).
-13. **Nonce match**: reconstruct `PaymentInfo` from `extra`, `payload.salt` as `PaymentInfo.salt`, the payer, and the requirements; recompute `signatureNonce` and assert it equals the nonce on the wire. When bound, also require `payload.salt == uint256(keccak256(abi.encode(receiverAuthorizer, policy, saltPreimage)))`. This transitively enforces equality on every field encoded in `PaymentInfo` — receiver, token, deadlines, fee bounds, fee recipient, operator, and when bound the receiver authorizer and policy — so none of them needs a check of its own.
-14. **Authorizer signature** (`charge` with a non-zero `receiverAuthorizer` only): the `Charge` signature recovers to `extra.receiverAuthorizer`. Skip for `authorize` and for a full-amount `charge` with no receiver authorizer.
+11. **Client signature**: verify the signature over the `ReceiveWithAuthorization` or `PermitTransferFrom` digest against the `from` address the payload names, which is the payer. ECDSA, ERC-1271, and EIP-6492 signatures are all valid and a facilitator MUST accept all three, as [Smart-wallet signatures](#smart-wallet-signatures) sets out.
+12. **Amount and fee**: `authorization.value` or `permitted.amount` equals `requirements.amount`, and for `charge`, either there is no receiver authorizer and the charged amount is `requirements.amount`, or `0 < payload.amount <= requirements.amount` with an authorizer signature. The `feeBps` and `feeReceiver` to be submitted satisfy [Fee system](#fee-system) either way.
+13. **Nonce match**: reconstruct `PaymentInfo` from `extra`, `payload.salt` as `PaymentInfo.salt`, the payer, and the requirements; recompute `signatureNonce` and assert it equals the nonce on the wire. When bound, also require `payload.salt == uint256(keccak256(abi.encode(SALT_BINDING_TYPEHASH, receiverAuthorizer, policy, saltNonce)))`. This transitively enforces equality on every field encoded in `PaymentInfo` — receiver, token, deadlines, fee bounds, fee recipient, operator, and when bound the receiver authorizer and policy — so none of them needs a check of its own.
+14. **Authorizer signature** (`charge` with a non-zero `receiverAuthorizer` only): the `Charge` signature recovers to `extra.receiverAuthorizer`, whatever the amount. Skip for `authorize` and for a `charge` with no receiver authorizer.
 15. **Simulate** the settlement call and require success.
 
 ### Lifecycle payloads
 
-Lifecycle payloads apply only to `operatorType: "delegated"` with a non-zero `receiverAuthorizer`. For `operatorType: "custom"`, and for `"delegated"` without a receiver authorizer, the facilitator MUST reject the request with `lifecycle_not_relayed` without further checks.
+Lifecycle payloads apply only to `operatorType: "delegated"` with a non-zero `receiverAuthorizer`. For `operatorType: "custom"`, and for `"delegated"` without a receiver authorizer, the facilitator MUST reject the request with `invalid_auth_capture_evm_lifecycle_not_relayed` without further checks.
 
-For `capture`, `void`, and `refund` under `"delegated"` with a receiver authorizer, the facilitator repeats the scheme, network, extra, and operator checks (2 through 5 above), and then:
+`capture` and `void` additionally require `paymentFlow: "escrow"`. The `"authorization"` flow settles the client's payload as a terminal `charge` and places no hold, so there is nothing to capture or release, and a payload naming either MUST be rejected with `invalid_auth_capture_evm_payload_type`. `refund` applies to both flows.
+
+For an admitted lifecycle payload, the facilitator repeats the scheme, network, extra, and operator checks (2 through 5 above), and then:
 
 1. **Operator match**: `payload.paymentInfo.operator === extra.captureAuthorizer`.
-2. **Salt binding**: `payload.paymentInfo.salt === uint256(keccak256(abi.encode(extra.receiverAuthorizer, extra.policy, payload.saltPreimage)))`. There is no client signature here to enforce this transitively, so it is an explicit check.
+2. **Salt binding**: `payload.paymentInfo.salt === uint256(keccak256(abi.encode(SALT_BINDING_TYPEHASH, extra.receiverAuthorizer, extra.policy, payload.saltNonce)))`. There is no client signature here to enforce this transitively, so it is an explicit check.
 3. **Requirements match**: every remaining `paymentInfo` field equals what `extra` and the top-level requirements dictate.
 4. **Authorizer signature**: the operation's signature recovers to `extra.receiverAuthorizer`. When `extra.receiverAuthorizer` is an address the facilitator controls, the server omits the signature and the facilitator produces it after authenticating the request out of band; a facilitator with no such authentication MUST reject the request.
 5. `voidAuthorizerSignature` (capture only): if present, it MUST recover to `extra.receiverAuthorizer` over the `Void` digest (or be produced by the facilitator under the same delegated rule as step 4). It MUST NOT appear on `void` or `refund` payloads.
 6. **Operation preconditions**, read from `AuthCaptureEscrow.paymentState(paymentInfoHash)` and `paymentInfo`:
 
+   | Operation | Preconditions                                                                                                                                          |
+   | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+   | `capture` | `now < authorizationExpiry`; `0 < amount <= capturableAmount`; fee parameters per [Fee system](#fee-system); the single-use balance check              |
+   | `void`    | `capturableAmount > 0`                                                                                                                                 |
+   | `refund`  | `now < refundExpiry`; `0 < amount <= refundableAmount`; the single-use balance check; refund liquidity available per [Refund funding](#refund-funding) |
 
-| Operation | Preconditions                                                                                                                                          |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `capture` | `now < authorizationExpiry`; `0 < amount <= capturableAmount`; fee parameters per [Fee system](#fee-system); the single-use balance check              |
-| `void`    | `capturableAmount > 0`                                                                                                                                 |
-| `refund`  | `now < refundExpiry`; `0 < amount <= refundableAmount`; the single-use balance check; refund liquidity available per [Refund funding](#refund-funding) |
+   When `voidAuthorizerSignature` is present, apply the `capture` row to `payload.amount`, and require `amount < capturableAmount` so a hold remains for `void` (a full capture omits the field). Simulation covers both legs.
 
+7. **Simulate** the settlement call and require success.
 
-When `voidAuthorizerSignature` is present, apply the `capture` row to `payload.amount`, and require `amount < capturableAmount` so a hold remains for `void` (a full capture omits the field). Simulation covers both legs.
-
-1. **Simulate** the settlement call and require success.
-
-`reclaim` is out of scope for the facilitator: the escrow restricts it to `paymentInfo.payer`, so it can only be called by the client and needs no operator ABI. `"custom"` lifecycle calls, and `"delegated"` collect-only lifecycle, are likewise out of scope, submitted straight to the operator and never to the facilitator.
+`reclaim` is out of scope for the facilitator: the escrow restricts it to `paymentInfo.payer`, so it can only be called by the client and needs no operator ABI. Out-of-band lifecycle is likewise out of scope, submitted straight to the operator.
 
 ## Settlement
 
 1. **Re-verify** the payload, catching anything that expired or was consumed since verification.
 2. **Resolve the target**: the escrow for `operatorType: "delegated"`, `extra.captureAuthorizer` for `"custom"`.
-3. **Encode the call** for the operation, which is `payload.type` on a lifecycle payload (`"delegated"` with a receiver authorizer only) and `extra.paymentFlow`'s implied `authorize` or `charge` on a client payload. For `authorize` and `charge`, resolve the collector from `extra.assetTransferMethod` and set `collectorData` to the raw ERC-3009 signature or the ABI-encoded Permit2 signature; `authorize` passes `requirements.amount`, `charge` passes the payload's `amount` (or `requirements.amount` when there is no receiver authorizer), `feeBps`, and `feeReceiver`. For `refund`, the collector is `OPERATOR_REFUND_COLLECTOR_ADDRESS` with empty `collectorData`.
+3. **Encode the call** for the operation, which is `payload.type` on a lifecycle payload and `extra.paymentFlow`'s implied `authorize` or `charge` on a client payload. For `authorize` and `charge`, resolve the collector from `extra.assetTransferMethod` and set `collectorData` to the raw ERC-3009 signature or the ABI-encoded Permit2 signature; `authorize` passes `requirements.amount`, and `charge` passes the payload's `amount` (or `requirements.amount` when there is no receiver authorizer) plus `feeBps` and `feeReceiver`. Those two come from the payload when an authorizer signature covers the call, and otherwise from [Fee system](#fee-system). For `refund`, the collector is `OPERATOR_REFUND_COLLECTOR_ADDRESS` with empty `collectorData`.
 4. **Capture-and-void**: when `payload.type` is `"capture"` and `voidAuthorizerSignature` is present, drive both legs from this single `/settle`: encode `capture` as above, then `void` with that signature. Submit them in one transaction when the target allows — any batched path the facilitator controls for `"delegated"` — and otherwise as two transactions still under this one request. If a race empties the hold between capture and void, skip `void` and treat the settle as capture-only success.
 5. **Submit**, wait up to 60 s for the receipt, and confirm the transaction succeeded onchain.
 6. **Return** the transaction hash, network, payer, and the amount settled (the captured amount; void releases the rest without changing that figure).
@@ -490,7 +510,7 @@ Facilitator-relayed refunds use `OperatorRefundCollector`, which pulls the refun
 
 - `signers` carries the addresses the facilitator submits transactions from, and is therefore where a server finds the value to advertise as `extra.captureAuthorizer` for `operatorType: "delegated"`: the escrow requires the submitting address to be the operator, so the two must be the same address. A smart-contract account the facilitator submits from MAY appear here.
 - `extra.receiverAuthorizer` is OPTIONAL: an address the facilitator will sign lifecycle digests with on a server's behalf. A facilitator MUST NOT advertise one unless it can authenticate lifecycle requests out of band — for example with an API credential bound at payment creation — because the signature is then the facilitator's own and no longer evidence of the server's intent.
-- `extra.feeRecipient`, `extra.minFeeBps`, and `extra.maxFeeBps` are OPTIONAL facilitator fee terms. A server using that supported kind MUST copy all three verbatim into its payment requirements; equal bounds fix the fee. Omission means the facilitator requires no fee terms.
+- `extra.feeRecipient`, `extra.minFeeBps`, and `extra.maxFeeBps` are OPTIONAL facilitator fee terms. A server using that supported kind MUST copy all three verbatim into its payment requirements. Equal bounds fix the fee and are what a facilitator SHOULD advertise; unequal bounds ask the server to grant free choice up to `maxFeeBps`, since nothing onchain holds the facilitator to a narrower value. Omission means the facilitator claims no fee, and a `"delegated"` server publishes zero bounds per [Fee system](#fee-system).
 - `extra.operators` is an OPTIONAL allowlist of the contract operators the facilitator will relay for, each entry pairing an address with the type it is admitted as. Omitted or `[]` admits no contract operator at all, leaving only `operatorType: "delegated"` with the facilitator's own submitter. `"address": "*"` admits every contract of that type; the wildcard MUST be written out, and an empty list MUST NOT be read as one.
 
 A facilitator that offers `"custom"` is relaying into contract code and MUST:
@@ -502,86 +522,86 @@ The simulation RPC MUST expose nested-call logs and enough pre- and post-call st
 
 ## Error Codes
 
-The scheme uses the standard x402 error codes plus the following.
+The scheme uses the standard x402 error codes plus the following. Every reason this binding defines is namespaced `invalid_auth_capture_evm_*`; standard reasons it also returns, such as `invalid_network`, keep their canonical names.
 
 ### Verification errors
 
 
-| Error Code                          | Description                                                                                                                                          |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `invalid_payload_format`            | Payload matches neither the EIP-3009 nor the Permit2 shape, omits `salt`, omits `saltPreimage` when bound, or carries `saltPreimage` when unbound.       |
-| `invalid_payload_type`              | A lifecycle payload's `payload.type` is missing or is not `"capture"`, `"void"`, or `"refund"`.                                                      |
-| `invalid_void_authorizer_signature` | `voidAuthorizerSignature` is present on a non-capture payload, or does not recover to `extra.receiverAuthorizer` over the `Void` digest.             |
-| `void_remainder_full_capture`       | `voidAuthorizerSignature` is present but `amount` equals the full `capturableAmount`, leaving nothing to void.                                       |
-| `unsupported_payment_flow`          | Resolved `paymentFlow` is neither `"escrow"` nor `"authorization"`.                                                                                  |
-| `unsupported_scheme`                | Scheme is not `auth-capture`.                                                                                                                        |
-| `network_mismatch`                  | Payload network does not match requirements.                                                                                                         |
-| `invalid_network`                   | Network format is not `eip155:<chainId>`.                                                                                                            |
-| `invalid_auth_capture_extra`        | Extra is missing required fields.                                                                                                                    |
-| `missing_receiver_authorizer`       | `extra.receiverAuthorizer` is absent or zero when this settle requires it non-zero (partial `charge`, or facilitator-relayed lifecycle).             |
-| `unsupported_operator_type`         | `extra.operatorType` is not a type the facilitator implements.                                                                                       |
-| `invalid_policy`                    | `extra.policy` does not fit the declared operator type: non-zero where the zero address is required, or not a policy contract where one is expected. |
-| `lifecycle_not_relayed`             | A lifecycle payload (`capture`, `void`, or `refund`) was submitted for `operatorType: "custom"`, or for `"delegated"` without a receiver authorizer. |
-| `operator_type_mismatch`            | `extra.captureAuthorizer` contradicts the declared type (wrapper selectors present when `"delegated"`, or missing when `"custom"` / `"policy"`).     |
-| `operator_not_admitted`             | The operator is not on the facilitator's allowlist, or `"delegated"` names an address it does not control and submit from.                           |
-| `operator_mismatch`                 | `paymentInfo.operator` does not match `extra.captureAuthorizer`.                                                                                     |
-| `salt_binding_mismatch`             | Bound `paymentInfo.salt` is not the salt derived from `receiverAuthorizer`, `policy`, and `saltPreimage`.                                              |
-| `invalid_authorizer_signature`      | The authorizer signature does not recover to `extra.receiverAuthorizer`.                                                                             |
-| `unauthenticated_lifecycle_request` | The authorizer is facilitator-controlled and the request carries no out-of-band authentication.                                                      |
-| `unexpected_payment_state`          | Observed `capturableAmount` or `refundableAmount` differs from the signed expectation.                                                               |
-| `refund_funding_unavailable`        | No refund liquidity path exists for the declared operator type.                                                                                      |
-| `unsupported_asset_transfer_method` | `assetTransferMethod` is neither `"eip3009"` nor `"permit2"`.                                                                                        |
-| `payload_method_mismatch`           | Payload shape does not match `assetTransferMethod`.                                                                                                  |
-| `capture_deadline_expired`          | `captureDeadline <= now + 6s` (floor), or a capture was attempted after it.                                                                          |
-| `refund_deadline_expired`           | A refund was attempted at or after `refundDeadline`.                                                                                                 |
-| `invalid_deadline_ordering`         | Deadlines violate `now + maxTimeoutSeconds <= captureDeadline <= refundDeadline`.                                                                    |
-| `authorization_expired`             | EIP-3009 `validBefore` or Permit2 `deadline` is `<= now + 6s` (floor).                                                                               |
-| `authorization_not_yet_valid`       | EIP-3009 `validAfter > now`.                                                                                                                         |
-| `invalid_auth_capture_signature`    | Client signature verification failed.                                                                                                                |
-| `amount_mismatch`                   | Authorization value does not match `requirements.amount`.                                                                                            |
-| `token_collector_mismatch`          | `to` or `spender` is not the expected collector for the method.                                                                                      |
-| `token_mismatch`                    | Permit2 `permitted.token` does not match `requirements.asset`.                                                                                       |
-| `nonce_mismatch`                    | Wire nonce does not match the recomputed `signatureNonce`.                                                                                           |
-| `insufficient_balance`              | Payer balance is below the required amount.                                                                                                          |
-| `simulation_failed`                 | Simulation reverted with an unmapped error.                                                                                                          |
+| Error Code                                                   | Description                                                                                                                                          |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_auth_capture_evm_payload_format`                    | Payload matches neither the EIP-3009 nor the Permit2 shape, omits `salt`, omits `saltNonce` when bound (unless probing), or carries it unbound.   |
+| `invalid_auth_capture_evm_payload_type`                      | A lifecycle payload's `payload.type` is missing or is not `"capture"`, `"void"`, or `"refund"`.                                                      |
+| `invalid_auth_capture_evm_void_authorizer_signature`         | `voidAuthorizerSignature` is present on a non-capture payload, or does not recover to `extra.receiverAuthorizer` over the `Void` digest.             |
+| `invalid_auth_capture_evm_void_remainder_full_capture`       | `voidAuthorizerSignature` is present but `amount` equals the full `capturableAmount`, leaving nothing to void.                                       |
+| `invalid_auth_capture_evm_unsupported_payment_flow`          | Resolved `paymentFlow` is neither `"escrow"` nor `"authorization"`, or `extra` carries the removed `autoCapture: true`.                              |
+| `invalid_auth_capture_evm_scheme`                            | Scheme is not `auth-capture`.                                                                                                                        |
+| `invalid_auth_capture_evm_network_mismatch`                  | Payload network does not match requirements.                                                                                                         |
+| `invalid_network`                                            | Network format is not `eip155:<chainId>`.                                                                                                            |
+| `invalid_auth_capture_evm_extra`                             | Extra is missing required fields, or its fee fields violate [Fee system](#fee-system).                                                               |
+| `invalid_auth_capture_evm_missing_receiver_authorizer`       | `extra.receiverAuthorizer` is absent or zero when this settle requires it non-zero (partial `charge`, or facilitator-relayed lifecycle).             |
+| `invalid_auth_capture_evm_unsupported_operator_type`         | `extra.operatorType` is an unknown value, or a type the facilitator does not implement.                                                              |
+| `invalid_auth_capture_evm_policy`                            | `extra.policy` does not fit the declared operator type: non-zero where the zero address is required, or not a policy contract where one is expected. |
+| `invalid_auth_capture_evm_lifecycle_not_relayed`             | A lifecycle payload (`capture`, `void`, or `refund`) was submitted for `operatorType: "custom"`, or for `"delegated"` without a receiver authorizer. |
+| `invalid_auth_capture_evm_operator_type_mismatch`            | `extra.captureAuthorizer` does not expose the collect wrappers `"custom"` / `"policy"` requires.                                                     |
+| `invalid_auth_capture_evm_operator_not_admitted`             | The operator is not on the facilitator's allowlist, or `"delegated"` names an address it does not control and submit from.                           |
+| `invalid_auth_capture_evm_operator_mismatch`                 | `paymentInfo.operator` does not match `extra.captureAuthorizer`.                                                                                     |
+| `invalid_auth_capture_evm_salt_binding_mismatch`             | Bound `paymentInfo.salt` is not the salt derived from `receiverAuthorizer`, `policy`, and `saltNonce`.                                            |
+| `invalid_auth_capture_evm_authorizer_signature`              | The authorizer signature does not recover to `extra.receiverAuthorizer`.                                                                             |
+| `invalid_auth_capture_evm_unauthenticated_lifecycle_request` | The authorizer is facilitator-controlled and the request carries no out-of-band authentication.                                                      |
+| `invalid_auth_capture_evm_unexpected_payment_state`          | Observed `capturableAmount` or `refundableAmount` differs from the signed expectation.                                                               |
+| `invalid_auth_capture_evm_refund_funding_unavailable`        | No refund liquidity path exists for the declared operator type.                                                                                      |
+| `invalid_auth_capture_evm_unsupported_asset_transfer_method` | `assetTransferMethod` is neither `"eip3009"` nor `"permit2"`.                                                                                        |
+| `invalid_auth_capture_evm_payload_method_mismatch`           | Payload shape does not match `assetTransferMethod`.                                                                                                  |
+| `invalid_auth_capture_evm_capture_deadline_expired`          | `captureDeadline <= now + 6s` (floor), or a capture was attempted after it.                                                                          |
+| `invalid_auth_capture_evm_refund_deadline_expired`           | A refund was attempted at or after `refundDeadline`.                                                                                                 |
+| `invalid_auth_capture_evm_deadline_ordering`                 | Deadlines violate `now + maxTimeoutSeconds <= captureDeadline <= refundDeadline`.                                                                    |
+| `invalid_auth_capture_evm_authorization_expired`             | EIP-3009 `validBefore` or Permit2 `deadline` is `<= now + 6s` (floor).                                                                               |
+| `invalid_auth_capture_evm_authorization_not_yet_valid`       | EIP-3009 `validAfter > now`.                                                                                                                         |
+| `invalid_auth_capture_evm_signature`                         | Client signature verification failed.                                                                                                                |
+| `invalid_auth_capture_evm_amount_mismatch`                   | Authorization value does not match `requirements.amount`.                                                                                            |
+| `invalid_auth_capture_evm_token_collector_mismatch`          | `to` or `spender` is not the expected collector for the method.                                                                                      |
+| `invalid_auth_capture_evm_token_mismatch`                    | Permit2 `permitted.token` does not match `requirements.asset`.                                                                                       |
+| `invalid_auth_capture_evm_nonce_mismatch`                    | Wire nonce does not match the recomputed `signatureNonce`.                                                                                           |
+| `invalid_auth_capture_evm_insufficient_balance`              | Payer balance is below the required amount.                                                                                                          |
+| `invalid_auth_capture_evm_simulation_failed`                 | Simulation reverted with an unmapped error.                                                                                                          |
 
 
 ### Typed simulation reverts
 
-When simulation reverts with a custom error declared in the call's ABI, the facilitator decodes it and surfaces a stable reason instead of the opaque `simulation_failed` fallback.
+When simulation reverts with a custom error declared in the call's ABI, the facilitator decodes it and surfaces a stable reason instead of the opaque `invalid_auth_capture_evm_simulation_failed` fallback.
 
 `AuthCaptureEscrow` errors:
 
 
-| Custom error                    | `invalidReason`                       |
-| ------------------------------- | ------------------------------------- |
-| `AfterPreApprovalExpiry`        | `authorization_expired`               |
-| `InvalidExpiries`               | `invalid_deadline_ordering`           |
-| `ExceedsMaxAmount`              | `amount_mismatch`                     |
-| `PaymentAlreadyCollected`       | `payment_already_collected`           |
-| `TokenCollectionFailed`         | `token_collection_failed`             |
-| `InvalidCollectorForOperation`  | `invalid_collector`                   |
-| `InvalidSender`                 | `operator_mismatch`                   |
-| `ZeroAmount` / `AmountOverflow` | `amount_mismatch` / `amount_overflow` |
-| `FeeBpsOverflow`                | `invalid_fee_bps`                     |
-| `InvalidFeeBpsRange`            | `invalid_fee_bps_range`               |
-| `FeeBpsOutOfRange`              | `fee_bps_out_of_range`                |
-| `ZeroFeeReceiver`               | `zero_fee_receiver`                   |
-| `InvalidFeeReceiver`            | `invalid_fee_receiver`                |
-| `AfterAuthorizationExpiry`      | `capture_deadline_expired`            |
-| `InsufficientAuthorization`     | `insufficient_authorization`          |
-| `ZeroAuthorization`             | `zero_authorization`                  |
-| `AfterRefundExpiry`             | `refund_deadline_expired`             |
-| `RefundExceedsCapture`          | `refund_exceeds_capture`              |
+| Custom error                    | `invalidReason`                                                                         |
+| ------------------------------- | --------------------------------------------------------------------------------------- |
+| `AfterPreApprovalExpiry`        | `invalid_auth_capture_evm_authorization_expired`                                        |
+| `InvalidExpiries`               | `invalid_auth_capture_evm_deadline_ordering`                                            |
+| `ExceedsMaxAmount`              | `invalid_auth_capture_evm_amount_mismatch`                                              |
+| `PaymentAlreadyCollected`       | `invalid_auth_capture_evm_payment_already_collected`                                    |
+| `TokenCollectionFailed`         | `invalid_auth_capture_evm_token_collection_failed`                                      |
+| `InvalidCollectorForOperation`  | `invalid_auth_capture_evm_collector`                                                    |
+| `InvalidSender`                 | `invalid_auth_capture_evm_operator_mismatch`                                            |
+| `ZeroAmount` / `AmountOverflow` | `invalid_auth_capture_evm_amount_mismatch` / `invalid_auth_capture_evm_amount_overflow` |
+| `FeeBpsOverflow`                | `invalid_auth_capture_evm_fee_bps`                                                      |
+| `InvalidFeeBpsRange`            | `invalid_auth_capture_evm_fee_bps_range`                                                |
+| `FeeBpsOutOfRange`              | `invalid_auth_capture_evm_fee_bps_out_of_range`                                         |
+| `ZeroFeeReceiver`               | `invalid_auth_capture_evm_zero_fee_receiver`                                            |
+| `InvalidFeeReceiver`            | `invalid_auth_capture_evm_fee_receiver`                                                 |
+| `AfterAuthorizationExpiry`      | `invalid_auth_capture_evm_capture_deadline_expired`                                     |
+| `InsufficientAuthorization`     | `invalid_auth_capture_evm_insufficient_authorization`                                   |
+| `ZeroAuthorization`             | `invalid_auth_capture_evm_zero_authorization`                                           |
+| `AfterRefundExpiry`             | `invalid_auth_capture_evm_refund_deadline_expired`                                      |
+| `RefundExceedsCapture`          | `invalid_auth_capture_evm_refund_exceeds_capture`                                       |
 
 
 ### Settlement errors
 
 
-| Error Code             | Description                                      |
-| ---------------------- | ------------------------------------------------ |
-| `verification_failed`  | Re-verification before settlement failed.        |
-| `transaction_reverted` | Onchain transaction reverted after confirmation. |
+| Error Code                                      | Description                                      |
+| ----------------------------------------------- | ------------------------------------------------ |
+| `invalid_auth_capture_evm_verification_failed`  | Re-verification before settlement failed.        |
+| `invalid_auth_capture_evm_transaction_reverted` | Onchain transaction reverted after confirmation. |
 
 
 ## Appendix
@@ -593,7 +613,7 @@ The struct keeps its canonical Solidity names rather than the names the same val
 ```solidity
 struct PaymentInfo {
     address operator;            // = extra.captureAuthorizer
-    address payer;               // recovered from the client's signature
+    address payer;               // = the payload's `from`, verified against the client's signature
     address receiver;            // = requirements.payTo
     address token;               // = requirements.asset
     uint120 maxAmount;           // = requirements.amount
@@ -603,7 +623,7 @@ struct PaymentInfo {
     uint16  minFeeBps;           // = extra.minFeeBps
     uint16  maxFeeBps;           // = extra.maxFeeBps
     address feeReceiver;         // = extra.feeRecipient
-    uint256 salt;                // = payload.salt. Unbound: client's random bytes. Bound: keccak256(receiverAuthorizer, policy, saltPreimage)
+    uint256 salt;                // = payload.salt. Unbound: client's random bytes. Bound: keccak256(SALT_BINDING_TYPEHASH, receiverAuthorizer, policy, saltNonce)
 }
 ```
 
@@ -626,23 +646,36 @@ Fees are enforced onchain by the escrow:
 - `feeBps` submitted at capture or charge must fall within the client-signed `[minFeeBps, maxFeeBps]`, both in the range 0–10,000.
 - `feeAmount = amount * feeBps / 10000`, and the remainder goes to the receiver.
 - If `PaymentInfo.feeReceiver` is non-zero, the submitted `feeReceiver` must equal it; if it is `address(0)`, any non-zero address is accepted.
-- For `"delegated"`, a zero `PaymentInfo.feeReceiver` MUST have `minFeeBps == maxFeeBps == 0`. A zero fee on the submitted call is not sufficient because the facilitator is the operator and can submit another value within the signed range; a server that permits a fee without giving the facilitator that discretion MUST use a non-zero receiver and equal bounds.
+
+Those three are the guarantee. Who holds the submitter to a narrower value differs per operator type:
+
+- `"delegated"` — the escrow's range and a non-zero `feeReceiver` are the only limits. An `authorizerSignature` over `feeBps` tells a conformant facilitator what to submit, but nothing onchain reads that signature, so the server's exposure is `maxFeeBps` whether the bind is on or off. This is the trust bound [`"delegated"`](#delegated--facilitator-is-the-operator) already states for every operation.
+- `"custom"` — the operator contract is the enforcement point, so the submitter's discretion is whatever that operator leaves unchecked, within the escrow's range.
+- `"policy"` — the operator verifies the authorizer's digest onchain, so the signed `feeBps` and `feeReceiver` are what executes.
+
+A server therefore MUST read its own published bounds, not any signature, as what it has agreed to:
+
+- **No agreed fee.** `minFeeBps == maxFeeBps == 0`, which is required unless the server has agreed fee terms with the party that ends up choosing the value: the facilitator under `"delegated"`, the operator under `"custom"`. Nothing can then be taken from any payment.
+- **Agreed fixed fee.** `minFeeBps == maxFeeBps` at the agreed value with a non-zero `feeRecipient`, which servers SHOULD prefer: the escrow admits exactly one fee to exactly one address, so the outcome needs no trust. The submitted `feeBps` MUST be that value and the submitted `feeReceiver` MUST be `extra.feeRecipient`, leaving nothing to choose. For `"delegated"` these are the facilitator's `/supported` fee terms copied verbatim; for `"custom"` they come from the server's agreement with the operator.
+- **Agreed range.** `minFeeBps < maxFeeBps` is permitted only where the server has agreed that range with the same party, and it grants that party free choice inside it. Publishing a range is granting the discretion, not reserving it.
+- **Zero fee receiver.** A zero `PaymentInfo.feeReceiver` lets the submitter name any non-zero recipient, so under `"delegated"` and `"custom"` it MUST come with `minFeeBps == maxFeeBps == 0`. A zero fee on the submitted call is not sufficient, since the submitter can send another value within the signed range. Under `"policy"` the authorizer's signature over `feeReceiver` is verified onchain, which supplies the missing constraint.
 
 ### Compatibility with v1.0
 
 The unbound collect path is byte-identical to v1.0: `extra.captureAuthorizer`, payload `salt`, `PaymentInfo.salt = payload.salt`. Clients MUST ignore unrecognized `extra` keys. New servers that omit `receiverAuthorizer` and `policy` remain payable by v1.0 clients. New clients that treat omitted `receiverAuthorizer` / `policy` as unbound remain able to pay v1.0 servers.
 
-Turning the bind on (non-zero `receiverAuthorizer` or `policy`) changes `signatureNonce` and requires `saltPreimage` beside `salt`. A v1.0 client then emits only `salt` (the random value, not the hash), so verification fails with `invalid_payload_format` or `nonce_mismatch` unless the server probes.
+v1.0's `extra.autoCapture` is removed, and `paymentFlow` is the only flow selector. `autoCapture: false` agrees with the default and needs no handling, but a facilitator that receives `autoCapture: true` MUST reject with `invalid_auth_capture_evm_unsupported_payment_flow` rather than fall through to `"escrow"`, because settling a hold where the server asked for a terminal `charge` is a different onchain outcome and no later error would report it.
 
-A server that turns the bind on while still serving v1.0 clients MAY nonce-probe: if `saltPreimage` is absent, treat `payload.salt` as the preimage, recompute `signatureNonce` for the raw value and for the hash, and accept whichever matches. It MUST persist the matching `uint256` (and the preimage, if any) for the life of the payment so later `capture` / `void` / `refund` reuse that salt and do not re-hash. A probed v1.0 payment is unbound onchain even though extra advertised an authorizer — the authorizer is then an HTTP check only. Pin `receiverAuthorizer` and `policy` per (`captureAuthorizer`, chain) and never rotate them mid-flight.
+Turning the bind on (non-zero `receiverAuthorizer` or `policy`) changes `signatureNonce` and requires `saltNonce` beside `salt`. A v1.0 client then emits only `salt` (the random value, not the hash), so verification fails with `invalid_auth_capture_evm_payload_format` or `invalid_auth_capture_evm_nonce_mismatch` unless the server probes.
 
-The 6s verification skew is a floor, not an exact constant. Implementations MAY use a larger skew.
+A server that turns the bind on while still serving v1.0 clients MAY nonce-probe: if `saltNonce` is absent, treat `payload.salt` as the nonce, recompute `signatureNonce` for the raw value and for the commitment over it, and accept whichever matches. It MUST persist the matching `uint256` (and the nonce, if any) for the life of the payment so later `capture` / `void` / `refund` reuse that salt and do not re-hash. A probed v1.0 payment is unbound onchain even though extra advertised an authorizer — the authorizer is then an HTTP check only. Pin `receiverAuthorizer` and `policy` per (`captureAuthorizer`, chain) and never rotate them mid-flight.
+
 
 ### Future operator type: `policy`
 
 `"delegated"` and `"custom"` sit at opposite ends of a trade-off. `"delegated"` with a receiver authorizer relays the whole lifecycle but rests on trusting the facilitator; `"custom"` needs no trust in the facilitator, but everything past collect also leaves the protocol. A third type, `operatorType: "policy"`, is a planned addition that closes the gap, and it buys two things:
 
-1. **Trustless relay.** The operator contract, not the facilitator, is what gates the escrow. It checks the payment's binding, verifies the receiver authorizer's EIP-712 signature onchain for `charge` and lifecycle, and compares the signed balances against `paymentState` before calling the escrow. The facilitator's HTTP checks stop being the thing that protects the server: a request the facilitator would refuse also reverts when anyone else submits it directly, and a request the facilitator relays cannot deviate from what the authorizer signed.
+1. **Trustless relay.** The operator contract, not the facilitator, is what gates the escrow. It checks the payment's binding, verifies the receiver authorizer's EIP-712 signature onchain for `charge` and lifecycle, and compares the signed balances against `paymentState` before calling the escrow. That is also what makes the signed `feeBps` and `feeReceiver` enforceable rather than advisory, so a range may be published without granting discretion over it (see [Fee system](#fee-system)). The facilitator's HTTP checks stop being the thing that protects the server: a request the facilitator would refuse also reverts when anyone else submits it directly, and a request the facilitator relays cannot deviate from what the authorizer signed.
 2. **Capture and void stay in the protocol.** They remain ordinary relayed `/settle` calls even when a contract enforces conditions on them, so the server keeps the gasless, RPC-free path it has under `"delegated"` without the trust. The conditions come from a separate policy contract consulted through read-only hooks, which is what makes relaying into unreviewed policy code safe for the facilitator.
 
 Everything this type needs on the wire already exists: `extra.operatorType: "policy"`, `extra.policy` naming the policy contract, and `PaymentInfo.salt` committing to it. Because the salt commits to the policy, the client's own signature commits to it too — a payer knows which rules govern its money before it pays, and a collected payment cannot be re-pointed at a different policy afterwards. `extra.policy` MAY be the zero address here, which selects the signature-only operator of step 1 below; `receiverAuthorizer` MUST be non-zero, so the bind is on. No payload, digest, or `extra` field changes. As with `"delegated"`, `authorize` needs no authorizer signature — only the salt-binding trailing parameters.
@@ -654,10 +687,10 @@ The operator implements the escrow ABI with trailing parameters appended. The fa
 
 | Operation   | Trailing parameters added to the escrow ABI                                                                    |
 | ----------- | -------------------------------------------------------------------------------------------------------------- |
-| `authorize` | `address authorizer, address policy, uint256 saltPreimage`                                                       |
-| `charge`    | `address authorizer, address policy, uint256 saltPreimage, bytes authorizerSignature`                            |
-| `void`      | `address authorizer, address policy, uint256 saltPreimage, bytes authorizerSignature`                            |
-| `capture`   | `address authorizer, address policy, uint256 saltPreimage, ExpectedBalances expected, bytes authorizerSignature` |
+| `authorize` | `address authorizer, address policy, uint256 saltNonce`                                                       |
+| `charge`    | `address authorizer, address policy, uint256 saltNonce, bytes authorizerSignature`                            |
+| `void`      | `address authorizer, address policy, uint256 saltNonce, bytes authorizerSignature`                            |
+| `capture`   | `address authorizer, address policy, uint256 saltNonce, ExpectedBalances expected, bytes authorizerSignature` |
 
 
 `ExpectedBalances` is `(uint256 capturableAmount, uint256 refundableAmount)` — the balances the authorizer expects in `paymentState` when the call executes. The EIP-712 digests name those members `expectedCapturableAmount` and `expectedRefundableAmount`.
@@ -676,13 +709,13 @@ function capture(
     address feeReceiver,
     address authorizer,
     address policy,
-    uint256 saltPreimage,
+    uint256 saltNonce,
     ExpectedBalances calldata expected,
     bytes calldata authorizerSignature
 ) external nonReentrant {
     // operator == address(this), authorizer != 0, policy == 0,
-    // and salt == keccak256(authorizer, policy, saltPreimage)
-    bytes32 paymentInfoHash = _checkBinding(paymentInfo, authorizer, policy, saltPreimage);
+    // and salt == keccak256(SALT_BINDING_TYPEHASH, authorizer, policy, saltNonce)
+    bytes32 paymentInfoHash = _checkBinding(paymentInfo, authorizer, policy, saltNonce);
     _checkSignature(
         authorizer, getCaptureDigest(paymentInfoHash, amount, feeBps, feeReceiver, expected), authorizerSignature
     );
@@ -701,7 +734,7 @@ What the wrapper cannot express is *when* an operation is allowed — a cooldown
 Instead the rule lives in a separate contract, named by `extra.policy` and consulted through `ICaptureAuthorizer`, whose predicates are `view` and return a boolean:
 
 ```solidity
-    bytes32 paymentInfoHash = _checkBinding(paymentInfo, authorizer, policy, saltPreimage);
+    bytes32 paymentInfoHash = _checkBinding(paymentInfo, authorizer, policy, saltNonce);
     _checkSignature(
         authorizer, getCaptureDigest(paymentInfoHash, amount, feeBps, feeReceiver, expected), authorizerSignature
     );
@@ -758,7 +791,7 @@ Because the policy address is in the salt, this promise is verifiable by the pay
 
 #### Facilitator validation and errors
 
-Validation follows the `"custom"` rules — `extra.captureAuthorizer` exposes the collect wrappers and is admitted by the facilitator's allowlist — with two changes: `capture` and `void` payloads are relayed rather than rejected, and `extra.policy`, when non-zero, MUST have deployed code and advertise `ICaptureAuthorizer` through ERC-165. A `refund` payload is rejected with `refund_funding_unavailable`, since the operator exposes no refund entry point. Admission works the same way, with an extra `/supported` entry:
+Validation follows the `"custom"` rules — `extra.captureAuthorizer` exposes the collect wrappers and is admitted by the facilitator's allowlist — with two changes: `capture` and `void` payloads are relayed rather than rejected, and `extra.policy`, when non-zero, MUST have deployed code and advertise `ICaptureAuthorizer` through ERC-165. A `refund` payload is rejected with `invalid_auth_capture_evm_refund_funding_unavailable`, since the operator exposes no refund entry point. Admission works the same way, with an extra `/supported` entry:
 
 ```json
 { "address": "0xOperatorAddress", "operatorType": "policy" }
@@ -767,29 +800,29 @@ Validation follows the `"custom"` rules — `extra.captureAuthorizer` exposes th
 The operator declares typed errors that a facilitator decodes from a reverted simulation:
 
 
-| Custom error                      | `invalidReason`                |
-| --------------------------------- | ------------------------------ |
-| `WrongOperator`                   | `operator_mismatch`            |
-| `SaltMismatch`                    | `salt_binding_mismatch`        |
-| `ZeroAuthorizer`                  | `missing_receiver_authorizer`  |
-| `InvalidSignature`                | `invalid_authorizer_signature` |
-| `UnexpectedPaymentState`          | `unexpected_payment_state`     |
-| `InvalidPolicy` / `NonZeroPolicy` | `invalid_policy`               |
-| `AuthorizationDenied`             | `policy_denied`                |
+| Custom error                      | `invalidReason`                                        |
+| --------------------------------- | ------------------------------------------------------ |
+| `WrongOperator`                   | `invalid_auth_capture_evm_operator_mismatch`           |
+| `SaltMismatch`                    | `invalid_auth_capture_evm_salt_binding_mismatch`       |
+| `ZeroAuthorizer`                  | `invalid_auth_capture_evm_missing_receiver_authorizer` |
+| `InvalidSignature`                | `invalid_auth_capture_evm_authorizer_signature`        |
+| `UnexpectedPaymentState`          | `invalid_auth_capture_evm_unexpected_payment_state`    |
+| `InvalidPolicy` / `NonZeroPolicy` | `invalid_auth_capture_evm_policy`                      |
+| `AuthorizationDenied`             | `invalid_auth_capture_evm_policy_denied`               |
 
 
 ### Contract addresses
 
 `AUTH_CAPTURE_ESCROW_ADDRESS`, `EIP3009_TOKEN_COLLECTOR_ADDRESS`, `PERMIT2_TOKEN_COLLECTOR_ADDRESS`, and `OPERATOR_REFUND_COLLECTOR_ADDRESS` resolve to the [Base commerce-payments contracts](https://github.com/base/commerce-payments/releases/tag/v1.0.0). `PERMIT2_ADDRESS` resolves to the canonical [Uniswap Permit2 contract](https://docs.uniswap.org/contracts/v4/deployments).
 
-No operator or policy address is canonical, and none is named above. `extra.captureAuthorizer` and `extra.policy` are per-deployment values with no protocol-level meaning: a facilitator MUST NOT treat either as trusted because its bytecode matches one of the shapes sketched here, and admission goes through the `[/supported](#supported)` rules in every case. The Solidity in the appendix illustrates a future addition rather than audited or deployed code, and anyone building on it is responsible for reviewing, auditing, and deploying their own.
+No operator or policy address is canonical, and none is named above. `extra.captureAuthorizer` and `extra.policy` are per-deployment values with no protocol-level meaning: a facilitator MUST NOT treat either as trusted because its bytecode matches one of the shapes sketched here, and admission goes through the [`/supported`](#supported) rules in every case. The Solidity in the appendix illustrates a future addition rather than audited or deployed code, and anyone building on it is responsible for reviewing, auditing, and deploying their own.
 
 ## Version History
 
 
 | Version | Date       | Changes                                    | Authors   |
 | ------- | ---------- | ------------------------------------------ | --------- |
-| v1.1    | 2025-08-13 | Payment flow lifecycles and operator types | @phdargen |
-| v1.0    | 2025-05-13 | Initial draft                              | @A1igator |
+| v1.1    | 2026-08-16 | Payment flow lifecycles and operator types | @phdargen |
+| v1.0    | 2026-05-13 | Initial draft                              | @A1igator |
 
 

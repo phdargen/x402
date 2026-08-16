@@ -89,14 +89,14 @@ Every `auth-capture` network binding MUST specify:
 
 ### Network bindings
 
-- `[scheme_auth_capture_evm.md](./scheme_auth_capture_evm.md)` — EVM.
+- [`scheme_auth_capture_evm.md`](./scheme_auth_capture_evm.md) — EVM.
 
 ## Version History
 
 
 | Version | Date       | Changes                                    | Authors   |
 | ------- | ---------- | ------------------------------------------ | --------- |
-| v1.1    | 2025-08-10 | Payment flow lifecycles and operator types | @phdargen |
-| v1.0    | 2025-05-13 | Initial draft                              | @A1igator |
+| v1.1    | 2026-08-16 | Payment flow lifecycles and operator types | @phdargen |
+| v1.0    | 2026-05-13 | Initial draft                              | @A1igator |
 
 
