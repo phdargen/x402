@@ -129,6 +129,18 @@ export type {
   BatchSettlementSettlePayload,
   BatchSettlementFacilitatorSettlePayload,
   BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementSelfRequirementsExtra,
+  BatchSettlementDelegatedRequirementsExtra,
+  BatchSettlementCorrectiveRequirementsExtra,
+  BatchSettlementSupportedExtra,
+  BatchSettlementSelfVerifyExtra,
+  BatchSettlementDelegatedVerifyExtra,
+  BatchSettlementCorrectiveVerifyExtra,
+  BatchSettlementCorrectiveState,
+  BatchSettlementVoucherStoreMode,
+  BatchSettlementChannelSnapshot,
+  BatchSettlementChannelStateExtra,
+  BatchSettlementVoucherStateExtra,
   BatchSettlementPaymentResponseExtra,
 } from "./batch-settlement/types";
 export {
@@ -138,6 +150,7 @@ export {
   isBatchSettlementClaimPayload,
   isBatchSettlementSettlePayload,
   isBatchSettlementEnrichedRefundPayload,
+  voucherStoreMode,
 } from "./batch-settlement/types";
 
 /**

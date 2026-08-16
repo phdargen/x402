@@ -6,10 +6,14 @@ import {
   isBatchSettlementClaimPayload,
   isBatchSettlementSettlePayload,
   isBatchSettlementEnrichedRefundPayload,
+  voucherStoreMode,
 } from "../../../src/batch-settlement/types";
 import type {
   ChannelConfig,
+  BatchSettlementDelegatedRequirementsExtra,
   BatchSettlementDepositPayload,
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementSelfRequirementsExtra,
   BatchSettlementVoucherPayload,
   BatchSettlementRefundPayload,
   BatchSettlementClaimPayload,
@@ -286,5 +290,64 @@ describe("isBatchSettlementEnrichedRefundPayload (specific fields)", () => {
     expect(isBatchSettlementEnrichedRefundPayload(rest as unknown as Record<string, unknown>)).toBe(
       false,
     );
+  });
+});
+
+describe("voucherStoreMode", () => {
+  it("treats extra.voucherStore === true as facilitator-managed custody", () => {
+    const extra: BatchSettlementDelegatedRequirementsExtra = {
+      receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+      withdrawDelay: 900,
+      name: "USDC",
+      version: "2",
+      voucherStore: true,
+    };
+    expect(voucherStoreMode(extra)).toBe("delegated");
+  });
+
+  it("defaults to self-managed custody for every other extra", () => {
+    const selfExtra: BatchSettlementSelfRequirementsExtra = {
+      receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+      withdrawDelay: 900,
+      name: "USDC",
+      version: "2",
+    };
+    expect(voucherStoreMode(selfExtra)).toBe("self");
+    expect(voucherStoreMode({ ...selfExtra, voucherStore: false })).toBe("self");
+    expect(voucherStoreMode({})).toBe("self");
+    expect(voucherStoreMode(undefined)).toBe("self");
+  });
+
+  it("does not treat truthy non-boolean values as a voucher store", () => {
+    expect(voucherStoreMode({ voucherStore: "true" })).toBe("self");
+    expect(voucherStoreMode({ voucherStore: 1 })).toBe("self");
+    expect(voucherStoreMode("voucherStore")).toBe("self");
+  });
+
+  it("narrows a requirements extra union to the delegated branch", () => {
+    const extras: BatchSettlementPaymentRequirementsExtra[] = [
+      {
+        receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+        withdrawDelay: 900,
+        name: "USDC",
+        version: "2",
+      },
+      {
+        receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+        withdrawDelay: 1800,
+        name: "USDC",
+        version: "2",
+        voucherStore: true,
+      },
+    ];
+
+    const delegated = extras.filter(
+      (extra): extra is BatchSettlementDelegatedRequirementsExtra =>
+        voucherStoreMode(extra) === "delegated",
+    );
+
+    expect(delegated).toHaveLength(1);
+    expect(delegated[0].voucherStore).toBe(true);
+    expect(delegated[0].withdrawDelay).toBe(1800);
   });
 });

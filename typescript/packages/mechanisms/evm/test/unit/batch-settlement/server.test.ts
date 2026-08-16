@@ -106,6 +106,7 @@ async function reservePending(
       pendingRequest: {
         pendingId,
         signedMaxClaimable: raw.voucher.maxClaimableAmount,
+        verifiedAmount: requirements.amount,
         expiresAt: now + 600_000,
       },
       lastRequestTimestamp: now,
@@ -2210,6 +2211,232 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       result: { success: false } as SettleResponse,
     } as never);
     expect(await storage.get(channelId)).toBeUndefined();
+  });
+});
+
+describe("BatchSettlementEvmScheme — facilitator-managed voucher custody", () => {
+  const advertised = {
+    voucherStore: true,
+    receiverAuthorizer: RECEIVER_AUTHORIZER,
+    withdrawDelay: 1800,
+  };
+
+  /**
+   * Builds a facilitator `/supported` kind for this scheme and network.
+   *
+   * @param extra - Advertised extra fields.
+   * @returns Supported kind for `enhancePaymentRequirements` / `validateFacilitatorSupport`.
+   */
+  function supportedKind(extra?: Record<string, unknown>) {
+    return { x402Version: 2, scheme: "batch-settlement", network: NETWORK, extra };
+  }
+
+  /**
+   * Creates a delegated server that has completed facilitator validation.
+   *
+   * @param replicaStorage - Optional voucher replica.
+   * @returns Server scheme in facilitator-managed mode.
+   */
+  function buildDelegatedServer(replicaStorage?: InMemoryChannelStorage) {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStore: "delegated",
+      ...(replicaStorage ? { replicaStorage } : {}),
+    });
+    server.validateFacilitatorSupport(NETWORK, supportedKind(advertised), []);
+    return server;
+  }
+
+  it("reports the custody mode", () => {
+    expect(new BatchSettlementEvmScheme(RECEIVER).getVoucherStoreMode()).toBe("self");
+    expect(buildDelegatedServer().getVoucherStoreMode()).toBe("delegated");
+  });
+
+  it("copies the facilitator's voucherStore handshake into the 402", async () => {
+    const server = buildDelegatedServer();
+    const enhanced = await server.enhancePaymentRequirements(
+      makeRequirements({ extra: { name: "USDC", version: "2" } }),
+      supportedKind(advertised),
+      [],
+    );
+
+    expect(enhanced.extra).toMatchObject({
+      voucherStore: true,
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
+      withdrawDelay: 1800,
+      name: "USDC",
+      version: "2",
+    });
+    expect(server.getWithdrawDelay()).toBe(1800);
+  });
+
+  it("throws when the facilitator does not advertise a voucher store", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStore: "delegated" });
+    await expect(
+      server.enhancePaymentRequirements(
+        makeRequirements(),
+        supportedKind({ receiverAuthorizer: RECEIVER_AUTHORIZER }),
+        [],
+      ),
+    ).rejects.toThrow(/voucherStore/);
+  });
+
+  it("fails startup when the facilitator runs no voucher store", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStore: "delegated" });
+    const problem = server.validateFacilitatorSupport(
+      NETWORK,
+      supportedKind({ receiverAuthorizer: RECEIVER_AUTHORIZER }),
+      [],
+    );
+    expect(problem).toMatch(/voucherStore/);
+  });
+
+  it("fails startup when the advertised voucher store is missing its pairing fields", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStore: "delegated" });
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supportedKind({ voucherStore: true }), []),
+    ).toMatch(/receiverAuthorizer/);
+    expect(
+      server.validateFacilitatorSupport(
+        NETWORK,
+        supportedKind({ voucherStore: true, receiverAuthorizer: RECEIVER_AUTHORIZER }),
+        [],
+      ),
+    ).toMatch(/withdrawDelay/);
+    expect(
+      server.validateFacilitatorSupport(
+        NETWORK,
+        supportedKind({ ...advertised, withdrawDelay: 1 }),
+        [],
+      ),
+    ).toMatch(/withdrawDelay/);
+  });
+
+  it("installs no hooks on the paid path beyond the post-verify stash", () => {
+    const server = buildDelegatedServer();
+    expect(Object.keys(server.schemeHooks)).toEqual(["onAfterVerify"]);
+    expect(server.enrichSettlementPayload).toBeUndefined();
+    expect(server.enrichSettlementResponse).toBeUndefined();
+  });
+
+  it("builds the corrective 402 from the facilitator's verify extra", async () => {
+    const server = buildDelegatedServer();
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "9000", config);
+    const channelState = {
+      channelId,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: "0",
+      chargedCumulativeAmount: "1000",
+    };
+    const voucherState = { signedMaxClaimable: "1000", signature: "0xaaa" };
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements: makeRequirements(),
+      result: {
+        isValid: false,
+        invalidReason: Errors.ErrCumulativeAmountMismatch,
+        extra: { channelState, voucherState },
+      } as VerifyResponse,
+    } as never);
+
+    const accepts = [makeRequirements()];
+    await server.enrichPaymentRequiredResponse!({
+      requirements: accepts,
+      paymentPayload,
+      error: Errors.ErrCumulativeAmountMismatch,
+    } as never);
+
+    expect(accepts[0].extra).toMatchObject({ channelState, voucherState });
+  });
+
+  it("leaves the 402 untouched for errors other than a cumulative mismatch", async () => {
+    const server = buildDelegatedServer();
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "9000", config);
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements: makeRequirements(),
+      result: {
+        isValid: false,
+        invalidReason: Errors.ErrChannelBusy,
+        extra: { channelState: { channelId } },
+      } as VerifyResponse,
+    } as never);
+
+    const accepts = [makeRequirements()];
+    await server.enrichPaymentRequiredResponse!({
+      requirements: accepts,
+      paymentPayload,
+      error: Errors.ErrChannelBusy,
+    } as never);
+
+    expect(accepts[0].extra?.channelState).toBeUndefined();
+  });
+
+  it("writes the settled voucher through to the replica", async () => {
+    const replicaStorage = new InMemoryChannelStorage();
+    const server = buildDelegatedServer(replicaStorage);
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildVoucherPayload(channelId, "3000", config, "0xfeed"),
+      requirements: makeRequirements(),
+      result: {
+        success: true,
+        transaction: "",
+        network: NETWORK,
+        amount: "",
+        extra: {
+          chargedAmount: "1000",
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "2000",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+            chargedCumulativeAmount: "3000",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    const replica = await replicaStorage.get(channelId);
+    expect(replica).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "3000",
+      signedMaxClaimable: "3000",
+      signature: "0xfeed",
+      balance: "10000",
+      totalClaimed: "2000",
+    });
+  });
+
+  it("installs no settle hook when no replica is configured", () => {
+    expect(buildDelegatedServer().schemeHooks.onAfterSettle).toBeUndefined();
+  });
+
+  it("has no local channel storage without a replica", () => {
+    const server = buildDelegatedServer();
+    expect(() => server.getStorage()).toThrow(/facilitator/);
+    expect(() => server.createChannelManager({} as FacilitatorClient, NETWORK)).toThrow(
+      /replicaStorage/,
+    );
+  });
+
+  it("manages claims from the replica when one is configured", () => {
+    const replicaStorage = new InMemoryChannelStorage();
+    const server = buildDelegatedServer(replicaStorage);
+    expect(server.getStorage()).toBe(replicaStorage);
+    expect(server.createChannelManager({} as FacilitatorClient, NETWORK)).toBeInstanceOf(
+      BatchSettlementChannelManager,
+    );
   });
 });
 

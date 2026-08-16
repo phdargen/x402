@@ -10,7 +10,8 @@ import type { BatchSettlementEvmScheme } from "./scheme";
 import { computeChannelId } from "../utils";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
-import type { Channel } from "./storage";
+import { isPendingLive, type Channel } from "../storage";
+import { buildClaimRow, buildClaimRows } from "../claims";
 
 export interface ChannelManagerConfig {
   scheme: BatchSettlementEvmScheme;
@@ -82,17 +83,6 @@ const AUTO_JOB_PRIORITY: AutoJob[] = ["claim", "settle", "refund"];
  */
 function formatFacilitatorFailure(operation: string, response: SettleResponse): string {
   return `${operation} failed: ${response.errorReason ?? "unknown"} — ${response.errorMessage ?? ""}`;
-}
-
-/**
- * Checks whether a channel has a non-expired payer request reservation.
- *
- * @param channel - Channel state to inspect.
- * @param now - Current wall-clock time in milliseconds.
- * @returns Whether the channel is busy with a live pending request.
- */
-function hasLivePendingRequest(channel: Channel, now = Date.now()): boolean {
-  return channel.pendingRequest !== undefined && channel.pendingRequest.expiresAt > now;
 }
 
 /**
@@ -203,7 +193,7 @@ export class BatchSettlementChannelManager {
             channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()),
           )
         : channels
-    ).filter(channel => !hasLivePendingRequest(channel, now));
+    ).filter(channel => !isPendingLive(channel.pendingRequest, now));
 
     if (targets.length === 0) {
       return [];
@@ -352,7 +342,7 @@ export class BatchSettlementChannelManager {
     await this.scheme
       .getStorage()
       .updateChannel(target.channelId, current =>
-        current && !hasLivePendingRequest(current) ? undefined : current,
+        current && !isPendingLive(current.pendingRequest) ? undefined : current,
       );
 
     return {
@@ -577,7 +567,7 @@ export class BatchSettlementChannelManager {
   private async refundChannels(channels: Channel[]): Promise<RefundResult[]> {
     const results: RefundResult[] = [];
     for (const channel of channels) {
-      if (hasLivePendingRequest(channel)) {
+      if (isPendingLive(channel.pendingRequest)) {
         continue;
       }
       results.push(await this.refundChannel(channel));
@@ -596,16 +586,7 @@ export class BatchSettlementChannelManager {
       return [];
     }
 
-    return [
-      {
-        voucher: {
-          channel: channel.channelConfig,
-          maxClaimableAmount: channel.signedMaxClaimable,
-        },
-        signature: channel.signature as `0x${string}`,
-        totalClaimed: channel.chargedCumulativeAmount,
-      },
-    ];
+    return [buildClaimRow(channel)];
   }
 
   /**
@@ -635,30 +616,10 @@ export class BatchSettlementChannelManager {
     channels: Channel[],
     opts?: { idleSecs?: number },
   ): BatchSettlementVoucherClaim[] {
-    const now = Date.now();
-    const claims: BatchSettlementVoucherClaim[] = [];
-
-    for (const c of channels) {
-      if (BigInt(c.chargedCumulativeAmount) <= BigInt(c.totalClaimed)) {
-        continue;
-      }
-      if (opts?.idleSecs !== undefined) {
-        const idleMs = now - c.lastRequestTimestamp;
-        if (idleMs < opts.idleSecs * 1000) {
-          continue;
-        }
-      }
-      claims.push({
-        voucher: {
-          channel: c.channelConfig,
-          maxClaimableAmount: c.signedMaxClaimable,
-        },
-        signature: c.signature as `0x${string}`,
-        totalClaimed: c.chargedCumulativeAmount,
-      });
-    }
-
-    return claims;
+    return buildClaimRows(
+      channels,
+      opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : {},
+    );
   }
 
   /**
@@ -673,7 +634,7 @@ export class BatchSettlementChannelManager {
     const idleMs = idleSecs * 1000;
     return channels.filter(c => {
       if (BigInt(c.balance) === 0n) return false;
-      if (hasLivePendingRequest(c, now)) return false;
+      if (isPendingLive(c.pendingRequest, now)) return false;
       return now - c.lastRequestTimestamp >= idleMs;
     });
   }

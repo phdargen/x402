@@ -535,6 +535,57 @@ describe("FileChannelStorage", () => {
   });
 });
 
+describe("channel storage scopes", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "x402-bs-scope-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps file-backed server and facilitator records in separate directories", async () => {
+    const server = new FileChannelStorage({ directory: root });
+    const facilitator = new FileChannelStorage({ directory: root, scope: "facilitator" });
+
+    const serverChannel = buildSession({ chargedCumulativeAmount: "1000" });
+    const facilitatorChannel = buildSession({ chargedCumulativeAmount: "2000" });
+    await server.updateChannel(CHANNEL_ID, () => serverChannel);
+    await facilitator.updateChannel(CHANNEL_ID, () => facilitatorChannel);
+
+    expect(await server.get(CHANNEL_ID)).toEqual(serverChannel);
+    expect(await facilitator.get(CHANNEL_ID)).toEqual(facilitatorChannel);
+    expect(await server.list()).toEqual([serverChannel]);
+    expect(await facilitator.list()).toEqual([facilitatorChannel]);
+    expect((await readdir(root)).sort()).toEqual(["facilitator", "server"]);
+    expect(await readdir(join(root, "facilitator"))).toEqual([`${CHANNEL_ID}.json`]);
+  });
+
+  it("keeps Redis server and facilitator records under separate key prefixes", async () => {
+    const client = new MockRedisClient();
+    const server = new RedisChannelStorage({ client, keyPrefix: "test:x402" });
+    const facilitator = new RedisChannelStorage({
+      client,
+      keyPrefix: "test:x402",
+      scope: "facilitator",
+    });
+
+    await server.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "1000" }));
+    await facilitator.updateChannel(CHANNEL_ID, () =>
+      buildSession({ chargedCumulativeAmount: "2000" }),
+    );
+
+    expect((await server.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("1000");
+    expect((await facilitator.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("2000");
+    expect([...client.store.keys()].sort()).toEqual([
+      `test:x402:facilitator:channel:${CHANNEL_ID}`,
+      `test:x402:server:channel:${CHANNEL_ID}`,
+    ]);
+  });
+});
+
 describe("FileClientChannelStorage", () => {
   let root: string;
   let storage: FileClientChannelStorage;

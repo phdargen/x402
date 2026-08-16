@@ -99,38 +99,91 @@ export type BatchSettlementVoucherClaim = {
   totalClaimed: string;
 };
 
-export type BatchSettlementChannelStateExtra = {
+/** Onchain channel snapshot the custodian mirrors back to clients. */
+export type BatchSettlementChannelSnapshot = {
   channelId: `0x${string}`;
   balance: string;
   totalClaimed: string;
   withdrawRequestedAt: number;
   refundNonce: string;
-  chargedCumulativeAmount?: string;
+};
+
+/** Snapshot plus the custodian's offchain watermark. */
+export type BatchSettlementChannelStateExtra = BatchSettlementChannelSnapshot & {
+  chargedCumulativeAmount: string;
 };
 
 export type BatchSettlementVoucherStateExtra = {
-  signedMaxClaimable?: string;
-  signature?: `0x${string}`;
+  signedMaxClaimable: string;
+  signature: `0x${string}`;
 };
 
-export type BatchSettlementPaymentRequirementsExtra = {
+/**
+ * Which side of the protocol owns the voucher store. `"self"` (the default) keeps the
+ * resource server authoritative; `"delegated"` hands custody to the facilitator, which
+ * is signalled on the wire by `extra.voucherStore === true`.
+ */
+export type BatchSettlementVoucherStoreMode = "self" | "delegated";
+
+type BatchSettlementRequirementsExtraBase = {
   receiverAuthorizer: `0x${string}`;
   withdrawDelay: number;
   name: string;
   version: string;
   assetTransferMethod?: BatchSettlementAssetTransferMethod;
-  channelState?: BatchSettlementChannelStateExtra;
+};
+
+export type BatchSettlementSelfRequirementsExtra = BatchSettlementRequirementsExtraBase & {
+  voucherStore?: false;
+};
+
+export type BatchSettlementDelegatedRequirementsExtra = BatchSettlementRequirementsExtraBase & {
+  voucherStore: true;
+};
+
+export type BatchSettlementPaymentRequirementsExtra =
+  | BatchSettlementSelfRequirementsExtra
+  | BatchSettlementDelegatedRequirementsExtra;
+
+/** Requirements extra carrying the corrective-only resynchronization fields. */
+export type BatchSettlementCorrectiveRequirementsExtra = BatchSettlementPaymentRequirementsExtra &
+  BatchSettlementCorrectiveState;
+
+/** `/supported` extra: advertising a voucher store requires the pairing fields. */
+export type BatchSettlementSupportedExtra =
+  | { voucherStore?: false; receiverAuthorizer?: `0x${string}` }
+  | { voucherStore: true; receiverAuthorizer: `0x${string}`; withdrawDelay: number };
+
+/** Self-managed `/verify` extra: the onchain snapshot only. */
+export type BatchSettlementSelfVerifyExtra = BatchSettlementChannelSnapshot;
+
+/** Facilitator-managed `/verify` extra: snapshot plus the facilitator's watermark. */
+export type BatchSettlementDelegatedVerifyExtra = BatchSettlementChannelStateExtra;
+
+/**
+ * What the custodian tells a client to resynchronize with after a cumulative-amount
+ * mismatch: its channel state, plus the voucher it holds. The voucher is absent on a
+ * channel the custodian has never settled, so there is nothing for the client to verify.
+ */
+export type BatchSettlementCorrectiveState = {
+  channelState: BatchSettlementChannelStateExtra;
   voucherState?: BatchSettlementVoucherStateExtra;
 };
 
+/** `/verify` extra on a cumulative-amount mismatch, mirroring the corrective 402. */
+export type BatchSettlementCorrectiveVerifyExtra = BatchSettlementCorrectiveState;
+
 export type FileChannelStorageOptions = {
-  /** Root directory; channels are stored under `{directory}/{client|server}/{channelId}.json`. */
+  /** Root directory; channels are stored under `{directory}/{scope}/{channelId}.json`. */
   directory: string;
+  /** Sub-directory that isolates one role's records. Defaults to `"server"`. */
+  scope?: string;
 };
 
 export type BatchSettlementPaymentResponseExtra = {
   chargedAmount?: string;
-  channelState?: BatchSettlementChannelStateExtra;
+  /** Snapshot; the watermark is present only when the responder owns the voucher store. */
+  channelState?: BatchSettlementChannelSnapshot & { chargedCumulativeAmount?: string };
   voucherState?: BatchSettlementVoucherStateExtra;
 };
 
@@ -161,6 +214,7 @@ export type BatchSettlementPayload =
 
 export type BatchSettlementFacilitatorSettlePayload =
   | BatchSettlementDepositPayload
+  | BatchSettlementVoucherPayload
   | BatchSettlementClaimPayload
   | BatchSettlementSettlePayload
   | BatchSettlementEnrichedRefundPayload;
@@ -173,6 +227,21 @@ export type BatchSettlementFacilitatorSettlePayload =
  */
 function isObject(payload: unknown): payload is Record<string, unknown> {
   return typeof payload === "object" && payload !== null;
+}
+
+/**
+ * Resolves the voucher-custody mode from a requirements or `/supported` extra object.
+ *
+ * The wire discriminant is `extra.voucherStore`: `true` selects facilitator-managed
+ * custody, anything else (including absence) keeps the self-managed default. This is
+ * the single narrowing point shared by the server and the facilitator; the client
+ * echoes the flag without interpreting it.
+ *
+ * @param extra - Extra fields from payment requirements or an advertised kind.
+ * @returns The custody mode the two sides agreed on.
+ */
+export function voucherStoreMode(extra: unknown): BatchSettlementVoucherStoreMode {
+  return isObject(extra) && extra.voucherStore === true ? "delegated" : "self";
 }
 
 /**

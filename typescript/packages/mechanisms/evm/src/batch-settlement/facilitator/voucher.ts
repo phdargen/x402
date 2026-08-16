@@ -2,6 +2,7 @@ import { PaymentRequirements, VerifyResponse } from "@x402/core/types";
 import { FacilitatorEvmSigner } from "../../signer";
 import {
   BatchSettlementRefundPayload,
+  BatchSettlementSelfVerifyExtra,
   BatchSettlementVoucherPayload,
   ChannelConfig,
 } from "../types";
@@ -93,6 +94,6 @@ export async function verifyVoucher(
       totalClaimed: state.totalClaimed.toString(),
       withdrawRequestedAt: state.withdrawRequestedAt,
       refundNonce: state.refundNonce.toString(),
-    },
+    } satisfies BatchSettlementSelfVerifyExtra,
   };
 }

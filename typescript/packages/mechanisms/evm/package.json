@@ -211,6 +211,26 @@
         "default": "./dist/cjs/batch-settlement/facilitator/index.js"
       }
     },
+    "./batch-settlement/facilitator/file-storage": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/facilitator/file-storage.d.mts",
+        "default": "./dist/esm/batch-settlement/facilitator/file-storage.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/facilitator/file-storage.d.ts",
+        "default": "./dist/cjs/batch-settlement/facilitator/file-storage.js"
+      }
+    },
+    "./batch-settlement/facilitator/redis-storage": {
+      "import": {
+        "types": "./dist/esm/batch-settlement/facilitator/redis-storage.d.mts",
+        "default": "./dist/esm/batch-settlement/facilitator/redis-storage.mjs"
+      },
+      "require": {
+        "types": "./dist/cjs/batch-settlement/facilitator/redis-storage.d.ts",
+        "default": "./dist/cjs/batch-settlement/facilitator/redis-storage.js"
+      }
+    },
     "./auth-capture/client": {
       "import": {
         "types": "./dist/esm/auth-capture/client/index.d.mts",

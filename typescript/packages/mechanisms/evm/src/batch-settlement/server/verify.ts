@@ -22,37 +22,14 @@ import { channelIdBindingError, computeChannelId, getBatchSettlementEip712Domain
 import { validateChannelConfig } from "../facilitator/utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import type { Channel, ChannelUpdateResult, PendingRequest } from "./storage";
+import {
+  isPendingLive,
+  pendingExpiresAt,
+  type Channel,
+  type ChannelUpdateResult,
+  type PendingRequest,
+} from "../storage";
 import { readExtraNumber, readExtraString } from "./utils";
-
-// Framework cleanup hooks clear pending reservations for normal failures
-// This bounded TTL releases channels when cleanup cannot run or complete
-const MIN_PENDING_TTL_MS = 5_000; // 5 seconds
-const MAX_PENDING_TTL_MS = 10 * 60 * 1000; // 600 seconds
-
-/**
- * Computes the bounded pending reservation expiry time.
- *
- * @param maxTimeoutSeconds - Resource timeout from payment requirements.
- * @param now - Current wall-clock time in milliseconds.
- * @returns Expiry timestamp in milliseconds.
- */
-function pendingExpiresAt(maxTimeoutSeconds: number | undefined, now: number): number {
-  const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000;
-  const ttlMs = Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
-  return now + ttlMs;
-}
-
-/**
- * Checks whether a pending reservation still blocks same-channel work.
- *
- * @param pending - Pending reservation to inspect.
- * @param now - Current wall-clock time in milliseconds.
- * @returns Whether the reservation exists and has not expired.
- */
-function isPendingLive(pending: PendingRequest | undefined, now: number): boolean {
-  return pending !== undefined && pending.expiresAt > now;
-}
 
 /**
  * Builds a fail-closed response when local verification state cannot be established.
@@ -338,6 +315,7 @@ export async function handleAfterVerify(
       const pendingRequest: PendingRequest = {
         pendingId,
         signedMaxClaimable,
+        verifiedAmount: requirements.amount,
         expiresAt: pendingExpiresAt(requirements.maxTimeoutSeconds, now),
       };
 

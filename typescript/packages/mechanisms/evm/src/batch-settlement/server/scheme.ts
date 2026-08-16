@@ -5,42 +5,39 @@ import {
   PaymentPayload,
   PaymentRequirements,
   Price,
+  SchemeEnrichPaymentRequiredResponseHook,
   SchemeNetworkServer,
   SchemeServerHooks,
   MoneyParser,
   SupportedKind,
 } from "@x402/core/types";
 import type { DeepReadonly } from "@x402/core/types";
-import type { SettleContext, SettleResultContext } from "@x402/core/server";
 import { convertToTokenAmount, numberToDecimalString, parseMoney } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
-import { getAddress } from "viem";
-import { BatchSettlementChannelManager } from "./channelManager";
+import type { BatchSettlementChannelManager } from "./channelManager";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
-import type { AuthorizerSigner, BatchSettlementAssetTransferMethod } from "../types";
-import { BATCH_SETTLEMENT_SCHEME, MIN_WITHDRAW_DELAY } from "../constants";
-import { InMemoryChannelStorage, ChannelStorage, type Channel } from "./storage";
-import {
-  handleAfterVerify,
-  handleBeforeVerify,
-  handleEnrichPaymentRequiredResponse,
-  handleVerifyFailure,
-  handleVerifiedPaymentCanceled,
-} from "./verify";
-import {
-  handleAfterSettle,
-  handleBeforeSettle,
-  handleEnrichSettlementPayload,
-  handleEnrichSettlementResponse,
-  handleSettleFailure,
-} from "./settle";
+import type {
+  AuthorizerSigner,
+  BatchSettlementAssetTransferMethod,
+  BatchSettlementVoucherStoreMode,
+} from "../types";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import type { ChannelStorage, Channel } from "../storage";
+import { DelegatedVoucherStore } from "./voucherStore/delegated";
+import { SelfVoucherStore } from "./voucherStore/self";
+import type {
+  BatchSettlementEvmSchemeServerConfig,
+  SchemeEnrichSettlementPayloadHook,
+  SchemeEnrichSettlementResponseHook,
+  SchemeVoucherStore,
+} from "./voucherStore/types";
 
-export interface BatchSettlementEvmSchemeServerConfig {
-  storage?: ChannelStorage;
-  receiverAuthorizerSigner?: AuthorizerSigner;
-  withdrawDelay?: number;
-  onchainStateTtlMs?: number;
-}
+export type {
+  BatchSettlementDelegatedServerConfig,
+  BatchSettlementEvmSchemeServerConfig,
+  BatchSettlementSelfServerConfig,
+  SchemeVoucherStore,
+} from "./voucherStore/types";
 
 export interface BatchSettlementRequestContext {
   channelId?: string;
@@ -62,68 +59,41 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   } as const satisfies Record<BatchSettlementAssetTransferMethod, PaymentFlowConfig>;
   readonly schemeHooks: SchemeServerHooks;
 
+  /**
+   * Set only in self-managed custody, where the server owns channel state. Facilitator-managed
+   * custody leaves all three undefined: the facilitator's settle response is already the
+   * payment response.
+   */
+  readonly enrichPaymentRequiredResponse?: SchemeEnrichPaymentRequiredResponseHook;
+  readonly enrichSettlementPayload?: SchemeEnrichSettlementPayloadHook;
+  readonly enrichSettlementResponse?: SchemeEnrichSettlementResponseHook;
+
   private readonly requestContexts = new WeakMap<
     DeepReadonly<PaymentPayload>,
     BatchSettlementRequestContext
   >();
   private moneyParsers: MoneyParser[] = [];
-  private readonly storage: ChannelStorage;
-  private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
-  private readonly withdrawDelay: number;
-  private readonly onchainStateTtlMs: number;
+  private readonly voucherStore: SchemeVoucherStore;
 
   /**
    * Constructs a batched server scheme.
    *
    * @param receiverAddress - The server's receiver address (payTo).
-   * @param config - Optional configuration for storage, receiver-authorizer signer, and withdraw delay.
+   * @param config - Optional configuration. Defaults to self-managed voucher custody with
+   *   in-memory storage; pass `voucherStore: "delegated"` to hand custody to the facilitator.
    */
   constructor(receiverAddress: `0x${string}`, config?: BatchSettlementEvmSchemeServerConfig) {
     this.receiverAddress = receiverAddress;
-    this.storage = config?.storage ?? new InMemoryChannelStorage();
-    this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
-    this.withdrawDelay = config?.withdrawDelay ?? MIN_WITHDRAW_DELAY;
-    this.onchainStateTtlMs =
-      config?.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
-    this.schemeHooks = {
-      onBeforeVerify: ctx => handleBeforeVerify(this, ctx),
-      onAfterVerify: ctx => handleAfterVerify(this, ctx),
-      onBeforeSettle: ctx => handleBeforeSettle(this, ctx),
-      onAfterSettle: ctx => handleAfterSettle(this, ctx),
-      onVerifyFailure: ctx => handleVerifyFailure(this, ctx),
-      onSettleFailure: ctx => handleSettleFailure(this, ctx),
-      onVerifiedPaymentCanceled: ctx => handleVerifiedPaymentCanceled(this, ctx),
-    };
+    this.voucherStore =
+      config?.voucherStore === "delegated"
+        ? new DelegatedVoucherStore(this, config)
+        : new SelfVoucherStore(this, config);
+    this.schemeHooks = this.voucherStore.hooks;
+    this.enrichPaymentRequiredResponse = this.voucherStore.enrichPaymentRequiredResponse;
+    this.enrichSettlementPayload = this.voucherStore.enrichSettlementPayload;
+    this.enrichSettlementResponse = this.voucherStore.enrichSettlementResponse;
   }
-
-  /**
-   * Adds server-owned settlement fields before facilitator settlement.
-   *
-   * @param ctx - Settlement context for the current payment.
-   * @returns Additive payload fields, or nothing when no enrichment is needed.
-   */
-  enrichSettlementPayload = (ctx: SettleContext): Promise<Record<string, unknown> | void> =>
-    handleEnrichSettlementPayload(this, ctx);
-
-  /**
-   * Adds corrective channel state to payment-required responses when available.
-   *
-   * @param ctx - Payment-required response context for the current request.
-   * @returns Updated payment requirements, or nothing when no enrichment is needed.
-   */
-  enrichPaymentRequiredResponse = (
-    ctx: Parameters<typeof handleEnrichPaymentRequiredResponse>[1],
-  ): Promise<PaymentRequirements[] | void> => handleEnrichPaymentRequiredResponse(this, ctx);
-
-  /**
-   * Adds server-owned extra fields after facilitator settlement.
-   *
-   * @param ctx - Settlement result context for the current payment.
-   * @returns Additive response extra fields, or nothing when no enrichment is needed.
-   */
-  enrichSettlementResponse = (ctx: SettleResultContext): Promise<Record<string, unknown> | void> =>
-    handleEnrichSettlementResponse(this, ctx);
 
   /**
    * Merges batch-settlement state into the current request context.
@@ -201,7 +171,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
-    await this.storage.updateChannel(context.channelId, current => {
+    await this.voucherStore.getStorage().updateChannel(context.channelId, current => {
       if (!current || current.pendingRequest?.pendingId !== context.pendingId) {
         return current;
       }
@@ -272,10 +242,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 
   /**
    * Injects batched-specific fields into the payment requirements returned to
-   * the client (receiverAuthorizer, withdrawDelay). Asset metadata (name,
-   * version, assetTransferMethod) is left untouched — it is already set by
-   * `parsePrice` or supplied explicitly by the caller, and is not re-derived
-   * from the default-asset registry here so unlisted networks keep working.
+   * the client (receiverAuthorizer, withdrawDelay, and `voucherStore` in
+   * facilitator-managed custody). Asset metadata (name, version,
+   * assetTransferMethod) is left untouched — it is already set by `parsePrice`
+   * or supplied explicitly by the caller, and is not re-derived from the
+   * default-asset registry here so unlisted networks keep working.
    *
    * @param paymentRequirements - Base payment requirements from the middleware.
    * @param supportedKind - Matched scheme/network kind (extra may contain overrides).
@@ -298,66 +269,54 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   ): Promise<PaymentRequirements> {
     void _extensionKeys;
 
-    const receiverAuthorizer =
-      this.receiverAuthorizerSigner?.address ??
-      (typeof supportedKind.extra?.receiverAuthorizer === "string"
-        ? supportedKind.extra.receiverAuthorizer
-        : undefined);
-
-    if (
-      !receiverAuthorizer ||
-      getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
-    ) {
-      throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
-    }
-
     return {
       ...paymentRequirements,
       extra: {
         ...paymentRequirements.extra,
-        receiverAuthorizer: getAddress(receiverAuthorizer),
-        withdrawDelay: this.withdrawDelay,
+        ...this.voucherStore.requirementsExtra(supportedKind),
       },
     };
   }
 
   /**
-   * Fails server startup when this scheme delegates the receiver-authorizer role
-   * but the facilitator does not advertise a usable `receiverAuthorizer`.
+   * Fails server startup when the facilitator cannot support this scheme's voucher-custody
+   * mode: self-managed custody needs a receiver authorizer it can delegate to,
+   * facilitator-managed custody needs a facilitator that advertises a voucher store.
    *
    * @param network - The network identifier being validated.
    * @param supportedKind - The facilitator's advertised kind for this scheme/network.
-   * @param _ - Extensions advertised by the facilitator (unused).
-   * @returns A problem message when delegation is impossible, or void when valid.
+   * @param facilitatorExtensions - Extensions advertised by the facilitator.
+   * @returns A problem message when the facilitator is unusable, or void when valid.
    */
   validateFacilitatorSupport(
     network: Network,
     supportedKind: SupportedKind,
-    _: string[],
+    facilitatorExtensions: string[],
   ): string | void {
-    if (this.receiverAuthorizerSigner) return;
+    return this.voucherStore.validateFacilitatorSupport(
+      network,
+      supportedKind,
+      facilitatorExtensions,
+    );
+  }
 
-    const advertised = supportedKind.extra?.receiverAuthorizer;
-    const hasValid =
-      typeof advertised === "string" &&
-      getAddress(advertised) !== "0x0000000000000000000000000000000000000000";
-
-    if (!hasValid) {
-      return (
-        `no receiverAuthorizerSigner is configured and the facilitator does not advertise a ` +
-        `receiverAuthorizer on ${network}. Configure a receiverAuthorizerSigner or use a ` +
-        `facilitator that advertises one.`
-      );
-    }
+  /**
+   * Returns which side of the protocol owns the voucher store.
+   *
+   * @returns `"self"` when this server is authoritative, `"delegated"` when the facilitator is.
+   */
+  getVoucherStoreMode(): BatchSettlementVoucherStoreMode {
+    return this.voucherStore.mode;
   }
 
   /**
    * Returns the underlying channel storage instance.
    *
    * @returns The configured {@link ChannelStorage} backend.
+   * @throws In facilitator-managed custody when no `replicaStorage` is configured.
    */
   getStorage(): ChannelStorage {
-    return this.storage;
+    return this.voucherStore.getStorage();
   }
 
   /**
@@ -375,16 +334,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Withdraw delay in seconds before uncooperative withdrawal is allowed.
    */
   getWithdrawDelay(): number {
-    return this.withdrawDelay;
+    return this.voucherStore.getWithdrawDelay();
   }
 
   /**
    * Returns how long mirrored onchain channel state is trusted for local voucher verification.
    *
-   * @returns Freshness window in milliseconds.
+   * @returns Freshness window in milliseconds; `0` in facilitator-managed custody.
    */
   getOnchainStateTtlMs(): number {
-    return this.onchainStateTtlMs;
+    return this.voucherStore.getOnchainStateTtlMs();
   }
 
   /**
@@ -393,7 +352,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Receiver-authorizer signer, or `undefined` when not set.
    */
   getReceiverAuthorizerSigner(): AuthorizerSigner | undefined {
-    return this.receiverAuthorizerSigner;
+    return this.voucherStore.getReceiverAuthorizerSigner();
   }
 
   /**
@@ -405,20 +364,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param token - Explicit token address to use. Falls back to the network's
    *   default asset (from the registry) when omitted.
    * @returns A ready-to-use channel manager.
+   * @throws In facilitator-managed custody when no `replicaStorage` is configured.
    */
   createChannelManager(
     facilitator: FacilitatorClient,
     network: Network,
     token?: `0x${string}`,
   ): BatchSettlementChannelManager {
-    const resolvedToken = token ?? (getDefaultAsset(network).asset as `0x${string}`);
-    return new BatchSettlementChannelManager({
-      scheme: this,
-      facilitator,
-      receiver: this.receiverAddress,
-      token: resolvedToken,
-      network,
-    });
+    return this.voucherStore.createChannelManager(facilitator, network, token);
   }
 
   /**
@@ -459,15 +412,4 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       },
     };
   }
-}
-
-/**
- * Derives a reasonable onchain state freshness window from the channel withdraw delay.
- *
- * @param withdrawDelaySeconds - Onchain withdraw delay for the channel, in seconds.
- * @returns TTL in milliseconds, clamped between 30 seconds and 5 minutes.
- */
-function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
-  const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1000;
-  return Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(withdrawDelayMs / 3)));
 }

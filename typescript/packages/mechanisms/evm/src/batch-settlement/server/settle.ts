@@ -10,7 +10,7 @@ import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim }
 import { computeChannelId } from "../utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import type { Channel } from "./storage";
+import type { Channel } from "../storage";
 import {
   parseRefundSettlementSnapshot,
   readChannelStateExtra,

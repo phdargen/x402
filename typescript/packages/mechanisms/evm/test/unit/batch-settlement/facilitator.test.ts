@@ -11,6 +11,7 @@ vi.mock("../../../src/multicall", async importOriginal => {
 
 import { multicall } from "../../../src/multicall";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/facilitator/scheme";
+import { InMemoryChannelStorage } from "../../../src/batch-settlement/storage";
 import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import {
   BATCH_SETTLEMENT_ADDRESS,
@@ -1335,6 +1336,379 @@ describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", 
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "refundWithSignature" }),
     );
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — facilitator-managed voucher custody", () => {
+  const authorizer = buildAuthorizerSigner();
+
+  /**
+   * Builds requirements whose `extra.voucherStore` hands custody to the facilitator.
+   *
+   * @param overrides - Requirement fields to override.
+   * @returns Requirements with `voucherStore: true` in `extra`.
+   */
+  function delegatedRequirements(
+    overrides: Partial<PaymentRequirements> = {},
+  ): PaymentRequirements {
+    const base = makeRequirements(overrides);
+    return { ...base, extra: { ...base.extra, voucherStore: true } };
+  }
+
+  /**
+   * Creates a facilitator scheme backed by a voucher store.
+   *
+   * @param overrides - Storage and signer overrides.
+   * @param overrides.storage - Channel storage the store should use.
+   * @param overrides.signer - Facilitator signer mock.
+   * @returns The scheme plus the storage and signer it was built with.
+   */
+  function buildStoreScheme(
+    overrides: { storage?: InMemoryChannelStorage; signer?: FacilitatorEvmSigner } = {},
+  ): {
+    scheme: BatchSettlementEvmScheme;
+    storage: InMemoryChannelStorage;
+    signer: FacilitatorEvmSigner;
+  } {
+    const storage = overrides.storage ?? new InMemoryChannelStorage();
+    const signer = overrides.signer ?? buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
+      voucherStore: { storage, withdrawDelay: 900 },
+    });
+    return { scheme, storage, signer };
+  }
+
+  /**
+   * Mocks the three onchain reads voucher verification performs.
+   *
+   * @param opts - Onchain channel values to report.
+   * @param opts.balance - Channel balance.
+   * @param opts.totalClaimed - Amount already claimed onchain.
+   * @param opts.withdrawRequestedAt - Withdraw request timestamp in seconds.
+   * @param opts.refundNonce - Current refund nonce.
+   */
+  function mockChannelReads(
+    opts: {
+      balance?: bigint;
+      totalClaimed?: bigint;
+      withdrawRequestedAt?: bigint;
+      refundNonce?: bigint;
+    } = {},
+  ): void {
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [opts.balance ?? 10_000n, opts.totalClaimed ?? 0n] },
+      { status: "success", result: [0n, opts.withdrawRequestedAt ?? 0n] },
+      { status: "success", result: opts.refundNonce ?? 0n },
+    ]);
+  }
+
+  const config = buildChannelConfig();
+  const channelId = computeChannelId(config);
+
+  /**
+   * Builds a paid voucher payload for the shared channel fixture.
+   *
+   * @param maxClaimableAmount - Cumulative cap the client signed.
+   * @param signature - Voucher signature, which doubles as the reservation id.
+   * @returns Voucher payload.
+   */
+  function voucherPayload(
+    maxClaimableAmount: string,
+    signature: `0x${string}` = "0xdead",
+  ): BatchSettlementVoucherPayload {
+    return {
+      type: "voucher",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount, signature },
+    };
+  }
+
+  it("requires an authorizerSigner so the stored vouchers can be claimed", () => {
+    expect(
+      () =>
+        new BatchSettlementEvmScheme(buildSigner(), undefined, {
+          voucherStore: { withdrawDelay: 900 },
+        }),
+    ).toThrow(/authorizerSigner/);
+  });
+
+  it("rejects a withdrawDelay outside the protocol bounds", () => {
+    expect(
+      () =>
+        new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+          voucherStore: { withdrawDelay: 1 },
+        }),
+    ).toThrow(/withdrawDelay/);
+  });
+
+  it("advertises voucherStore with the paired receiverAuthorizer and withdrawDelay", () => {
+    const { scheme } = buildStoreScheme();
+    expect(scheme.getExtra(NETWORK)).toEqual({
+      voucherStore: true,
+      receiverAuthorizer: authorizer.address,
+      withdrawDelay: 900,
+    });
+  });
+
+  it("cold-starts the watermark at totalClaimed and returns it in verify extra", async () => {
+    mockChannelReads({ totalClaimed: 4_000n });
+    const { scheme } = buildStoreScheme();
+
+    const result = await scheme.verify(
+      envelopeVoucher(voucherPayload("5000")),
+      delegatedRequirements(),
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.extra).toMatchObject({
+      channelId,
+      balance: "10000",
+      totalClaimed: "4000",
+      chargedCumulativeAmount: "4000",
+    });
+  });
+
+  it("returns a corrective CumulativeAmountMismatch when the voucher base is stale", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+
+    const result = await scheme.verify(
+      envelopeVoucher(voucherPayload("7000")),
+      delegatedRequirements(),
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(result.extra?.channelState).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "0",
+    });
+    expect(result.extra?.voucherState).toBeUndefined();
+  });
+
+  it("includes the last committed voucher in the corrective extra", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+    const requirements = delegatedRequirements();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000", "0xaaa")), requirements);
+    await scheme.settle(envelopeVoucher(voucherPayload("1000", "0xaaa")), requirements);
+
+    const result = await scheme.verify(
+      envelopeVoucher(voucherPayload("9000", "0xbbb")),
+      requirements,
+    );
+
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(result.extra?.channelState).toMatchObject({ chargedCumulativeAmount: "1000" });
+    expect(result.extra?.voucherState).toEqual({
+      signedMaxClaimable: "1000",
+      signature: "0xaaa",
+    });
+  });
+
+  it("rejects a second in-flight request for the same channel as busy", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+    const requirements = delegatedRequirements();
+
+    const first = await scheme.verify(envelopeVoucher(voucherPayload("1000")), requirements);
+    const second = await scheme.verify(envelopeVoucher(voucherPayload("1000")), requirements);
+
+    expect(first.isValid).toBe(true);
+    expect(second.isValid).toBe(false);
+    expect(second.invalidReason).toBe(Errors.ErrChannelBusy);
+  });
+
+  it("accepts the channel again once the reservation expires", async () => {
+    mockChannelReads();
+    const { scheme, storage } = buildStoreScheme();
+    const requirements = delegatedRequirements();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000")), requirements);
+    await storage.updateChannel(channelId, current => ({
+      ...current!,
+      pendingRequest: { ...current!.pendingRequest!, expiresAt: Date.now() - 1 },
+    }));
+
+    const retry = await scheme.verify(envelopeVoucher(voucherPayload("1000")), requirements);
+    expect(retry.isValid).toBe(true);
+  });
+
+  it("settles a voucher offchain, advancing the watermark without a transaction", async () => {
+    mockChannelReads();
+    const { scheme, storage, signer } = buildStoreScheme();
+    const requirements = delegatedRequirements();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000")), requirements);
+    const result = await scheme.settle(envelopeVoucher(voucherPayload("1000")), requirements);
+
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("");
+    expect(result.amount).toBe("");
+    expect(result.extra).toMatchObject({
+      chargedAmount: "1000",
+      channelState: { channelId, chargedCumulativeAmount: "1000" },
+    });
+    expect(signer.writeContract).not.toHaveBeenCalled();
+
+    const stored = await storage.get(channelId);
+    expect(stored?.chargedCumulativeAmount).toBe("1000");
+    expect(stored?.signedMaxClaimable).toBe("1000");
+    expect(stored?.pendingRequest).toBeUndefined();
+  });
+
+  it("charges the settle-time amount when dynamic pricing lowers it", async () => {
+    mockChannelReads();
+    const { scheme, storage } = buildStoreScheme();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000")), delegatedRequirements());
+    const result = await scheme.settle(
+      envelopeVoucher(voucherPayload("1000")),
+      delegatedRequirements({ amount: "400" }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.extra).toMatchObject({ chargedAmount: "400" });
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("400");
+  });
+
+  it("rejects a settle that charges more than the verified amount", async () => {
+    mockChannelReads();
+    const { scheme, storage } = buildStoreScheme();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000")), delegatedRequirements());
+    const result = await scheme.settle(
+      envelopeVoucher(voucherPayload("1000")),
+      delegatedRequirements({ amount: "1500" }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrChargeExceedsSignedCumulative);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("0");
+  });
+
+  it("rejects a settle whose voucher never reserved the channel", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+    const requirements = delegatedRequirements();
+
+    await scheme.verify(envelopeVoucher(voucherPayload("1000", "0xaaa")), requirements);
+    const result = await scheme.settle(
+      envelopeVoucher(voucherPayload("1000", "0xbbb")),
+      requirements,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrChannelBusy);
+  });
+
+  it("rejects a settle for a channel the store has never seen", async () => {
+    const { scheme } = buildStoreScheme();
+    const result = await scheme.settle(
+      envelopeVoucher(voucherPayload("1000")),
+      delegatedRequirements(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrMissingChannel);
+  });
+
+  it("persists the deposit voucher and initialises the watermark on deposit settle", async () => {
+    const signer = buildSigner();
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1_000_000n },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [10_000n, 0n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ]);
+    const { scheme, storage } = buildStoreScheme({ signer });
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x0000000000000000000000000000000000000000000000000000000000000001",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+
+    const result = await scheme.settle(envelopeDeposit(deposit), delegatedRequirements());
+
+    expect(result.success).toBe(true);
+    expect(result.extra).toMatchObject({
+      chargedAmount: "1000",
+      channelState: { channelId, balance: "10000", chargedCumulativeAmount: "1000" },
+    });
+    const stored = await storage.get(channelId);
+    expect(stored?.signature).toBe("0xcafebabe");
+    expect(stored?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("does not support refunds while managed refunds are deferred", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+    const refund: BatchSettlementRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+    };
+
+    const result = await scheme.verify(envelopeRefund(refund), delegatedRequirements());
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrInvalidPayloadType);
+  });
+
+  it("rejects delegated requests when no voucher store is configured", async () => {
+    mockChannelReads();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
+
+    const verified = await scheme.verify(
+      envelopeVoucher(voucherPayload("1000")),
+      delegatedRequirements(),
+    );
+    const settled = await scheme.settle(
+      envelopeVoucher(voucherPayload("1000")),
+      delegatedRequirements(),
+    );
+
+    expect(verified.invalidReason).toBe(Errors.ErrInvalidPayloadType);
+    expect(settled.errorReason).toBe(Errors.ErrInvalidPayloadType);
+  });
+
+  it("rejects a voucher settle from a self-managed server", async () => {
+    mockChannelReads();
+    const { scheme } = buildStoreScheme();
+
+    const result = await scheme.settle(envelopeVoucher(voucherPayload("1000")), makeRequirements());
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrInvalidPayloadType);
+  });
+
+  it("keeps serving self-managed servers statelessly", async () => {
+    mockChannelReads();
+    const { scheme, storage } = buildStoreScheme();
+
+    const result = await scheme.verify(envelopeVoucher(voucherPayload("1000")), makeRequirements());
+
+    expect(result.isValid).toBe(true);
+    expect(result.extra?.chargedCumulativeAmount).toBeUndefined();
+    expect(await storage.get(channelId)).toBeUndefined();
   });
 });
 
