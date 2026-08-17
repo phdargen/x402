@@ -225,7 +225,7 @@ spend_controls = {
 |---------|---------|
 | `spend_controls: False` | Disable all spend controls (any asset, no caps). Useful for UI-confirmed flows (paywall) and tests. |
 | `max_amount_per_payment` | USD ceiling on payments in recognized USD-pegged assets (default **`$1`**). Set a higher value to raise the cap, or **`False`** to remove it. |
-| `allowed_assets` | Opt-in for non-default tokens. Omit for default assets only; `True` to allow any asset; or a list of `{ network, asset }` with optional atomic `max_amount_per_payment` per entry. |
+| `allowed_assets` | Opt-in for non-default tokens. Omit for default assets only; `True` to allow any asset; or a list of `{ network, asset }` with optional integer atomic `max_amount_per_payment` per entry (e.g. `"2000000"`, not `"$1"`). |
 
 ## Policies
 

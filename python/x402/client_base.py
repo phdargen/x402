@@ -195,7 +195,7 @@ class SpendControlAsset(_SpendControlAssetRequired, total=False):
     """Opt-in asset for SpendControls.allowed_assets.
 
     Default assets are always allowed; list non-default tokens here (and optional
-    atomic caps).
+    integer atomic caps, e.g. ``"2000000"``, not ``"$1"``).
     """
 
     max_amount_per_payment: str
@@ -557,7 +557,16 @@ class x402ClientBase:
         for requirement in filtered:
             asset_entry = find_asset_entry(requirement)
             if asset_entry is not None and asset_entry.get("max_amount_per_payment") is not None:
-                ok = amount_of(requirement) <= int(asset_entry["max_amount_per_payment"])
+                cap = asset_entry["max_amount_per_payment"]
+                if not _ATOMIC_AMOUNT.fullmatch(cap):
+                    raise ValueError(
+                        "spend_controls.allowed_assets[].max_amount_per_payment must be an "
+                        f"integer atomic amount, not a dollar value; got {cap!r}"
+                    )
+                if not _ATOMIC_AMOUNT.fullmatch(raw_amount_of(requirement)):
+                    rejected_by_asset_cap = True
+                    continue
+                ok = amount_of(requirement) <= int(cap)
                 if not ok:
                     rejected_by_asset_cap = True
                 else:

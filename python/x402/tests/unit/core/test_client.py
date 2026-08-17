@@ -918,6 +918,74 @@ class TestSpendControls:
         assert len(mock_client.create_calls) == 1
 
     @pytest.mark.asyncio
+    async def test_drops_non_integer_amount_on_per_asset_atomic_cap_path(self):
+        custom_asset = "0xCustomToken"
+        client, _ = self._client_with_default_asset(
+            self.usdc,
+            {
+                "allowed_assets": [
+                    {
+                        "asset": custom_asset,
+                        "network": self.network,
+                        "max_amount_per_payment": "10000",
+                    }
+                ]
+            },
+        )
+
+        with pytest.raises(Exception, match="allowed_assets max_amount_per_payment"):
+            await client.create_payment_payload(
+                self._required(self._req(asset=custom_asset, amount="1.5"))
+            )
+
+    @pytest.mark.asyncio
+    async def test_keeps_sibling_when_mixed_offer_has_non_integer_per_asset_amount(self):
+        custom_asset = "0xCustomToken"
+        client, mock_client = self._client_with_default_asset(
+            self.usdc,
+            {
+                "allowed_assets": [
+                    {
+                        "asset": custom_asset,
+                        "network": self.network,
+                        "max_amount_per_payment": "10000",
+                    }
+                ]
+            },
+        )
+
+        await client.create_payment_payload(
+            self._required(
+                self._req(asset=custom_asset, amount="1.5"),
+                self._req(asset=custom_asset, amount="100"),
+            )
+        )
+        assert mock_client.create_calls[0].amount == "100"
+
+    @pytest.mark.asyncio
+    async def test_errors_when_per_asset_cap_is_not_integer_atomic(self):
+        custom_asset = "0xCustomToken"
+        for cap in ("$1", "1.5"):
+            client, _ = self._client_with_default_asset(
+                self.usdc,
+                {
+                    "allowed_assets": [
+                        {
+                            "asset": custom_asset,
+                            "network": self.network,
+                            "max_amount_per_payment": cap,
+                        }
+                    ]
+                },
+            )
+            with pytest.raises(
+                Exception, match="max_amount_per_payment must be an integer atomic amount"
+            ):
+                await client.create_payment_payload(
+                    self._required(self._req(asset=custom_asset, amount="100"))
+                )
+
+    @pytest.mark.asyncio
     async def test_overrides_usd_cap_for_default_assets_by_id_or_symbol(self):
         by_id, mock_by_id = self._client_with_default_asset(
             self.usdc,

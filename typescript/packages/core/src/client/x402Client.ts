@@ -163,7 +163,7 @@ export interface SpendControlAsset {
   network: Network;
   /** On-chain asset id, or a default-asset symbol (e.g. `"PYUSD"`). */
   asset: string;
-  /** Optional atomic per-payment cap. Omit to allow uncapped. */
+  /** Optional integer atomic per-payment cap (e.g. `"2000000"`), not `"$1"`. Omit to allow uncapped. */
   maxAmountPerPayment?: string;
 }
 
@@ -187,7 +187,7 @@ export interface SpendControls {
    * Opt-in non-default assets.
    * - omit: default assets only
    * - `true`: allow any asset (USD cap still applies to defaults)
-   * - list: defaults plus listed entries; optional atomic `maxAmountPerPayment` per entry
+   * - list: defaults plus listed entries; optional integer atomic `maxAmountPerPayment` per entry
    */
   allowedAssets?: true | SpendControlAsset[];
 }
@@ -848,6 +848,15 @@ export class x402Client {
     filtered = filtered.filter(requirement => {
       const assetEntry = findAssetEntry(requirement);
       if (assetEntry?.maxAmountPerPayment != null) {
+        if (!isAtomicAmount(assetEntry.maxAmountPerPayment)) {
+          throw new Error(
+            `spendControls.allowedAssets[].maxAmountPerPayment must be an integer atomic amount, not a dollar value; got ${JSON.stringify(assetEntry.maxAmountPerPayment)}`,
+          );
+        }
+        if (!isAtomicAmount(rawAmountOf(requirement))) {
+          rejectedByAssetCap = true;
+          return false;
+        }
         const ok = amountOf(requirement) <= BigInt(assetEntry.maxAmountPerPayment);
         if (!ok) rejectedByAssetCap = true;
         return ok;
