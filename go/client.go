@@ -470,11 +470,17 @@ func (c *x402Client) applySpendControls(x402Version int, requirements []PaymentR
 	for _, requirement := range beforeAmountCaps {
 		assetEntry := findAssetEntry(requirement)
 		if assetEntry != nil && assetEntry.MaxAmountPerPayment != "" {
-			capN, ok := new(big.Int).SetString(assetEntry.MaxAmountPerPayment, 10)
-			if !ok {
+			if !atomicAmountPattern.MatchString(assetEntry.MaxAmountPerPayment) {
+				return nil, fmt.Errorf(
+					"spendControls.allowedAssets[].maxAmountPerPayment must be an integer atomic amount, not a dollar value; got %q",
+					assetEntry.MaxAmountPerPayment,
+				)
+			}
+			if !atomicAmountPattern.MatchString(rawAmountOf(requirement)) {
 				rejectedByAssetCap = true
 				continue
 			}
+			capN, _ := new(big.Int).SetString(assetEntry.MaxAmountPerPayment, 10)
 			if amountOf(requirement).Cmp(capN) <= 0 {
 				capped = append(capped, requirement)
 			} else {

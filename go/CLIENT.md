@@ -203,7 +203,7 @@ Accept selection runs in three stages: **spend controls** enforce built-in safet
 |---------|---------|
 | `DisableSpendControls()` | Disable all spend controls (any asset, no caps). Useful for UI-confirmed flows (paywall) and tests. |
 | `MaxAmountPerPayment` | USD ceiling on payments in recognized USD-pegged assets (default **`$1`**). Set a higher value to raise the cap, or `DisableMaxAmountPerPayment: true` to remove it. |
-| `AllowedAssets` | Opt-in for non-default tokens. Omit for default assets only; `AllowAnyAsset: true` to allow any asset; or a list of `{ Network, Asset }` with optional atomic `MaxAmountPerPayment` per entry. `Asset` may be an on-chain id or a default-asset symbol (e.g. `"PYUSD"`). |
+| `AllowedAssets` | Opt-in for non-default tokens. Omit for default assets only; `AllowAnyAsset: true` to allow any asset; or a list of `{ Network, Asset }` with optional atomic `MaxAmountPerPayment` per entry. Per-entry `MaxAmountPerPayment` is an integer atomic string (`"2000000"`), not `"$1"`. `Asset` may be an on-chain id or a default-asset symbol (e.g. `"PYUSD"`). |
 
 Network scoping is separate: register only the networks you intend to pay on. Unregistered networks are never selected regardless of spend controls.
 

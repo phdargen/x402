@@ -995,6 +995,43 @@ func TestSpendControls(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("rejects a non-integer 402 amount on a per-asset atomic cap", func(t *testing.T) {
+		customAsset := "0xCustomToken"
+		client := clientWithDefaultAsset(usdc, &SpendControls{
+			AllowedAssets: []SpendControlAsset{{Asset: customAsset, Network: network, MaxAmountPerPayment: "10000"}},
+		}, false)
+		_, err := client.SelectPaymentRequirements([]types.PaymentRequirements{req(customAsset, "1.5", "")})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "allowedAssets maxAmountPerPayment")
+	})
+
+	t.Run("keeps a sibling atomic accept when a per-asset amount is not an integer", func(t *testing.T) {
+		customAsset := "0xCustomToken"
+		client := clientWithDefaultAsset(usdc, &SpendControls{
+			AllowedAssets: []SpendControlAsset{{Asset: customAsset, Network: network, MaxAmountPerPayment: "10000"}},
+		}, false)
+		selected, err := client.SelectPaymentRequirements([]types.PaymentRequirements{
+			req(customAsset, "1.5", ""),
+			req(customAsset, "100", ""),
+		})
+		require.NoError(t, err)
+		require.Equal(t, "100", selected.Amount)
+	})
+
+	t.Run("errors when a per-asset cap is not an integer atomic amount", func(t *testing.T) {
+		customAsset := "0xCustomToken"
+		for _, cap := range []string{"$1", "1.5"} {
+			client := clientWithDefaultAsset(usdc, &SpendControls{
+				AllowedAssets: []SpendControlAsset{{Asset: customAsset, Network: network, MaxAmountPerPayment: cap}},
+			}, false)
+			_, err := client.SelectPaymentRequirements([]types.PaymentRequirements{req(customAsset, "100", "")})
+			require.Error(t, err, "cap %q", cap)
+			require.Contains(t, err.Error(), "maxAmountPerPayment")
+			require.Contains(t, err.Error(), "integer atomic")
+			require.NotContains(t, err.Error(), "Raise the per-asset cap")
+		}
+	})
+
 	t.Run("overrides the USD cap for default assets by id or symbol", func(t *testing.T) {
 		byID := clientWithDefaultAsset(usdc, &SpendControls{
 			AllowedAssets: []SpendControlAsset{{Asset: usdc.Asset, Network: network, MaxAmountPerPayment: "500000"}},
