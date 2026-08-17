@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-const (
-	TokenProgramAddress     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-	Token2022ProgramAddress = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
-)
-
 // SvmDefaultAsset is a USD-pegged SVM asset used for money strings and spend caps.
 type SvmDefaultAsset struct {
 	Asset        string
