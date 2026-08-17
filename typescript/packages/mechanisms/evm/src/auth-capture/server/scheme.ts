@@ -16,7 +16,12 @@ import type {
 } from "@x402/core/types";
 import type { SettleContext, VerifiedPaymentCanceledContext } from "@x402/core/server";
 import type { FacilitatorClient } from "@x402/core/server";
-import { convertToTokenAmount, numberToDecimalString, parseMoney } from "@x402/core/utils";
+import {
+  convertToTokenAmount,
+  networkMatchesPattern,
+  numberToDecimalString,
+  parseMoney,
+} from "@x402/core/utils";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
@@ -62,7 +67,57 @@ function resolveOffsetToDeadline(
   return now + raw;
 }
 
+/**
+ * Collect facilitator submitter addresses whose family pattern matches the
+ * route network.
+ *
+ * @param signersByFamily - Signer addresses grouped by CAIP-2 family pattern from `/supported`.
+ * @param network - Route network used to filter matching signer families.
+ * @returns Deduplicated submitter addresses applicable to `network`.
+ */
+function resolveSignersForNetwork(
+  signersByFamily: Record<string, string[]>,
+  network: Network,
+): string[] {
+  const result = new Set<string>();
+  for (const [family, addresses] of Object.entries(signersByFamily)) {
+    if (networkMatchesPattern(family as Network, network)) {
+      for (const address of addresses) {
+        result.add(address);
+      }
+    }
+  }
+  return Array.from(result);
+}
+
+/**
+ * Select the capture authorizer for delegated routes from facilitator signers.
+ *
+ * @param signers - Submitter addresses resolved for the route network.
+ * @returns The sole capture authorizer address.
+ * @throws If no signers are available or more than one submitter is advertised.
+ */
+function pickDelegatedCaptureAuthorizer(signers: readonly string[]): string {
+  if (signers.length === 0) {
+    throw new Error(
+      'AuthCapture requires extra.captureAuthorizer for operatorType "delegated", or a facilitator ' +
+        "submitter in /supported signers. Pass lifecycle: { facilitator } on AuthCaptureEvmScheme " +
+        "so delegated routes can resolve the relayer automatically.",
+    );
+  }
+  if (signers.length > 1) {
+    throw new Error(
+      "AuthCapture requires extra.captureAuthorizer when the facilitator advertises multiple submitters " +
+        "in /supported signers.",
+    );
+  }
+  return signers[0]!;
+}
+
 const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
+  captureAuthorizer:
+    ' For operatorType "delegated", omit extra.captureAuthorizer and pass lifecycle.facilitator so ' +
+    "the scheme can resolve the relayer from /supported signers.",
   captureDeadline:
     " Set extra.captureDeadlineSeconds (relative, recommended) or extra.captureDeadline (absolute).",
   refundDeadline:
@@ -109,6 +164,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   private moneyParsers: MoneyParser[] = [];
   private readonly lifecycle: AuthCaptureLifecycleManager;
   private readonly authorizerSigner: AuthorizerSigner | undefined;
+  private readonly facilitatorClient: FacilitatorClient | undefined;
+  private supportedSignersFetch: Promise<Record<string, string[]>> | undefined;
 
   /**
    * Construct a server-side auth-capture scheme.
@@ -117,10 +174,11 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
    */
   constructor(config?: AuthCaptureServerConfig) {
     this.authorizerSigner = config?.lifecycle?.authorizerSigner;
+    this.facilitatorClient = config?.lifecycle?.facilitator;
     this.lifecycle = new AuthCaptureLifecycleManager({
       storage: config?.storage ?? new InMemoryAuthorizedPaymentStorage(),
       authorizerSigner: this.authorizerSigner,
-      facilitator: config?.lifecycle?.facilitator,
+      facilitator: this.facilitatorClient,
     });
     this.schemeHooks = {
       onBeforeSettle: ctx => this.lifecycle.handleBeforeSettle(ctx),
@@ -256,6 +314,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       if (refundFromOffset !== undefined) merged.refundDeadline = refundFromOffset;
     }
 
+    await this.resolveDelegatedCaptureAuthorizerIfNeeded(merged, requirements.network);
+
     assertAuthCaptureMerchantExtraComplete(merged);
 
     const paymentFlow = merged.paymentFlow === "authorization" ? "authorization" : "escrow";
@@ -357,6 +417,55 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
    */
   listAuthorizedPayments(): Promise<AuthorizedPayment[]> {
     return this.lifecycle.listAuthorizedPayments();
+  }
+
+  /**
+   * Load and cache `/supported` signers for delegated `captureAuthorizer` resolution.
+   *
+   * @returns Signers map keyed by CAIP family pattern.
+   * @throws When `lifecycle.facilitator` was not configured on the scheme.
+   */
+  private loadSupportedSigners(): Promise<Record<string, string[]>> {
+    if (!this.facilitatorClient) {
+      return Promise.reject(
+        new Error(
+          'AuthCapture requires extra.captureAuthorizer for operatorType "delegated", or ' +
+            "lifecycle.facilitator on AuthCaptureEvmScheme to resolve it from /supported signers.",
+        ),
+      );
+    }
+
+    if (!this.supportedSignersFetch) {
+      this.supportedSignersFetch = this.facilitatorClient
+        .getSupported()
+        .then(supported => supported.signers);
+    }
+
+    return this.supportedSignersFetch;
+  }
+
+  /**
+   * Fill `extra.captureAuthorizer` for delegated routes from facilitator signers
+   * when the merchant did not set it on the route.
+   *
+   * @param merged - Merged `extra` map being assembled for publication.
+   * @param network - Route network used to match `/supported` signer families.
+   */
+  private async resolveDelegatedCaptureAuthorizerIfNeeded(
+    merged: Record<string, unknown>,
+    network: Network,
+  ): Promise<void> {
+    const operatorType = merged.operatorType ?? "delegated";
+    if (operatorType !== "delegated") return;
+
+    if (typeof merged.captureAuthorizer === "string" && merged.captureAuthorizer.length > 0) {
+      return;
+    }
+
+    const signersByFamily = await this.loadSupportedSigners();
+    merged.captureAuthorizer = pickDelegatedCaptureAuthorizer(
+      resolveSignersForNetwork(signersByFamily, network),
+    );
   }
 
   /**

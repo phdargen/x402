@@ -1,12 +1,14 @@
 # auth-capture Client Example
 
-Fetch-based client that pays for a single request to an [auth-capture](../../../specs/schemes/auth-capture/scheme_auth-capture_evm.md)-protected endpoint. Signs an ERC-3009 `ReceiveWithAuthorization` whose `nonce` is the payer-agnostic PaymentInfo hash (per the [scheme spec](../../../specs/schemes/auth-capture/scheme_auth-capture_evm.md#nonce-derivation-both-methods)).
+Fetch-based client that pays for a single request to an [auth-capture v1.1](../../../../specs/proposed/scheme_auth_capture_evm.md)-protected endpoint. Signs an ERC-3009 `ReceiveWithAuthorization` whose `nonce` is the payer-agnostic PaymentInfo hash.
+
+Works with all three [server flows](../servers/auth-capture/): delegated sync, delegated deferred, and custom escrow collect-only.
 
 ## Prerequisites
 
 - Node.js v20+, pnpm v10
-- A running auth-capture server to pay against (the server/facilitator SDK lands separately; point `RESOURCE_SERVER_URL` at any auth-capture endpoint)
-- A funded EVM key holding the requested asset (USDC on Base Sepolia by default)
+- A running [auth-capture server](../servers/auth-capture/) and [facilitator](../facilitator/auth-capture/)
+- A funded EVM key holding USDC on Base Sepolia
 
 ## Setup
 
@@ -16,25 +18,34 @@ cp .env-local .env
 
 cd ../../..
 pnpm install && pnpm build
-cd examples/clients/auth-capture
+cd examples/typescript/clients/auth-capture
 
 pnpm start
 ```
 
+Start the matching server flow first (`pnpm delegated-sync`, `delegated-deferred`, or `custom-escrow` under `servers/auth-capture`).
+
+For **delegated deferred**, capture the hold after paying:
+
+```bash
+cd ../servers/auth-capture && pnpm capture-pending
+```
+
 ## Environment
 
-| Variable              | Required | Default                 |
-| :-------------------- | :------- | :---------------------- |
-| `EVM_PRIVATE_KEY`     | Yes      | (none)                  |
-| `RESOURCE_SERVER_URL` | No       | `http://localhost:4021` |
-| `ENDPOINT_PATH`       | No       | `/weather`              |
+| Variable | Required | Default |
+| :-- | :-- | :-- |
+| `EVM_PRIVATE_KEY` | Yes | (none) |
+| `RESOURCE_SERVER_URL` | No | `http://localhost:4021` |
+| `ENDPOINT_PATH` | No | `/weather` |
 
 ## What happens
 
-1. Client builds and signs an ERC-3009 payload with the `Eip3009Payload` shape.
+1. Client builds and signs an ERC-3009 payload (`Eip3009Payload` shape; Permit2 is also supported when advertised).
 2. `wrapFetchWithPayment` retries the request with the `PAYMENT-SIGNATURE` header on first `402`.
 3. Server verifies, then asks the facilitator to settle.
-4. Facilitator submits `AuthCaptureEscrow.authorize(...)` (two-phase); funds are locked in escrow under the captureAuthorizer's control.
-5. Server returns the resource; the example prints the body and the payment response.
+4. **Delegated sync:** facilitator submits `authorize`, handler runs, server relays signed `capture`.
+5. **Delegated deferred:** facilitator submits `authorize`; after-handler settle is skipped — run `pnpm capture-pending` on the server.
+6. **Custom escrow:** facilitator submits collect `authorize` via the custom operator; lifecycle is out of band.
 
-Capture, void, and refund are performed by whoever holds the `captureAuthorizer` role and are out of scope for the client.
+The client only participates in the collect step. Capture, void, and refund are server/operator responsibilities.

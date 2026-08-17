@@ -67,7 +67,6 @@ app.use(
           network: "eip155:84532",
           payTo: receiverAddress,
           extra: {
-            captureAuthorizer, // facilitator submitter for "delegated", or a custom operator
             captureDeadlineSeconds: 3600, // seconds-from-now; scheme converts to absolute per request
             refundDeadlineSeconds: 7200,
             feeRecipient: zeroAddress, // address(0) with zero bounds: no facilitator fee
@@ -91,7 +90,7 @@ Import `AuthCaptureRouteExtra` from `@x402/evm/auth-capture/server` if you want 
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `captureAuthorizer` | `address` | Committed onchain as `PaymentInfo.operator`. See [Operator types](#operator-types) below. |
+| `captureAuthorizer` | `address` | Committed onchain as `PaymentInfo.operator`. For `operatorType: "delegated"`, omit this when `lifecycle.facilitator` is configured — the scheme resolves it from `/supported` signers (like SVM `feePayer`). Required for `"custom"`. See [Operator types](#operator-types) below. |
 | `feeRecipient` | `address` | `address(0)` lets the captureAuthorizer pick a non-zero recipient at capture/charge time. |
 | `minFeeBps` | `uint16` | Floor on the captureAuthorizer's fee. `0` = no minimum. |
 | `maxFeeBps` | `uint16` | Cap on the captureAuthorizer's fee. |

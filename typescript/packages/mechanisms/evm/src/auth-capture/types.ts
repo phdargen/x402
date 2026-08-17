@@ -48,16 +48,25 @@ type AuthCaptureDeadlineExtra =
       refundDeadline?: never;
     };
 
-type AuthCaptureSharedExtra = {
-  captureAuthorizer: `0x${string}`;
+type AuthCaptureMerchantFeesExtra = {
   feeRecipient: `0x${string}`;
   minFeeBps: number;
   maxFeeBps: number;
   name: string;
   version: string;
   policy?: `0x${string}`;
-  operatorType?: Exclude<AuthCaptureOperatorType, "policy">;
   assetTransferMethod?: AssetTransferMethod;
+};
+
+type AuthCaptureDelegatedRouteExtra = AuthCaptureMerchantFeesExtra & {
+  operatorType?: "delegated";
+  /** Omitted for delegated routes when lifecycle.facilitator resolves it from /supported signers. */
+  captureAuthorizer?: `0x${string}`;
+};
+
+type AuthCaptureCustomRouteExtra = AuthCaptureMerchantFeesExtra & {
+  operatorType: "custom";
+  captureAuthorizer: `0x${string}`;
 };
 
 /**
@@ -66,7 +75,7 @@ type AuthCaptureSharedExtra = {
  * authorization route, mixed absolute/relative deadlines) are unrepresentable
  * when the literal is checked with `satisfies AuthCaptureRouteExtra`.
  */
-export type AuthCaptureRouteExtra = AuthCaptureSharedExtra &
+export type AuthCaptureRouteExtra = (AuthCaptureDelegatedRouteExtra | AuthCaptureCustomRouteExtra) &
   AuthCaptureLifecycleExtra &
   AuthCaptureDeadlineExtra;
 
