@@ -52,6 +52,51 @@ export const ESCROW_ABI = [
     ],
     outputs: [],
   },
+  {
+    name: "capture",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+      { name: "amount", type: "uint256" },
+      { name: "feeBps", type: "uint16" },
+      { name: "feeReceiver", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "void",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+    ],
+    outputs: [],
+  },
+  {
+    name: "refund",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+      { name: "amount", type: "uint256" },
+      { name: "tokenCollector", type: "address" },
+      { name: "collectorData", type: "bytes" },
+    ],
+    outputs: [],
+  },
 ] as const;
 
 // ERC-20 balanceOf ABI for balance checks
@@ -65,8 +110,8 @@ export const ERC20_BALANCE_OF_ABI = [
   },
 ] as const;
 
-// View functions on AuthCaptureEscrow used by tests / introspection. Not part
-// of ESCROW_ABI because settle/simulate paths only need authorize + charge.
+// View functions on AuthCaptureEscrow used by verify (paymentState single-use
+// checks) and tests / introspection.
 export const ESCROW_VIEW_ABI = [
   {
     name: "getHash",
@@ -142,4 +187,16 @@ export const ESCROW_ERRORS_ABI = [
     inputs: [{ type: "bytes32" }, { type: "uint256" }, { type: "uint256" }],
   },
   { type: "error", name: "ZeroAuthorization", inputs: [{ type: "bytes32" }] },
+  {
+    type: "error",
+    name: "AfterRefundExpiry",
+    inputs: [{ type: "uint48" }, { type: "uint48" }],
+  },
+  {
+    type: "error",
+    name: "RefundExceedsCapture",
+    inputs: [{ type: "uint256" }, { type: "uint256" }],
+  },
 ] as const;
+
+export const ESCROW_ABI_WITH_ERRORS = [...ESCROW_ABI, ...ESCROW_ERRORS_ABI] as const;

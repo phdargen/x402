@@ -1,5 +1,5 @@
 import type { PaymentRequirements } from "@x402/core/types";
-import type { AuthCaptureDeployment } from "./constants";
+import { EIP3009_TOKEN_COLLECTOR_ADDRESS, PERMIT2_TOKEN_COLLECTOR_ADDRESS } from "./constants";
 import type {
   AuthCaptureCollectPayload,
   AuthCaptureExtra,
@@ -62,21 +62,13 @@ export function paymentInfoToContractTuple(p: PaymentInfoStruct) {
 /**
  * Unpack the per-method inputs the escrow needs at collect settle time.
  *
- * `collectorData` is the client's signature exactly as it arrived, ERC-6492 wrapper and
- * all. Both canonical collectors pass it through `ERC6492SignatureHandler`, which strips
- * the wrapper, runs the preparation call via Multicall3, and hands only the inner
- * signature to the token or Permit2. Unwrapping here would therefore drop the deployment
- * step an undeployed payer wallet depends on.
- *
  * @param wirePayload - The verified collect payload (EIP-3009 or Permit2).
  * @param assetTransferMethod - Which envelope the payload uses.
- * @param deployment - Resolved commerce-payments deployment.
  * @returns `preApprovalExpiry`, signed `amount`, `tokenCollector`, and `collectorData`.
  */
 export function unpackForSettle(
   wirePayload: AuthCaptureCollectPayload,
   assetTransferMethod: "eip3009" | "permit2",
-  deployment: AuthCaptureDeployment,
 ): {
   preApprovalExpiry: number;
   amount: bigint;
@@ -88,7 +80,7 @@ export function unpackForSettle(
     return {
       preApprovalExpiry: Number(p.authorization.validBefore),
       amount: BigInt(p.authorization.value),
-      tokenCollector: deployment.eip3009Collector,
+      tokenCollector: EIP3009_TOKEN_COLLECTOR_ADDRESS,
       collectorData: p.signature,
     };
   }
@@ -96,7 +88,7 @@ export function unpackForSettle(
   return {
     preApprovalExpiry: Number(p.permit2Authorization.deadline),
     amount: BigInt(p.permit2Authorization.permitted.amount),
-    tokenCollector: deployment.permit2Collector,
+    tokenCollector: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
     collectorData: p.signature,
   };
 }

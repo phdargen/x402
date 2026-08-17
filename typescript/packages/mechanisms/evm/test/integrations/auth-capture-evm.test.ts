@@ -81,7 +81,7 @@ class EvmFacilitatorClient implements FacilitatorClient {
  * @param payTo - Receiver address.
  * @param amount - Amount in smallest token units (USDC has 6 decimals).
  * @param captureAuthorizer - Address allowed to authorize/capture/void on escrow: facilitator's submitter EOA, or a smart contract that ultimately calls escrow as msg.sender.
- * @param overrides - Optional `extra` overrides (e.g., autoCapture, assetTransferMethod).
+ * @param overrides - Optional `extra` overrides (e.g., paymentFlow, assetTransferMethod).
  * @returns Configured {@link PaymentRequirements}.
  */
 function buildAuthCaptureRequirements(
@@ -188,13 +188,14 @@ describe("AuthCapture EVM Integration Tests", () => {
     });
 
     it(
-      "EIP-3009 + autoCapture: false — verifies and authorizes escrow",
+      "EIP-3009 + paymentFlow escrow — verifies and authorizes escrow",
       { timeout: 60000 },
       async () => {
         const accepts = [
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "eip3009",
-            autoCapture: false,
+            paymentFlow: "escrow",
+            captureMode: "deferred",
           }),
         ];
         const resource = {
@@ -225,13 +226,13 @@ describe("AuthCapture EVM Integration Tests", () => {
     );
 
     it(
-      "EIP-3009 + autoCapture: true — verifies and charges (single-shot transfer)",
+      "EIP-3009 + paymentFlow authorization — verifies and charges (single-shot transfer)",
       { timeout: 60000 },
       async () => {
         const accepts = [
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "eip3009",
-            autoCapture: true,
+            paymentFlow: "authorization",
           }),
         ];
         const resource = {
@@ -254,13 +255,14 @@ describe("AuthCapture EVM Integration Tests", () => {
     );
 
     it(
-      "Permit2 + autoCapture: false — verifies and authorizes (requires Permit2 pre-approval)",
+      "Permit2 + paymentFlow escrow — verifies and authorizes (requires Permit2 pre-approval)",
       { timeout: 60000 },
       async () => {
         const accepts = [
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "permit2",
-            autoCapture: false,
+            paymentFlow: "escrow",
+            captureMode: "deferred",
           }),
         ];
         const resource = {
@@ -283,13 +285,13 @@ describe("AuthCapture EVM Integration Tests", () => {
     );
 
     it(
-      "Permit2 + autoCapture: true — verifies and charges (requires Permit2 pre-approval)",
+      "Permit2 + paymentFlow authorization — verifies and charges (requires Permit2 pre-approval)",
       { timeout: 60000 },
       async () => {
         const accepts = [
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "permit2",
-            autoCapture: true,
+            paymentFlow: "authorization",
           }),
         ];
         const resource = {

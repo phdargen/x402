@@ -12,7 +12,6 @@
  * is added beside `salt`.
  */
 
-import type { PendingSettlementStore } from "@x402/core/facilitator";
 import type { TypedData } from "viem";
 import type { AssetTransferMethod } from "../types";
 
@@ -31,11 +30,8 @@ export interface AuthorizerSigner {
 }
 
 type AuthCaptureLifecycleExtra =
-  | {
-      paymentFlow?: "escrow";
-      captureMode?: AuthCaptureCaptureMode;
-      receiverAuthorizer?: `0x${string}`;
-    }
+  | { paymentFlow?: "escrow"; captureMode?: "sync"; receiverAuthorizer: `0x${string}` }
+  | { paymentFlow?: "escrow"; captureMode: "deferred"; receiverAuthorizer?: `0x${string}` }
   | { paymentFlow: "authorization"; captureMode?: never; receiverAuthorizer?: `0x${string}` };
 
 type AuthCaptureDeadlineExtra =
@@ -52,37 +48,25 @@ type AuthCaptureDeadlineExtra =
       refundDeadline?: never;
     };
 
-type AuthCaptureMerchantFeesExtra = {
+type AuthCaptureSharedExtra = {
+  captureAuthorizer: `0x${string}`;
   feeRecipient: `0x${string}`;
   minFeeBps: number;
   maxFeeBps: number;
   name: string;
   version: string;
   policy?: `0x${string}`;
+  operatorType?: Exclude<AuthCaptureOperatorType, "policy">;
   assetTransferMethod?: AssetTransferMethod;
-};
-
-type AuthCaptureDelegatedRouteExtra = AuthCaptureMerchantFeesExtra & {
-  operatorType?: "delegated";
-  /** Omitted for delegated routes when the facilitator advertises it on `/supported` extra. */
-  captureAuthorizer?: `0x${string}`;
-};
-
-type AuthCaptureCustomRouteExtra = AuthCaptureMerchantFeesExtra & {
-  operatorType: "custom";
-  captureAuthorizer: `0x${string}`;
-  /** Collect-only: the facilitator relays no lifecycle, so sync has nothing to finalize with. */
-  captureMode?: "deferred";
 };
 
 /**
  * Merchant-authored route extra. Correlated optionals are unions so forbidden
- * combinations (captureMode on an authorization route, sync capture on a custom
- * operator, mixed absolute/relative deadlines) are unrepresentable when the
- * literal is checked with `satisfies AuthCaptureRouteExtra`. Escrow sync derives
- * `receiverAuthorizer` from the scheme signer when the route omits it.
+ * combinations (sync escrow without a receiver authorizer, captureMode on an
+ * authorization route, mixed absolute/relative deadlines) are unrepresentable
+ * when the literal is checked with `satisfies AuthCaptureRouteExtra`.
  */
-export type AuthCaptureRouteExtra = (AuthCaptureDelegatedRouteExtra | AuthCaptureCustomRouteExtra) &
+export type AuthCaptureRouteExtra = AuthCaptureSharedExtra &
   AuthCaptureLifecycleExtra &
   AuthCaptureDeadlineExtra;
 
@@ -100,7 +84,6 @@ export interface AuthCaptureExtra {
   maxFeeBps: number;
   name: string;
   version: string;
-  authCaptureEscrow?: `0x${string}`;
   paymentFlow?: AuthCapturePaymentFlow;
   captureMode?: AuthCaptureCaptureMode;
   receiverAuthorizer?: `0x${string}`;
@@ -125,52 +108,17 @@ export type AuthCaptureFacilitatorConfig = {
   operators?: OperatorAllowlistEntry[];
   receiverAuthorizer?: `0x${string}`;
   /**
-   * Max gas for a custom-operator collect relay (`authorize` or `charge`).
-   * Used as the verify reject threshold and as a hard broadcast ceiling.
-   *
-   * @default DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT (1_000_000)
-   */
-  customOperatorAuthorizeGasLimit?: bigint;
-  /**
-   * Allowlist of ERC-6492 preparation targets (hex strings, case-insensitive) the
-   * facilitator accepts for an undeployed payer wallet.
-   *
-   * A counterfactual payer has no `isValidSignature` to call, so its signature can only
-   * be validated by the onchain simulation, where the canonical token collector deploys
-   * the wallet before checking the inner signature. The collector makes that preparation
-   * call through Multicall3, so the facilitator is never its sender; the allowlist exists
-   * to bound the gas an unknown preparation target can burn. An empty or omitted list
-   * rejects every counterfactual payment.
-   *
-   * @default []
-   */
-  eip6492AllowedFactories?: string[];
-  /**
    * When true, the facilitator relays `type: "refund"` for `"delegated"`
    * operators. Requires an out-of-band funding agreement: refunds pull tokens
-   * from `PaymentInfo.operator`. With a rotated submitter set, every address
-   * in the rotation must be funded and approved — `OperatorRefundCollector`
-   * pulls with `safeTransferFrom(token, PaymentInfo.operator, ...)`.
-   *
-   * Each submitter also gets its own CREATE2 `TokenStore` on first authorize,
-   * so N keys mean N deployment costs and escrow-held balances split N ways.
+   * from the operator (the facilitator's submitter).
    */
   refundFunding?: boolean;
-  /**
-   * Lets a retried settle for the same payload reconcile against an
-   * already-broadcast transaction instead of re-verifying and
-   * re-broadcasting (see {@link PendingSettlementStore}). Defaults to a
-   * fresh in-memory store shared across all settle calls on this scheme
-   * instance.
-   */
-  pendingSettlementStore?: PendingSettlementStore;
 };
 
-export type CaptureOptions = {
-  feeReceiver?: `0x${string}`;
-  feeBps?: number;
-  feeAmount?: string;
-} & ({ amount?: string; voidRemainder?: false } | { amount: string; voidRemainder: true });
+export type CaptureOptions = { feeBps?: number; feeReceiver?: `0x${string}` } & (
+  | { amount?: string; voidRemainder?: false }
+  | { amount: string; voidRemainder: true }
+);
 
 /**
  * Type guard for AuthCaptureExtra. Checks the structural shape an auth-capture
@@ -195,26 +143,16 @@ export function isAuthCaptureExtra(value: unknown): value is AuthCaptureExtra {
   );
 }
 
-type ChargeCompletionV1_0 = {
+type ChargeCompletion = {
   amount: string;
   feeBps: number;
   feeReceiver: `0x${string}`;
   authorizerSignature: `0x${string}`;
 };
 
-type ChargeCompletionV1_1 = {
-  amount: string;
-  feeAmount: string;
-  feeReceiver: `0x${string}`;
-  authorizerSignature: `0x${string}`;
-};
-
-type ChargeCompletion = ChargeCompletionV1_0 | ChargeCompletionV1_1;
-
 type NoChargeCompletion = {
   amount?: never;
   feeBps?: never;
-  feeAmount?: never;
   feeReceiver?: never;
   authorizerSignature?: never;
 };
@@ -265,11 +203,12 @@ type LifecycleBase = {
 export type CapturePayload = LifecycleBase & {
   type: "capture";
   amount: string;
+  feeBps: number;
   feeReceiver: `0x${string}`;
   expectedCapturableAmount: string;
   expectedRefundableAmount: string;
   voidAuthorizerSignature?: `0x${string}`;
-} & ({ feeBps: number; feeAmount?: never } | { feeAmount: string; feeBps?: never });
+};
 
 export type VoidPayload = LifecycleBase & {
   type: "void";
@@ -310,13 +249,11 @@ export function isLifecyclePayload(value: unknown): value is AuthCaptureLifecycl
 export function isCapturePayload(value: unknown): value is CapturePayload {
   if (!isLifecyclePayload(value) || value.type !== "capture") return false;
   const v = value as Record<string, unknown>;
-  const hasFeeBps = typeof v.feeBps === "number";
-  const hasFeeAmount = typeof v.feeAmount === "string";
-  if (hasFeeBps === hasFeeAmount) return false;
   return (
     isPaymentInfoStruct(v.paymentInfo) &&
     typeof v.saltNonce === "string" &&
     typeof v.amount === "string" &&
+    typeof v.feeBps === "number" &&
     typeof v.feeReceiver === "string" &&
     typeof v.expectedCapturableAmount === "string" &&
     typeof v.expectedRefundableAmount === "string" &&
@@ -404,37 +341,17 @@ function isHexString(value: unknown): value is `0x${string}` {
  * @returns ChargeCompletion when all four are present and well-typed; undefined when all are absent.
  */
 function readChargeCompletion(v: Record<string, unknown>): ChargeCompletion | undefined {
-  const hasAny =
-    "amount" in v ||
-    "feeBps" in v ||
-    "feeAmount" in v ||
-    "feeReceiver" in v ||
-    "authorizerSignature" in v;
+  const hasAny = "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
   if (!hasAny) return undefined;
   if (
     typeof v.amount === "string" &&
     typeof v.feeBps === "number" &&
-    v.feeAmount === undefined &&
     typeof v.feeReceiver === "string" &&
     typeof v.authorizerSignature === "string"
   ) {
     return {
       amount: v.amount,
       feeBps: v.feeBps,
-      feeReceiver: v.feeReceiver as `0x${string}`,
-      authorizerSignature: v.authorizerSignature as `0x${string}`,
-    };
-  }
-  if (
-    typeof v.amount === "string" &&
-    typeof v.feeAmount === "string" &&
-    v.feeBps === undefined &&
-    typeof v.feeReceiver === "string" &&
-    typeof v.authorizerSignature === "string"
-  ) {
-    return {
-      amount: v.amount,
-      feeAmount: v.feeAmount,
       feeReceiver: v.feeReceiver as `0x${string}`,
       authorizerSignature: v.authorizerSignature as `0x${string}`,
     };
@@ -484,11 +401,7 @@ export function isEip3009Payload(value: unknown): value is Eip3009Payload {
   const saltFields = collectExtras(v);
   if (!saltFields) return false;
   const hasAnyCharge =
-    "amount" in v ||
-    "feeBps" in v ||
-    "feeAmount" in v ||
-    "feeReceiver" in v ||
-    "authorizerSignature" in v;
+    "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
   if (hasAnyCharge) {
     if (!saltFields.saltNonce) return false;
     return readChargeCompletion(v) !== undefined;
@@ -522,11 +435,7 @@ export function isPermit2Payload(value: unknown): value is Permit2Payload {
   const saltFields = collectExtras(v);
   if (!saltFields) return false;
   const hasAnyCharge =
-    "amount" in v ||
-    "feeBps" in v ||
-    "feeAmount" in v ||
-    "feeReceiver" in v ||
-    "authorizerSignature" in v;
+    "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
   if (hasAnyCharge) {
     if (!saltFields.saltNonce) return false;
     return readChargeCompletion(v) !== undefined;
