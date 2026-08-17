@@ -354,6 +354,9 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       }
     }
 
+    // Facilitator-only allowlist from GET /supported — not part of the 402 wire.
+    delete merged.operators;
+
     return { ...requirements, extra: merged };
   }
 

@@ -41,7 +41,13 @@ import {
   verifyCommon,
   type NormalizedAuthCaptureExtra,
 } from "../extra";
-import { collectPayer, simulateEscrowCall, submitEscrowCall, SAFETY_MARGIN_SECONDS } from "./utils";
+import {
+  collectPayer,
+  readPaymentStateForBalances,
+  simulateEscrowCall,
+  submitEscrowCall,
+  SAFETY_MARGIN_SECONDS,
+} from "./utils";
 
 /**
  * Bound-collect `saltNonce`, if present.
@@ -393,6 +399,22 @@ export async function settleCollect(
       network: requirements.network,
       payer,
     };
+  }
+
+  const chainId = getEvmChainId(requirements.network);
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+
+  if (functionName === "authorize") {
+    const { state } = await readPaymentStateForBalances(signer, paymentInfoHash, settleAmount, 0n);
+    if (!state || state.capturableAmount !== settleAmount || state.refundableAmount !== 0n) {
+      return {
+        success: false,
+        errorReason: Errors.ErrUnexpectedPaymentState,
+        transaction: submitted.txHash,
+        network: requirements.network,
+        payer,
+      };
+    }
   }
 
   return {

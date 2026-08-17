@@ -240,6 +240,22 @@ describe("AuthCaptureEvmScheme", () => {
       });
     });
 
+    it("should not mirror facilitator operators allowlist onto 402 extra", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+        extra: {
+          operators: [{ address: "*", operatorType: "custom" }],
+        },
+      };
+
+      const result = await scheme.enhancePaymentRequirements(baseRequirements, supportedKind, []);
+
+      expect(result.extra).not.toHaveProperty("operators");
+    });
+
     it("should preserve existing extra fields from requirements", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
@@ -1110,6 +1126,84 @@ describe("AuthCaptureEvmScheme", () => {
         authorizerSignature: "0xsig",
       });
       expect(enrichment).not.toHaveProperty("saltNonce");
+    });
+
+    it("should keep authorized maxAmount in capture paymentInfo when settle amount is overridden", async () => {
+      const authorizerSigner = {
+        address: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+        signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
+      };
+      const scheme = new AuthCaptureEvmScheme({
+        lifecycle: {
+          authorizerSigner,
+          facilitator: { settle: vi.fn() } as unknown as FacilitatorClient,
+        },
+      });
+      const future = Math.floor(Date.now() / 1000) + 86400;
+      const extra = {
+        captureAuthorizer: "0x1234567890123456789012345678901234567890",
+        captureDeadline: future,
+        refundDeadline: future + 86400,
+        feeRecipient: "0x0000000000000000000000000000000000000000",
+        minFeeBps: 0,
+        maxFeeBps: 0,
+        name: "USDC",
+        version: "2",
+        paymentFlow: "escrow" as const,
+        captureMode: "sync" as const,
+        receiverAuthorizer: authorizerSigner.address,
+      };
+      const accepted = {
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+        amount: "1000000",
+        asset: BASE_SEPOLIA_USDC,
+        payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        maxTimeoutSeconds: 300,
+        extra,
+      };
+      const enrichment = await scheme.enrichSettlementPayload({
+        phase: "after-handler",
+        paymentPayload: {
+          x402Version: 2,
+          accepted: {
+            ...accepted,
+            amount: "1",
+            payTo: "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead",
+          },
+          payload: {
+            authorization: {
+              from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              to: EIP3009_TOKEN_COLLECTOR_ADDRESS,
+              value: "1000000",
+              validAfter: "0",
+              validBefore: String(future),
+              nonce: "0x" + "33".repeat(32),
+            },
+            signature: "0xabcd",
+            salt: "0x" + "44".repeat(32),
+            saltNonce: "0x" + "22".repeat(32),
+          },
+        },
+        requirements: { ...accepted, amount: "980000" },
+        declaredExtensions: {},
+      } as never);
+      expect(enrichment).toMatchObject({
+        type: "capture",
+        amount: "980000",
+        expectedCapturableAmount: "1000000",
+      });
+      expect(
+        (enrichment as { paymentInfo: { maxAmount: string; receiver: string } }).paymentInfo,
+      ).toEqual(
+        expect.objectContaining({
+          maxAmount: "1000000",
+          receiver: accepted.payTo,
+        }),
+      );
+      expect((enrichment as { paymentInfo: { receiver: string } }).paymentInfo.receiver).not.toBe(
+        "0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead",
+      );
     });
   });
 });
