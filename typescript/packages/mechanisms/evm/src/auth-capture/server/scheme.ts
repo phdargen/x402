@@ -1,9 +1,6 @@
 /**
  * AuthCapture Scheme - Server
- * Handles price parsing and requirement enhancement for resource servers.
- *
- * Implements x402's SchemeNetworkServer interface so it can be registered
- * on an x402ResourceServer via server.register('eip155:84532', new AuthCaptureEvmScheme()).
+ * Handles price parsing, requirement enhancement, and payment-flow selection.
  */
 
 import type {
@@ -14,11 +11,28 @@ import type {
   PaymentRequirements,
   Price,
   SchemeNetworkServer,
+  SchemeServerHooks,
+  SettleResponse,
 } from "@x402/core/types";
+import type { SettleContext, VerifiedPaymentCanceledContext } from "@x402/core/server";
+import type { FacilitatorClient } from "@x402/core/server";
 import { convertToTokenAmount, numberToDecimalString, parseMoney } from "@x402/core/utils";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
+import { isNonZeroAddress } from "../nonce";
+import type { AuthorizerSigner, CaptureOptions } from "../types";
+import { AuthCaptureLifecycleManager } from "./lifecycleManager";
+import {
+  InMemoryAuthorizedPaymentStorage,
+  type AuthorizedPayment,
+  type AuthorizedPaymentStorage,
+} from "./storage";
+
+export type AuthCaptureServerConfig = { storage?: AuthorizedPaymentStorage } & (
+  | { lifecycle?: never }
+  | { lifecycle: { authorizerSigner: AuthorizerSigner; facilitator: FacilitatorClient } }
+);
 
 /**
  * Validate a relative-offset extras key and resolve it to an absolute Unix
@@ -48,11 +62,6 @@ function resolveOffsetToDeadline(
   return now + raw;
 }
 
-/**
- * Field-specific hint appended to the missing-field error message for
- * fields whose configuration path is non-obvious. Keeps the merchant from
- * having to dig through docs to find out where the value comes from.
- */
 const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
   captureDeadline:
     " Set extra.captureDeadlineSeconds (relative, recommended) or extra.captureDeadline (absolute).",
@@ -62,24 +71,10 @@ const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
 
 /**
  * Assert that the merged `extra` carries every field that comes from the
- * merchant's route config, so a missing or wrongly-typed value surfaces as
- * a server-side error the merchant will see in their own logs rather than
- * as a downstream `invalid_auth_capture_extra` rejection from the facilitator.
- *
- * Asymmetric on purpose, matching upstream `batch-settlement`'s split: this
- * asserter covers fields the merchant directly sets in `accepts.extra`
- * (`captureAuthorizer`, deadlines, `feeRecipient`, fee bands), and skips
- * fields that `parsePrice` auto-populates from `getDefaultAsset` (`name`,
- * `version`). Those are handled separately:
- *  - For decimal pricing they're populated automatically and never missing.
- *  - For custom-AssetAmount pricing the merchant must set them on
- *    `AssetAmount.extra`; if they forget, the facilitator's
- *    `isAuthCaptureExtra` guard still rejects at verify time with
- *    `invalid_auth_capture_extra`. That's the right escalation point because
- *    the merchant has taken explicit control of the asset domain.
+ * merchant's route config.
  *
  * @param extra - The merged `extra` map about to be returned by `enhancePaymentRequirements`.
- * @throws With a message naming the first missing or wrongly-typed merchant field, plus a path-to-fix hint where relevant.
+ * @throws With a message naming the first missing or wrongly-typed merchant field.
  */
 function assertAuthCaptureMerchantExtraComplete(extra: Record<string, unknown>): void {
   const required: Array<[string, "string" | "number"]> = [
@@ -99,33 +94,44 @@ function assertAuthCaptureMerchantExtraComplete(extra: Record<string, unknown>):
 }
 
 /**
- * Server-side implementation of the auth-capture scheme: maps merchant-friendly
- * prices (`"$0.01"`, decimal numbers, or pre-built `AssetAmount`) to the
- * stablecoin asset + base-unit amount needed in `PaymentRequirements`, resolves
- * merchant-supplied `*DeadlineSeconds` offsets into per-request absolute
- * deadlines, and merges facilitator-advertised `extra` fields into the
- * published requirements. Implements `SchemeNetworkServer`.
+ * Server-side implementation of the auth-capture scheme.
  */
 export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   readonly scheme = AUTH_CAPTURE_SCHEME;
   readonly defaultAssetTransferMethod: AssetTransferMethod = "eip3009";
-  /**
-   * Both collectors settle as a single escrow call after the resource runs
-   * (`authorize` for the two-phase default, `charge` when `extra.autoCapture`
-   * is set), which is core's `authorization` flow: verify → resource → settle.
-   * The two-settle `escrow` flow would require the facilitator to distinguish a
-   * hold from a later capture, which this implementation does not do.
-   */
   readonly paymentFlows = {
-    eip3009: { supported: ["authorization"], default: "authorization" },
-    permit2: { supported: ["authorization"], default: "authorization" },
+    eip3009: { supported: ["escrow", "authorization"], default: "escrow" },
+    permit2: { supported: ["escrow", "authorization"], default: "escrow" },
   } as const satisfies Record<AssetTransferMethod, PaymentFlowConfig>;
+  readonly schemeHooks: SchemeServerHooks;
+  readonly enrichSettlementPayload: (ctx: SettleContext) => Promise<Record<string, unknown> | void>;
+
   private moneyParsers: MoneyParser[] = [];
+  private readonly lifecycle: AuthCaptureLifecycleManager;
+  private readonly authorizerSigner: AuthorizerSigner | undefined;
+
+  /**
+   * Construct a server-side auth-capture scheme.
+   *
+   * @param config - Optional storage and grouped lifecycle (authorizer signer + facilitator).
+   */
+  constructor(config?: AuthCaptureServerConfig) {
+    this.authorizerSigner = config?.lifecycle?.authorizerSigner;
+    this.lifecycle = new AuthCaptureLifecycleManager({
+      storage: config?.storage ?? new InMemoryAuthorizedPaymentStorage(),
+      authorizerSigner: this.authorizerSigner,
+      facilitator: config?.lifecycle?.facilitator,
+    });
+    this.schemeHooks = {
+      onBeforeSettle: ctx => this.lifecycle.handleBeforeSettle(ctx),
+      onAfterSettle: ctx => this.lifecycle.handleAfterSettle(ctx),
+    };
+    this.enrichSettlementPayload = ctx => this.lifecycle.enrichSettlementPayload(ctx);
+  }
 
   /**
    * Add a custom money parser to the chain. Parsers run in registration order;
-   * the first one to return a non-null `AssetAmount` wins. If every parser
-   * returns null, the default network-stablecoin conversion is used.
+   * the first one to return a non-null `AssetAmount` wins.
    *
    * @param parser - Function that maps a decimal amount to an `AssetAmount`, or `null` to defer.
    * @returns This server scheme instance, for fluent chaining.
@@ -148,9 +154,6 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
 
   /**
    * Translate a merchant-supplied `Price` into a fully-resolved `AssetAmount`.
-   * Pass-through for `AssetAmount` inputs (with required `asset` validation);
-   * otherwise normalizes the input to a decimal, then runs the registered
-   * money parser chain, falling back to the default stablecoin for the network.
    *
    * @param price - `"$0.01"` / `0.01` / `{ asset, amount }`.
    * @param network - CAIP-2 network identifier used for default-asset lookup.
@@ -181,43 +184,13 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Merge facilitator-advertised `extra` (from `/supported`) into the
-   * merchant's payment requirements and resolve relative deadline offsets
-   * into per-request absolute deadlines.
-   *
-   * auth-capture's wire format commits the payer to absolute Unix-second
-   * `captureDeadline` and `refundDeadline` values in the on-chain
-   * `PaymentInfo`. Merchants almost always think in policy terms
-   * ("capture within 30 days, refund within 60 days"), so the server-side
-   * convention is:
-   *
-   * - Merchant sets `extra.captureDeadlineSeconds` / `extra.refundDeadlineSeconds`
-   *   (seconds-from-now relative offsets, matching x402's `maxTimeoutSeconds`
-   *   suffix convention). These are server-side inputs only.
-   * - `enhancePaymentRequirements` runs per request, computes
-   *   `now + offset`, and publishes absolute `captureDeadline` /
-   *   `refundDeadline` (the values the wire-format spec defines). The
-   *   `*Seconds` keys are stripped from the published `extra`.
-   * - Merchants who already have absolute timestamps (e.g., tied to an
-   *   external commitment) can set `extra.captureDeadline` / `refundDeadline`
-   *   directly; those values win over offset-derived ones.
-   * - After offset conversion the merged `extra` is validated against the
-   *   merchant-set subset of `isAuthCaptureExtra`: `captureAuthorizer`,
-   *   `captureDeadline`, `refundDeadline`, `feeRecipient`, `minFeeBps`,
-   *   `maxFeeBps`. Missing or wrongly-typed fields throw here so the
-   *   merchant sees the error in their own logs rather than as a 402
-   *   `invalid_auth_capture_extra` to a payer. `name` / `version` are
-   *   excluded because `parsePrice` auto-populates them from
-   *   `getDefaultAsset` for decimal pricing; the only path that bypasses
-   *   that is a custom `AssetAmount` where the merchant has explicitly
-   *   taken control of the asset domain, and the facilitator-side
-   *   `isAuthCaptureExtra` rejection at verify time is the right
-   *   escalation point for that case. Matches the asymmetric split
-   *   `batch-settlement` uses (fail-fast on merchant-set fields, leave
-   *   scheme-auto-populated fields to the wire).
+   * Merge facilitator-advertised `extra` into the merchant's payment
+   * requirements, resolve relative deadline offsets into absolute deadlines,
+   * write the resolved `paymentFlow` / `captureMode`, and fail-fast on
+   * misconfiguration.
    *
    * @param requirements - The merchant-authored payment requirements.
-   * @param supportedKind - The facilitator's advertised support entry for this scheme/network.
+   * @param supportedKind - The facilitator's advertised support entry.
    * @param supportedKind.x402Version - Protocol version the facilitator advertises.
    * @param supportedKind.scheme - Scheme identifier (`"auth-capture"`).
    * @param supportedKind.network - CAIP-2 network identifier.
@@ -240,41 +213,160 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       ...requirements.extra,
     };
 
+    if ("autoCapture" in merged) {
+      throw new Error(
+        "AuthCapture extra.autoCapture was removed in v1.1. Use extra.paymentFlow " +
+          '("escrow" or "authorization") instead.',
+      );
+    }
+
     const now = Math.floor(Date.now() / 1000);
+    const hasAbsCapture = typeof merged.captureDeadline === "number";
+    const hasAbsRefund = typeof merged.refundDeadline === "number";
+    const hasRelCapture = merged.captureDeadlineSeconds !== undefined;
+    const hasRelRefund = merged.refundDeadlineSeconds !== undefined;
+    const absPair = hasAbsCapture && hasAbsRefund;
+    const relPair = hasRelCapture && hasRelRefund;
+
+    if (absPair && relPair) {
+      throw new Error(
+        "AuthCapture extra must use either both absolute deadlines (captureDeadline and " +
+          "refundDeadline) or both relative offsets (captureDeadlineSeconds and " +
+          "refundDeadlineSeconds), not a mix.",
+      );
+    }
+    if (
+      (hasAbsCapture !== hasAbsRefund || hasRelCapture !== hasRelRefund) &&
+      !(absPair || relPair)
+    ) {
+      throw new Error(
+        "AuthCapture extra must use either both absolute deadlines (captureDeadline and " +
+          "refundDeadline) or both relative offsets (captureDeadlineSeconds and " +
+          "refundDeadlineSeconds), not a mix.",
+      );
+    }
+
     const captureFromOffset = resolveOffsetToDeadline(merged, "captureDeadlineSeconds", now);
     const refundFromOffset = resolveOffsetToDeadline(merged, "refundDeadlineSeconds", now);
-
-    // Strip the server-side-only offset inputs; the wire format only carries absolute deadlines.
     delete merged.captureDeadlineSeconds;
     delete merged.refundDeadlineSeconds;
 
-    // Absolute values (if the merchant supplied them directly) win over offset-derived ones.
-    if (captureFromOffset !== undefined && typeof merged.captureDeadline !== "number") {
-      merged.captureDeadline = captureFromOffset;
-    }
-    if (refundFromOffset !== undefined && typeof merged.refundDeadline !== "number") {
-      merged.refundDeadline = refundFromOffset;
+    if (!absPair) {
+      if (captureFromOffset !== undefined) merged.captureDeadline = captureFromOffset;
+      if (refundFromOffset !== undefined) merged.refundDeadline = refundFromOffset;
     }
 
     assertAuthCaptureMerchantExtraComplete(merged);
+
+    const paymentFlow = merged.paymentFlow === "authorization" ? "authorization" : "escrow";
+    merged.paymentFlow = paymentFlow;
+
+    if (paymentFlow === "authorization") {
+      if (merged.captureMode !== undefined) {
+        throw new Error(
+          'AuthCapture extra.captureMode is only valid with paymentFlow "escrow"; ' +
+            "authorization has no hold to finalize.",
+        );
+      }
+    } else {
+      const captureMode = merged.captureMode === "deferred" ? "deferred" : "sync";
+      merged.captureMode = captureMode;
+      if (captureMode === "sync") {
+        if (
+          !isNonZeroAddress(
+            typeof merged.receiverAuthorizer === "string" ? merged.receiverAuthorizer : undefined,
+          )
+        ) {
+          throw new Error(
+            'AuthCapture extra.receiverAuthorizer is required for paymentFlow "escrow" with ' +
+              'captureMode "sync". Set extra.receiverAuthorizer, or move the route to ' +
+              'captureMode "deferred" or paymentFlow "authorization".',
+          );
+        }
+        if (!this.authorizerSigner) {
+          throw new Error(
+            "AuthCapture escrow sync routes require a lifecycle.authorizerSigner on the scheme " +
+              "(to sign capture/void). Pass lifecycle: { authorizerSigner, facilitator } to " +
+              'AuthCaptureEvmScheme, or move the route to captureMode "deferred" / paymentFlow ' +
+              '"authorization".',
+          );
+        }
+      }
+    }
 
     return { ...requirements, extra: merged };
   }
 
   /**
+   * On handler failure after a before-handler authorize, settle a void.
+   *
+   * @param context - Cancellation context.
+   * @returns Requirements to settle, or void when there is no hold to release.
+   */
+  settleOnCancel(context: VerifiedPaymentCanceledContext): Promise<PaymentRequirements | void> {
+    return this.lifecycle.settleOnCancel(context);
+  }
+
+  /**
+   * Capture a stored authorized payment through the facilitator.
+   *
+   * @param paymentInfoHash - Escrow payment identifier.
+   * @param opts - Capture amount, fees, and optional void-remainder.
+   * @returns Facilitator settle response.
+   */
+  capture(paymentInfoHash: `0x${string}`, opts?: CaptureOptions): Promise<SettleResponse> {
+    return this.lifecycle.capture(paymentInfoHash, opts);
+  }
+
+  /**
+   * Void the remaining hold on a stored authorized payment.
+   *
+   * @param paymentInfoHash - Escrow payment identifier.
+   * @returns Facilitator settle response.
+   */
+  voidPayment(paymentInfoHash: `0x${string}`): Promise<SettleResponse> {
+    return this.lifecycle.voidPayment(paymentInfoHash);
+  }
+
+  /**
+   * Refund captured funds on a stored authorized payment.
+   *
+   * @param paymentInfoHash - Escrow payment identifier.
+   * @param opts - Refund amount.
+   * @param opts.amount - Atomic refund amount in token base units.
+   * @returns Facilitator settle response.
+   */
+  refund(paymentInfoHash: `0x${string}`, opts: { amount: string }): Promise<SettleResponse> {
+    return this.lifecycle.refund(paymentInfoHash, opts);
+  }
+
+  /**
+   * Read a stored authorized payment.
+   *
+   * @param paymentInfoHash - Escrow payment identifier.
+   * @returns The record, or undefined.
+   */
+  getAuthorizedPayment(paymentInfoHash: `0x${string}`): Promise<AuthorizedPayment | undefined> {
+    return this.lifecycle.getAuthorizedPayment(paymentInfoHash);
+  }
+
+  /**
+   * List stored authorized payments.
+   *
+   * @returns All records in storage.
+   */
+  listAuthorizedPayments(): Promise<AuthorizedPayment[]> {
+    return this.lifecycle.listAuthorizedPayments();
+  }
+
+  /**
    * Fall-through converter: resolves a decimal amount against the default
-   * asset registered for the network in `getDefaultAsset` (shared with the
-   * `exact` and `upto` schemes via `../../defaultAssets`). A ticker from a
-   * suffixed price (e.g. `"1 PYUSD"`) selects among the network's entries.
-   * The EIP-712 token-domain fields (`name` / `version`) are included for
-   * tokens used via ERC-3009 or EIP-2612 paths, and `assetTransferMethod` is
-   * propagated for chains whose default token does not support ERC-3009.
+   * asset registered for the network in `getDefaultAsset`.
    *
    * @param amount - Decimal amount in the token's display units.
    * @param network - CAIP-2 network identifier.
    * @param symbol - Optional ticker from a suffixed price.
    * @returns Resolved `AssetAmount` with the network's default asset.
-   * @throws If no default asset is configured for `network`.
    */
   private defaultMoneyConversion(amount: number, network: Network, symbol?: string): AssetAmount {
     const assetInfo = getDefaultAsset(network, symbol);
