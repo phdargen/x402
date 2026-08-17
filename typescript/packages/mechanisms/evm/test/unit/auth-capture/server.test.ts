@@ -279,6 +279,97 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.extra?.sharedKey).toBe("0xcccccccccccccccccccccccccccccccccccccccc");
     });
 
+    it("should resolve captureAuthorizer from /supported signers for delegated routes", async () => {
+      const mockFacilitator: FacilitatorClient = {
+        getSupported: vi.fn().mockResolvedValue({
+          kinds: [],
+          extensions: [],
+          signers: { "eip155:*": ["0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] },
+        }),
+        verify: vi.fn(),
+        settle: vi.fn(),
+      };
+      const scheme = new AuthCaptureEvmScheme({
+        lifecycle: {
+          authorizerSigner: {
+            address: "0xcccccccccccccccccccccccccccccccccccccccc",
+            signTypedData: vi.fn(),
+          },
+          facilitator: mockFacilitator,
+        },
+      });
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "delegated" }),
+      };
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+      };
+
+      const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
+
+      expect(result.extra?.captureAuthorizer).toBe("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+      expect(mockFacilitator.getSupported).toHaveBeenCalledTimes(1);
+    });
+
+    it("should throw when delegated captureAuthorizer is missing and no lifecycle.facilitator is configured", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "delegated" }),
+      };
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+      };
+
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/lifecycle\.facilitator/);
+    });
+
+    it("should throw when delegated captureAuthorizer is missing and facilitator advertises multiple signers", async () => {
+      const mockFacilitator: FacilitatorClient = {
+        getSupported: vi.fn().mockResolvedValue({
+          kinds: [],
+          extensions: [],
+          signers: {
+            "eip155:*": [
+              "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ],
+          },
+        }),
+        verify: vi.fn(),
+        settle: vi.fn(),
+      };
+      const scheme = new AuthCaptureEvmScheme({
+        lifecycle: {
+          authorizerSigner: {
+            address: "0xcccccccccccccccccccccccccccccccccccccccc",
+            signTypedData: vi.fn(),
+          },
+          facilitator: mockFacilitator,
+        },
+      });
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "delegated" }),
+      };
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+      };
+
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/multiple submitters/);
+    });
+
     it("should preserve all original requirement fields", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const supportedKind = {
@@ -533,7 +624,7 @@ describe("AuthCaptureEvmScheme", () => {
       network: "eip155:84532" as const,
     };
 
-    for (const field of ["captureAuthorizer", "feeRecipient", "minFeeBps", "maxFeeBps"] as const) {
+    for (const field of ["feeRecipient", "minFeeBps", "maxFeeBps"] as const) {
       it(`should throw when extra.${field} is missing`, async () => {
         const scheme = new AuthCaptureEvmScheme();
         const requirements = {
@@ -545,6 +636,17 @@ describe("AuthCaptureEvmScheme", () => {
         ).rejects.toThrow(new RegExp(`extra\\.${field}`));
       });
     }
+
+    it("should throw when extra.captureAuthorizer is missing for custom operatorType", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "custom" }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/extra\.captureAuthorizer/);
+    });
 
     it("should throw when neither captureDeadlineSeconds nor captureDeadline is provided", async () => {
       const scheme = new AuthCaptureEvmScheme();
