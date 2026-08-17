@@ -1,6 +1,7 @@
 """EVM utility functions for address, amount, and nonce handling."""
 
 import os
+import re
 from decimal import Decimal
 
 try:
