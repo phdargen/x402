@@ -58,6 +58,7 @@ const feeRecipient = (process.env.FEE_RECIPIENT?.trim() || zeroAddress) as `0x${
 const minFeeBps = Number(process.env.MIN_FEE_BPS ?? "0");
 const maxFeeBps = Number(process.env.MAX_FEE_BPS ?? "0");
 
+console.info(`EVM RPC: ${rpcHost(evmRpcUrl)}`);
 console.info(`EVM Facilitator relayer: ${evmAccount.address}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver authorizer: ${authorizerSigner.address}`);
@@ -93,25 +94,7 @@ const evmSigner = toFacilitatorEvmSigner({
   waitForTransactionReceipt: args => viemClient.waitForTransactionReceipt(args),
 });
 
-const facilitator = new x402Facilitator()
-  .onBeforeVerify(async context => {
-    console.log("Before verify", context);
-  })
-  .onAfterVerify(async context => {
-    console.log("After verify", context);
-  })
-  .onVerifyFailure(async context => {
-    console.log("Verify failure", context);
-  })
-  .onBeforeSettle(async context => {
-    console.log("Before settle", context);
-  })
-  .onAfterSettle(async context => {
-    console.log("After settle", context);
-  })
-  .onSettleFailure(async context => {
-    console.log("Settle failure", context);
-  });
+const facilitator = new x402Facilitator();
 
 facilitator.register(
   "eip155:84532",
@@ -173,9 +156,15 @@ app.post("/settle", async (req, res) => {
       });
     }
 
-    const response: SettleResponse = await facilitator.settle(
-      paymentPayload as PaymentPayload,
-      paymentRequirements as PaymentRequirements,
+    const payload = paymentPayload as PaymentPayload;
+    const requirements = paymentRequirements as PaymentRequirements;
+    const payloadType = (payload.payload as { type?: string }).type ?? "collect";
+
+    const response: SettleResponse = await facilitator.settle(payload, requirements);
+
+    console.info(
+      `[settle] type=${payloadType} requirements.amount=${requirements.amount}`,
+      JSON.stringify(response, null, 2),
     );
 
     res.json(response);

@@ -52,6 +52,18 @@ function asCollectPayload(
 }
 
 /**
+ * Client-signed authorize amount from a collect payload (EIP-3009 value or Permit2 permitted amount).
+ *
+ * @param collect - Verified collect envelope.
+ * @returns Atomic amount in token base units.
+ */
+function signedCollectAmount(collect: AuthCaptureCollectPayload): string {
+  return isEip3009Payload(collect)
+    ? collect.authorization.value
+    : collect.permit2Authorization.permitted.amount;
+}
+
+/**
  * Deferred lifecycle: storage, sync enrichment, and one-shot capture/void/refund helpers.
  */
 export class AuthCaptureLifecycleManager {
@@ -83,7 +95,8 @@ export class AuthCaptureLifecycleManager {
 
     if (ctx.phase === "cancel") {
       if (extra.paymentFlow !== "escrow") return;
-      const paymentInfo = paymentInfoFromCollect(collect, ctx.requirements, extra);
+      const requirements = ctx.requirements as PaymentRequirements;
+      const paymentInfo = paymentInfoFromCollect(collect, requirements, extra);
       const chainId = getEvmChainId(ctx.requirements.network);
       return buildVoidEnrichment({
         paymentInfo,
@@ -110,22 +123,25 @@ export class AuthCaptureLifecycleManager {
     }
 
     if (extra.paymentFlow === "escrow" && extra.captureMode !== "deferred") {
-      const paymentInfo = paymentInfoFromCollect(
-        collect,
-        ctx.paymentPayload.accepted as PaymentRequirements,
-        extra,
-      );
+      const requirements = ctx.requirements as PaymentRequirements;
+      const authorizeRequirements: PaymentRequirements = {
+        ...requirements,
+        amount: signedCollectAmount(collect),
+      };
+      const paymentInfo = paymentInfoFromCollect(collect, authorizeRequirements, extra);
       const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
       const stored = await this.config.storage.get(paymentInfoHash);
+      const trustedPaymentInfo = stored?.paymentInfo ?? paymentInfo;
       return buildCaptureEnrichment({
         collect,
-        requirements: ctx.requirements as PaymentRequirements,
+        requirements: authorizeRequirements,
+        paymentInfo: trustedPaymentInfo,
         extra,
         signer,
         chainId,
-        capturable: stored?.capturableAmount ?? paymentInfo.maxAmount,
+        capturable: stored?.capturableAmount ?? trustedPaymentInfo.maxAmount,
         refundable: stored?.refundableAmount ?? "0",
-        amount: ctx.requirements.amount,
+        amount: requirements.amount,
       });
     }
   }

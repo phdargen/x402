@@ -137,6 +137,7 @@ export async function signCaptureFields(params: {
  * @param params.capturable - Current capturable balance on the hold.
  * @param params.refundable - Current refundable balance on the hold.
  * @param params.amount - Capture amount for this settle.
+ * @param params.paymentInfo - Server-trusted PaymentInfo; when omitted, reconstructed from collect + requirements.
  * @returns Fields to merge into the client payload.
  */
 export async function buildCaptureEnrichment(params: {
@@ -148,8 +149,10 @@ export async function buildCaptureEnrichment(params: {
   capturable: string;
   refundable: string;
   amount: string;
+  paymentInfo?: PaymentInfoStruct;
 }): Promise<Record<string, unknown>> {
-  const paymentInfo = paymentInfoFromCollect(params.collect, params.requirements, params.extra);
+  const paymentInfo =
+    params.paymentInfo ?? paymentInfoFromCollect(params.collect, params.requirements, params.extra);
   const paymentInfoHash = computePaymentInfoHash(params.chainId, paymentInfo);
   const signed = await signCaptureFields({
     signer: params.signer,
