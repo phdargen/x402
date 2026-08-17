@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { AuthCaptureEvmScheme } from "../../../src/auth-capture/server/index";
+import { describe, it, expect, vi } from "vitest";
+import {
+  AuthCaptureEvmScheme,
+  InMemoryAuthorizedPaymentStorage,
+} from "../../../src/auth-capture/server/index";
+import { EIP3009_TOKEN_COLLECTOR_ADDRESS } from "../../../src/auth-capture/constants";
+import type { FacilitatorClient } from "@x402/core/server";
+import type { AuthorizedPayment } from "../../../src/auth-capture/server/storage";
 
 const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 
@@ -195,6 +201,7 @@ describe("AuthCaptureEvmScheme", () => {
         maxFeeBps: 100,
         name: "USDC",
         version: "2",
+        captureMode: "deferred",
       };
       for (const [k, v] of Object.entries(overrides)) {
         if (v === undefined) delete out[k];
@@ -320,13 +327,7 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.extra).not.toHaveProperty("refundDeadlineSeconds");
     });
 
-    it("should process the capture/refund pair independently when one half is absolute and the other is an offset", async () => {
-      // Asymmetric mix: capture is pinned to an absolute timestamp (e.g., a delivery commit),
-      // refund is a relative window. Each half is converted on its own. If the merchant pairs
-      // an absolute capture in the far future with a tiny refund offset (or vice-versa), the
-      // resulting `(captureDeadline, refundDeadline)` can violate the spec's ordering invariant;
-      // the facilitator rejects with `invalid_deadline_ordering` at verify time, covered by
-      // facilitator.test.ts at "should reject when refundDeadline is not after captureDeadline".
+    it("should throw when mixing an absolute deadline with a relative offset", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const supportedKind = {
         x402Version: 2,
@@ -334,8 +335,7 @@ describe("AuthCaptureEvmScheme", () => {
         network: "eip155:84532" as const,
       };
 
-      // Case 1: absolute capture + relative refund.
-      const reqs1 = {
+      const reqs = {
         ...baseRequirements,
         extra: completeExtra({
           captureDeadline: 1700000000,
@@ -343,43 +343,18 @@ describe("AuthCaptureEvmScheme", () => {
           refundDeadlineSeconds: 60,
         }),
       };
-      const before1 = Math.floor(Date.now() / 1000);
-      const out1 = await scheme.enhancePaymentRequirements(reqs1, supportedKind, []);
-      const after1 = Math.floor(Date.now() / 1000);
-
-      expect(out1.extra?.captureDeadline).toBe(1700000000);
-      expect(out1.extra?.refundDeadline).toBeGreaterThanOrEqual(before1 + 60);
-      expect(out1.extra?.refundDeadline).toBeLessThanOrEqual(after1 + 60);
-      expect(out1.extra).not.toHaveProperty("captureDeadlineSeconds");
-      expect(out1.extra).not.toHaveProperty("refundDeadlineSeconds");
-
-      // Case 2: relative capture + absolute refund.
-      const reqs2 = {
-        ...baseRequirements,
-        extra: completeExtra({
-          captureDeadlineSeconds: 60,
-          refundDeadlineSeconds: undefined,
-          refundDeadline: 1800000000,
-        }),
-      };
-      const before2 = Math.floor(Date.now() / 1000);
-      const out2 = await scheme.enhancePaymentRequirements(reqs2, supportedKind, []);
-      const after2 = Math.floor(Date.now() / 1000);
-
-      expect(out2.extra?.refundDeadline).toBe(1800000000);
-      expect(out2.extra?.captureDeadline).toBeGreaterThanOrEqual(before2 + 60);
-      expect(out2.extra?.captureDeadline).toBeLessThanOrEqual(after2 + 60);
-      expect(out2.extra).not.toHaveProperty("captureDeadlineSeconds");
-      expect(out2.extra).not.toHaveProperty("refundDeadlineSeconds");
+      await expect(scheme.enhancePaymentRequirements(reqs, supportedKind, [])).rejects.toThrow(
+        /both absolute deadlines/,
+      );
     });
 
-    it("should let absolute captureDeadline / refundDeadline win over offsets", async () => {
+    it("should use absolute captureDeadline / refundDeadline when both are set without offsets", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
         extra: completeExtra({
-          captureDeadlineSeconds: 600,
-          refundDeadlineSeconds: 1200,
+          captureDeadlineSeconds: undefined,
+          refundDeadlineSeconds: undefined,
           captureDeadline: 1700000000,
           refundDeadline: 1800000000,
         }),
@@ -534,6 +509,7 @@ describe("AuthCaptureEvmScheme", () => {
         maxFeeBps: 100,
         name: "USDC",
         version: "2",
+        captureMode: "deferred",
       };
       for (const [k, v] of Object.entries(overrides)) {
         if (v === undefined) delete out[k];
@@ -576,6 +552,7 @@ describe("AuthCaptureEvmScheme", () => {
         ...baseRequirements,
         extra: completeExtra({
           captureDeadlineSeconds: undefined,
+          refundDeadlineSeconds: undefined,
         }),
       };
       await expect(
@@ -583,7 +560,7 @@ describe("AuthCaptureEvmScheme", () => {
       ).rejects.toThrow(/extra\.captureDeadline/);
     });
 
-    it("should throw when neither refundDeadlineSeconds nor refundDeadline is provided", async () => {
+    it("should throw the mix error when only one relative deadline offset is set", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
@@ -593,7 +570,7 @@ describe("AuthCaptureEvmScheme", () => {
       };
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
-      ).rejects.toThrow(/extra\.refundDeadline/);
+      ).rejects.toThrow(/both absolute deadlines.*both relative offsets/);
     });
 
     it("should throw when captureAuthorizer is the wrong type", async () => {
@@ -611,7 +588,10 @@ describe("AuthCaptureEvmScheme", () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
-        extra: completeExtra({ captureDeadlineSeconds: undefined }),
+        extra: completeExtra({
+          captureDeadlineSeconds: undefined,
+          refundDeadlineSeconds: undefined,
+        }),
       };
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
@@ -642,6 +622,50 @@ describe("AuthCaptureEvmScheme", () => {
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
       ).resolves.not.toThrow();
     });
+
+    it("should throw when autoCapture is present", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ autoCapture: true }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/autoCapture/);
+    });
+
+    it("should throw on escrow sync without receiverAuthorizer", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureMode: undefined }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/receiverAuthorizer/);
+    });
+
+    it("should throw when captureMode is set on an authorization route", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ paymentFlow: "authorization", captureMode: "sync" }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/captureMode/);
+    });
+
+    it("should write paymentFlow escrow onto extra for the default route", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const result = await scheme.enhancePaymentRequirements(
+        { ...baseRequirements, extra: completeExtra() },
+        supportedKind,
+        [],
+      );
+      expect(result.extra?.paymentFlow).toBe("escrow");
+      expect(result.extra?.captureMode).toBe("deferred");
+    });
   });
 
   describe("scheme property", () => {
@@ -652,13 +676,13 @@ describe("AuthCaptureEvmScheme", () => {
   });
 
   describe("payment flow declaration", () => {
-    it("should default to eip3009 and declare the authorization flow for both collectors", () => {
+    it("should default to eip3009 and declare escrow (default) plus authorization for both collectors", () => {
       const scheme = new AuthCaptureEvmScheme();
 
       expect(scheme.defaultAssetTransferMethod).toBe("eip3009");
       expect(scheme.paymentFlows).toEqual({
-        eip3009: { supported: ["authorization"], default: "authorization" },
-        permit2: { supported: ["authorization"], default: "authorization" },
+        eip3009: { supported: ["escrow", "authorization"], default: "escrow" },
+        permit2: { supported: ["escrow", "authorization"], default: "escrow" },
       });
     });
   });
@@ -676,6 +700,314 @@ describe("AuthCaptureEvmScheme", () => {
       expect(
         scheme.getAssetDecimals("0x9999999999999999999999999999999999999999", "eip155:84532"),
       ).toBeUndefined();
+    });
+  });
+
+  describe("authorized payment storage and helpers", () => {
+    const hash = ("0x" + "11".repeat(32)) as `0x${string}`;
+    const saltNonce = ("0x" + "22".repeat(32)) as `0x${string}`;
+    const receiverAuthorizer = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const payer = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as `0x${string}`;
+
+    function sampleRecord(overrides: Partial<AuthorizedPayment> = {}): AuthorizedPayment {
+      return {
+        paymentInfoHash: hash,
+        paymentInfo: {
+          operator: "0x1234567890123456789012345678901234567890" as `0x${string}`,
+          payer,
+          receiver: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as `0x${string}`,
+          token: BASE_SEPOLIA_USDC as `0x${string}`,
+          maxAmount: "1000000",
+          preApprovalExpiry: 1,
+          authorizationExpiry: 2,
+          refundExpiry: 3,
+          minFeeBps: 0,
+          maxFeeBps: 0,
+          feeReceiver: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+          salt: ("0x" + "00".repeat(32)) as `0x${string}`,
+        },
+        saltNonce,
+        receiverAuthorizer,
+        policy: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+        network: "eip155:84532",
+        capturableAmount: "1000000",
+        refundableAmount: "0",
+        collectTransaction: "0xabc",
+        createdAt: Date.now(),
+        name: "USDC",
+        version: "2",
+        paymentFlow: "escrow",
+        operatorType: "delegated",
+        assetTransferMethod: "eip3009",
+        ...overrides,
+      };
+    }
+
+    function lifecycleScheme(storage: InMemoryAuthorizedPaymentStorage, settle = vi.fn()) {
+      settle.mockResolvedValue({
+        success: true,
+        transaction: "0xtx",
+        network: "eip155:84532",
+        payer,
+        amount: "500000",
+      });
+      const authorizerSigner = {
+        address: receiverAuthorizer,
+        signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
+      };
+      const facilitator = { settle } as unknown as FacilitatorClient;
+      return {
+        scheme: new AuthCaptureEvmScheme({
+          storage,
+          lifecycle: { authorizerSigner, facilitator },
+        }),
+        settle,
+        authorizerSigner,
+      };
+    }
+
+    it("should persist and list records through InMemoryAuthorizedPaymentStorage", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      const record = sampleRecord();
+      await storage.update(hash, () => record);
+      expect(await storage.get(hash)).toEqual(record);
+      expect(await storage.list()).toHaveLength(1);
+    });
+
+    it("should throw when capture is called without a stored record", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      await expect(scheme.capture(hash)).rejects.toThrow(/no authorized payment/);
+    });
+
+    it("should throw when capture is called without lifecycle config", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord());
+      const scheme = new AuthCaptureEvmScheme({ storage });
+      await expect(scheme.capture(hash)).rejects.toThrow(/lifecycle/);
+    });
+
+    it("should capture through the facilitator and write remaining balances", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord());
+      const { scheme, settle } = lifecycleScheme(storage);
+      const result = await scheme.capture(hash, { amount: "500000" });
+      expect(result.success).toBe(true);
+      expect(settle).toHaveBeenCalledOnce();
+      const payload = settle.mock.calls[0][0].payload;
+      expect(payload.type).toBe("capture");
+      expect(payload.amount).toBe("500000");
+      expect(payload.voidAuthorizerSignature).toBeUndefined();
+      const updated = await scheme.getAuthorizedPayment(hash);
+      expect(updated?.capturableAmount).toBe("500000");
+      expect(updated?.refundableAmount).toBe("500000");
+    });
+
+    it("should attach voidAuthorizerSignature and zero capturable on voidRemainder", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord());
+      const { scheme, settle } = lifecycleScheme(storage);
+      await scheme.capture(hash, { amount: "500000", voidRemainder: true });
+      const payload = settle.mock.calls[0][0].payload;
+      expect(payload.voidAuthorizerSignature).toBe("0xsig");
+      const updated = await scheme.getAuthorizedPayment(hash);
+      expect(updated?.capturableAmount).toBe("0");
+      expect(updated?.refundableAmount).toBe("500000");
+    });
+
+    it("should void remaining hold through voidPayment", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord());
+      const { scheme, settle } = lifecycleScheme(storage);
+      await scheme.voidPayment(hash);
+      expect(settle.mock.calls[0][0].payload.type).toBe("void");
+      const updated = await scheme.getAuthorizedPayment(hash);
+      expect(updated?.capturableAmount).toBe("0");
+    });
+
+    it("should refund captured funds and decrement refundableAmount", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () =>
+        sampleRecord({ capturableAmount: "0", refundableAmount: "1000000" }),
+      );
+      const { scheme, settle } = lifecycleScheme(storage);
+      await scheme.refund(hash, { amount: "250000" });
+      expect(settle.mock.calls[0][0].payload.type).toBe("refund");
+      const updated = await scheme.getAuthorizedPayment(hash);
+      expect(updated?.refundableAmount).toBe("750000");
+    });
+  });
+
+  describe("schemeHooks — deferred skip and persist", () => {
+    const future = Math.floor(Date.now() / 1000) + 86400;
+    const extra = {
+      captureAuthorizer: "0x1234567890123456789012345678901234567890",
+      captureDeadline: future,
+      refundDeadline: future + 86400,
+      feeRecipient: "0x0000000000000000000000000000000000000000",
+      minFeeBps: 0,
+      maxFeeBps: 0,
+      name: "USDC",
+      version: "2",
+      paymentFlow: "escrow" as const,
+      captureMode: "deferred" as const,
+    };
+    const requirements = {
+      scheme: "auth-capture",
+      network: "eip155:84532" as const,
+      amount: "1000000",
+      asset: BASE_SEPOLIA_USDC,
+      payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      maxTimeoutSeconds: 300,
+      extra,
+    };
+    const paymentPayload = {
+      x402Version: 2,
+      accepted: requirements,
+      payload: {
+        authorization: {
+          from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          to: EIP3009_TOKEN_COLLECTOR_ADDRESS,
+          value: "1000000",
+          validAfter: "0",
+          validBefore: String(future),
+          nonce: "0x" + "33".repeat(32),
+        },
+        signature: "0xabcd",
+        salt: "0x" + "44".repeat(32),
+      },
+    };
+    const authorizeResult = {
+      success: true,
+      transaction: "0xauthorize",
+      network: "eip155:84532",
+      payer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    };
+
+    it("should skip the after-handler settle and echo the authorize receipt", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      await scheme.schemeHooks.onAfterSettle!({
+        phase: "before-handler",
+        paymentPayload,
+        requirements,
+        declaredExtensions: {},
+        result: authorizeResult,
+      } as never);
+      const skip = await scheme.schemeHooks.onBeforeSettle!({
+        phase: "after-handler",
+        paymentPayload,
+        requirements,
+        declaredExtensions: {},
+      } as never);
+      expect(skip).toEqual({ skip: true, result: authorizeResult });
+    });
+
+    it("should persist an authorized payment after a successful authorize settle", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      const scheme = new AuthCaptureEvmScheme({ storage });
+      await scheme.schemeHooks.onAfterSettle!({
+        phase: "before-handler",
+        paymentPayload,
+        requirements,
+        declaredExtensions: {},
+        result: authorizeResult,
+      } as never);
+      const listed = await scheme.listAuthorizedPayments();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.capturableAmount).toBe("1000000");
+      expect(listed[0]?.refundableAmount).toBe("0");
+      expect(listed[0]?.collectTransaction).toBe("0xauthorize");
+    });
+
+    it("should not skip after-handler settle for sync escrow", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const syncRequirements = {
+        ...requirements,
+        extra: {
+          ...extra,
+          captureMode: "sync" as const,
+          receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+        },
+      };
+      await scheme.schemeHooks.onAfterSettle!({
+        phase: "before-handler",
+        paymentPayload,
+        requirements: syncRequirements,
+        declaredExtensions: {},
+        result: authorizeResult,
+      } as never);
+      const skip = await scheme.schemeHooks.onBeforeSettle!({
+        phase: "after-handler",
+        paymentPayload,
+        requirements: syncRequirements,
+        declaredExtensions: {},
+      } as never);
+      expect(skip).toBeUndefined();
+    });
+  });
+
+  describe("enrichSettlementPayload", () => {
+    it("should add capture fields without re-emitting saltNonce", async () => {
+      const authorizerSigner = {
+        address: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+        signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
+      };
+      const scheme = new AuthCaptureEvmScheme({
+        lifecycle: {
+          authorizerSigner,
+          facilitator: { settle: vi.fn() } as unknown as FacilitatorClient,
+        },
+      });
+      const future = Math.floor(Date.now() / 1000) + 86400;
+      const extra = {
+        captureAuthorizer: "0x1234567890123456789012345678901234567890",
+        captureDeadline: future,
+        refundDeadline: future + 86400,
+        feeRecipient: "0x0000000000000000000000000000000000000000",
+        minFeeBps: 0,
+        maxFeeBps: 0,
+        name: "USDC",
+        version: "2",
+        paymentFlow: "escrow" as const,
+        captureMode: "sync" as const,
+        receiverAuthorizer: authorizerSigner.address,
+      };
+      const requirements = {
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+        amount: "1000000",
+        asset: BASE_SEPOLIA_USDC,
+        payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        maxTimeoutSeconds: 300,
+        extra,
+      };
+      const enrichment = await scheme.enrichSettlementPayload({
+        phase: "after-handler",
+        paymentPayload: {
+          x402Version: 2,
+          accepted: requirements,
+          payload: {
+            authorization: {
+              from: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              to: EIP3009_TOKEN_COLLECTOR_ADDRESS,
+              value: "1000000",
+              validAfter: "0",
+              validBefore: String(future),
+              nonce: "0x" + "33".repeat(32),
+            },
+            signature: "0xabcd",
+            salt: "0x" + "44".repeat(32),
+            saltNonce: "0x" + "22".repeat(32),
+          },
+        },
+        requirements,
+        declaredExtensions: {},
+      } as never);
+      expect(enrichment).toMatchObject({
+        type: "capture",
+        amount: "1000000",
+        authorizerSignature: "0xsig",
+      });
+      expect(enrichment).not.toHaveProperty("saltNonce");
     });
   });
 });

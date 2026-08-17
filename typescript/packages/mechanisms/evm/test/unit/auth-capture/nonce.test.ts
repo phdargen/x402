@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { zeroAddress } from "viem";
-import { computePayerAgnosticPaymentInfoHash, generateSalt } from "../../../src/auth-capture/nonce";
+import {
+  computePayerAgnosticPaymentInfoHash,
+  deriveBoundSalt,
+  generateSalt,
+  isSaltBindingOn,
+} from "../../../src/auth-capture/nonce";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
 describe("nonce utilities", () => {
@@ -92,6 +97,43 @@ describe("nonce utilities", () => {
       const salt = generateSalt();
       const hexPart = salt.slice(2);
       expect(hexPart).toMatch(/^[0-9a-f]+$/);
+    });
+  });
+
+  describe("salt binding", () => {
+    const authorizer = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const policy = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+    const nonce =
+      "0x0000000000000000000000000000000000000000000000000000000000000abc" as `0x${string}`;
+
+    it("is off when receiverAuthorizer and policy are absent or zero", () => {
+      expect(isSaltBindingOn({})).toBe(false);
+      expect(isSaltBindingOn({ receiverAuthorizer: policy, policy })).toBe(false);
+    });
+
+    it("is on when receiverAuthorizer is non-zero", () => {
+      expect(isSaltBindingOn({ receiverAuthorizer: authorizer })).toBe(true);
+    });
+
+    it("derives a deterministic 32-byte salt from the typehash, addresses, and nonce", () => {
+      const a = deriveBoundSalt(authorizer, policy, nonce);
+      const b = deriveBoundSalt(authorizer, policy, nonce);
+      expect(a).toBe(b);
+      expect(a).toMatch(/^0x[a-fA-F0-9]{64}$/);
+    });
+
+    it("changes when any bound input changes", () => {
+      const base = deriveBoundSalt(authorizer, policy, nonce);
+      expect(deriveBoundSalt("0x2222222222222222222222222222222222222222", policy, nonce)).not.toBe(
+        base,
+      );
+      expect(
+        deriveBoundSalt(
+          authorizer,
+          policy,
+          "0x0000000000000000000000000000000000000000000000000000000000000abd",
+        ),
+      ).not.toBe(base);
     });
   });
 });

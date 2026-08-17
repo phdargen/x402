@@ -21,13 +21,16 @@ import {
 } from "../constants";
 import {
   computePayerAgnosticPaymentInfoHash,
+  deriveBoundSalt,
+  extraAddress,
   generateSalt,
+  isSaltBindingOn,
   signERC3009,
   signPermit2,
 } from "../nonce";
 import type { AuthCaptureExtra, Eip3009Payload, PaymentInfoStruct, Permit2Payload } from "../types";
 import { findDefaultAsset } from "../../defaultAssets";
-import { parseChainId } from "../utils";
+import { getEvmChainId } from "../../utils";
 
 /**
  * Client-side implementation of the auth-capture scheme: derives the canonical
@@ -105,12 +108,21 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
       );
     }
 
-    const chainId = parseChainId(requirements.network);
+    const chainId = getEvmChainId(requirements.network);
     const maxAmount = requirements.amount;
     const nowSeconds = Math.floor(Date.now() / 1000);
     const preApprovalExpiry = nowSeconds + requirements.maxTimeoutSeconds;
-    const salt = generateSalt();
     const assetTransferMethod = extra.assetTransferMethod ?? "eip3009";
+
+    const bindOn = isSaltBindingOn(extra);
+    const saltNonce = generateSalt();
+    const salt = bindOn
+      ? deriveBoundSalt(
+          extraAddress(extra.receiverAuthorizer),
+          extraAddress(extra.policy),
+          saltNonce,
+        )
+      : saltNonce;
 
     // Build the canonical PaymentInfo struct (Solidity field names — do not rename).
     const paymentInfo: PaymentInfoStruct = {
@@ -143,7 +155,9 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
         deadline: String(preApprovalExpiry),
       };
       const signature = await signPermit2(this.signer, permit2Authorization, chainId);
-      const payload: Permit2Payload = { permit2Authorization, signature, salt };
+      const payload: Permit2Payload = bindOn
+        ? { permit2Authorization, signature, salt, saltNonce }
+        : { permit2Authorization, signature, salt };
       return { x402Version, payload: payload as unknown as Record<string, unknown> };
     }
 
@@ -163,7 +177,9 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
       requirements.asset as `0x${string}`,
       chainId,
     );
-    const payload: Eip3009Payload = { authorization, signature, salt };
+    const payload: Eip3009Payload = bindOn
+      ? { authorization, signature, salt, saltNonce }
+      : { authorization, signature, salt };
     return { x402Version, payload: payload as unknown as Record<string, unknown> };
   }
 }
