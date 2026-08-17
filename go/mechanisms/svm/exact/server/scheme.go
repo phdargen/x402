@@ -68,7 +68,7 @@ func (s *ExactSvmScheme) PaymentFlows() map[string]x402.PaymentFlowConfig {
 
 // RegisterMoneyParser registers a custom money parser in the parser chain.
 // Multiple parsers can be registered - they will be tried in registration order.
-// Each parser receives a decimal amount (e.g., 1.50 for $1.50).
+// Each parser receives a decimal string (e.g., "1.50" for $1.50).
 // If a parser returns nil, the next parser in the chain will be tried.
 // The default parser is always the final fallback.
 //
@@ -82,16 +82,16 @@ func (s *ExactSvmScheme) PaymentFlows() map[string]x402.PaymentFlowConfig {
 //
 // Example:
 //
-//	svmServer.RegisterMoneyParser(func(amount float64, network x402.Network) (*x402.AssetAmount, error) {
-//	    // Use custom token for large amounts
-//	    if amount > 100 {
-//	        return &x402.AssetAmount{
-//	            Amount: fmt.Sprintf("%.0f", amount * 1e9),
-//	            Asset:  "CustomTokenMint111111111111111111111",
-//	            Extra:  map[string]interface{}{"token": "CUSTOM", "tier": "large"},
-//	        }, nil
+//	svmServer.RegisterMoneyParser(func(amount string, network x402.Network) (*x402.AssetAmount, error) {
+//	    tokenAmount, err := x402.ConvertToTokenAmount(amount, 9)
+//	    if err != nil {
+//	        return nil, err
 //	    }
-//	    return nil, nil // Use next parser
+//	    return &x402.AssetAmount{
+//	        Amount: tokenAmount,
+//	        Asset:  "CustomTokenMint111111111111111111111",
+//	        Extra:  map[string]interface{}{"token": "CUSTOM", "tier": "large"},
+//	    }, nil
 //	})
 func (s *ExactSvmScheme) RegisterMoneyParser(parser x402.MoneyParser) *ExactSvmScheme {
 	s.moneyParsers = append(s.moneyParsers, parser)
@@ -150,7 +150,7 @@ func (s *ExactSvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 		}
 	}
 
-	// Parse Money to decimal number
+	// Parse Money to a decimal string
 	decimalAmount, symbol, err := x402.ParseMoney(price)
 	if err != nil {
 		return x402.AssetAmount{}, err
@@ -175,13 +175,13 @@ func (s *ExactSvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 }
 
 // defaultMoneyConversion converts decimal amount to a default-asset AssetAmount
-func (s *ExactSvmScheme) defaultMoneyConversion(amount float64, network x402.Network, symbol string) (x402.AssetAmount, error) {
+func (s *ExactSvmScheme) defaultMoneyConversion(amount string, network x402.Network, symbol string) (x402.AssetAmount, error) {
 	assetInfo, err := svm.GetDefaultAsset(string(network), symbol)
 	if err != nil {
 		return x402.AssetAmount{}, err
 	}
 
-	tokenAmount, err := x402.ConvertToTokenAmount(x402.NumberToDecimalString(amount), assetInfo.Decimals)
+	tokenAmount, err := x402.ConvertToTokenAmount(amount, assetInfo.Decimals)
 	if err != nil {
 		return x402.AssetAmount{}, fmt.Errorf(ErrFailedToConvertAmount+": %w", err)
 	}

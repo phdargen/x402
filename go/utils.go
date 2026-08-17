@@ -2,14 +2,15 @@ package x402
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
 var (
-	moneyStringPattern = regexp.MustCompile(`^-?\d+(?:\.\d+)?$`)
-	moneyParsePattern  = regexp.MustCompile(`^\$?\s*(-?\d+(?:\.\d+)?)(?:\s+([A-Za-z][A-Za-z0-9.]*))?$`)
+	moneyStringPattern = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+	moneyParsePattern  = regexp.MustCompile(`^\$?\s*(\d+(?:\.\d+)?)(?:\s+([A-Za-z][A-Za-z0-9.]*))?$`)
 	tokenAmountPattern = regexp.MustCompile(`^-?\d+\.?\d*$`)
 	scientificPattern  = regexp.MustCompile(`[eE]`)
 )
@@ -106,63 +107,55 @@ func NumberToDecimalString(n float64) string {
 	return strconv.FormatFloat(n, 'f', -1, 64)
 }
 
-// ParseMoneyString parses a money string into a finite, non-negative decimal number.
+// ParseMoneyString extracts a non-negative decimal substring from a money string.
 // Accepts plain decimal strings with an optional leading dollar sign.
 // Rejects ticker suffixes — use ParseMoney when a symbol may be present.
-func ParseMoneyString(money string) (float64, error) {
+func ParseMoneyString(money string) (string, error) {
 	cleaned := strings.TrimSpace(strings.TrimPrefix(money, "$"))
 	if !moneyStringPattern.MatchString(cleaned) || scientificPattern.MatchString(cleaned) {
-		return 0, fmt.Errorf("invalid money format: %s", money)
+		return "", fmt.Errorf("invalid money format: %s", money)
 	}
-	amount, err := strconv.ParseFloat(cleaned, 64)
-	if err != nil || amount < 0 {
-		return 0, fmt.Errorf("invalid money format: %s", money)
-	}
-	return amount, nil
+	return cleaned, nil
 }
 
-// ParseMoney parses money into amount and optional uppercase ticker.
+// ParseMoney parses money into a decimal string and optional uppercase ticker.
 // "1.50 USDT" → symbol; "1.50 USD" and bare amounts have none.
 // Glued tickers ("1.50USDT") are rejected.
-func ParseMoney(money Price) (amount float64, symbol string, err error) {
+func ParseMoney(money Price) (amount string, symbol string, err error) {
 	switch v := money.(type) {
 	case float64:
-		if v < 0 {
-			return 0, "", fmt.Errorf("invalid money format: %v", v)
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return "", "", fmt.Errorf("invalid money format: %v", v)
 		}
-		return v, "", nil
+		return NumberToDecimalString(v), "", nil
 	case float32:
-		if v < 0 {
-			return 0, "", fmt.Errorf("invalid money format: %v", v)
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) || v < 0 {
+			return "", "", fmt.Errorf("invalid money format: %v", v)
 		}
-		return float64(v), "", nil
+		return NumberToDecimalString(float64(v)), "", nil
 	case int:
 		if v < 0 {
-			return 0, "", fmt.Errorf("invalid money format: %v", v)
+			return "", "", fmt.Errorf("invalid money format: %v", v)
 		}
-		return float64(v), "", nil
+		return strconv.Itoa(v), "", nil
 	case int64:
 		if v < 0 {
-			return 0, "", fmt.Errorf("invalid money format: %v", v)
+			return "", "", fmt.Errorf("invalid money format: %v", v)
 		}
-		return float64(v), "", nil
+		return strconv.FormatInt(v, 10), "", nil
 	case string:
 		trimmed := strings.TrimSpace(v)
 		match := moneyParsePattern.FindStringSubmatch(trimmed)
 		if match == nil {
-			return 0, "", fmt.Errorf("invalid money format: %s", v)
-		}
-		parsed, parseErr := ParseMoneyString(match[1])
-		if parseErr != nil {
-			return 0, "", parseErr
+			return "", "", fmt.Errorf("invalid money format: %s", v)
 		}
 		rawSymbol := match[2]
 		if rawSymbol == "" || strings.ToUpper(rawSymbol) == "USD" {
-			return parsed, "", nil
+			return match[1], "", nil
 		}
-		return parsed, strings.ToUpper(rawSymbol), nil
+		return match[1], strings.ToUpper(rawSymbol), nil
 	default:
-		return 0, "", fmt.Errorf("invalid money format: %v", money)
+		return "", "", fmt.Errorf("invalid money format: %v", money)
 	}
 }
 
@@ -186,9 +179,6 @@ func ConvertToTokenAmount(decimalAmount string, decimals int) (string, error) {
 	tokenAmount := strings.TrimLeft(intPart+paddedDec, "0")
 	if tokenAmount == "" {
 		tokenAmount = "0"
-	}
-	if tokenAmount == "0" && strings.ContainsAny(decimalAmount, "123456789") {
-		return "", fmt.Errorf("amount %s is too small to represent with %d decimal places", decimalAmount, decimals)
 	}
 	return tokenAmount, nil
 }

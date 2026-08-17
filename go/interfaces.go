@@ -13,13 +13,13 @@ import (
 //
 // Args:
 //
-//	amount: Decimal amount (e.g., 1.50 for $1.50)
+//	amount: Decimal string (e.g., "1.50" for $1.50)
 //	network: Network identifier
 //
 // Returns:
 //
 //	AssetAmount or nil if this parser cannot handle the conversion
-type MoneyParser func(amount float64, network Network) (*AssetAmount, error)
+type MoneyParser func(amount string, network Network) (*AssetAmount, error)
 
 // ============================================================================
 // V1 Interfaces (Legacy - explicitly versioned)

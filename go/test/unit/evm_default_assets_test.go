@@ -67,7 +67,7 @@ func TestEVMDefaultAssets(t *testing.T) {
 	})
 
 	t.Run("ConvertDefaultMoney converts decimal amount using default asset decimals", func(t *testing.T) {
-		info, amount, err := evm.ConvertDefaultMoney(1.5, "eip155:8453", "")
+		info, amount, err := evm.ConvertDefaultMoney("1.5", "eip155:8453", "")
 		if err != nil {
 			t.Fatalf("ConvertDefaultMoney: %v", err)
 		}
@@ -80,7 +80,7 @@ func TestEVMDefaultAssets(t *testing.T) {
 	})
 
 	t.Run("ConvertDefaultMoney returns lookup errors as-is", func(t *testing.T) {
-		_, _, err := evm.ConvertDefaultMoney(1, "eip155:8453", "USDT")
+		_, _, err := evm.ConvertDefaultMoney("1", "eip155:8453", "USDT")
 		if err == nil || !strings.Contains(err.Error(), "no USDT default asset configured for network eip155:8453") {
 			t.Fatalf("expected USDT error, got %v", err)
 		}

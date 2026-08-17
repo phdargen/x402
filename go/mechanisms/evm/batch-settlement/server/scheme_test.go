@@ -131,7 +131,7 @@ func TestParsePrice_UnsupportedType(t *testing.T) {
 func TestRegisterMoneyParser_OverridesDefault(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	called := false
-	s.RegisterMoneyParser(func(_ float64, _ x402.Network) (*x402.AssetAmount, error) {
+	s.RegisterMoneyParser(func(_ string, _ x402.Network) (*x402.AssetAmount, error) {
 		called = true
 		return &x402.AssetAmount{Amount: "777", Asset: "0xcustom"}, nil
 	})
@@ -418,13 +418,13 @@ func TestCreateChannelManager_NotNil(t *testing.T) {
 func TestParseMoney_AllNumericTypes(t *testing.T) {
 	cases := []struct {
 		in   x402.Price
-		want float64
+		want string
 	}{
-		{"1.5", 1.5},
-		{"$2.25", 2.25},
-		{float64(3.5), 3.5},
-		{int(4), 4.0},
-		{int64(5), 5.0},
+		{"1.5", "1.5"},
+		{"$2.25", "2.25"},
+		{float64(3.5), "3.5"},
+		{int(4), "4"},
+		{int64(5), "5"},
 	}
 	for _, c := range cases {
 		got, _, err := x402.ParseMoney(c.in)

@@ -57,7 +57,7 @@ func (s *ExactEvmScheme) GetAssetDecimals(asset string, network x402.Network) (i
 
 // RegisterMoneyParser registers a custom money parser in the parser chain.
 // Multiple parsers can be registered - they will be tried in registration order.
-// Each parser receives a decimal amount (e.g., 1.50 for $1.50).
+// Each parser receives a decimal string (e.g., "1.50" for $1.50).
 // If a parser returns nil, the next parser in the chain will be tried.
 // The default parser is always the final fallback.
 //
@@ -71,16 +71,16 @@ func (s *ExactEvmScheme) GetAssetDecimals(asset string, network x402.Network) (i
 //
 // Example:
 //
-//	evmServer.RegisterMoneyParser(func(amount float64, network x402.Network) (*x402.AssetAmount, error) {
-//	    // Use DAI for large amounts
-//	    if amount > 100 {
-//	        return &x402.AssetAmount{
-//	            Amount: fmt.Sprintf("%.0f", amount * 1e18),
-//	            Asset:  "0x6B175474E89094C44Da98b954EedeAC495271d0F", // DAI
-//	            Extra:  map[string]interface{}{"token": "DAI"},
-//	        }, nil
+//	evmServer.RegisterMoneyParser(func(amount string, network x402.Network) (*x402.AssetAmount, error) {
+//	    tokenAmount, err := x402.ConvertToTokenAmount(amount, 18)
+//	    if err != nil {
+//	        return nil, err
 //	    }
-//	    return nil, nil // Use next parser
+//	    return &x402.AssetAmount{
+//	        Amount: tokenAmount,
+//	        Asset:  "0x6B175474E89094C44Da98b954EedeAC495271d0F", // DAI
+//	        Extra:  map[string]interface{}{"token": "DAI"},
+//	    }, nil
 //	})
 func (s *ExactEvmScheme) RegisterMoneyParser(parser x402.MoneyParser) *ExactEvmScheme {
 	s.moneyParsers = append(s.moneyParsers, parser)
@@ -135,7 +135,7 @@ func (s *ExactEvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 		}
 	}
 
-	// Parse Money to decimal number
+	// Parse Money to a decimal string
 	decimalAmount, symbol, err := x402.ParseMoney(price)
 	if err != nil {
 		return x402.AssetAmount{}, err
@@ -160,7 +160,7 @@ func (s *ExactEvmScheme) ParsePrice(price x402.Price, network x402.Network) (x40
 }
 
 // defaultMoneyConversion converts a decimal amount to an AssetAmount using the default token.
-func (s *ExactEvmScheme) defaultMoneyConversion(amount float64, network x402.Network, symbol string) (x402.AssetAmount, error) {
+func (s *ExactEvmScheme) defaultMoneyConversion(amount string, network x402.Network, symbol string) (x402.AssetAmount, error) {
 	assetInfo, tokenAmount, err := evm.ConvertDefaultMoney(amount, string(network), symbol)
 	if err != nil {
 		return x402.AssetAmount{}, err

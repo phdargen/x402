@@ -109,7 +109,7 @@ func (s *UptoEvmScheme) ParsePrice(price x402.Price, network x402.Network) (x402
 	return s.defaultMoneyConversion(decimalAmount, network, symbol)
 }
 
-func (s *UptoEvmScheme) defaultMoneyConversion(amount float64, network x402.Network, symbol string) (x402.AssetAmount, error) {
+func (s *UptoEvmScheme) defaultMoneyConversion(amount string, network x402.Network, symbol string) (x402.AssetAmount, error) {
 	assetInfo, tokenAmount, err := evm.ConvertDefaultMoney(amount, string(network), symbol)
 	if err != nil {
 		return x402.AssetAmount{}, err

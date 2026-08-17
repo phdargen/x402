@@ -46,16 +46,7 @@ func ResolveSettlementOverrideAmount(rawAmount string, requirements types.Paymen
 	}
 
 	if m := dollarRegex.FindStringSubmatch(rawAmount); m != nil {
-		dollarFloat, ok := new(big.Float).SetPrec(256).SetString(m[1])
-		if !ok {
-			return "", fmt.Errorf("invalid dollar amount: %s", rawAmount)
-		}
-		multiplier := new(big.Float).SetPrec(256).SetInt(
-			new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil),
-		)
-		atomicFloat := new(big.Float).SetPrec(256).Mul(dollarFloat, multiplier)
-		atomicInt, _ := atomicFloat.Int(nil) // truncates toward zero (floor for positive values)
-		return atomicInt.String(), nil
+		return ConvertToTokenAmount(m[1], decimals)
 	}
 
 	return rawAmount, nil

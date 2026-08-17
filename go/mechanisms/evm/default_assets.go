@@ -127,12 +127,12 @@ func resolveNetworkKey(network string) string {
 
 // ConvertDefaultMoney looks up the network's default (or ticker-matched) asset
 // and converts a decimal amount to token smallest units.
-func ConvertDefaultMoney(amount float64, network string, symbol string) (*DefaultAssetInfo, string, error) {
+func ConvertDefaultMoney(amount string, network string, symbol string) (*DefaultAssetInfo, string, error) {
 	assetInfo, err := GetDefaultAsset(network, symbol)
 	if err != nil {
 		return nil, "", err
 	}
-	tokenAmount, err := x402.ConvertToTokenAmount(x402.NumberToDecimalString(amount), assetInfo.Decimals)
+	tokenAmount, err := x402.ConvertToTokenAmount(amount, assetInfo.Decimals)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to convert amount: %w", err)
 	}

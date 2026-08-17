@@ -504,7 +504,7 @@ func (c *x402Client) applySpendControls(x402Version int, requirements []PaymentR
 			if err != nil {
 				return nil, err
 			}
-			capScaled, err := ConvertToTokenAmount(NumberToDecimalString(parsed), 18)
+			capScaled, err := ConvertToTokenAmount(parsed, 18)
 			if err != nil {
 				return nil, err
 			}
@@ -522,7 +522,7 @@ func (c *x402Client) applySpendControls(x402Version int, requirements []PaymentR
 		if err != nil {
 			return nil, err
 		}
-		maxAtomic, err := ConvertToTokenAmount(NumberToDecimalString(parsed), defaultAsset.Decimals)
+		maxAtomic, err := ConvertToTokenAmount(parsed, defaultAsset.Decimals)
 		if err != nil {
 			return nil, err
 		}
