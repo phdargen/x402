@@ -24,7 +24,7 @@ from .....schemas import (
     SettleResultContext,
     SupportedKind,
 )
-from .....schemas.helpers import parse_money
+from .....schemas.helpers import convert_to_token_amount, parse_money
 from .....schemas.hooks import (
     AbortResult,
     RecoveredSettleResult,
@@ -45,7 +45,7 @@ from ..constants import MIN_WITHDRAW_DELAY, SCHEME_BATCH_SETTLEMENT
 from ..types import AuthorizerSigner
 from .storage import Channel, ChannelStorage, InMemoryChannelStorage
 
-MoneyParser = Callable[[float, str], AssetAmount | None]
+MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
 
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -296,12 +296,10 @@ class BatchSettlementEvmScheme:
         )
 
     def _default_money_conversion(
-        self, amount: float, network: str, symbol: str | None = None
+        self, amount: str, network: str, symbol: str | None = None
     ) -> AssetAmount:
-        from decimal import Decimal
-
         asset = get_default_asset(network, symbol)
-        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
+        token_amount = convert_to_token_amount(amount, asset["decimals"])
         atm = asset.get("asset_transfer_method")
         extra: dict[str, Any] = {"name": asset["name"], "version": asset["version"]}
         if atm:

@@ -39,7 +39,7 @@ from .schemas import (
     matches_network_pattern,
 )
 from .schemas.extensions import ClientExtension
-from .schemas.helpers import parse_money_string
+from .schemas.helpers import convert_to_token_amount, parse_money
 from .server_base import _ADDITIVE_LIST_INFO_FIELDS
 
 # ============================================================================
@@ -553,43 +553,6 @@ class x402ClientBase:
         rejected_by_asset_cap = False
         rejected_usd_symbol: str | None = None
 
-        def convert_to_token_amount(decimal_amount: str, decimals: int) -> str:
-            if re.search(r"[eE]", decimal_amount):
-                raise ValueError(
-                    f"Invalid amount: {decimal_amount} — use decimal notation, not scientific notation"
-                )
-            if not re.fullmatch(r"-?\d+\.?\d*", decimal_amount):
-                raise ValueError(f"Invalid amount: {decimal_amount}")
-            int_part, _, dec_part = decimal_amount.partition(".")
-            padded_dec = (dec_part + "0" * decimals)[:decimals]
-            token_amount = (int_part + padded_dec).lstrip("0") or "0"
-            if token_amount == "0" and re.search(r"[1-9]", decimal_amount):
-                raise ValueError(
-                    f"Amount {decimal_amount} is too small to represent with {decimals} decimal places"
-                )
-            return token_amount
-
-        def number_to_decimal_string(n: float) -> str:
-            s = str(n)
-            if not re.search(r"[eE]", s):
-                return s
-            significand, exponent_str = re.split(r"[eE]", s)
-            exp = int(exponent_str)
-            negative = significand.startswith("-")
-            abs_s = significand[1:] if negative else significand
-            parts = abs_s.split(".")
-            int_digits = parts[0]
-            frac_digits = parts[1] if len(parts) > 1 else ""
-            all_digits = int_digits + frac_digits
-            decimal_pos = len(int_digits) + exp
-            if decimal_pos <= 0:
-                result = "0." + "0" * (-decimal_pos) + all_digits
-            elif decimal_pos >= len(all_digits):
-                result = all_digits + "0" * (decimal_pos - len(all_digits))
-            else:
-                result = all_digits[:decimal_pos] + "." + all_digits[decimal_pos:]
-            return ("-" if negative else "") + result
-
         kept: list[RequirementsView] = []
         for requirement in filtered:
             asset_entry = find_asset_entry(requirement)
@@ -613,12 +576,7 @@ class x402ClientBase:
             raw_amount = raw_amount_of(requirement)
             if not _ATOMIC_AMOUNT.fullmatch(raw_amount):
                 value_scaled = int(convert_to_token_amount(raw_amount, 18))
-                cap_scaled = int(
-                    convert_to_token_amount(
-                        number_to_decimal_string(parse_money_string(str(usd_limit))),
-                        18,
-                    )
-                )
+                cap_scaled = int(convert_to_token_amount(parse_money(usd_limit)["amount"], 18))
                 ok = value_scaled <= cap_scaled
                 if not ok:
                     rejected_usd_symbol = default_asset["symbol"]
@@ -628,7 +586,7 @@ class x402ClientBase:
 
             max_atomic = int(
                 convert_to_token_amount(
-                    number_to_decimal_string(parse_money_string(str(usd_limit))),
+                    parse_money(usd_limit)["amount"],
                     default_asset["decimals"],
                 )
             )

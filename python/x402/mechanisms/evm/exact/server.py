@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
-from ....schemas.helpers import parse_money
+from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..constants import SCHEME_EXACT
 from ..default_assets import find_default_asset, get_default_asset
 from ..utils import (
@@ -12,7 +12,7 @@ from ..utils import (
 )
 
 # Type alias for money parser (sync)
-MoneyParser = Callable[[float, str], AssetAmount | None]
+MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
 
 
 class ExactEvmScheme:
@@ -20,8 +20,7 @@ class ExactEvmScheme:
 
     Parses prices and enhances payment requirements with EIP-712 domain info.
 
-    Note: Money/price parsing lives here, not as a standalone utility.
-    USD→atomic conversion is scheme-specific.
+    Note: parse_price orchestrates shared helpers plus scheme asset/extra.
 
     Attributes:
         scheme: The scheme identifier ("exact").
@@ -37,7 +36,7 @@ class ExactEvmScheme:
         """Register custom money parser in the parser chain.
 
         Multiple parsers can be registered - tried in registration order.
-        Each parser receives decimal amount (e.g., 1.50 for $1.50).
+        Each parser receives a decimal string (e.g., "1.50" for $1.50).
         If parser returns None, next parser is tried.
         Default parser is always the final fallback.
 
@@ -159,12 +158,12 @@ class ExactEvmScheme:
         return requirements
 
     def _default_money_conversion(
-        self, amount: float, network: str, symbol: str | None = None
+        self, amount: str, network: str, symbol: str | None = None
     ) -> AssetAmount:
         """Convert decimal amount to network's default stablecoin AssetAmount.
 
         Args:
-            amount: Decimal amount (e.g., 1.50).
+            amount: Decimal amount as a string (e.g., "1.50").
             network: Network identifier.
 
         Returns:
@@ -173,12 +172,10 @@ class ExactEvmScheme:
         Raises:
             ValueError: If no default stablecoin is configured for the network.
         """
-        from decimal import Decimal
-
         from ..default_assets import ExactDefaultAssetInfo
 
         asset: ExactDefaultAssetInfo = get_default_asset(network, symbol)
-        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
+        token_amount = convert_to_token_amount(amount, asset["decimals"])
 
         atm = asset.get("asset_transfer_method")
         include_eip712_domain = not atm or asset.get("supports_eip2612", False)

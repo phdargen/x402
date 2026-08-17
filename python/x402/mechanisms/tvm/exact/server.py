@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from decimal import Decimal
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
-from ....schemas.helpers import parse_money
+from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..codecs.common import (
     encode_base64_boc,
     make_zero_bit_cell,
@@ -18,7 +17,7 @@ from ..constants import (
 )
 from ..default_assets import find_default_asset, get_default_asset
 
-MoneyParser = Callable[[float, str], AssetAmount | None]
+MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
 
 
 class ExactTvmScheme:
@@ -104,11 +103,11 @@ class ExactTvmScheme:
         return requirements
 
     def _default_money_conversion(
-        self, amount: float, network: str, symbol: str | None = None
+        self, amount: str, network: str, symbol: str | None = None
     ) -> AssetAmount:
         asset = get_default_asset(network, symbol)
         return AssetAmount(
-            amount=str(parse_amount(format(Decimal(str(amount)), "f"), asset["decimals"])),
+            amount=convert_to_token_amount(amount, asset["decimals"]),
             asset=asset["asset"],
             extra={
                 "areFeesSponsored": True,

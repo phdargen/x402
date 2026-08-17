@@ -10,6 +10,7 @@ except ImportError as e:
         "EVM mechanism requires ethereum packages. Install with: pip install x402[evm]"
     ) from e
 
+from ...schemas.helpers import convert_to_token_amount
 from .constants import (
     NETWORK_CONFIGS,
     AssetInfo,
@@ -239,9 +240,7 @@ def parse_amount(amount: str, decimals: int) -> int:
     Returns:
         Amount in smallest unit.
     """
-    d = Decimal(amount)
-    multiplier = Decimal(10**decimals)
-    return int(d * multiplier)
+    return int(convert_to_token_amount(amount, decimals))
 
 
 def format_amount(amount: int, decimals: int) -> str:

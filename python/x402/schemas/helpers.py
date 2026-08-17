@@ -1,6 +1,7 @@
 """Utility functions for the x402 Python SDK."""
 
 import json
+import math
 import re
 from typing import Any, TypedDict, TypeVar
 
@@ -278,24 +279,47 @@ def find_schemes_by_network(
 class ParsedMoney(TypedDict, total=False):
     """Result of :func:`parse_money`."""
 
-    amount: float
+    amount: str
     symbol: str
 
 
-def parse_money_string(money: str) -> float:
-    """Parse a money string into a finite, non-negative decimal number.
+def number_to_decimal_string(n: int | float) -> str:
+    """Convert a number to a plain decimal string, expanding scientific notation.
+
+    Digits already lost in the caller's ``int``/``float`` stay lost.
+    """
+    s = str(n)
+    if not re.search(r"[eE]", s):
+        return s
+
+    significand, exponent_str = re.split(r"[eE]", s, maxsplit=1)
+    exp = int(exponent_str)
+    negative = significand.startswith("-")
+    abs_s = significand[1:] if negative else significand
+    parts = abs_s.split(".")
+    int_digits = parts[0]
+    frac_digits = parts[1] if len(parts) > 1 else ""
+    all_digits = int_digits + frac_digits
+    decimal_pos = len(int_digits) + exp
+    if decimal_pos <= 0:
+        result = "0." + "0" * (-decimal_pos) + all_digits
+    elif decimal_pos >= len(all_digits):
+        result = all_digits + "0" * (decimal_pos - len(all_digits))
+    else:
+        result = all_digits[:decimal_pos] + "." + all_digits[decimal_pos:]
+    return ("-" if negative else "") + result
+
+
+def parse_money_string(money: str) -> str:
+    """Parse a money string into a finite, non-negative decimal string.
 
     Accepts plain decimal strings with an optional leading dollar sign.
     Rejects ticker suffixes — use :func:`parse_money` when a symbol may be present.
     """
     cleaned = re.sub(r"^\$", "", money).strip()
-    if not re.fullmatch(r"-?\d+(?:\.\d+)?", cleaned) or re.search(r"[eE]", cleaned):
+    if not re.fullmatch(r"\d+(?:\.\d+)?", cleaned) or re.search(r"[eE]", cleaned):
         raise ValueError(f"Invalid money format: {money}")
-
-    amount = float(cleaned)
-    if amount != amount or amount < 0:  # NaN or negative
-        raise ValueError(f"Invalid money format: {money}")
-    return amount
+    return cleaned
 
 
 def parse_money(money: Money) -> ParsedMoney:
@@ -303,11 +327,14 @@ def parse_money(money: Money) -> ParsedMoney:
 
     ``"1.50 USDT"`` → symbol; ``"1.50 USD"`` and bare amounts have none.
     Glued tickers (``"1.50USDT"``) are rejected.
+
+    String prices keep the extracted decimal substring. Number prices are
+    stringified once via :func:`number_to_decimal_string`.
     """
     if isinstance(money, int | float):
-        if money != money or money < 0:  # NaN or negative
+        if not math.isfinite(money) or money < 0:
             raise ValueError(f"Invalid money format: {money}")
-        return {"amount": float(money)}
+        return {"amount": number_to_decimal_string(money)}
 
     trimmed = money.strip()
     match = re.fullmatch(
@@ -322,3 +349,20 @@ def parse_money(money: Money) -> ParsedMoney:
     if not raw_symbol or raw_symbol.upper() == "USD":
         return {"amount": amount}
     return {"amount": amount, "symbol": raw_symbol.upper()}
+
+
+def convert_to_token_amount(decimal_amount: str, decimals: int) -> str:
+    """Convert a decimal amount to token smallest units.
+
+    Accepts only plain decimal strings — scientific notation is not allowed.
+    Pads or truncates toward zero, including to ``"0"``. Does not round.
+    """
+    if re.search(r"[eE]", decimal_amount):
+        raise ValueError(
+            f"Invalid amount: {decimal_amount} — use decimal notation, not scientific notation"
+        )
+    if not re.fullmatch(r"-?\d+\.?\d*", decimal_amount):
+        raise ValueError(f"Invalid amount: {decimal_amount}")
+    int_part, _, dec_part = decimal_amount.partition(".")
+    padded_dec = (dec_part + "0" * decimals)[:decimals]
+    return (int_part + padded_dec).lstrip("0") or "0"

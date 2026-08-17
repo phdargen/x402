@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
-from ....schemas.helpers import parse_money
+from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..constants import SCHEME_UPTO
 from ..default_assets import find_default_asset, get_default_asset
 from ..utils import (
@@ -11,7 +11,7 @@ from ..utils import (
     parse_amount,
 )
 
-MoneyParser = Callable[[float, str], AssetAmount | None]
+MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
 
 
 class UptoEvmScheme:
@@ -113,12 +113,10 @@ class UptoEvmScheme:
         return requirements
 
     def _default_money_conversion(
-        self, amount: float, network: str, symbol: str | None = None
+        self, amount: str, network: str, symbol: str | None = None
     ) -> AssetAmount:
-        from decimal import Decimal
-
         asset = get_default_asset(network, symbol)
-        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
+        token_amount = convert_to_token_amount(amount, asset["decimals"])
 
         extra: dict = {
             "assetTransferMethod": "permit2",

@@ -15,8 +15,7 @@ import {
   findByNetworkAndScheme,
   findSchemesByNetwork,
   networkMatchesPattern,
-  numberToDecimalString,
-  parseMoneyString,
+  parseMoney,
   toComparableArray,
 } from "../utils";
 
@@ -868,22 +867,14 @@ export class x402Client {
       if (!isAtomicAmount(rawAmount)) {
         // Decimal ledger value (e.g. XRPL IOU "0.01") — 1:1 USD vs the Money cap.
         const valueScaled = BigInt(convertToTokenAmount(rawAmount, 18));
-        const capScaled = BigInt(
-          convertToTokenAmount(
-            numberToDecimalString(parseMoneyString(String(usdLimit))),
-            18,
-          ),
-        );
+        const capScaled = BigInt(convertToTokenAmount(parseMoney(usdLimit).amount, 18));
         const ok = valueScaled <= capScaled;
         if (!ok) rejectedUsdSymbol = defaultAsset.symbol;
         return ok;
       }
 
       const maxAtomic = BigInt(
-        convertToTokenAmount(
-          numberToDecimalString(parseMoneyString(String(usdLimit))),
-          defaultAsset.decimals,
-        ),
+        convertToTokenAmount(parseMoney(usdLimit).amount, defaultAsset.decimals),
       );
       const ok = amountOf(requirement) <= maxAtomic;
       if (!ok) rejectedUsdSymbol = defaultAsset.symbol;

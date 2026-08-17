@@ -19,6 +19,7 @@ from ..schemas import (
     ResourceInfo,
     SettleResponse,
     SkipHandlerDirective,
+    convert_to_token_amount,
 )
 from ..schemas.errors import SettleError
 from ..schemas.hooks import AbortProtectedRequestResult, GrantAccessResult
@@ -661,8 +662,7 @@ class x402HTTPServerBase:
                     f'Cannot convert dollar settlement override "{raw_amount}" to atomic units: '
                     "asset decimals are unknown. Pass an atomic amount or register the asset."
                 )
-            dollars = float(dollar_match.group(1))
-            return str(round(dollars * (10**decimals)))
+            return convert_to_token_amount(dollar_match.group(1), decimals)
 
         return raw_amount
 

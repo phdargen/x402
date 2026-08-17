@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import binascii
-from decimal import Decimal
+
+from ....schemas.helpers import convert_to_token_amount
 
 try:
     from pytoniq_core import Address, Builder, Cell
@@ -59,4 +60,4 @@ def get_network_global_id(network: str) -> int:
 
 def parse_amount(amount: str, decimals: int) -> int:
     """Convert decimal string to smallest unit."""
-    return int(Decimal(amount) * Decimal(10**decimals))
+    return int(convert_to_token_amount(amount, decimals))

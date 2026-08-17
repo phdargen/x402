@@ -88,6 +88,15 @@ class TestDollarFormat:
         reqs = _requirements()
         assert x402HTTPServerBase.resolve_settlement_override_amount("$0", reqs, 6) == "0"
 
+    def test_pads_and_truncates_toward_zero_without_rounding(self):
+        reqs = _requirements()
+        assert (
+            x402HTTPServerBase.resolve_settlement_override_amount("$1.0000005", reqs, 6)
+            == "1000000"
+        )
+        assert x402HTTPServerBase.resolve_settlement_override_amount("$0.0000005", reqs, 6) == "0"
+        assert x402HTTPServerBase.resolve_settlement_override_amount("$0.0000009", reqs, 6) == "0"
+
     def test_throws_when_decimals_are_unknown(self):
         reqs = _requirements()
         with pytest.raises(ValueError, match="asset decimals are unknown"):

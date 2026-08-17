@@ -31,6 +31,8 @@ import pytest
 
 pytest.importorskip("pytoniq_core")
 
+from decimal import Decimal
+
 from x402 import x402ClientSync, x402FacilitatorSync, x402ResourceServerSync
 from x402.mechanisms.tvm import (
     SCHEME_EXACT,
@@ -71,6 +73,7 @@ from x402.schemas import (
     SupportedResponse,
     VerifyResponse,
 )
+from x402.schemas.helpers import convert_to_token_amount
 
 TVM_PRIVATE_KEY = os.environ.get("TVM_PRIVATE_KEY")
 TVM_CLIENT_PRIVATE_KEY = os.environ.get("TVM_CLIENT_PRIVATE_KEY", TVM_PRIVATE_KEY)
@@ -682,10 +685,10 @@ class TestTvmPriceParsing:
     def test_custom_money_parser(self) -> None:
         from x402.schemas import AssetAmount
 
-        def large_amount_parser(amount: float, network: str):
-            if amount > 100:
+        def large_amount_parser(amount: str | int | float, network: str):
+            if Decimal(str(amount)) > 100:
                 return AssetAmount(
-                    amount=str(int(amount * 1_000_000_000)),
+                    amount=convert_to_token_amount(str(amount), 9),
                     asset="0:" + "b" * 64,
                     extra={"token": "LARGE", "tier": "large"},
                 )

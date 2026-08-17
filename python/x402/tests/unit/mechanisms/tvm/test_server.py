@@ -6,6 +6,8 @@ import pytest
 
 pytest.importorskip("pytoniq_core")
 
+from decimal import Decimal
+
 from x402.mechanisms.tvm import (
     TVM_MAINNET,
     TVM_TESTNET,
@@ -107,9 +109,9 @@ class TestParsePrice:
         def test_should_use_custom_money_parser_before_default_conversion(self):
             server = ExactTvmServerScheme()
 
-            def custom_parser(amount: float, network: str) -> AssetAmount | None:
+            def custom_parser(amount: str | int | float, network: str) -> AssetAmount | None:
                 assert network == TVM_MAINNET
-                if amount >= 100:
+                if Decimal(str(amount)) >= 100:
                     return AssetAmount(
                         amount="999",
                         asset="0:" + "9" * 64,
@@ -132,7 +134,7 @@ class TestParsePrice:
             server = ExactTvmServerScheme()
             parser_called = False
 
-            def tracking_parser(amount: float, network: str) -> AssetAmount | None:
+            def tracking_parser(amount: str | int | float, network: str) -> AssetAmount | None:
                 nonlocal parser_called
                 parser_called = True
                 return None

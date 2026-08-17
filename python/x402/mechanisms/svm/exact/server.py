@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
-from ....schemas.helpers import parse_money
+from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..constants import SCHEME_EXACT
 from ..default_assets import find_default_asset, get_default_asset
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from solana.rpc.api import Client as SolanaClient
 
 # Type alias for money parser (sync)
-MoneyParser = Callable[[float, str], AssetAmount | None]
+MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
 
 
 class ExactSvmScheme:
@@ -22,8 +22,7 @@ class ExactSvmScheme:
 
     Parses prices and enhances payment requirements with feePayer info.
 
-    Note: Money/price parsing lives here, not as a standalone utility.
-    USD→atomic conversion is scheme-specific.
+    Note: parse_price orchestrates shared helpers plus scheme asset/extra.
 
     Attributes:
         scheme: The scheme identifier ("exact").
@@ -52,7 +51,7 @@ class ExactSvmScheme:
         """Register custom money parser in the parser chain.
 
         Multiple parsers can be registered - tried in registration order.
-        Each parser receives decimal amount (e.g., 1.50 for $1.50).
+        Each parser receives a decimal string (e.g., "1.50" for $1.50).
         If parser returns None, next parser is tried.
         Default parser is always the final fallback.
 
@@ -159,12 +158,10 @@ class ExactSvmScheme:
         return requirements
 
     def _default_money_conversion(
-        self, amount: float, network: str, symbol: str | None = None
+        self, amount: str, network: str, symbol: str | None = None
     ) -> AssetAmount:
-        from decimal import Decimal
-
         asset = get_default_asset(network, symbol)
-        token_amount = int(Decimal(str(amount)) * (Decimal(10) ** asset["decimals"]))
+        token_amount = convert_to_token_amount(amount, asset["decimals"])
 
         return AssetAmount(
             amount=str(token_amount),

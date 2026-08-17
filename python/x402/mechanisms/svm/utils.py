@@ -15,6 +15,7 @@ except ImportError as e:
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
 
+from ...schemas.helpers import convert_to_token_amount
 from .constants import (
     NETWORK_CONFIGS,
     SOLANA_DEVNET_CAIP2,
@@ -162,29 +163,6 @@ def get_asset_info(network: str, asset_address: str | None = None) -> AssetInfo:
     }
 
 
-def convert_to_token_amount(decimal_amount: str, decimals: int) -> str:
-    """Convert a decimal amount to token smallest units.
-
-    Args:
-        decimal_amount: The decimal amount (e.g., "0.10").
-        decimals: The number of decimals for the token (e.g., 6 for USDC).
-
-    Returns:
-        The amount in smallest units as a string.
-
-    Raises:
-        ValueError: If amount is invalid.
-    """
-    try:
-        amount = Decimal(decimal_amount)
-    except Exception as e:
-        raise ValueError(f"Invalid amount: {decimal_amount}") from e
-
-    # Convert to smallest unit (e.g., for USDC with 6 decimals: 0.10 * 10^6 = 100000)
-    token_amount = int(amount * Decimal(10**decimals))
-    return str(token_amount)
-
-
 def parse_amount(amount: str, decimals: int) -> int:
     """Convert decimal string to smallest unit.
 
@@ -195,9 +173,7 @@ def parse_amount(amount: str, decimals: int) -> int:
     Returns:
         Amount in smallest unit.
     """
-    d = Decimal(amount)
-    multiplier = Decimal(10**decimals)
-    return int(d * multiplier)
+    return int(convert_to_token_amount(amount, decimals))
 
 
 def format_amount(amount: int, decimals: int) -> str:
