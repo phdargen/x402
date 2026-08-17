@@ -109,6 +109,7 @@ In every branch `extra.receiverAuthorizer` is optional, with absent read as the 
 | `minFeeBps`           | Yes      | `uint16`                       | Fee floor in basis points; `0` for none.                                                                                                                                                                                                                                       |
 | `maxFeeBps`           | Yes      | `uint16`                       | Fee ceiling in basis points.                                                                                                                                                                                                                                                   |
 | `paymentFlow`         | No       | `"escrow"` \| `"authorization"` | Which lifecycle applies, and with it whether the client's payload settles as `authorize` or `charge`. Default `"escrow"`. New servers SHOULD write `"escrow"` out. A server that captures automatically after its own `authorize` is still `"escrow"`; `"authorization"` means the client's payload itself settles as a terminal `charge`. |
+| `captureMode`         | No       | `"sync"` \| `"deferred"`       | Escrow-only resource-server choice for when the post-resource finalize runs. Default `"sync"`: the after-handler `/settle` relays `capture` or `void`. `"deferred"` skips that settle so the server captures later from durable state. MUST NOT be set when `paymentFlow` is `"authorization"`. |
 | `operatorType`        | No       | `"delegated"` \| `"custom"`    | Kind of `extra.captureAuthorizer`: an address the facilitator controls and submits from (`"delegated"`, EOA or smart-contract account) or a contract with permissionless collect and an out-of-band lifecycle surface (`"custom"`). Default `"delegated"`. `"policy"` is reserved for the appendix's future type. |
 | `assetTransferMethod` | No       | `"eip3009"` \| `"permit2"`     | Which canonical token collector the client authorizes. Default `"eip3009"`. A server MAY list several `accepts[]` entries differing only here, so clients can pick the method matching their token approvals. The collector address is not carried on `extra`.                  |
 
@@ -328,7 +329,7 @@ For `operatorType: "delegated"` this check runs only at the facilitator, so onch
 
 ## Sync and async finalize
 
-Whether the post-resource finalize runs during the paid request or afterwards is a resource-server choice; the wire format does not name a mode.
+Whether the post-resource finalize runs during the paid request or afterwards is a resource-server choice. This binding publishes that choice as OPTIONAL `extra.captureMode` (`"sync"` default, or `"deferred"`) so a route can carry it through to settle time. The field is meaningful only under `paymentFlow: "escrow"` and MUST NOT appear on an `"authorization"` route.
 
 - **Sync.** The in-request `/settle` after the resource runs is a `capture`, a partial `capture` with `void` of the remaining balance, or a `void`. No durable payment state is required.
 - **Async.** That second in-request settle does not call the facilitator or broadcast a transaction. The server instead commits enough payment info into durable storage to author lifecycle settles later — at least `paymentInfo`, and when the bind is on the client `saltNonce`.
