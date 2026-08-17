@@ -7,7 +7,6 @@ import type {
 } from "@x402/core/types";
 import { isAddressEqual } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
-import { ESCROW_VIEW_ABI } from "../abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
   AUTH_CAPTURE_SCHEME,
@@ -35,7 +34,12 @@ import {
   verifyCommon,
   type NormalizedAuthCaptureExtra,
 } from "../extra";
-import { simulateEscrowCall, submitEscrowCall } from "./utils";
+import {
+  readPaymentStateForBalances,
+  readPaymentStateOnce,
+  simulateEscrowCall,
+  submitEscrowCall,
+} from "./utils";
 
 /**
  * Verify a lifecycle (capture / void / refund) payload.
@@ -335,38 +339,6 @@ function paymentInfoMatchesRequirements(
 }
 
 /**
- * Read AuthCaptureEscrow.paymentState(paymentInfoHash).
- *
- * @param signer - Facilitator signer.
- * @param paymentInfoHash - Escrow payment identifier.
- * @returns Onchain balances, or undefined when the read fails.
- */
-async function readPaymentState(
-  signer: FacilitatorEvmSigner,
-  paymentInfoHash: `0x${string}`,
-): Promise<PaymentState | undefined> {
-  try {
-    const state = (await signer.readContract({
-      address: AUTH_CAPTURE_ESCROW_ADDRESS,
-      abi: ESCROW_VIEW_ABI,
-      functionName: "paymentState",
-      args: [paymentInfoHash],
-    })) as {
-      hasCollectedPayment: boolean;
-      capturableAmount: bigint;
-      refundableAmount: bigint;
-    };
-    return {
-      hasCollectedPayment: Boolean(state.hasCollectedPayment),
-      capturableAmount: BigInt(state.capturableAmount),
-      refundableAmount: BigInt(state.refundableAmount),
-    };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * Single-use check: signed expected balances must equal onchain state.
  *
  * @param state - Escrow paymentState.
@@ -448,12 +420,17 @@ async function verifyCapturePayload(
     return { isValid: false, invalidReason: Errors.ErrCaptureDeadlineExpired, payer };
   }
 
-  const state = await readPaymentState(signer, paymentInfoHash);
+  const expectedCapturable = BigInt(wirePayload.expectedCapturableAmount);
+  const expectedRefundable = BigInt(wirePayload.expectedRefundableAmount);
+  const { state } = await readPaymentStateForBalances(
+    signer,
+    paymentInfoHash,
+    expectedCapturable,
+    expectedRefundable,
+  );
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }
-  const expectedCapturable = BigInt(wirePayload.expectedCapturableAmount);
-  const expectedRefundable = BigInt(wirePayload.expectedRefundableAmount);
   if (!balancesMatch(state, expectedCapturable, expectedRefundable)) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }
@@ -527,7 +504,7 @@ async function verifyVoidPayload(
     return { isValid: false, invalidReason: Errors.ErrAuthorizerSignature, payer };
   }
 
-  const state = await readPaymentState(signer, paymentInfoHash);
+  const state = await readPaymentStateOnce(signer, paymentInfoHash);
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }
@@ -593,12 +570,17 @@ async function verifyRefundPayload(
     return { isValid: false, invalidReason: Errors.ErrRefundDeadlineExpired, payer };
   }
 
-  const state = await readPaymentState(signer, paymentInfoHash);
+  const expectedCapturable = BigInt(wirePayload.expectedCapturableAmount);
+  const expectedRefundable = BigInt(wirePayload.expectedRefundableAmount);
+  const { state } = await readPaymentStateForBalances(
+    signer,
+    paymentInfoHash,
+    expectedCapturable,
+    expectedRefundable,
+  );
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }
-  const expectedCapturable = BigInt(wirePayload.expectedCapturableAmount);
-  const expectedRefundable = BigInt(wirePayload.expectedRefundableAmount);
   if (!balancesMatch(state, expectedCapturable, expectedRefundable)) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ContractFunctionExecutionError,
   ContractFunctionRevertedError,
@@ -8,6 +8,13 @@ import {
   zeroAddress,
 } from "viem";
 import { AuthCaptureEvmScheme } from "../../../src/auth-capture/facilitator/scheme";
+import {
+  normalizePaymentState,
+  PAYMENT_STATE_MAX_ATTEMPTS,
+  PAYMENT_STATE_RETRY_DELAYS_MS,
+  readPaymentStateForBalances,
+  readPaymentStateOnce,
+} from "../../../src/auth-capture/facilitator/utils";
 import { ESCROW_ABI_WITH_ERRORS } from "../../../src/auth-capture/abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
@@ -19,6 +26,7 @@ import {
   computePayerAgnosticPaymentInfoHash,
   deriveBoundSalt,
 } from "../../../src/auth-capture/nonce";
+import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
 const DEPLOYED_BYTECODE = "0x6080604052" as const;
@@ -926,6 +934,40 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_unexpected_payment_state");
     });
 
+    it("should retry stale paymentState reads before capture verify", async () => {
+      let paymentStateCalls = 0;
+      mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "paymentState") {
+          paymentStateCalls += 1;
+          if (paymentStateCalls === 1) {
+            return {
+              hasCollectedPayment: false,
+              capturableAmount: 0n,
+              refundableAmount: 0n,
+            };
+          }
+          return {
+            hasCollectedPayment: true,
+            capturableAmount: BigInt("1000000"),
+            refundableAmount: 0n,
+          };
+        }
+        return BigInt("1000000000");
+      });
+
+      vi.useFakeTimers();
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload();
+      const verifyPromise = scheme.verify(envelope, envelope.accepted);
+      await vi.advanceTimersByTimeAsync(200);
+      const result = await verifyPromise;
+      vi.useRealTimers();
+
+      expect(result.isValid).toBe(true);
+      expect(paymentStateCalls).toBe(2);
+    });
+
     it("should reject voidAuthorizerSignature on a full capture", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       const envelope = buildCapturePayload({
@@ -1028,6 +1070,174 @@ describe("AuthCaptureEvmScheme", () => {
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.functionName).toBe("refund");
       expect(call.args[2]).toBe(OPERATOR_REFUND_COLLECTOR_ADDRESS);
+    });
+  });
+});
+
+describe("auth-capture paymentState reads", () => {
+  describe("normalizePaymentState", () => {
+    it("should parse flat object shapes from viem", () => {
+      expect(
+        normalizePaymentState({
+          hasCollectedPayment: true,
+          capturableAmount: 10000n,
+          refundableAmount: 0n,
+        }),
+      ).toEqual({
+        hasCollectedPayment: true,
+        capturableAmount: 10000n,
+        refundableAmount: 0n,
+      });
+    });
+
+    it("should parse tuple arrays", () => {
+      expect(normalizePaymentState([true, 10000n, 0n])).toEqual({
+        hasCollectedPayment: true,
+        capturableAmount: 10000n,
+        refundableAmount: 0n,
+      });
+    });
+
+    it("should unwrap nested state objects", () => {
+      expect(
+        normalizePaymentState({
+          state: { hasCollectedPayment: false, capturableAmount: 1n, refundableAmount: 2n },
+        }),
+      ).toEqual({
+        hasCollectedPayment: false,
+        capturableAmount: 1n,
+        refundableAmount: 2n,
+      });
+    });
+
+    it("should return undefined for unrecognized values", () => {
+      expect(normalizePaymentState(null)).toBeUndefined();
+      expect(normalizePaymentState({})).toBeUndefined();
+      expect(normalizePaymentState([true])).toBeUndefined();
+    });
+  });
+
+  describe("readPaymentStateForBalances", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function createSigner(readImpl: () => Promise<unknown>): FacilitatorEvmSigner {
+      return {
+        readContract: vi.fn().mockImplementation(readImpl),
+      } as unknown as FacilitatorEvmSigner;
+    }
+
+    it("should return immediately when balances match", async () => {
+      const signer = createSigner(async () => ({
+        hasCollectedPayment: true,
+        capturableAmount: 10000n,
+        refundableAmount: 0n,
+      }));
+
+      const result = await readPaymentStateForBalances(
+        signer,
+        "0x1234567890123456789012345678901234567890123456789012345678901234",
+        10000n,
+        0n,
+      );
+
+      expect(result).toEqual({
+        state: {
+          hasCollectedPayment: true,
+          capturableAmount: 10000n,
+          refundableAmount: 0n,
+        },
+        readFailed: false,
+        attempts: 1,
+      });
+      expect(signer.readContract).toHaveBeenCalledTimes(1);
+    });
+
+    it("should retry stale zero balances until RPC catches up", async () => {
+      let calls = 0;
+      const signer = createSigner(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return { hasCollectedPayment: false, capturableAmount: 0n, refundableAmount: 0n };
+        }
+        return { hasCollectedPayment: true, capturableAmount: 10000n, refundableAmount: 0n };
+      });
+
+      const resultPromise = readPaymentStateForBalances(
+        signer,
+        "0x1234567890123456789012345678901234567890123456789012345678901234",
+        10000n,
+        0n,
+      );
+      await vi.advanceTimersByTimeAsync(PAYMENT_STATE_RETRY_DELAYS_MS[0]!);
+      const result = await resultPromise;
+
+      expect(result.state?.capturableAmount).toBe(10000n);
+      expect(result.readFailed).toBe(false);
+      expect(result.attempts).toBe(2);
+      expect(signer.readContract).toHaveBeenCalledTimes(2);
+    });
+
+    it("should stop retrying when balances genuinely mismatch", async () => {
+      const signer = createSigner(async () => ({
+        hasCollectedPayment: true,
+        capturableAmount: 5000n,
+        refundableAmount: 0n,
+      }));
+
+      const result = await readPaymentStateForBalances(
+        signer,
+        "0x1234567890123456789012345678901234567890123456789012345678901234",
+        10000n,
+        0n,
+      );
+
+      expect(result.state?.capturableAmount).toBe(5000n);
+      expect(result.readFailed).toBe(false);
+      expect(result.attempts).toBe(1);
+      expect(signer.readContract).toHaveBeenCalledTimes(1);
+    });
+
+    it("should exhaust retries when reads keep failing", async () => {
+      const signer = createSigner(async () => {
+        throw new Error("rpc down");
+      });
+
+      const resultPromise = readPaymentStateForBalances(
+        signer,
+        "0x1234567890123456789012345678901234567890123456789012345678901234",
+        10000n,
+        0n,
+      );
+      await vi.advanceTimersByTimeAsync(
+        PAYMENT_STATE_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0),
+      );
+      const result = await resultPromise;
+
+      expect(result.readFailed).toBe(true);
+      expect(result.state).toBeUndefined();
+      expect(result.attempts).toBe(PAYMENT_STATE_MAX_ATTEMPTS);
+      expect(signer.readContract).toHaveBeenCalledTimes(PAYMENT_STATE_MAX_ATTEMPTS);
+    });
+  });
+
+  describe("readPaymentStateOnce", () => {
+    it("should return undefined when readContract throws", async () => {
+      const signer = {
+        readContract: vi.fn().mockRejectedValue(new Error("rpc down")),
+      } as unknown as FacilitatorEvmSigner;
+
+      await expect(
+        readPaymentStateOnce(
+          signer,
+          "0x1234567890123456789012345678901234567890123456789012345678901234",
+        ),
+      ).resolves.toBeUndefined();
     });
   });
 });
