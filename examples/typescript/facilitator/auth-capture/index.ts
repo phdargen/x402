@@ -58,7 +58,6 @@ const feeRecipient = (process.env.FEE_RECIPIENT?.trim() || zeroAddress) as `0x${
 const minFeeBps = Number(process.env.MIN_FEE_BPS ?? "0");
 const maxFeeBps = Number(process.env.MAX_FEE_BPS ?? "0");
 
-console.info(`EVM RPC: ${rpcHost(evmRpcUrl)}`);
 console.info(`EVM Facilitator relayer: ${evmAccount.address}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver authorizer: ${authorizerSigner.address}`);
@@ -79,6 +78,10 @@ const evmSigner = toFacilitatorEvmSigner({
     viemClient.readContract({ ...args, args: args.args ?? [] } as Parameters<
       typeof viemClient.readContract
     >[0]),
+  simulateCalls: args =>
+    viemClient.simulateCalls(
+      args as Parameters<typeof viemClient.simulateCalls>[0],
+    ),
   verifyTypedData: args =>
     viemClient.verifyTypedData(
       args as Parameters<typeof viemClient.verifyTypedData>[0],
@@ -104,6 +107,7 @@ facilitator.register(
       ? { feeTerms: { feeRecipient, minFeeBps, maxFeeBps } }
       : {}),
     operators: [{ address: "*", operatorType: "custom" }],
+    customOperatorAuthorizeGasLimit: 1_000_000n,
     refundFunding: false,
   }),
 );

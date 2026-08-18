@@ -72,9 +72,6 @@ export type FacilitatorEvmSigner = {
     abi: readonly unknown[];
     functionName: string;
     args?: readonly unknown[];
-    /** Optional `from` address for the underlying `eth_call`. Lets schemes
-     * whose contracts gate on `msg.sender` (e.g., auth-capture escrow's
-     * `onlySender(operator)`) simulate from the correct caller. */
     account?: `0x${string}`;
   }): Promise<unknown>;
   verifyTypedData(args: {
@@ -103,6 +100,25 @@ export type FacilitatorEvmSigner = {
     logs?: readonly Log[];
   }>;
   getCode(args: { address: `0x${string}` }): Promise<`0x${string}` | undefined>;
+  simulateCalls?(args: {
+    account: `0x${string}`;
+    calls: readonly {
+      to: `0x${string}`;
+      data?: `0x${string}`;
+      abi?: readonly unknown[];
+      functionName?: string;
+      args?: readonly unknown[];
+      gas?: bigint;
+    }[];
+  }): Promise<{
+    results: readonly {
+      status: "success" | "failure";
+      result?: unknown;
+      logs?: readonly Log[];
+      data?: `0x${string}`;
+      gasUsed?: bigint;
+    }[];
+  }>;
 };
 
 /**

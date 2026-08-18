@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ContractFunctionExecutionError,
   ContractFunctionRevertedError,
+  encodeAbiParameters,
+  encodeEventTopics,
   encodeErrorResult,
   getAddress,
   hexToBigInt,
+  type Log,
   zeroAddress,
 } from "viem";
 import { AuthCaptureEvmScheme } from "../../../src/auth-capture/facilitator/scheme";
@@ -15,22 +18,95 @@ import {
   readPaymentStateForBalances,
   readPaymentStateOnce,
 } from "../../../src/auth-capture/facilitator/utils";
-import { ESCROW_ABI_WITH_ERRORS } from "../../../src/auth-capture/abi";
+import {
+  ESCROW_EVENTS_ABI,
+  PAYMENT_INFO_COMPONENTS,
+} from "../../../src/auth-capture/abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
+  DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
   EIP3009_TOKEN_COLLECTOR_ADDRESS,
   OPERATOR_REFUND_COLLECTOR_ADDRESS,
   PERMIT2_TOKEN_COLLECTOR_ADDRESS,
 } from "../../../src/auth-capture/constants";
 import {
   computePayerAgnosticPaymentInfoHash,
+  computePaymentInfoHash,
   deriveBoundSalt,
 } from "../../../src/auth-capture/nonce";
+import { paymentInfoToContractTuple } from "../../../src/auth-capture/utils";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
 const DEPLOYED_BYTECODE = "0x6080604052" as const;
 const ERC1271_MAGIC_VALUE = "0x1626ba7e" as const;
+const TOKEN_STORE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as `0x${string}`;
+const INITIAL_BALANCE = BigInt("1000000000");
+
+function makeEscrowEventLog(
+  eventName: "PaymentAuthorized" | "PaymentCharged",
+  paymentInfo: PaymentInfoStruct,
+  amount: bigint,
+  tokenCollector: `0x${string}`,
+  chainId: number,
+  fee?: { feeBps: number; feeReceiver: `0x${string}` },
+): Log {
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+  const tuple = paymentInfoToContractTuple(paymentInfo);
+  if (eventName === "PaymentAuthorized") {
+    const topics = encodeEventTopics({
+      abi: ESCROW_EVENTS_ABI,
+      eventName: "PaymentAuthorized",
+      args: { paymentInfoHash },
+    });
+    const data = encodeAbiParameters(
+      [
+        { type: "tuple", name: "paymentInfo", components: [...PAYMENT_INFO_COMPONENTS] },
+        { type: "uint256", name: "amount" },
+        { type: "address", name: "tokenCollector" },
+      ],
+      [tuple, amount, tokenCollector],
+    );
+    return {
+      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      topics,
+      data,
+      blockHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      blockNumber: 1n,
+      transactionHash: "0x2222222222222222222222222222222222222222222222222222222222222222",
+      transactionIndex: 0,
+      logIndex: 0,
+      removed: false,
+    };
+  }
+
+  const topics = encodeEventTopics({
+    abi: ESCROW_EVENTS_ABI,
+    eventName: "PaymentCharged",
+    args: { paymentInfoHash },
+  });
+  const data = encodeAbiParameters(
+    [
+      { type: "tuple", name: "paymentInfo", components: [...PAYMENT_INFO_COMPONENTS] },
+      { type: "uint256", name: "amount" },
+      { type: "address", name: "tokenCollector" },
+      { type: "uint16", name: "feeBps" },
+      { type: "address", name: "feeReceiver" },
+    ],
+    [tuple, amount, tokenCollector, fee!.feeBps, fee!.feeReceiver],
+  );
+  return {
+    address: AUTH_CAPTURE_ESCROW_ADDRESS,
+    topics,
+    data,
+    blockHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    blockNumber: 1n,
+    transactionHash: "0x2222222222222222222222222222222222222222222222222222222222222222",
+    transactionIndex: 0,
+    logIndex: 0,
+    removed: false,
+  };
+}
 
 describe("AuthCaptureEvmScheme", () => {
   /**
@@ -45,6 +121,7 @@ describe("AuthCaptureEvmScheme", () => {
     getAddresses: () => ["0x1234567890123456789012345678901234567890"] as readonly `0x${string}`[],
     readContract: vi.fn().mockImplementation(async (args: { functionName: string }) => {
       if (args?.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+      if (args?.functionName === "getTokenStore") return TOKEN_STORE;
       if (args?.functionName === "paymentState") {
         return {
           hasCollectedPayment: true,
@@ -52,7 +129,7 @@ describe("AuthCaptureEvmScheme", () => {
           refundableAmount: 0n,
         };
       }
-      return BigInt("1000000000");
+      return INITIAL_BALANCE;
     }),
     writeContract: vi.fn().mockResolvedValue("0xabcdef1234567890" as `0x${string}`),
     verifyTypedData: vi.fn().mockResolvedValue(true),
@@ -68,6 +145,162 @@ describe("AuthCaptureEvmScheme", () => {
   });
 
   let mockSigner: ReturnType<typeof createMockSigner>;
+
+  function installCustomOperatorSimulation(opts: {
+    paymentInfo: PaymentInfoStruct;
+    amount?: bigint;
+    tokenCollector?: `0x${string}`;
+    functionName?: "authorize" | "charge";
+    gasUsed?: bigint;
+    logs?: Log[];
+    forwardedStatus?: "success" | "failure";
+    postState?: {
+      hasCollectedPayment: boolean;
+      capturableAmount: bigint;
+      refundableAmount: bigint;
+    };
+    payerDelta?: bigint;
+    tokenStoreDelta?: bigint;
+    receiverDelta?: bigint;
+    feeReceiverDelta?: bigint;
+    facilitatorDelta?: bigint;
+    feeBps?: number;
+    feeReceiver?: `0x${string}`;
+    receiptLogs?: Log[];
+  }) {
+    const amount = opts.amount ?? BigInt("1000000");
+    const tokenCollector = opts.tokenCollector ?? EIP3009_TOKEN_COLLECTOR_ADDRESS;
+    const functionName = opts.functionName ?? "authorize";
+    const feeBps = opts.feeBps ?? 0;
+    const feeReceiver = opts.feeReceiver ?? FEE_RECIPIENT;
+    const logs =
+      opts.logs ??
+      (functionName === "charge"
+        ? [
+          makeEscrowEventLog("PaymentCharged", opts.paymentInfo, amount, tokenCollector, 84532, {
+            feeBps,
+            feeReceiver,
+          }),
+        ]
+        : [
+          makeEscrowEventLog(
+            "PaymentAuthorized",
+            opts.paymentInfo,
+            amount,
+            tokenCollector,
+            84532,
+          ),
+        ]);
+
+    const freshState = {
+      hasCollectedPayment: false,
+      capturableAmount: 0n,
+      refundableAmount: 0n,
+    };
+    const defaultPostState =
+      functionName === "authorize"
+        ? { hasCollectedPayment: true, capturableAmount: amount, refundableAmount: 0n }
+        : { hasCollectedPayment: true, capturableAmount: 0n, refundableAmount: amount };
+    const postState = opts.postState ?? defaultPostState;
+    const payerDelta = opts.payerDelta ?? -amount;
+    const tokenStoreDelta = opts.tokenStoreDelta ?? (functionName === "authorize" ? amount : 0n);
+    const fee = (amount * BigInt(feeBps)) / 10_000n;
+    const receiverDelta = opts.receiverDelta ?? (functionName === "charge" ? amount - fee : 0n);
+    const feeReceiverDelta = opts.feeReceiverDelta ?? fee;
+    const facilitatorDelta = opts.facilitatorDelta ?? 0n;
+
+    mockSigner.simulateCalls = vi.fn().mockImplementation(async ({ calls }) => {
+      const forwardedIndex = calls.findIndex(
+        (call: { data?: string; functionName?: string }) => call.data && !call.functionName,
+      );
+      const results = calls.map(
+        (
+          call: { functionName?: string; args?: readonly unknown[]; data?: string },
+          index: number,
+        ) => {
+          if (call.data && !call.functionName) {
+            if (opts.forwardedStatus === "failure") {
+              return { status: "failure" as const };
+            }
+            return {
+              status: "success" as const,
+              logs,
+              gasUsed: opts.gasUsed ?? 100_000n,
+            };
+          }
+          if (call.functionName === "paymentState") {
+            return {
+              status: "success" as const,
+              result: index < forwardedIndex ? freshState : postState,
+            };
+          }
+          if (call.functionName === "balanceOf") {
+            const account = (call.args?.[0] as string).toLowerCase();
+            const isPre = index < forwardedIndex;
+            let base = INITIAL_BALANCE;
+            if (account === TOKEN_STORE.toLowerCase()) base = 0n;
+            if (account === PAY_TO.toLowerCase()) base = 0n;
+            if (account === FEE_RECIPIENT.toLowerCase()) base = 0n;
+            if (!isPre) {
+              if (account === TOKEN_STORE.toLowerCase()) {
+                return { status: "success" as const, result: base + tokenStoreDelta };
+              }
+              if (account === PAYER.toLowerCase()) {
+                return { status: "success" as const, result: base + payerDelta };
+              }
+              if (account === FACILITATOR_EOA.toLowerCase()) {
+                return { status: "success" as const, result: base + facilitatorDelta };
+              }
+              if (account === PAY_TO.toLowerCase() && functionName === "charge") {
+                return { status: "success" as const, result: base + receiverDelta };
+              }
+              if (account === FEE_RECIPIENT.toLowerCase() && functionName === "charge") {
+                return { status: "success" as const, result: base + feeReceiverDelta };
+              }
+            }
+            return { status: "success" as const, result: base };
+          }
+          return { status: "success" as const, result: 0n };
+        },
+      );
+      return { results };
+    });
+
+    mockSigner.readContract.mockImplementation(
+      async (args: { functionName: string; address?: string }) => {
+        if (args.functionName === "getTokenStore") return TOKEN_STORE;
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "paymentState") {
+          return {
+            hasCollectedPayment: true,
+            capturableAmount: functionName === "authorize" ? amount : 0n,
+            refundableAmount: functionName === "charge" ? amount : 0n,
+          };
+        }
+        return INITIAL_BALANCE;
+      },
+    );
+
+    mockSigner.waitForTransactionReceipt.mockResolvedValue({
+      status: "success",
+      logs: opts.receiptLogs ?? logs,
+    });
+  }
+
+  function customOperatorConfig() {
+    return { operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" as const }] };
+  }
+
+  function customOperatorRequirements() {
+    return {
+      ...mockRequirements,
+      extra: {
+        ...mockRequirements.extra,
+        captureAuthorizer: CUSTOM_OPERATOR,
+        operatorType: "custom" as const,
+      },
+    };
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -317,17 +550,10 @@ describe("AuthCaptureEvmScheme", () => {
     });
 
     it("should route authorize × eip3009 × custom operator via the captureAuthorizer with the literal escrow ABI and 4 args", async () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
-        operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" }],
-      });
-      const reqs = {
-        ...mockRequirements,
-        extra: {
-          ...mockRequirements.extra,
-          captureAuthorizer: CUSTOM_OPERATOR,
-          operatorType: "custom" as const,
-        },
-      };
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const reqs = customOperatorRequirements();
       await scheme.settle(buildEip3009Payload(CUSTOM_OPERATOR), reqs);
 
       const call = mockSigner.writeContract.mock.calls[0][0];
@@ -335,18 +561,17 @@ describe("AuthCaptureEvmScheme", () => {
       expect(call.functionName).toBe("authorize");
       expect(call.args).toHaveLength(4);
       expect(call.args[2]).toBe(EIP3009_TOKEN_COLLECTOR_ADDRESS);
+      expect(call.gas).toBe(DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT);
     });
 
     it("should route charge × eip3009 × custom operator via the captureAuthorizer with the 6-arg ABI", async () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
-        operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" }],
-      });
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo, functionName: "charge" });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
       const reqs = {
-        ...mockRequirements,
+        ...customOperatorRequirements(),
         extra: {
-          ...mockRequirements.extra,
-          captureAuthorizer: CUSTOM_OPERATOR,
-          operatorType: "custom" as const,
+          ...customOperatorRequirements().extra,
           paymentFlow: "authorization" as const,
         },
       };
@@ -359,18 +584,20 @@ describe("AuthCaptureEvmScheme", () => {
       expect(call.args[2]).toBe(EIP3009_TOKEN_COLLECTOR_ADDRESS);
       expect(call.args[4]).toBe(0);
       expect(call.args[5]).toBe(FEE_RECIPIENT);
+      expect(call.gas).toBe(DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT);
     });
 
     it("should route authorize × permit2 × custom operator via the captureAuthorizer with the permit2 collector", async () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
-        operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" }],
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        tokenCollector: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
       });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
       const reqs = {
-        ...mockRequirements,
+        ...customOperatorRequirements(),
         extra: {
-          ...mockRequirements.extra,
-          captureAuthorizer: CUSTOM_OPERATOR,
-          operatorType: "custom" as const,
+          ...customOperatorRequirements().extra,
           assetTransferMethod: "permit2" as const,
         },
       };
@@ -384,15 +611,17 @@ describe("AuthCaptureEvmScheme", () => {
     });
 
     it("should route charge × permit2 × custom operator via the captureAuthorizer with 6 args + permit2 collector", async () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
-        operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" }],
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        functionName: "charge",
+        tokenCollector: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
       });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
       const reqs = {
-        ...mockRequirements,
+        ...customOperatorRequirements(),
         extra: {
-          ...mockRequirements.extra,
-          captureAuthorizer: CUSTOM_OPERATOR,
-          operatorType: "custom" as const,
+          ...customOperatorRequirements().extra,
           assetTransferMethod: "permit2" as const,
           paymentFlow: "authorization" as const,
         },
@@ -406,27 +635,23 @@ describe("AuthCaptureEvmScheme", () => {
       expect(call.args[2]).toBe(PERMIT2_TOKEN_COLLECTOR_ADDRESS);
     });
 
-    it("should route simulateSettle through the custom operator with ESCROW_ABI + errors", async () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
-        operators: [{ address: CUSTOM_OPERATOR, operatorType: "custom" }],
-      });
-      const reqs = {
-        ...mockRequirements,
-        extra: {
-          ...mockRequirements.extra,
-          captureAuthorizer: CUSTOM_OPERATOR,
-          operatorType: "custom" as const,
-        },
-      };
-      await scheme.verify(buildEip3009Payload(CUSTOM_OPERATOR), reqs);
+    it("should preflight custom collect via simulateCalls with a gas cap", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      await scheme.verify(buildEip3009Payload(CUSTOM_OPERATOR), customOperatorRequirements());
 
-      const simulateCall = mockSigner.readContract.mock.calls.find(
-        c => c[0].functionName === "authorize" || c[0].functionName === "charge",
+      expect(mockSigner.simulateCalls).toHaveBeenCalledWith(
+        expect.objectContaining({
+          account: FACILITATOR_EOA,
+          calls: expect.arrayContaining([
+            expect.objectContaining({
+              to: getAddress(CUSTOM_OPERATOR),
+              gas: DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
+            }),
+          ]),
+        }),
       );
-      expect(simulateCall).toBeDefined();
-      const call = simulateCall![0];
-      expect(call.address).toBe(getAddress(CUSTOM_OPERATOR));
-      expect(call.abi).toHaveLength(ESCROW_ABI_WITH_ERRORS.length);
     });
 
     it("should pass EIP3009_TOKEN_COLLECTOR as the tokenCollector arg for eip3009", async () => {
@@ -823,8 +1048,9 @@ describe("AuthCaptureEvmScheme", () => {
       expect(scheme.getExtra("eip155:8453")).toBeUndefined();
     });
 
-    it("should advertise grouped fee terms and operators when configured", () => {
-      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+    it("should advertise grouped fee terms and operators when simulateCalls is wired", () => {
+      const signerWithSim = { ...mockSigner, simulateCalls: vi.fn() };
+      const scheme = new AuthCaptureEvmScheme(signerWithSim, {
         feeTerms: { feeRecipient: FEE_RECIPIENT, minFeeBps: 100, maxFeeBps: 100 },
         operators: [{ address: "*", operatorType: "custom" }],
         receiverAuthorizer: FACILITATOR_EOA,
@@ -836,6 +1062,125 @@ describe("AuthCaptureEvmScheme", () => {
         maxFeeBps: 100,
         operators: [{ address: "*", operatorType: "custom" }],
       });
+    });
+
+    it("should omit operators from getExtra when simulateCalls is unavailable", () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        operators: [{ address: "*", operatorType: "custom" }],
+      });
+      expect(scheme.getExtra("eip155:8453")).toBeUndefined();
+    });
+  });
+
+  describe("custom operator — simulateCalls outcome checks", () => {
+    it("should verify happy authorize with event, state, token deltas, and gas under the limit", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject when simulated gasUsed exceeds the custom gas limit", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        gasUsed: DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT + 1n,
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+      expect(mockSigner.writeContract).not.toHaveBeenCalled();
+    });
+
+    it("should reject when the forwarded call succeeds but emits no escrow-address log", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo, logs: [] });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should reject authorize-then-void style final paymentState", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        postState: {
+          hasCollectedPayment: false,
+          capturableAmount: 0n,
+          refundableAmount: 0n,
+        },
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should reject token delta mismatch", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        tokenStoreDelta: 0n,
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should reject when facilitator balance decreases", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        facilitatorDelta: -1n,
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should reject custom collect when simulateCalls is missing", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should fail settle when the mined receipt lacks the escrow event", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo, receiptLogs: [] });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.settle(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
     });
   });
 

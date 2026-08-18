@@ -17,6 +17,9 @@ export const PERMIT2_TOKEN_COLLECTOR_ADDRESS =
 export const OPERATOR_REFUND_COLLECTOR_ADDRESS =
   "0x934907bffd0901b6A21e398B9C53A4A38F02fa5d" as const satisfies `0x${string}`;
 
+/** Default max gas for a custom-operator collect relay (`authorize` or `charge`). */
+export const DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT = 1_000_000n;
+
 // Domain tag for the bound-salt derivation. Encoded as the first word of
 // `abi.encode(SALT_BINDING_TYPEHASH, receiverAuthorizer, policy, saltNonce)`
 // so a value produced as a salt commitment can never be read as a signature nonce.

@@ -4,12 +4,25 @@ import type {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { hexToBigInt, parseErc6492Signature } from "viem";
+import {
+  encodeFunctionData,
+  hexToBigInt,
+  isAddressEqual,
+  parseErc6492Signature,
+  parseEventLogs,
+  type Log,
+} from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
-import { ERC20_BALANCE_OF_ABI } from "../abi";
+import {
+  ERC20_BALANCE_OF_ABI,
+  ESCROW_ABI_WITH_ERRORS,
+  ESCROW_EVENTS_ABI,
+  ESCROW_VIEW_ABI,
+} from "../abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
   AUTH_CAPTURE_SCHEME,
+  DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
   EIP3009_TOKEN_COLLECTOR_ADDRESS,
   PERMIT2_TOKEN_COLLECTOR_ADDRESS,
 } from "../constants";
@@ -29,6 +42,7 @@ import type {
   AuthCaptureCollectPayload,
   AuthCaptureFacilitatorConfig,
   Eip3009Payload,
+  PaymentInfoStruct,
   Permit2Payload,
 } from "../types";
 import { isEip3009Payload, isPermit2Payload } from "../types";
@@ -43,6 +57,7 @@ import {
 } from "../extra";
 import {
   collectPayer,
+  normalizePaymentState,
   readPaymentStateForBalances,
   simulateEscrowCall,
   submitEscrowCall,
@@ -276,6 +291,7 @@ export async function verifyCollect(
 
   const simulateResult = await simulateCollect(
     signer,
+    config,
     extra,
     paymentInfo,
     settleAmount,
@@ -283,6 +299,7 @@ export async function verifyCollect(
     unpacked.collectorData,
     feeBps,
     feeReceiver,
+    chainId,
   );
   if (simulateResult !== "ok") {
     try {
@@ -381,7 +398,13 @@ export async function settleCollect(
       : ([tuple, settleAmount, unpacked.tokenCollector, unpacked.collectorData] as const);
 
   const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
-  const submitted = await submitEscrowCall(signer, settleTarget, functionName, args);
+  const customGasLimit =
+    extra.operatorType === "custom"
+      ? (config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT)
+      : undefined;
+  const submitted = await submitEscrowCall(signer, settleTarget, functionName, args, {
+    gas: customGasLimit,
+  });
   if ("error" in submitted && submitted.error === "reverted") {
     return {
       success: false,
@@ -404,17 +427,54 @@ export async function settleCollect(
   const chainId = getEvmChainId(requirements.network);
   const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
 
-  if (functionName === "authorize") {
-    const { state } = await readPaymentStateForBalances(signer, paymentInfoHash, settleAmount, 0n);
-    if (!state || state.capturableAmount !== settleAmount || state.refundableAmount !== 0n) {
+  if (extra.operatorType === "custom") {
+    const eventOk =
+      functionName === "charge"
+        ? verifyPaymentChargedEvent(submitted.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+            paymentInfoHash,
+            amount: settleAmount,
+            tokenCollector: unpacked.tokenCollector,
+            operator: extra.captureAuthorizer,
+            feeBps,
+            feeReceiver,
+          })
+        : verifyPaymentAuthorizedEvent(submitted.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+            paymentInfoHash,
+            amount: settleAmount,
+            tokenCollector: unpacked.tokenCollector,
+            operator: extra.captureAuthorizer,
+          });
+    if (!eventOk) {
       return {
         success: false,
-        errorReason: Errors.ErrUnexpectedPaymentState,
+        errorReason: Errors.ErrSimulationFailed,
         transaction: submitted.txHash,
         network: requirements.network,
         payer,
       };
     }
+  }
+
+  const expectedCapturable = functionName === "authorize" ? settleAmount : 0n;
+  const expectedRefundable = functionName === "charge" ? settleAmount : 0n;
+  const { state } = await readPaymentStateForBalances(
+    signer,
+    paymentInfoHash,
+    expectedCapturable,
+    expectedRefundable,
+  );
+  if (
+    !state ||
+    state.capturableAmount !== expectedCapturable ||
+    state.refundableAmount !== expectedRefundable
+  ) {
+    return {
+      success: false,
+      errorReason: Errors.ErrUnexpectedPaymentState,
+      transaction: submitted.txHash,
+      network: requirements.network,
+      payer,
+    };
   }
 
   return {
@@ -430,6 +490,7 @@ export async function settleCollect(
  * Simulate authorize or charge against the resolved settle target.
  *
  * @param signer - Facilitator signer.
+ * @param config - Facilitator config.
  * @param extra - Normalized extra.
  * @param paymentInfo - Reconstructed PaymentInfo.
  * @param amount - Amount to collect.
@@ -437,17 +498,20 @@ export async function settleCollect(
  * @param collectorData - Raw signature bytes.
  * @param feeBps - Fee for charge; ignored for authorize.
  * @param feeReceiver - Fee recipient for charge; ignored for authorize.
+ * @param chainId - EVM chain id for paymentInfoHash.
  * @returns `"ok"` or a stable invalidReason.
  */
 async function simulateCollect(
   signer: FacilitatorEvmSigner,
+  config: AuthCaptureFacilitatorConfig | undefined,
   extra: NormalizedAuthCaptureExtra,
-  paymentInfo: ReturnType<typeof reconstructPaymentInfo>,
+  paymentInfo: PaymentInfoStruct,
   amount: bigint,
   tokenCollector: `0x${string}`,
   collectorData: `0x${string}`,
   feeBps: number,
   feeReceiver: `0x${string}`,
+  chainId: number,
 ): Promise<"ok" | string> {
   const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
   const tuple = paymentInfoToContractTuple(paymentInfo);
@@ -455,6 +519,278 @@ async function simulateCollect(
     functionName === "charge"
       ? ([tuple, amount, tokenCollector, collectorData, feeBps, feeReceiver] as const)
       : ([tuple, amount, tokenCollector, collectorData] as const);
-  const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
-  return simulateEscrowCall(signer, settleTarget, functionName, args, signer.getAddresses()[0]);
+
+  if (extra.operatorType === "delegated") {
+    // Delegated collect calls the escrow directly; eth_call success is sufficient preflight.
+    const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+    return simulateEscrowCall(signer, settleTarget, functionName, args, signer.getAddresses()[0]!);
+  }
+
+  // Custom operators relay through captureAuthorizer — require eth_simulateV1 outcome checks.
+  if (!signer.simulateCalls) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  const gasLimit = config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT;
+  const facilitator = signer.getAddresses()[0]!;
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+  const operator = extra.captureAuthorizer;
+  const token = paymentInfo.token;
+  const payer = paymentInfo.payer;
+  const receiver = paymentInfo.receiver;
+
+  // Token store is CREATE2-predictable from the operator even before deployment.
+  let tokenStore: `0x${string}`;
+  try {
+    tokenStore = (await signer.readContract({
+      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      abi: ESCROW_VIEW_ABI,
+      functionName: "getTokenStore",
+      args: [operator],
+    })) as `0x${string}`;
+  } catch {
+    return Errors.ErrSimulationFailed;
+  }
+
+  const balanceCall = (account: `0x${string}`) =>
+    ({
+      to: token,
+      abi: ERC20_BALANCE_OF_ABI,
+      functionName: "balanceOf",
+      args: [account],
+    }) as const;
+
+  const paymentStateCall = () =>
+    ({
+      to: AUTH_CAPTURE_ESCROW_ADDRESS,
+      abi: ESCROW_VIEW_ABI,
+      functionName: "paymentState",
+      args: [paymentInfoHash],
+    }) as const;
+
+  const preCalls = [
+    paymentStateCall(),
+    balanceCall(payer),
+    balanceCall(tokenStore),
+    balanceCall(facilitator),
+    ...(functionName === "charge" ? [balanceCall(receiver), balanceCall(feeReceiver)] : []),
+  ];
+
+  const forwardedData = encodeFunctionData({
+    abi: ESCROW_ABI_WITH_ERRORS,
+    functionName,
+    args,
+  });
+
+  // One batch: snapshot pre-state, simulate the operator relay (gas-capped), then re-read deltas.
+  const forwardedCall = {
+    to: operator,
+    data: forwardedData,
+    gas: gasLimit,
+  } as const;
+
+  const postCalls = [
+    paymentStateCall(),
+    balanceCall(payer),
+    balanceCall(tokenStore),
+    balanceCall(facilitator),
+    ...(functionName === "charge" ? [balanceCall(receiver), balanceCall(feeReceiver)] : []),
+  ];
+
+  const calls = [...preCalls, forwardedCall, ...postCalls];
+  const forwardedIndex = preCalls.length;
+
+  let results: Awaited<ReturnType<NonNullable<FacilitatorEvmSigner["simulateCalls"]>>>["results"];
+  try {
+    ({ results } = await signer.simulateCalls({ account: facilitator, calls }));
+  } catch {
+    return Errors.ErrSimulationFailed;
+  }
+
+  if (results.length !== calls.length) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  // Every view call in the batch must succeed so deltas are readable.
+  for (let i = 0; i < results.length; i++) {
+    if (i === forwardedIndex) continue;
+    if (results[i]?.status !== "success") {
+      return Errors.ErrSimulationFailed;
+    }
+  }
+
+  const forwarded = results[forwardedIndex];
+  if (!forwarded || forwarded.status !== "success") {
+    return Errors.ErrSimulationFailed;
+  }
+  // Reject over-limit gas even when the call returns success under the sim cap.
+  if (forwarded.gasUsed !== undefined && forwarded.gasUsed > gasLimit) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  // Top-level operator success is not enough — require a canonical escrow event
+  // (operator-emitted logs are ignored by filtering on escrow address).
+  const eventOk =
+    functionName === "charge"
+      ? verifyPaymentChargedEvent(forwarded.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+          paymentInfoHash,
+          amount,
+          tokenCollector,
+          operator,
+          feeBps,
+          feeReceiver,
+        })
+      : verifyPaymentAuthorizedEvent(forwarded.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+          paymentInfoHash,
+          amount,
+          tokenCollector,
+          operator,
+        });
+  if (!eventOk) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  const preState = normalizePaymentState(results[0]?.result);
+  const postState = normalizePaymentState(results[forwardedIndex + 1]?.result);
+  // Payment must start uncollected; a non-zero pre-state means reuse or stale sim state.
+  if (
+    !preState ||
+    !postState ||
+    preState.hasCollectedPayment ||
+    preState.capturableAmount !== 0n ||
+    preState.refundableAmount !== 0n
+  ) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  const readBalance = (index: number): bigint | undefined => {
+    const result = results[index]?.result;
+    if (result === undefined || result === null) return undefined;
+    return BigInt(result as bigint | number | string);
+  };
+
+  const prePayer = readBalance(1);
+  const preTokenStore = readBalance(2);
+  const preFacilitator = readBalance(3);
+  const postPayer = readBalance(forwardedIndex + 2);
+  const postTokenStore = readBalance(forwardedIndex + 3);
+  const postFacilitator = readBalance(forwardedIndex + 4);
+
+  if (
+    prePayer === undefined ||
+    preTokenStore === undefined ||
+    preFacilitator === undefined ||
+    postPayer === undefined ||
+    postTokenStore === undefined ||
+    postFacilitator === undefined
+  ) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  if (postFacilitator < preFacilitator) {
+    // No token movement may originate from a facilitator-controlled address.
+    return Errors.ErrSimulationFailed;
+  }
+
+  if (postPayer !== prePayer - amount) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  if (functionName === "authorize") {
+    // Authorize: escrow hold (capturable=amount); payer debited into the operator token store.
+    if (
+      !postState.hasCollectedPayment ||
+      postState.capturableAmount !== amount ||
+      postState.refundableAmount !== 0n ||
+      postTokenStore !== preTokenStore + amount
+    ) {
+      return Errors.ErrSimulationFailed;
+    }
+    return "ok";
+  }
+
+  const fee = (amount * BigInt(feeBps)) / 10_000n;
+  const preReceiver = readBalance(4);
+  const preFeeReceiver = readBalance(5);
+  const postReceiver = readBalance(forwardedIndex + 5);
+  const postFeeReceiver = readBalance(forwardedIndex + 6);
+
+  if (
+    preReceiver === undefined ||
+    preFeeReceiver === undefined ||
+    postReceiver === undefined ||
+    postFeeReceiver === undefined
+  ) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  // Charge: payer debited, token store net zero, receiver/feeReceiver split matches _distributeTokens.
+  if (
+    !postState.hasCollectedPayment ||
+    postState.capturableAmount !== 0n ||
+    postState.refundableAmount !== amount ||
+    postTokenStore !== preTokenStore ||
+    postReceiver !== preReceiver + (amount - fee) ||
+    postFeeReceiver !== preFeeReceiver + fee
+  ) {
+    return Errors.ErrSimulationFailed;
+  }
+
+  return "ok";
+}
+
+function escrowEventLogs(logs: readonly Log[] | undefined, escrowAddress: `0x${string}`): Log[] {
+  return (logs ?? []).filter(log => isAddressEqual(log.address, escrowAddress));
+}
+
+function verifyPaymentAuthorizedEvent(
+  logs: readonly Log[] | undefined,
+  escrowAddress: `0x${string}`,
+  expected: {
+    paymentInfoHash: `0x${string}`;
+    amount: bigint;
+    tokenCollector: `0x${string}`;
+    operator: `0x${string}`;
+  },
+): boolean {
+  const parsed = parseEventLogs({
+    abi: ESCROW_EVENTS_ABI,
+    eventName: "PaymentAuthorized",
+    logs: escrowEventLogs(logs, escrowAddress),
+  });
+  return parsed.some(
+    event =>
+      event.args.paymentInfoHash?.toLowerCase() === expected.paymentInfoHash.toLowerCase() &&
+      event.args.amount === expected.amount &&
+      isAddressEqual(event.args.tokenCollector, expected.tokenCollector) &&
+      isAddressEqual(event.args.paymentInfo.operator, expected.operator),
+  );
+}
+
+function verifyPaymentChargedEvent(
+  logs: readonly Log[] | undefined,
+  escrowAddress: `0x${string}`,
+  expected: {
+    paymentInfoHash: `0x${string}`;
+    amount: bigint;
+    tokenCollector: `0x${string}`;
+    operator: `0x${string}`;
+    feeBps: number;
+    feeReceiver: `0x${string}`;
+  },
+): boolean {
+  const parsed = parseEventLogs({
+    abi: ESCROW_EVENTS_ABI,
+    eventName: "PaymentCharged",
+    logs: escrowEventLogs(logs, escrowAddress),
+  });
+  return parsed.some(
+    event =>
+      event.args.paymentInfoHash?.toLowerCase() === expected.paymentInfoHash.toLowerCase() &&
+      event.args.amount === expected.amount &&
+      isAddressEqual(event.args.tokenCollector, expected.tokenCollector) &&
+      isAddressEqual(event.args.paymentInfo.operator, expected.operator) &&
+      event.args.feeBps === expected.feeBps &&
+      isAddressEqual(event.args.feeReceiver, expected.feeReceiver),
+  );
 }

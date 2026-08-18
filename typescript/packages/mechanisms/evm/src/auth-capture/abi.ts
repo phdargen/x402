@@ -112,7 +112,47 @@ export const ERC20_BALANCE_OF_ABI = [
 
 // View functions on AuthCaptureEscrow used by verify (paymentState single-use
 // checks) and tests / introspection.
+export const ESCROW_EVENTS_ABI = [
+  {
+    type: "event",
+    name: "PaymentAuthorized",
+    inputs: [
+      { name: "paymentInfoHash", type: "bytes32", indexed: true },
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "tokenCollector", type: "address", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "PaymentCharged",
+    inputs: [
+      { name: "paymentInfoHash", type: "bytes32", indexed: true },
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "tokenCollector", type: "address", indexed: false },
+      { name: "feeBps", type: "uint16", indexed: false },
+      { name: "feeReceiver", type: "address", indexed: false },
+    ],
+  },
+] as const;
+
 export const ESCROW_VIEW_ABI = [
+  {
+    name: "getTokenStore",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "operator", type: "address" }],
+    outputs: [{ type: "address" }],
+  },
   {
     name: "getHash",
     type: "function",
