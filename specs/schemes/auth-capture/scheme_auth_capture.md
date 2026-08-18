@@ -96,7 +96,7 @@ Every `auth-capture` network binding MUST specify:
 
 | Version | Date       | Changes                                    | Authors   |
 | ------- | ---------- | ------------------------------------------ | --------- |
-| v1.1    | 2026-08-16 | Payment flow lifecycles and operator types | @phdargen |
+| v1.1    | 2026-08-18 | Payment flow lifecycles and operator types | @phdargen |
 | v1.0    | 2026-05-13 | Initial draft                              | @A1igator |
 
 
