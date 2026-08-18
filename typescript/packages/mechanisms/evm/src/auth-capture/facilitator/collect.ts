@@ -1,4 +1,5 @@
 import type {
+  FacilitatorContext,
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
@@ -35,6 +36,7 @@ import {
   verifyERC3009Signature,
   verifyPermit2Signature,
 } from "../nonce";
+import { resolveDataSuffix } from "../../shared/extensions";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple, reconstructPaymentInfo, unpackForSettle } from "../utils";
 import { verifyCharge } from "../authorizerSigner";
@@ -329,6 +331,7 @@ export async function verifyCollect(
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Narrowed collect payload.
+ * @param context - Optional facilitator context for extension hooks.
  * @returns SettleResponse, including the settled amount.
  */
 export async function settleCollect(
@@ -337,6 +340,7 @@ export async function settleCollect(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureCollectPayload,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const verification = await verifyCollect(signer, config, payload, requirements, wirePayload);
   if (!verification.isValid) {
@@ -402,8 +406,13 @@ export async function settleCollect(
     extra.operatorType === "custom"
       ? (config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT)
       : undefined;
+  const dataSuffix = await resolveDataSuffix(context, {
+    paymentPayload: payload,
+    paymentRequirements: requirements,
+  });
   const submitted = await submitEscrowCall(signer, settleTarget, functionName, args, {
     gas: customGasLimit,
+    dataSuffix,
   });
   if ("error" in submitted && submitted.error === "reverted") {
     return {

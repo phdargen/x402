@@ -1,4 +1,5 @@
 import type {
+  FacilitatorContext,
   Network,
   PaymentPayload,
   PaymentRequirements,
@@ -13,6 +14,7 @@ import {
   OPERATOR_REFUND_COLLECTOR_ADDRESS,
 } from "../constants";
 import { computePaymentInfoHash, deriveBoundSalt, isNonZeroAddress } from "../nonce";
+import { resolveDataSuffix } from "../../shared/extensions";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple } from "../utils";
 import { verifyCapture, verifyRefund, verifyVoid } from "../authorizerSigner";
@@ -188,6 +190,7 @@ export async function verifyLifecycle(
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Payload with a lifecycle `type`.
+ * @param context - Optional facilitator context for extension hooks.
  * @returns SettleResponse.
  */
 export async function settleLifecycle(
@@ -196,6 +199,7 @@ export async function settleLifecycle(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureLifecyclePayload,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const verification = await verifyLifecycle(signer, config, payload, requirements, wirePayload);
   if (!verification.isValid) {
@@ -222,9 +226,13 @@ export async function settleLifecycle(
   const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
   const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
   const payer = wirePayload.paymentInfo.payer;
+  const dataSuffix = await resolveDataSuffix(context, {
+    paymentPayload: payload,
+    paymentRequirements: requirements,
+  });
 
   if (wirePayload.type === "void") {
-    const submitted = await submitEscrowCall(signer, settleTarget, "void", [tuple]);
+    const submitted = await submitEscrowCall(signer, settleTarget, "void", [tuple], { dataSuffix });
     return settleResult(submitted, requirements.network, payer, "0");
   }
 
@@ -235,7 +243,7 @@ export async function settleLifecycle(
       amount,
       OPERATOR_REFUND_COLLECTOR_ADDRESS,
       "0x",
-    ]);
+    ], { dataSuffix });
     return settleResult(submitted, requirements.network, payer, amount.toString());
   }
 
@@ -246,13 +254,13 @@ export async function settleLifecycle(
     amount,
     capture.feeBps,
     capture.feeReceiver,
-  ]);
+  ], { dataSuffix });
   if ("error" in captureSubmitted) {
     return settleResult(captureSubmitted, requirements.network, payer, amount.toString());
   }
 
   if (capture.voidAuthorizerSignature) {
-    const voidSubmitted = await submitEscrowCall(signer, settleTarget, "void", [tuple]);
+    const voidSubmitted = await submitEscrowCall(signer, settleTarget, "void", [tuple], { dataSuffix });
     if ("error" in voidSubmitted) {
       // A race that empties the hold between capture and void is capture-only success.
       const reason = voidSubmitted.error;

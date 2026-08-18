@@ -123,21 +123,22 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
    *
    * @param payload - The wire payload from the payer or resource server.
    * @param requirements - The server's published payment requirements.
-   * @param _ - Unused FacilitatorContext (interface compatibility).
+   * @param context - Optional facilitator context for extension hooks (e.g.
+   *                  builder-code calldata suffixes).
    * @returns A `SettleResponse` with `success`, the transaction hash (on
    *          success), and a stable `errorReason` (on failure).
    */
   async settle(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-    _?: FacilitatorContext,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
-      return settleLifecycle(this.signer, this.config, payload, requirements, raw);
+      return settleLifecycle(this.signer, this.config, payload, requirements, raw, context);
     }
     if (isAuthCaptureCollectPayload(raw)) {
-      return settleCollect(this.signer, this.config, payload, requirements, raw);
+      return settleCollect(this.signer, this.config, payload, requirements, raw, context);
     }
     return {
       success: false,
