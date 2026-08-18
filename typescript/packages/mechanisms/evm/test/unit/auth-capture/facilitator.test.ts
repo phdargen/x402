@@ -12,16 +12,15 @@ import {
 } from "viem";
 import { AuthCaptureEvmScheme } from "../../../src/auth-capture/facilitator/scheme";
 import {
+  facilitatorAddresses,
   normalizePaymentState,
   PAYMENT_STATE_MAX_ATTEMPTS,
   PAYMENT_STATE_RETRY_DELAYS_MS,
   readPaymentStateForBalances,
   readPaymentStateOnce,
+  selectSubmitter,
 } from "../../../src/auth-capture/facilitator/utils";
-import {
-  ESCROW_EVENTS_ABI,
-  PAYMENT_INFO_COMPONENTS,
-} from "../../../src/auth-capture/abi";
+import { ESCROW_EVENTS_ABI, PAYMENT_INFO_COMPONENTS } from "../../../src/auth-capture/abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
   DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
@@ -118,8 +117,10 @@ describe("AuthCaptureEvmScheme", () => {
    * every other address (notably `captureAuthorizer`) reads as an EOA so
    * `resolveSettleTarget` targets the canonical escrow.
    */
-  const createMockSigner = () => ({
-    getAddresses: () => ["0x1234567890123456789012345678901234567890"] as readonly `0x${string}`[],
+  const createMockSigner = (
+    addresses: readonly `0x${string}`[] = ["0x1234567890123456789012345678901234567890"],
+  ) => ({
+    getAddresses: () => addresses,
     readContract: vi.fn().mockImplementation(async (args: { functionName: string }) => {
       if (args?.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
       if (args?.functionName === "getTokenStore") return TOKEN_STORE;
@@ -165,6 +166,7 @@ describe("AuthCaptureEvmScheme", () => {
     receiverDelta?: bigint;
     feeReceiverDelta?: bigint;
     facilitatorDelta?: bigint;
+    facilitatorAddress?: `0x${string}`;
     feeBps?: number;
     feeReceiver?: `0x${string}`;
     receiptLogs?: Log[];
@@ -178,20 +180,20 @@ describe("AuthCaptureEvmScheme", () => {
       opts.logs ??
       (functionName === "charge"
         ? [
-          makeEscrowEventLog("PaymentCharged", opts.paymentInfo, amount, tokenCollector, 84532, {
-            feeBps,
-            feeReceiver,
-          }),
-        ]
+            makeEscrowEventLog("PaymentCharged", opts.paymentInfo, amount, tokenCollector, 84532, {
+              feeBps,
+              feeReceiver,
+            }),
+          ]
         : [
-          makeEscrowEventLog(
-            "PaymentAuthorized",
-            opts.paymentInfo,
-            amount,
-            tokenCollector,
-            84532,
-          ),
-        ]);
+            makeEscrowEventLog(
+              "PaymentAuthorized",
+              opts.paymentInfo,
+              amount,
+              tokenCollector,
+              84532,
+            ),
+          ]);
 
     const freshState = {
       hasCollectedPayment: false,
@@ -209,6 +211,7 @@ describe("AuthCaptureEvmScheme", () => {
     const receiverDelta = opts.receiverDelta ?? (functionName === "charge" ? amount - fee : 0n);
     const feeReceiverDelta = opts.feeReceiverDelta ?? fee;
     const facilitatorDelta = opts.facilitatorDelta ?? 0n;
+    const facilitatorAddress = opts.facilitatorAddress ?? FACILITATOR_EOA;
 
     mockSigner.simulateCalls = vi.fn().mockImplementation(async ({ calls }) => {
       const forwardedIndex = calls.findIndex(
@@ -249,7 +252,7 @@ describe("AuthCaptureEvmScheme", () => {
               if (account === PAYER.toLowerCase()) {
                 return { status: "success" as const, result: base + payerDelta };
               }
-              if (account === FACILITATOR_EOA.toLowerCase()) {
+              if (account === facilitatorAddress.toLowerCase()) {
                 return { status: "success" as const, result: base + facilitatorDelta };
               }
               if (account === PAY_TO.toLowerCase() && functionName === "charge") {
@@ -329,6 +332,9 @@ describe("AuthCaptureEvmScheme", () => {
   const refundDeadline = captureDeadline + 86400;
 
   const FACILITATOR_EOA = "0x1234567890123456789012345678901234567890" as `0x${string}`;
+  const SUBMITTER_B = "0x2222222222222222222222222222222222222222" as `0x${string}`;
+  const SUBMITTER_C = "0x5555555555555555555555555555555555555555" as `0x${string}`;
+  const MULTI_SUBMITTERS = [FACILITATOR_EOA, SUBMITTER_B, SUBMITTER_C] as const;
   const PAYER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as `0x${string}`;
   const ASSET = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
   const PAY_TO = "0xdddddddddddddddddddddddddddddddddddddddd" as `0x${string}`;
@@ -1093,8 +1099,15 @@ describe("AuthCaptureEvmScheme", () => {
   });
 
   describe("getExtra", () => {
-    it("should return undefined when no facilitator config is set", () => {
+    it("should advertise a captureAuthorizer from getAddresses when unconfigured", () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const extra = scheme.getExtra("eip155:8453");
+      expect(extra).toBeDefined();
+      expect(mockSigner.getAddresses()).toContain(extra?.captureAuthorizer);
+    });
+
+    it("should return undefined for an empty signer set", () => {
+      const scheme = new AuthCaptureEvmScheme([]);
       expect(scheme.getExtra("eip155:8453")).toBeUndefined();
     });
 
@@ -1105,20 +1118,143 @@ describe("AuthCaptureEvmScheme", () => {
         operators: [{ address: "*", operatorType: "custom" }],
         receiverAuthorizer: FACILITATOR_EOA,
       });
-      expect(scheme.getExtra("eip155:8453")).toEqual({
+      const extra = scheme.getExtra("eip155:8453");
+      expect(extra).toMatchObject({
         receiverAuthorizer: FACILITATOR_EOA,
         feeRecipient: FEE_RECIPIENT,
         minFeeBps: 100,
         maxFeeBps: 100,
         operators: [{ address: "*", operatorType: "custom" }],
       });
+      expect(signerWithSim.getAddresses()).toContain(extra?.captureAuthorizer);
     });
 
     it("should omit operators from getExtra when simulateCalls is unavailable", () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner, {
         operators: [{ address: "*", operatorType: "custom" }],
       });
-      expect(scheme.getExtra("eip155:8453")).toBeUndefined();
+      const extra = scheme.getExtra("eip155:8453");
+      expect(extra).not.toHaveProperty("operators");
+      expect(mockSigner.getAddresses()).toContain(extra?.captureAuthorizer);
+    });
+  });
+
+  describe("constructor and getSigners", () => {
+    it("should accept a single signer and return its addresses", () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      expect(scheme.getSigners("eip155:84532")).toEqual([FACILITATOR_EOA]);
+    });
+
+    it("should accept an array of signers and return the union", () => {
+      const signerB = createMockSigner([SUBMITTER_B]);
+      const scheme = new AuthCaptureEvmScheme([mockSigner, signerB]);
+      expect(scheme.getSigners("eip155:84532")).toEqual([FACILITATOR_EOA, SUBMITTER_B]);
+    });
+  });
+
+  describe("multi-signer submitter selection", () => {
+    function createThreeSigners() {
+      return MULTI_SUBMITTERS.map(address => createMockSigner([address]));
+    }
+
+    it("should verify and settle from addresses[2], not addresses[0]", async () => {
+      const signers = createThreeSigners();
+      const scheme = new AuthCaptureEvmScheme(signers);
+      const payload = buildEip3009Payload(SUBMITTER_C);
+      const requirements = { ...payload.accepted };
+
+      const verified = await scheme.verify(payload, requirements);
+      expect(verified.isValid).toBe(true);
+
+      const settled = await scheme.settle(payload, requirements);
+      expect(settled.success).toBe(true);
+      expect(signers[2]!.writeContract).toHaveBeenCalled();
+      expect(signers[0]!.writeContract).not.toHaveBeenCalled();
+
+      const simulateAccount = signers[2]!.readContract.mock.calls.find(
+        (call: [{ functionName: string; account?: string }]) =>
+          call[0].functionName === "authorize",
+      )?.[0].account;
+      expect(simulateAccount).toBe(SUBMITTER_C);
+    });
+
+    it("should reject a captureAuthorizer outside the signer set", async () => {
+      const scheme = new AuthCaptureEvmScheme(createThreeSigners());
+      const outsider = "0x9999999999999999999999999999999999999999" as `0x${string}`;
+      const result = await scheme.verify(buildEip3009Payload(outsider), {
+        ...mockRequirements,
+        extra: { ...mockRequirements.extra, captureAuthorizer: outsider },
+      });
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_operator_not_admitted");
+    });
+
+    it("should match a lowercase advertised address to a checksummed signer", async () => {
+      const scheme = new AuthCaptureEvmScheme(createThreeSigners());
+      const lowercase = SUBMITTER_C.toLowerCase() as `0x${string}`;
+      const payload = buildEip3009Payload(lowercase);
+      const result = await scheme.verify(payload, payload.accepted);
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should settle a lifecycle capture from the paymentInfo.operator signer", async () => {
+      const signers = createThreeSigners();
+      const scheme = new AuthCaptureEvmScheme(signers);
+      const envelope = buildCapturePayload({
+        paymentInfo: boundPaymentInfo(SUBMITTER_C),
+      });
+      envelope.accepted = {
+        ...envelope.accepted,
+        extra: boundExtra({ captureAuthorizer: SUBMITTER_C }),
+      };
+      const result = await scheme.settle(envelope, envelope.accepted);
+      expect(result.success).toBe(true);
+      expect(signers[2]!.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "capture" }),
+      );
+      expect(signers[0]!.writeContract).not.toHaveBeenCalled();
+    });
+
+    it("should snapshot the custom-path submitter and fail when that balance drops", async () => {
+      const signers = createThreeSigners();
+      mockSigner = signers[0]!;
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        facilitatorAddress: FACILITATOR_EOA,
+        facilitatorDelta: -1n,
+      });
+      const scheme = new AuthCaptureEvmScheme(signers, customOperatorConfig());
+      const result = await scheme.verify(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+      expect(signers[0]!.simulateCalls).toHaveBeenCalledWith(
+        expect.objectContaining({ account: FACILITATOR_EOA }),
+      );
+    });
+
+    it("should settle custom collect from the first signer", async () => {
+      const signers = createThreeSigners();
+      mockSigner = signers[0]!;
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        facilitatorAddress: FACILITATOR_EOA,
+      });
+      const scheme = new AuthCaptureEvmScheme(signers, customOperatorConfig());
+      const result = await scheme.settle(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+      expect(result.success).toBe(true);
+      expect(signers[0]!.writeContract).toHaveBeenCalled();
+      expect(signers[2]!.writeContract).not.toHaveBeenCalled();
+      expect(signers[0]!.simulateCalls).toHaveBeenCalledWith(
+        expect.objectContaining({ account: FACILITATOR_EOA }),
+      );
     });
   });
 
@@ -1634,5 +1770,35 @@ describe("auth-capture paymentState reads", () => {
         ),
       ).resolves.toBeUndefined();
     });
+  });
+});
+
+describe("facilitatorAddresses and selectSubmitter", () => {
+  const addrA = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as `0x${string}`;
+  const addrB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as `0x${string}`;
+  const addrC = "0xcccccccccccccccccccccccccccccccccccccccc" as `0x${string}`;
+
+  function stubSigner(addresses: readonly `0x${string}`[]): FacilitatorEvmSigner {
+    return { getAddresses: () => addresses } as FacilitatorEvmSigner;
+  }
+
+  it("should flatten and dedupe addresses across members", () => {
+    const signers = [stubSigner([addrA, addrB]), stubSigner([addrB, addrC])];
+    expect(facilitatorAddresses(signers)).toEqual([addrA, addrB, addrC]);
+  });
+
+  it("should return the owning signer", () => {
+    const owner = stubSigner([addrB]);
+    const other = stubSigner([addrA]);
+    expect(selectSubmitter([other, owner], addrB)).toBe(owner);
+  });
+
+  it("should match across checksum and lowercase", () => {
+    const owner = stubSigner([getAddress(addrB)]);
+    expect(selectSubmitter([owner], addrB.toLowerCase() as `0x${string}`)).toBe(owner);
+  });
+
+  it("should return undefined for an unknown address", () => {
+    expect(selectSubmitter([stubSigner([addrA])], addrB)).toBeUndefined();
   });
 });

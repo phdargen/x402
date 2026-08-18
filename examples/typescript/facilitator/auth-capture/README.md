@@ -34,7 +34,7 @@ cd facilitator/auth-capture
 pnpm dev
 ```
 
-The facilitator listens on `http://localhost:4022` by default. Delegated server flows pick up the relayer address from `GET /supported` signers.
+The facilitator listens on `http://localhost:4022` by default. Delegated server flows pick up the relayer address from `GET /supported` extra.captureAuthorizer.
 
 ## API Surface
 

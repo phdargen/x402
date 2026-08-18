@@ -1,4 +1,4 @@
-import { BaseError, ContractFunctionRevertedError, type Log } from "viem";
+import { BaseError, ContractFunctionRevertedError, isAddressEqual, type Log } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { ESCROW_ABI_WITH_ERRORS, ESCROW_VIEW_ABI } from "../abi";
 import { AUTH_CAPTURE_ESCROW_ADDRESS } from "../constants";
@@ -7,6 +7,66 @@ import { isEip3009Payload } from "../types";
 import { ESCROW_ERROR_TO_INVALID_REASON, ErrSimulationFailed } from "../errors";
 
 export const SAFETY_MARGIN_SECONDS = 6;
+
+/**
+ * Flatten and dedupe facilitator submitter addresses across a signer set.
+ *
+ * @param signers - Facilitator signers (each may expose one or more addresses).
+ * @returns Unique addresses in first-seen order.
+ */
+export function facilitatorAddresses(
+  signers: readonly FacilitatorEvmSigner[],
+): readonly `0x${string}`[] {
+  const seen: `0x${string}`[] = [];
+  for (const signer of signers) {
+    for (const address of signer.getAddresses()) {
+      if (!seen.some(existing => isAddressEqual(existing, address))) {
+        seen.push(address);
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * Find the signer that can submit from `address`.
+ *
+ * Comparison is checksum-insensitive so a parsed `extra.captureAuthorizer`
+ * still matches a lowercase `getAddresses()` entry.
+ *
+ * @param signers - Facilitator signers to scan.
+ * @param address - Submitter to look up.
+ * @returns The owning signer, or undefined when no member controls `address`.
+ */
+export function selectSubmitter(
+  signers: readonly FacilitatorEvmSigner[],
+  address: `0x${string}`,
+): FacilitatorEvmSigner | undefined {
+  return signers.find(signer =>
+    signer.getAddresses().some(owned => isAddressEqual(owned, address)),
+  );
+}
+
+/**
+ * Resolve the signer that will simulate and submit this request.
+ * Delegated payments use `extra.captureAuthorizer`; custom operators may be
+ * submitted by any facilitator address, so the first signer is used.
+ *
+ * @param signers - Facilitator signer set.
+ * @param extra - Normalized extra after `verifyCommon`.
+ * @param extra.operatorType - `"delegated"` or `"custom"`.
+ * @param extra.captureAuthorizer - Operator address from extra.
+ * @returns The submitter, or undefined when the set is empty.
+ */
+export function resolveSubmitter(
+  signers: readonly FacilitatorEvmSigner[],
+  extra: { operatorType: "delegated" | "custom"; captureAuthorizer: `0x${string}` },
+): FacilitatorEvmSigner | undefined {
+  if (extra.operatorType === "delegated") {
+    return selectSubmitter(signers, extra.captureAuthorizer);
+  }
+  return signers[0];
+}
 
 export const RECEIPT_TIMEOUT_MS = 60_000;
 
@@ -90,6 +150,9 @@ export async function simulateEscrowCall(
  * @param target - Contract to call.
  * @param functionName - Escrow ABI function.
  * @param args - Encoded arguments.
+ * @param options - Optional gas cap and extension calldata suffix.
+ * @param options.gas - Hard gas limit for the write.
+ * @param options.dataSuffix - Builder-code suffix appended to calldata.
  * @returns Transaction hash, or a failure reason.
  */
 export async function submitEscrowCall(

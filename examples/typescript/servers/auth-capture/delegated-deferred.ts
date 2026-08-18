@@ -38,17 +38,14 @@ if (!receiverAuthorizerPrivateKey) {
   process.exit(1);
 }
 
-const authorizerSigner = privateKeyToAccount(receiverAuthorizerPrivateKey);
-const receiverAuthorizer = getAddress(authorizerSigner.address) as `0x${string}`;
+const receiverAuthorizerSigner = privateKeyToAccount(receiverAuthorizerPrivateKey);
 const payToAddress = getAddress(payTo) as `0x${string}`;
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 const scheme = new AuthCaptureEvmScheme({
-  lifecycle: {
-    authorizerSigner,
-    facilitator: facilitatorClient,
-  },
+  receiverAuthorizerSigner,
 });
+const lifecycle = scheme.createLifecycleManager(facilitatorClient);
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, scheme);
 const httpServer = new x402HTTPResourceServer(resourceServer, {
@@ -67,7 +64,6 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
         operatorType: "delegated",
         paymentFlow: "escrow",
         captureMode: "deferred",
-        receiverAuthorizer,
       },
     },
     description: "Weather data",
@@ -81,10 +77,11 @@ async function main(): Promise<void> {
   await httpServer.initialize();
 
   app.use(paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, false));
+  app.use(express.json());
 
   app.get("/admin/payments", async (_req, res) => {
     try {
-      const payments = await scheme.listAuthorizedPayments();
+      const payments = await lifecycle.listAuthorizedPayments();
       res.json(
         payments.map(payment => ({
           paymentInfoHash: payment.paymentInfoHash,
@@ -111,7 +108,7 @@ async function main(): Promise<void> {
       const amount = req.body?.amount as string | undefined;
       const voidRemainder = Boolean(req.body?.voidRemainder);
 
-      const response = await scheme.capture(
+      const response = await lifecycle.capture(
         paymentInfoHash,
         amount ? { amount, voidRemainder } : undefined,
       );
@@ -130,7 +127,7 @@ async function main(): Promise<void> {
         return res.status(400).json({ error: "paymentInfoHash is required" });
       }
 
-      const response = await scheme.voidPayment(paymentInfoHash);
+      const response = await lifecycle.voidPayment(paymentInfoHash);
       res.json(response);
     } catch (error) {
       res.status(500).json({
@@ -156,8 +153,8 @@ async function main(): Promise<void> {
     console.log("  POST /admin/capture  { paymentInfoHash, amount?, voidRemainder? }");
     console.log("  POST /admin/void     { paymentInfoHash }");
     console.log("  Deferred captures use in-memory storage — call admin routes before restart.");
-    console.log(`  Receiver authorizer: ${receiverAuthorizer}`);
-    console.log("  Capture authorizer: resolved from facilitator /supported signers per request");
+    console.log(`  Receiver authorizer: ${receiverAuthorizerSigner.address}`);
+    console.log("  Capture authorizer: copied from facilitator /supported extra.captureAuthorizer");
   });
 }
 
