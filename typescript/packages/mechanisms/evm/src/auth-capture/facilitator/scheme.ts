@@ -23,6 +23,7 @@ import { AUTH_CAPTURE_SCHEME } from "../constants";
 import type { AuthCaptureFacilitatorConfig } from "../types";
 import { isAuthCaptureCollectPayload, isLifecyclePayload } from "../types";
 import * as Errors from "../errors";
+import { facilitatorAddresses } from "./utils";
 import { verifyCollect, settleCollect } from "./collect";
 import { verifyLifecycle, settleLifecycle } from "./lifecycle";
 
@@ -43,39 +44,47 @@ export type { AuthCaptureFacilitatorConfig } from "../types";
 export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   readonly scheme = AUTH_CAPTURE_SCHEME;
   readonly caipFamily = "eip155:*";
+  private readonly signers: readonly FacilitatorEvmSigner[];
 
   /**
-   * Construct a facilitator-side auth-capture scheme bound to a specific signer.
+   * Construct a facilitator-side auth-capture scheme bound to one or more signers.
+   * Pass an array of single-address `toFacilitatorEvmSigner` results to rotate
+   * submitters — do not register the scheme twice on the same network.
    *
-   * @param signer - Facilitator signer with onchain read + write capability.
+   * @param signer - Facilitator signer, or a set of signers to rotate across.
    * @param config - Optional fee terms, operator allowlist, delegated refund funding.
    */
   constructor(
-    private signer: FacilitatorEvmSigner,
+    signer: FacilitatorEvmSigner | readonly FacilitatorEvmSigner[],
     private config?: AuthCaptureFacilitatorConfig,
-  ) {}
+  ) {
+    this.signers = Array.isArray(signer) ? [...signer] : [signer];
+  }
 
   /**
-   * Return the EOA address(es) this facilitator submits transactions from.
-   * Advertised via `/supported` so merchants can set
-   * `extra.captureAuthorizer` for `operatorType: "delegated"`.
+   * Return the flattened, deduped addresses this facilitator submits from.
    *
    * @param _ - Unused network argument (interface compatibility).
    * @returns The facilitator's submitter address(es) on this network.
    */
   getSigners(_: string): string[] {
-    return [...this.signer.getAddresses()];
+    return [...facilitatorAddresses(this.signers)];
   }
 
   /**
-   * Facilitator-injected `extra` fields for `/supported`: optional receiver
-   * authorizer, grouped fee terms, and the custom-operator allowlist.
+   * Facilitator-injected `extra` fields for `/supported`: a randomly selected
+   * `captureAuthorizer`, optional receiver authorizer, grouped fee terms, and
+   * the custom-operator allowlist.
    *
    * @param _ - Unused network argument (interface compatibility).
    * @returns Extra to merge into payment requirements, or undefined when empty.
    */
   getExtra(_: string): Record<string, unknown> | undefined {
     const extra: Record<string, unknown> = {};
+    const addresses = facilitatorAddresses(this.signers);
+    if (addresses.length > 0) {
+      extra.captureAuthorizer = addresses[Math.floor(Math.random() * addresses.length)];
+    }
     if (this.config?.receiverAuthorizer) {
       extra.receiverAuthorizer = this.config.receiverAuthorizer;
     }
@@ -84,7 +93,12 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
       extra.minFeeBps = this.config.feeTerms.minFeeBps;
       extra.maxFeeBps = this.config.feeTerms.maxFeeBps;
     }
-    if (this.config?.operators && this.config.operators.length > 0 && this.signer.simulateCalls) {
+    if (
+      this.config?.operators &&
+      this.config.operators.length > 0 &&
+      this.signers.length > 0 &&
+      this.signers.every(member => member.simulateCalls)
+    ) {
       extra.operators = this.config.operators;
     }
     return Object.keys(extra).length > 0 ? extra : undefined;
@@ -106,10 +120,10 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   ): Promise<VerifyResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
-      return verifyLifecycle(this.signer, this.config, payload, requirements, raw);
+      return verifyLifecycle(this.signers, this.config, payload, requirements, raw);
     }
     if (isAuthCaptureCollectPayload(raw)) {
-      return verifyCollect(this.signer, this.config, payload, requirements, raw);
+      return verifyCollect(this.signers, this.config, payload, requirements, raw);
     }
     if (typeof raw === "object" && raw !== null && "type" in raw) {
       return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
@@ -135,10 +149,10 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   ): Promise<SettleResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
-      return settleLifecycle(this.signer, this.config, payload, requirements, raw, context);
+      return settleLifecycle(this.signers, this.config, payload, requirements, raw, context);
     }
     if (isAuthCaptureCollectPayload(raw)) {
-      return settleCollect(this.signer, this.config, payload, requirements, raw, context);
+      return settleCollect(this.signers, this.config, payload, requirements, raw, context);
     }
     return {
       success: false,

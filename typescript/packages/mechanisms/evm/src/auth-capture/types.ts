@@ -30,8 +30,11 @@ export interface AuthorizerSigner {
 }
 
 type AuthCaptureLifecycleExtra =
-  | { paymentFlow?: "escrow"; captureMode?: "sync"; receiverAuthorizer: `0x${string}` }
-  | { paymentFlow?: "escrow"; captureMode: "deferred"; receiverAuthorizer?: `0x${string}` }
+  | {
+      paymentFlow?: "escrow";
+      captureMode?: AuthCaptureCaptureMode;
+      receiverAuthorizer?: `0x${string}`;
+    }
   | { paymentFlow: "authorization"; captureMode?: never; receiverAuthorizer?: `0x${string}` };
 
 type AuthCaptureDeadlineExtra =
@@ -60,7 +63,7 @@ type AuthCaptureMerchantFeesExtra = {
 
 type AuthCaptureDelegatedRouteExtra = AuthCaptureMerchantFeesExtra & {
   operatorType?: "delegated";
-  /** Omitted for delegated routes when lifecycle.facilitator resolves it from /supported signers. */
+  /** Omitted for delegated routes when the facilitator advertises it on `/supported` extra. */
   captureAuthorizer?: `0x${string}`;
 };
 
@@ -71,9 +74,10 @@ type AuthCaptureCustomRouteExtra = AuthCaptureMerchantFeesExtra & {
 
 /**
  * Merchant-authored route extra. Correlated optionals are unions so forbidden
- * combinations (sync escrow without a receiver authorizer, captureMode on an
- * authorization route, mixed absolute/relative deadlines) are unrepresentable
- * when the literal is checked with `satisfies AuthCaptureRouteExtra`.
+ * combinations (captureMode on an authorization route, mixed absolute/relative
+ * deadlines) are unrepresentable when the literal is checked with
+ * `satisfies AuthCaptureRouteExtra`. Escrow sync derives `receiverAuthorizer`
+ * from the scheme signer when the route omits it.
  */
 export type AuthCaptureRouteExtra = (AuthCaptureDelegatedRouteExtra | AuthCaptureCustomRouteExtra) &
   AuthCaptureLifecycleExtra &
@@ -126,7 +130,12 @@ export type AuthCaptureFacilitatorConfig = {
   /**
    * When true, the facilitator relays `type: "refund"` for `"delegated"`
    * operators. Requires an out-of-band funding agreement: refunds pull tokens
-   * from the operator (the facilitator's submitter).
+   * from `PaymentInfo.operator`. With a rotated submitter set, every address
+   * in the rotation must be funded and approved — `OperatorRefundCollector`
+   * pulls with `safeTransferFrom(token, PaymentInfo.operator, ...)`.
+   *
+   * Each submitter also gets its own CREATE2 `TokenStore` on first authorize,
+   * so N keys mean N deployment costs and escrow-held balances split N ways.
    */
   refundFunding?: boolean;
 };

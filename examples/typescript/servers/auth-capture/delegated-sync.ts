@@ -39,16 +39,12 @@ if (!receiverAuthorizerPrivateKey) {
   process.exit(1);
 }
 
-const authorizerSigner = privateKeyToAccount(receiverAuthorizerPrivateKey);
-const receiverAuthorizer = getAddress(authorizerSigner.address) as `0x${string}`;
+const receiverAuthorizerSigner = privateKeyToAccount(receiverAuthorizerPrivateKey);
 const payToAddress = getAddress(payTo) as `0x${string}`;
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 const scheme = new AuthCaptureEvmScheme({
-  lifecycle: {
-    authorizerSigner,
-    facilitator: facilitatorClient,
-  },
+  receiverAuthorizerSigner,
 });
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, scheme);
@@ -68,7 +64,6 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
         operatorType: "delegated",
         paymentFlow: "escrow",
         captureMode: "sync",
-        receiverAuthorizer,
       },
     },
     description: "Weather data",
@@ -99,8 +94,8 @@ async function main(): Promise<void> {
   app.listen(PORT, () => {
     console.log(`Auth-capture server (delegated-sync) listening at http://localhost:${PORT}`);
     console.log("  GET /weather");
-    console.log(`  Receiver authorizer: ${receiverAuthorizer}`);
-    console.log("  Capture authorizer: resolved from facilitator /supported signers per request");
+    console.log(`  Receiver authorizer: ${receiverAuthorizerSigner.address}`);
+    console.log("  Capture authorizer: copied from facilitator /supported extra.captureAuthorizer");
   });
 }
 

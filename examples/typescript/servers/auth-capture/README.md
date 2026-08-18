@@ -20,7 +20,7 @@ The facilitator relays `authorize`, the resource handler runs, then the server s
 
 - `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` = local authorizer that signs capture/void
 
-`extra.captureAuthorizer` for delegated flows is taken from the facilitator's `/supported` signers (the relayer address).
+`extra.captureAuthorizer` for delegated flows is copied from the facilitator's `/supported` extra.captureAuthorizer (the advertised relayer).
 
 The `/weather` route bills a random fraction of the authorized `$0.01` ceiling to demonstrate usage-based capture.
 
@@ -54,7 +54,7 @@ Set `CUSTOM_OPERATOR_ADDRESS` to the deployed address. The example facilitator a
 - Node.js v20+, pnpm v10
 - A running [auth-capture facilitator](../../facilitator/auth-capture)
 - An EVM `payTo` address (`EVM_ADDRESS`)
-- For delegated flows: receiver authorizer key (capture authorizer comes from facilitator `/supported`)
+- For delegated flows: receiver authorizer key (capture authorizer comes from facilitator `/supported` extra.captureAuthorizer)
 - For custom escrow: deployed custom operator on Base Sepolia
 
 ## Setup

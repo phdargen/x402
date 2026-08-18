@@ -152,3 +152,31 @@ export class InMemoryAuthorizedPaymentStorage implements AuthorizedPaymentStorag
     });
   }
 }
+
+/**
+ * Apply a successful capture to stored capturable/refundable balances.
+ *
+ * @param storage - Authorized-payment storage.
+ * @param paymentInfoHash - Storage key.
+ * @param amount - Captured atomic amount.
+ * @param voidRemainder - When true, zero the remaining hold.
+ * @returns Nothing.
+ */
+export async function applyCaptureBalances(
+  storage: AuthorizedPaymentStorage,
+  paymentInfoHash: string,
+  amount: string,
+  voidRemainder: boolean,
+): Promise<void> {
+  await storage.update(paymentInfoHash, current => {
+    if (!current) return current;
+    const captured = BigInt(amount);
+    const capturable = BigInt(current.capturableAmount) - captured;
+    const refundable = BigInt(current.refundableAmount) + captured;
+    return {
+      ...current,
+      capturableAmount: voidRemainder ? "0" : capturable.toString(),
+      refundableAmount: refundable.toString(),
+    };
+  });
+}

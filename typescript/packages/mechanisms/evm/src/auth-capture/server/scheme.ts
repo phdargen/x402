@@ -12,32 +12,34 @@ import type {
   Price,
   SchemeNetworkServer,
   SchemeServerHooks,
-  SettleResponse,
 } from "@x402/core/types";
-import type { SettleContext, VerifiedPaymentCanceledContext } from "@x402/core/server";
 import type { FacilitatorClient } from "@x402/core/server";
-import {
-  convertToTokenAmount,
-  networkMatchesPattern,
-  numberToDecimalString,
-  parseMoney,
-} from "@x402/core/utils";
+import type { VerifiedPaymentCanceledContext } from "@x402/core/server";
+import { convertToTokenAmount, numberToDecimalString, parseMoney } from "@x402/core/utils";
+import { getAddress, isAddressEqual } from "viem";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
 import { isNonZeroAddress } from "../nonce";
-import type { AuthorizerSigner, CaptureOptions } from "../types";
+import type { AuthorizerSigner } from "../types";
 import { AuthCaptureLifecycleManager } from "./lifecycleManager";
-import {
-  InMemoryAuthorizedPaymentStorage,
-  type AuthorizedPayment,
-  type AuthorizedPaymentStorage,
-} from "./storage";
+import { AuthCaptureSettlementHooks } from "./settlementHooks";
+import { InMemoryAuthorizedPaymentStorage, type AuthorizedPaymentStorage } from "./storage";
 
-export type AuthCaptureServerConfig = { storage?: AuthorizedPaymentStorage } & (
-  | { lifecycle?: never }
-  | { lifecycle: { authorizerSigner: AuthorizerSigner; facilitator: FacilitatorClient } }
-);
+export interface AuthCaptureServerConfig {
+  storage?: AuthorizedPaymentStorage;
+  receiverAuthorizerSigner?: AuthorizerSigner;
+}
+
+const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
+  captureAuthorizer:
+    ' For operatorType "delegated", omit extra.captureAuthorizer so the scheme copies it from ' +
+    "the facilitator's /supported extra.captureAuthorizer.",
+  captureDeadline:
+    " Set extra.captureDeadlineSeconds (relative, recommended) or extra.captureDeadline (absolute).",
+  refundDeadline:
+    " Set extra.refundDeadlineSeconds (relative, recommended) or extra.refundDeadline (absolute).",
+};
 
 /**
  * Validate a relative-offset extras key and resolve it to an absolute Unix
@@ -66,63 +68,6 @@ function resolveOffsetToDeadline(
   }
   return now + raw;
 }
-
-/**
- * Collect facilitator submitter addresses whose family pattern matches the
- * route network.
- *
- * @param signersByFamily - Signer addresses grouped by CAIP-2 family pattern from `/supported`.
- * @param network - Route network used to filter matching signer families.
- * @returns Deduplicated submitter addresses applicable to `network`.
- */
-function resolveSignersForNetwork(
-  signersByFamily: Record<string, string[]>,
-  network: Network,
-): string[] {
-  const result = new Set<string>();
-  for (const [family, addresses] of Object.entries(signersByFamily)) {
-    if (networkMatchesPattern(family as Network, network)) {
-      for (const address of addresses) {
-        result.add(address);
-      }
-    }
-  }
-  return Array.from(result);
-}
-
-/**
- * Select the capture authorizer for delegated routes from facilitator signers.
- *
- * @param signers - Submitter addresses resolved for the route network.
- * @returns The sole capture authorizer address.
- * @throws If no signers are available or more than one submitter is advertised.
- */
-function pickDelegatedCaptureAuthorizer(signers: readonly string[]): string {
-  if (signers.length === 0) {
-    throw new Error(
-      'AuthCapture requires extra.captureAuthorizer for operatorType "delegated", or a facilitator ' +
-        "submitter in /supported signers. Pass lifecycle: { facilitator } on AuthCaptureEvmScheme " +
-        "so delegated routes can resolve the relayer automatically.",
-    );
-  }
-  if (signers.length > 1) {
-    throw new Error(
-      "AuthCapture requires extra.captureAuthorizer when the facilitator advertises multiple submitters " +
-        "in /supported signers.",
-    );
-  }
-  return signers[0]!;
-}
-
-const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
-  captureAuthorizer:
-    ' For operatorType "delegated", omit extra.captureAuthorizer and pass lifecycle.facilitator so ' +
-    "the scheme can resolve the relayer from /supported signers.",
-  captureDeadline:
-    " Set extra.captureDeadlineSeconds (relative, recommended) or extra.captureDeadline (absolute).",
-  refundDeadline:
-    " Set extra.refundDeadlineSeconds (relative, recommended) or extra.refundDeadline (absolute).",
-};
 
 /**
  * Assert that the merged `extra` carries every field that comes from the
@@ -159,32 +104,32 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
     permit2: { supported: ["escrow", "authorization"], default: "escrow" },
   } as const satisfies Record<AssetTransferMethod, PaymentFlowConfig>;
   readonly schemeHooks: SchemeServerHooks;
-  readonly enrichSettlementPayload: (ctx: SettleContext) => Promise<Record<string, unknown> | void>;
+  readonly enrichSettlementPayload: (
+    ctx: Parameters<AuthCaptureSettlementHooks["enrichSettlementPayload"]>[0],
+  ) => Promise<Record<string, unknown> | void>;
 
   private moneyParsers: MoneyParser[] = [];
-  private readonly lifecycle: AuthCaptureLifecycleManager;
-  private readonly authorizerSigner: AuthorizerSigner | undefined;
-  private readonly facilitatorClient: FacilitatorClient | undefined;
-  private supportedSignersFetch: Promise<Record<string, string[]>> | undefined;
+  private readonly storage: AuthorizedPaymentStorage;
+  private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
+  private readonly settlementHooks: AuthCaptureSettlementHooks;
 
   /**
    * Construct a server-side auth-capture scheme.
    *
-   * @param config - Optional storage and grouped lifecycle (authorizer signer + facilitator).
+   * @param config - Optional storage and receiver-authorizer signer.
    */
   constructor(config?: AuthCaptureServerConfig) {
-    this.authorizerSigner = config?.lifecycle?.authorizerSigner;
-    this.facilitatorClient = config?.lifecycle?.facilitator;
-    this.lifecycle = new AuthCaptureLifecycleManager({
-      storage: config?.storage ?? new InMemoryAuthorizedPaymentStorage(),
-      authorizerSigner: this.authorizerSigner,
-      facilitator: this.facilitatorClient,
+    this.storage = config?.storage ?? new InMemoryAuthorizedPaymentStorage();
+    this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
+    this.settlementHooks = new AuthCaptureSettlementHooks({
+      storage: this.storage,
+      receiverAuthorizerSigner: this.receiverAuthorizerSigner,
     });
     this.schemeHooks = {
-      onBeforeSettle: ctx => this.lifecycle.handleBeforeSettle(ctx),
-      onAfterSettle: ctx => this.lifecycle.handleAfterSettle(ctx),
+      onBeforeSettle: ctx => this.settlementHooks.handleBeforeSettle(ctx),
+      onAfterSettle: ctx => this.settlementHooks.handleAfterSettle(ctx),
     };
-    this.enrichSettlementPayload = ctx => this.lifecycle.enrichSettlementPayload(ctx);
+    this.enrichSettlementPayload = ctx => this.settlementHooks.enrichSettlementPayload(ctx);
   }
 
   /**
@@ -314,7 +259,32 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       if (refundFromOffset !== undefined) merged.refundDeadline = refundFromOffset;
     }
 
-    await this.resolveDelegatedCaptureAuthorizerIfNeeded(merged, requirements.network);
+    const operatorType = merged.operatorType ?? "delegated";
+    if (operatorType === "custom") {
+      const merchantSet = requirements.extra?.captureAuthorizer;
+      if (typeof merchantSet !== "string" || merchantSet.length === 0) {
+        delete merged.captureAuthorizer;
+      }
+    }
+
+    const signerAddress = this.receiverAuthorizerSigner?.address;
+    const routeReceiverAuthorizer = requirements.extra?.receiverAuthorizer;
+    if (
+      signerAddress &&
+      typeof routeReceiverAuthorizer === "string" &&
+      isNonZeroAddress(routeReceiverAuthorizer) &&
+      !isAddressEqual(routeReceiverAuthorizer as `0x${string}`, signerAddress)
+    ) {
+      throw new Error(
+        `AuthCapture extra.receiverAuthorizer (${routeReceiverAuthorizer}) does not match the ` +
+          `scheme's receiverAuthorizerSigner (${signerAddress}).`,
+      );
+    }
+
+    const receiverAuthorizer = signerAddress ?? merged.receiverAuthorizer;
+    if (typeof receiverAuthorizer === "string" && receiverAuthorizer.length > 0) {
+      merged.receiverAuthorizer = getAddress(receiverAuthorizer);
+    }
 
     assertAuthCaptureMerchantExtraComplete(merged);
 
@@ -331,26 +301,12 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
     } else {
       const captureMode = merged.captureMode === "deferred" ? "deferred" : "sync";
       merged.captureMode = captureMode;
-      if (captureMode === "sync") {
-        if (
-          !isNonZeroAddress(
-            typeof merged.receiverAuthorizer === "string" ? merged.receiverAuthorizer : undefined,
-          )
-        ) {
-          throw new Error(
-            'AuthCapture extra.receiverAuthorizer is required for paymentFlow "escrow" with ' +
-              'captureMode "sync". Set extra.receiverAuthorizer, or move the route to ' +
-              'captureMode "deferred" or paymentFlow "authorization".',
-          );
-        }
-        if (!this.authorizerSigner) {
-          throw new Error(
-            "AuthCapture escrow sync routes require a lifecycle.authorizerSigner on the scheme " +
-              "(to sign capture/void). Pass lifecycle: { authorizerSigner, facilitator } to " +
-              'AuthCaptureEvmScheme, or move the route to captureMode "deferred" / paymentFlow ' +
-              '"authorization".',
-          );
-        }
+      if (captureMode === "sync" && !this.receiverAuthorizerSigner) {
+        throw new Error(
+          "AuthCapture escrow sync routes require a receiverAuthorizerSigner on the scheme " +
+            "(to sign capture/void). Pass receiverAuthorizerSigner to AuthCaptureEvmScheme, " +
+            'or move the route to captureMode "deferred" / paymentFlow "authorization".',
+        );
       }
     }
 
@@ -367,108 +323,35 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
    * @returns Requirements to settle, or void when there is no hold to release.
    */
   settleOnCancel(context: VerifiedPaymentCanceledContext): Promise<PaymentRequirements | void> {
-    return this.lifecycle.settleOnCancel(context);
+    return this.settlementHooks.settleOnCancel(context);
   }
 
   /**
-   * Capture a stored authorized payment through the facilitator.
+   * Returns the authorized-payment storage backend.
    *
-   * @param paymentInfoHash - Escrow payment identifier.
-   * @param opts - Capture amount, fees, and optional void-remainder.
-   * @returns Facilitator settle response.
+   * @returns The configured {@link AuthorizedPaymentStorage}.
    */
-  capture(paymentInfoHash: `0x${string}`, opts?: CaptureOptions): Promise<SettleResponse> {
-    return this.lifecycle.capture(paymentInfoHash, opts);
+  getStorage(): AuthorizedPaymentStorage {
+    return this.storage;
   }
 
   /**
-   * Void the remaining hold on a stored authorized payment.
+   * Returns the receiver-authorizer signer, if configured.
    *
-   * @param paymentInfoHash - Escrow payment identifier.
-   * @returns Facilitator settle response.
+   * @returns Receiver-authorizer signer, or `undefined` when not set.
    */
-  voidPayment(paymentInfoHash: `0x${string}`): Promise<SettleResponse> {
-    return this.lifecycle.voidPayment(paymentInfoHash);
+  getReceiverAuthorizerSigner(): AuthorizerSigner | undefined {
+    return this.receiverAuthorizerSigner;
   }
 
   /**
-   * Refund captured funds on a stored authorized payment.
+   * Create a facilitator-bound manager for out-of-band capture / void / refund.
    *
-   * @param paymentInfoHash - Escrow payment identifier.
-   * @param opts - Refund amount.
-   * @param opts.amount - Atomic refund amount in token base units.
-   * @returns Facilitator settle response.
+   * @param facilitator - Facilitator client used to POST lifecycle settles.
+   * @returns A lifecycle manager reading storage and the signer from this scheme.
    */
-  refund(paymentInfoHash: `0x${string}`, opts: { amount: string }): Promise<SettleResponse> {
-    return this.lifecycle.refund(paymentInfoHash, opts);
-  }
-
-  /**
-   * Read a stored authorized payment.
-   *
-   * @param paymentInfoHash - Escrow payment identifier.
-   * @returns The record, or undefined.
-   */
-  getAuthorizedPayment(paymentInfoHash: `0x${string}`): Promise<AuthorizedPayment | undefined> {
-    return this.lifecycle.getAuthorizedPayment(paymentInfoHash);
-  }
-
-  /**
-   * List stored authorized payments.
-   *
-   * @returns All records in storage.
-   */
-  listAuthorizedPayments(): Promise<AuthorizedPayment[]> {
-    return this.lifecycle.listAuthorizedPayments();
-  }
-
-  /**
-   * Load and cache `/supported` signers for delegated `captureAuthorizer` resolution.
-   *
-   * @returns Signers map keyed by CAIP family pattern.
-   * @throws When `lifecycle.facilitator` was not configured on the scheme.
-   */
-  private loadSupportedSigners(): Promise<Record<string, string[]>> {
-    if (!this.facilitatorClient) {
-      return Promise.reject(
-        new Error(
-          'AuthCapture requires extra.captureAuthorizer for operatorType "delegated", or ' +
-            "lifecycle.facilitator on AuthCaptureEvmScheme to resolve it from /supported signers.",
-        ),
-      );
-    }
-
-    if (!this.supportedSignersFetch) {
-      this.supportedSignersFetch = this.facilitatorClient
-        .getSupported()
-        .then(supported => supported.signers);
-    }
-
-    return this.supportedSignersFetch;
-  }
-
-  /**
-   * Fill `extra.captureAuthorizer` for delegated routes from facilitator signers
-   * when the merchant did not set it on the route.
-   *
-   * @param merged - Merged `extra` map being assembled for publication.
-   * @param network - Route network used to match `/supported` signer families.
-   */
-  private async resolveDelegatedCaptureAuthorizerIfNeeded(
-    merged: Record<string, unknown>,
-    network: Network,
-  ): Promise<void> {
-    const operatorType = merged.operatorType ?? "delegated";
-    if (operatorType !== "delegated") return;
-
-    if (typeof merged.captureAuthorizer === "string" && merged.captureAuthorizer.length > 0) {
-      return;
-    }
-
-    const signersByFamily = await this.loadSupportedSigners();
-    merged.captureAuthorizer = pickDelegatedCaptureAuthorizer(
-      resolveSignersForNetwork(signersByFamily, network),
-    );
+  createLifecycleManager(facilitator: FacilitatorClient): AuthCaptureLifecycleManager {
+    return new AuthCaptureLifecycleManager({ scheme: this, facilitator });
   }
 
   /**

@@ -59,8 +59,10 @@ import {
 } from "../extra";
 import {
   collectPayer,
+  facilitatorAddresses,
   normalizePaymentState,
   readPaymentStateForBalances,
+  resolveSubmitter,
   simulateEscrowCall,
   submitEscrowCall,
   SAFETY_MARGIN_SECONDS,
@@ -89,7 +91,7 @@ function collectChargeAmount(payload: AuthCaptureCollectPayload): string | undef
 /**
  * Verify a collect (authorize / charge) payload.
  *
- * @param signer - Facilitator signer.
+ * @param signers - Facilitator signer set.
  * @param config - Facilitator config.
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
@@ -97,7 +99,7 @@ function collectChargeAmount(payload: AuthCaptureCollectPayload): string | undef
  * @returns VerifyResponse.
  */
 export async function verifyCollect(
-  signer: FacilitatorEvmSigner,
+  signers: readonly FacilitatorEvmSigner[],
   config: AuthCaptureFacilitatorConfig | undefined,
   payload: PaymentPayload,
   requirements: PaymentRequirements,
@@ -109,7 +111,7 @@ export async function verifyCollect(
     payload.accepted.network,
     requirements,
     AUTH_CAPTURE_SCHEME,
-    signer.getAddresses(),
+    facilitatorAddresses(signers),
     config,
     false,
   );
@@ -117,6 +119,10 @@ export async function verifyCollect(
     return { isValid: false, invalidReason: common.error, payer };
   }
   const extra = common.extra;
+  const submitter = resolveSubmitter(signers, extra);
+  if (!submitter) {
+    return { isValid: false, invalidReason: Errors.ErrOperatorNotAdmitted, payer };
+  }
   const bindOn = isSaltBindingOn(extra);
   const saltNonce = collectSaltNonce(wirePayload);
 
@@ -197,14 +203,14 @@ export async function verifyCollect(
   const signatureValid =
     extra.assetTransferMethod === "eip3009"
       ? await verifyERC3009Signature(
-          signer,
+          submitter,
           (wirePayload as Eip3009Payload).authorization,
           parsed.signature,
           { ...extra, chainId },
           requirements.asset as `0x${string}`,
         )
       : await verifyPermit2Signature(
-          signer,
+          submitter,
           (wirePayload as Permit2Payload).permit2Authorization,
           parsed.signature,
           chainId,
@@ -272,7 +278,7 @@ export async function verifyCollect(
   if (needsChargeCompletion) {
     const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
     const ok = await verifyCharge(
-      signer,
+      submitter,
       extra.receiverAuthorizer,
       chainId,
       extra.captureAuthorizer,
@@ -292,7 +298,7 @@ export async function verifyCollect(
   }
 
   const simulateResult = await simulateCollect(
-    signer,
+    submitter,
     config,
     extra,
     paymentInfo,
@@ -305,7 +311,7 @@ export async function verifyCollect(
   );
   if (simulateResult !== "ok") {
     try {
-      const balance = (await signer.readContract({
+      const balance = (await submitter.readContract({
         address: requirements.asset as `0x${string}`,
         abi: ERC20_BALANCE_OF_ABI,
         functionName: "balanceOf",
@@ -326,7 +332,7 @@ export async function verifyCollect(
 /**
  * Re-verify and settle a collect payload.
  *
- * @param signer - Facilitator signer.
+ * @param signers - Facilitator signer set.
  * @param config - Facilitator config.
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
@@ -335,14 +341,14 @@ export async function verifyCollect(
  * @returns SettleResponse, including the settled amount.
  */
 export async function settleCollect(
-  signer: FacilitatorEvmSigner,
+  signers: readonly FacilitatorEvmSigner[],
   config: AuthCaptureFacilitatorConfig | undefined,
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureCollectPayload,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
-  const verification = await verifyCollect(signer, config, payload, requirements, wirePayload);
+  const verification = await verifyCollect(signers, config, payload, requirements, wirePayload);
   if (!verification.isValid) {
     return {
       success: false,
@@ -364,6 +370,16 @@ export async function settleCollect(
     };
   }
   const extra = parsed.extra;
+  const submitter = resolveSubmitter(signers, extra);
+  if (!submitter) {
+    return {
+      success: false,
+      errorReason: Errors.ErrOperatorNotAdmitted,
+      transaction: "",
+      network: requirements.network,
+      payer: verification.payer,
+    };
+  }
   const payer = verification.payer as `0x${string}`;
   const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod);
   const originalMax = payload.accepted.amount;
@@ -410,7 +426,7 @@ export async function settleCollect(
     paymentPayload: payload,
     paymentRequirements: requirements,
   });
-  const submitted = await submitEscrowCall(signer, settleTarget, functionName, args, {
+  const submitted = await submitEscrowCall(submitter, settleTarget, functionName, args, {
     gas: customGasLimit,
     dataSuffix,
   });
@@ -467,7 +483,7 @@ export async function settleCollect(
   const expectedCapturable = functionName === "authorize" ? settleAmount : 0n;
   const expectedRefundable = functionName === "charge" ? settleAmount : 0n;
   const { state } = await readPaymentStateForBalances(
-    signer,
+    submitter,
     paymentInfoHash,
     expectedCapturable,
     expectedRefundable,
@@ -532,7 +548,7 @@ async function simulateCollect(
   if (extra.operatorType === "delegated") {
     // Delegated collect calls the escrow directly; eth_call success is sufficient preflight.
     const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
-    return simulateEscrowCall(signer, settleTarget, functionName, args, signer.getAddresses()[0]!);
+    return simulateEscrowCall(signer, settleTarget, functionName, args, extra.captureAuthorizer);
   }
 
   // Custom operators relay through captureAuthorizer — require eth_simulateV1 outcome checks.
@@ -540,7 +556,8 @@ async function simulateCollect(
     return Errors.ErrSimulationFailed;
   }
 
-  const gasLimit = config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT;
+  const gasLimit =
+    config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT;
   const facilitator = signer.getAddresses()[0]!;
   const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
   const operator = extra.captureAuthorizer;
@@ -748,10 +765,29 @@ async function simulateCollect(
   return "ok";
 }
 
+/**
+ * Filter receipt or simulation logs down to the canonical escrow address.
+ *
+ * @param logs - Logs from the forwarded call or mined receipt.
+ * @param escrowAddress - Canonical AuthCaptureEscrow address.
+ * @returns Logs emitted by the escrow.
+ */
 function escrowEventLogs(logs: readonly Log[] | undefined, escrowAddress: `0x${string}`): Log[] {
   return (logs ?? []).filter(log => isAddressEqual(log.address, escrowAddress));
 }
 
+/**
+ * Whether logs contain a PaymentAuthorized event matching the expected collect.
+ *
+ * @param logs - Logs from the forwarded call or mined receipt.
+ * @param escrowAddress - Canonical AuthCaptureEscrow address.
+ * @param expected - Expected event fields.
+ * @param expected.paymentInfoHash - Escrow payment identifier.
+ * @param expected.amount - Authorized amount.
+ * @param expected.tokenCollector - Collector used for the collect.
+ * @param expected.operator - PaymentInfo.operator.
+ * @returns True when a matching event is present.
+ */
 function verifyPaymentAuthorizedEvent(
   logs: readonly Log[] | undefined,
   escrowAddress: `0x${string}`,
@@ -776,6 +812,20 @@ function verifyPaymentAuthorizedEvent(
   );
 }
 
+/**
+ * Whether logs contain a PaymentCharged event matching the expected collect.
+ *
+ * @param logs - Logs from the forwarded call or mined receipt.
+ * @param escrowAddress - Canonical AuthCaptureEscrow address.
+ * @param expected - Expected event fields.
+ * @param expected.paymentInfoHash - Escrow payment identifier.
+ * @param expected.amount - Charged amount.
+ * @param expected.tokenCollector - Collector used for the collect.
+ * @param expected.operator - PaymentInfo.operator.
+ * @param expected.feeBps - Submitted fee in basis points.
+ * @param expected.feeReceiver - Submitted fee recipient.
+ * @returns True when a matching event is present.
+ */
 function verifyPaymentChargedEvent(
   logs: readonly Log[] | undefined,
   escrowAddress: `0x${string}`,
