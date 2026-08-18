@@ -1,4 +1,4 @@
-import { BaseError, ContractFunctionRevertedError } from "viem";
+import { BaseError, ContractFunctionRevertedError, type Log } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { ESCROW_ABI_WITH_ERRORS, ESCROW_VIEW_ABI } from "../abi";
 import { AUTH_CAPTURE_ESCROW_ADDRESS } from "../constants";
@@ -97,13 +97,17 @@ export async function submitEscrowCall(
   target: `0x${string}`,
   functionName: "authorize" | "charge" | "capture" | "void" | "refund",
   args: readonly unknown[],
-): Promise<{ txHash: `0x${string}` } | { error: string; txHash?: `0x${string}` }> {
+  options?: { gas?: bigint },
+): Promise<
+  { txHash: `0x${string}`; logs?: readonly Log[] } | { error: string; txHash?: `0x${string}` }
+> {
   try {
     const txHash = await signer.writeContract({
       address: target,
       abi: ESCROW_ABI_WITH_ERRORS,
       functionName,
       args,
+      gas: options?.gas,
     });
 
     const receiptPromise = signer.waitForTransactionReceipt({ hash: txHash });
@@ -118,7 +122,7 @@ export async function submitEscrowCall(
     if (receipt.status !== "success") {
       return { error: "reverted", txHash };
     }
-    return { txHash };
+    return { txHash, logs: receipt.logs };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Settlement failed" };
   }

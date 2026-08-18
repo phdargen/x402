@@ -183,6 +183,7 @@ const evmSigner = toFacilitatorEvmSigner({
   address: account.address,
   getCode: args => viemClient.getCode(args),
   readContract: args => viemClient.readContract(args),
+  simulateCalls: args => viemClient.simulateCalls(args),
   verifyTypedData: args => viemClient.verifyTypedData(args),
   writeContract: args => viemClient.writeContract(args),
   sendTransaction: args => viemClient.sendTransaction(args),
@@ -195,12 +196,13 @@ facilitator.register(
   new AuthCaptureEvmScheme(evmSigner, {
     feeTerms: { feeRecipient, minFeeBps: 100, maxFeeBps: 100 },
     operators: [{ address: "*", operatorType: "custom" }],
+    customOperatorAuthorizeGasLimit: 1_000_000n,
     refundFunding: false, // set true only with an out-of-band funding agreement
   }),
 );
 ```
 
-`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (with EIP-6492 unwrap), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons.
+`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (with EIP-6492 unwrap), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on the signer; otherwise `operators` is omitted from `getExtra`.
 
 `settle` re-verifies then dispatches:
 
