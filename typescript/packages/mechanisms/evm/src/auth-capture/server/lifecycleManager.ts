@@ -1,167 +1,36 @@
 import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/core/types";
-import type { DeepReadonly } from "@x402/core/types";
-import type {
-  SettleContext,
-  SettleResultContext,
-  VerifiedPaymentCanceledContext,
-} from "@x402/core/server";
 import type { FacilitatorClient } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
-import { computePaymentInfoHash, isNonZeroAddress } from "../nonce";
-import { parseAuthCaptureExtra } from "../extra";
-import {
-  buildCaptureEnrichment,
-  buildCapturePayload,
-  buildChargeCompletionEnrichment,
-  buildRefundPayload,
-  buildVoidEnrichment,
-  buildVoidPayload,
-  paymentInfoFromCollect,
-} from "../lifecyclePayload";
+import { buildCapturePayload, buildRefundPayload, buildVoidPayload } from "../lifecyclePayload";
 import type {
-  AuthCaptureCollectPayload,
   AuthCaptureExtra,
   AuthorizerSigner,
   CaptureOptions,
   CapturePayload,
-  PaymentInfoStruct,
   RefundPayload,
   VoidPayload,
 } from "../types";
-import { isAuthCaptureCollectPayload, isEip3009Payload } from "../types";
-import type { AuthorizedPayment, AuthorizedPaymentStorage } from "./storage";
+import { applyCaptureBalances, type AuthorizedPayment } from "./storage";
+import type { AuthCaptureEvmScheme } from "./scheme";
 
-export interface AuthCaptureLifecycleConfig {
-  storage: AuthorizedPaymentStorage;
-  authorizerSigner?: AuthorizerSigner;
-  facilitator?: FacilitatorClient;
+export interface AuthCaptureLifecycleManagerConfig {
+  scheme: AuthCaptureEvmScheme;
+  facilitator: FacilitatorClient;
 }
 
 /**
- * Narrow a wire payload to a collect envelope, or undefined.
- *
- * @param payload - `PaymentPayload.payload`.
- * @returns Collect payload when the shape matches.
- */
-function asCollectPayload(
-  payload: DeepReadonly<PaymentPayload>["payload"],
-): AuthCaptureCollectPayload | undefined {
-  return isAuthCaptureCollectPayload(payload) ? payload : undefined;
-}
-
-/**
- * Client-signed authorize amount from a collect payload (EIP-3009 value or Permit2 permitted amount).
- *
- * @param collect - Verified collect envelope.
- * @returns Atomic amount in token base units.
- */
-function signedCollectAmount(collect: AuthCaptureCollectPayload): string {
-  return isEip3009Payload(collect)
-    ? collect.authorization.value
-    : collect.permit2Authorization.permitted.amount;
-}
-
-/**
- * Deferred lifecycle: storage, sync enrichment, and one-shot capture/void/refund helpers.
+ * Out-of-band capture / void / refund against stored authorized payments.
+ * Storage and the receiver-authorizer signer are read through the scheme.
  */
 export class AuthCaptureLifecycleManager {
-  private readonly authorizeResults = new WeakMap<object, SettleResponse>();
-
   /**
-   * Create a lifecycle manager with storage and optional deferred helpers.
+   * Create a facilitator-bound lifecycle manager.
    *
-   * @param config - Storage and optional grouped lifecycle (authorizer signer + facilitator).
+   * @param config - Scheme (storage + signer) and facilitator client.
    */
-  constructor(private readonly config: AuthCaptureLifecycleConfig) {}
-
-  /**
-   * Additive payload enrichment for sync capture, bound charge, and cancel void.
-   *
-   * @param ctx - Settle context from core.
-   * @returns Fields to merge into the client payload, or void when not applicable.
-   */
-  async enrichSettlementPayload(ctx: SettleContext): Promise<Record<string, unknown> | void> {
-    if (ctx.phase === "before-handler") return;
-    const extraParsed = parseAuthCaptureExtra(ctx.requirements.extra);
-    if ("error" in extraParsed) return;
-    const extra = extraParsed.extra;
-    const collect = asCollectPayload(ctx.paymentPayload.payload);
-    if (!collect) return;
-
-    const signer = this.config.authorizerSigner;
-    if (!signer) return;
-
-    if (ctx.phase === "cancel") {
-      if (extra.paymentFlow !== "escrow") return;
-      const requirements = ctx.requirements as PaymentRequirements;
-      const paymentInfo = paymentInfoFromCollect(collect, requirements, extra);
-      const chainId = getEvmChainId(ctx.requirements.network);
-      return buildVoidEnrichment({
-        paymentInfo,
-        extra,
-        signer,
-        chainId,
-        paymentInfoHash: computePaymentInfoHash(chainId, paymentInfo),
-      });
-    }
-
-    if (ctx.phase !== "after-handler") return;
-
-    const chainId = getEvmChainId(ctx.requirements.network);
-
-    if (extra.paymentFlow === "authorization" && isNonZeroAddress(extra.receiverAuthorizer)) {
-      return buildChargeCompletionEnrichment({
-        collect,
-        requirements: ctx.requirements as PaymentRequirements,
-        extra,
-        signer,
-        chainId,
-        amount: ctx.requirements.amount,
-      });
-    }
-
-    if (extra.paymentFlow === "escrow" && extra.captureMode !== "deferred") {
-      const requirements = ctx.requirements as PaymentRequirements;
-      const authorizeRequirements: PaymentRequirements = {
-        ...requirements,
-        amount: signedCollectAmount(collect),
-      };
-      const paymentInfo = paymentInfoFromCollect(collect, authorizeRequirements, extra);
-      const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
-      const stored = await this.config.storage.get(paymentInfoHash);
-      const trustedPaymentInfo = stored?.paymentInfo ?? paymentInfo;
-      return buildCaptureEnrichment({
-        collect,
-        requirements: authorizeRequirements,
-        paymentInfo: trustedPaymentInfo,
-        extra,
-        signer,
-        chainId,
-        capturable: stored?.capturableAmount ?? trustedPaymentInfo.maxAmount,
-        refundable: stored?.refundableAmount ?? "0",
-        amount: requirements.amount,
-      });
-    }
-  }
-
-  /**
-   * On handler failure after a before-handler authorize, settle a void.
-   *
-   * @param context - Cancellation context.
-   * @returns Requirements to settle, or void when there is no hold to release.
-   */
-  async settleOnCancel(
-    context: VerifiedPaymentCanceledContext,
-  ): Promise<PaymentRequirements | void> {
-    const extraParsed = parseAuthCaptureExtra(context.requirements.extra);
-    if ("error" in extraParsed) return;
-    const extra = extraParsed.extra;
-    if (extra.paymentFlow !== "escrow") return;
-    if (!this.config.authorizerSigner || !isNonZeroAddress(extra.receiverAuthorizer)) return;
-    return context.requirements as PaymentRequirements;
-  }
+  constructor(private readonly config: AuthCaptureLifecycleManagerConfig) {}
 
   /**
    * Capture a stored authorized payment through the facilitator.
@@ -184,7 +53,7 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireLifecycle().authorizerSigner,
+      signer: this.requireSigner(),
       chainId,
       amount,
       feeBps: opts?.feeBps,
@@ -193,7 +62,12 @@ export class AuthCaptureLifecycleManager {
     });
     const response = await this.settleLifecycle(record, payload);
     if (response.success) {
-      await this.applyCaptureBalances(record.paymentInfoHash, amount, Boolean(opts?.voidRemainder));
+      await applyCaptureBalances(
+        this.config.scheme.getStorage(),
+        record.paymentInfoHash,
+        amount,
+        Boolean(opts?.voidRemainder),
+      );
     }
     return response;
   }
@@ -214,14 +88,16 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireLifecycle().authorizerSigner,
+      signer: this.requireSigner(),
       chainId: getEvmChainId(record.network),
     });
     const response = await this.settleLifecycle(record, payload);
     if (response.success) {
-      await this.config.storage.update(record.paymentInfoHash, current =>
-        current ? { ...current, capturableAmount: "0" } : current,
-      );
+      await this.config.scheme
+        .getStorage()
+        .update(record.paymentInfoHash, current =>
+          current ? { ...current, capturableAmount: "0" } : current,
+        );
     }
     return response;
   }
@@ -246,13 +122,13 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireLifecycle().authorizerSigner,
+      signer: this.requireSigner(),
       chainId: getEvmChainId(record.network),
       amount: opts.amount,
     });
     const response = await this.settleLifecycle(record, payload);
     if (response.success) {
-      await this.config.storage.update(record.paymentInfoHash, current => {
+      await this.config.scheme.getStorage().update(record.paymentInfoHash, current => {
         if (!current) return current;
         const next = BigInt(current.refundableAmount) - BigInt(opts.amount);
         return { ...current, refundableAmount: next.toString() };
@@ -270,7 +146,7 @@ export class AuthCaptureLifecycleManager {
   async getAuthorizedPayment(
     paymentInfoHash: `0x${string}`,
   ): Promise<AuthorizedPayment | undefined> {
-    return this.config.storage.get(paymentInfoHash);
+    return this.config.scheme.getStorage().get(paymentInfoHash);
   }
 
   /**
@@ -279,161 +155,7 @@ export class AuthCaptureLifecycleManager {
    * @returns All records in storage.
    */
   async listAuthorizedPayments(): Promise<AuthorizedPayment[]> {
-    return this.config.storage.list();
-  }
-
-  /**
-   * Skip the after-handler facilitator settle for deferred escrow; echo the authorize receipt.
-   *
-   * @param ctx - Settle context.
-   * @returns Skip directive with the prior authorize result, or void.
-   */
-  async handleBeforeSettle(
-    ctx: SettleContext,
-  ): Promise<void | { skip: true; result: SettleResponse }> {
-    if (ctx.phase !== "after-handler") return;
-    const extraParsed = parseAuthCaptureExtra(ctx.requirements.extra);
-    if ("error" in extraParsed) return;
-    if (extraParsed.extra.paymentFlow !== "escrow") return;
-    if (extraParsed.extra.captureMode !== "deferred") return;
-    const prior = this.authorizeResults.get(ctx.paymentPayload);
-    if (!prior) return;
-    return { skip: true, result: prior };
-  }
-
-  /**
-   * Persist authorized-payment records and update balances after a successful settle.
-   *
-   * @param ctx - Settle result context.
-   * @returns Nothing.
-   */
-  async handleAfterSettle(ctx: SettleResultContext): Promise<void> {
-    if (!ctx.result.success) return;
-    const extraParsed = parseAuthCaptureExtra(ctx.requirements.extra);
-    if ("error" in extraParsed) return;
-    const extra = extraParsed.extra;
-    const collect = asCollectPayload(ctx.paymentPayload.payload);
-
-    if (ctx.phase === "before-handler" && collect) {
-      this.authorizeResults.set(ctx.paymentPayload, ctx.result as SettleResponse);
-      await this.persistCollect(collect, ctx, extra, "authorize");
-      return;
-    }
-    if (ctx.phase === "after-handler" && extra.paymentFlow === "authorization" && collect) {
-      await this.persistCollect(collect, ctx, extra, "charge");
-      return;
-    }
-    if (
-      ctx.phase === "after-handler" &&
-      extra.paymentFlow === "escrow" &&
-      extra.captureMode !== "deferred"
-    ) {
-      const type = (ctx.paymentPayload.payload as Record<string, unknown>).type;
-      if (type === "capture") {
-        const amount = ctx.result.amount ?? ctx.requirements.amount;
-        const voidRemainder =
-          (ctx.paymentPayload.payload as Record<string, unknown>).voidAuthorizerSignature !==
-          undefined;
-        const paymentInfo = (ctx.paymentPayload.payload as Record<string, unknown>).paymentInfo as
-          | PaymentInfoStruct
-          | undefined;
-        if (paymentInfo) {
-          const hash = computePaymentInfoHash(getEvmChainId(ctx.requirements.network), paymentInfo);
-          await this.applyCaptureBalances(hash, amount, voidRemainder);
-        }
-      }
-    }
-    if (ctx.phase === "cancel") {
-      const paymentInfo = (ctx.paymentPayload.payload as Record<string, unknown>).paymentInfo as
-        | PaymentInfoStruct
-        | undefined;
-      if (paymentInfo) {
-        const hash = computePaymentInfoHash(getEvmChainId(ctx.requirements.network), paymentInfo);
-        await this.config.storage.update(hash, current =>
-          current ? { ...current, capturableAmount: "0" } : current,
-        );
-      }
-    }
-  }
-
-  /**
-   * Store a payment record after a successful collect settle.
-   *
-   * @param collect - Client collect payload.
-   * @param ctx - Settle result context.
-   * @param extra - Normalized extra used for reconstruction.
-   * @param operation - `"authorize"` (hold) or `"charge"` (already captured).
-   * @returns Nothing.
-   */
-  private async persistCollect(
-    collect: AuthCaptureCollectPayload,
-    ctx: SettleResultContext,
-    extra: AuthCaptureExtra & {
-      paymentFlow: "escrow" | "authorization";
-      operatorType: "delegated" | "custom";
-      assetTransferMethod: AssetTransferMethod;
-      receiverAuthorizer: `0x${string}`;
-      policy: `0x${string}`;
-    },
-    operation: "authorize" | "charge",
-  ): Promise<void> {
-    const paymentInfo = paymentInfoFromCollect(
-      collect,
-      ctx.requirements as PaymentRequirements,
-      extra,
-    );
-    const chainId = getEvmChainId(ctx.requirements.network);
-    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
-    const signedAmount = isEip3009Payload(collect)
-      ? collect.authorization.value
-      : collect.permit2Authorization.permitted.amount;
-    const settledAmount = ctx.result.amount ?? signedAmount;
-    const saltNonce = "saltNonce" in collect ? collect.saltNonce : undefined;
-
-    const record: AuthorizedPayment = {
-      paymentInfoHash,
-      paymentInfo,
-      ...(saltNonce ? { saltNonce } : {}),
-      receiverAuthorizer: extra.receiverAuthorizer,
-      policy: extra.policy,
-      network: ctx.requirements.network,
-      capturableAmount: operation === "authorize" ? signedAmount : "0",
-      refundableAmount: operation === "charge" ? settledAmount : "0",
-      collectTransaction: ctx.result.transaction,
-      createdAt: Date.now(),
-      name: extra.name,
-      version: extra.version,
-      paymentFlow: extra.paymentFlow,
-      operatorType: extra.operatorType,
-      assetTransferMethod: extra.assetTransferMethod,
-    };
-    await this.config.storage.update(paymentInfoHash, () => record);
-  }
-
-  /**
-   * Apply a successful capture to stored capturable/refundable balances.
-   *
-   * @param paymentInfoHash - Storage key.
-   * @param amount - Captured atomic amount.
-   * @param voidRemainder - When true, zero the remaining hold.
-   * @returns Nothing.
-   */
-  private async applyCaptureBalances(
-    paymentInfoHash: string,
-    amount: string,
-    voidRemainder: boolean,
-  ): Promise<void> {
-    await this.config.storage.update(paymentInfoHash, current => {
-      if (!current) return current;
-      const captured = BigInt(amount);
-      const capturable = BigInt(current.capturableAmount) - captured;
-      const refundable = BigInt(current.refundableAmount) + captured;
-      return {
-        ...current,
-        capturableAmount: voidRemainder ? "0" : capturable.toString(),
-        refundableAmount: refundable.toString(),
-      };
-    });
+    return this.config.scheme.getStorage().list();
   }
 
   /**
@@ -447,14 +169,13 @@ export class AuthCaptureLifecycleManager {
     record: AuthorizedPayment,
     payload: CapturePayload | VoidPayload | RefundPayload,
   ): Promise<SettleResponse> {
-    const { facilitator } = this.requireLifecycle();
     const requirements = buildRequirements(record);
     const paymentPayload: PaymentPayload = {
       x402Version: 2,
       accepted: requirements,
       payload: payload as unknown as Record<string, unknown>,
     };
-    return facilitator.settle(paymentPayload, requirements);
+    return this.config.facilitator.settle(paymentPayload, requirements);
   }
 
   /**
@@ -464,7 +185,7 @@ export class AuthCaptureLifecycleManager {
    * @returns The record.
    */
   private async requireRecord(paymentInfoHash: `0x${string}`): Promise<AuthorizedPayment> {
-    const record = await this.config.storage.get(paymentInfoHash);
+    const record = await this.config.scheme.getStorage().get(paymentInfoHash);
     if (!record) {
       throw new Error(`AuthCapture: no authorized payment ${paymentInfoHash}`);
     }
@@ -487,24 +208,18 @@ export class AuthCaptureLifecycleManager {
   }
 
   /**
-   * Constructor lifecycle config, or throw if helpers were called without it.
+   * Receiver-authorizer signer from the scheme, or throw if helpers were called without it.
    *
-   * @returns Authorizer signer and facilitator client.
+   * @returns Authorizer signer.
    */
-  private requireLifecycle(): {
-    authorizerSigner: AuthorizerSigner;
-    facilitator: FacilitatorClient;
-  } {
-    if (!this.config.authorizerSigner || !this.config.facilitator) {
+  private requireSigner(): AuthorizerSigner {
+    const signer = this.config.scheme.getReceiverAuthorizerSigner();
+    if (!signer) {
       throw new Error(
-        "AuthCapture lifecycle helpers require lifecycle: { authorizerSigner, facilitator } " +
-          "on AuthCaptureEvmScheme",
+        "AuthCapture lifecycle helpers require a receiverAuthorizerSigner on AuthCaptureEvmScheme",
       );
     }
-    return {
-      authorizerSigner: this.config.authorizerSigner,
-      facilitator: this.config.facilitator,
-    };
+    return signer;
   }
 }
 
@@ -520,6 +235,7 @@ function extraFromRecord(record: AuthorizedPayment): AuthCaptureExtra & {
   assetTransferMethod: AssetTransferMethod;
   receiverAuthorizer: `0x${string}`;
   policy: `0x${string}`;
+  captureMode: "sync" | "deferred";
 } {
   return {
     captureAuthorizer: record.paymentInfo.operator,
@@ -535,6 +251,7 @@ function extraFromRecord(record: AuthorizedPayment): AuthCaptureExtra & {
     assetTransferMethod: record.assetTransferMethod,
     receiverAuthorizer: record.receiverAuthorizer,
     policy: record.policy,
+    captureMode: record.paymentFlow === "escrow" ? "deferred" : "sync",
   };
 }
 

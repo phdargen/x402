@@ -99,18 +99,26 @@ const evmSigner = toFacilitatorEvmSigner({
 
 const facilitator = new x402Facilitator();
 
-facilitator.register(
-  "eip155:84532",
-  new AuthCaptureEvmScheme(evmSigner, {
-    ...(authorizerSigner ? { receiverAuthorizer: authorizerSigner.address } : {}),
-    ...(minFeeBps > 0 || maxFeeBps > 0 || feeRecipient !== zeroAddress
-      ? { feeTerms: { feeRecipient, minFeeBps, maxFeeBps } }
-      : {}),
-    operators: [{ address: "*", operatorType: "custom" }],
-    customOperatorAuthorizeGasLimit: 1_000_000n,
-    refundFunding: false,
-  }),
-);
+const authCaptureConfig = {
+  ...(authorizerSigner ? { receiverAuthorizer: authorizerSigner.address } : {}),
+  ...(minFeeBps > 0 || maxFeeBps > 0 || feeRecipient !== zeroAddress
+    ? { feeTerms: { feeRecipient, minFeeBps, maxFeeBps } }
+    : {}),
+  operators: [{ address: "*", operatorType: "custom" as const }],
+  customOperatorAuthorizeGasLimit: 1_000_000n,
+  refundFunding: false,
+};
+
+facilitator.register("eip155:84532", new AuthCaptureEvmScheme(evmSigner, authCaptureConfig));
+
+// Multi-signer rotation: pass an array of toFacilitatorEvmSigner results to one
+// scheme. Do not register the scheme twice on the same network — getSupported
+// and settle both keep the first kind. Every address in the rotation must stay
+// funded (and approved, if refundFunding is true) until payments that used it
+// pass refundDeadline.
+//
+// const evmSignerB = toFacilitatorEvmSigner({ address: accountB.address, ...clientB });
+// facilitator.register("eip155:84532", new AuthCaptureEvmScheme([evmSigner, evmSignerB], authCaptureConfig));
 
 const app = express();
 app.use(express.json());

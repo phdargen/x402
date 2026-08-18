@@ -295,25 +295,8 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.extra?.sharedKey).toBe("0xcccccccccccccccccccccccccccccccccccccccc");
     });
 
-    it("should resolve captureAuthorizer from /supported signers for delegated routes", async () => {
-      const mockFacilitator: FacilitatorClient = {
-        getSupported: vi.fn().mockResolvedValue({
-          kinds: [],
-          extensions: [],
-          signers: { "eip155:*": ["0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] },
-        }),
-        verify: vi.fn(),
-        settle: vi.fn(),
-      };
-      const scheme = new AuthCaptureEvmScheme({
-        lifecycle: {
-          authorizerSigner: {
-            address: "0xcccccccccccccccccccccccccccccccccccccccc",
-            signTypedData: vi.fn(),
-          },
-          facilitator: mockFacilitator,
-        },
-      });
+    it("should copy captureAuthorizer from supportedKind.extra for delegated routes", async () => {
+      const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
         extra: completeExtra({ captureAuthorizer: undefined, operatorType: "delegated" }),
@@ -322,15 +305,15 @@ describe("AuthCaptureEvmScheme", () => {
         x402Version: 2,
         scheme: "auth-capture",
         network: "eip155:84532" as const,
+        extra: { captureAuthorizer: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
       };
 
       const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
 
       expect(result.extra?.captureAuthorizer).toBe("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-      expect(mockFacilitator.getSupported).toHaveBeenCalledTimes(1);
     });
 
-    it("should throw when delegated captureAuthorizer is missing and no lifecycle.facilitator is configured", async () => {
+    it("should throw when delegated captureAuthorizer is missing from route and supportedKind", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
@@ -344,46 +327,25 @@ describe("AuthCaptureEvmScheme", () => {
 
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
-      ).rejects.toThrow(/lifecycle\.facilitator/);
+      ).rejects.toThrow(/captureAuthorizer/);
     });
 
-    it("should throw when delegated captureAuthorizer is missing and facilitator advertises multiple signers", async () => {
-      const mockFacilitator: FacilitatorClient = {
-        getSupported: vi.fn().mockResolvedValue({
-          kinds: [],
-          extensions: [],
-          signers: {
-            "eip155:*": [
-              "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ],
-          },
-        }),
-        verify: vi.fn(),
-        settle: vi.fn(),
-      };
-      const scheme = new AuthCaptureEvmScheme({
-        lifecycle: {
-          authorizerSigner: {
-            address: "0xcccccccccccccccccccccccccccccccccccccccc",
-            signTypedData: vi.fn(),
-          },
-          facilitator: mockFacilitator,
-        },
-      });
+    it("should not inherit facilitator-advertised captureAuthorizer on custom routes", async () => {
+      const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
-        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "delegated" }),
+        extra: completeExtra({ captureAuthorizer: undefined, operatorType: "custom" }),
       };
       const supportedKind = {
         x402Version: 2,
         scheme: "auth-capture",
         network: "eip155:84532" as const,
+        extra: { captureAuthorizer: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
       };
 
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
-      ).rejects.toThrow(/multiple submitters/);
+      ).rejects.toThrow(/extra\.captureAuthorizer/);
     });
 
     it("should preserve all original requirement fields", async () => {
@@ -752,15 +714,64 @@ describe("AuthCaptureEvmScheme", () => {
       ).rejects.toThrow(/autoCapture/);
     });
 
-    it("should throw on escrow sync without receiverAuthorizer", async () => {
-      const scheme = new AuthCaptureEvmScheme();
+    it("should derive receiverAuthorizer from the signer when the route omits it", async () => {
+      const signerAddress = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: { address: signerAddress, signTypedData: vi.fn() },
+      });
       const requirements = {
         ...baseRequirements,
         extra: completeExtra({ captureMode: undefined }),
       };
+      const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
+      expect(result.extra?.receiverAuthorizer).toBe(signerAddress);
+    });
+
+    it("should let the signer win over a facilitator-advertised receiverAuthorizer", async () => {
+      const signerAddress = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: { address: signerAddress, signTypedData: vi.fn() },
+      });
+      const result = await scheme.enhancePaymentRequirements(
+        { ...baseRequirements, extra: completeExtra({ captureMode: "deferred" }) },
+        {
+          ...supportedKind,
+          extra: { receiverAuthorizer: "0x9999999999999999999999999999999999999999" },
+        },
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(signerAddress);
+    });
+
+    it("should throw when the route sets a conflicting non-zero receiverAuthorizer", async () => {
+      const signerAddress = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: { address: signerAddress, signTypedData: vi.fn() },
+      });
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({
+          captureMode: "deferred",
+          receiverAuthorizer: "0x9999999999999999999999999999999999999999",
+        }),
+      };
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
-      ).rejects.toThrow(/receiverAuthorizer/);
+      ).rejects.toThrow(/does not match the scheme's receiverAuthorizerSigner/);
+    });
+
+    it("should throw on escrow sync without a receiverAuthorizerSigner", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({
+          captureMode: undefined,
+          receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+        }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/receiverAuthorizerSigner/);
     });
 
     it("should throw when captureMode is set on an authorization route", async () => {
@@ -790,6 +801,28 @@ describe("AuthCaptureEvmScheme", () => {
     it('should have scheme set to "auth-capture"', () => {
       const scheme = new AuthCaptureEvmScheme();
       expect(scheme.scheme).toBe("auth-capture");
+    });
+  });
+
+  describe("getters", () => {
+    it("should default storage and leave the receiver-authorizer signer unset", () => {
+      const scheme = new AuthCaptureEvmScheme();
+      expect(scheme.getStorage()).toBeInstanceOf(InMemoryAuthorizedPaymentStorage);
+      expect(scheme.getReceiverAuthorizerSigner()).toBeUndefined();
+    });
+
+    it("should return the configured storage and signer", () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      const signer = {
+        address: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+        signTypedData: vi.fn(),
+      };
+      const scheme = new AuthCaptureEvmScheme({
+        storage,
+        receiverAuthorizerSigner: signer,
+      });
+      expect(scheme.getStorage()).toBe(storage);
+      expect(scheme.getReceiverAuthorizerSigner()).toBe(signer);
     });
   });
 
@@ -874,11 +907,13 @@ describe("AuthCaptureEvmScheme", () => {
         signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
       };
       const facilitator = { settle } as unknown as FacilitatorClient;
+      const scheme = new AuthCaptureEvmScheme({
+        storage,
+        receiverAuthorizerSigner: authorizerSigner,
+      });
       return {
-        scheme: new AuthCaptureEvmScheme({
-          storage,
-          lifecycle: { authorizerSigner, facilitator },
-        }),
+        scheme,
+        lifecycle: scheme.createLifecycleManager(facilitator),
         settle,
         authorizerSigner,
       };
@@ -893,29 +928,32 @@ describe("AuthCaptureEvmScheme", () => {
     });
 
     it("should throw when capture is called without a stored record", async () => {
-      const scheme = new AuthCaptureEvmScheme();
-      await expect(scheme.capture(hash)).rejects.toThrow(/no authorized payment/);
+      const { lifecycle } = lifecycleScheme(new InMemoryAuthorizedPaymentStorage());
+      await expect(lifecycle.capture(hash)).rejects.toThrow(/no authorized payment/);
     });
 
-    it("should throw when capture is called without lifecycle config", async () => {
+    it("should throw when capture is called without a receiverAuthorizerSigner", async () => {
       const storage = new InMemoryAuthorizedPaymentStorage();
       await storage.update(hash, () => sampleRecord());
       const scheme = new AuthCaptureEvmScheme({ storage });
-      await expect(scheme.capture(hash)).rejects.toThrow(/lifecycle/);
+      const lifecycle = scheme.createLifecycleManager({
+        settle: vi.fn(),
+      } as unknown as FacilitatorClient);
+      await expect(lifecycle.capture(hash)).rejects.toThrow(/receiverAuthorizerSigner/);
     });
 
     it("should capture through the facilitator and write remaining balances", async () => {
       const storage = new InMemoryAuthorizedPaymentStorage();
       await storage.update(hash, () => sampleRecord());
-      const { scheme, settle } = lifecycleScheme(storage);
-      const result = await scheme.capture(hash, { amount: "500000" });
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      const result = await lifecycle.capture(hash, { amount: "500000" });
       expect(result.success).toBe(true);
       expect(settle).toHaveBeenCalledOnce();
       const payload = settle.mock.calls[0][0].payload;
       expect(payload.type).toBe("capture");
       expect(payload.amount).toBe("500000");
       expect(payload.voidAuthorizerSignature).toBeUndefined();
-      const updated = await scheme.getAuthorizedPayment(hash);
+      const updated = await lifecycle.getAuthorizedPayment(hash);
       expect(updated?.capturableAmount).toBe("500000");
       expect(updated?.refundableAmount).toBe("500000");
     });
@@ -923,11 +961,11 @@ describe("AuthCaptureEvmScheme", () => {
     it("should attach voidAuthorizerSignature and zero capturable on voidRemainder", async () => {
       const storage = new InMemoryAuthorizedPaymentStorage();
       await storage.update(hash, () => sampleRecord());
-      const { scheme, settle } = lifecycleScheme(storage);
-      await scheme.capture(hash, { amount: "500000", voidRemainder: true });
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      await lifecycle.capture(hash, { amount: "500000", voidRemainder: true });
       const payload = settle.mock.calls[0][0].payload;
       expect(payload.voidAuthorizerSignature).toBe("0xsig");
-      const updated = await scheme.getAuthorizedPayment(hash);
+      const updated = await lifecycle.getAuthorizedPayment(hash);
       expect(updated?.capturableAmount).toBe("0");
       expect(updated?.refundableAmount).toBe("500000");
     });
@@ -935,10 +973,10 @@ describe("AuthCaptureEvmScheme", () => {
     it("should void remaining hold through voidPayment", async () => {
       const storage = new InMemoryAuthorizedPaymentStorage();
       await storage.update(hash, () => sampleRecord());
-      const { scheme, settle } = lifecycleScheme(storage);
-      await scheme.voidPayment(hash);
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      await lifecycle.voidPayment(hash);
       expect(settle.mock.calls[0][0].payload.type).toBe("void");
-      const updated = await scheme.getAuthorizedPayment(hash);
+      const updated = await lifecycle.getAuthorizedPayment(hash);
       expect(updated?.capturableAmount).toBe("0");
     });
 
@@ -947,10 +985,10 @@ describe("AuthCaptureEvmScheme", () => {
       await storage.update(hash, () =>
         sampleRecord({ capturableAmount: "0", refundableAmount: "1000000" }),
       );
-      const { scheme, settle } = lifecycleScheme(storage);
-      await scheme.refund(hash, { amount: "250000" });
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      await lifecycle.refund(hash, { amount: "250000" });
       expect(settle.mock.calls[0][0].payload.type).toBe("refund");
-      const updated = await scheme.getAuthorizedPayment(hash);
+      const updated = await lifecycle.getAuthorizedPayment(hash);
       expect(updated?.refundableAmount).toBe("750000");
     });
   });
@@ -1029,7 +1067,7 @@ describe("AuthCaptureEvmScheme", () => {
         declaredExtensions: {},
         result: authorizeResult,
       } as never);
-      const listed = await scheme.listAuthorizedPayments();
+      const listed = await scheme.getStorage().list();
       expect(listed).toHaveLength(1);
       expect(listed[0]?.capturableAmount).toBe("1000000");
       expect(listed[0]?.refundableAmount).toBe("0");
@@ -1070,10 +1108,7 @@ describe("AuthCaptureEvmScheme", () => {
         signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
       };
       const scheme = new AuthCaptureEvmScheme({
-        lifecycle: {
-          authorizerSigner,
-          facilitator: { settle: vi.fn() } as unknown as FacilitatorClient,
-        },
+        receiverAuthorizerSigner: authorizerSigner,
       });
       const future = Math.floor(Date.now() / 1000) + 86400;
       const extra = {
@@ -1134,10 +1169,7 @@ describe("AuthCaptureEvmScheme", () => {
         signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
       };
       const scheme = new AuthCaptureEvmScheme({
-        lifecycle: {
-          authorizerSigner,
-          facilitator: { settle: vi.fn() } as unknown as FacilitatorClient,
-        },
+        receiverAuthorizerSigner: authorizerSigner,
       });
       const future = Math.floor(Date.now() / 1000) + 86400;
       const extra = {

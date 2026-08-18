@@ -37,8 +37,10 @@ import {
   type NormalizedAuthCaptureExtra,
 } from "../extra";
 import {
+  facilitatorAddresses,
   readPaymentStateForBalances,
   readPaymentStateOnce,
+  resolveSubmitter,
   simulateEscrowCall,
   submitEscrowCall,
 } from "./utils";
@@ -46,7 +48,7 @@ import {
 /**
  * Verify a lifecycle (capture / void / refund) payload.
  *
- * @param signer - Facilitator signer.
+ * @param signers - Facilitator signer set.
  * @param config - Facilitator config.
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
@@ -54,7 +56,7 @@ import {
  * @returns VerifyResponse.
  */
 export async function verifyLifecycle(
-  signer: FacilitatorEvmSigner,
+  signers: readonly FacilitatorEvmSigner[],
   config: AuthCaptureFacilitatorConfig | undefined,
   payload: PaymentPayload,
   requirements: PaymentRequirements,
@@ -95,7 +97,7 @@ export async function verifyLifecycle(
     payload.accepted.network,
     requirements,
     AUTH_CAPTURE_SCHEME,
-    signer.getAddresses(),
+    facilitatorAddresses(signers),
     config,
     true,
   );
@@ -103,6 +105,10 @@ export async function verifyLifecycle(
     return { isValid: false, invalidReason: common.error };
   }
   const extra = common.extra;
+  const submitter = resolveSubmitter(signers, extra);
+  if (!submitter) {
+    return { isValid: false, invalidReason: Errors.ErrOperatorNotAdmitted };
+  }
 
   if (
     (wirePayload.type === "capture" || wirePayload.type === "void") &&
@@ -146,9 +152,9 @@ export async function verifyLifecycle(
   const now = Math.floor(Date.now() / 1000);
 
   if (!wirePayload.authorizerSignature) {
-    const facilitatorControlled = signer
-      .getAddresses()
-      .some(a => isAddressEqual(a, extra.receiverAuthorizer));
+    const facilitatorControlled = facilitatorAddresses(signers).some(a =>
+      isAddressEqual(a, extra.receiverAuthorizer),
+    );
     return {
       isValid: false,
       invalidReason: facilitatorControlled
@@ -159,7 +165,7 @@ export async function verifyLifecycle(
 
   if (wirePayload.type === "capture") {
     return verifyCapturePayload(
-      signer,
+      submitter,
       extra,
       chainId,
       paymentInfo,
@@ -169,10 +175,10 @@ export async function verifyLifecycle(
     );
   }
   if (wirePayload.type === "void") {
-    return verifyVoidPayload(signer, extra, chainId, paymentInfo, paymentInfoHash, wirePayload);
+    return verifyVoidPayload(submitter, extra, chainId, paymentInfo, paymentInfoHash, wirePayload);
   }
   return verifyRefundPayload(
-    signer,
+    submitter,
     extra,
     chainId,
     paymentInfo,
@@ -185,7 +191,7 @@ export async function verifyLifecycle(
 /**
  * Re-verify and settle a lifecycle payload.
  *
- * @param signer - Facilitator signer.
+ * @param signers - Facilitator signer set.
  * @param config - Facilitator config.
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
@@ -194,14 +200,14 @@ export async function verifyLifecycle(
  * @returns SettleResponse.
  */
 export async function settleLifecycle(
-  signer: FacilitatorEvmSigner,
+  signers: readonly FacilitatorEvmSigner[],
   config: AuthCaptureFacilitatorConfig | undefined,
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureLifecyclePayload,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
-  const verification = await verifyLifecycle(signer, config, payload, requirements, wirePayload);
+  const verification = await verifyLifecycle(signers, config, payload, requirements, wirePayload);
   if (!verification.isValid) {
     return {
       success: false,
@@ -223,6 +229,16 @@ export async function settleLifecycle(
     };
   }
   const extra = parsed.extra;
+  const submitter = resolveSubmitter(signers, extra);
+  if (!submitter) {
+    return {
+      success: false,
+      errorReason: Errors.ErrOperatorNotAdmitted,
+      transaction: "",
+      network: requirements.network,
+      payer: wirePayload.paymentInfo.payer,
+    };
+  }
   const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
   const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
   const payer = wirePayload.paymentInfo.payer;
@@ -232,35 +248,41 @@ export async function settleLifecycle(
   });
 
   if (wirePayload.type === "void") {
-    const submitted = await submitEscrowCall(signer, settleTarget, "void", [tuple], { dataSuffix });
+    const submitted = await submitEscrowCall(submitter, settleTarget, "void", [tuple], {
+      dataSuffix,
+    });
     return settleResult(submitted, requirements.network, payer, "0");
   }
 
   if (wirePayload.type === "refund") {
     const amount = BigInt(wirePayload.amount);
-    const submitted = await submitEscrowCall(signer, settleTarget, "refund", [
-      tuple,
-      amount,
-      OPERATOR_REFUND_COLLECTOR_ADDRESS,
-      "0x",
-    ], { dataSuffix });
+    const submitted = await submitEscrowCall(
+      submitter,
+      settleTarget,
+      "refund",
+      [tuple, amount, OPERATOR_REFUND_COLLECTOR_ADDRESS, "0x"],
+      { dataSuffix },
+    );
     return settleResult(submitted, requirements.network, payer, amount.toString());
   }
 
   const capture = wirePayload;
   const amount = BigInt(capture.amount);
-  const captureSubmitted = await submitEscrowCall(signer, settleTarget, "capture", [
-    tuple,
-    amount,
-    capture.feeBps,
-    capture.feeReceiver,
-  ], { dataSuffix });
+  const captureSubmitted = await submitEscrowCall(
+    submitter,
+    settleTarget,
+    "capture",
+    [tuple, amount, capture.feeBps, capture.feeReceiver],
+    { dataSuffix },
+  );
   if ("error" in captureSubmitted) {
     return settleResult(captureSubmitted, requirements.network, payer, amount.toString());
   }
 
   if (capture.voidAuthorizerSignature) {
-    const voidSubmitted = await submitEscrowCall(signer, settleTarget, "void", [tuple], { dataSuffix });
+    const voidSubmitted = await submitEscrowCall(submitter, settleTarget, "void", [tuple], {
+      dataSuffix,
+    });
     if ("error" in voidSubmitted) {
       // A race that empties the hold between capture and void is capture-only success.
       const reason = voidSubmitted.error;
@@ -459,7 +481,7 @@ async function verifyCapturePayload(
     resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
     "capture",
     [tuple, amount, wirePayload.feeBps, wirePayload.feeReceiver],
-    signer.getAddresses()[0],
+    extra.captureAuthorizer,
   );
   if (captureSim !== "ok") {
     return { isValid: false, invalidReason: captureSim, payer };
@@ -470,7 +492,7 @@ async function verifyCapturePayload(
       resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
       "void",
       [tuple],
-      signer.getAddresses()[0],
+      extra.captureAuthorizer,
     );
     if (voidSim !== "ok") {
       return { isValid: false, invalidReason: voidSim, payer };
@@ -526,7 +548,7 @@ async function verifyVoidPayload(
     resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
     "void",
     [tuple],
-    signer.getAddresses()[0],
+    extra.captureAuthorizer,
   );
   if (sim !== "ok") {
     return { isValid: false, invalidReason: sim, payer };
@@ -604,7 +626,7 @@ async function verifyRefundPayload(
     resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
     "refund",
     [tuple, amount, OPERATOR_REFUND_COLLECTOR_ADDRESS, "0x"],
-    signer.getAddresses()[0],
+    extra.captureAuthorizer,
   );
   if (sim !== "ok") {
     return { isValid: false, invalidReason: sim, payer };
