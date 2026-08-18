@@ -97,7 +97,7 @@ export async function submitEscrowCall(
   target: `0x${string}`,
   functionName: "authorize" | "charge" | "capture" | "void" | "refund",
   args: readonly unknown[],
-  options?: { gas?: bigint },
+  options?: { gas?: bigint; dataSuffix?: `0x${string}` },
 ): Promise<
   { txHash: `0x${string}`; logs?: readonly Log[] } | { error: string; txHash?: `0x${string}` }
 > {
@@ -108,6 +108,7 @@ export async function submitEscrowCall(
       functionName,
       args,
       gas: options?.gas,
+      dataSuffix: options?.dataSuffix,
     });
 
     const receiptPromise = signer.waitForTransactionReceipt({ hash: txHash });
