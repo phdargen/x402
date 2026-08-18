@@ -35,6 +35,7 @@ import {
   deriveBoundSalt,
 } from "../../../src/auth-capture/nonce";
 import { paymentInfoToContractTuple } from "../../../src/auth-capture/utils";
+import { BUILDER_CODE_KEY } from "../../../src/shared/extensions";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
@@ -489,6 +490,55 @@ describe("AuthCaptureEvmScheme", () => {
       },
     };
   }
+
+  describe("settle — builder-code dataSuffix", () => {
+    const BUILDER_SUFFIX = "0xdeadbeef" as const;
+
+    function mockBuilderCodeContext() {
+      return {
+        getExtension: vi.fn().mockImplementation((key: string) => {
+          if (key === BUILDER_CODE_KEY) {
+            return {
+              key: BUILDER_CODE_KEY,
+              buildDataSuffix: vi.fn().mockReturnValue(BUILDER_SUFFIX),
+            };
+          }
+          return undefined;
+        }),
+      };
+    }
+
+    it("should append builder-code dataSuffix on collect authorize", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      await scheme.settle(buildEip3009Payload(), mockRequirements, mockBuilderCodeContext());
+
+      expect(mockSigner.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "authorize",
+          dataSuffix: BUILDER_SUFFIX,
+        }),
+      );
+    });
+
+    it("should append builder-code dataSuffix on lifecycle capture and remainder void", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({ voidAuthorizerSignature: "0xabcd" });
+      await scheme.settle(envelope, envelope.accepted, mockBuilderCodeContext());
+
+      expect(mockSigner.writeContract).toHaveBeenCalledTimes(2);
+      for (const call of mockSigner.writeContract.mock.calls) {
+        expect(call[0]).toEqual(
+          expect.objectContaining({
+            dataSuffix: BUILDER_SUFFIX,
+          }),
+        );
+      }
+      const names = mockSigner.writeContract.mock.calls.map(
+        (call: [{ functionName: string }]) => call[0].functionName,
+      );
+      expect(names).toEqual(["capture", "void"]);
+    });
+  });
 
   describe("settle — paymentFlow routing", () => {
     it("should default to authorize when paymentFlow is absent (escrow)", async () => {
