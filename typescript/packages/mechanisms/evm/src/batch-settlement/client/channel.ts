@@ -1,34 +1,12 @@
 import { decodePaymentResponseHeader } from "@x402/core/http";
-import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
+import type { PaymentRequirements } from "@x402/core/types";
 import { getAddress } from "viem";
 import type { ClientEvmSigner } from "../../signer";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS, MIN_WITHDRAW_DELAY } from "../constants";
-import type {
-  BatchSettlementPaymentRequirementsExtra,
-  BatchSettlementPaymentResponseExtra,
-  ChannelConfig,
-} from "../types";
+import type { BatchSettlementPaymentRequirementsExtra, ChannelConfig } from "../types";
 import { computeChannelId } from "../utils";
 import type { BatchSettlementClientContext, ClientChannelStorage } from "./storage";
-
-type ResponseChannelState = NonNullable<BatchSettlementPaymentResponseExtra["channelState"]>;
-
-/**
- * Reads the nested channel state from a settlement response extra object.
- *
- * @param extra - Settlement response extra fields.
- * @returns Channel state fields, or undefined when absent.
- */
-function readResponseChannelState(
-  extra: Record<string, unknown>,
-): ResponseChannelState | undefined {
-  const channelState = extra.channelState;
-  if (typeof channelState !== "object" || channelState === null) {
-    return undefined;
-  }
-  return channelState as ResponseChannelState;
-}
 
 /**
  * Runtime dependency bag shared by every storage-bound client helper (channel,
@@ -80,97 +58,145 @@ export function buildChannelConfig(
 }
 
 /**
- * Updates local channel state from a parsed `SettleResponse`.
+ * Local inputs for applying a deposit or voucher settle.
+ *
+ * `requestAmount` is the per-request maximum (`PaymentRequirements.amount`);
+ * the voucher ceiling was `chargedCumulativeAmount + requestAmount`.
+ * `depositAmount` is `payload.deposit.amount` for this payment and is added to
+ * previous local `balance` after settle. Omit it on voucher-only.
+ */
+export type ChannelSettleLocal = {
+  channelId: `0x${string}`;
+  requestAmount: string;
+  depositAmount?: string;
+};
+
+/**
+ * Updates local channel state after a deposit or voucher settle.
+ *
+ * `server.chargedAmount` is the only settle-response field used, and it is
+ * capped at `local.requestAmount`. Next cumulative is previous local
+ * `chargedCumulativeAmount` plus that charge. Next balance is previous local
+ * `balance` plus `local.depositAmount` when present; voucher-only leaves
+ * balance unchanged. Server `channelState` is not an input.
  *
  * @param storage - Client channel storage.
- * @param settle - The parsed settle response.
+ * @param input - Server-reported charge and client-owned settle inputs.
+ * @param input.server - Untrusted settlement response fields.
+ * @param input.server.chargedAmount - Untrusted `PAYMENT-RESPONSE` extra.chargedAmount.
+ * @param input.local - Client-computed channel id, request maximum, and optional deposit.
  */
-export async function processSettleResponse(
+export async function updateChannelFromSettle(
   storage: ClientChannelStorage,
-  settle: SettleResponse,
+  input: {
+    server: { chargedAmount?: string };
+    local: ChannelSettleLocal;
+  },
 ): Promise<void> {
-  const extra = settle.extra ?? {};
-  const channelState = readResponseChannelState(extra);
-  if (!channelState) return;
-
-  const channelId = channelState.channelId;
-  const key = channelId.toLowerCase();
-
-  const prev = await storage.get(key);
-  const next: BatchSettlementClientContext = { ...(prev ?? {}) };
-
-  if (channelState.chargedCumulativeAmount !== undefined) {
-    next.chargedCumulativeAmount = String(channelState.chargedCumulativeAmount);
+  const { server, local } = input;
+  let chargedAmount = 0n;
+  if (server.chargedAmount !== undefined) {
+    if (!/^\d+$/.test(server.chargedAmount)) {
+      throw new Error("invalid chargedAmount: not a non-negative integer");
+    }
+    chargedAmount = BigInt(server.chargedAmount);
   }
-  if (channelState.balance !== undefined) {
-    next.balance = String(channelState.balance);
+  const requestAmount = BigInt(local.requestAmount);
+  if (chargedAmount > requestAmount) {
+    throw new Error("settle response chargedAmount exceeds PaymentRequirements.amount");
   }
-  if (channelState.totalClaimed !== undefined) {
-    next.totalClaimed = String(channelState.totalClaimed);
+
+  const key = local.channelId.toLowerCase();
+  const previous = await storage.get(key);
+  const depositAmount = local.depositAmount === undefined ? undefined : BigInt(local.depositAmount);
+
+  if (!previous && chargedAmount === 0n && depositAmount === undefined) {
+    return;
+  }
+
+  const next: BatchSettlementClientContext = { ...(previous ?? {}) };
+  next.chargedCumulativeAmount = (
+    BigInt(previous?.chargedCumulativeAmount ?? "0") + chargedAmount
+  ).toString();
+
+  if (depositAmount !== undefined) {
+    next.balance = (BigInt(previous?.balance ?? "0") + depositAmount).toString();
   }
 
   await storage.set(key, next);
 }
 
 /**
- * Reconciles local channel state with the outcome of a cooperative refund.
+ * Updates local channel state after a cooperative refund the client signed.
  *
- * Deletes the channel record when the post-refund balance is zero (full refund),
- * otherwise updates local state from the server snapshot.
+ * Omitted `refundAmount` is a full refund: delete the local record. Otherwise
+ * the signed amount is capped to the locally expected refundable balance.
+ * Delete the record when that drains the refundable balance; otherwise subtract
+ * the effective refund from balance. Cumulative is unchanged, and server
+ * `channelState` is not an input.
  *
  * @param storage - Client channel storage.
- * @param channelKey - Lowercased channel id used as the storage key.
- * @param settleExtra - The `extra` block from the refund settle response.
+ * @param channelKey - Lowercased client-computed channel id used as the storage key.
+ * @param refundAmount - Partial refund the client signed; omit for a full refund.
  */
 export async function updateChannelAfterRefund(
   storage: ClientChannelStorage,
   channelKey: string,
-  settleExtra: Record<string, unknown>,
+  refundAmount?: string,
 ): Promise<void> {
-  const channelState = readResponseChannelState(settleExtra);
-  if (!channelState) {
+  if (refundAmount === undefined) {
     await storage.delete(channelKey);
     return;
   }
 
-  const balanceAfter =
-    channelState.balance !== undefined ? BigInt(String(channelState.balance)) : undefined;
-
-  if (balanceAfter === undefined || balanceAfter <= 0n) {
+  const amount = BigInt(refundAmount);
+  const previous = await storage.get(channelKey);
+  const previousBalance = BigInt(previous?.balance ?? "0");
+  const chargedCumulativeAmount = BigInt(previous?.chargedCumulativeAmount ?? "0");
+  const refundableBalance =
+    previousBalance > chargedCumulativeAmount ? previousBalance - chargedCumulativeAmount : 0n;
+  if (amount >= refundableBalance) {
     await storage.delete(channelKey);
     return;
   }
 
-  const prev = await storage.get(channelKey);
-  const next: BatchSettlementClientContext = { ...(prev ?? {}) };
-  next.balance = balanceAfter.toString();
-  if (channelState.chargedCumulativeAmount !== undefined) {
-    next.chargedCumulativeAmount = String(channelState.chargedCumulativeAmount);
-  }
-  if (channelState.totalClaimed !== undefined) {
-    next.totalClaimed = String(channelState.totalClaimed);
-  }
+  const next: BatchSettlementClientContext = { ...(previous ?? {}) };
+  next.balance = (previousBalance - amount).toString();
   await storage.set(channelKey, next);
 }
 
 /**
  * Processes the `PAYMENT-RESPONSE` header after a successful request.
  *
- * Decodes the header into a `SettleResponse` and delegates to
- * {@link processSettleResponse}.
+ * Decodes the untrusted header and delegates to {@link updateChannelFromSettle}
+ * with server `chargedAmount` and the caller-supplied local channel inputs.
  *
  * @param storage - Client channel storage.
  * @param getHeader - Function to retrieve a response header by name.
+ * @param local - Channel id, per-request maximum, and optional deposit from this payment.
+ * @param local.channelId - Client-computed channel id used as the storage key.
+ * @param local.requestAmount - Per-request maximum (`PaymentRequirements.amount`).
+ * @param local.depositAmount - `payload.deposit.amount` from this payment.
  */
 export async function processPaymentResponse(
   storage: ClientChannelStorage,
   getHeader: (name: string) => string | null | undefined,
+  local: ChannelSettleLocal,
 ): Promise<void> {
   const raw = getHeader("PAYMENT-RESPONSE");
   if (!raw) return;
 
   const settle = decodePaymentResponseHeader(raw);
-  await processSettleResponse(storage, settle);
+  if (!settle.success) return;
+
+  const chargedAmount = settle.extra?.chargedAmount;
+  if (chargedAmount !== undefined && typeof chargedAmount !== "string") {
+    throw new Error("invalid chargedAmount: not a non-negative integer");
+  }
+  await updateChannelFromSettle(storage, {
+    server: { chargedAmount },
+    local,
+  });
 }
 
 /**
