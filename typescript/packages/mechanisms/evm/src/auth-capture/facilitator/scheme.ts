@@ -84,7 +84,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
       extra.minFeeBps = this.config.feeTerms.minFeeBps;
       extra.maxFeeBps = this.config.feeTerms.maxFeeBps;
     }
-    if (this.config?.operators && this.config.operators.length > 0) {
+    if (this.config?.operators && this.config.operators.length > 0 && this.signer.simulateCalls) {
       extra.operators = this.config.operators;
     }
     return Object.keys(extra).length > 0 ? extra : undefined;

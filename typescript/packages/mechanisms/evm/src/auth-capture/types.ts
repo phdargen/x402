@@ -117,6 +117,13 @@ export type AuthCaptureFacilitatorConfig = {
   operators?: OperatorAllowlistEntry[];
   receiverAuthorizer?: `0x${string}`;
   /**
+   * Max gas for a custom-operator collect relay (`authorize` or `charge`).
+   * Used as the verify reject threshold and as a hard broadcast ceiling.
+   *
+   * @default DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT (1_000_000)
+   */
+  customOperatorAuthorizeGasLimit?: bigint;
+  /**
    * When true, the facilitator relays `type: "refund"` for `"delegated"`
    * operators. Requires an out-of-band funding agreement: refunds pull tokens
    * from the operator (the facilitator's submitter).
