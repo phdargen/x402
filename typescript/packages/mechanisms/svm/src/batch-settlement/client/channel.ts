@@ -56,12 +56,12 @@ export class BatchChannelTracker {
     return this.chargedCumulativeAmount;
   }
 
-  async voucher(charge: bigint, expiresAt = 0): Promise<BatchVoucher> {
+  async voucher(charge: bigint): Promise<BatchVoucher> {
     if (charge <= 0n) throw new Error("charge must be positive");
     this.chargedCumulativeAmount += charge;
     return signBatchVoucher(this.signer, {
       channelId: this.channelId,
-      expiresAt,
+      expiresAt: 0,
       maxClaimableAmount: this.chargedCumulativeAmount,
     });
   }
@@ -78,7 +78,6 @@ export interface BuildDepositArgs {
   openSlot: bigint;
   depositAmount: bigint;
   firstCharge: bigint;
-  expiresAt?: number | undefined;
   withdrawDelay: number;
   memo?: string | undefined;
 }
@@ -121,7 +120,7 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
     withdrawDelay: args.withdrawDelay,
   };
   const tracker = new BatchChannelTracker(open.channelId, channelConfig, args.payer);
-  const voucher = await tracker.voucher(args.firstCharge, args.expiresAt ?? 0);
+  const voucher = await tracker.voucher(args.firstCharge);
   return {
     channelId: open.channelId,
     payload: {

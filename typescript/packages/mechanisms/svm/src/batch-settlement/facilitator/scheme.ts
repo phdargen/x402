@@ -57,8 +57,6 @@ import {
   type BatchSettlePayload,
   isBatchFacilitatorPayload,
   isBatchPayload,
-  DEFAULT_SETTLEMENT_BUFFER_SECONDS,
-  resolveSettlementBuffer,
 } from "../types";
 const MIN_WITHDRAW_DELAY = 900;
 const MAX_WITHDRAW_DELAY = 2_592_000;
@@ -72,7 +70,6 @@ export interface BatchSvmFacilitatorConfig {
   rpcUrl?: string | undefined;
   /** Shared, facilitator-owned lifecycle index used for rent cleanup. */
   channelStorage?: PaymentChannelStorage | undefined;
-  settlementBufferSeconds?: number | undefined;
   maxPriorityFeeMicroLamports?: number | undefined;
   maxComputeUnits?: number | undefined;
   maxRequiredSignatures?: number | undefined;
@@ -84,7 +81,6 @@ type BatchTerms = {
   receiverAuthorizer?: string | undefined;
   tokenProgram: string;
   withdrawDelay: number;
-  settlementBufferSeconds: number;
   memo?: string | undefined;
 };
 
@@ -122,13 +118,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
 
   getExtra(_: Network): Record<string, unknown> {
     const addresses = this.signer.getAddresses();
-    const settlementBufferSeconds =
-      this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS;
     return {
       feePayer: addresses[Math.floor(Math.random() * addresses.length)],
-      ...(settlementBufferSeconds !== DEFAULT_SETTLEMENT_BUFFER_SECONDS
-        ? { settlementBufferSeconds }
-        : {}),
     };
   }
 
@@ -273,7 +264,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       const channelId = await this.deriveChannelId(claim.voucher.channelConfig, terms.feePayer);
       if (channelId !== claim.voucher.channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
       const cumulative = parseU64(claim.voucher.maxClaimableAmount, "maxClaimableAmount");
-      this.assertClaimExpiry(claim.voucher.expiresAt);
+      this.assertExpiry(claim.voucher.expiresAt);
       const channel = await this.fetchChannel(rpc, channelId);
       this.assertClaimChannel(channel, claim.voucher.channelConfig, terms, requirements, [
         ChannelStatus.Open,
@@ -436,11 +427,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       signerBase58: payload.channelConfig.payerAuthorizer,
     });
     if (!voucherValid) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid voucher`);
-    this.assertExpiry(
-      payload.voucher.expiresAt,
-      terms.withdrawDelay,
-      terms.settlementBufferSeconds,
-    );
+    this.assertExpiry(payload.voucher.expiresAt);
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
       authorizedSigner: payload.channelConfig.payerAuthorizer,
       feePayer: terms.feePayer,
@@ -534,11 +521,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     channelId: string,
   ): Promise<Channel> {
     const cumulative = parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount");
-    this.assertExpiry(
-      payload.voucher.expiresAt,
-      terms.withdrawDelay,
-      terms.settlementBufferSeconds,
-    );
+    this.assertExpiry(payload.voucher.expiresAt);
     const valid = await verifyVoucherSignature({
       message: encodeVoucherMessageBytes({
         channelId,
@@ -696,7 +679,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       ...(typeof receiverAuthorizer === "string" ? { receiverAuthorizer } : {}),
       tokenProgram,
       withdrawDelay,
-      settlementBufferSeconds: resolveSettlementBuffer(extra.settlementBufferSeconds),
     };
   }
 
@@ -711,18 +693,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     });
   }
 
-  private assertExpiry(expiresAt: number, withdrawDelay: number, bufferSeconds: number): void {
-    if (expiresAt === 0) return;
-    const minimum = Math.floor(Date.now() / 1000) + withdrawDelay + bufferSeconds;
-    if (!Number.isSafeInteger(expiresAt) || expiresAt < minimum) {
-      throw new Error(BatchError.EXPIRY_WINDOW_TOO_SHORT);
-    }
-  }
-
-  private assertClaimExpiry(expiresAt: number): void {
-    if (!isClaimExpiryValid(expiresAt, Math.floor(Date.now() / 1000))) {
-      throw new Error(BatchError.EXPIRY_WINDOW_TOO_SHORT);
-    }
+  private assertExpiry(expiresAt: number): void {
+    if (expiresAt !== 0) throw new Error(BatchError.VOUCHER_EXPIRY);
   }
 
   private resolveFeePayer(feePayer: string): FacilitatorSigningCapabilities {
@@ -838,10 +810,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       payer,
     };
   }
-}
-
-export function isClaimExpiryValid(expiresAt: number, now: number): boolean {
-  return expiresAt === 0 || (Number.isSafeInteger(expiresAt) && expiresAt > now);
 }
 
 export function calculateDistributionAmount(

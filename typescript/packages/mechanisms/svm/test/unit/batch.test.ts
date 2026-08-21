@@ -12,7 +12,6 @@ import {
 import {
   BatchSvmScheme as BatchFacilitatorScheme,
   calculateDistributionAmount,
-  isClaimExpiryValid,
 } from "../../src/batch-settlement/facilitator/scheme";
 import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
 import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
@@ -437,13 +436,19 @@ describe("batch-settlement SVM", () => {
       expect(facilitator.getSigners(SOLANA_DEVNET_CAIP2)).toEqual([feePayer.address]);
     });
 
-    it("advertises a non-default settlement buffer", () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
-        settlementBufferSeconds: 300,
+    it("rejects vouchers with a nonzero expiry", async () => {
+      const server = new BatchServerScheme({ store: new MemoryChannelStore() });
+      const expiring = await signedVoucher(1_000n, Math.floor(Date.now() / 1000) + 86_400);
+      const result = await server.schemeHooks.onBeforeVerify!({
+        declaredExtensions: {},
+        paymentPayload: {
+          accepted: requirements(),
+          payload: { channelConfig, type: "voucher", voucher: expiring },
+          x402Version: 2,
+        },
+        requirements: requirements(),
       });
-      expect(facilitator.getExtra(SOLANA_DEVNET_CAIP2)).toMatchObject({
-        settlementBufferSeconds: 300,
-      });
+      expect(result).toMatchObject({ abort: true, reason: BatchError.VOUCHER_EXPIRY });
     });
 
     it("rejects legacy payload shapes before touching RPC", async () => {
@@ -482,12 +487,6 @@ describe("batch-settlement SVM", () => {
         invalidReason: BatchError.CLOSE_AUTHORIZATION,
         isValid: false,
       });
-    });
-
-    it("checks only onchain expiry at claim redemption", () => {
-      expect(isClaimExpiryValid(0, 1_000)).toBe(true);
-      expect(isClaimExpiryValid(1_001, 1_000)).toBe(true);
-      expect(isClaimExpiryValid(1_000, 1_000)).toBe(false);
     });
 
     it("sums only undistributed settled amounts", () => {

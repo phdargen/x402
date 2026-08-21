@@ -34,12 +34,7 @@ import {
 } from "../../utils";
 import { BatchError } from "../errors";
 import type { BatchChannelConfig, BatchPayload, BatchVoucher } from "../types";
-import {
-  BATCH_SETTLEMENT_SCHEME,
-  DEFAULT_SETTLEMENT_BUFFER_SECONDS,
-  isBatchPayload,
-  resolveSettlementBuffer,
-} from "../types";
+import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
 import { type ChannelState, type ChannelStore, MemoryChannelStore } from "./storage";
 
 type ParsedMoney = { amount: number; stablecoin?: SvmStablecoinSymbol };
@@ -55,7 +50,6 @@ export interface BatchSvmServerConfig {
   withdrawDelay?: number | undefined;
   receiverAuthorizer?: string | undefined;
   store?: ChannelStore | undefined;
-  settlementBufferSeconds?: number | undefined;
   /** Resolve the application response cached under a replayed commitment. */
   getReplayResponse?:
     | ((commitment: {
@@ -139,16 +133,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (withdrawDelay > MAX_WITHDRAW_DELAY) {
       throw new Error(BatchError.WITHDRAW_DELAY_OUT_OF_RANGE);
     }
-    const settlementBufferSeconds =
-      this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS;
     return Promise.resolve({
       ...paymentRequirements,
       extra: {
         ...paymentRequirements.extra,
         ...supportedKind.extra,
-        ...(settlementBufferSeconds !== DEFAULT_SETTLEMENT_BUFFER_SECONDS
-          ? { settlementBufferSeconds }
-          : {}),
         tokenProgram: getStablecoinTokenProgram(
           paymentRequirements.asset,
           paymentRequirements.network,
@@ -434,11 +423,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     });
     if (raw.type === "deposit" || raw.type === "voucher") {
       if (raw.voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
-      this.assertExpiry(
-        raw.voucher,
-        raw.channelConfig.withdrawDelay,
-        resolveSettlementBuffer(extra.settlementBufferSeconds),
-      );
+      this.assertExpiry(raw.voucher);
       const valid = await verifyVoucherSignature({
         message: encodeVoucherMessageBytes({
           channelId,
@@ -453,12 +438,8 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return channelId;
   }
 
-  private assertExpiry(voucher: BatchVoucher, withdrawDelay: number, bufferSeconds: number): void {
-    if (voucher.expiresAt === 0) return;
-    const minimum = Math.floor(Date.now() / 1000) + withdrawDelay + bufferSeconds;
-    if (!Number.isSafeInteger(voucher.expiresAt) || voucher.expiresAt < minimum) {
-      throw new Error(BatchError.EXPIRY_WINDOW_TOO_SHORT);
-    }
+  private assertExpiry(voucher: BatchVoucher): void {
+    if (voucher.expiresAt !== 0) throw new Error(BatchError.VOUCHER_EXPIRY);
   }
 
   private provisionalState(
