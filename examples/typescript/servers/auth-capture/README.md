@@ -37,17 +37,9 @@ Funds are held in escrow during the request, but the after-handler facilitator s
 
 ### Custom escrow (collect-only)
 
-`extra.captureAuthorizer` is a deployed custom operator (for example via `contracts/evm/tmp/deploy-captureauth.sh`, which wraps the canonical `AuthCaptureEscrow` collect entry points). The facilitator relays only the collect `authorize`; capture/void/refund happen on the operator contract outside x402.
+`extra.captureAuthorizer` is a deployed custom operator. The facilitator relays only the collect `authorize`; capture/void/refund happen on the operator contract outside x402.
 
-Deploy on Base Sepolia:
-
-```bash
-cd ../../../../contracts/evm
-cp .env.example .env   # set EVM_PRIVATE_KEY
-./tmp/deploy-captureauth.sh
-```
-
-Set `CUSTOM_OPERATOR_ADDRESS` to the deployed address. The example facilitator allowlists all custom operators for local testing.
+Set `CUSTOM_OPERATOR_ADDRESS` to that operator. The example facilitator allowlists all custom operators for local testing.
 
 ## Prerequisites
 

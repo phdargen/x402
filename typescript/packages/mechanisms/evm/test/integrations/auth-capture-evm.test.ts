@@ -91,10 +91,12 @@ function buildAuthCaptureRequirements(
   overrides: Partial<AuthCaptureExtra> = {},
 ): PaymentRequirements {
   const now = Math.floor(Date.now() / 1000);
+  // captureDeadline must stay >= now + maxTimeoutSeconds through verify+settle
+  // (client preApprovalExpiry is now + maxTimeoutSeconds at payload creation).
   const extra: AuthCaptureExtra = {
     captureAuthorizer,
-    captureDeadline: now + 3600,
-    refundDeadline: now + 7200,
+    captureDeadline: now + 7200,
+    refundDeadline: now + 14400,
     feeRecipient: captureAuthorizer,
     minFeeBps: 0,
     maxFeeBps: 100,
@@ -213,10 +215,7 @@ describe("AuthCapture EVM Integration Tests", () => {
         const accepted = server.findMatchingRequirements(accepts, payload);
         expect(accepted).toBeDefined();
 
-        const verifyResponse = await server.verifyPayment(payload, accepted!);
-        expect(verifyResponse.isValid, JSON.stringify(verifyResponse)).toBe(true);
-        expect(verifyResponse.payer?.toLowerCase()).toBe(clientAddress.toLowerCase());
-
+        // Escrow flow skips facilitator /verify (settle-before-handler). Authorize is settle.
         const settleResponse = await server.settlePayment(payload, accepted!);
         expect(settleResponse.success, JSON.stringify(settleResponse)).toBe(true);
         expect(settleResponse.network).toBe(NETWORK);
@@ -274,9 +273,6 @@ describe("AuthCapture EVM Integration Tests", () => {
         const paymentRequired = await server.createPaymentRequiredResponse(accepts, resource);
         const payload = await client.createPaymentPayload(paymentRequired);
         const accepted = server.findMatchingRequirements(accepts, payload);
-
-        const verifyResponse = await server.verifyPayment(payload, accepted!);
-        expect(verifyResponse.isValid, JSON.stringify(verifyResponse)).toBe(true);
 
         const settleResponse = await server.settlePayment(payload, accepted!);
         expect(settleResponse.success, JSON.stringify(settleResponse)).toBe(true);
