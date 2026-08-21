@@ -15,7 +15,7 @@ import type {
 } from "@x402/core/types";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { VerifiedPaymentCanceledContext } from "@x402/core/server";
-import { convertToTokenAmount, numberToDecimalString, parseMoney } from "@x402/core/utils";
+import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
 import { getAddress, isAddressEqual } from "viem";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
@@ -363,9 +363,9 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
    * @param symbol - Optional ticker from a suffixed price.
    * @returns Resolved `AssetAmount` with the network's default asset.
    */
-  private defaultMoneyConversion(amount: number, network: Network, symbol?: string): AssetAmount {
+  private defaultMoneyConversion(amount: string, network: Network, symbol?: string): AssetAmount {
     const assetInfo = getDefaultAsset(network, symbol);
-    const tokenAmount = convertToTokenAmount(numberToDecimalString(amount), assetInfo.decimals);
+    const tokenAmount = convertToTokenAmount(amount, assetInfo.decimals);
     const includeEip712Domain = !assetInfo.assetTransferMethod || assetInfo.supportsEip2612;
     return {
       asset: assetInfo.asset,
