@@ -57,10 +57,11 @@ import {
   type BatchSettlePayload,
   isBatchFacilitatorPayload,
   isBatchPayload,
+  DEFAULT_SETTLEMENT_BUFFER_SECONDS,
+  resolveSettlementBuffer,
 } from "../types";
 const MIN_WITHDRAW_DELAY = 900;
 const MAX_WITHDRAW_DELAY = 2_592_000;
-const DEFAULT_SETTLEMENT_BUFFER_SECONDS = 60;
 const CHANNEL_READ_ATTEMPTS = 5;
 const CHANNEL_READ_INITIAL_BACKOFF_MS = 200;
 
@@ -83,6 +84,7 @@ type BatchTerms = {
   receiverAuthorizer?: string | undefined;
   tokenProgram: string;
   withdrawDelay: number;
+  settlementBufferSeconds: number;
   memo?: string | undefined;
 };
 
@@ -120,9 +122,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
 
   getExtra(_: Network): Record<string, unknown> {
     const addresses = this.signer.getAddresses();
+    const settlementBufferSeconds =
+      this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS;
     return {
       feePayer: addresses[Math.floor(Math.random() * addresses.length)],
-      paymentFlow: "escrow",
+      ...(settlementBufferSeconds !== DEFAULT_SETTLEMENT_BUFFER_SECONDS
+        ? { settlementBufferSeconds }
+        : {}),
     };
   }
 
@@ -430,7 +436,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       signerBase58: payload.channelConfig.payerAuthorizer,
     });
     if (!voucherValid) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid voucher`);
-    this.assertExpiry(payload.voucher.expiresAt, terms.withdrawDelay);
+    this.assertExpiry(
+      payload.voucher.expiresAt,
+      terms.withdrawDelay,
+      terms.settlementBufferSeconds,
+    );
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
       authorizedSigner: payload.channelConfig.payerAuthorizer,
       feePayer: terms.feePayer,
@@ -524,7 +534,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     channelId: string,
   ): Promise<Channel> {
     const cumulative = parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount");
-    this.assertExpiry(payload.voucher.expiresAt, terms.withdrawDelay);
+    this.assertExpiry(
+      payload.voucher.expiresAt,
+      terms.withdrawDelay,
+      terms.settlementBufferSeconds,
+    );
     const valid = await verifyVoucherSignature({
       message: encodeVoucherMessageBytes({
         channelId,
@@ -635,7 +649,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
   ): Promise<BatchTerms> {
     const extra = requirements.extra;
-    if (extra?.paymentFlow !== "escrow") throw new Error(BatchError.PAYMENT_FLOW);
+    if (!extra || (extra.paymentFlow !== undefined && extra.paymentFlow !== "authorization")) {
+      throw new Error(BatchError.PAYMENT_FLOW);
+    }
     const feePayer = extra.feePayer;
     if (typeof feePayer !== "string") throw new Error(BatchError.FEE_PAYER_MISMATCH);
     const feePayerSigner = this.resolveFeePayer(feePayer);
@@ -680,6 +696,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       ...(typeof receiverAuthorizer === "string" ? { receiverAuthorizer } : {}),
       tokenProgram,
       withdrawDelay,
+      settlementBufferSeconds: resolveSettlementBuffer(extra.settlementBufferSeconds),
     };
   }
 
@@ -694,12 +711,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     });
   }
 
-  private assertExpiry(expiresAt: number, withdrawDelay: number): void {
+  private assertExpiry(expiresAt: number, withdrawDelay: number, bufferSeconds: number): void {
     if (expiresAt === 0) return;
-    const minimum =
-      Math.floor(Date.now() / 1000) +
-      withdrawDelay +
-      (this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS);
+    const minimum = Math.floor(Date.now() / 1000) + withdrawDelay + bufferSeconds;
     if (!Number.isSafeInteger(expiresAt) || expiresAt < minimum) {
       throw new Error(BatchError.EXPIRY_WINDOW_TOO_SHORT);
     }

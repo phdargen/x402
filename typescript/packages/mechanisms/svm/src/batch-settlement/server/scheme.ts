@@ -34,7 +34,12 @@ import {
 } from "../../utils";
 import { BatchError } from "../errors";
 import type { BatchChannelConfig, BatchPayload, BatchVoucher } from "../types";
-import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
+import {
+  BATCH_SETTLEMENT_SCHEME,
+  DEFAULT_SETTLEMENT_BUFFER_SECONDS,
+  isBatchPayload,
+  resolveSettlementBuffer,
+} from "../types";
 import { type ChannelState, type ChannelStore, MemoryChannelStore } from "./storage";
 
 type ParsedMoney = { amount: number; stablecoin?: SvmStablecoinSymbol };
@@ -44,7 +49,6 @@ type RequestContext = { channelId: string; pendingId?: string; replay?: boolean 
 const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
 const MIN_WITHDRAW_DELAY = 900;
 const MAX_WITHDRAW_DELAY = 2_592_000;
-const DEFAULT_SETTLEMENT_BUFFER_SECONDS = 60;
 const CHANNEL_BUSY = "duplicate_settlement";
 
 export interface BatchSvmServerConfig {
@@ -72,7 +76,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   readonly defaultAssetTransferMethod = "channel";
   readonly paymentFlows = {
-    channel: { default: "escrow", supported: ["escrow"] },
+    channel: { default: "authorization", supported: ["authorization"] },
   } as const satisfies Record<string, PaymentFlowConfig>;
   readonly dynamicExtraFields = ["recentBlockhash", "recentSlot"];
   readonly schemeHooks: SchemeServerHooks;
@@ -135,12 +139,16 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (withdrawDelay > MAX_WITHDRAW_DELAY) {
       throw new Error(BatchError.WITHDRAW_DELAY_OUT_OF_RANGE);
     }
+    const settlementBufferSeconds =
+      this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS;
     return Promise.resolve({
       ...paymentRequirements,
       extra: {
         ...paymentRequirements.extra,
         ...supportedKind.extra,
-        paymentFlow: "escrow",
+        ...(settlementBufferSeconds !== DEFAULT_SETTLEMENT_BUFFER_SECONDS
+          ? { settlementBufferSeconds }
+          : {}),
         tokenProgram: getStablecoinTokenProgram(
           paymentRequirements.asset,
           paymentRequirements.network,
@@ -272,7 +280,6 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   > {
     const raw = ctx.paymentPayload.payload;
     if (!isBatchPayload(raw) || raw.type === "refund") return;
-    if (raw.type === "deposit" && ctx.phase === "before-handler") return;
 
     const request = this.requestContexts.get(ctx.paymentPayload);
     if (request?.replay) {
@@ -287,9 +294,10 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       return this.abort(CHANNEL_BUSY, "reservation changed");
     }
 
-    if (ctx.phase === "before-handler") {
-      return { skip: true, result: acceptedResponse(state, ctx.requirements, false) };
-    }
+    // Deposits go to the facilitator, which broadcasts the open/top_up
+    // transaction in this post-handler settle; the voucher commits in
+    // afterSettle once the deposit succeeds.
+    if (raw.type === "deposit") return;
 
     try {
       const committed = await this.store.update(request.channelId, current => {
@@ -321,7 +329,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     const request = this.requestContexts.get(ctx.paymentPayload);
     if (!request?.pendingId) return;
 
-    if (raw.type === "deposit" && ctx.phase === "before-handler") {
+    if (raw.type === "deposit") {
       await this.store.update(request.channelId, current => {
         if (!current || current.pendingRequest?.id !== request.pendingId) {
           throw new Error(CHANNEL_BUSY);
@@ -330,8 +338,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
           ...current,
           openSignature: ctx.result.transaction,
           settled: BigInt(readChannelState(ctx.result).totalClaimed),
+          chargedCumulativeAmount: BigInt(raw.voucher.maxClaimableAmount),
+          highestVoucherExpiresAt: raw.voucher.expiresAt,
+          highestVoucherSignature: raw.voucher.signature,
+          signedMaxClaimable: BigInt(raw.voucher.maxClaimableAmount),
+          pendingRequest: undefined,
         };
       });
+      this.requestContexts.delete(ctx.paymentPayload);
       return;
     }
 
@@ -377,7 +391,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     requirements: PaymentRequirements,
   ): Promise<string> {
     const extra = requirements.extra;
-    if (extra?.paymentFlow !== "escrow") throw new Error(BatchError.PAYMENT_FLOW);
+    if (!extra || (extra.paymentFlow !== undefined && extra.paymentFlow !== "authorization")) {
+      throw new Error(BatchError.PAYMENT_FLOW);
+    }
     if (typeof extra.feePayer !== "string") throw new Error(BatchError.FEE_PAYER_MISMATCH);
     if (
       raw.channelConfig.payer === extra.feePayer ||
@@ -418,7 +434,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     });
     if (raw.type === "deposit" || raw.type === "voucher") {
       if (raw.voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
-      this.assertExpiry(raw.voucher, raw.channelConfig.withdrawDelay);
+      this.assertExpiry(
+        raw.voucher,
+        raw.channelConfig.withdrawDelay,
+        resolveSettlementBuffer(extra.settlementBufferSeconds),
+      );
       const valid = await verifyVoucherSignature({
         message: encodeVoucherMessageBytes({
           channelId,
@@ -433,12 +453,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return channelId;
   }
 
-  private assertExpiry(voucher: BatchVoucher, withdrawDelay: number): void {
+  private assertExpiry(voucher: BatchVoucher, withdrawDelay: number, bufferSeconds: number): void {
     if (voucher.expiresAt === 0) return;
-    const minimum =
-      Math.floor(Date.now() / 1000) +
-      withdrawDelay +
-      (this.config.settlementBufferSeconds ?? DEFAULT_SETTLEMENT_BUFFER_SECONDS);
+    const minimum = Math.floor(Date.now() / 1000) + withdrawDelay + bufferSeconds;
     if (!Number.isSafeInteger(voucher.expiresAt) || voucher.expiresAt < minimum) {
       throw new Error(BatchError.EXPIRY_WINDOW_TOO_SHORT);
     }

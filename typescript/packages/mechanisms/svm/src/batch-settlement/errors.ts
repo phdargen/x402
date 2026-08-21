@@ -16,6 +16,7 @@ export const BatchError = {
   CUMULATIVE_AMOUNT_MISMATCH: `${PREFIX}cumulative_amount_mismatch`,
   CUMULATIVE_EXCEEDS_DEPOSIT: `${PREFIX}cumulative_exceeds_deposit`,
   EXPIRY_WINDOW_TOO_SHORT: `${PREFIX}expiry_window_too_short`,
+  SETTLEMENT_BUFFER: `${PREFIX}settlement_buffer`,
   SETUP_TRANSACTION: `${PREFIX}setup_transaction`,
   SETTLEMENT_SIMULATION: `${PREFIX}settlement_simulation`,
   CHANNEL_STATE: `${PREFIX}channel_state`,

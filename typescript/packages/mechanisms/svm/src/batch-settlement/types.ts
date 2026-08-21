@@ -1,13 +1,35 @@
 /* eslint-disable jsdoc/require-jsdoc */
 /** Wire types for the SVM `batch-settlement` scheme. */
 
+import { BatchError } from "./errors";
+
 export const BATCH_SETTLEMENT_SCHEME = "batch-settlement";
 
+/** Default voucher-expiry settlement margin (seconds) when none is advertised. */
+export const DEFAULT_SETTLEMENT_BUFFER_SECONDS = 60;
+
+/**
+ * Resolve the effective voucher-expiry settlement buffer from the advertised
+ * `extra.settlementBufferSeconds`. Enforcers MUST NOT require a larger margin
+ * than the advertised value (or its default of 60 when absent).
+ *
+ * @param advertised - Raw `extra.settlementBufferSeconds` from the requirements
+ * @returns The effective buffer in seconds
+ */
+export function resolveSettlementBuffer(advertised: unknown): number {
+  if (advertised === undefined) return DEFAULT_SETTLEMENT_BUFFER_SECONDS;
+  if (typeof advertised !== "number" || !Number.isSafeInteger(advertised) || advertised <= 0) {
+    throw new Error(BatchError.SETTLEMENT_BUFFER);
+  }
+  return advertised;
+}
+
 export type BatchExtra = {
-  paymentFlow: "escrow";
+  paymentFlow?: "authorization" | undefined;
   feePayer: string;
   receiverAuthorizer?: string | undefined;
   withdrawDelay: number;
+  settlementBufferSeconds?: number | undefined;
   tokenProgram: string;
   memo?: string | undefined;
   recentBlockhash?: string | undefined;

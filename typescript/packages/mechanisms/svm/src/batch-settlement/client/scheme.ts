@@ -133,7 +133,10 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     memo?: string | undefined;
   }> {
     const extra = requirements.extra;
-    if (extra?.paymentFlow !== "escrow") throw new Error("extra.paymentFlow must be escrow");
+    if (!extra) throw new Error("requirements.extra is required");
+    if (extra.paymentFlow !== undefined && extra.paymentFlow !== "authorization") {
+      throw new Error('extra.paymentFlow must be "authorization" when present');
+    }
     const feePayer = extra.feePayer;
     if (typeof feePayer !== "string" || feePayer.length === 0) {
       throw new Error("extra.feePayer must be a non-empty string");

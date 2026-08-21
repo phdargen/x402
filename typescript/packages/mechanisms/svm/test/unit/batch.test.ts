@@ -79,7 +79,6 @@ function requirements(amount = "1000"): PaymentRequirements {
     asset: MINT,
     extra: {
       feePayer: feePayer.address,
-      paymentFlow: "escrow",
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: WITHDRAW_DELAY,
     },
@@ -131,12 +130,12 @@ describe("batch-settlement SVM", () => {
       });
     });
 
-    it("publishes the escrow/channel requirements", async () => {
+    it("publishes the authorization/channel requirements", async () => {
       const server = new BatchServerScheme({ withdrawDelay: 1_200 });
       const enhanced = await server.enhancePaymentRequirements(
         requirements(),
         {
-          extra: { feePayer: feePayer.address, paymentFlow: "escrow" },
+          extra: { feePayer: feePayer.address },
           network: SOLANA_DEVNET_CAIP2,
           scheme: "batch-settlement",
           x402Version: 2,
@@ -144,16 +143,16 @@ describe("batch-settlement SVM", () => {
         [],
       );
       expect(server.defaultAssetTransferMethod).toBe("channel");
-      expect(server.paymentFlows.channel.default).toBe("escrow");
+      expect(server.paymentFlows.channel.default).toBe("authorization");
       expect(enhanced.extra).toMatchObject({
         feePayer: feePayer.address,
-        paymentFlow: "escrow",
         tokenProgram: TOKEN_PROGRAM_ADDRESS,
         withdrawDelay: 1_200,
       });
+      expect(enhanced.extra).not.toHaveProperty("paymentFlow");
     });
 
-    it("commits the first voucher only after the handler succeeds", async () => {
+    it("broadcasts the deposit and commits its voucher only in the post-handler settle", async () => {
       const store = new MemoryChannelStore();
       const server = new BatchServerScheme({ store });
       const voucher = await signedVoucher(1_000n);
@@ -183,9 +182,16 @@ describe("batch-settlement SVM", () => {
         chargedCumulativeAmount: 0n,
         pendingRequest: { maxClaimableAmount: 1_000n },
       });
+
+      const forwarded = await server.schemeHooks.onBeforeSettle!({
+        ...verifyContext,
+        phase: "after-handler",
+      });
+      expect(forwarded).toBeUndefined();
+
       await server.schemeHooks.onAfterSettle!({
         ...verifyContext,
-        phase: "before-handler",
+        phase: "after-handler",
         result: {
           extra: { channelState: { totalClaimed: "0", withdrawRequestedAt: 0 } },
           network: SOLANA_DEVNET_CAIP2,
@@ -194,27 +200,8 @@ describe("batch-settlement SVM", () => {
         },
       });
       expect(await store.get(channelId)).toMatchObject({
-        chargedCumulativeAmount: 0n,
-        openSignature: "open-signature",
-      });
-
-      const settled = await server.schemeHooks.onBeforeSettle!({
-        ...verifyContext,
-        phase: "after-handler",
-      });
-      expect(settled).toMatchObject({
-        result: {
-          extra: {
-            channelState: { chargedCumulativeAmount: "1000" },
-            chargedAmount: "1000",
-          },
-          success: true,
-          transaction: "",
-        },
-        skip: true,
-      });
-      expect(await store.get(channelId)).toMatchObject({
         chargedCumulativeAmount: 1_000n,
+        openSignature: "open-signature",
         pendingRequest: undefined,
         signedMaxClaimable: 1_000n,
       });
@@ -442,13 +429,21 @@ describe("batch-settlement SVM", () => {
   });
 
   describe("facilitator registration surface", () => {
-    it("advertises only the escrow flow and one managed fee payer", () => {
+    it("advertises one managed fee payer without a paymentFlow override", () => {
       const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
       expect(facilitator.getExtra(SOLANA_DEVNET_CAIP2)).toEqual({
         feePayer: feePayer.address,
-        paymentFlow: "escrow",
       });
       expect(facilitator.getSigners(SOLANA_DEVNET_CAIP2)).toEqual([feePayer.address]);
+    });
+
+    it("advertises a non-default settlement buffer", () => {
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        settlementBufferSeconds: 300,
+      });
+      expect(facilitator.getExtra(SOLANA_DEVNET_CAIP2)).toMatchObject({
+        settlementBufferSeconds: 300,
+      });
     });
 
     it("rejects legacy payload shapes before touching RPC", async () => {
