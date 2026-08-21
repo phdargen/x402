@@ -1714,6 +1714,31 @@ describe("auth-capture paymentState reads", () => {
       expect(signer.readContract).toHaveBeenCalledTimes(2);
     });
 
+    it("should retry stale zero balances after charge until RPC catches up", async () => {
+      let calls = 0;
+      const signer = createSigner(async () => {
+        calls += 1;
+        if (calls === 1) {
+          return { hasCollectedPayment: false, capturableAmount: 0n, refundableAmount: 0n };
+        }
+        return { hasCollectedPayment: true, capturableAmount: 0n, refundableAmount: 10000n };
+      });
+
+      const resultPromise = readPaymentStateForBalances(
+        signer,
+        "0x1234567890123456789012345678901234567890123456789012345678901234",
+        0n,
+        10000n,
+      );
+      await vi.advanceTimersByTimeAsync(PAYMENT_STATE_RETRY_DELAYS_MS[0]!);
+      const result = await resultPromise;
+
+      expect(result.state?.refundableAmount).toBe(10000n);
+      expect(result.readFailed).toBe(false);
+      expect(result.attempts).toBe(2);
+      expect(signer.readContract).toHaveBeenCalledTimes(2);
+    });
+
     it("should stop retrying when balances genuinely mismatch", async () => {
       const signer = createSigner(async () => ({
         hasCollectedPayment: true,

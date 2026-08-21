@@ -32,7 +32,7 @@ if (!facilitatorUrl) {
 
 if (!customOperatorAddress || !/^0x[0-9a-fA-F]{40}$/.test(customOperatorAddress)) {
   console.error(
-    "Missing or invalid CUSTOM_OPERATOR_ADDRESS (deploy x402AuthCaptureOperator and allowlist it on the facilitator)",
+    "Missing or invalid CUSTOM_OPERATOR_ADDRESS (deploy a custom operator and allowlist it on the facilitator)",
   );
   process.exit(1);
 }

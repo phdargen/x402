@@ -286,15 +286,24 @@ function paymentStateBalancesMatch(
 }
 
 /**
- * Detect empty paymentState that likely reflects RPC index lag after authorize.
+ * Detect empty paymentState that likely reflects RPC index lag after collect.
+ *
+ * Authorize expects a capturable hold; charge expects a refundable balance.
+ * Public RPCs often still return the uncollected zero struct right after the
+ * receipt, so both cases retry rather than treating zeros as a genuine mismatch.
  *
  * @param state - Escrow paymentState read from chain.
  * @param expectedCapturable - Signed expected capturable balance.
- * @returns True when the read looks like a stale zero state despite an expected hold.
+ * @param expectedRefundable - Signed expected refundable balance.
+ * @returns True when the read looks like a stale zero state despite an expected collect.
  */
-function isLikelyStalePaymentState(state: PaymentState, expectedCapturable: bigint): boolean {
+function isLikelyStalePaymentState(
+  state: PaymentState,
+  expectedCapturable: bigint,
+  expectedRefundable: bigint,
+): boolean {
   return (
-    expectedCapturable > 0n &&
+    (expectedCapturable > 0n || expectedRefundable > 0n) &&
     !state.hasCollectedPayment &&
     state.capturableAmount === 0n &&
     state.refundableAmount === 0n
@@ -302,7 +311,7 @@ function isLikelyStalePaymentState(state: PaymentState, expectedCapturable: bigi
 }
 
 /**
- * Read paymentState with exponential backoff when the RPC may not yet reflect a fresh authorize.
+ * Read paymentState with exponential backoff when the RPC may not yet reflect a fresh collect.
  *
  * @param signer - Facilitator signer.
  * @param paymentInfoHash - Escrow payment identifier.
@@ -323,7 +332,7 @@ export async function readPaymentStateForBalances(
       return { state, readFailed: false, attempts: attempt + 1 };
     }
 
-    if (state && !isLikelyStalePaymentState(state, expectedCapturable)) {
+    if (state && !isLikelyStalePaymentState(state, expectedCapturable, expectedRefundable)) {
       return { state, readFailed: false, attempts: attempt + 1 };
     }
 
