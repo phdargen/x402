@@ -194,6 +194,25 @@
         "bazaar"
       ]
     },
+    "/exact/evm/permit2/upfront": {
+      "scheme": "exact",
+      "assetTransferMethod": "permit2",
+      "sdks": [
+        "typescript"
+      ],
+      "paymentFlow": "upfront",
+      "schemeOptions": {
+        "permit2Direct": true
+      },
+      "price": {
+        "amount": "1000",
+        "assetRef": "permit2",
+        "permit2Domain": true
+      },
+      "extensions": [
+        "bazaar"
+      ]
+    },
     "/exact/evm/permit2-eip2612GasSponsoring": {
       "scheme": "exact",
       "assetTransferMethod": "permit2",
