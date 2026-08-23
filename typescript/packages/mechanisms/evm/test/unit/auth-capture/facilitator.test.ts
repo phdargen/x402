@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ContractFunctionExecutionError,
   ContractFunctionRevertedError,
+  decodeFunctionData,
   encodeAbiParameters,
   encodeEventTopics,
   encodeErrorResult,
   getAddress,
   hexToBigInt,
+  serializeErc6492Signature,
   type Log,
   zeroAddress,
 } from "viem";
@@ -20,7 +22,11 @@ import {
   readPaymentStateOnce,
   selectSubmitter,
 } from "../../../src/auth-capture/facilitator/utils";
-import { ESCROW_EVENTS_ABI, PAYMENT_INFO_COMPONENTS } from "../../../src/auth-capture/abi";
+import {
+  ESCROW_ABI_WITH_ERRORS,
+  ESCROW_EVENTS_ABI,
+  PAYMENT_INFO_COMPONENTS,
+} from "../../../src/auth-capture/abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
   DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
@@ -166,10 +172,16 @@ describe("AuthCaptureEvmScheme", () => {
     receiverDelta?: bigint;
     feeReceiverDelta?: bigint;
     facilitatorDelta?: bigint;
+    settledPayerDelta?: bigint;
+    settledTokenStoreDelta?: bigint;
+    settledReceiverDelta?: bigint;
+    settledFeeReceiverDelta?: bigint;
+    settledFacilitatorDelta?: bigint;
     facilitatorAddress?: `0x${string}`;
     feeBps?: number;
     feeReceiver?: `0x${string}`;
     receiptLogs?: Log[];
+    rejectDataSuffix?: `0x${string}`;
   }) {
     const amount = opts.amount ?? BigInt("1000000");
     const tokenCollector = opts.tokenCollector ?? EIP3009_TOKEN_COLLECTOR_ADDRESS;
@@ -211,7 +223,13 @@ describe("AuthCaptureEvmScheme", () => {
     const receiverDelta = opts.receiverDelta ?? (functionName === "charge" ? amount - fee : 0n);
     const feeReceiverDelta = opts.feeReceiverDelta ?? fee;
     const facilitatorDelta = opts.facilitatorDelta ?? 0n;
+    const settledPayerDelta = opts.settledPayerDelta ?? payerDelta;
+    const settledTokenStoreDelta = opts.settledTokenStoreDelta ?? tokenStoreDelta;
+    const settledReceiverDelta = opts.settledReceiverDelta ?? receiverDelta;
+    const settledFeeReceiverDelta = opts.settledFeeReceiverDelta ?? feeReceiverDelta;
+    const settledFacilitatorDelta = opts.settledFacilitatorDelta ?? facilitatorDelta;
     const facilitatorAddress = opts.facilitatorAddress ?? FACILITATOR_EOA;
+    let settled = false;
 
     mockSigner.simulateCalls = vi.fn().mockImplementation(async ({ calls }) => {
       const forwardedIndex = calls.findIndex(
@@ -225,6 +243,13 @@ describe("AuthCaptureEvmScheme", () => {
           if (call.data && !call.functionName) {
             if (opts.forwardedStatus === "failure") {
               return { status: "failure" as const };
+            }
+            if (opts.rejectDataSuffix && call.data.endsWith(opts.rejectDataSuffix.slice(2))) {
+              return {
+                status: "success" as const,
+                logs: [],
+                gasUsed: opts.gasUsed ?? 100_000n,
+              };
             }
             return {
               status: "success" as const,
@@ -270,8 +295,12 @@ describe("AuthCaptureEvmScheme", () => {
       return { results };
     });
 
+    mockSigner.writeContract.mockImplementation(async () => {
+      settled = true;
+      return "0xabcdef1234567890" as `0x${string}`;
+    });
     mockSigner.readContract.mockImplementation(
-      async (args: { functionName: string; address?: string }) => {
+      async (args: { functionName: string; address?: string; args?: readonly unknown[] }) => {
         if (args.functionName === "getTokenStore") return TOKEN_STORE;
         if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
         if (args.functionName === "paymentState") {
@@ -280,6 +309,26 @@ describe("AuthCaptureEvmScheme", () => {
             capturableAmount: functionName === "authorize" ? amount : 0n,
             refundableAmount: functionName === "charge" ? amount : 0n,
           };
+        }
+        if (args.functionName === "balanceOf") {
+          const account = (args.args?.[0] as string).toLowerCase();
+          let base = INITIAL_BALANCE;
+          if (account === TOKEN_STORE.toLowerCase()) base = 0n;
+          if (account === PAY_TO.toLowerCase()) base = 0n;
+          if (account === FEE_RECIPIENT.toLowerCase()) base = 0n;
+          if (!settled) return base;
+          if (account === TOKEN_STORE.toLowerCase()) return base + settledTokenStoreDelta;
+          if (account === PAYER.toLowerCase()) return base + settledPayerDelta;
+          if (account === facilitatorAddress.toLowerCase()) {
+            return base + settledFacilitatorDelta;
+          }
+          if (account === PAY_TO.toLowerCase() && functionName === "charge") {
+            return base + settledReceiverDelta;
+          }
+          if (account === FEE_RECIPIENT.toLowerCase() && functionName === "charge") {
+            return base + settledFeeReceiverDelta;
+          }
+          return base;
         }
         return INITIAL_BALANCE;
       },
@@ -526,6 +575,48 @@ describe("AuthCaptureEvmScheme", () => {
       );
     });
 
+    it("should include builder-code dataSuffix in custom-operator simulation", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const envelope = buildEip3009Payload(CUSTOM_OPERATOR);
+      const requirements = customOperatorRequirements();
+      const context = mockBuilderCodeContext();
+      const verification = await scheme.verify(envelope, requirements, context);
+      const result = await scheme.settle(envelope, requirements, context);
+
+      expect(verification.isValid).toBe(true);
+      expect(result.success).toBe(true);
+      for (const call of mockSigner.simulateCalls.mock.calls) {
+        const simulation = call[0] as {
+          calls: readonly { data?: `0x${string}`; functionName?: string }[];
+        };
+        const forwarded = simulation.calls.find(item => item.data && !item.functionName);
+        expect(forwarded?.data?.endsWith(BUILDER_SUFFIX.slice(2))).toBe(true);
+      }
+      expect(mockSigner.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({ dataSuffix: BUILDER_SUFFIX }),
+      );
+    });
+
+    it("should reject a custom operator that changes behavior for suffixed calldata", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        rejectDataSuffix: BUILDER_SUFFIX,
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.settle(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+        mockBuilderCodeContext(),
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
+      expect(mockSigner.writeContract).not.toHaveBeenCalled();
+    });
+
     it("should append builder-code dataSuffix on lifecycle capture and remainder void", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       const envelope = buildCapturePayload({ voidAuthorizerSignature: "0xabcd" });
@@ -664,6 +755,35 @@ describe("AuthCaptureEvmScheme", () => {
       expect(call.functionName).toBe("authorize");
       expect(call.args).toHaveLength(4);
       expect(call.args[2]).toBe(PERMIT2_TOKEN_COLLECTOR_ADDRESS);
+    });
+
+    it("should forward raw ERC-6492 collectorData while verifying its inner signature", async () => {
+      const wrappedSignature = serializeErc6492Signature({
+        address: "0xca11bde05977b3631167028862be2a173976ca11",
+        data: "0xdeadbeef",
+        signature: "0xabcd",
+      });
+      const envelope = buildEip3009Payload(CUSTOM_OPERATOR);
+      envelope.payload.signature = wrappedSignature;
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({ paymentInfo });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+
+      const result = await scheme.settle(envelope, customOperatorRequirements());
+
+      expect(result.success).toBe(true);
+      const call = mockSigner.writeContract.mock.calls[0]![0];
+      expect(call.args[3]).toBe(wrappedSignature);
+      const simulation = mockSigner.simulateCalls.mock.calls[0]![0] as {
+        calls: readonly { data?: `0x${string}`; functionName?: string }[];
+      };
+      const forwarded = simulation.calls.find(item => item.data && !item.functionName);
+      expect(forwarded?.data).toBeDefined();
+      const decoded = decodeFunctionData({
+        abi: ESCROW_ABI_WITH_ERRORS,
+        data: forwarded!.data!,
+      });
+      expect(decoded.args?.[3]).toBe(wrappedSignature);
     });
 
     it("should route charge × permit2 × custom operator via the captureAuthorizer with 6 args + permit2 collector", async () => {
@@ -1365,6 +1485,39 @@ describe("AuthCaptureEvmScheme", () => {
         buildEip3009Payload(CUSTOM_OPERATOR),
         customOperatorRequirements(),
       );
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should fail settle when mined token deltas differ from simulation", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        settledTokenStoreDelta: BigInt("999999"),
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.settle(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
+      expect(result.transaction).toBe("0xabcdef1234567890");
+    });
+
+    it("should fail settle when the mined call spends facilitator payment tokens", async () => {
+      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      installCustomOperatorSimulation({
+        paymentInfo,
+        settledFacilitatorDelta: -1n,
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
+      const result = await scheme.settle(
+        buildEip3009Payload(CUSTOM_OPERATOR),
+        customOperatorRequirements(),
+      );
+
       expect(result.success).toBe(false);
       expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
     });

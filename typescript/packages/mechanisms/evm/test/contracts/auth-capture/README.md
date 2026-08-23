@@ -4,6 +4,8 @@
 
 These Solidity files exist so `@x402/evm` custom-operator integration tests can hit real bytecode on Base Sepolia (`eth_simulateV1`, gas cap, escrow events). They are not production operators and not a template for a merchant operator.
 
+`collectorData` is payer-controlled opaque bytes. A forwarding operator passes it through unchanged; ERC-6492 preparation calldata is interpreted only by the canonical token collector, which executes it through a neutral Multicall3 sender.
+
 | Contract | Role in tests |
 | --- | --- |
 | `ForwardingOperator.sol` | Spec-minimum: permissionless `authorize` / `charge` that forward 1:1 to canonical `AuthCaptureEscrow` |
