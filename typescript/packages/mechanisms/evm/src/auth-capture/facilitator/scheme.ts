@@ -19,6 +19,7 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 import type { FacilitatorEvmSigner } from "../../signer";
+import { resolveDataSuffix } from "../../shared/extensions";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
 import type { AuthCaptureFacilitatorConfig } from "../types";
 import { isAuthCaptureCollectPayload, isLifecyclePayload } from "../types";
@@ -110,20 +111,24 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
    *
    * @param payload - The wire payload from the payer or resource server.
    * @param requirements - The server's published payment requirements.
-   * @param _ - Unused FacilitatorContext (interface compatibility).
+   * @param context - Optional facilitator context for extension hooks.
    * @returns A `VerifyResponse` with `isValid` and, on failure, a stable `invalidReason`.
    */
   async verify(
     payload: PaymentPayload,
     requirements: PaymentRequirements,
-    _?: FacilitatorContext,
+    context?: FacilitatorContext,
   ): Promise<VerifyResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
       return verifyLifecycle(this.signers, this.config, payload, requirements, raw);
     }
     if (isAuthCaptureCollectPayload(raw)) {
-      return verifyCollect(this.signers, this.config, payload, requirements, raw);
+      const dataSuffix = await resolveDataSuffix(context, {
+        paymentPayload: payload,
+        paymentRequirements: requirements,
+      });
+      return verifyCollect(this.signers, this.config, payload, requirements, raw, dataSuffix);
     }
     if (typeof raw === "object" && raw !== null && "type" in raw) {
       return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
