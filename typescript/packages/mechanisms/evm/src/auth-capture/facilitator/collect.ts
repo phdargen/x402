@@ -36,7 +36,7 @@ import {
   verifyERC3009Signature,
   verifyPermit2Signature,
 } from "../nonce";
-import { resolveDataSuffix } from "../../shared/extensions";
+import { appendDataSuffix, resolveDataSuffix } from "../../shared/extensions";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple, reconstructPaymentInfo, unpackForSettle } from "../utils";
 import { verifyCharge } from "../authorizerSigner";
@@ -96,6 +96,7 @@ function collectChargeAmount(payload: AuthCaptureCollectPayload): string | undef
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Narrowed collect payload.
+ * @param dataSuffix - Optional settlement suffix included in custom-operator simulation.
  * @returns VerifyResponse.
  */
 export async function verifyCollect(
@@ -104,6 +105,7 @@ export async function verifyCollect(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureCollectPayload,
+  dataSuffix?: `0x${string}`,
 ): Promise<VerifyResponse> {
   const payer = collectPayer(wirePayload);
   const common = verifyCommon(
@@ -308,6 +310,7 @@ export async function verifyCollect(
     feeBps,
     feeReceiver,
     chainId,
+    dataSuffix,
   );
   if (simulateResult !== "ok") {
     try {
@@ -348,7 +351,18 @@ export async function settleCollect(
   wirePayload: AuthCaptureCollectPayload,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
-  const verification = await verifyCollect(signers, config, payload, requirements, wirePayload);
+  const dataSuffix = await resolveDataSuffix(context, {
+    paymentPayload: payload,
+    paymentRequirements: requirements,
+  });
+  const verification = await verifyCollect(
+    signers,
+    config,
+    payload,
+    requirements,
+    wirePayload,
+    dataSuffix,
+  );
   if (!verification.isValid) {
     return {
       success: false,
@@ -422,10 +436,62 @@ export async function settleCollect(
     extra.operatorType === "custom"
       ? (config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT)
       : undefined;
-  const dataSuffix = await resolveDataSuffix(context, {
-    paymentPayload: payload,
-    paymentRequirements: requirements,
-  });
+  let customBalanceCheck:
+    | {
+        before: CollectBalanceSnapshot;
+        tokenStore: `0x${string}`;
+        facilitator: `0x${string}`;
+      }
+    | undefined;
+  if (extra.operatorType === "custom") {
+    const facilitator = submitter.getAddresses()[0];
+    if (!facilitator) {
+      return {
+        success: false,
+        errorReason: Errors.ErrSimulationFailed,
+        transaction: "",
+        network: requirements.network,
+        payer,
+      };
+    }
+    let tokenStore: `0x${string}`;
+    try {
+      tokenStore = (await submitter.readContract({
+        address: AUTH_CAPTURE_ESCROW_ADDRESS,
+        abi: ESCROW_VIEW_ABI,
+        functionName: "getTokenStore",
+        args: [extra.captureAuthorizer],
+      })) as `0x${string}`;
+    } catch {
+      return {
+        success: false,
+        errorReason: Errors.ErrSimulationFailed,
+        transaction: "",
+        network: requirements.network,
+        payer,
+      };
+    }
+    const before = await readCollectBalanceSnapshot(
+      submitter,
+      paymentInfo.token,
+      payer,
+      tokenStore,
+      facilitator,
+      functionName,
+      paymentInfo.receiver,
+      feeReceiver,
+    );
+    if (!before) {
+      return {
+        success: false,
+        errorReason: Errors.ErrSimulationFailed,
+        transaction: "",
+        network: requirements.network,
+        payer,
+      };
+    }
+    customBalanceCheck = { before, tokenStore, facilitator };
+  }
   const submitted = await submitEscrowCall(submitter, settleTarget, functionName, args, {
     gas: customGasLimit,
     dataSuffix,
@@ -490,6 +556,7 @@ export async function settleCollect(
   );
   if (
     !state ||
+    !state.hasCollectedPayment ||
     state.capturableAmount !== expectedCapturable ||
     state.refundableAmount !== expectedRefundable
   ) {
@@ -500,6 +567,37 @@ export async function settleCollect(
       network: requirements.network,
       payer,
     };
+  }
+
+  if (customBalanceCheck) {
+    const after = await readCollectBalanceSnapshot(
+      submitter,
+      paymentInfo.token,
+      payer,
+      customBalanceCheck.tokenStore,
+      customBalanceCheck.facilitator,
+      functionName,
+      paymentInfo.receiver,
+      feeReceiver,
+    );
+    if (
+      !after ||
+      !hasExpectedCollectBalanceChanges(
+        customBalanceCheck.before,
+        after,
+        functionName,
+        settleAmount,
+        feeBps,
+      )
+    ) {
+      return {
+        success: false,
+        errorReason: Errors.ErrSimulationFailed,
+        transaction: submitted.txHash,
+        network: requirements.network,
+        payer,
+      };
+    }
   }
 
   return {
@@ -524,6 +622,7 @@ export async function settleCollect(
  * @param feeBps - Fee for charge; ignored for authorize.
  * @param feeReceiver - Fee recipient for charge; ignored for authorize.
  * @param chainId - EVM chain id for paymentInfoHash.
+ * @param dataSuffix - Optional settlement suffix appended to the simulated calldata.
  * @returns `"ok"` or a stable invalidReason.
  */
 async function simulateCollect(
@@ -537,6 +636,7 @@ async function simulateCollect(
   feeBps: number,
   feeReceiver: `0x${string}`,
   chainId: number,
+  dataSuffix?: `0x${string}`,
 ): Promise<"ok" | string> {
   const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
   const tuple = paymentInfoToContractTuple(paymentInfo);
@@ -602,11 +702,14 @@ async function simulateCollect(
     ...(functionName === "charge" ? [balanceCall(receiver), balanceCall(feeReceiver)] : []),
   ];
 
-  const forwardedData = encodeFunctionData({
-    abi: ESCROW_ABI_WITH_ERRORS,
-    functionName,
-    args,
-  });
+  const forwardedData = appendDataSuffix(
+    encodeFunctionData({
+      abi: ESCROW_ABI_WITH_ERRORS,
+      functionName,
+      args,
+    }),
+    dataSuffix,
+  );
 
   // One batch: snapshot pre-state, simulate the operator relay (gas-capped), then re-read deltas.
   const forwardedCall = {
@@ -713,29 +816,29 @@ async function simulateCollect(
     return Errors.ErrSimulationFailed;
   }
 
-  if (postFacilitator < preFacilitator) {
-    // No token movement may originate from a facilitator-controlled address.
-    return Errors.ErrSimulationFailed;
-  }
-
-  if (postPayer !== prePayer - amount) {
-    return Errors.ErrSimulationFailed;
-  }
-
+  const beforeBalances: CollectBalanceSnapshot = {
+    payer: prePayer,
+    tokenStore: preTokenStore,
+    facilitator: preFacilitator,
+  };
+  const afterBalances: CollectBalanceSnapshot = {
+    payer: postPayer,
+    tokenStore: postTokenStore,
+    facilitator: postFacilitator,
+  };
   if (functionName === "authorize") {
     // Authorize: escrow hold (capturable=amount); payer debited into the operator token store.
     if (
       !postState.hasCollectedPayment ||
       postState.capturableAmount !== amount ||
       postState.refundableAmount !== 0n ||
-      postTokenStore !== preTokenStore + amount
+      !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, feeBps)
     ) {
       return Errors.ErrSimulationFailed;
     }
     return "ok";
   }
 
-  const fee = (amount * BigInt(feeBps)) / 10_000n;
   const preReceiver = readBalance(4);
   const preFeeReceiver = readBalance(5);
   const postReceiver = readBalance(forwardedIndex + 5);
@@ -750,19 +853,128 @@ async function simulateCollect(
     return Errors.ErrSimulationFailed;
   }
 
+  beforeBalances.receiver = preReceiver;
+  beforeBalances.feeReceiver = preFeeReceiver;
+  afterBalances.receiver = postReceiver;
+  afterBalances.feeReceiver = postFeeReceiver;
+
   // Charge: payer debited, token store net zero, receiver/feeReceiver split matches _distributeTokens.
   if (
     !postState.hasCollectedPayment ||
     postState.capturableAmount !== 0n ||
     postState.refundableAmount !== amount ||
-    postTokenStore !== preTokenStore ||
-    postReceiver !== preReceiver + (amount - fee) ||
-    postFeeReceiver !== preFeeReceiver + fee
+    !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, feeBps)
   ) {
     return Errors.ErrSimulationFailed;
   }
 
   return "ok";
+}
+
+type CollectBalanceSnapshot = {
+  payer: bigint;
+  tokenStore: bigint;
+  facilitator: bigint;
+  receiver?: bigint;
+  feeReceiver?: bigint;
+};
+
+/**
+ * Read the payment-token balances used to verify a custom collect outcome.
+ *
+ * @param signer - Facilitator signer used for reads.
+ * @param token - Payment token.
+ * @param payer - Payer address.
+ * @param tokenStore - Operator's escrow token store.
+ * @param facilitator - Facilitator submitter address.
+ * @param functionName - Collect operation.
+ * @param receiver - Payment receiver.
+ * @param feeReceiver - Charge fee recipient.
+ * @returns A balance snapshot, or undefined when any read fails.
+ */
+async function readCollectBalanceSnapshot(
+  signer: FacilitatorEvmSigner,
+  token: `0x${string}`,
+  payer: `0x${string}`,
+  tokenStore: `0x${string}`,
+  facilitator: `0x${string}`,
+  functionName: "authorize" | "charge",
+  receiver: `0x${string}`,
+  feeReceiver: `0x${string}`,
+): Promise<CollectBalanceSnapshot | undefined> {
+  const readBalance = async (account: `0x${string}`): Promise<bigint> =>
+    BigInt(
+      (await signer.readContract({
+        address: token,
+        abi: ERC20_BALANCE_OF_ABI,
+        functionName: "balanceOf",
+        args: [account],
+        account: facilitator,
+      })) as bigint | number | string,
+    );
+
+  try {
+    const common = await Promise.all([
+      readBalance(payer),
+      readBalance(tokenStore),
+      readBalance(facilitator),
+    ]);
+    if (functionName === "authorize") {
+      return { payer: common[0], tokenStore: common[1], facilitator: common[2] };
+    }
+    const [receiverBalance, feeReceiverBalance] = await Promise.all([
+      readBalance(receiver),
+      readBalance(feeReceiver),
+    ]);
+    return {
+      payer: common[0],
+      tokenStore: common[1],
+      facilitator: common[2],
+      receiver: receiverBalance,
+      feeReceiver: feeReceiverBalance,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Check actual payment-token balance changes against the simulated collect invariants.
+ *
+ * @param before - Balances immediately before submission.
+ * @param after - Balances after the transaction confirms.
+ * @param functionName - Collect operation.
+ * @param amount - Settled amount.
+ * @param feeBps - Charge fee in basis points.
+ * @returns True when all expected deltas match.
+ */
+function hasExpectedCollectBalanceChanges(
+  before: CollectBalanceSnapshot,
+  after: CollectBalanceSnapshot,
+  functionName: "authorize" | "charge",
+  amount: bigint,
+  feeBps: number,
+): boolean {
+  if (after.facilitator < before.facilitator || after.payer !== before.payer - amount) {
+    return false;
+  }
+  if (functionName === "authorize") {
+    return after.tokenStore === before.tokenStore + amount;
+  }
+  if (
+    before.receiver === undefined ||
+    before.feeReceiver === undefined ||
+    after.receiver === undefined ||
+    after.feeReceiver === undefined
+  ) {
+    return false;
+  }
+  const fee = (amount * BigInt(feeBps)) / 10_000n;
+  return (
+    after.tokenStore === before.tokenStore &&
+    after.receiver === before.receiver + (amount - fee) &&
+    after.feeReceiver === before.feeReceiver + fee
+  );
 }
 
 /**

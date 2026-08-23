@@ -215,7 +215,7 @@ facilitator.register("eip155:84532", new AuthCaptureEvmScheme([signerA, signerB]
 
 Each submitter gets its own CREATE2 token store on first authorize, so N keys mean N first-authorize deployment costs and escrow-held balances split N ways.
 
-`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (with EIP-6492 unwrap), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
+`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (with EIP-6492 unwrap), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). When extension context adds a calldata suffix, the custom-operator simulation includes the same suffix that settlement broadcasts. The mined transaction is checked against the same payment-state and payment-token balance invariants before settlement is reported as successful. Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
 
 `settle` re-verifies then dispatches:
 
@@ -223,7 +223,7 @@ Each submitter gets its own CREATE2 token store on first authorize, so N keys me
 - no `payload.type` + `paymentFlow: "authorization"` → `charge`
 - `payload.type` of `"capture"` / `"void"` / `"refund"` → lifecycle (capture-and-void when `voidAuthorizerSignature` is present)
 
-The settle target is the canonical escrow for `"delegated"` and `extra.captureAuthorizer` for `"custom"`. Bytecode is not probed.
+The settle target is the canonical escrow for `"delegated"` and `extra.captureAuthorizer` for `"custom"`. Bytecode is not probed. `collectorData` is payer-controlled opaque bytes; custom operators must forward it unchanged. ERC-6492 preparation calldata is executed by the token collector through a neutral Multicall3 sender, not as the facilitator or operator.
 
 ## Supported Networks
 

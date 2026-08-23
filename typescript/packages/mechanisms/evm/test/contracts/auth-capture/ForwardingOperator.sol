@@ -8,62 +8,62 @@ pragma solidity ^0.8.20;
 ///      Regenerate: `forge build` in this directory, then copy `out/ForwardingOperator.sol/ForwardingOperator.json`
 ///      `abi` and `bytecode.object` into the artifact.
 interface IAuthCaptureEscrow {
-    struct PaymentInfo {
-        address operator;
-        address payer;
-        address receiver;
-        address token;
-        uint120 maxAmount;
-        uint48 preApprovalExpiry;
-        uint48 authorizationExpiry;
-        uint48 refundExpiry;
-        uint16 minFeeBps;
-        uint16 maxFeeBps;
-        address feeReceiver;
-        uint256 salt;
-    }
+  struct PaymentInfo {
+    address operator;
+    address payer;
+    address receiver;
+    address token;
+    uint120 maxAmount;
+    uint48 preApprovalExpiry;
+    uint48 authorizationExpiry;
+    uint48 refundExpiry;
+    uint16 minFeeBps;
+    uint16 maxFeeBps;
+    address feeReceiver;
+    uint256 salt;
+  }
 
-    function authorize(
-        PaymentInfo calldata paymentInfo,
-        uint256 amount,
-        address tokenCollector,
-        bytes calldata collectorData
-    ) external;
+  function authorize(
+    PaymentInfo calldata paymentInfo,
+    uint256 amount,
+    address tokenCollector,
+    bytes calldata collectorData
+  ) external;
 
-    function charge(
-        PaymentInfo calldata paymentInfo,
-        uint256 amount,
-        address tokenCollector,
-        bytes calldata collectorData,
-        uint16 feeBps,
-        address feeReceiver
-    ) external;
+  function charge(
+    PaymentInfo calldata paymentInfo,
+    uint256 amount,
+    address tokenCollector,
+    bytes calldata collectorData,
+    uint16 feeBps,
+    address feeReceiver
+  ) external;
 }
 
 contract ForwardingOperator {
-    IAuthCaptureEscrow public immutable escrow;
+  IAuthCaptureEscrow public immutable escrow;
 
-    constructor(address escrow_) {
-        escrow = IAuthCaptureEscrow(escrow_);
-    }
+  constructor(address escrow_) {
+    escrow = IAuthCaptureEscrow(escrow_);
+  }
 
-    function authorize(
-        IAuthCaptureEscrow.PaymentInfo calldata paymentInfo,
-        uint256 amount,
-        address tokenCollector,
-        bytes calldata collectorData
-    ) external {
-        escrow.authorize(paymentInfo, amount, tokenCollector, collectorData);
-    }
+  function authorize(
+    IAuthCaptureEscrow.PaymentInfo calldata paymentInfo,
+    uint256 amount,
+    address tokenCollector,
+    bytes calldata collectorData
+  ) external {
+    escrow.authorize(paymentInfo, amount, tokenCollector, collectorData);
+  }
 
-    function charge(
-        IAuthCaptureEscrow.PaymentInfo calldata paymentInfo,
-        uint256 amount,
-        address tokenCollector,
-        bytes calldata collectorData,
-        uint16 feeBps,
-        address feeReceiver
-    ) external {
-        escrow.charge(paymentInfo, amount, tokenCollector, collectorData, feeBps, feeReceiver);
-    }
+  function charge(
+    IAuthCaptureEscrow.PaymentInfo calldata paymentInfo,
+    uint256 amount,
+    address tokenCollector,
+    bytes calldata collectorData,
+    uint16 feeBps,
+    address feeReceiver
+  ) external {
+    escrow.charge(paymentInfo, amount, tokenCollector, collectorData, feeBps, feeReceiver);
+  }
 }
