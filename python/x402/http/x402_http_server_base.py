@@ -729,7 +729,7 @@ class x402HTTPServerBase:
         # not force a decimals lookup (unknown custom mints would otherwise fail).
         decimals = None
         if re.match(r"^\$(\d+(?:\.\d+)?)$", raw_amount):
-            scheme = self._server._find_registered_scheme(requirements.scheme, requirements.network)
+            scheme = self._server.get_registered_scheme(requirements.network, requirements.scheme)
             if scheme is not None:
                 get_decimals = getattr(scheme, "get_asset_decimals", None)
                 if callable(get_decimals):
@@ -1117,10 +1117,10 @@ class x402HTTPServerBase:
                 options = [options]
 
             for option in options:
-                finder = getattr(self._server, "_find_registered_scheme", None)
-                if not callable(finder):
+                getter = getattr(self._server, "get_registered_scheme", None)
+                if not callable(getter):
                     continue
-                scheme_server = finder(option.scheme, option.network)
+                scheme_server = getter(option.network, option.scheme)
                 if scheme_server is None:
                     if include_missing_scheme:
                         errors.append(
