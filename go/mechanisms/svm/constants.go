@@ -87,6 +87,11 @@ const (
 	DevnetRPCURL  = "https://api.devnet.solana.com"
 	TestnetRPCURL = "https://api.testnet.solana.com"
 
+	// Default WebSocket endpoints for Solana networks.
+	MainnetWSURL = "wss://api.mainnet-beta.solana.com"
+	DevnetWSURL  = "wss://api.devnet.solana.com"
+	TestnetWSURL = "wss://api.testnet.solana.com"
+
 	// TokenProgramAddress and Token2022ProgramAddress are the SPL token programs,
 	// identical on every Solana network.
 	TokenProgramAddress     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -142,6 +147,14 @@ const (
 )
 
 var (
+	// NetworkConfigs maps CAIP-2 network identifiers to transport endpoints.
+	// Default assets live in DefaultAssets, not here.
+	NetworkConfigs = map[string]NetworkConfig{
+		SolanaMainnetCAIP2: {RPCURL: MainnetRPCURL, WSURL: MainnetWSURL},
+		SolanaDevnetCAIP2:  {RPCURL: DevnetRPCURL, WSURL: DevnetWSURL},
+		SolanaTestnetCAIP2: {RPCURL: TestnetRPCURL, WSURL: TestnetWSURL},
+	}
+
 	// V1ToV2NetworkMap maps V1 network names to CAIP-2 identifiers
 	V1ToV2NetworkMap = map[string]string{
 		SolanaMainnetV1: SolanaMainnetCAIP2,

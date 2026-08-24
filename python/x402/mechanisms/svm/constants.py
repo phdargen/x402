@@ -101,3 +101,27 @@ class AssetInfo(TypedDict):
     address: str
     name: str
     decimals: int
+
+
+class NetworkConfig(TypedDict):
+    """Transport endpoints for a Solana network."""
+
+    rpc_url: str
+    ws_url: str
+
+
+# Per-network transport endpoints (default assets live in default_assets.py).
+NETWORK_CONFIGS: dict[str, NetworkConfig] = {
+    SOLANA_MAINNET_CAIP2: {
+        "rpc_url": MAINNET_RPC_URL,
+        "ws_url": MAINNET_WS_URL,
+    },
+    SOLANA_DEVNET_CAIP2: {
+        "rpc_url": DEVNET_RPC_URL,
+        "ws_url": DEVNET_WS_URL,
+    },
+    SOLANA_TESTNET_CAIP2: {
+        "rpc_url": TESTNET_RPC_URL,
+        "ws_url": TESTNET_WS_URL,
+    },
+}

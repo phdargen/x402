@@ -58,10 +58,11 @@ func (s *realFacilitatorSvmSigner) getRPC(_ context.Context, network string) (*r
 	// Use custom RPC URL if provided, otherwise use network default
 	rpcURL := s.rpcURL
 	if rpcURL == "" {
-		rpcURL, err := svm.GetRpcURL(network)
+		config, err := svm.GetNetworkConfig(network)
 		if err != nil {
 			return nil, err
 		}
+		rpcURL = config.RPCURL
 	}
 
 	client := rpc.New(rpcURL)

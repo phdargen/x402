@@ -173,6 +173,13 @@ type ReceiverAuthorizerSigner interface {
 	SignMessage(ctx context.Context, message []byte) ([]byte, error)
 }
 
+// NetworkConfig holds static transport endpoints for a Solana network.
+// Default assets live in DefaultAssets, not here.
+type NetworkConfig struct {
+	RPCURL string
+	WSURL  string
+}
+
 // AssetInfo contains information about a SPL token
 type AssetInfo struct {
 	Address  string // Mint address

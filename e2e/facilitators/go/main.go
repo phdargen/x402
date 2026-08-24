@@ -656,11 +656,11 @@ func (s *realFacilitatorSvmSigner) getRPC(ctx context.Context, network string) (
 
 	rpcURL := s.rpcURL
 	if rpcURL == "" {
-		defaultURL, err := svmmech.GetRpcURL(network)
+		config, err := svmmech.GetNetworkConfig(network)
 		if err != nil {
 			return nil, err
 		}
-		rpcURL = defaultURL
+		rpcURL = config.RPCURL
 	}
 
 	client := rpc.New(rpcURL)

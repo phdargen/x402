@@ -38,23 +38,18 @@ func NormalizeNetwork(network string) (string, error) {
 	return caip2Network, nil
 }
 
-// GetRpcURL returns the default RPC URL for a supported Solana network.
-func GetRpcURL(network string) (string, error) {
+// GetNetworkConfig returns transport endpoints for a supported Solana network.
+func GetNetworkConfig(network string) (*NetworkConfig, error) {
 	caip2Network, err := NormalizeNetwork(network)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	switch caip2Network {
-	case SolanaMainnetCAIP2:
-		return MainnetRPCURL, nil
-	case SolanaDevnetCAIP2:
-		return DevnetRPCURL, nil
-	case SolanaTestnetCAIP2:
-		return TestnetRPCURL, nil
-	default:
-		return "", fmt.Errorf("unsupported Solana network: %s", network)
+	config, ok := NetworkConfigs[caip2Network]
+	if !ok {
+		return nil, fmt.Errorf("no configuration for network: %s", network)
 	}
+	return &config, nil
 }
 
 // GetAssetInfo returns information about an asset on a network

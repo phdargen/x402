@@ -30,7 +30,7 @@ from ...default_assets import find_default_asset
 from ...mint_cache import MintMetadataCache, get_cached_mint_metadata
 from ...signer import ClientSvmSigner
 from ...types import ExactSvmPayload
-from ...utils import derive_ata, get_rpc_url, normalize_network, resolve_blockhash
+from ...utils import derive_ata, get_network_config, normalize_network
 
 
 class ExactSvmSchemeV1:
@@ -79,7 +79,7 @@ class ExactSvmSchemeV1:
         if self._custom_rpc_url:
             rpc_url = self._custom_rpc_url
         else:
-            rpc_url = get_rpc_url(network)
+            rpc_url = get_network_config(network)["rpc_url"]
 
         client = SolanaClient(rpc_url)
         self._clients[caip2_network] = client

@@ -573,10 +573,7 @@ class TestRegisterMoneyParser:
             assert sepolia_result.asset == "0xTestToken123456789012345678901234567890"
 
             mainnet_result = server.parse_price(10, "eip155:8453")
-            assert (
-                mainnet_result.asset
-                == get_default_asset("eip155:8453")["asset"]
-            )
+            assert mainnet_result.asset == get_default_asset("eip155:8453")["asset"]
 
         def test_should_support_tiered_pricing(self):
             """Should support tiered pricing."""

@@ -6,7 +6,7 @@ For networks without a configured default, servers can use `registerMoneyParser(
 
 ## Per-family convention
 
-Every mechanism package that supports dollar-string pricing declares defaults in a dedicated `default_assets` module (not in `constants` or bundled network-config maps):
+Every mechanism package that supports dollar-string pricing declares defaults in a dedicated `default_assets` module (do not put default assets in `NETWORK_CONFIGS` or other endpoint maps):
 
 | SDK | File | Exports |
 |-----|------|---------|
@@ -52,6 +52,10 @@ Adding non-USD denominations (EUR, JPY, etc.) would require:
 - Separate caps per currency rather than a single USD ceiling
 
 Until that exists, only list tokens intended to track USD.
+
+## SVM network endpoints
+
+SVM also exposes a per-network transport config (`NETWORK_CONFIGS` / `GetNetworkConfig`) for RPC and WebSocket URLs. Default assets stay in `default_assets.*` — do not add them to network config.
 
 ## EVM-specific: asset transfer methods
 

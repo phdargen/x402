@@ -15,7 +15,7 @@ except ImportError as e:
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
 
-from .utils import get_rpc_url, normalize_network
+from .utils import get_network_config, normalize_network
 
 
 class KeypairSigner:
@@ -144,7 +144,7 @@ class FacilitatorKeypairSigner:
         if self._custom_rpc_url:
             rpc_url = self._custom_rpc_url
         else:
-            rpc_url = get_rpc_url(network)
+            rpc_url = get_network_config(network)["rpc_url"]
 
         client = SolanaClient(rpc_url)
         self._clients[caip2_network] = client

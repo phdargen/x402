@@ -97,11 +97,11 @@ func NewRPCClient(network, rpcURL string) (*rpc.Client, error) {
 	if rpcURL != "" {
 		return rpc.New(rpcURL), nil
 	}
-	rpcURL, err := svm.GetRpcURL(network)
+	config, err := svm.GetNetworkConfig(network)
 	if err != nil {
 		return nil, err
 	}
-	return rpc.New(rpcURL), nil
+	return rpc.New(config.RPCURL), nil
 }
 
 // ParseTokenProgramHint reads and validates `extra.tokenProgram`. The second

@@ -36,6 +36,7 @@ from .constants import (
     MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
     MAX_MEMO_BYTES,
     MEMO_PROGRAM_ADDRESS,
+    NETWORK_CONFIGS,
     SCHEME_EXACT,
     SOLANA_DEVNET_CAIP2,
     SOLANA_MAINNET_CAIP2,
@@ -51,6 +52,7 @@ from .constants import (
     V1_NETWORKS,
     V1_TO_V2_NETWORK_MAP,
     AssetInfo,
+    NetworkConfig,
 )
 
 # Default assets
@@ -81,9 +83,8 @@ from .utils import (
     extract_transaction_info,
     format_amount,
     get_asset_info,
-    get_rpc_url,
+    get_network_config,
     get_token_payer_from_transaction,
-    get_ws_url,
     get_usdc_address,
     normalize_network,
     parse_amount,
@@ -118,7 +119,9 @@ __all__ = [
     "V1_TO_V2_NETWORK_MAP",
     "V1_NETWORKS",
     "SVM_ADDRESS_REGEX",
+    "NETWORK_CONFIGS",
     "AssetInfo",
+    "NetworkConfig",
     # Error codes
     "ERR_UNSUPPORTED_SCHEME",
     "ERR_NETWORK_MISMATCH",
@@ -157,8 +160,7 @@ __all__ = [
     "FacilitatorKeypairSigner",
     # Utilities
     "normalize_network",
-    "get_rpc_url",
-    "get_ws_url",
+    "get_network_config",
     "validate_svm_address",
     "get_usdc_address",
     "get_asset_info",

@@ -66,10 +66,11 @@ func (c *ExactSvmSchemeV1) CreatePaymentPayload(
 	}
 
 	// Get network configuration
-	rpcURL, err := svm.GetRpcURL(networkStr)
+	config, err := svm.GetNetworkConfig(networkStr)
 	if err != nil {
 		return types.PaymentPayloadV1{}, err
 	}
+	rpcURL := config.RPCURL
 	if c.config != nil && c.config.RPCURL != "" {
 		rpcURL = c.config.RPCURL
 	}
