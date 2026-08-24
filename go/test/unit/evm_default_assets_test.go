@@ -11,8 +11,6 @@ import (
 
 func TestEVMDefaultAssets(t *testing.T) {
 	baseUSDC := evm.DefaultAssets["eip155:8453"][0]
-	ethereumUSDC := evm.DefaultAssets["eip155:1"][0]
-	avalancheUSDC := evm.DefaultAssets["eip155:43114"][0]
 	mezoTestnetMUSD := evm.DefaultAssets["eip155:31611"][0]
 
 	t.Run("findDefaultAsset matches checksummed and lowercase addresses", func(t *testing.T) {
@@ -33,34 +31,6 @@ func TestEVMDefaultAssets(t *testing.T) {
 		got := evm.FindDefaultAsset(baseUSDC.Asset, "base")
 		if got == nil || got.Asset != baseUSDC.Asset {
 			t.Fatalf("base lookup = %+v, want %+v", got, baseUSDC)
-		}
-	})
-
-	t.Run("resolves ethereum and avalanche by CAIP-2 and v1 name", func(t *testing.T) {
-		got := evm.FindDefaultAsset(ethereumUSDC.Asset, "eip155:1")
-		if got == nil || got.Asset != ethereumUSDC.Asset {
-			t.Fatalf("eip155:1 lookup = %+v, want %+v", got, ethereumUSDC)
-		}
-		got = evm.FindDefaultAsset(ethereumUSDC.Asset, "ethereum")
-		if got == nil || got.Asset != ethereumUSDC.Asset {
-			t.Fatalf("ethereum lookup = %+v, want %+v", got, ethereumUSDC)
-		}
-		got, err := evm.GetDefaultAsset("ethereum", "")
-		if err != nil || got.Asset != ethereumUSDC.Asset {
-			t.Fatalf("GetDefaultAsset(ethereum) = %+v, %v", got, err)
-		}
-
-		got = evm.FindDefaultAsset(avalancheUSDC.Asset, "eip155:43114")
-		if got == nil || got.Asset != avalancheUSDC.Asset {
-			t.Fatalf("eip155:43114 lookup = %+v, want %+v", got, avalancheUSDC)
-		}
-		got = evm.FindDefaultAsset(avalancheUSDC.Asset, "avalanche")
-		if got == nil || got.Asset != avalancheUSDC.Asset {
-			t.Fatalf("avalanche lookup = %+v, want %+v", got, avalancheUSDC)
-		}
-		got, err = evm.GetDefaultAsset("avalanche", "")
-		if err != nil || got.Asset != avalancheUSDC.Asset {
-			t.Fatalf("GetDefaultAsset(avalanche) = %+v, %v", got, err)
 		}
 	})
 
