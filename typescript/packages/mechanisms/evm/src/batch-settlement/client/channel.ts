@@ -4,7 +4,11 @@ import { getAddress } from "viem";
 import type { ClientEvmSigner } from "../../signer";
 import { batchSettlementABI } from "../abi";
 import { BATCH_SETTLEMENT_ADDRESS, MIN_WITHDRAW_DELAY } from "../constants";
-import type { BatchSettlementPaymentRequirementsExtra, ChannelConfig } from "../types";
+import type {
+  BatchSettlementChannelStateExtra,
+  BatchSettlementPaymentRequirementsExtra,
+  ChannelConfig,
+} from "../types";
 import { computeChannelId } from "../utils";
 import type { BatchSettlementClientContext, ClientChannelStorage } from "./storage";
 
@@ -74,22 +78,24 @@ export type ChannelSettleLocal = {
 /**
  * Updates local channel state after a deposit or voucher settle.
  *
- * `server.chargedAmount` is the only settle-response field used, and it is
- * capped at `local.requestAmount`. Next cumulative is previous local
- * `chargedCumulativeAmount` plus that charge. Next balance is previous local
- * `balance` plus `local.depositAmount` when present; voucher-only leaves
- * balance unchanged. Server `channelState` is not an input.
+ * Next cumulative is previous local `chargedCumulativeAmount` plus
+ * `server.chargedAmount` (capped at `local.requestAmount`). Next balance is
+ * previous local `balance` plus `local.depositAmount` when present;
+ * voucher-only leaves balance unchanged. The write is skipped when extra
+ * `chargedCumulativeAmount` is present and is not a non-negative integer equal
+ * to that next cumulative. Server `channelState` fields are never copied.
  *
  * @param storage - Client channel storage.
  * @param input - Server-reported charge and client-owned settle inputs.
  * @param input.server - Untrusted settlement response fields.
  * @param input.server.chargedAmount - Untrusted `PAYMENT-RESPONSE` extra.chargedAmount.
+ * @param input.server.chargedCumulativeAmount - Untrusted extra.channelState.chargedCumulativeAmount.
  * @param input.local - Client-computed channel id, request maximum, and optional deposit.
  */
 export async function updateChannelFromSettle(
   storage: ClientChannelStorage,
   input: {
-    server: { chargedAmount?: string };
+    server: { chargedAmount?: string; chargedCumulativeAmount?: string };
     local: ChannelSettleLocal;
   },
 ): Promise<void> {
@@ -114,10 +120,18 @@ export async function updateChannelFromSettle(
     return;
   }
 
+  const nextChargedCumulative = BigInt(previous?.chargedCumulativeAmount ?? "0") + chargedAmount;
+  if (server.chargedCumulativeAmount !== undefined) {
+    if (
+      !/^\d+$/.test(server.chargedCumulativeAmount) ||
+      BigInt(server.chargedCumulativeAmount) !== nextChargedCumulative
+    ) {
+      return;
+    }
+  }
+
   const next: BatchSettlementClientContext = { ...(previous ?? {}) };
-  next.chargedCumulativeAmount = (
-    BigInt(previous?.chargedCumulativeAmount ?? "0") + chargedAmount
-  ).toString();
+  next.chargedCumulativeAmount = nextChargedCumulative.toString();
 
   if (depositAmount !== undefined) {
     next.balance = (BigInt(previous?.balance ?? "0") + depositAmount).toString();
@@ -169,7 +183,8 @@ export async function updateChannelAfterRefund(
  * Processes the `PAYMENT-RESPONSE` header after a successful request.
  *
  * Decodes the untrusted header and delegates to {@link updateChannelFromSettle}
- * with server `chargedAmount` and the caller-supplied local channel inputs.
+ * with server `chargedAmount`, optional extra cumulative, and the caller-supplied
+ * local channel inputs.
  *
  * @param storage - Client channel storage.
  * @param getHeader - Function to retrieve a response header by name.
@@ -193,8 +208,12 @@ export async function processPaymentResponse(
   if (chargedAmount !== undefined && typeof chargedAmount !== "string") {
     throw new Error("invalid chargedAmount: not a non-negative integer");
   }
+  const channelState = settle.extra?.channelState as BatchSettlementChannelStateExtra | undefined;
   await updateChannelFromSettle(storage, {
-    server: { chargedAmount },
+    server: {
+      chargedAmount,
+      chargedCumulativeAmount: channelState?.chargedCumulativeAmount,
+    },
     local,
   });
 }

@@ -33,11 +33,7 @@ import {
   validateDepositPolicy,
 } from "./config";
 import { refundChannel, type RefundOptions } from "./refund";
-import {
-  type BatchSettlementClientDeps,
-  buildChannelConfig,
-  recoverChannel,
-} from "./channel";
+import { type BatchSettlementClientDeps, buildChannelConfig, recoverChannel } from "./channel";
 import { createBatchSettlementClientHooks } from "./hooks";
 import { processCorrectivePaymentRequired } from "./recovery";
 import type { ClientChannelStorage } from "./storage";

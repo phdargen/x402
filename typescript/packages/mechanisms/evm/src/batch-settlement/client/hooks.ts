@@ -1,5 +1,9 @@
 import type { SchemeClientHooks } from "@x402/core/types";
-import { isBatchSettlementDepositPayload, isBatchSettlementRefundPayload } from "../types";
+import {
+  isBatchSettlementDepositPayload,
+  isBatchSettlementRefundPayload,
+  type BatchSettlementChannelStateExtra,
+} from "../types";
 import { computeChannelId } from "../utils";
 import {
   type BatchSettlementClientDeps,
@@ -39,8 +43,14 @@ export function createBatchSettlementClientHooks(
         if (chargedAmount !== undefined && typeof chargedAmount !== "string") {
           throw new Error("invalid chargedAmount: not a non-negative integer");
         }
+        const channelState = settleResponse.extra?.channelState as
+          | BatchSettlementChannelStateExtra
+          | undefined;
         await updateChannelFromSettle(deps.storage, {
-          server: { chargedAmount },
+          server: {
+            chargedAmount,
+            chargedCumulativeAmount: channelState?.chargedCumulativeAmount,
+          },
           local: {
             channelId,
             requestAmount: ctx.requirements.amount,

@@ -614,7 +614,7 @@ describe("updateChannelFromSettle / schemeHooks", () => {
         chargedAmount: "1000",
         channelState: {
           channelId,
-          chargedCumulativeAmount: "9999",
+          chargedCumulativeAmount: "1000",
           balance: "1",
           totalClaimed: "999",
         },
@@ -933,13 +933,13 @@ describe("updateChannelFromSettle local truth", () => {
     });
 
     const ctx = await storage.get(channelId.toLowerCase());
-    expect(ctx?.chargedCumulativeAmount).toBe("10000");
+    expect(ctx?.chargedCumulativeAmount).toBe("0");
     expect(ctx?.balance).toBe("50000");
 
     const result = await client.createPaymentPayload(2, requirements);
     expect(isBatchSettlementVoucherPayload(result.payload as Record<string, unknown>)).toBe(true);
     const payload = result.payload as { voucher: { maxClaimableAmount: string } };
-    expect(payload.voucher.maxClaimableAmount).toBe("20000");
+    expect(payload.voucher.maxClaimableAmount).toBe("10000");
   });
 
   it("does not write a second key when extra.channelId does not match", async () => {
@@ -1044,7 +1044,7 @@ describe("updateChannelFromSettle local truth", () => {
     expect(ctx?.balance).toBe("50000");
   });
 
-  it("persists an honest previous + chargedAmount settle", async () => {
+  it("persists an honest previous + chargedAmount settle when extra cumulative is omitted", async () => {
     const storage = new InMemoryClientChannelStorage();
     const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000007";
     await seedChannel(storage, channelId, { balance: "50000", chargedCumulativeAmount: "0" });
@@ -1056,6 +1056,51 @@ describe("updateChannelFromSettle local truth", () => {
 
     const ctx = await storage.get(channelId.toLowerCase());
     expect(ctx?.chargedCumulativeAmount).toBe("10000");
+    expect(ctx?.balance).toBe("50000");
+  });
+
+  it("persists when extra chargedCumulativeAmount matches previous plus chargedAmount", async () => {
+    const storage = new InMemoryClientChannelStorage();
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000007";
+    await seedChannel(storage, channelId, { balance: "50000", chargedCumulativeAmount: "0" });
+
+    await updateChannelFromSettle(storage, {
+      server: { chargedAmount: "10000", chargedCumulativeAmount: "10000" },
+      local: { channelId, requestAmount: "10000" },
+    });
+
+    const ctx = await storage.get(channelId.toLowerCase());
+    expect(ctx?.chargedCumulativeAmount).toBe("10000");
+    expect(ctx?.balance).toBe("50000");
+  });
+
+  it("writes nothing when extra chargedCumulativeAmount disagrees, including deposit", async () => {
+    const storage = new InMemoryClientChannelStorage();
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000009";
+    await seedChannel(storage, channelId, { balance: "50000", chargedCumulativeAmount: "0" });
+
+    await updateChannelFromSettle(storage, {
+      server: { chargedAmount: "10000", chargedCumulativeAmount: "40000" },
+      local: { channelId, requestAmount: "10000", depositAmount: "1000" },
+    });
+
+    const ctx = await storage.get(channelId.toLowerCase());
+    expect(ctx?.chargedCumulativeAmount).toBe("0");
+    expect(ctx?.balance).toBe("50000");
+  });
+
+  it("writes nothing when extra chargedCumulativeAmount is not a non-negative integer", async () => {
+    const storage = new InMemoryClientChannelStorage();
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000009";
+    await seedChannel(storage, channelId, { balance: "50000", chargedCumulativeAmount: "0" });
+
+    await updateChannelFromSettle(storage, {
+      server: { chargedAmount: "10000", chargedCumulativeAmount: "10.5" },
+      local: { channelId, requestAmount: "10000", depositAmount: "1000" },
+    });
+
+    const ctx = await storage.get(channelId.toLowerCase());
+    expect(ctx?.chargedCumulativeAmount).toBe("0");
     expect(ctx?.balance).toBe("50000");
   });
 });
