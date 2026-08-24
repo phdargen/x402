@@ -88,6 +88,28 @@ func TestV1GetAssetInfo(t *testing.T) {
 		}
 	})
 
+	t.Run("ethereum empty asset uses default USDC", func(t *testing.T) {
+		info, err := evmv1.GetAssetInfo("ethereum", "")
+		if err != nil {
+			t.Fatalf("Failed to get asset info: %v", err)
+		}
+
+		if info.Address != "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" {
+			t.Errorf("Expected Ethereum USDC address, got %s", info.Address)
+		}
+	})
+
+	t.Run("avalanche empty asset uses default USDC", func(t *testing.T) {
+		info, err := evmv1.GetAssetInfo("avalanche", "")
+		if err != nil {
+			t.Fatalf("Failed to get asset info: %v", err)
+		}
+
+		if info.Address != "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E" {
+			t.Errorf("Expected Avalanche USDC address, got %s", info.Address)
+		}
+	})
+
 	t.Run("network without config fails for empty asset", func(t *testing.T) {
 		_, err := evmv1.GetAssetInfo("iotex", "")
 		if err == nil {

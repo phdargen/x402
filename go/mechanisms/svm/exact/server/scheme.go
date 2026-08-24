@@ -204,6 +204,9 @@ func (s *ExactSvmScheme) EnhancePaymentRequirements(
 
 	// Get network config
 	networkStr := string(requirements.Network)
+	if _, err := svm.NormalizeNetwork(networkStr); err != nil {
+		return requirements, err
+	}
 
 	// Get asset info
 	var assetInfo *svm.AssetInfo

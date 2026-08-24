@@ -251,6 +251,9 @@ func (s *UptoSvmScheme) EnhancePaymentRequirements(
 	extensionKeys []string,
 ) (types.PaymentRequirements, error) {
 	networkStr := string(requirements.Network)
+	if _, err := svm.NormalizeNetwork(networkStr); err != nil {
+		return requirements, err
+	}
 
 	var assetInfo *svm.AssetInfo
 	var err error

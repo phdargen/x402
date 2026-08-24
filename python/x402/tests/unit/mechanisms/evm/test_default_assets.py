@@ -13,6 +13,8 @@ from x402.mechanisms.evm.default_assets import (
 from x402.mechanisms.evm.exact.server import ExactEvmScheme
 
 BASE_USDC = DEFAULT_ASSETS["eip155:8453"][0]
+ETHEREUM_USDC = DEFAULT_ASSETS["eip155:1"][0]
+AVALANCHE_USDC = DEFAULT_ASSETS["eip155:43114"][0]
 MEZO_TESTNET_MUSD = DEFAULT_ASSETS["eip155:31611"][0]
 
 
@@ -26,6 +28,16 @@ class TestFindDefaultAsset:
 
     def test_resolves_v1_legacy_network_name_base(self):
         assert find_default_asset(BASE_USDC["asset"], "base") == BASE_USDC
+
+    def test_resolves_ethereum_and_avalanche_by_caip2_and_v1_name(self):
+        assert find_default_asset(ETHEREUM_USDC["asset"], "eip155:1") == ETHEREUM_USDC
+        assert find_default_asset(ETHEREUM_USDC["asset"], "ethereum") == ETHEREUM_USDC
+        assert find_default_asset(AVALANCHE_USDC["asset"], "eip155:43114") == AVALANCHE_USDC
+        assert find_default_asset(AVALANCHE_USDC["asset"], "avalanche") == AVALANCHE_USDC
+        assert get_default_asset("eip155:1") == ETHEREUM_USDC
+        assert get_default_asset("ethereum") == ETHEREUM_USDC
+        assert get_default_asset("eip155:43114") == AVALANCHE_USDC
+        assert get_default_asset("avalanche") == AVALANCHE_USDC
 
     def test_finds_18_decimal_musd_on_mezo_testnet(self):
         assert find_default_asset(MEZO_TESTNET_MUSD["asset"], "eip155:31611") == MEZO_TESTNET_MUSD

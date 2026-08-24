@@ -4,6 +4,8 @@ import { ExactEvmScheme } from "../../src/exact/server/scheme";
 import { DEFAULT_ASSETS, findDefaultAsset, getDefaultAsset } from "../../src/defaultAssets";
 
 const BASE_USDC = DEFAULT_ASSETS["eip155:8453"]![0]!;
+const ETHEREUM_USDC = DEFAULT_ASSETS["eip155:1"]![0]!;
+const AVALANCHE_USDC = DEFAULT_ASSETS["eip155:43114"]![0]!;
 const MEZO_TESTNET_MUSD = DEFAULT_ASSETS["eip155:31611"]![0]!;
 
 describe("defaultAssets (EVM)", () => {
@@ -18,6 +20,17 @@ describe("defaultAssets (EVM)", () => {
 
     it("resolves v1 legacy network name base to eip155:8453", () => {
       expect(findDefaultAsset(BASE_USDC.asset, "base")).toEqual(BASE_USDC);
+    });
+
+    it("resolves ethereum and avalanche by CAIP-2 and v1 name", () => {
+      expect(findDefaultAsset(ETHEREUM_USDC.asset, "eip155:1")).toEqual(ETHEREUM_USDC);
+      expect(findDefaultAsset(ETHEREUM_USDC.asset, "ethereum")).toEqual(ETHEREUM_USDC);
+      expect(findDefaultAsset(AVALANCHE_USDC.asset, "eip155:43114")).toEqual(AVALANCHE_USDC);
+      expect(findDefaultAsset(AVALANCHE_USDC.asset, "avalanche")).toEqual(AVALANCHE_USDC);
+      expect(getDefaultAsset("eip155:1")).toEqual(ETHEREUM_USDC);
+      expect(getDefaultAsset("ethereum")).toEqual(ETHEREUM_USDC);
+      expect(getDefaultAsset("eip155:43114")).toEqual(AVALANCHE_USDC);
+      expect(getDefaultAsset("avalanche")).toEqual(AVALANCHE_USDC);
     });
 
     it("finds 18-decimal mUSD on Mezo testnet", () => {

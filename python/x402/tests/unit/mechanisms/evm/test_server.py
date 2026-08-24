@@ -70,10 +70,23 @@ class TestParsePrice:
     class TestEthereumMainnetNetwork:
         """Test Ethereum Mainnet network."""
 
+        def test_should_use_ethereum_usdc_address(self):
+            """Should use Ethereum mainnet USDC address."""
+            server = ExactEvmServerScheme()
+            network = "eip155:1"
+
+            result = server.parse_price("1.00", network)
+
+            assert result.asset == get_default_asset(network)["asset"]
+            assert result.amount == "1000000"
+
+    class TestUnknownNetwork:
+        """Test networks without a configured default stablecoin."""
+
         def test_should_raise_for_network_without_default_stablecoin(self):
             """Should raise ValueError when network has no default stablecoin configured."""
             server = ExactEvmServerScheme()
-            network = "eip155:1"
+            network = "eip155:999999"
 
             with pytest.raises(ValueError, match="No default asset configured"):
                 server.parse_price("1.00", network)

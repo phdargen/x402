@@ -57,6 +57,20 @@ class TestV1GetAssetInfo:
         info = get_asset_info("base-sepolia", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
         assert info["decimals"] == 6
 
+    def test_should_return_ethereum_usdc(self):
+        info = get_asset_info("ethereum", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+        assert info["address"] == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        assert info["decimals"] == 6
+        assert info["name"] == "USD Coin"
+        assert info["version"] == "2"
+
+    def test_should_return_avalanche_usdc(self):
+        info = get_asset_info("avalanche", "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E")
+        assert info["address"] == "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"
+        assert info["decimals"] == 6
+        assert info["name"] == "USD Coin"
+        assert info["version"] == "2"
+
     def test_should_raise_for_unknown_v1_network(self):
         with pytest.raises(ValueError, match="Unknown v1 network"):
             get_asset_info("eip155:8453", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913")
