@@ -21,15 +21,15 @@ var (
 
 // NormalizeNetwork converts V1 network names to CAIP-2 format
 func NormalizeNetwork(network string) (string, error) {
-	// If it's already CAIP-2 format (contains ":"), validate it's supported
 	if strings.Contains(network, ":") {
-		if _, ok := NetworkConfigs[network]; ok {
+		switch network {
+		case SolanaMainnetCAIP2, SolanaDevnetCAIP2, SolanaTestnetCAIP2:
 			return network, nil
+		default:
+			return "", fmt.Errorf("unsupported Solana network: %s", network)
 		}
-		return "", fmt.Errorf("unsupported Solana network: %s", network)
 	}
 
-	// Otherwise, it's a V1 network name, convert to CAIP-2
 	caip2Network, ok := V1ToV2NetworkMap[network]
 	if !ok {
 		return "", fmt.Errorf("unsupported Solana network: %s", network)
@@ -38,31 +38,29 @@ func NormalizeNetwork(network string) (string, error) {
 	return caip2Network, nil
 }
 
-// GetNetworkConfig returns the configuration for a network
-func GetNetworkConfig(network string) (*NetworkConfig, error) {
-	// Normalize to CAIP-2
+// GetRpcURL returns the default RPC URL for a supported Solana network.
+func GetRpcURL(network string) (string, error) {
 	caip2Network, err := NormalizeNetwork(network)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	config, ok := NetworkConfigs[caip2Network]
-	if !ok {
-		return nil, fmt.Errorf("network configuration not found: %s", network)
+	switch caip2Network {
+	case SolanaMainnetCAIP2:
+		return MainnetRPCURL, nil
+	case SolanaDevnetCAIP2:
+		return DevnetRPCURL, nil
+	case SolanaTestnetCAIP2:
+		return TestnetRPCURL, nil
+	default:
+		return "", fmt.Errorf("unsupported Solana network: %s", network)
 	}
-
-	return &config, nil
 }
 
 // GetAssetInfo returns information about an asset on a network
 func GetAssetInfo(network string, assetSymbolOrAddress string) (*AssetInfo, error) {
 	if found := FindDefaultAsset(assetSymbolOrAddress, network); found != nil {
 		return defaultAssetToAssetInfo(found), nil
-	}
-
-	config, err := GetNetworkConfig(network)
-	if err != nil {
-		return nil, err
 	}
 
 	// Check if it's a valid Solana address (mint address)
@@ -75,8 +73,11 @@ func GetAssetInfo(network string, assetSymbolOrAddress string) (*AssetInfo, erro
 		}, nil
 	}
 
-	// Default to the network's default asset
-	return &config.DefaultAsset, nil
+	info, err := GetDefaultAsset(network, "")
+	if err != nil {
+		return nil, err
+	}
+	return defaultAssetToAssetInfo(info), nil
 }
 
 // stablecoinNetworkKey maps a network identifier to its mint lookup key.

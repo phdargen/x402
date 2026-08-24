@@ -1,0 +1,2 @@
+kind: changed
+body: Remove bundled EVM/SVM `GetNetworkConfig` and `NetworkConfig`. Default assets live in `default_assets.go`, EVM chain IDs use `GetEvmChainId`, and SVM RPC URLs use `GetRpcURL`.

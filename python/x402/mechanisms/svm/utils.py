@@ -17,11 +17,16 @@ except ImportError as e:
 
 from ...schemas.helpers import convert_to_token_amount
 from .constants import (
-    NETWORK_CONFIGS,
+    DEVNET_RPC_URL,
+    DEVNET_WS_URL,
+    MAINNET_RPC_URL,
+    MAINNET_WS_URL,
     SOLANA_DEVNET_CAIP2,
     SOLANA_MAINNET_CAIP2,
     SOLANA_TESTNET_CAIP2,
     SVM_ADDRESS_REGEX,
+    TESTNET_RPC_URL,
+    TESTNET_WS_URL,
     TOKEN_2022_PROGRAM_ADDRESS,
     TOKEN_PROGRAM_ADDRESS,
     USDC_DEVNET_ADDRESS,
@@ -29,7 +34,6 @@ from .constants import (
     USDC_TESTNET_ADDRESS,
     V1_TO_V2_NETWORK_MAP,
     AssetInfo,
-    NetworkConfig,
 )
 from .types import ExactSvmPayload, TransactionInfo
 
@@ -76,23 +80,32 @@ def normalize_network(network: str) -> str:
     return caip2_network
 
 
-def get_network_config(network: str) -> NetworkConfig:
-    """Get configuration for a network.
-
-    Args:
-        network: Network identifier (CAIP-2 or V1 format).
-
-    Returns:
-        Network configuration.
-
-    Raises:
-        ValueError: If network is not supported.
-    """
+def get_rpc_url(network: str) -> str:
+    """Return the default RPC URL for a supported Solana network."""
     caip2_network = normalize_network(network)
-    config = NETWORK_CONFIGS.get(caip2_network)
-    if not config:
-        raise ValueError(f"No configuration for network: {network}")
-    return config
+
+    if caip2_network == SOLANA_MAINNET_CAIP2:
+        return MAINNET_RPC_URL
+    if caip2_network == SOLANA_DEVNET_CAIP2:
+        return DEVNET_RPC_URL
+    if caip2_network == SOLANA_TESTNET_CAIP2:
+        return TESTNET_RPC_URL
+
+    raise ValueError(f"Unsupported SVM network: {network}")
+
+
+def get_ws_url(network: str) -> str:
+    """Return the default WebSocket URL for a supported Solana network."""
+    caip2_network = normalize_network(network)
+
+    if caip2_network == SOLANA_MAINNET_CAIP2:
+        return MAINNET_WS_URL
+    if caip2_network == SOLANA_DEVNET_CAIP2:
+        return DEVNET_WS_URL
+    if caip2_network == SOLANA_TESTNET_CAIP2:
+        return TESTNET_WS_URL
+
+    raise ValueError(f"Unsupported SVM network: {network}")
 
 
 def validate_svm_address(address: str) -> bool:

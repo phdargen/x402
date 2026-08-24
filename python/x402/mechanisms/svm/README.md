@@ -90,7 +90,10 @@ facilitator.register(
 | `FacilitatorSvmSigner` | Protocol for facilitator signers |
 | `KeypairSigner` | Client signer using Solana keypair |
 | `FacilitatorKeypairSigner` | Facilitator signer with RPC client |
-| `NETWORK_CONFIGS` | Network configuration mapping |
+| `DEFAULT_ASSETS` | USD-pegged default asset table (CAIP-2 → asset list) |
+| `get_default_asset` / `find_default_asset` | Forward and reverse default-asset lookups |
+| `get_rpc_url` / `get_ws_url` | Default RPC/WebSocket URLs for a Solana network |
+| `MAINNET_RPC_URL`, `DEVNET_RPC_URL`, `TESTNET_RPC_URL` | RPC URL constants |
 | `V1_NETWORKS` | List of V1 network names |
 
 ## Supported Networks

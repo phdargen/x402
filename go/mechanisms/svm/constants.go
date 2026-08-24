@@ -82,6 +82,11 @@ const (
 
 	CASHMainnetAddress = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH"
 
+	// Default RPC endpoints for Solana networks.
+	MainnetRPCURL = "https://api.mainnet-beta.solana.com"
+	DevnetRPCURL  = "https://api.devnet.solana.com"
+	TestnetRPCURL = "https://api.testnet.solana.com"
+
 	// TokenProgramAddress and Token2022ProgramAddress are the SPL token programs,
 	// identical on every Solana network.
 	TokenProgramAddress     = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -137,41 +142,6 @@ const (
 )
 
 var (
-	// NetworkConfigs maps CAIP-2 identifiers to network configurations
-	// See DEFAULT_ASSETS.md for guidelines on adding new networks
-	NetworkConfigs = map[string]NetworkConfig{
-		SolanaMainnetCAIP2: {
-			Name:   "Solana Mainnet",
-			CAIP2:  SolanaMainnetCAIP2,
-			RPCURL: "https://api.mainnet-beta.solana.com",
-			DefaultAsset: AssetInfo{
-				Address:  USDCMainnetAddress,
-				Symbol:   "USDC",
-				Decimals: DefaultDecimals,
-			},
-		},
-		SolanaDevnetCAIP2: {
-			Name:   "Solana Devnet",
-			CAIP2:  SolanaDevnetCAIP2,
-			RPCURL: "https://api.devnet.solana.com",
-			DefaultAsset: AssetInfo{
-				Address:  USDCDevnetAddress,
-				Symbol:   "USDC",
-				Decimals: DefaultDecimals,
-			},
-		},
-		SolanaTestnetCAIP2: {
-			Name:   "Solana Testnet",
-			CAIP2:  SolanaTestnetCAIP2,
-			RPCURL: "https://api.testnet.solana.com",
-			DefaultAsset: AssetInfo{
-				Address:  USDCTestnetAddress,
-				Symbol:   "USDC",
-				Decimals: DefaultDecimals,
-			},
-		},
-	}
-
 	// V1ToV2NetworkMap maps V1 network names to CAIP-2 identifiers
 	V1ToV2NetworkMap = map[string]string{
 		SolanaMainnetV1: SolanaMainnetCAIP2,

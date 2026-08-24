@@ -1,0 +1,1 @@
+Remove bundled EVM/SVM `get_network_config`, `NETWORK_CONFIGS`, and `NetworkConfig`. Default assets live in `default_assets.py`, EVM chain IDs use `get_evm_chain_id`, and SVM RPC URLs use `get_rpc_url` / `get_ws_url`.

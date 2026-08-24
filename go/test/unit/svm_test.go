@@ -211,31 +211,29 @@ func TestSolanaIsValidNetwork(t *testing.T) {
 	}
 }
 
-// TestSolanaGetNetworkConfig tests network config retrieval
-func TestSolanaGetNetworkConfig(t *testing.T) {
+// TestSolanaGetRpcURL tests default RPC URL lookup
+func TestSolanaGetRpcURL(t *testing.T) {
 	tests := []struct {
-		input        string
-		expectedCAIP string
-		shouldError  bool
+		input       string
+		expectedURL string
+		shouldError bool
 	}{
-		{svm.SolanaMainnetV1, svm.SolanaMainnetCAIP2, false},
-		{svm.SolanaMainnetCAIP2, svm.SolanaMainnetCAIP2, false},
-		{svm.SolanaDevnetV1, svm.SolanaDevnetCAIP2, false},
+		{svm.SolanaMainnetV1, svm.MainnetRPCURL, false},
+		{svm.SolanaMainnetCAIP2, svm.MainnetRPCURL, false},
+		{svm.SolanaDevnetV1, svm.DevnetRPCURL, false},
 		{"invalid", "", true},
 	}
 
 	for _, tt := range tests {
-		config, err := svm.GetNetworkConfig(tt.input)
+		url, err := svm.GetRpcURL(tt.input)
 		if tt.shouldError && err == nil {
 			t.Errorf("Expected error for %s", tt.input)
 		}
 		if !tt.shouldError && err != nil {
 			t.Errorf("Unexpected error for %s: %v", tt.input, err)
 		}
-		if !tt.shouldError {
-			if config.CAIP2 != tt.expectedCAIP {
-				t.Errorf("Expected CAIP2 %s, got %s", tt.expectedCAIP, config.CAIP2)
-			}
+		if !tt.shouldError && url != tt.expectedURL {
+			t.Errorf("Expected RPC URL %s, got %s", tt.expectedURL, url)
 		}
 	}
 }
