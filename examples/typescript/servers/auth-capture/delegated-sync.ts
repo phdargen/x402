@@ -73,6 +73,9 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
 
 const app = express();
 
+/**
+ * Starts the resource server for the delegated escrow, sync capture flow.
+ */
 async function main(): Promise<void> {
   await httpServer.initialize();
 

@@ -40,10 +40,10 @@ The facilitator listens on `http://localhost:4022` by default. Delegated server 
 
 Standard x402 facilitator endpoints: `POST /verify`, `POST /settle`, `GET /supported`.
 
-| Collect settle (no `payload.type`) | `extra.paymentFlow` | Contract call |
-| --- | --- | --- |
-| Escrow hold | `"escrow"` (default) | `authorize(...)` |
-| Terminal charge | `"authorization"` | `charge(...)` |
+| Collect settle (no `payload.type`) | `extra.paymentFlow`  | Contract call    |
+| ---------------------------------- | -------------------- | ---------------- |
+| Escrow hold                        | `"escrow"` (default) | `authorize(...)` |
+| Terminal charge                    | `"authorization"`    | `charge(...)`    |
 
 | Lifecycle settle (`payload.type`) | Contract call |
 | --- | --- |
