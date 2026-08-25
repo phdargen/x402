@@ -70,14 +70,16 @@ type AuthCaptureDelegatedRouteExtra = AuthCaptureMerchantFeesExtra & {
 type AuthCaptureCustomRouteExtra = AuthCaptureMerchantFeesExtra & {
   operatorType: "custom";
   captureAuthorizer: `0x${string}`;
+  /** Collect-only: the facilitator relays no lifecycle, so sync has nothing to finalize with. */
+  captureMode?: "deferred";
 };
 
 /**
  * Merchant-authored route extra. Correlated optionals are unions so forbidden
- * combinations (captureMode on an authorization route, mixed absolute/relative
- * deadlines) are unrepresentable when the literal is checked with
- * `satisfies AuthCaptureRouteExtra`. Escrow sync derives `receiverAuthorizer`
- * from the scheme signer when the route omits it.
+ * combinations (captureMode on an authorization route, sync capture on a custom
+ * operator, mixed absolute/relative deadlines) are unrepresentable when the
+ * literal is checked with `satisfies AuthCaptureRouteExtra`. Escrow sync derives
+ * `receiverAuthorizer` from the scheme signer when the route omits it.
  */
 export type AuthCaptureRouteExtra = (AuthCaptureDelegatedRouteExtra | AuthCaptureCustomRouteExtra) &
   AuthCaptureLifecycleExtra &
