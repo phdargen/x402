@@ -148,7 +148,7 @@ export type FacilitatorSvmSigner = {
   signTransaction(transaction: string, feePayer: Address, network: string): Promise<string>;
 
   /**
-   * Simulate a transaction to verify it would succeed on-chain.
+   * Simulate a transaction to verify it would succeed onchain.
    * Does not verify signatures (RPC `sigVerify` is off). Callers must verify
    * required signatures themselves; the fee-payer slot may be unsigned.
    *

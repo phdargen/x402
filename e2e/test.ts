@@ -172,6 +172,11 @@ async function revokePermit2Approval(evm: NetworkConfig, tokenAddress?: string):
   });
 }
 
+/** True when a client declares Swig setup env (svm-smart-wallet overlay). */
+function clientRequiresSwigSetup(client: { config: { environment?: { required?: string[] } } }): boolean {
+  return (client.config.environment?.required ?? []).includes('SWIG_ACCOUNT_ADDRESS');
+}
+
 /**
  * Prepare Swig smart-wallet state for svm-smart-wallet e2e client tests.
  * Called before each endpoint; creates/funds via scripts/swig-setup.ts when balance is low.
@@ -983,9 +988,7 @@ async function runTest() {
     }
   }
 
-  const hasSwigSmartWalletScenarios = filteredScenarios.some(
-    s => s.client.name === 'typescript/http/svm-smart-wallet',
-  );
+  const hasSwigSmartWalletScenarios = filteredScenarios.some(s => clientRequiresSwigSetup(s.client));
 
   if (hasSwigSmartWalletScenarios) {
     log('🔧 Swig smart-wallet scenarios detected — swig-setup runs before each endpoint when balance is low');
@@ -1512,7 +1515,7 @@ async function runTest() {
             error,
           });
 
-          if (scenario.client.name === 'typescript/http/svm-smart-wallet') {
+          if (clientRequiresSwigSetup(scenario.client)) {
             await setupSwigWallet(networks.svm.rpcUrl);
           }
 

@@ -69,7 +69,7 @@ func main() {
 
 	if svmSigner != nil {
 		settlementCache := svmmech.NewSettlementCache()
-		facilitator.Register([]x402.Network{svmNetwork}, svm.NewExactSvmScheme(svmSigner, settlementCache))
+		facilitator.Register([]x402.Network{svmNetwork}, svm.NewExactSvmScheme(svmSigner, &svm.Config{SettlementCache: settlementCache}))
 		facilitator.RegisterV1([]x402.Network{"solana-devnet"}, svmv1.NewExactSvmSchemeV1(svmSigner, settlementCache))
 	}
 
