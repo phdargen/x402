@@ -344,6 +344,28 @@ func TestExactSvmScheme_LookupTableResolvedWhenSignerSupportsIt(t *testing.T) {
 	assert.True(t, resp.IsValid)
 }
 
+func TestBalanceDeltaMeetsAmount(t *testing.T) {
+	tests := []struct {
+		name     string
+		after    uint64
+		before   uint64
+		required uint64
+		want     bool
+	}{
+		{name: "sufficient increase", after: 2000, before: 1000, required: 1000, want: true},
+		{name: "increase exceeds required", after: 2500, before: 1000, required: 1000, want: true},
+		{name: "unchanged balance", after: 1000, before: 1000, required: 1000, want: false},
+		{name: "insufficient increase", after: 1500, before: 1000, required: 1000, want: false},
+		{name: "balance decrease does not wrap", after: 900, before: 1000, required: 1000, want: false},
+		{name: "zero after lower than before", after: 0, before: 1, required: 1, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, balanceDeltaMeetsAmount(tt.after, tt.before, tt.required))
+		})
+	}
+}
+
 func TestExactSvmScheme_PostSettlementTOCTOUMiss(t *testing.T) {
 	f := buildSmartWalletFixture(t, squadsV4, 200_000)
 	signer := &mockSmartWalletSigner{

@@ -311,6 +311,10 @@ func parseUintAmount(amount string) (uint64, error) {
 	return strconv.ParseUint(amount, 10, 64)
 }
 
+func balanceDeltaMeetsAmount(after, before, required uint64) bool {
+	return after >= before && after-before >= required
+}
+
 func verifyPostSettlement(
 	ctx context.Context,
 	caps svm.SmartWalletRPCCapabilities,
@@ -381,7 +385,7 @@ func verifyPostSettlement(
 		if balErr != nil || !exists {
 			return false
 		}
-		return after-*balanceBefore >= requiredAmount
+		return balanceDeltaMeetsAmount(after, *balanceBefore, requiredAmount)
 	}
 
 	payTo, err := solana.PublicKeyFromBase58(requirements.PayTo)
@@ -401,7 +405,7 @@ func verifyPostSettlement(
 		if balErr != nil || !exists {
 			continue
 		}
-		if after-*balanceBefore >= requiredAmount {
+		if balanceDeltaMeetsAmount(after, *balanceBefore, requiredAmount) {
 			return true
 		}
 	}
