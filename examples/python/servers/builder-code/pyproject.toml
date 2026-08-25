@@ -2,7 +2,7 @@
 name = "x402-builder-code-server-example"
 version = "0.1.0"
 description = "Example of using x402 builder-code extension for ERC-8021 attribution"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
     "x402[fastapi,evm,extensions]",

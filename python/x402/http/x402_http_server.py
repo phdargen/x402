@@ -120,7 +120,7 @@ class x402HTTPResourceServer(x402HTTPServerBase):
                         result = await self._build_payment_requirements_from_options(
                             route_config.accepts, ctx, timeout=timeout
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         exception = TimeoutError("Hook execution timed out")
                         result = None
                     except Exception as e:

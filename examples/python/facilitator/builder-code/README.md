@@ -4,7 +4,7 @@ FastAPI-based facilitator that verifies and settles payments and appends ERC-802
 
 ## Prerequisites
 
-- Python 3.10+ (install via [pyenv](https://github.com/pyenv/pyenv) or [uv](https://docs.astral.sh/uv/))
+- Python 3.11+ (install via [pyenv](https://github.com/pyenv/pyenv) or [uv](https://docs.astral.sh/uv/))
 - uv package manager (install via [uv installation](https://docs.astral.sh/uv/getting-started/installation/))
 - Dedicated EVM facilitator private key with Base Sepolia ETH for transaction fees
 

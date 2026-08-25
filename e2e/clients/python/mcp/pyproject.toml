@@ -2,7 +2,7 @@
 name = "x402-mcp-client-e2e"
 version = "0.1.0"
 description = "Python MCP client for x402 e2e tests"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "e2e-client",
     "python-dotenv>=1.0.0",

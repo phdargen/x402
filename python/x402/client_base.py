@@ -10,9 +10,7 @@ import inspect
 import re
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
-
-from typing_extensions import Self
+from typing import Any, Literal, Self, TypedDict
 
 from .hook_adapters import collect_client_scheme_hook_handles, get_labeled_client_hooks
 from .interfaces import SchemeNetworkClient, SchemeNetworkClientV1
@@ -781,8 +779,8 @@ class x402ClientBase:
                 scheme_result = client.create_payment_payload(selected)
 
             # Let the async/sync driver execute the scheme uniformly. Async
-            # schemes (such as SVM on solana>=0.40) must be awaited by the
-            # async client, while the sync client can reject them clearly.
+            # schemes (such as SVM on solana>=0.40) are awaited by x402Client
+            # and run via _run_coroutine_sync on x402ClientSync.
             inner_payload = yield ("scheme_create", scheme_result, None)
 
             # 5b. Extract scheme-generated extensions (e.g. gas sponsoring) and

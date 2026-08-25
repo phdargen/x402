@@ -11,20 +11,12 @@ try:
     from solders.keypair import Keypair
     from solders.signature import Signature
     from solders.transaction import VersionedTransaction
-except ImportError:
-    try:
-        from solana.rpc.api import Client as SolanaClient  # type: ignore[no-redef]
-        from solana.rpc.commitment import Confirmed  # type: ignore[no-redef]
-        from solana.rpc.types import TxOpts  # type: ignore[no-redef]
-        from solders.keypair import Keypair  # type: ignore[no-redef]
-        from solders.signature import Signature  # type: ignore[no-redef]
-        from solders.transaction import VersionedTransaction  # type: ignore[no-redef]
-    except ImportError as e:
-        raise ImportError(
-            "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
-        ) from e
+except ImportError as e:
+    raise ImportError(
+        "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
+    ) from e
 
-from .utils import get_network_config, normalize_network
+from .utils import get_network_config
 
 
 class KeypairSigner:
@@ -134,30 +126,15 @@ class FacilitatorKeypairSigner:
             keypairs = [keypairs]
         self._keypairs = {str(kp.pubkey()): kp for kp in keypairs}
         self._custom_rpc_url = rpc_url
-        self._clients: dict[str, SolanaClient] = {}
 
     def _get_client(self, network: str) -> SolanaClient:
-        """Get or create RPC client for network.
+        """Create an RPC client for this call.
 
-        Args:
-            network: CAIP-2 network identifier.
-
-        Returns:
-            Solana RPC client (AsyncClient for solana>=0.40, Client for <0.40).
+        Do not cache across ``asyncio.run()`` — that binds httpx to a closed loop.
+        Tests may patch this method.
         """
-        caip2_network = normalize_network(network)
-
-        if caip2_network in self._clients:
-            return self._clients[caip2_network]
-
-        if self._custom_rpc_url:
-            rpc_url = self._custom_rpc_url
-        else:
-            rpc_url = get_network_config(network)["rpc_url"]
-
-        client = SolanaClient(rpc_url)
-        self._clients[caip2_network] = client
-        return client
+        rpc_url = self._custom_rpc_url or get_network_config(network)["rpc_url"]
+        return SolanaClient(rpc_url)
 
     def get_addresses(self) -> list[str]:
         """Get all fee payer addresses.
@@ -278,16 +255,18 @@ class FacilitatorKeypairSigner:
             RuntimeError: If simulation fails.
         """
         client = self._get_client(network)
+        try:
+            # Decode transaction
+            tx_bytes = base64.b64decode(tx_base64)
+            tx = VersionedTransaction.from_bytes(tx_bytes)
 
-        # Decode transaction
-        tx_bytes = base64.b64decode(tx_base64)
-        tx = VersionedTransaction.from_bytes(tx_bytes)
+            # Simulate with explicit signature verification
+            result = await client.simulate_transaction(tx, sig_verify=True, commitment=Confirmed)
 
-        # Simulate with explicit signature verification
-        result = await client.simulate_transaction(tx, sig_verify=True, commitment=Confirmed)
-
-        if result.value.err:
-            raise RuntimeError(f"Simulation failed: {result.value.err}")
+            if result.value.err:
+                raise RuntimeError(f"Simulation failed: {result.value.err}")
+        finally:
+            await client.close()
 
     async def send_transaction(self, tx_base64: str, network: str) -> str:
         """Send a transaction.
@@ -303,16 +282,18 @@ class FacilitatorKeypairSigner:
             RuntimeError: If send fails.
         """
         client = self._get_client(network)
+        try:
+            # Decode transaction from base64
+            tx_bytes = base64.b64decode(tx_base64)
 
-        # Decode transaction from base64
-        tx_bytes = base64.b64decode(tx_base64)
+            # Use send_raw_transaction with skip_preflight option
+            # This bypasses preflight checks since transaction was already simulated during verify()
+            tx_opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
+            result = await client.send_raw_transaction(tx_bytes, opts=tx_opts)
 
-        # Use send_raw_transaction with skip_preflight option
-        # This bypasses preflight checks since transaction was already simulated during verify()
-        tx_opts = TxOpts(skip_preflight=True, preflight_commitment=Confirmed)
-        result = await client.send_raw_transaction(tx_bytes, opts=tx_opts)
-
-        return str(result.value)
+            return str(result.value)
+        finally:
+            await client.close()
 
     async def confirm_transaction(
         self,
@@ -333,26 +314,29 @@ class FacilitatorKeypairSigner:
         from solders.transaction_status import TransactionConfirmationStatus
 
         client = self._get_client(network)
-        sig = Signature.from_string(signature)
+        try:
+            sig = Signature.from_string(signature)
 
-        start_time = time.time()
-        while time.time() - start_time < timeout_seconds:
-            result = await client.get_signature_statuses([sig])
+            start_time = time.time()
+            while time.time() - start_time < timeout_seconds:
+                result = await client.get_signature_statuses([sig])
 
-            if result.value and result.value[0]:
-                status = result.value[0]
-                # confirmation_status is an enum, compare properly
-                if status.confirmation_status in [
-                    TransactionConfirmationStatus.Confirmed,
-                    TransactionConfirmationStatus.Finalized,
-                ]:
-                    return
-                if status.err:
-                    raise RuntimeError(f"Transaction failed: {status.err}")
+                if result.value and result.value[0]:
+                    status = result.value[0]
+                    # confirmation_status is an enum, compare properly
+                    if status.confirmation_status in [
+                        TransactionConfirmationStatus.Confirmed,
+                        TransactionConfirmationStatus.Finalized,
+                    ]:
+                        return
+                    if status.err:
+                        raise RuntimeError(f"Transaction failed: {status.err}")
 
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
 
-        raise RuntimeError("Transaction confirmation timeout")
+            raise RuntimeError("Transaction confirmation timeout")
+        finally:
+            await client.close()
 
     @classmethod
     def from_base58(

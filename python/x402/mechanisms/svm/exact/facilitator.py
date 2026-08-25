@@ -424,7 +424,9 @@ class ExactSvmScheme:
                 payer = get_token_payer_from_transaction(tx) or ""
             except Exception:
                 payer = ""
-            return await self._reconcile_pending_settlement(tx_key, cached_signature, payer, network)
+            return await self._reconcile_pending_settlement(
+                tx_key, cached_signature, payer, network
+            )
 
         # First verify
         verify_result = await self.verify(payload, requirements, context)

@@ -2,19 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import Any
+
+import nest_asyncio
 
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
 from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..constants import SCHEME_EXACT
 from ..default_assets import find_default_asset, get_default_asset
 
-if TYPE_CHECKING:
-    from solana.rpc.api import Client as SolanaClient
-
 # Type alias for money parser (sync)
 MoneyParser = Callable[[str | int | float, str], AssetAmount | None]
+
+
+def _fetch_latest_blockhash(rpc_url: str) -> Any:
+    """Fetch the latest blockhash via AsyncClient from a sync scheme method."""
+
+    async def _fetch() -> Any:
+        from solana.rpc.async_api import AsyncClient
+
+        client = AsyncClient(rpc_url)
+        try:
+            return (await client.get_latest_blockhash()).value
+        finally:
+            await client.close()
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_fetch())
+    nest_asyncio.apply()
+    return asyncio.get_event_loop().run_until_complete(_fetch())
 
 
 class ExactSvmScheme:
@@ -42,15 +62,8 @@ class ExactSvmScheme:
             rpc_url: Optional RPC URL used to add blockhash construction hints.
         """
         self._money_parsers: list[MoneyParser] = []
-        self._rpc_client: SolanaClient | None = None
-        if rpc_url:
-            try:
-                from solana.rpc.api import Client as SolanaClient
-            except ImportError as e:
-                raise ImportError(
-                    "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
-                ) from e
-            self._rpc_client = SolanaClient(rpc_url)
+        self._rpc_url = rpc_url
+        self._rpc_client: Any = None
 
     def register_money_parser(self, parser: MoneyParser) -> ExactSvmScheme:
         """Register custom money parser in the parser chain.
@@ -151,9 +164,13 @@ class ExactSvmScheme:
         if "feePayer" in extra:
             requirements.extra["feePayer"] = extra["feePayer"]
 
-        if self._rpc_client:
+        if self._rpc_client is not None or self._rpc_url:
             try:
-                blockhash = self._rpc_client.get_latest_blockhash().value
+                if self._rpc_client is not None:
+                    blockhash = self._rpc_client.get_latest_blockhash().value
+                else:
+                    assert self._rpc_url is not None
+                    blockhash = _fetch_latest_blockhash(self._rpc_url)
                 requirements.extra["recentBlockhash"] = str(blockhash.blockhash)
                 requirements.extra["lastValidBlockHeight"] = str(blockhash.last_valid_block_height)
             except Exception:

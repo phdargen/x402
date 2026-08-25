@@ -34,7 +34,7 @@ async def get_weather():
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - uv (install via [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/))
 - Valid EVM address for receiving payments (Base Sepolia)
 - Valid SVM address for receiving payments (Solana Devnet)

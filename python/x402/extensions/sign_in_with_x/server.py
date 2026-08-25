@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -52,11 +52,11 @@ async def _enrich_siwx_payment_required_response(
         supported_networks = list({req.network for req in context.requirements})
 
     nonce = secrets.token_hex(16)
-    issued_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    issued_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     expiration_time = None
     if opts.expiration_seconds is not None:
         expiration_time = (
-            (datetime.now(timezone.utc) + timedelta(seconds=opts.expiration_seconds))
+            (datetime.now(UTC) + timedelta(seconds=opts.expiration_seconds))
             .isoformat()
             .replace("+00:00", "Z")
         )

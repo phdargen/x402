@@ -20,7 +20,7 @@ async with x402HttpxClient(client) as http:
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - uv (install via [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/))
 - Running [builder-code server](../../servers/builder-code/) and [builder-code facilitator](../../facilitator/builder-code/)
 - EVM private key funded on Base Sepolia

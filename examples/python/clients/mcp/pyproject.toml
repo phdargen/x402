@@ -2,7 +2,7 @@
 name = "x402-mcp-client-example"
 version = "0.1.0"
 description = "Example of MCP client with x402 payment support"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "x402[mcp,evm]",
     "python-dotenv>=1.0.0",

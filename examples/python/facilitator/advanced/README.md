@@ -4,7 +4,7 @@ FastAPI facilitator service demonstrating advanced x402 patterns including all-n
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - uv (install via [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/))
 - Any configured payment signer set:
   - EVM private key with Base Sepolia ETH for transaction fees

@@ -8,10 +8,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 from pydantic import BaseModel
-from typing_extensions import Self
 
 from .hook_adapters import (
     build_extension_server_hook_handles,

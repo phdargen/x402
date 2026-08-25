@@ -71,6 +71,7 @@ class TestCreatePaymentPayload:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
+        mock_client.close = AsyncMock()
         return mock_client
 
     @staticmethod
@@ -150,7 +151,9 @@ class TestCreatePaymentPayload:
         [None, "", "not-a-blockhash", 123],
         ids=["absent", "empty", "malformed", "wrong-type"],
     )
-    async def test_falls_back_to_rpc_for_unusable_supplied_blockhash(self, recent_blockhash: object):
+    async def test_falls_back_to_rpc_for_unusable_supplied_blockhash(
+        self, recent_blockhash: object
+    ):
         """Missing or invalid challenge hints should fall back to RPC."""
         client = ExactSvmClientScheme(KeypairSigner(Keypair.from_seed(bytes([1] * 32))))
         rpc_client = self._mock_rpc_client()
@@ -188,6 +191,7 @@ class TestMintMetadataCache:
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
 
+        mock_client.close = AsyncMock()
         return mock_client
 
     async def test_v2_reuses_cached_mint_metadata(self):

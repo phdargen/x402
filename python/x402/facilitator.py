@@ -7,9 +7,9 @@ implementations. Runs as a service, manages scheme mechanisms, handles V1/V2 rou
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Self
 
-from typing_extensions import Self
+import nest_asyncio
 
 from .facilitator_base import (
     AfterSettleHook,
@@ -34,6 +34,21 @@ from .schemas import (
     SettleResponse,
     VerifyResponse,
 )
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run a scheme coroutine from a sync x402 driver.
+
+    Uses ``asyncio.run`` when no loop is running (requests / Flask). If a loop
+    is already running, nest_asyncio allows ``run_until_complete``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    nest_asyncio.apply()
+    return asyncio.get_event_loop().run_until_complete(coro)
+
 
 # ============================================================================
 # Async Facilitator (Default)
@@ -143,20 +158,21 @@ class x402Facilitator(x402FacilitatorBase):
         gen = self._verify_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
+            command = gen.send(result)
             while True:
-                phase, hook, ctx = gen.send(result)
+                phase, hook, ctx = command
                 try:
                     if phase == "scheme_verify":
-                        result = await hook
+                        result = hook
+                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                            result = await result
                     else:
                         result = await self._execute_hook(hook, ctx)
                 except Exception as verify_error:
                     result = None
                     command = gen.throw(verify_error)
                 else:
-                    command = None
-                if command is not None:
-                    continue
+                    command = gen.send(result)
         except StopIteration as e:
             return e.value
 
@@ -191,20 +207,21 @@ class x402Facilitator(x402FacilitatorBase):
         gen = self._settle_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
+            command = gen.send(result)
             while True:
-                phase, hook, ctx = gen.send(result)
+                phase, hook, ctx = command
                 try:
                     if phase == "scheme_settle":
-                        result = await hook
+                        result = hook
+                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                            result = await result
                     else:
                         result = await self._execute_hook(hook, ctx)
                 except Exception as settle_error:
                     result = None
                     command = gen.throw(settle_error)
                 else:
-                    command = None
-                if command is not None:
-                    continue
+                    command = gen.send(result)
         except StopIteration as e:
             return e.value
 
@@ -315,31 +332,25 @@ class x402FacilitatorSync(x402FacilitatorBase):
         Raises:
             SchemeNotFoundError: If no facilitator registered for scheme/network.
             PaymentAbortedError: If a before hook aborts.
-            TypeError: If scheme uses async methods (use x402Facilitator instead).
         """
         gen = self._verify_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
+            command = gen.send(result)
             while True:
-                phase, hook, ctx = gen.send(result)
+                phase, hook, ctx = command
                 try:
                     if phase == "scheme_verify":
-                        if asyncio.iscoroutine(hook):
-                            hook.close()
-                            raise TypeError(
-                                "Async scheme methods are not supported in x402FacilitatorSync. "
-                                "Use x402Facilitator for async scheme support."
-                            )
                         result = hook
+                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                            result = _run_coroutine_sync(result)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as verify_error:
                     result = None
                     command = gen.throw(verify_error)
                 else:
-                    command = None
-                if command is not None:
-                    continue
+                    command = gen.send(result)
         except StopIteration as e:
             return e.value
 
@@ -370,31 +381,25 @@ class x402FacilitatorSync(x402FacilitatorBase):
         Raises:
             SchemeNotFoundError: If no facilitator registered for scheme/network.
             PaymentAbortedError: If a before hook aborts.
-            TypeError: If scheme uses async methods (use x402Facilitator instead).
         """
         gen = self._settle_core(payload, requirements, payload_bytes, requirements_bytes)
         result = None
         try:
+            command = gen.send(result)
             while True:
-                phase, hook, ctx = gen.send(result)
+                phase, hook, ctx = command
                 try:
                     if phase == "scheme_settle":
-                        if asyncio.iscoroutine(hook):
-                            hook.close()
-                            raise TypeError(
-                                "Async scheme methods are not supported in x402FacilitatorSync. "
-                                "Use x402Facilitator for async scheme support."
-                            )
                         result = hook
+                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                            result = _run_coroutine_sync(result)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as settle_error:
                     result = None
                     command = gen.throw(settle_error)
                 else:
-                    command = None
-                if command is not None:
-                    continue
+                    command = gen.send(result)
         except StopIteration as e:
             return e.value
 

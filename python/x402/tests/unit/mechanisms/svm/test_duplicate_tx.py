@@ -52,7 +52,7 @@ class TestFixedBlockhashProducesDistinctTransactions:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
-
+        mock_client.close = AsyncMock()
         return mock_client
 
     @pytest.fixture
@@ -139,7 +139,7 @@ class TestFixedBlockhashProducesDistinctTransactions:
             mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
             mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
             mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
-
+            mock_client.close = AsyncMock()
             return mock_client
 
         with patch.object(client, "_get_client", side_effect=get_mock_client):
@@ -219,7 +219,7 @@ class TestMemoDataIsValidUTF8:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
-
+        mock_client.close = AsyncMock()
         return mock_client
 
     @pytest.fixture
@@ -298,6 +298,7 @@ class TestMemoInstructionHasNoSigners:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
+        mock_client.close = AsyncMock()
         return mock_client
 
     @pytest.fixture
@@ -346,6 +347,7 @@ class TestSellerMemo:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
+        mock_client.close = AsyncMock()
         return mock_client
 
     @pytest.fixture
@@ -483,6 +485,7 @@ class TestMessageHashMalleabilityResistance:
         mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
         mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
         mock_client.get_account_info = AsyncMock(return_value=mock_account_info)
+        mock_client.close = AsyncMock()
         return mock_client
 
     @pytest.fixture
@@ -545,6 +548,7 @@ class TestMessageHashMalleabilityResistance:
             mock_account_info.value.owner = Pubkey.from_string(TOKEN_PROGRAM_ADDRESS)
             mock_account_info.value.data = bytes(44) + bytes([6]) + bytes(37)
             mock.get_account_info = AsyncMock(return_value=mock_account_info)
+            mock.close = AsyncMock()
             return mock
 
         client = ExactSvmClientScheme(KeypairSigner(test_keypair))

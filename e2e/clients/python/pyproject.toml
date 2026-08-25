@@ -2,7 +2,7 @@
 name = "e2e-client"
 version = "0.1.0"
 description = "Shared client setup for Python e2e clients"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "eth-account>=0.13.0",
     "x402[evm,svm,tvm,extensions]"

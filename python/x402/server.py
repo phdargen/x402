@@ -8,9 +8,7 @@ and settling transactions via facilitator clients.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
-
-from typing_extensions import Self
+from typing import Any, Self
 
 from .schemas import (
     PaymentPayload,

@@ -12,18 +12,10 @@ try:
     from solders.pubkey import Pubkey
     from solders.signature import Signature
     from solders.transaction import VersionedTransaction
-except ImportError:
-    try:
-        from solana.rpc.api import Client as SolanaClient  # type: ignore[no-redef]
-        from solders.instruction import AccountMeta, Instruction  # type: ignore[no-redef]
-        from solders.message import MessageV0  # type: ignore[no-redef]
-        from solders.pubkey import Pubkey  # type: ignore[no-redef]
-        from solders.signature import Signature  # type: ignore[no-redef]
-        from solders.transaction import VersionedTransaction  # type: ignore[no-redef]
-    except ImportError as e:
-        raise ImportError(
-            "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
-        ) from e
+except ImportError as e:
+    raise ImportError(
+        "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
+    ) from e
 
 from ....schemas import PaymentRequirements
 from ..constants import (
@@ -38,7 +30,7 @@ from ..default_assets import find_default_asset
 from ..mint_cache import MintMetadataCache, get_cached_mint_metadata
 from ..signer import ClientSvmSigner
 from ..types import ExactSvmPayload
-from ..utils import derive_ata, get_network_config, normalize_network, resolve_blockhash
+from ..utils import derive_ata, get_network_config, resolve_blockhash
 
 
 class ExactSvmScheme:
@@ -63,31 +55,16 @@ class ExactSvmScheme:
         """
         self._signer = signer
         self._custom_rpc_url = rpc_url
-        self._clients: dict[str, SolanaClient] = {}
         self._mint_cache: MintMetadataCache = {}
 
     def _get_client(self, network: str) -> SolanaClient:
-        """Get or create RPC client for network.
+        """Create an RPC client for this call.
 
-        Args:
-            network: Network identifier.
-
-        Returns:
-            Solana RPC client.
+        Do not cache across ``asyncio.run()`` — that binds httpx to a closed loop.
+        Tests may patch this method.
         """
-        caip2_network = normalize_network(network)
-
-        if caip2_network in self._clients:
-            return self._clients[caip2_network]
-
-        if self._custom_rpc_url:
-            rpc_url = self._custom_rpc_url
-        else:
-            rpc_url = get_network_config(network)["rpc_url"]
-
-        client = SolanaClient(rpc_url)
-        self._clients[caip2_network] = client
-        return client
+        rpc_url = self._custom_rpc_url or get_network_config(network)["rpc_url"]
+        return SolanaClient(rpc_url)
 
     async def create_payment_payload(
         self,
@@ -107,7 +84,18 @@ class ExactSvmScheme:
         """
         network = str(requirements.network)
         client = self._get_client(network)
+        try:
+            return await self._create_payment_payload(client, network, requirements)
+        finally:
+            await client.close()
 
+    async def _create_payment_payload(
+        self,
+        client: SolanaClient,
+        network: str,
+        requirements: PaymentRequirements,
+    ) -> dict[str, Any]:
+        """Build the signed SPL TransferChecked inner payload."""
         # Facilitator must provide feePayer to cover transaction fees
         extra = requirements.extra or {}
         fee_payer_str = extra.get("feePayer")

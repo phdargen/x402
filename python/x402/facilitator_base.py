@@ -5,8 +5,7 @@ Contains shared logic for facilitator implementations.
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable, Coroutine, Generator
+from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any, Generic, Literal, TypeVar
 
@@ -70,7 +69,7 @@ SyncAfterSettleHook = Callable[[SettleResultContext], None]
 SyncOnSettleFailureHook = Callable[[SettleFailureContext], RecoveredSettleResult | None]
 
 # Hook command type for generator-based implementation
-HookPhase = Literal["before", "after", "failure"]
+HookPhase = Literal["before", "after", "failure", "scheme_verify", "scheme_settle"]
 HookCommand = tuple[HookPhase, Any, Any]  # (phase, hook, context)
 
 
@@ -315,7 +314,7 @@ class x402FacilitatorBase:
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
-    ) -> VerifyResponse | Coroutine:
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
         """Verify V2 payment. Returns VerifyResponse or coroutine if scheme is async."""
         scheme = payload.get_scheme()
         network = payload.get_network()
@@ -324,16 +323,13 @@ class x402FacilitatorBase:
         if facilitator is None:
             raise SchemeNotFoundError(scheme, network)
 
-        result = facilitator.verify(payload, requirements, self._build_facilitator_context())
-        if asyncio.iscoroutine(result):
-            return result
-        return result
+        return facilitator.verify(payload, requirements, self._build_facilitator_context())
 
     def _verify_v1(
         self,
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
-    ) -> VerifyResponse | Coroutine:
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
         """Verify V1 payment. Returns VerifyResponse or coroutine if scheme is async."""
         scheme = payload.get_scheme()
         network = payload.get_network()
@@ -342,16 +338,13 @@ class x402FacilitatorBase:
         if facilitator is None:
             raise SchemeNotFoundError(scheme, network)
 
-        result = facilitator.verify(payload, requirements, self._build_facilitator_context())
-        if asyncio.iscoroutine(result):
-            return result
-        return result
+        return facilitator.verify(payload, requirements, self._build_facilitator_context())
 
     def _settle_v2(
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
-    ) -> SettleResponse | Coroutine:
+    ) -> SettleResponse | Awaitable[SettleResponse]:
         """Settle V2 payment. Returns SettleResponse or coroutine if scheme is async."""
         scheme = payload.get_scheme()
         network = payload.get_network()
@@ -360,16 +353,13 @@ class x402FacilitatorBase:
         if facilitator is None:
             raise SchemeNotFoundError(scheme, network)
 
-        result = facilitator.settle(payload, requirements, self._build_facilitator_context())
-        if asyncio.iscoroutine(result):
-            return result
-        return result
+        return facilitator.settle(payload, requirements, self._build_facilitator_context())
 
     def _settle_v1(
         self,
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
-    ) -> SettleResponse | Coroutine:
+    ) -> SettleResponse | Awaitable[SettleResponse]:
         """Settle V1 payment. Returns SettleResponse or coroutine if scheme is async."""
         scheme = payload.get_scheme()
         network = payload.get_network()
@@ -378,10 +368,7 @@ class x402FacilitatorBase:
         if facilitator is None:
             raise SchemeNotFoundError(scheme, network)
 
-        result = facilitator.settle(payload, requirements, self._build_facilitator_context())
-        if asyncio.iscoroutine(result):
-            return result
-        return result
+        return facilitator.settle(payload, requirements, self._build_facilitator_context())
 
     # ========================================================================
     # Core Logic Generators (shared between async/sync)
@@ -427,23 +414,25 @@ class x402FacilitatorBase:
                 raise PaymentAbortedError(result.reason)
 
         try:
-            # Route by version
+            # Route by version; the driver awaits or runs a coroutine if needed
             if payload.x402_version == 1:
-                verify_result_or_coro = self._verify_v1(
-                    payload,  # type: ignore[arg-type]
-                    requirements,  # type: ignore[arg-type]
+                verify_result = yield (
+                    "scheme_verify",
+                    self._verify_v1(
+                        payload,  # type: ignore[arg-type]
+                        requirements,  # type: ignore[arg-type]
+                    ),
+                    None,
                 )
             else:
-                verify_result_or_coro = self._verify_v2(
-                    payload,  # type: ignore[arg-type]
-                    requirements,  # type: ignore[arg-type]
+                verify_result = yield (
+                    "scheme_verify",
+                    self._verify_v2(
+                        payload,  # type: ignore[arg-type]
+                        requirements,  # type: ignore[arg-type]
+                    ),
+                    None,
                 )
-
-            # Handle async scheme methods
-            if asyncio.iscoroutine(verify_result_or_coro):
-                verify_result = yield ("scheme_verify", verify_result_or_coro, None)
-            else:
-                verify_result = verify_result_or_coro
 
             # Check if verification failed
             if not verify_result.is_valid:
@@ -540,23 +529,25 @@ class x402FacilitatorBase:
                 raise PaymentAbortedError(result.reason)
 
         try:
-            # Route by version
+            # Route by version; the driver awaits or runs a coroutine if needed
             if payload.x402_version == 1:
-                settle_result_or_coro = self._settle_v1(
-                    payload,  # type: ignore[arg-type]
-                    requirements,  # type: ignore[arg-type]
+                settle_result = yield (
+                    "scheme_settle",
+                    self._settle_v1(
+                        payload,  # type: ignore[arg-type]
+                        requirements,  # type: ignore[arg-type]
+                    ),
+                    None,
                 )
             else:
-                settle_result_or_coro = self._settle_v2(
-                    payload,  # type: ignore[arg-type]
-                    requirements,  # type: ignore[arg-type]
+                settle_result = yield (
+                    "scheme_settle",
+                    self._settle_v2(
+                        payload,  # type: ignore[arg-type]
+                        requirements,  # type: ignore[arg-type]
+                    ),
+                    None,
                 )
-
-            # Handle async scheme methods
-            if asyncio.iscoroutine(settle_result_or_coro):
-                settle_result = yield ("scheme_settle", settle_result_or_coro, None)
-            else:
-                settle_result = settle_result_or_coro
 
             # Check if settlement failed
             if not settle_result.success:

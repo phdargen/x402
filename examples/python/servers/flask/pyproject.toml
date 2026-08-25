@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "logan", email = "kcs93023@gmail.com" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["x402", "payment", "protocol", "http", "402"]
 dependencies = [
     "python-dotenv>=1.2.1",
@@ -51,7 +51,7 @@ ignore = [
 known-first-party = ["x402"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

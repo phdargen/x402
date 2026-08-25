@@ -42,7 +42,7 @@ app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
 - At least one payout address: EVM, SVM, or both
 - Facilitator URL (see [facilitator list](https://www.x402.org/ecosystem?category=facilitators))

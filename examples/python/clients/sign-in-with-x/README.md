@@ -51,7 +51,7 @@ The `x402HttpxClient` handles the full 402 → sign/pay → retry cycle automati
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
 - At least one private key (EVM or SVM) for payments and SIWX authentication
 - Running SIWX server (see [server example](../../servers/sign-in-with-x/))

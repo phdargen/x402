@@ -1,7 +1,7 @@
 """Helpers for caching immutable SPL mint metadata."""
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from solders.pubkey import Pubkey
 
@@ -19,8 +19,14 @@ class MintMetadata:
 MintMetadataCache = dict[tuple[str, str], MintMetadata]
 
 
+class MintAccountClient(Protocol):
+    """RPC client surface used to load mint metadata."""
+
+    async def get_account_info(self, mint: Pubkey) -> Any: ...
+
+
 async def get_cached_mint_metadata(
-    client: Any,
+    client: MintAccountClient,
     network: str,
     mint: Pubkey,
     cache: MintMetadataCache,

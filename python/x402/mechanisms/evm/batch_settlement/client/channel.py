@@ -5,9 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypedDict, cast
-
-from typing_extensions import NotRequired
+from typing import NotRequired, TypedDict, cast
 
 try:
     from eth_utils import to_checksum_address

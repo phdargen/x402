@@ -2,7 +2,7 @@
 name = "x402-payment-identifier-server-example"
 version = "0.1.0"
 description = "Example of using x402 payment-identifier extension for idempotent payments"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
     "x402[fastapi,evm,extensions]",

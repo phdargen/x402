@@ -3,7 +3,8 @@
 This module defines the Protocol interfaces that payment schemes must implement
 to integrate with x402Client, x402ResourceServer, and x402Facilitator.
 
-Note: All protocols are sync-first (matching legacy SDK pattern).
+Note: Scheme create/verify/settle methods may be sync or async
+(``T | Awaitable[T]``). Sync x402 drivers run returned coroutines.
 """
 
 from __future__ import annotations
@@ -116,15 +117,15 @@ class SchemeNetworkClient(Protocol):
     def create_payment_payload(
         self,
         requirements: PaymentRequirements,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Awaitable[dict[str, Any]]:
         """Create the scheme-specific inner payload dict.
 
         Args:
             requirements: The payment requirements to fulfill.
 
         Returns:
-            Scheme-specific payload dict. x402Client wraps this into
-            a full PaymentPayload with x402_version, accepted, etc.
+            Scheme-specific payload dict, or an awaitable of one. x402Client
+            wraps this into a full PaymentPayload with x402_version, accepted, etc.
         """
         ...
 
@@ -143,15 +144,15 @@ class SchemeNetworkClientV1(Protocol):
     def create_payment_payload(
         self,
         requirements: PaymentRequirementsV1,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Awaitable[dict[str, Any]]:
         """Create the scheme-specific inner payload dict for V1.
 
         Args:
             requirements: The V1 payment requirements to fulfill.
 
         Returns:
-            Scheme-specific payload dict. x402Client wraps this into
-            a full PaymentPayloadV1.
+            Scheme-specific payload dict, or an awaitable of one. x402Client
+            wraps this into a full PaymentPayloadV1.
         """
         ...
 
@@ -466,7 +467,7 @@ class SchemeNetworkFacilitator(Protocol):
         payload: PaymentPayload,
         requirements: PaymentRequirements,
         context: FacilitatorContext | None = None,
-    ) -> VerifyResponse:
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
         """Verify a payment.
 
         Args:
@@ -477,6 +478,7 @@ class SchemeNetworkFacilitator(Protocol):
         Returns:
             VerifyResponse with is_valid=True on success,
             or is_valid=False with invalid_reason on failure.
+            May be awaitable for schemes that perform RPC.
         """
         ...
 
@@ -485,7 +487,7 @@ class SchemeNetworkFacilitator(Protocol):
         payload: PaymentPayload,
         requirements: PaymentRequirements,
         context: FacilitatorContext | None = None,
-    ) -> SettleResponse:
+    ) -> SettleResponse | Awaitable[SettleResponse]:
         """Settle a payment.
 
         Args:
@@ -496,6 +498,7 @@ class SchemeNetworkFacilitator(Protocol):
         Returns:
             SettleResponse with success=True and transaction on success,
             or success=False with error_reason on failure.
+            May be awaitable for schemes that perform RPC.
         """
         ...
 
@@ -529,7 +532,7 @@ class SchemeNetworkFacilitatorV1(Protocol):
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
         context: FacilitatorContext | None = None,
-    ) -> VerifyResponse:
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
         """Verify a V1 payment."""
         ...
 
@@ -538,7 +541,7 @@ class SchemeNetworkFacilitatorV1(Protocol):
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
         context: FacilitatorContext | None = None,
-    ) -> SettleResponse:
+    ) -> SettleResponse | Awaitable[SettleResponse]:
         """Settle a V1 payment."""
         ...
 

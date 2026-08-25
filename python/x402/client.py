@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Generator
-from typing import Any, TypeVar
+from typing import Any, Self, TypeVar
 
-from typing_extensions import Self
+import nest_asyncio
 
 from .client_base import (
     DEFAULT_MAX_AMOUNT_PER_PAYMENT,
@@ -62,6 +62,20 @@ __all__ = [
     "prefer_scheme",
     "max_amount",
 ]
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run a scheme coroutine from a sync x402 driver.
+
+    Uses ``asyncio.run`` when no loop is running (requests / Flask). If a loop
+    is already running, nest_asyncio allows ``run_until_complete``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    nest_asyncio.apply()
+    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 # ============================================================================
@@ -430,11 +444,7 @@ class x402ClientSync(x402ClientBase):
                     if phase == "scheme_create":
                         result = hook
                         if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result.close()
-                            raise TypeError(
-                                "Async scheme methods are not supported in x402ClientSync. "
-                                "Use x402Client for async scheme support."
-                            )
+                            result = _run_coroutine_sync(result)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as hook_error:

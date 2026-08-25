@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "x402 Contributors" },
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["x402", "payment", "protocol", "http", "402", "custom"]
 dependencies = [
     "x402[fastapi,evm]",
@@ -53,7 +53,7 @@ ignore = [
 known-first-party = ["x402"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true

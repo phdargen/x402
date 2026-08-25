@@ -28,7 +28,7 @@ response.headers["PAYMENT-RESPONSE"] = encode(settle_result)
 
 ## Prerequisites
 
-- Python 3.10+ (install via [pyenv](https://github.com/pyenv/pyenv))
+- Python 3.11+ (install via [pyenv](https://github.com/pyenv/pyenv))
 - uv (install via [astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/))
 - Valid EVM address for receiving payments
 - URL of a facilitator supporting the desired payment network, see [facilitator list](https://www.x402.org/ecosystem?category=facilitators)

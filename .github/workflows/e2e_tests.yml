@@ -145,7 +145,7 @@ jobs:
 
       - name: Install Python
         if: steps.families.outputs.configured == 'true'
-        run: uv python install 3.10
+        run: uv python install 3.11
 
       - name: Install and build TypeScript SDK
         if: steps.families.outputs.configured == 'true'

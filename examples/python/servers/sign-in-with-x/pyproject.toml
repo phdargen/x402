@@ -2,7 +2,7 @@
 name = "x402-sign-in-with-x-server-example"
 version = "0.1.0"
 description = "Example server for x402 sign-in-with-x extension"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
     "x402[fastapi,evm,svm,extensions]",

@@ -41,7 +41,7 @@ async with x402HttpxClient(client) as http:
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - uv (install via [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/))
 - A running payment-identifier server (see [payment-identifier server example](../../servers/payment-identifier))
 - Valid EVM private key for making payments (Base Sepolia with USDC)

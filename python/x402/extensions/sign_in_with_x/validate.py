@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from .types import SIWxPayload, SIWxValidationOptions, SIWxValidationResult
@@ -60,9 +60,9 @@ async def validate_siwx_message(
             invalid_message="Invalid issuedAt timestamp",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if issued_at.tzinfo is None:
-        issued_at = issued_at.replace(tzinfo=timezone.utc)
+        issued_at = issued_at.replace(tzinfo=UTC)
     age_ms = (now - issued_at).total_seconds() * 1000
     if age_ms > max_age:
         return SIWxValidationResult(
@@ -89,7 +89,7 @@ async def validate_siwx_message(
                 invalid_message="Invalid expirationTime timestamp",
             )
         if expiration.tzinfo is None:
-            expiration = expiration.replace(tzinfo=timezone.utc)
+            expiration = expiration.replace(tzinfo=UTC)
         if expiration < now:
             return SIWxValidationResult(
                 is_valid=False,
@@ -107,7 +107,7 @@ async def validate_siwx_message(
                 invalid_message="Invalid notBefore timestamp",
             )
         if not_before.tzinfo is None:
-            not_before = not_before.replace(tzinfo=timezone.utc)
+            not_before = not_before.replace(tzinfo=UTC)
         if now < not_before:
             return SIWxValidationResult(
                 is_valid=False,

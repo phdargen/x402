@@ -1211,3 +1211,85 @@ class TestPaymentFlowSelection:
         )
         await client.create_payment_payload(self._required(auth, upfront))
         assert mock_client.create_calls[0] == upfront
+
+
+class AsyncMockSchemeClient:
+    """V2 scheme whose create_payment_payload is a coroutine."""
+
+    scheme = "exact"
+
+    def __init__(self) -> None:
+        self.find_default_asset = lambda asset, _network=None: {
+            "asset": asset,
+            "decimals": 6,
+            "symbol": "MOCK",
+        }
+
+    async def create_payment_payload(self, requirements):
+        return {"mock": "async-payload", "network": requirements.network}
+
+
+class AsyncMockSchemeClientV1:
+    """V1 scheme whose create_payment_payload is a coroutine."""
+
+    scheme = "mock-v1"
+
+    def __init__(self) -> None:
+        self.find_default_asset = lambda asset, _network=None: {
+            "asset": asset,
+            "decimals": 6,
+            "symbol": "MOCK",
+        }
+
+    async def create_payment_payload(self, requirements):
+        return {"mock": "async-v1-payload", "network": requirements.network}
+
+
+def _make_v1_requirements() -> PaymentRequirementsV1:
+    return PaymentRequirementsV1(
+        scheme="mock-v1",
+        network="base-sepolia",
+        max_amount_required="1000000",
+        resource="https://example.com",
+        pay_to="0x1234567890123456789012345678901234567890",
+        max_timeout_seconds=300,
+        asset="0x0000000000000000000000000000000000000000",
+    )
+
+
+class TestAsyncSchemeCreatePaymentPayload:
+    """Async scheme methods work on x402Client (awaited) and x402ClientSync (bridged)."""
+
+    @pytest.mark.asyncio
+    async def test_v2_async_scheme_via_async_client(self):
+        client = x402Client().register("eip155:8453", AsyncMockSchemeClient())
+        payload = await client.create_payment_payload(
+            PaymentRequired(x402_version=2, accepts=[_make_payment_requirements()]),
+        )
+        assert payload.payload["mock"] == "async-payload"
+        assert payload.x402_version == 2
+
+    def test_v2_async_scheme_via_sync_client(self):
+        client = x402ClientSync().register("eip155:8453", AsyncMockSchemeClient())
+        payload = client.create_payment_payload(
+            PaymentRequired(x402_version=2, accepts=[_make_payment_requirements()]),
+        )
+        assert payload.payload["mock"] == "async-payload"
+        assert payload.x402_version == 2
+
+    @pytest.mark.asyncio
+    async def test_v1_async_scheme_via_async_client(self):
+        client = x402Client().register_v1("base-sepolia", AsyncMockSchemeClientV1())
+        payload = await client.create_payment_payload(
+            PaymentRequiredV1(x402_version=1, accepts=[_make_v1_requirements()]),
+        )
+        assert payload.payload["mock"] == "async-v1-payload"
+        assert payload.x402_version == 1
+
+    def test_v1_async_scheme_via_sync_client(self):
+        client = x402ClientSync().register_v1("base-sepolia", AsyncMockSchemeClientV1())
+        payload = client.create_payment_payload(
+            PaymentRequiredV1(x402_version=1, accepts=[_make_v1_requirements()]),
+        )
+        assert payload.payload["mock"] == "async-v1-payload"
+        assert payload.x402_version == 1

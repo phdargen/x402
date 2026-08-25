@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from eth_account import Account
@@ -68,7 +68,7 @@ def _bound_request_url(info: dict) -> str:
 
 
 def _valid_payload(**overrides) -> SIWxPayload:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     base = {
         "domain": "api.example.com",
         "address": "0x1234567890123456789012345678901234567890",
@@ -98,11 +98,11 @@ def _test_challenge(**opts) -> dict:
                 "uri": opts.get("resource_uri", "https://api.example.com/resource"),
                 "version": "1",
                 "nonce": secrets.token_hex(16),
-                "issuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "issuedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 **(
                     {
                         "expirationTime": (
-                            datetime.now(timezone.utc)
+                            datetime.now(UTC)
                             + timedelta(seconds=opts["expiration_seconds"])
                         )
                         .isoformat()
@@ -140,7 +140,7 @@ class TestPayloadSchema:
                 "chainId": "eip155:8453",
                 "type": "eip191",
                 "nonce": "abc123",
-                "issuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "issuedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "signature": "0xabcdef",
             }
         )
@@ -210,7 +210,7 @@ class TestValidate:
             (
                 "invalid_siwx_issued_at_too_old",
                 {
-                    "issuedAt": (datetime.now(timezone.utc) - timedelta(minutes=10))
+                    "issuedAt": (datetime.now(UTC) - timedelta(minutes=10))
                     .isoformat()
                     .replace("+00:00", "Z")
                 },
@@ -219,7 +219,7 @@ class TestValidate:
             (
                 "invalid_siwx_issued_at_in_future",
                 {
-                    "issuedAt": (datetime.now(timezone.utc) + timedelta(seconds=60))
+                    "issuedAt": (datetime.now(UTC) + timedelta(seconds=60))
                     .isoformat()
                     .replace("+00:00", "Z")
                 },
@@ -229,7 +229,7 @@ class TestValidate:
             (
                 "invalid_siwx_expired",
                 {
-                    "expirationTime": (datetime.now(timezone.utc) - timedelta(seconds=1))
+                    "expirationTime": (datetime.now(UTC) - timedelta(seconds=1))
                     .isoformat()
                     .replace("+00:00", "Z")
                 },
@@ -239,7 +239,7 @@ class TestValidate:
             (
                 "invalid_siwx_not_yet_valid",
                 {
-                    "notBefore": (datetime.now(timezone.utc) + timedelta(seconds=60))
+                    "notBefore": (datetime.now(UTC) + timedelta(seconds=60))
                     .isoformat()
                     .replace("+00:00", "Z")
                 },
@@ -261,7 +261,7 @@ class TestValidate:
     ):
         payload = _valid_payload(
             **{
-                "issuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "issuedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 **overrides,
             }
         )
@@ -272,7 +272,7 @@ class TestValidate:
     @pytest.mark.asyncio
     async def test_propagates_check_nonce_errors(self):
         payload = _valid_payload(
-            issuedAt=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            issuedAt=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         )
 
         def _raise(_nonce: str) -> bool:
@@ -820,7 +820,7 @@ class TestOriginBinding:
                     "uri": "not-a-url",
                     "version": "1",
                     "nonce": "abc",
-                    "issuedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "issuedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 },
                 "https://api.example.com/resource",
             )

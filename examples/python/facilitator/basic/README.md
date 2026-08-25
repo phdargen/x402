@@ -4,7 +4,7 @@ FastAPI-based facilitator service that verifies and settles payments on-chain fo
 
 ## Prerequisites
 
-- Python 3.10+ (install via [pyenv](https://github.com/pyenv/pyenv) or [uv](https://docs.astral.sh/uv/))
+- Python 3.11+ (install via [pyenv](https://github.com/pyenv/pyenv) or [uv](https://docs.astral.sh/uv/))
 - uv package manager (install via [uv installation](https://docs.astral.sh/uv/getting-started/installation/))
 - Dedicated EVM facilitator private key with Base Sepolia ETH for transaction fees
 - Dedicated SVM facilitator private key with Solana Devnet SOL for transaction fees

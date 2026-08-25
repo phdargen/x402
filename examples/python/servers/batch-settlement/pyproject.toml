@@ -3,7 +3,7 @@ name = "x402-batch-settlement-server-example"
 version = "0.1.0"
 description = "Example FastAPI server using the x402 batch-settlement EVM scheme"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["x402", "payment", "batch-settlement", "evm"]
 dependencies = [
     "x402[fastapi,evm]",

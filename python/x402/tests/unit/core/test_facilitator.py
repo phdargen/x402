@@ -1,8 +1,16 @@
 """Unit tests for x402Facilitator and x402FacilitatorSync."""
 
+import pytest
+
 from x402 import x402Facilitator, x402FacilitatorSync
 from x402.interfaces import FacilitatorExtension
-from x402.schemas import SettleResponse, VerifyResponse
+from x402.schemas import (
+    PaymentPayload,
+    PaymentRequirements,
+    SettleResponse,
+    VerifyResponse,
+)
+from x402.schemas.hooks import RecoveredSettleResult, RecoveredVerifyResult
 
 # =============================================================================
 # Mock Scheme Facilitators
@@ -413,3 +421,121 @@ class TestFindFacilitatorV1:
         assert facilitator._find_facilitator("exact", "base-sepolia") is None
         # V1 lookup shouldn't find V2
         assert facilitator._find_facilitator_v1("exact", "eip155:8453") is None
+
+
+class RaisingAsyncFacilitator:
+    """Async scheme whose verify/settle raise, so failure hooks can recover."""
+
+    scheme = "mock"
+    caip_family = "eip155"
+
+    async def verify(self, payload, requirements, context=None) -> VerifyResponse:
+        raise RuntimeError("verify boom")
+
+    async def settle(self, payload, requirements, context=None) -> SettleResponse:
+        raise RuntimeError("settle boom")
+
+    def get_extra(self, network: str) -> dict | None:
+        return None
+
+    def get_signers(self, network: str) -> list[str]:
+        return []
+
+
+def _facilitator_payment() -> tuple[PaymentPayload, PaymentRequirements]:
+    requirements = PaymentRequirements(
+        scheme="mock",
+        network="eip155:8453",
+        asset="0x0000000000000000000000000000000000000000",
+        amount="1",
+        pay_to="0x1234567890123456789012345678901234567890",
+        max_timeout_seconds=60,
+    )
+    payload = PaymentPayload(x402_version=2, payload={}, accepted=requirements)
+    return payload, requirements
+
+
+class TestFacilitatorFailureHooksOnAsyncSchemeRaise:
+    """Thrown scheme verify/settle must still run on_*_failure hooks."""
+
+    @pytest.mark.asyncio
+    async def test_async_verify_raise_runs_failure_hook(self):
+        facilitator = x402Facilitator().register(["eip155:8453"], RaisingAsyncFacilitator())
+        seen: list[Exception] = []
+
+        def hook(ctx):
+            seen.append(ctx.error)
+            return RecoveredVerifyResult(result=VerifyResponse(is_valid=True, payer="0xrecovered"))
+
+        facilitator.on_verify_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        result = await facilitator.verify(payload, requirements)
+
+        assert result.is_valid is True
+        assert result.payer == "0xrecovered"
+        assert len(seen) == 1
+        assert str(seen[0]) == "verify boom"
+
+    def test_sync_verify_raise_runs_failure_hook(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], RaisingAsyncFacilitator())
+        seen: list[Exception] = []
+
+        def hook(ctx):
+            seen.append(ctx.error)
+            return RecoveredVerifyResult(result=VerifyResponse(is_valid=True, payer="0xrecovered"))
+
+        facilitator.on_verify_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        result = facilitator.verify(payload, requirements)
+
+        assert result.is_valid is True
+        assert result.payer == "0xrecovered"
+        assert len(seen) == 1
+        assert str(seen[0]) == "verify boom"
+
+    @pytest.mark.asyncio
+    async def test_async_settle_raise_runs_failure_hook(self):
+        facilitator = x402Facilitator().register(["eip155:8453"], RaisingAsyncFacilitator())
+        seen: list[Exception] = []
+
+        def hook(ctx):
+            seen.append(ctx.error)
+            return RecoveredSettleResult(
+                result=SettleResponse(
+                    success=True, transaction="0xrecovered", network="eip155:8453"
+                )
+            )
+
+        facilitator.on_settle_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        result = await facilitator.settle(payload, requirements)
+
+        assert result.success is True
+        assert result.transaction == "0xrecovered"
+        assert len(seen) == 1
+        assert str(seen[0]) == "settle boom"
+
+    def test_sync_settle_raise_runs_failure_hook(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], RaisingAsyncFacilitator())
+        seen: list[Exception] = []
+
+        def hook(ctx):
+            seen.append(ctx.error)
+            return RecoveredSettleResult(
+                result=SettleResponse(
+                    success=True, transaction="0xrecovered", network="eip155:8453"
+                )
+            )
+
+        facilitator.on_settle_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        result = facilitator.settle(payload, requirements)
+
+        assert result.success is True
+        assert result.transaction == "0xrecovered"
+        assert len(seen) == 1
+        assert str(seen[0]) == "settle boom"

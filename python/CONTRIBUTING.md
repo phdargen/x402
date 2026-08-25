@@ -46,7 +46,7 @@ python/
 
 ### Prerequisites
 
-- Python >= 3.10
+- Python >= 3.11
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 ### Installation with uv

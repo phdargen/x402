@@ -8,9 +8,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
-
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Any, Self
 
 from ..schemas import PaymentPayload, PaymentRequired, PaymentRequiredContext
 from ..schemas.hooks import PaymentRequiredHeadersResult
