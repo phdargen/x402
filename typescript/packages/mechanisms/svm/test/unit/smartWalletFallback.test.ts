@@ -326,6 +326,8 @@ describe("ExactSvmScheme smart wallet fallback path", () => {
 
     expect(result.isValid).toBe(true);
     expect(result.payer).toBe(payer.address);
+    expect(result).not.toHaveProperty("matchedTransfer");
+    expect(() => JSON.stringify(result)).not.toThrow();
     expect(mockSigner.simulateTransactionWithInnerInstructions).toHaveBeenCalled();
   });
 

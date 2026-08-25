@@ -3,6 +3,7 @@ package svm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 
@@ -15,10 +16,31 @@ import (
 // transactions are returned instead of rejected.
 var maxSupportedTxVersion uint64
 
+const ixTokenTransferChecked = 12
+
+// simulateInnerIx accepts both compiled (programIdIndex/accounts/data) and
+// jsonParsed (programId + parsed.type/info) inner instructions. Current Solana
+// RPCs return jsonParsed TransferChecked CPIs from simulateTransaction.
+type simulateInnerIx struct {
+	ProgramIDIndex uint16        `json:"programIdIndex"`
+	Accounts       []uint16      `json:"accounts"`
+	Data           solana.Base58 `json:"data"`
+	ProgramID      string        `json:"programId"`
+	Parsed         *struct {
+		Type string                 `json:"type"`
+		Info map[string]interface{} `json:"info"`
+	} `json:"parsed"`
+}
+
+type simulateInnerGroup struct {
+	Index        uint16            `json:"index"`
+	Instructions []simulateInnerIx `json:"instructions"`
+}
+
 type simulateWithInnerResult struct {
 	Value *struct {
-		Err               interface{}            `json:"err"`
-		InnerInstructions []rpc.InnerInstruction `json:"innerInstructions"`
+		Err               interface{}          `json:"err"`
+		InnerInstructions []simulateInnerGroup `json:"innerInstructions"`
 	} `json:"value"`
 }
 
@@ -46,9 +68,109 @@ func SimulateWithInnerInstructions(ctx context.Context, client *rpc.Client, tx *
 		return nil, fmt.Errorf("simulation failed: empty result")
 	}
 	if out.Value.Err != nil {
-		return nil, fmt.Errorf("simulation failed: transaction would fail on-chain")
+		return nil, fmt.Errorf("simulation failed: %v", out.Value.Err)
 	}
-	return out.Value.InnerInstructions, nil
+	return normalizeSimulatedInnerInstructions(out.Value.InnerInstructions, tx.Message.AccountKeys), nil
+}
+
+func accountIndex(keys solana.PublicKeySlice, address string) (uint16, bool) {
+	pk, err := solana.PublicKeyFromBase58(address)
+	if err != nil {
+		return 0, false
+	}
+	for i, key := range keys {
+		if key.Equals(pk) {
+			return uint16(i), true
+		}
+	}
+	return 0, false
+}
+
+func parsedTransferAmount(info map[string]interface{}) (uint64, bool) {
+	if tokenAmount, ok := info["tokenAmount"].(map[string]interface{}); ok {
+		if amount, ok := tokenAmount["amount"].(string); ok {
+			parsed, err := strconv.ParseUint(amount, 10, 64)
+			return parsed, err == nil
+		}
+	}
+	switch amount := info["amount"].(type) {
+	case string:
+		parsed, err := strconv.ParseUint(amount, 10, 64)
+		return parsed, err == nil
+	case float64:
+		return uint64(amount), true
+	}
+	return 0, false
+}
+
+func compiledFromSimulatedInner(ix simulateInnerIx, keys solana.PublicKeySlice) (rpc.CompiledInstruction, bool) {
+	if len(ix.Data) > 0 {
+		return rpc.CompiledInstruction{
+			ProgramIDIndex: ix.ProgramIDIndex,
+			Accounts:       ix.Accounts,
+			Data:           ix.Data,
+		}, true
+	}
+	if ix.Parsed == nil || ix.Parsed.Type != "transferChecked" || ix.Parsed.Info == nil {
+		return rpc.CompiledInstruction{}, false
+	}
+
+	info := ix.Parsed.Info
+	mint, _ := info["mint"].(string)
+	destination, _ := info["destination"].(string)
+	authority, _ := info["authority"].(string)
+	source, _ := info["source"].(string)
+	amount, ok := parsedTransferAmount(info)
+	if !ok || mint == "" || destination == "" || authority == "" {
+		return rpc.CompiledInstruction{}, false
+	}
+
+	programID := ix.ProgramID
+	if programID == "" {
+		return rpc.CompiledInstruction{}, false
+	}
+	programIdx, ok := accountIndex(keys, programID)
+	if !ok {
+		return rpc.CompiledInstruction{}, false
+	}
+	sourceIdx, okSource := accountIndex(keys, source)
+	mintIdx, okMint := accountIndex(keys, mint)
+	destIdx, okDest := accountIndex(keys, destination)
+	authIdx, okAuth := accountIndex(keys, authority)
+	if !okMint || !okDest || !okAuth {
+		return rpc.CompiledInstruction{}, false
+	}
+	if !okSource {
+		sourceIdx = 0
+	}
+
+	data := make([]byte, 9)
+	data[0] = ixTokenTransferChecked
+	binary.LittleEndian.PutUint64(data[1:], amount)
+	return rpc.CompiledInstruction{
+		ProgramIDIndex: programIdx,
+		Accounts:       []uint16{sourceIdx, mintIdx, destIdx, authIdx},
+		Data:           solana.Base58(data),
+	}, true
+}
+
+func normalizeSimulatedInnerInstructions(groups []simulateInnerGroup, keys solana.PublicKeySlice) []rpc.InnerInstruction {
+	if groups == nil {
+		return nil
+	}
+	out := make([]rpc.InnerInstruction, 0, len(groups))
+	for _, group := range groups {
+		converted := rpc.InnerInstruction{Index: group.Index}
+		for _, ix := range group.Instructions {
+			compiled, ok := compiledFromSimulatedInner(ix, keys)
+			if !ok {
+				continue
+			}
+			converted.Instructions = append(converted.Instructions, compiled)
+		}
+		out = append(out, converted)
+	}
+	return out
 }
 
 // ConfirmedTransactionInnerInstructions fetches a confirmed transaction's CPI

@@ -956,10 +956,11 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
         },
         decodedView,
       );
+      const { matchedTransfer, ...response } = smartWalletResult;
       return {
-        response: smartWalletResult,
+        response,
         verificationPath: smartWalletResult.isValid ? "smartWallet" : null,
-        matchedTransfer: smartWalletResult.matchedTransfer,
+        matchedTransfer,
       };
     }
 

@@ -1475,9 +1475,8 @@ async function runTest() {
       mockFacilitatorUrl,
     };
 
-    const started = await startServer(serverProxy, serverConfig, { transport: server.config.transport });
-    if (!started) {
-      cLog.log(`❌ Failed to start server ${serverName}`);
+    const serverStartFailures = (error: string) => {
+      cLog.log(`❌ Failed to start server ${serverName}${error ? `: ${error}` : ''}`);
       return scenarios.map(scenario => ({
         testNumber: nextTestNumber(),
         client: scenario.client.name,
@@ -1488,6 +1487,16 @@ async function runTest() {
         passed: false,
         error: 'Server failed to start',
       }));
+    };
+
+    let started = false;
+    try {
+      started = await startServer(serverProxy, serverConfig, { transport: server.config.transport });
+    } catch (error) {
+      return serverStartFailures(error instanceof Error ? error.message : String(error));
+    }
+    if (!started) {
+      return serverStartFailures('');
     }
     cLog.log(`  ✅ Server ${serverName} ready`);
 
@@ -1516,7 +1525,10 @@ async function runTest() {
           });
 
           if (clientRequiresSwigSetup(scenario.client)) {
-            await setupSwigWallet(networks.svm.rpcUrl);
+            const swigReady = await setupSwigWallet(networks.svm.rpcUrl);
+            if (!swigReady) {
+              return setupFailure('Swig wallet setup failed');
+            }
           }
 
           if (scenario.endpoint.schemeOptions?.permit2Direct === true) {
