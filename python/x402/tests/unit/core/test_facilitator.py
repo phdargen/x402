@@ -539,3 +539,194 @@ class TestFacilitatorFailureHooksOnAsyncSchemeRaise:
         assert result.transaction == "0xrecovered"
         assert len(seen) == 1
         assert str(seen[0]) == "settle boom"
+
+
+class InvalidVerifyFacilitator:
+    scheme = "mock"
+    caip_family = "eip155"
+
+    def verify(self, payload, requirements, context=None) -> VerifyResponse:
+        return VerifyResponse(is_valid=False, invalid_reason="bad_payload", payer="")
+
+    def settle(self, payload, requirements, context=None) -> SettleResponse:
+        return SettleResponse(success=True, transaction="0x", network=requirements.network)
+
+    def get_extra(self, network: str) -> dict | None:
+        return None
+
+    def get_signers(self, network: str) -> list[str]:
+        return []
+
+
+class InvalidSettleFacilitator:
+    scheme = "mock"
+    caip_family = "eip155"
+
+    def verify(self, payload, requirements, context=None) -> VerifyResponse:
+        return VerifyResponse(is_valid=True)
+
+    def settle(self, payload, requirements, context=None) -> SettleResponse:
+        return SettleResponse(
+            success=False,
+            error_reason="settle_failed",
+            network=requirements.network,
+        )
+
+    def get_extra(self, network: str) -> dict | None:
+        return None
+
+    def get_signers(self, network: str) -> list[str]:
+        return []
+
+
+class _CustomAwaitableVerifyResponse:
+    def __init__(self, result: VerifyResponse) -> None:
+        self._result = result
+
+    def __await__(self):
+        async def _inner():
+            return self._result
+
+        return _inner().__await__()
+
+
+class CustomAwaitableFacilitator:
+    scheme = "mock"
+    caip_family = "eip155"
+
+    def verify(self, payload, requirements, context=None):
+        return _CustomAwaitableVerifyResponse(VerifyResponse(is_valid=True, payer="0xcustom"))
+
+    def settle(self, payload, requirements, context=None):
+        async def _inner():
+            return SettleResponse(
+                success=True, transaction="0xcustom", network=requirements.network
+            )
+
+        return _inner()
+
+    def get_extra(self, network: str) -> dict | None:
+        return None
+
+    def get_signers(self, network: str) -> list[str]:
+        return []
+
+
+class TestFacilitatorFailureHookExactlyOnce:
+    def test_verify_failure_hook_raises_once(self):
+        import asyncio
+
+        facilitator = x402Facilitator().register(["eip155:8453"], InvalidVerifyFacilitator())
+        calls = {"count": 0}
+
+        def hook(_ctx):
+            calls["count"] += 1
+            raise RuntimeError("hook failed")
+
+        facilitator.on_verify_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        with pytest.raises(RuntimeError, match="hook failed"):
+            asyncio.run(facilitator.verify(payload, requirements))
+
+        assert calls["count"] == 1
+
+    def test_sync_verify_failure_hook_raises_once(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], InvalidVerifyFacilitator())
+        calls = {"count": 0}
+
+        def hook(_ctx):
+            calls["count"] += 1
+            raise RuntimeError("hook failed")
+
+        facilitator.on_verify_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        with pytest.raises(RuntimeError, match="hook failed"):
+            facilitator.verify(payload, requirements)
+
+        assert calls["count"] == 1
+
+    def test_settle_failure_hook_raises_once(self):
+        import asyncio
+
+        facilitator = x402Facilitator().register(["eip155:8453"], InvalidSettleFacilitator())
+        calls = {"count": 0}
+
+        def hook(_ctx):
+            calls["count"] += 1
+            raise RuntimeError("hook failed")
+
+        facilitator.on_settle_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        with pytest.raises(RuntimeError, match="hook failed"):
+            asyncio.run(facilitator.settle(payload, requirements))
+
+        assert calls["count"] == 1
+
+    def test_sync_settle_failure_hook_raises_once(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], InvalidSettleFacilitator())
+        calls = {"count": 0}
+
+        def hook(_ctx):
+            calls["count"] += 1
+            raise RuntimeError("hook failed")
+
+        facilitator.on_settle_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        with pytest.raises(RuntimeError, match="hook failed"):
+            facilitator.settle(payload, requirements)
+
+        assert calls["count"] == 1
+
+
+class TestCustomAwaitableFacilitatorSchemes:
+    @pytest.mark.asyncio
+    async def test_custom_awaitable_verify_async_facilitator(self):
+        facilitator = x402Facilitator().register(["eip155:8453"], CustomAwaitableFacilitator())
+        payload, requirements = _facilitator_payment()
+        result = await facilitator.verify(payload, requirements)
+        assert result.is_valid is True
+        assert result.payer == "0xcustom"
+
+    def test_custom_awaitable_verify_sync_facilitator(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], CustomAwaitableFacilitator())
+        payload, requirements = _facilitator_payment()
+        result = facilitator.verify(payload, requirements)
+        assert result.is_valid is True
+        assert result.payer == "0xcustom"
+
+    @pytest.mark.asyncio
+    async def test_custom_awaitable_settle_async_facilitator(self):
+        facilitator = x402Facilitator().register(["eip155:8453"], CustomAwaitableFacilitator())
+        payload, requirements = _facilitator_payment()
+        result = await facilitator.settle(payload, requirements)
+        assert result.success is True
+        assert result.transaction == "0xcustom"
+
+    def test_custom_awaitable_settle_sync_facilitator(self):
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], CustomAwaitableFacilitator())
+        payload, requirements = _facilitator_payment()
+        result = facilitator.settle(payload, requirements)
+        assert result.success is True
+        assert result.transaction == "0xcustom"
+
+    @pytest.mark.asyncio
+    async def test_async_scheme_via_sync_facilitator_under_active_loop(self):
+        from x402.async_utils import run_awaitable_sync
+
+        facilitator = x402FacilitatorSync().register(["eip155:8453"], RaisingAsyncFacilitator())
+        seen: list[Exception] = []
+
+        def hook(ctx):
+            seen.append(ctx.error)
+            return RecoveredVerifyResult(result=VerifyResponse(is_valid=True, payer="0xrecovered"))
+
+        facilitator.on_verify_failure(hook)
+        payload, requirements = _facilitator_payment()
+
+        result = run_awaitable_sync(facilitator.verify(payload, requirements))
+        assert result.is_valid is True
+        assert len(seen) == 1

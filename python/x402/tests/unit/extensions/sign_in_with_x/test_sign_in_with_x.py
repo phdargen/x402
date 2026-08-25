@@ -102,8 +102,7 @@ def _test_challenge(**opts) -> dict:
                 **(
                     {
                         "expirationTime": (
-                            datetime.now(UTC)
-                            + timedelta(seconds=opts["expiration_seconds"])
+                            datetime.now(UTC) + timedelta(seconds=opts["expiration_seconds"])
                         )
                         .isoformat()
                         .replace("+00:00", "Z")

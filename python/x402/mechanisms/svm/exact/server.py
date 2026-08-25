@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from typing import Any
 
-import nest_asyncio
-
+from ....async_utils import run_awaitable_sync
 from ....schemas import AssetAmount, Network, PaymentRequirements, Price, SupportedKind
 from ....schemas.helpers import convert_to_token_amount, parse_money
 from ..constants import SCHEME_EXACT
@@ -29,12 +27,7 @@ def _fetch_latest_blockhash(rpc_url: str) -> Any:
         finally:
             await client.close()
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_fetch())
-    nest_asyncio.apply()
-    return asyncio.get_event_loop().run_until_complete(_fetch())
+    return run_awaitable_sync(_fetch())
 
 
 class ExactSvmScheme:

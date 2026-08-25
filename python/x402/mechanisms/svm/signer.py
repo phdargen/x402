@@ -1,5 +1,6 @@
 """SVM signer protocol definitions."""
 
+from collections.abc import Awaitable
 from typing import Protocol
 
 try:
@@ -54,8 +55,9 @@ class FacilitatorSvmSigner(Protocol):
     Implement this protocol to integrate with your Solana infrastructure.
     The facilitator pays transaction fees and submits transactions.
 
-    Note: RPC methods (simulate, send, confirm) are async because solana>=0.40
-    only ships AsyncClient. sign_transaction stays sync (pure CPU, no I/O).
+    Note: RPC methods (simulate, send, confirm) may be sync or async.
+    Async implementations are preferred with solana>=0.40 (AsyncClient).
+    sign_transaction stays sync (pure CPU, no I/O).
     """
 
     def get_addresses(self) -> list[str]:
@@ -91,7 +93,7 @@ class FacilitatorSvmSigner(Protocol):
         """
         ...
 
-    async def simulate_transaction(self, tx_base64: str, network: str) -> None:
+    def simulate_transaction(self, tx_base64: str, network: str) -> None | Awaitable[None]:
         """Simulate a signed transaction to verify it would succeed.
 
         Args:
@@ -103,7 +105,7 @@ class FacilitatorSvmSigner(Protocol):
         """
         ...
 
-    async def send_transaction(self, tx_base64: str, network: str) -> str:
+    def send_transaction(self, tx_base64: str, network: str) -> str | Awaitable[str]:
         """Send a signed transaction to the network.
 
         Args:
@@ -118,7 +120,7 @@ class FacilitatorSvmSigner(Protocol):
         """
         ...
 
-    async def confirm_transaction(self, signature: str, network: str) -> None:
+    def confirm_transaction(self, signature: str, network: str) -> None | Awaitable[None]:
         """Wait for transaction confirmation.
 
         Args:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
+from collections.abc import Awaitable
 from typing import Any
 
 try:
@@ -12,6 +14,7 @@ except ImportError as e:
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
 
+from ....async_utils import await_if_needed, run_sync_or_return_awaitable
 from ....pending_settlement_store import InMemoryPendingSettlementStore, PendingSettlementStore
 from ....schemas import (
     Network,
@@ -128,13 +131,22 @@ class ExactSvmScheme:
         _ = network  # Unused
         return list(self._signer.get_addresses())
 
-    async def verify(
+    def verify(
+        self,
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+        context=None,
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
+        """Verify SPL token payment payload."""
+        return run_sync_or_return_awaitable(self._verify_async(payload, requirements, context))
+
+    async def _verify_async(
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
         context=None,
     ) -> VerifyResponse:
-        """Verify SPL token payment payload.
+        """Verify SPL token payment payload (native async).
 
         Validates:
         - Scheme and network match
@@ -147,13 +159,6 @@ class ExactSvmScheme:
         - Amount >= requirements.amount
           - Authority is not the facilitator (prevent self-transfer)
         - Simulates transaction to catch runtime errors
-
-        Args:
-            payload: Payment payload from client.
-            requirements: Payment requirements.
-
-        Returns:
-            VerifyResponse with is_valid and payer.
         """
         svm_payload = ExactSvmPayload.from_dict(payload.payload)
         network = str(requirements.network)
@@ -354,7 +359,7 @@ class ExactSvmScheme:
             )
 
             # Simulate to verify transaction would succeed
-            await self._signer.simulate_transaction(fully_signed_tx, network)
+            await await_if_needed(self._signer.simulate_transaction(fully_signed_tx, network))
         except Exception as e:
             error_msg = str(e)
             return VerifyResponse(
@@ -366,26 +371,22 @@ class ExactSvmScheme:
 
         return VerifyResponse(is_valid=True, payer=payer)
 
-    async def settle(
+    def settle(
+        self,
+        payload: PaymentPayload,
+        requirements: PaymentRequirements,
+        context=None,
+    ) -> SettleResponse | Awaitable[SettleResponse]:
+        """Settle SPL token payment on-chain."""
+        return run_sync_or_return_awaitable(self._settle_async(payload, requirements, context))
+
+    async def _settle_async(
         self,
         payload: PaymentPayload,
         requirements: PaymentRequirements,
         context=None,
     ) -> SettleResponse:
-        """Settle SPL token payment on-chain.
-
-        - Re-verifies payment
-        - Signs transaction with fee payer
-        - Sends transaction to network
-        - Waits for confirmation
-
-        Args:
-            payload: Verified payment payload.
-            requirements: Payment requirements.
-
-        Returns:
-            SettleResponse with success, transaction, and payer.
-        """
+        """Settle SPL token payment on-chain (native async)."""
         svm_payload = ExactSvmPayload.from_dict(payload.payload)
         network = str(payload.accepted.network)
 
@@ -411,13 +412,13 @@ class ExactSvmScheme:
         # resend can fail even when the original is still perfectly valid), and if the
         # original actually did land, a second verify's balance-based simulation could
         # now spuriously fail (funds already moved).
-        cached_signature = self._pending_store.get(tx_key)
+        cached_signature = await asyncio.to_thread(self._pending_store.get, tx_key)
         if cached_signature is not None:
             # Remove before reconciling (rather than after) so a concurrent
             # retry of the same payload misses here instead of also
             # reconciling: it falls through to the settlement_cache dedup
             # check below, which independently rejects it as a duplicate.
-            self._pending_store.delete(tx_key)
+            await asyncio.to_thread(self._pending_store.delete, tx_key)
             # Best-effort payer for the response; a lookup failure here doesn't block
             # reconciliation (the payload already broadcast successfully).
             try:
@@ -429,7 +430,7 @@ class ExactSvmScheme:
             )
 
         # First verify
-        verify_result = await self.verify(payload, requirements, context)
+        verify_result = await self._verify_async(payload, requirements, context)
         if not verify_result.is_valid:
             return SettleResponse(
                 success=False,
@@ -471,7 +472,9 @@ class ExactSvmScheme:
 
         try:
             # Send transaction to network
-            signature = await self._signer.send_transaction(fully_signed_tx, network)
+            signature = await await_if_needed(
+                self._signer.send_transaction(fully_signed_tx, network)
+            )
         except Exception as e:
             self._settlement_cache.delete(tx_key)
             return SettleResponse(
@@ -519,10 +522,10 @@ class ExactSvmScheme:
         retry reconciles via the fast path instead of re-verifying/re-sending.
         """
         try:
-            await self._signer.confirm_transaction(signature, network)
+            await await_if_needed(self._signer.confirm_transaction(signature, network))
         except Exception as e:
             try:
-                self._pending_store.set(tx_key, signature)
+                await asyncio.to_thread(self._pending_store.set, tx_key, signature)
             except Exception as store_error:
                 # Can't guarantee a later retry will find this to reconcile
                 # against — a blind retry could re-verify/re-broadcast and
@@ -548,7 +551,7 @@ class ExactSvmScheme:
             )
 
         try:
-            self._pending_store.delete(tx_key)
+            await asyncio.to_thread(self._pending_store.delete, tx_key)
         except Exception:
             pass  # best-effort; a stale entry merely lingers until TTL expiry
         return SettleResponse(

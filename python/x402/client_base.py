@@ -5,13 +5,13 @@ Contains shared logic for client implementations.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, TypedDict
 
+from .async_utils import await_if_needed
 from .hook_adapters import collect_client_scheme_hook_handles, get_labeled_client_hooks
 from .interfaces import SchemeNetworkClient, SchemeNetworkClientV1
 from .schemas import (
@@ -705,10 +705,7 @@ class x402ClientBase:
             if enrich is None:
                 continue
             result = enrich(enriched, payment_required)
-            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                enriched = await result
-            else:
-                enriched = result
+            enriched = await await_if_needed(result)
 
         # Re-merge so server-declared extension fields survive registered client
         # extensions: the server's declared entry is preserved while the client

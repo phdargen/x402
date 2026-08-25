@@ -6,12 +6,11 @@ Async is the default with full async hook support.
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 from collections.abc import Generator
 from typing import Any, Self, TypeVar
 
-import nest_asyncio
-
+from .async_utils import await_if_needed, run_awaitable_sync
 from .client_base import (
     DEFAULT_MAX_AMOUNT_PER_PAYMENT,
     AfterPaymentCreationHook,
@@ -62,20 +61,6 @@ __all__ = [
     "prefer_scheme",
     "max_amount",
 ]
-
-
-def _run_coroutine_sync(coro: Any) -> Any:
-    """Run a scheme coroutine from a sync x402 driver.
-
-    Uses ``asyncio.run`` when no loop is running (requests / Flask). If a loop
-    is already running, nest_asyncio allows ``run_until_complete``.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    nest_asyncio.apply()
-    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 # ============================================================================
@@ -252,9 +237,7 @@ class x402Client(x402ClientBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_create":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = await result
+                        result = await await_if_needed(hook)
                     else:
                         result = await self._execute_hook(hook, ctx)
                 except Exception as hook_error:
@@ -268,10 +251,7 @@ class x402Client(x402ClientBase):
 
     async def _execute_hook(self, hook: Any, context: Any) -> Any:
         """Execute hook, auto-detecting sync/async."""
-        result = hook(context)
-        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-            return await result
-        return result
+        return await await_if_needed(hook(context))
 
 
 # ============================================================================
@@ -442,9 +422,7 @@ class x402ClientSync(x402ClientBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_create":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = _run_coroutine_sync(result)
+                        result = run_awaitable_sync(hook)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as hook_error:
@@ -459,8 +437,9 @@ class x402ClientSync(x402ClientBase):
     def _execute_hook_sync(self, hook: Any, context: Any) -> Any:
         """Execute hook synchronously. Raises if async hook detected."""
         result = hook(context)
-        if asyncio.iscoroutine(result):
-            result.close()  # Prevent warning
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()  # Prevent warning
             raise TypeError(
                 "Async hooks are not supported in x402ClientSync. "
                 "Use x402Client for async hook support."

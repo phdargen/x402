@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Awaitable
 from typing import Any
 
 try:
@@ -12,6 +13,7 @@ except ImportError as e:
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
 
+from .....async_utils import await_if_needed, run_sync_or_return_awaitable
 from .....schemas import Network, SettleResponse, VerifyResponse
 from .....schemas.v1 import PaymentPayloadV1, PaymentRequirementsV1
 from ...constants import (
@@ -111,25 +113,22 @@ class ExactSvmSchemeV1:
         _ = network  # Unused
         return list(self._signer.get_addresses())
 
-    async def verify(
+    def verify(
+        self,
+        payload: PaymentPayloadV1,
+        requirements: PaymentRequirementsV1,
+        context=None,
+    ) -> VerifyResponse | Awaitable[VerifyResponse]:
+        """Verify SPL token payment payload (V1)."""
+        return run_sync_or_return_awaitable(self._verify_async(payload, requirements, context))
+
+    async def _verify_async(
         self,
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
         context=None,
     ) -> VerifyResponse:
-        """Verify SPL token payment payload (V1).
-
-        V1 validation differences:
-        - scheme/network at top level of payload
-        - Uses maxAmountRequired for amount check
-
-        Args:
-            payload: V1 payment payload.
-            requirements: V1 payment requirements.
-
-        Returns:
-            VerifyResponse with is_valid and payer.
-        """
+        """Verify SPL token payment payload (V1, native async)."""
         svm_payload = ExactSvmPayload.from_dict(payload.payload)
         network = requirements.network
 
@@ -326,7 +325,7 @@ class ExactSvmSchemeV1:
             fully_signed_tx = self._signer.sign_transaction(
                 svm_payload.transaction, fee_payer_str, network
             )
-            await self._signer.simulate_transaction(fully_signed_tx, network)
+            await await_if_needed(self._signer.simulate_transaction(fully_signed_tx, network))
         except Exception as e:
             error_msg = str(e)
             return VerifyResponse(
@@ -338,28 +337,27 @@ class ExactSvmSchemeV1:
 
         return VerifyResponse(is_valid=True, payer=payer)
 
-    async def settle(
+    def settle(
+        self,
+        payload: PaymentPayloadV1,
+        requirements: PaymentRequirementsV1,
+        context=None,
+    ) -> SettleResponse | Awaitable[SettleResponse]:
+        """Settle SPL token payment on-chain (V1)."""
+        return run_sync_or_return_awaitable(self._settle_async(payload, requirements, context))
+
+    async def _settle_async(
         self,
         payload: PaymentPayloadV1,
         requirements: PaymentRequirementsV1,
         context=None,
     ) -> SettleResponse:
-        """Settle SPL token payment on-chain (V1).
-
-        Same settlement logic as V2, but uses V1 payload/requirements.
-
-        Args:
-            payload: V1 payment payload.
-            requirements: V1 payment requirements.
-
-        Returns:
-            SettleResponse with success, transaction, and payer.
-        """
+        """Settle SPL token payment on-chain (V1, native async)."""
         svm_payload = ExactSvmPayload.from_dict(payload.payload)
         network = payload.network
 
         # First verify
-        verify_result = await self.verify(payload, requirements, context)
+        verify_result = await self._verify_async(payload, requirements, context)
         if not verify_result.is_valid:
             return SettleResponse(
                 success=False,
@@ -393,10 +391,12 @@ class ExactSvmSchemeV1:
             )
 
             # Send transaction to network
-            signature = await self._signer.send_transaction(fully_signed_tx, network)
+            signature = await await_if_needed(
+                self._signer.send_transaction(fully_signed_tx, network)
+            )
 
             # Wait for confirmation
-            await self._signer.confirm_transaction(signature, network)
+            await await_if_needed(self._signer.confirm_transaction(signature, network))
 
             return SettleResponse(
                 success=True,

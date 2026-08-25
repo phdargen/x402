@@ -3,6 +3,7 @@
 import base64
 import binascii
 import os
+from collections.abc import Awaitable
 from typing import Any
 
 try:
@@ -17,6 +18,7 @@ except ImportError as e:
         "SVM mechanism requires solana packages. Install with: pip install x402[svm]"
     ) from e
 
+from .....async_utils import run_sync_or_return_awaitable
 from .....schemas.v1 import PaymentRequirementsV1
 from ...constants import (
     COMPUTE_BUDGET_PROGRAM_ADDRESS,
@@ -70,22 +72,18 @@ class ExactSvmSchemeV1:
         rpc_url = self._custom_rpc_url or get_network_config(network)["rpc_url"]
         return SolanaClient(rpc_url)
 
-    async def create_payment_payload(
+    def create_payment_payload(
+        self,
+        requirements: PaymentRequirementsV1,
+    ) -> dict[str, Any] | Awaitable[dict[str, Any]]:
+        """Create signed SPL TransferChecked inner payload (V1 format)."""
+        return run_sync_or_return_awaitable(self._create_payment_payload_async(requirements))
+
+    async def _create_payment_payload_async(
         self,
         requirements: PaymentRequirementsV1,
     ) -> dict[str, Any]:
-        """Create signed SPL TransferChecked inner payload (V1 format).
-
-        Args:
-            requirements: V1 payment requirements.
-
-        Returns:
-            Inner payload dict (transaction).
-            x402Client wraps this with x402_version, scheme, network.
-
-        Raises:
-            ValueError: If feePayer is missing or invalid.
-        """
+        """Create signed SPL TransferChecked inner payload (V1, native async)."""
         network = requirements.network
         client = self._get_client(network)
         try:

@@ -1293,3 +1293,78 @@ class TestAsyncSchemeCreatePaymentPayload:
         )
         assert payload.payload["mock"] == "async-v1-payload"
         assert payload.x402_version == 1
+
+
+class _CustomAwaitablePayload:
+    def __init__(self, value: dict) -> None:
+        self._value = value
+
+    def __await__(self):
+        async def _inner():
+            return self._value
+
+        return _inner().__await__()
+
+
+class CustomAwaitableMockSchemeClient:
+    scheme = "exact"
+
+    def __init__(self) -> None:
+        self.find_default_asset = lambda asset, _network=None: {
+            "asset": asset,
+            "decimals": 6,
+            "symbol": "MOCK",
+        }
+
+    def create_payment_payload(self, requirements):
+        return _CustomAwaitablePayload(
+            {"mock": "custom-awaitable", "network": requirements.network}
+        )
+
+
+class CustomAwaitableMockSchemeClientV1:
+    scheme = "mock-v1"
+
+    def __init__(self) -> None:
+        self.find_default_asset = lambda asset, _network=None: {
+            "asset": asset,
+            "decimals": 6,
+            "symbol": "MOCK",
+        }
+
+    def create_payment_payload(self, requirements):
+        return _CustomAwaitablePayload(
+            {"mock": "custom-awaitable-v1", "network": requirements.network}
+        )
+
+
+class TestCustomAwaitableSchemeCreatePaymentPayload:
+    @pytest.mark.asyncio
+    async def test_v2_custom_awaitable_via_async_client(self):
+        client = x402Client().register("eip155:8453", CustomAwaitableMockSchemeClient())
+        payload = await client.create_payment_payload(
+            PaymentRequired(x402_version=2, accepts=[_make_payment_requirements()]),
+        )
+        assert payload.payload["mock"] == "custom-awaitable"
+
+    def test_v2_custom_awaitable_via_sync_client(self):
+        client = x402ClientSync().register("eip155:8453", CustomAwaitableMockSchemeClient())
+        payload = client.create_payment_payload(
+            PaymentRequired(x402_version=2, accepts=[_make_payment_requirements()]),
+        )
+        assert payload.payload["mock"] == "custom-awaitable"
+
+    @pytest.mark.asyncio
+    async def test_v1_custom_awaitable_via_async_client(self):
+        client = x402Client().register_v1("base-sepolia", CustomAwaitableMockSchemeClientV1())
+        payload = await client.create_payment_payload(
+            PaymentRequiredV1(x402_version=1, accepts=[_make_v1_requirements()]),
+        )
+        assert payload.payload["mock"] == "custom-awaitable-v1"
+
+    def test_v1_custom_awaitable_via_sync_client(self):
+        client = x402ClientSync().register_v1("base-sepolia", CustomAwaitableMockSchemeClientV1())
+        payload = client.create_payment_payload(
+            PaymentRequiredV1(x402_version=1, accepts=[_make_v1_requirements()]),
+        )
+        assert payload.payload["mock"] == "custom-awaitable-v1"

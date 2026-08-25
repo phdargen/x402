@@ -268,7 +268,7 @@ class TestSettle:
         )
 
         # settle() now decodes the transaction up front (to key the pending-settlement
-        # store) before verify() runs, so an arbitrary test string needs a fake decode to
+        # store) before _verify_async() runs, so an arbitrary test string needs a fake decode to
         # reach the scheme-mismatch check below.
         with patch(
             "x402.mechanisms.svm.exact.facilitator.decode_transaction_from_payload",
@@ -312,7 +312,7 @@ class TestSettle:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 result = await facilitator.settle(payload, requirements)
@@ -365,7 +365,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 result = await facilitator.settle(payload, requirements)
@@ -388,7 +388,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 first = await facilitator.settle(payload, requirements)
@@ -401,8 +401,8 @@ class TestSettlePendingSettlementStoreReconciliation:
                 signer.confirm_transaction = confirm_transaction
                 with patch.object(
                     facilitator,
-                    "verify",
-                    side_effect=AssertionError("verify must be skipped on a pending-store hit"),
+                    "_verify_async",
+                    side_effect=AssertionError("_verify_async must be skipped on a pending-store hit"),
                 ):
                     second = await facilitator.settle(payload, requirements)
 
@@ -421,7 +421,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 first = await facilitator.settle(payload, requirements)
@@ -442,7 +442,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=False, invalid_reason="invalid_signature"),
             ):
                 result = await facilitator.settle(payload, requirements)
@@ -455,7 +455,7 @@ class TestSettlePendingSettlementStoreReconciliation:
     async def test_confirm_timeout_preserves_duplicate_cache_entry(self):
         """A confirm-wait timeout is non-terminal (the transaction really was broadcast), so
         the dedup lock must stay held — otherwise a fresh settle for the identical payload
-        (e.g. from a caller without a shared PendingSettlementStore) could re-verify and
+        (e.g. from a caller without a shared PendingSettlementStore) could re-_verify_async and
         re-send a transaction that's already in flight. Mirrors the Go/TS SVM exact tests.
         """
 
@@ -468,7 +468,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 result = await facilitator.settle(payload, requirements)
@@ -491,7 +491,7 @@ class TestSettlePendingSettlementStoreReconciliation:
         ):
             with patch.object(
                 facilitator,
-                "verify",
+                "_verify_async",
                 return_value=VerifyResponse(is_valid=True, payer="PayerAddress"),
             ):
                 await facilitator.settle(payload, requirements)
@@ -627,7 +627,7 @@ class TestDuplicateSettlementCache:
         async def mock_verify(*args, **kwargs):
             return VerifyResponse(is_valid=True, payer="PayerAddress")
 
-        with patch.object(facilitator, "verify", side_effect=mock_verify):
+        with patch.object(facilitator, "_verify_async", side_effect=mock_verify):
             result1 = await facilitator.settle(payload, requirements)
             assert result1.success is True
 
@@ -644,7 +644,7 @@ class TestDuplicateSettlementCache:
         async def mock_verify(*args, **kwargs):
             return VerifyResponse(is_valid=True, payer="PayerAddress")
 
-        with patch.object(facilitator, "verify", side_effect=mock_verify):
+        with patch.object(facilitator, "_verify_async", side_effect=mock_verify):
             result1 = await facilitator.settle(self._make_payload("transactionA=="), requirements)
             assert result1.success is True
 
@@ -666,7 +666,7 @@ class TestDuplicateSettlementCache:
         async def mock_verify(*args, **kwargs):
             return VerifyResponse(is_valid=True, payer="PayerAddress")
 
-        with patch.object(facilitator, "verify", side_effect=mock_verify):
+        with patch.object(facilitator, "_verify_async", side_effect=mock_verify):
             result1 = await facilitator.settle(payload, requirements)
             assert result1.success is True
 
@@ -694,7 +694,7 @@ class TestDuplicateSettlementCache:
         async def mock_verify_v2(*args, **kwargs):
             return VerifyResponse(is_valid=True, payer="PayerAddress")
 
-        with patch.object(v2, "verify", side_effect=mock_verify_v2):
+        with patch.object(v2, "_verify_async", side_effect=mock_verify_v2):
             result1 = await v2.settle(
                 self._make_payload("crossVersionTx=="),
                 self._make_requirements(),
@@ -721,7 +721,7 @@ class TestDuplicateSettlementCache:
         async def mock_verify_v1(*args, **kwargs):
             return VerifyResponse(is_valid=True, payer="PayerAddress")
 
-        with patch.object(v1, "verify", side_effect=mock_verify_v1):
+        with patch.object(v1, "_verify_async", side_effect=mock_verify_v1):
             result2 = await v1.settle(v1_payload, v1_requirements)
             assert result2.success is False
             assert result2.error_reason == "duplicate_settlement"

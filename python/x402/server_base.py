@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 from pydantic import BaseModel
 
+from .async_utils import await_if_needed
 from .hook_adapters import (
     build_extension_server_hook_handles,
     collect_scheme_server_hook_handles,
@@ -811,13 +812,9 @@ class x402ResourceServerBase:
         transport_context: Any,
         payment_payload: PaymentPayload | None,
     ) -> PaymentRequired:
-        import asyncio
 
         async def invoke(hook: Any, *args: Any) -> Any:
-            result = hook(*args)
-            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                return await result
-            return result
+            return await await_if_needed(hook(*args))
 
         working_accepts = snapshot_payment_requirements_list(requirements)
         baseline_accepts = snapshot_payment_requirements_list(working_accepts)
@@ -962,13 +959,9 @@ class x402ResourceServerBase:
         declared_extensions: dict[str, Any],
         matched_scheme: dict[str, str],
     ) -> None:
-        import asyncio
 
         async def invoke(hook: Any, *args: Any) -> Any:
-            result = hook(*args)
-            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                return await result
-            return result
+            return await await_if_needed(hook(*args))
 
         if not settle_result.success:
             return

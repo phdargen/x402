@@ -19,13 +19,13 @@ happens to land back on the same process. Implementations must be safe for
 concurrent use.
 
 Unlike the Go/TypeScript SDKs (where facilitator mechanism code is
-network-bound and asynchronous throughout), this Python SDK's mechanism layer
-(``verify``/``settle`` on every scheme class) is fully synchronous — see
-``ExactEvmScheme.settle``, ``ExactSvmScheme.settle``, etc. This Protocol is
-therefore intentionally synchronous too, matching the existing
-``SettlementCache`` convention (``mechanisms/svm/settlement_cache.py``), so
-mechanism code never needs to bridge sync/async. A network-backed
-implementation is free to perform blocking I/O inside these methods.
+network-bound and asynchronous throughout), this Python SDK keeps the
+``PendingSettlementStore`` protocol synchronous for EVM backward
+compatibility and to match the ``SettlementCache`` convention
+(``mechanisms/svm/settlement_cache.py``). Async mechanism implementations
+(SVM) must offload potentially blocking store I/O (e.g. Redis) via
+``asyncio.to_thread`` or equivalent. Implementations remain responsible
+for thread safety.
 """
 
 from __future__ import annotations

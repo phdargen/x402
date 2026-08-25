@@ -6,11 +6,10 @@ implementations. Runs as a service, manages scheme mechanisms, handles V1/V2 rou
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 from typing import Any, Self
 
-import nest_asyncio
-
+from .async_utils import await_if_needed, run_awaitable_sync
 from .facilitator_base import (
     AfterSettleHook,
     AfterVerifyHook,
@@ -34,21 +33,6 @@ from .schemas import (
     SettleResponse,
     VerifyResponse,
 )
-
-
-def _run_coroutine_sync(coro: Any) -> Any:
-    """Run a scheme coroutine from a sync x402 driver.
-
-    Uses ``asyncio.run`` when no loop is running (requests / Flask). If a loop
-    is already running, nest_asyncio allows ``run_until_complete``.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    nest_asyncio.apply()
-    return asyncio.get_event_loop().run_until_complete(coro)
-
 
 # ============================================================================
 # Async Facilitator (Default)
@@ -163,12 +147,12 @@ class x402Facilitator(x402FacilitatorBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_verify":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = await result
+                        result = await await_if_needed(hook)
                     else:
                         result = await self._execute_hook(hook, ctx)
                 except Exception as verify_error:
+                    if phase == "failure":
+                        raise
                     result = None
                     command = gen.throw(verify_error)
                 else:
@@ -212,12 +196,12 @@ class x402Facilitator(x402FacilitatorBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_settle":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = await result
+                        result = await await_if_needed(hook)
                     else:
                         result = await self._execute_hook(hook, ctx)
                 except Exception as settle_error:
+                    if phase == "failure":
+                        raise
                     result = None
                     command = gen.throw(settle_error)
                 else:
@@ -227,10 +211,7 @@ class x402Facilitator(x402FacilitatorBase):
 
     async def _execute_hook(self, hook: Any, context: Any) -> Any:
         """Execute hook, auto-detecting sync/async."""
-        result = hook(context)
-        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-            return await result
-        return result
+        return await await_if_needed(hook(context))
 
 
 # ============================================================================
@@ -341,12 +322,12 @@ class x402FacilitatorSync(x402FacilitatorBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_verify":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = _run_coroutine_sync(result)
+                        result = run_awaitable_sync(hook)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as verify_error:
+                    if phase == "failure":
+                        raise
                     result = None
                     command = gen.throw(verify_error)
                 else:
@@ -390,12 +371,12 @@ class x402FacilitatorSync(x402FacilitatorBase):
                 phase, hook, ctx = command
                 try:
                     if phase == "scheme_settle":
-                        result = hook
-                        if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                            result = _run_coroutine_sync(result)
+                        result = run_awaitable_sync(hook)
                     else:
                         result = self._execute_hook_sync(hook, ctx)
                 except Exception as settle_error:
+                    if phase == "failure":
+                        raise
                     result = None
                     command = gen.throw(settle_error)
                 else:
@@ -406,8 +387,9 @@ class x402FacilitatorSync(x402FacilitatorBase):
     def _execute_hook_sync(self, hook: Any, context: Any) -> Any:
         """Execute hook synchronously. Raises if async hook detected."""
         result = hook(context)
-        if asyncio.iscoroutine(result):
-            result.close()  # Prevent warning
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()  # Prevent warning
             raise TypeError(
                 "Async hooks are not supported in x402FacilitatorSync. "
                 "Use x402Facilitator for async hook support."
