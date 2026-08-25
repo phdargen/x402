@@ -499,10 +499,13 @@ describe("AuthCaptureEvmScheme", () => {
     };
   }
 
-  function buildBoundEip3009Payload() {
-    const paymentInfo = boundPaymentInfo();
+  function buildBoundEip3009Payload(
+    operator: `0x${string}` = CAPTURE_AUTHORIZER,
+    extraOverrides: Record<string, unknown> = {},
+  ) {
+    const paymentInfo = boundPaymentInfo(operator);
     const nonce = computePayerAgnosticPaymentInfoHash(84532, paymentInfo);
-    const extra = boundExtra();
+    const extra = boundExtra({ captureAuthorizer: operator, ...extraOverrides });
     const accepted = { ...mockRequirements, extra };
     return {
       x402Version: 2,
@@ -521,6 +524,63 @@ describe("AuthCaptureEvmScheme", () => {
         signature: "0xabcd" as `0x${string}`,
         salt: BOUND_SALT,
         saltNonce: SALT_NONCE,
+      },
+    };
+  }
+
+  function buildChargeEip3009Payload(
+    operator: `0x${string}` = CAPTURE_AUTHORIZER,
+    extraOverrides: Record<string, unknown> = {},
+  ) {
+    const envelope = buildBoundEip3009Payload(operator, {
+      paymentFlow: "authorization",
+      ...extraOverrides,
+    });
+    return {
+      ...envelope,
+      payload: {
+        ...envelope.payload,
+        amount: "1000000",
+        feeBps: 0,
+        feeReceiver: FEE_RECIPIENT,
+        authorizerSignature: "0xabcd" as `0x${string}`,
+      },
+    };
+  }
+
+  function buildChargePermit2Payload(
+    operator: `0x${string}` = CAPTURE_AUTHORIZER,
+    extraOverrides: Record<string, unknown> = {},
+  ) {
+    const paymentInfo = boundPaymentInfo(operator);
+    const nonce = computePayerAgnosticPaymentInfoHash(84532, paymentInfo);
+    const extra = boundExtra({
+      captureAuthorizer: operator,
+      assetTransferMethod: "permit2",
+      paymentFlow: "authorization",
+      ...extraOverrides,
+    });
+    const accepted = { ...mockRequirements, extra };
+    return {
+      x402Version: 2,
+      scheme: "auth-capture",
+      resource: { url: "https://example.com/weather", method: "GET" },
+      accepted,
+      payload: {
+        permit2Authorization: {
+          from: PAYER,
+          permitted: { token: ASSET, amount: "1000000" },
+          spender: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
+          nonce: hexToBigInt(nonce).toString(),
+          deadline: String(futureSeconds),
+        },
+        signature: "0xabcd" as `0x${string}`,
+        salt: BOUND_SALT,
+        saltNonce: SALT_NONCE,
+        amount: "1000000",
+        feeBps: 0,
+        feeReceiver: FEE_RECIPIENT,
+        authorizerSignature: "0xabcd" as `0x${string}`,
       },
     };
   }
@@ -649,11 +709,8 @@ describe("AuthCaptureEvmScheme", () => {
 
     it("should call charge when paymentFlow is authorization", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
-      const reqs = {
-        ...mockRequirements,
-        extra: { ...mockRequirements.extra, paymentFlow: "authorization" as const },
-      };
-      await scheme.settle(buildEip3009Payload(), reqs);
+      const envelope = buildChargeEip3009Payload();
+      await scheme.settle(envelope, envelope.accepted);
 
       expect(mockSigner.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "charge" }),
@@ -712,17 +769,13 @@ describe("AuthCaptureEvmScheme", () => {
     });
 
     it("should route charge × eip3009 × custom operator via the captureAuthorizer with the 6-arg ABI", async () => {
-      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      const paymentInfo = boundPaymentInfo(CUSTOM_OPERATOR);
       installCustomOperatorSimulation({ paymentInfo, functionName: "charge" });
       const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
-      const reqs = {
-        ...customOperatorRequirements(),
-        extra: {
-          ...customOperatorRequirements().extra,
-          paymentFlow: "authorization" as const,
-        },
-      };
-      await scheme.settle(buildEip3009Payload(CUSTOM_OPERATOR), reqs);
+      const envelope = buildChargeEip3009Payload(CUSTOM_OPERATOR, {
+        operatorType: "custom",
+      });
+      await scheme.settle(envelope, envelope.accepted);
 
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.address).toBe(getAddress(CUSTOM_OPERATOR));
@@ -787,22 +840,17 @@ describe("AuthCaptureEvmScheme", () => {
     });
 
     it("should route charge × permit2 × custom operator via the captureAuthorizer with 6 args + permit2 collector", async () => {
-      const paymentInfo = buildPaymentInfo(CUSTOM_OPERATOR);
+      const paymentInfo = boundPaymentInfo(CUSTOM_OPERATOR);
       installCustomOperatorSimulation({
         paymentInfo,
         functionName: "charge",
         tokenCollector: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
       });
       const scheme = new AuthCaptureEvmScheme(mockSigner, customOperatorConfig());
-      const reqs = {
-        ...customOperatorRequirements(),
-        extra: {
-          ...customOperatorRequirements().extra,
-          assetTransferMethod: "permit2" as const,
-          paymentFlow: "authorization" as const,
-        },
-      };
-      await scheme.settle(buildPermit2Payload(CUSTOM_OPERATOR), reqs);
+      const envelope = buildChargePermit2Payload(CUSTOM_OPERATOR, {
+        operatorType: "custom",
+      });
+      await scheme.settle(envelope, envelope.accepted);
 
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.address).toBe(getAddress(CUSTOM_OPERATOR));
@@ -861,6 +909,30 @@ describe("AuthCaptureEvmScheme", () => {
       const result = await scheme.verify(buildEip3009Payload(), bad);
       expect(result.isValid).toBe(false);
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_extra");
+    });
+
+    it("should reject charge when receiverAuthorizer is absent", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const requirements = {
+        ...mockRequirements,
+        extra: { ...mockRequirements.extra, paymentFlow: "authorization" as const },
+      };
+      const result = await scheme.verify(buildEip3009Payload(), requirements);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_missing_receiver_authorizer");
+    });
+
+    it("should verify raw charge intent but reject settle without authorizer-signed fields", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildBoundEip3009Payload(CAPTURE_AUTHORIZER, {
+        paymentFlow: "authorization",
+      });
+      const verification = await scheme.verify(envelope, envelope.accepted);
+      expect(verification.isValid).toBe(true);
+
+      const settlement = await scheme.settle(envelope, envelope.accepted);
+      expect(settlement.success).toBe(false);
+      expect(settlement.errorReason).toBe("invalid_auth_capture_evm_payload_format");
     });
 
     it("should reject when refundDeadline is not after captureDeadline", async () => {
@@ -1310,11 +1382,8 @@ describe("AuthCaptureEvmScheme", () => {
   describe("settle — charge fee args (ABI 6-arg correctness)", () => {
     it("should pass feeBps and feeReceiver as args[4] and args[5] for charge", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
-      const reqs = {
-        ...mockRequirements,
-        extra: { ...mockRequirements.extra, paymentFlow: "authorization" as const },
-      };
-      await scheme.settle(buildEip3009Payload(), reqs);
+      const envelope = buildChargeEip3009Payload();
+      await scheme.settle(envelope, envelope.accepted);
 
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.functionName).toBe("charge");

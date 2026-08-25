@@ -298,6 +298,14 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
             "authorization has no hold to finalize.",
         );
       }
+      if (
+        typeof merged.receiverAuthorizer !== "string" ||
+        !isNonZeroAddress(merged.receiverAuthorizer)
+      ) {
+        throw new Error(
+          'AuthCapture paymentFlow "authorization" requires a non-zero receiverAuthorizer',
+        );
+      }
     } else {
       const captureMode = merged.captureMode === "deferred" ? "deferred" : "sync";
       merged.captureMode = captureMode;

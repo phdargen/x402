@@ -159,7 +159,15 @@ function buildPipeline(): {
   const client = new x402Client().register(NETWORK, new AuthCaptureEvmClient(clientSigner));
 
   const server = new x402ResourceServer(facilitatorClient);
-  server.register(NETWORK, new AuthCaptureEvmServer());
+  server.register(
+    NETWORK,
+    new AuthCaptureEvmServer({
+      receiverAuthorizerSigner: {
+        address: facilitatorAccount.address,
+        signTypedData: params => facilitatorAccount.signTypedData(params as never),
+      },
+    }),
+  );
 
   return {
     client,
@@ -232,6 +240,7 @@ describe("AuthCapture EVM Integration Tests", () => {
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "eip3009",
             paymentFlow: "authorization",
+            receiverAuthorizer: facilitatorAddress,
           }),
         ];
         const resource = {
@@ -288,6 +297,7 @@ describe("AuthCapture EVM Integration Tests", () => {
           buildAuthCaptureRequirements(receiverAddress, "1000", facilitatorAddress, {
             assetTransferMethod: "permit2",
             paymentFlow: "authorization",
+            receiverAuthorizer: facilitatorAddress,
           }),
         ];
         const resource = {

@@ -785,6 +785,30 @@ describe("AuthCaptureEvmScheme", () => {
       ).rejects.toThrow(/captureMode/);
     });
 
+    it("should throw on an authorization route without a receiver authorizer", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ paymentFlow: "authorization", captureMode: undefined }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/requires a non-zero receiverAuthorizer/);
+    });
+
+    it("should derive the required charge authorizer from the configured signer", async () => {
+      const signerAddress = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: { address: signerAddress, signTypedData: vi.fn() },
+      });
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ paymentFlow: "authorization", captureMode: undefined }),
+      };
+      const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
+      expect(result.extra?.receiverAuthorizer).toBe(signerAddress);
+    });
+
     it("should throw on escrow sync for a custom operator", async () => {
       const scheme = new AuthCaptureEvmScheme({
         receiverAuthorizerSigner: {
