@@ -84,7 +84,7 @@ app.use(
 );
 ```
 
-Import `AuthCaptureRouteExtra` from `@x402/evm/auth-capture/server` if you want the compiler to reject forbidden combinations (`captureMode` on an authorization route, mixed absolute/relative deadlines). `PaymentOption.extra` is `Record<string, unknown>` on the wire, so the `satisfies` check only applies to the literal you write. Escrow sync derives `receiverAuthorizer` from the scheme's `receiverAuthorizerSigner` when the route omits it.
+Import `AuthCaptureRouteExtra` from `@x402/evm/auth-capture/server` if you want the compiler to reject forbidden combinations (`captureMode` on an authorization route, mixed absolute/relative deadlines). `PaymentOption.extra` is `Record<string, unknown>` on the wire, so the `satisfies` check only applies to the literal you write. Escrow sync and authorization routes derive `receiverAuthorizer` from the scheme's `receiverAuthorizerSigner` when the route omits it.
 
 ### Required `extra` fields
 
@@ -118,7 +118,7 @@ The server-side fail-fast also covers the other directly-merchant-set fields (`c
 | --- | --- | --- |
 | `paymentFlow` | `"escrow"` | `"escrow"` → `authorize` then capture/void. `"authorization"` → terminal `charge`. Written back onto extra so core cannot drop it. |
 | `captureMode` | `"sync"` | Escrow only. `"sync"` authors a signed capture (or void) on the after-handler settle. `"deferred"` skips that settle; capture later via helpers. Forbidden on `"authorization"`. Must be `"deferred"` for `operatorType: "custom"`, which is collect-only. |
-| `receiverAuthorizer` | zero address | Signer of facilitator-relayed `charge` / `capture` / `void` / `refund`. Derived from `receiverAuthorizerSigner.address` when that signer is configured. Required (via the signer or this field) for escrow + sync. Non-zero turns salt binding on. |
+| `receiverAuthorizer` | zero address | Signer of facilitator-relayed `charge` / `capture` / `void` / `refund`. Derived from `receiverAuthorizerSigner.address` when that signer is configured. Must be non-zero for every authorization route and for escrow + sync. Non-zero turns salt binding on. |
 | `policy` | zero address | Reserved. Non-zero is rejected for `"delegated"` and `"custom"` (`operatorType: "policy"` is not implemented). Still bound into the salt derivation. |
 | `operatorType` | `"delegated"` | `"delegated"` (facilitator is the operator) or `"custom"` (allowlisted contract operator). `"policy"` is rejected. |
 | `assetTransferMethod` | `"eip3009"` | `"eip3009"` (ERC-3009) or `"permit2"` (Uniswap Permit2). See [Asset Transfer Methods](#asset-transfer-methods). |
@@ -127,6 +127,7 @@ Fail-fast in `enhancePaymentRequirements`:
 
 - escrow + sync on an `operatorType: "custom"` route (collect-only: the facilitator refuses relayed capture/void, so the hold could never be finalized)
 - escrow + sync without a `receiverAuthorizerSigner` on the scheme
+- an authorization route without a non-zero `receiverAuthorizer` from the route, configured signer, or facilitator
 - a route `receiverAuthorizer` that conflicts with `receiverAuthorizerSigner.address`
 - `captureMode` set on an authorization route
 - `autoCapture` present at all
@@ -219,7 +220,7 @@ facilitator.register("eip155:84532", new AuthCaptureEvmScheme([signerA, signerB]
 
 Each submitter gets its own CREATE2 token store on first authorize, so N keys mean N first-authorize deployment costs and escrow-held balances split N ways.
 
-`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (ECDSA, ERC-1271, or the inner signature of an EIP-6492 envelope), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). That costs materially more RPC than a `"delegated"` verify, which preflights with a single `eth_call`: the custom path reads the operator's token store and then simulates a bundle of 9 calls for `authorize` (11 for `charge`) to snapshot state on both sides of the relay. When extension context adds a calldata suffix, the custom-operator simulation includes the same suffix that settlement broadcasts. The mined transaction is checked against the same payment-state and payment-token balance invariants before settlement is reported as successful. Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
+`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (ECDSA, ERC-1271, or the inner signature of an EIP-6492 envelope), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / completed charge payloads, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. The initial verification of an authorization-flow client payload has no server-authored completion fields, so it provisionally simulates a full-amount charge with default fee terms; settlement re-verification requires `amount`, `feeBps`, `feeReceiver`, and `authorizerSignature`, then simulates that exact signed charge. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). That costs materially more RPC than a `"delegated"` verify, which preflights with a single `eth_call`: the custom path reads the operator's token store and then simulates a bundle of 9 calls for `authorize` (11 for `charge`) to snapshot state on both sides of the relay. When extension context adds a calldata suffix, the custom-operator simulation includes the same suffix that settlement broadcasts. The mined transaction is checked against the same payment-state and payment-token balance invariants before settlement is reported as successful. Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
 
 `settle` re-verifies then dispatches:
 
@@ -250,7 +251,7 @@ Requires the canonical `AuthCaptureEscrow` and EIP-3009 / Permit2 / operator-ref
 | --- | --- | --- | --- |
 | `"escrow"` (default) | `"sync"` (default) | `escrow.authorize(...)` | Second settle relays signed `capture` / `void`. Requires `receiverAuthorizerSigner` on the scheme. |
 | `"escrow"` | `"deferred"` | `escrow.authorize(...)` | After-handler settle is skipped. Capture later via `createLifecycleManager(facilitator).capture` / `voidPayment` / `refund`, or out of band. |
-| `"authorization"` | n/a | (verify only) | `escrow.charge(...)`. `captureMode` must be omitted. |
+| `"authorization"` | n/a | (verify only) | `escrow.charge(...)` with an authorizer-signed completion. A non-zero `receiverAuthorizer` is required and `captureMode` must be omitted. |
 
 ## Operator types
 
@@ -258,8 +259,8 @@ Requires the canonical `AuthCaptureEscrow` and EIP-3009 / Permit2 / operator-ref
 
 | Type | Settle target | Facilitator relays |
 | --- | --- | --- |
-| `"delegated"` (default) | Canonical `AuthCaptureEscrow` | Collect always. Lifecycle only when `receiverAuthorizer` is non-zero. `captureAuthorizer` must be an address the facilitator submits from (EOA or smart-contract account). |
-| `"custom"` | `extra.captureAuthorizer` | Collect only, and only if that address is on the facilitator's operator allowlist. Lifecycle is out of band, so escrow routes must set `captureMode: "deferred"`. |
+| `"delegated"` (default) | Canonical `AuthCaptureEscrow` | `authorize` always; `charge` and lifecycle only when `receiverAuthorizer` is non-zero. `captureAuthorizer` must be an address the facilitator submits from (EOA or smart-contract account). |
+| `"custom"` | `extra.captureAuthorizer` | Collect only, and only if that address is on the facilitator's operator allowlist. `charge` requires a non-zero `receiverAuthorizer`; lifecycle is out of band, so escrow routes must set `captureMode: "deferred"`. |
 | `"policy"` | — | Reserved. Rejected with `invalid_auth_capture_evm_unsupported_operator_type`. |
 
 ## Asset Transfer Methods

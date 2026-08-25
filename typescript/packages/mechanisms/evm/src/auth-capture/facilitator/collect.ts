@@ -24,7 +24,6 @@ import {
   computePayerAgnosticPaymentInfoHash,
   computePaymentInfoHash,
   deriveBoundSalt,
-  isNonZeroAddress,
   isSaltBindingOn,
   verifyERC3009Signature,
   verifyPermit2Signature,
@@ -91,6 +90,7 @@ function collectChargeAmount(payload: AuthCaptureCollectPayload): string | undef
  * @param requirements - Published requirements.
  * @param wirePayload - Narrowed collect payload.
  * @param dataSuffix - Optional settlement suffix included in custom-operator simulation.
+ * @param requireChargeCompletion - Require the server-authored fields present at settle time.
  * @returns VerifyResponse.
  */
 export async function verifyCollect(
@@ -100,6 +100,7 @@ export async function verifyCollect(
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureCollectPayload,
   dataSuffix?: `0x${string}`,
+  requireChargeCompletion = false,
 ): Promise<VerifyResponse> {
   const payer = collectPayer(wirePayload);
   const common = verifyCommon(
@@ -131,13 +132,12 @@ export async function verifyCollect(
 
   const hasChargeCompletion =
     "authorizerSignature" in wirePayload && wirePayload.authorizerSignature !== undefined;
-  const needsChargeCompletion =
-    extra.paymentFlow === "authorization" && isNonZeroAddress(extra.receiverAuthorizer);
+  const isCharge = extra.paymentFlow === "authorization";
 
-  if (needsChargeCompletion !== hasChargeCompletion) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
-  }
-  if (extra.paymentFlow === "escrow" && hasChargeCompletion) {
+  if (
+    (!isCharge && hasChargeCompletion) ||
+    (isCharge && requireChargeCompletion && !hasChargeCompletion)
+  ) {
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
   }
 
@@ -247,7 +247,7 @@ export async function verifyCollect(
   let feeBps = defaultSubmittedFee(extra).feeBps;
   let feeReceiver = defaultSubmittedFee(extra).feeReceiver;
 
-  if (needsChargeCompletion) {
+  if (hasChargeCompletion) {
     const chargeAmount = collectChargeAmount(wirePayload);
     if (chargeAmount === undefined) {
       return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
@@ -293,7 +293,7 @@ export async function verifyCollect(
     }
   }
 
-  if (needsChargeCompletion) {
+  if (hasChargeCompletion) {
     const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
     const ok = await verifyCharge(
       submitter,
@@ -378,6 +378,7 @@ export async function settleCollect(
     requirements,
     wirePayload,
     dataSuffix,
+    true,
   );
   if (!verification.isValid) {
     return {
@@ -422,8 +423,7 @@ export async function settleCollect(
     originalMax,
   );
 
-  const needsChargeCompletion =
-    extra.paymentFlow === "authorization" && isNonZeroAddress(extra.receiverAuthorizer);
+  const needsChargeCompletion = extra.paymentFlow === "authorization";
   const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
   let settleAmount = unpacked.amount;
   let feeBps = defaultSubmittedFee(extra).feeBps;

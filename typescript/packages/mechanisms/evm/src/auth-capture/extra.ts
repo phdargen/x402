@@ -87,6 +87,10 @@ export function parseAuthCaptureExtra(
   if (isAddressEqual(feeRecipient, zeroAddress) && (raw.minFeeBps !== 0 || raw.maxFeeBps !== 0)) {
     return { error: Errors.ErrInvalidAuthCaptureExtra };
   }
+  const receiverAuthorizer = extraAddress(raw.receiverAuthorizer);
+  if (paymentFlow === "authorization" && !isNonZeroAddress(receiverAuthorizer)) {
+    return { error: Errors.ErrMissingReceiverAuthorizer };
+  }
 
   return {
     extra: {
@@ -97,7 +101,7 @@ export function parseAuthCaptureExtra(
       captureMode,
       operatorType,
       assetTransferMethod,
-      receiverAuthorizer: extraAddress(raw.receiverAuthorizer),
+      receiverAuthorizer,
       policy: extraAddress(raw.policy),
     },
   };
@@ -134,8 +138,8 @@ export function validateSubmittedFee(
 }
 
 /**
- * Default feeBps / feeReceiver when no authorizer signature covers the call:
- * the equal-bound value (or minFeeBps) and extra.feeRecipient.
+ * Default feeBps / feeReceiver for server-authored signed operations:
+ * the minimum fee and extra.feeRecipient.
  *
  * @param extra - Normalized extra.
  * @returns Fee parameters to submit with charge.
