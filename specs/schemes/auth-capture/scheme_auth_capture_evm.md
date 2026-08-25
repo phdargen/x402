@@ -484,6 +484,8 @@ The operation is `authorize` or `charge` according to `extra.paymentFlow`, which
 
 Step 15 is materially heavier on RPC for `operatorType: "custom"` than for `"delegated"`, which simulates a single escrow call: the custom outcome assertions in [`/supported`](#supported) need the operator's token store and the pre- and post-call state around the relay.
 
+Step 15 is materially heavier on RPC for `operatorType: "custom"` than for `"delegated"`, which simulates a single escrow call: the custom outcome assertions in [`/supported`](#supported) need the operator's token store and the pre- and post-call state around the relay.
+
 ### Lifecycle payloads
 
 Lifecycle payloads apply only to `operatorType: "delegated"` with a non-zero `receiverAuthorizer`. For `operatorType: "custom"`, and for `"delegated"` without a receiver authorizer, the facilitator MUST reject the request with `invalid_auth_capture_evm_lifecycle_not_relayed` without further checks.
