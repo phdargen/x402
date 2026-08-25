@@ -26,7 +26,7 @@
     },
     "/exact/tvm/upfront": {
       "scheme": "exact",
-      "sdks": ["typescript"],
+      "sdks": ["typescript", "python"],
       "paymentFlow": "upfront",
       "price": { "usd": "$0.001" },
       "extensions": ["bazaar"]

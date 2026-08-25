@@ -27,7 +27,7 @@
     },
     "/exact/svm/upfront": {
       "scheme": "exact",
-      "sdks": ["typescript", "go"],
+      "sdks": ["typescript", "go", "python"],
       "paymentFlow": "upfront",
       "price": { "usd": "$0.001" },
       "extensions": ["bazaar"]

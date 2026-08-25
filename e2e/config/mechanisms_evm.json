@@ -165,7 +165,8 @@
       "assetTransferMethod": "eip3009",
       "sdks": [
         "typescript",
-        "go"
+        "go",
+        "python"
       ],
       "paymentFlow": "upfront",
       "price": {
@@ -200,7 +201,8 @@
       "assetTransferMethod": "permit2",
       "sdks": [
         "typescript",
-        "go"
+        "go",
+        "python"
       ],
       "paymentFlow": "upfront",
       "schemeOptions": {
