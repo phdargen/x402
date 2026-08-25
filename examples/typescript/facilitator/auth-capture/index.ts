@@ -25,15 +25,6 @@ if (!process.env.EVM_PRIVATE_KEY) {
 
 const evmRpcUrl = process.env.EVM_RPC_URL?.trim() || "https://sepolia.base.org";
 
-/** Log RPC host only — URLs may embed API keys. */
-function rpcHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "(invalid EVM_RPC_URL)";
-  }
-}
-
 const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
 
 const evmAccount = privateKeyToAccount(process.env.EVM_PRIVATE_KEY as `0x${string}`, {
@@ -42,9 +33,7 @@ const evmAccount = privateKeyToAccount(process.env.EVM_PRIVATE_KEY as `0x${strin
 
 let authorizerSigner: AuthorizerSigner | undefined;
 if (receiverAuthorizerPrivateKey) {
-  const authorizerAccount = privateKeyToAccount(
-    receiverAuthorizerPrivateKey as `0x${string}`,
-  );
+  const authorizerAccount = privateKeyToAccount(receiverAuthorizerPrivateKey as `0x${string}`);
   authorizerSigner = {
     address: authorizerAccount.address,
     signTypedData: params =>
@@ -79,21 +68,13 @@ const evmSigner = toFacilitatorEvmSigner({
       typeof viemClient.readContract
     >[0]),
   simulateCalls: args =>
-    viemClient.simulateCalls(
-      args as Parameters<typeof viemClient.simulateCalls>[0],
-    ),
+    viemClient.simulateCalls(args as Parameters<typeof viemClient.simulateCalls>[0]),
   verifyTypedData: args =>
-    viemClient.verifyTypedData(
-      args as Parameters<typeof viemClient.verifyTypedData>[0],
-    ),
+    viemClient.verifyTypedData(args as Parameters<typeof viemClient.verifyTypedData>[0]),
   writeContract: args =>
-    viemClient.writeContract(
-      args as Parameters<typeof viemClient.writeContract>[0],
-    ),
+    viemClient.writeContract(args as Parameters<typeof viemClient.writeContract>[0]),
   sendTransaction: args =>
-    viemClient.sendTransaction(
-      args as Parameters<typeof viemClient.sendTransaction>[0],
-    ),
+    viemClient.sendTransaction(args as Parameters<typeof viemClient.sendTransaction>[0]),
   waitForTransactionReceipt: args => viemClient.waitForTransactionReceipt(args),
 });
 
@@ -140,10 +121,7 @@ app.post("/verify", async (req, res) => {
       });
     }
 
-    const response: VerifyResponse = await facilitator.verify(
-      paymentPayload,
-      paymentRequirements,
-    );
+    const response: VerifyResponse = await facilitator.verify(paymentPayload, paymentRequirements);
 
     res.json(response);
   } catch (error) {
@@ -183,10 +161,7 @@ app.post("/settle", async (req, res) => {
   } catch (error) {
     console.error("Settle error:", error);
 
-    if (
-      error instanceof Error &&
-      error.message.includes("Settlement aborted:")
-    ) {
+    if (error instanceof Error && error.message.includes("Settlement aborted:")) {
       return res.json({
         success: false,
         errorReason: error.message.replace("Settlement aborted: ", ""),

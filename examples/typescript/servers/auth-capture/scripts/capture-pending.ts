@@ -22,7 +22,9 @@ async function main(): Promise<void> {
   }>;
 
   if (payments.length === 0) {
-    console.log("No authorized payments in storage. Pay GET /weather first, then rerun this script.");
+    console.log(
+      "No authorized payments in storage. Pay GET /weather first, then rerun this script.",
+    );
     return;
   }
 
