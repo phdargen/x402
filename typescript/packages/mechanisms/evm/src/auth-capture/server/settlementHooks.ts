@@ -286,6 +286,10 @@ export class AuthCaptureSettlementHooks {
       operatorType: extra.operatorType,
       assetTransferMethod: extra.assetTransferMethod,
     };
-    await this.config.storage.update(paymentInfoHash, () => record);
+    // First write wins. A second collect for the same paymentInfoHash cannot succeed onchain
+    // (the escrow marks it collected), so reaching here twice means a retry, and the stored
+    // balances are then the authoritative ones — out-of-band capture/refund or a cancel void
+    // may already have moved them.
+    await this.config.storage.update(paymentInfoHash, current => current ?? record);
   }
 }

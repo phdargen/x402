@@ -5,14 +5,7 @@ import type {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import {
-  encodeFunctionData,
-  hexToBigInt,
-  isAddressEqual,
-  parseErc6492Signature,
-  parseEventLogs,
-  type Log,
-} from "viem";
+import { encodeFunctionData, hexToBigInt, isAddressEqual, parseEventLogs, type Log } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import {
   ERC20_BALANCE_OF_ABI,
@@ -37,6 +30,7 @@ import {
   verifyPermit2Signature,
 } from "../nonce";
 import { appendDataSuffix, resolveDataSuffix } from "../../shared/extensions";
+import { classifyErc6492Payer } from "../../shared/verifySignature";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple, reconstructPaymentInfo, unpackForSettle } from "../utils";
 import { verifyCharge } from "../authorizerSigner";
@@ -201,25 +195,47 @@ export async function verifyCollect(
     }
   }
 
-  const parsed = parseErc6492Signature(wirePayload.signature);
-  const signatureValid =
-    extra.assetTransferMethod === "eip3009"
-      ? await verifyERC3009Signature(
-          submitter,
-          (wirePayload as Eip3009Payload).authorization,
-          parsed.signature,
-          { ...extra, chainId },
-          requirements.asset as `0x${string}`,
-        )
-      : await verifyPermit2Signature(
-          submitter,
-          (wirePayload as Permit2Payload).permit2Authorization,
-          parsed.signature,
-          chainId,
-        );
+  // The canonical collectors strip the ERC-6492 wrapper onchain, so pre-verify checks the
+  // inner signature while settlement forwards the wrapper untouched.
+  const { isCounterfactual, innerSignature, eip6492Deployment } = await classifyErc6492Payer(
+    submitter,
+    wirePayload.signature,
+    payer,
+  );
 
-  if (!signatureValid) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidAuthCaptureSignature, payer };
+  if (isCounterfactual) {
+    // An undeployed wallet has no isValidSignature to call, so the simulation below is the
+    // only sound check: the collector deploys the wallet before the token validates the
+    // inner signature. Gate the preparation target on the allowlist first.
+    const factory = eip6492Deployment?.factoryAddress;
+    const factoryAllowed =
+      !!factory &&
+      (config?.eip6492AllowedFactories ?? []).some(
+        allowed => allowed.trim().toLowerCase() === factory.toLowerCase(),
+      );
+    if (!factoryAllowed) {
+      return { isValid: false, invalidReason: Errors.ErrErc6492FactoryNotAllowed, payer };
+    }
+  } else {
+    const signatureValid =
+      extra.assetTransferMethod === "eip3009"
+        ? await verifyERC3009Signature(
+            submitter,
+            (wirePayload as Eip3009Payload).authorization,
+            innerSignature,
+            { ...extra, chainId },
+            requirements.asset as `0x${string}`,
+          )
+        : await verifyPermit2Signature(
+            submitter,
+            (wirePayload as Permit2Payload).permit2Authorization,
+            innerSignature,
+            chainId,
+          );
+
+    if (!signatureValid) {
+      return { isValid: false, invalidReason: Errors.ErrInvalidAuthCaptureSignature, payer };
+    }
   }
 
   const originalMax = payload.accepted.amount;

@@ -1113,6 +1113,121 @@ describe("AuthCaptureEvmScheme", () => {
     });
   });
 
+  describe("verify — ERC-6492 counterfactual payers", () => {
+    const FACTORY = "0x7777777777777777777777777777777777777777" as `0x${string}`;
+
+    /**
+     * A counterfactual payer's signature cannot be checked locally, so these tests make the
+     * payer read as undeployed and rely on the escrow simulation as the only signature check.
+     *
+     * @returns An EIP-3009 envelope whose signature is an ERC-6492 envelope naming `FACTORY`.
+     */
+    function buildCounterfactualPayload() {
+      const envelope = buildEip3009Payload();
+      envelope.payload.signature = serializeErc6492Signature({
+        address: FACTORY,
+        data: "0xdeadbeef",
+        signature: "0xabcd",
+      });
+      return envelope;
+    }
+
+    beforeEach(() => {
+      mockSigner.getCode.mockImplementation(async () => "0x");
+    });
+
+    it("should accept a counterfactual payer whose factory is allowlisted", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        eip6492AllowedFactories: [FACTORY],
+      });
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(true);
+      expect(result.payer).toBe(PAYER);
+      // Deferred to the escrow simulation, never to a local ERC-1271 call.
+      const readFunctions = mockSigner.readContract.mock.calls.map(
+        (call: [{ functionName: string }]) => call[0].functionName,
+      );
+      expect(readFunctions).toContain("authorize");
+      expect(readFunctions).not.toContain("isValidSignature");
+    });
+
+    it("should match allowlist entries case-insensitively and ignore surrounding space", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        eip6492AllowedFactories: [` ${FACTORY.toUpperCase()} `],
+      });
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject a counterfactual payer whose factory is not allowlisted", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        eip6492AllowedFactories: ["0x8888888888888888888888888888888888888888"],
+      });
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_erc6492_factory_not_allowed");
+    });
+
+    it("should reject a counterfactual payer when no allowlist is configured", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_erc6492_factory_not_allowed");
+    });
+
+    it("should reject an allowlisted counterfactual payer when the simulation reverts", async () => {
+      mockSimulationRevert(new Error("execution reverted"));
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        eip6492AllowedFactories: [FACTORY],
+      });
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_simulation_failed");
+    });
+
+    it("should settle an allowlisted counterfactual payer forwarding the wrapper intact", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        eip6492AllowedFactories: [FACTORY],
+      });
+      const envelope = buildCounterfactualPayload();
+
+      const result = await scheme.settle(envelope, mockRequirements);
+
+      expect(result.success).toBe(true);
+      const call = mockSigner.writeContract.mock.calls[0]![0];
+      expect(call.functionName).toBe("authorize");
+      expect(call.args[3]).toBe(envelope.payload.signature);
+      // No separate deployment transaction: the token collector deploys via Multicall3.
+      expect(mockSigner.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("should verify a deployed wallet locally even when its signature stays wrapped", async () => {
+      mockSigner.getCode.mockImplementation(async ({ address }: { address: `0x${string}` }) =>
+        address.toLowerCase() === PAYER.toLowerCase() ? DEPLOYED_BYTECODE : "0x",
+      );
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+
+      const result = await scheme.verify(buildCounterfactualPayload(), mockRequirements);
+
+      expect(result.isValid).toBe(true);
+      const isValidSignatureCall = mockSigner.readContract.mock.calls.find(
+        (call: [{ functionName: string }]) => call[0].functionName === "isValidSignature",
+      );
+      // The inner signature is what ERC-1271 sees; the wrapper is stripped onchain.
+      expect(isValidSignatureCall?.[0].args?.[1]).toBe("0xabcd");
+    });
+  });
+
   describe("verify — typed simulation revert decoding", () => {
     /**
      * Build a viem ContractFunctionExecutionError that wraps a real
@@ -1695,6 +1810,41 @@ describe("AuthCaptureEvmScheme", () => {
         (call: [{ functionName: string }]) => call[0].functionName,
       );
       expect(names).toEqual(["capture", "void"]);
+    });
+
+    it("should keep the capture transaction when the trailing void fails on RPC", async () => {
+      const captureTx = "0xcafe000000000000000000000000000000000000000000000000000000000001";
+      mockSigner.writeContract.mockImplementation(
+        async ({ functionName }: { functionName: string }) => {
+          if (functionName === "void") throw new Error("Transaction receipt timeout after 60s");
+          return captureTx as `0x${string}`;
+        },
+      );
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({ voidAuthorizerSignature: "0xabcd" });
+
+      const result = await scheme.settle(envelope, envelope.accepted);
+
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe(captureTx);
+      expect(result.amount).toBe("500000");
+    });
+
+    it("should keep the capture transaction when the trailing void reverts", async () => {
+      const captureTx = "0xcafe000000000000000000000000000000000000000000000000000000000002";
+      mockSigner.writeContract.mockResolvedValue(captureTx as `0x${string}`);
+      mockSigner.waitForTransactionReceipt.mockImplementation(async () =>
+        mockSigner.writeContract.mock.calls.length > 1
+          ? { status: "reverted" }
+          : { status: "success" },
+      );
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({ voidAuthorizerSignature: "0xabcd" });
+
+      const result = await scheme.settle(envelope, envelope.accepted);
+
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe(captureTx);
     });
 
     it("should reject delegated refunds when refundFunding is not configured", async () => {

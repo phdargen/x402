@@ -130,6 +130,20 @@ export type AuthCaptureFacilitatorConfig = {
    */
   customOperatorAuthorizeGasLimit?: bigint;
   /**
+   * Allowlist of ERC-6492 preparation targets (hex strings, case-insensitive) the
+   * facilitator accepts for an undeployed payer wallet.
+   *
+   * A counterfactual payer has no `isValidSignature` to call, so its signature can only
+   * be validated by the onchain simulation, where the canonical token collector deploys
+   * the wallet before checking the inner signature. The collector makes that preparation
+   * call through Multicall3, so the facilitator is never its sender; the allowlist exists
+   * to bound the gas an unknown preparation target can burn. An empty or omitted list
+   * rejects every counterfactual payment.
+   *
+   * @default []
+   */
+  eip6492AllowedFactories?: string[];
+  /**
    * When true, the facilitator relays `type: "refund"` for `"delegated"`
    * operators. Requires an out-of-band funding agreement: refunds pull tokens
    * from `PaymentInfo.operator`. With a rotated submitter set, every address

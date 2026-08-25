@@ -201,6 +201,7 @@ facilitator.register(
     feeTerms: { feeRecipient, minFeeBps: 100, maxFeeBps: 100 },
     operators: [{ address: customOperatorAddress, operatorType: "custom" }],
     customOperatorAuthorizeGasLimit: 1_000_000n,
+    eip6492AllowedFactories: [smartWalletFactoryAddress], // omit to reject undeployed payers
     refundFunding: false, // set true only with an out-of-band funding agreement
   }),
 );
@@ -218,7 +219,7 @@ facilitator.register("eip155:84532", new AuthCaptureEvmScheme([signerA, signerB]
 
 Each submitter gets its own CREATE2 token store on first authorize, so N keys mean N first-authorize deployment costs and escrow-held balances split N ways.
 
-`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (with EIP-6492 unwrap), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). That costs materially more RPC than a `"delegated"` verify, which preflights with a single `eth_call`: the custom path reads the operator's token store and then simulates a bundle of 9 calls for `authorize` (11 for `charge`) to snapshot state on both sides of the relay. When extension context adds a calldata suffix, the custom-operator simulation includes the same suffix that settlement broadcasts. The mined transaction is checked against the same payment-state and payment-token balance invariants before settlement is reported as successful. Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
+`verify` performs envelope shape checks, scheme/network agreement, `extra` validation, operator-type / allowlist rules, salt binding, deadline-ordering invariants, per-method field checks, client signature verification (ECDSA, ERC-1271, or the inner signature of an EIP-6492 envelope), nonce binding to the payer-agnostic PaymentInfo hash, authorizer EIP-712 signatures on lifecycle / partial charge, single-use `paymentState` checks, and an onchain simulation of the target call so typed escrow reverts surface as stable `invalid_auth_capture_evm_*` reasons. For `"custom"` operators, collect verification uses `eth_simulateV1` (`simulateCalls`) with a facilitator-chosen gas cap and outcome checks (canonical escrow event, `paymentState`, token deltas, facilitator balance unchanged). That costs materially more RPC than a `"delegated"` verify, which preflights with a single `eth_call`: the custom path reads the operator's token store and then simulates a bundle of 9 calls for `authorize` (11 for `charge`) to snapshot state on both sides of the relay. When extension context adds a calldata suffix, the custom-operator simulation includes the same suffix that settlement broadcasts. The mined transaction is checked against the same payment-state and payment-token balance invariants before settlement is reported as successful. Facilitators that advertise `"custom"` on `/supported` must wire `simulateCalls` on every signer; otherwise `operators` is omitted from `getExtra`.
 
 `settle` re-verifies then dispatches:
 
@@ -227,6 +228,12 @@ Each submitter gets its own CREATE2 token store on first authorize, so N keys me
 - `payload.type` of `"capture"` / `"void"` / `"refund"` → lifecycle (capture-and-void when `voidAuthorizerSignature` is present)
 
 The settle target is the canonical escrow for `"delegated"` and `extra.captureAuthorizer` for `"custom"`. Bytecode is not probed. `collectorData` is payer-controlled opaque bytes; custom operators must forward it unchanged. ERC-6492 preparation calldata is executed by the token collector through a neutral Multicall3 sender, not as the facilitator or operator.
+
+### Undeployed (counterfactual) payer wallets
+
+`collectorData` is submitted as the client signed it, ERC-6492 wrapper included. The collector's `ERC6492SignatureHandler` strips the wrapper onchain, runs the preparation call through Multicall3, and only then hands the inner signature to the token or Permit2 — so unwrapping before submitting would drop the deployment an undeployed wallet needs.
+
+A payer whose wallet is not deployed yet has no `isValidSignature` to call, so `verify` cannot check its signature locally. It instead requires the preparation target to appear in `eip6492AllowedFactories` and leaves the signature to the onchain simulation, which deploys the wallet and then validates. A target outside the list is rejected with `invalid_auth_capture_evm_erc6492_factory_not_allowed`, and an omitted list rejects every counterfactual payer. The allowlist is about gas, not authority: Multicall3 makes the facilitator a bystander to the preparation call, but an unknown target can still burn gas inside the facilitator's transaction. A deployed wallet that still sends a wrapped signature takes the normal ERC-1271 path and needs no allowlist entry.
 
 ## Supported Networks
 

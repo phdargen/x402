@@ -62,6 +62,12 @@ export function paymentInfoToContractTuple(p: PaymentInfoStruct) {
 /**
  * Unpack the per-method inputs the escrow needs at collect settle time.
  *
+ * `collectorData` is the client's signature exactly as it arrived, ERC-6492 wrapper and
+ * all. Both canonical collectors pass it through `ERC6492SignatureHandler`, which strips
+ * the wrapper, runs the preparation call via Multicall3, and hands only the inner
+ * signature to the token or Permit2. Unwrapping here would therefore drop the deployment
+ * step an undeployed payer wallet depends on.
+ *
  * @param wirePayload - The verified collect payload (EIP-3009 or Permit2).
  * @param assetTransferMethod - Which envelope the payload uses.
  * @returns `preApprovalExpiry`, signed `amount`, `tokenCollector`, and `collectorData`.

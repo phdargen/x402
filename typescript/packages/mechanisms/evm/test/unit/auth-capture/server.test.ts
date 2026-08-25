@@ -1101,6 +1101,35 @@ describe("AuthCaptureEvmScheme", () => {
       expect(listed[0]?.collectTransaction).toBe("0xauthorize");
     });
 
+    it("should leave balances alone when a retried settle persists the same payment", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      const scheme = new AuthCaptureEvmScheme({ storage });
+      const persist = () =>
+        scheme.schemeHooks.onAfterSettle!({
+          phase: "before-handler",
+          paymentPayload,
+          requirements,
+          declaredExtensions: {},
+          result: authorizeResult,
+        } as never);
+
+      await persist();
+      // Stand in for an out-of-band capture that already moved the balances.
+      const [stored] = await storage.list();
+      await storage.update(stored!.paymentInfoHash, current => ({
+        ...current!,
+        capturableAmount: "400000",
+        refundableAmount: "600000",
+      }));
+
+      await persist();
+
+      const listed = await storage.list();
+      expect(listed).toHaveLength(1);
+      expect(listed[0]?.capturableAmount).toBe("400000");
+      expect(listed[0]?.refundableAmount).toBe("600000");
+    });
+
     it("should not skip after-handler settle for sync escrow", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const syncRequirements = {
