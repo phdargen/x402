@@ -21,6 +21,7 @@ import type { PaymentRequirements, VerifyResponse } from "@x402/core/types";
 import { MEMO_PROGRAM_ADDRESS } from "../../constants";
 import type { FacilitatorSvmSigner, SvmInnerInstructionsResult } from "../../signer";
 import { decodeTransactionFromPayload } from "../../utils";
+import * as Errors from "./errors";
 
 const DEFAULT_SMART_WALLET_MAX_COMPUTE_UNITS = 400_000;
 const DEFAULT_SMART_WALLET_MAX_PRIORITY_FEE_MICROLAMPORTS = 50_000;
@@ -171,7 +172,7 @@ export async function assertFeePayerIsolated(
     // Resolve ALTs before decompiling so all accounts are visible
     if (!signer || !network || typeof signer.fetchAddressLookupTables !== "function") {
       throw new Error(
-        "smart_wallet_alt_resolution_not_available: transaction uses Address Lookup Tables " +
+        `${Errors.ErrSmartWalletAltResolutionUnavailable}: transaction uses Address Lookup Tables ` +
           "but signer does not implement fetchAddressLookupTables",
       );
     }
@@ -208,7 +209,7 @@ export function assertFeePayerIsolatedFromInstructions(
   for (const ix of instructions) {
     if (ix.programAddress.toString() === feePayerAddress) {
       throw new Error(
-        `smart_wallet_fee_payer_not_isolated: fee payer ${feePayerAddress} invoked as program`,
+        `${Errors.ErrSmartWalletFeePayerNotIsolated}: fee payer ${feePayerAddress} invoked as program`,
       );
     }
 
@@ -216,7 +217,7 @@ export function assertFeePayerIsolatedFromInstructions(
     for (const account of accounts) {
       if (account.address.toString() === feePayerAddress) {
         throw new Error(
-          `smart_wallet_fee_payer_not_isolated: fee payer ${feePayerAddress} appears in instruction accounts (program: ${ix.programAddress})`,
+          `${Errors.ErrSmartWalletFeePayerNotIsolated}: fee payer ${feePayerAddress} appears in instruction accounts (program: ${ix.programAddress})`,
         );
       }
     }
@@ -269,23 +270,25 @@ export function validateComputeBudgetLimitsFromInstructions(
     if (ix.programAddress.toString() !== COMPUTE_BUDGET_PROGRAM_ADDRESS.toString()) continue;
     const data = ix.data;
     if (!data || data.length === 0) {
-      throw new Error("smart_wallet_malformed_compute_budget: empty instruction data");
+      throw new Error(`${Errors.ErrSmartWalletMalformedComputeBudget}: empty instruction data`);
     }
 
     if (data[0] === IX_SET_COMPUTE_UNIT_LIMIT) {
       if (data.length < 5) {
-        throw new Error("smart_wallet_malformed_compute_limit");
+        throw new Error(Errors.ErrSmartWalletMalformedComputeLimit);
       }
       const units = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(1, true);
       if (units > maxCU) {
-        throw new Error(`smart_wallet_compute_units_too_high: ${units} exceeds max ${maxCU}`);
+        throw new Error(
+          `${Errors.ErrSmartWalletComputeUnitsTooHigh}: ${units} exceeds max ${maxCU}`,
+        );
       }
       continue;
     }
 
     if (data[0] === IX_SET_COMPUTE_UNIT_PRICE) {
       if (data.length < 9) {
-        throw new Error("smart_wallet_malformed_compute_price");
+        throw new Error(Errors.ErrSmartWalletMalformedComputePrice);
       }
       const microLamports = new DataView(
         data.buffer,
@@ -294,7 +297,7 @@ export function validateComputeBudgetLimitsFromInstructions(
       ).getBigUint64(1, true);
       if (microLamports > BigInt(maxPriorityFee)) {
         throw new Error(
-          `smart_wallet_priority_fee_too_high: ${microLamports} exceeds max ${maxPriorityFee}`,
+          `${Errors.ErrSmartWalletPriorityFeeTooHigh}: ${microLamports} exceeds max ${maxPriorityFee}`,
         );
       }
       continue;
@@ -304,7 +307,7 @@ export function validateComputeBudgetLimitsFromInstructions(
     // Other ComputeBudget types (RequestHeapFrame, SetLoadedAccountsDataSizeLimit, etc.)
     // are rejected because they expand execution surface without being necessary
     // for payment outcome verification.
-    throw new Error(`smart_wallet_unsupported_compute_budget_instruction: type ${data[0]}`);
+    throw new Error(`${Errors.ErrSmartWalletUnsupportedComputeBudget}: type ${data[0]}`);
   }
 }
 
@@ -445,7 +448,8 @@ export async function verifySmartWalletTransaction(
   } catch (error) {
     return {
       isValid: false,
-      invalidReason: error instanceof Error ? error.message : "smart_wallet_fee_payer_not_isolated",
+      invalidReason:
+        error instanceof Error ? error.message : Errors.ErrSmartWalletFeePayerNotIsolated,
       payer: "",
     };
   }
@@ -470,7 +474,7 @@ export async function verifySmartWalletTransaction(
     return {
       isValid: false,
       invalidReason:
-        error instanceof Error ? error.message : "smart_wallet_compute_budget_violation",
+        error instanceof Error ? error.message : Errors.ErrSmartWalletComputeBudgetViolation,
       payer: "",
     };
   }
@@ -479,7 +483,7 @@ export async function verifySmartWalletTransaction(
   if (typeof signer.simulateTransactionWithInnerInstructions !== "function") {
     return {
       isValid: false,
-      invalidReason: "smart_wallet_verification_not_available",
+      invalidReason: Errors.ErrSmartWalletVerificationUnavailable,
       payer: "",
     };
   }
@@ -493,7 +497,7 @@ export async function verifySmartWalletTransaction(
   } catch (error) {
     return {
       isValid: false,
-      invalidReason: `smart_wallet_simulation_failed: ${error instanceof Error ? error.message : String(error)}`,
+      invalidReason: `${Errors.ErrSmartWalletSimulationFailed}: ${error instanceof Error ? error.message : String(error)}`,
       payer: "",
     };
   }
@@ -523,7 +527,7 @@ export async function verifySmartWalletTransaction(
     if (memoInstructions.length !== 1) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_svm_payload_memo_count",
+        invalidReason: Errors.ErrMemoCount,
         payer: "",
       };
     }
@@ -532,7 +536,7 @@ export async function verifySmartWalletTransaction(
     if (actualMemo !== expectedMemo) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_svm_payload_memo_mismatch",
+        invalidReason: Errors.ErrMemoMismatch,
         payer: "",
       };
     }
@@ -569,7 +573,7 @@ export async function verifySmartWalletTransaction(
     if (signerAddresses.includes(t.authority)) {
       return {
         isValid: false,
-        invalidReason: "invalid_exact_svm_payload_transaction_fee_payer_transferring_funds",
+        invalidReason: Errors.ErrFeePayerTransferringFunds,
         payer: t.authority,
       };
     }
@@ -595,7 +599,7 @@ export async function verifySmartWalletTransaction(
   if (expectedATAs.size === 0) {
     return {
       isValid: false,
-      invalidReason: "smart_wallet_cannot_derive_destination_ata",
+      invalidReason: Errors.ErrSmartWalletCannotDeriveATA,
       payer: "",
     };
   }
@@ -610,11 +614,15 @@ export async function verifySmartWalletTransaction(
 
   if (matchingTransfers.length === 0) {
     if (allTransfers.length === 0) {
-      return { isValid: false, invalidReason: "smart_wallet_no_transfer_in_simulation", payer: "" };
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrSmartWalletNoTransferInSimulation,
+        payer: "",
+      };
     }
     return {
       isValid: false,
-      invalidReason: "smart_wallet_transfer_mismatch",
+      invalidReason: Errors.ErrSmartWalletTransferMismatch,
       payer: allTransfers[0].authority,
     };
   }
@@ -622,7 +630,7 @@ export async function verifySmartWalletTransaction(
   if (matchingTransfers.length > 1) {
     return {
       isValid: false,
-      invalidReason: "smart_wallet_multiple_matching_transfers",
+      invalidReason: Errors.ErrSmartWalletMultipleMatchingTransfers,
       payer: matchingTransfers[0].authority,
     };
   }

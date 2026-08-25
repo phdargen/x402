@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { COMPUTE_BUDGET_PROGRAM_ADDRESS } from "@solana-program/compute-budget";
 import { ExactSvmScheme } from "../../src/exact/facilitator/scheme";
+import * as Errors from "../../src/exact/facilitator/errors";
 import { ExactSvmSchemeV1 } from "../../src/exact/v1/facilitator/scheme";
 import { SettlementCache } from "../../src/settlement-cache";
 import type { FacilitatorSvmSigner } from "../../src/signer";
@@ -112,7 +113,7 @@ describe("ExactSvmScheme", () => {
       const result = await facilitator.verify(payload, requirements);
 
       expect(result.isValid).toBe(false);
-      expect(result.invalidReason).toBe("unsupported_scheme");
+      expect(result.invalidReason).toBe(Errors.ErrUnsupportedScheme);
     });
 
     it("should reject if network does not match", async () => {
@@ -153,7 +154,7 @@ describe("ExactSvmScheme", () => {
 
       // Network check happens early in Step 1 (before transaction parsing)
       expect(result.isValid).toBe(false);
-      expect(result.invalidReason).toBe("network_mismatch");
+      expect(result.invalidReason).toBe(Errors.ErrNetworkMismatch);
     });
 
     it("should reject if feePayer is missing", async () => {
@@ -416,7 +417,7 @@ describe("ExactSvmScheme", () => {
       const result = await facilitator.settle(payload, requirements);
 
       expect(result.success).toBe(false);
-      expect(result.errorReason).toBe("unsupported_scheme");
+      expect(result.errorReason).toBe(Errors.ErrUnsupportedScheme);
       expect(result.network).toBe(SOLANA_DEVNET_CAIP2);
     });
   });
@@ -518,7 +519,11 @@ describe("ExactSvmScheme", () => {
       );
       verify
         .mockResolvedValueOnce({
-          response: { isValid: false, invalidReason: "transaction_simulation_failed", payer: "" },
+          response: {
+            isValid: false,
+            invalidReason: Errors.ErrTransactionSimulationFailed,
+            payer: "",
+          },
           verificationPath: null,
         })
         .mockResolvedValueOnce({
@@ -538,7 +543,7 @@ describe("ExactSvmScheme", () => {
       const payload = makePayload("retryAfterVerifyFail==");
       const result1 = await facilitator.settle(payload, requirements);
       expect(result1.success).toBe(false);
-      expect(result1.errorReason).toBe("transaction_simulation_failed");
+      expect(result1.errorReason).toBe(Errors.ErrTransactionSimulationFailed);
 
       const result2 = await facilitator.settle(payload, requirements);
       expect(result2.success).toBe(true);
@@ -555,7 +560,7 @@ describe("ExactSvmScheme", () => {
       const payload = makePayload("retryAfterTransientFailure==");
       const result1 = await facilitator.settle(payload, requirements);
       expect(result1.success).toBe(false);
-      expect(result1.errorReason).toBe("transaction_failed");
+      expect(result1.errorReason).toBe(Errors.ErrTransactionFailed);
 
       const result2 = await facilitator.settle(payload, requirements);
       expect(result2.success).toBe(true);

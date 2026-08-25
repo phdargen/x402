@@ -18,6 +18,7 @@ import {
 } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS } from "../../src/defaultAssets";
 import { encodeSignedTransaction, placeholderFeePayerSignature } from "./helpers/signedTransaction";
+import * as Errors from "../../src/exact/facilitator/errors";
 
 const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111" as Address;
 const SWIG_PROGRAM = "swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB" as Address;
@@ -415,7 +416,7 @@ describe("ExactSvmScheme smart wallet fallback path", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe("smart_wallet_multiple_matching_transfers");
+    expect(result.invalidReason).toBe(Errors.ErrSmartWalletMultipleMatchingTransfers);
   });
 
   it("verify rejects smart wallet transaction when fee payer is transfer authority", async () => {
@@ -562,7 +563,7 @@ describe("ExactSvmScheme smart wallet fallback path", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toContain("smart_wallet_program_not_allowed");
+    expect(result.invalidReason).toContain(Errors.ErrSmartWalletProgramNotAllowed);
   });
 
   it("verify accepts smart wallet transaction when required memo is present and matches", async () => {

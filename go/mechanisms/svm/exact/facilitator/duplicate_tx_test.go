@@ -33,7 +33,7 @@ func TestFacilitatorInstructionConstraints(t *testing.T) {
 func TestErrorCodesForMitigationPlanning(t *testing.T) {
 	t.Run("instruction count error", func(t *testing.T) {
 		err := ErrTransactionInstructionsLength
-		assert.Equal(t, "invalid_exact_solana_payload_transaction_instructions_length", err)
+		assert.Equal(t, ErrTransactionInstructionsLength, err)
 	})
 }
 

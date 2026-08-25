@@ -7,7 +7,7 @@
  */
 
 import { getAddressEncoder, verifySignature, type Address, type Transaction } from "@solana/kit";
-import { INVALID_FEE_PAYER_MISMATCH, INVALID_SIGNATURE } from "./errors";
+import * as Errors from "./errors";
 
 const addressEncoder = getAddressEncoder();
 
@@ -36,7 +36,7 @@ export async function verifyRequiredSignatures(
 ): Promise<SignatureVerificationResult> {
   const feePayerAccount = compiled.staticAccounts[0]?.toString();
   if (!feePayerAccount || feePayerAccount !== expectedFeePayer) {
-    return { ok: false, invalidReason: INVALID_FEE_PAYER_MISMATCH };
+    return { ok: false, invalidReason: Errors.ErrFeePayerMismatch };
   }
 
   const numSigners = compiled.header.numSignerAccounts;
@@ -45,12 +45,12 @@ export async function verifyRequiredSignatures(
   for (let i = 1; i < numSigners; i++) {
     const address = compiled.staticAccounts[i]?.toString();
     if (!address) {
-      return { ok: false, invalidReason: INVALID_SIGNATURE };
+      return { ok: false, invalidReason: Errors.ErrSignatureInvalid };
     }
 
     const signature = transaction.signatures[address as Address];
     if (!signature || signature.length !== 64) {
-      return { ok: false, invalidReason: INVALID_SIGNATURE };
+      return { ok: false, invalidReason: Errors.ErrSignatureInvalid };
     }
 
     checks.push(verifyEd25519(address, signature, transaction.messageBytes));
@@ -58,7 +58,7 @@ export async function verifyRequiredSignatures(
 
   const results = await Promise.all(checks);
   if (results.some(valid => !valid)) {
-    return { ok: false, invalidReason: INVALID_SIGNATURE };
+    return { ok: false, invalidReason: Errors.ErrSignatureInvalid };
   }
 
   return { ok: true };

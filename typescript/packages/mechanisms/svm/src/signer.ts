@@ -15,6 +15,7 @@ import {
   decodeTransactionFromPayload,
   TransactionOnchainFailureError,
 } from "./utils";
+import { ErrSmartWalletAltResolutionFailed } from "./exact/facilitator/errors";
 
 /**
  * Client-side signer for creating and signing Solana transactions
@@ -637,7 +638,7 @@ export function toFacilitatorSvmSigner(
         // accounts. The caller (assertFeePayerIsolated) converts this into a
         // verify failure so a transient RPC blip fails the payment safely.
         throw new Error(
-          `smart_wallet_alt_resolution_failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${ErrSmartWalletAltResolutionFailed}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     },

@@ -18,6 +18,7 @@ import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS } from "../../src/defaultAssets";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { encodeSignedTransaction, placeholderFeePayerSignature } from "./helpers/signedTransaction";
+import * as Errors from "../../src/exact/facilitator/errors";
 
 const COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111" as Address;
 
@@ -256,6 +257,6 @@ describe("ExactSvmScheme maxRequiredSignatures", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe("invalid_exact_svm_payload_fee_payer_mismatch");
+    expect(result.invalidReason).toBe(Errors.ErrFeePayerMismatch);
   });
 });
