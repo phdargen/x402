@@ -280,16 +280,11 @@ export async function settleLifecycle(
   }
 
   if (capture.voidAuthorizerSignature) {
-    const voidSubmitted = await submitEscrowCall(submitter, settleTarget, "void", [tuple], {
-      dataSuffix,
-    });
-    if ("error" in voidSubmitted) {
-      // A race that empties the hold between capture and void is capture-only success.
-      const reason = voidSubmitted.error;
-      if (reason !== "reverted" && !/ZeroAuthorization|revert/i.test(reason)) {
-        return settleResult(voidSubmitted, requirements.network, payer, amount.toString());
-      }
-    }
+    // Releasing the remainder is best effort: the capture already moved funds, so this settle
+    // succeeded whatever the void does. A remainder left behind — by a race that emptied the
+    // hold, or by an RPC failure — stays voidable until authorizationExpiry, after which the
+    // payer can reclaim it.
+    await submitEscrowCall(submitter, settleTarget, "void", [tuple], { dataSuffix });
   }
 
   return {

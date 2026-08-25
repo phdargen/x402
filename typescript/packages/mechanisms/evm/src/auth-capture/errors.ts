@@ -40,6 +40,7 @@ export const ErrAuthorizationNotYetValid = "invalid_auth_capture_evm_authorizati
 export const ErrTokenCollectorMismatch = "invalid_auth_capture_evm_token_collector_mismatch";
 export const ErrTokenMismatch = "invalid_auth_capture_evm_token_mismatch";
 export const ErrInvalidAuthCaptureSignature = "invalid_auth_capture_evm_signature";
+export const ErrErc6492FactoryNotAllowed = "invalid_auth_capture_evm_erc6492_factory_not_allowed";
 export const ErrAmountMismatch = "invalid_auth_capture_evm_amount_mismatch";
 export const ErrNonceMismatch = "invalid_auth_capture_evm_nonce_mismatch";
 export const ErrInsufficientBalance = "invalid_auth_capture_evm_insufficient_balance";
