@@ -470,15 +470,17 @@ describe("ExactSvmScheme", () => {
     function setupSettleMocks(facilitator: ExactSvmScheme) {
       // settle() calls the internal _verify (which also reports the path), so we
       // mock that to isolate the duplicate-cache logic from real verification.
-      vi.spyOn(
-        facilitator as unknown as {
-          _verify: (...args: unknown[]) => Promise<unknown>;
-        },
-        "_verify",
-      ).mockResolvedValue({
-        response: { isValid: true, payer: "PayerAddress" },
-        verificationPath: "static",
-      });
+      const verifySpy = vi
+        .spyOn(
+          facilitator as unknown as {
+            _verify: (...args: unknown[]) => Promise<unknown>;
+          },
+          "_verify",
+        )
+        .mockResolvedValue({
+          response: { isValid: true, payer: "PayerAddress" },
+          verificationPath: "static",
+        });
       (mockSigner as Record<string, unknown>).signTransaction = vi
         .fn()
         .mockResolvedValue("signedTx");
@@ -488,11 +490,13 @@ describe("ExactSvmScheme", () => {
       (mockSigner as Record<string, unknown>).confirmTransaction = vi
         .fn()
         .mockResolvedValue(undefined);
+      return { verifySpy };
     }
 
     it("should reject duplicate settlement of the same transaction", async () => {
       const facilitator = new ExactSvmScheme(mockSigner);
-      setupSettleMocks(facilitator);
+      const { verifySpy } = setupSettleMocks(facilitator);
+      vi.spyOn(svmUtils, "getTokenPayerFromTransaction").mockReturnValue("TokenPayer111");
 
       const payload = makePayload("sameTransactionBase64==");
 
@@ -502,6 +506,42 @@ describe("ExactSvmScheme", () => {
       const result2 = await facilitator.settle(payload, requirements);
       expect(result2.success).toBe(false);
       expect(result2.errorReason).toBe("duplicate_settlement");
+      expect(result2.payer).toBe("TokenPayer111");
+      expect(verifySpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("should release the settlement cache when verification fails so a retry can proceed", async () => {
+      const facilitator = new ExactSvmScheme(mockSigner);
+      const verify = vi.spyOn(
+        facilitator as unknown as { _verify: (...args: unknown[]) => Promise<unknown> },
+        "_verify",
+      );
+      verify
+        .mockResolvedValueOnce({
+          response: { isValid: false, invalidReason: "transaction_simulation_failed", payer: "" },
+          verificationPath: null,
+        })
+        .mockResolvedValueOnce({
+          response: { isValid: true, payer: "PayerAddress" },
+          verificationPath: "static",
+        });
+      (mockSigner as Record<string, unknown>).signTransaction = vi
+        .fn()
+        .mockResolvedValue("signedTx");
+      (mockSigner as Record<string, unknown>).sendTransaction = vi
+        .fn()
+        .mockResolvedValue("txSignature123");
+      (mockSigner as Record<string, unknown>).confirmTransaction = vi
+        .fn()
+        .mockResolvedValue(undefined);
+
+      const payload = makePayload("retryAfterVerifyFail==");
+      const result1 = await facilitator.settle(payload, requirements);
+      expect(result1.success).toBe(false);
+      expect(result1.errorReason).toBe("transaction_simulation_failed");
+
+      const result2 = await facilitator.settle(payload, requirements);
+      expect(result2.success).toBe(true);
     });
 
     it("should release the settlement cache when send/confirm fails so a retry can proceed", async () => {

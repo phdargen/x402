@@ -6,6 +6,9 @@
  * cross-SDK parity.
  */
 
+export const INVALID_FEE_PAYER_MISMATCH = "invalid_exact_svm_payload_fee_payer_mismatch";
+export const INVALID_SIGNATURE = "invalid_exact_svm_payload_signature_invalid";
+
 /**
  * Non-terminal settle error reason used when a transaction was broadcast but
  * `confirmTransaction` couldn't observe its confirmation in time. Always

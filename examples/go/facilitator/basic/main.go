@@ -96,6 +96,11 @@ func main() {
 
 	// Verify endpoint - verifies payment signatures
 	r.POST("/verify", func(c *gin.Context) {
+		endpointT0 := time.Now()
+		defer func() {
+			fmt.Printf("/verify completed in %.3fs\n", time.Since(endpointT0).Seconds())
+		}()
+
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 		defer cancel()
 
@@ -129,6 +134,11 @@ func main() {
 
 	// Settle endpoint - settles payments on-chain
 	r.POST("/settle", func(c *gin.Context) {
+		endpointT0 := time.Now()
+		defer func() {
+			fmt.Printf("/settle completed in %.3fs\n", time.Since(endpointT0).Seconds())
+		}()
+
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 		defer cancel()
 

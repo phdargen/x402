@@ -46,10 +46,16 @@ import {
 } from "../../utils";
 import {
   assertSmartWalletLimits,
+  resolveAccountKeys,
   verifySmartWalletTransaction,
   verifyPostSettlement,
+  type DecodedTransactionView,
+  type TransferCheckedInfo,
 } from "./smartWalletVerification";
+import { verifyRequiredSignatures } from "./signatureVerification";
 import { ErrSettlementPending } from "./errors";
+
+const compiledMessageDecoder = getCompiledTransactionMessageDecoder();
 
 /**
  * Default allowed smart wallet program addresses.
@@ -82,6 +88,7 @@ type VerificationPath = "static" | "smartWallet";
 type VerifyResult = {
   response: VerifyResponse;
   verificationPath: VerificationPath | null;
+  matchedTransfer?: TransferCheckedInfo;
 };
 
 /**
@@ -356,6 +363,11 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       txKey = undefined;
     }
 
+    // Duplicate settlement check keyed on message hash (immune to mutable fee-payer sig at slot
+    // 0). Must remain synchronous (before any await) so concurrent settle calls for
+    // the same payment are caught before any async work begins.
+    const isCachedDuplicate = txKey ? this.settlementCache.isDuplicate(txKey) : false;
+
     // Pending-settlement fast path: a prior settle for this exact transaction
     // broadcast successfully but its confirmTransaction wait failed. Reconcile
     // against the already-broadcast signature instead of re-verifying and
@@ -397,8 +409,31 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       }
     }
 
-    const { response: valid, verificationPath } = await this._verify(payload, requirements);
+    if (isCachedDuplicate) {
+      let payer = "";
+      try {
+        payer = getTokenPayerFromTransaction(decodedTransaction!) || "";
+      } catch {
+        payer = "";
+      }
+      return {
+        success: false,
+        network: payload.accepted.network,
+        transaction: "",
+        errorReason: "duplicate_settlement",
+        payer,
+      };
+    }
+
+    const {
+      response: valid,
+      verificationPath,
+      matchedTransfer,
+    } = await this._verify(payload, requirements);
     if (!valid.isValid) {
+      if (txKey) {
+        this.settlementCache.delete(txKey);
+      }
       return {
         success: false,
         network: payload.accepted.network,
@@ -408,22 +443,12 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       };
     }
 
-    // Duplicate settlement check keyed on message hash (immune to mutable fee-payer sig at slot
-    // 0). Reuses the txKey decoded/hashed synchronously above (before the _verify await) instead
-    // of decoding a third time: the transaction content is unchanged, and a decode failure here
-    // would imply _verify's identical decode already failed and returned isValid:false, so this
-    // point is unreachable with txKey undefined. The fallback recompute only exists to satisfy
-    // the type checker without an unsafe non-null assertion.
+    // Reuses the txKey decoded/hashed synchronously above instead of decoding a
+    // third time: the transaction content is unchanged, and a decode failure here
+    // would imply _verify's identical decode already failed and returned isValid:false,
+    // so this point is unreachable with txKey undefined. The fallback recompute
+    // only exists to satisfy the type checker without an unsafe non-null assertion.
     txKey ??= transactionMessageHash(decodeTransactionFromPayload(exactSvmPayload));
-    if (this.settlementCache.isDuplicate(txKey)) {
-      return {
-        success: false,
-        network: payload.accepted.network,
-        transaction: "",
-        errorReason: "duplicate_settlement",
-        payer: valid.payer || "",
-      };
-    }
 
     // Settlements verified through Path 2 (smart wallet) require post-settlement
     // verification to defend against TOCTOU. _verify reports the path directly,
@@ -432,46 +457,31 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
 
     // For smart wallet settlements: record destination ATA balance before sending.
     // Used as fallback verification if getTransaction has indexing lag.
-    // Try both SPL Token and Token-2022 programs — the payment may use either.
-    let balanceBefore: bigint | null = null;
-    let balanceBeforeTokenProgram:
-      | typeof TOKEN_PROGRAM_ADDRESS
-      | typeof TOKEN_2022_PROGRAM_ADDRESS
-      | null = null;
-    if (isSmartWalletSettlement && typeof this.signer.getTokenAccountBalance === "function") {
-      for (const tokenProgram of [TOKEN_PROGRAM_ADDRESS, TOKEN_2022_PROGRAM_ADDRESS]) {
-        try {
-          const [destinationAta] = await findAssociatedTokenPda({
-            mint: requirements.asset as Address,
-            owner: requirements.payTo as Address,
-            tokenProgram: tokenProgram as unknown as Address,
-          });
-          const balance = await this.signer.getTokenAccountBalance(
-            destinationAta.toString(),
-            requirements.network,
-          );
-          if (balance !== null) {
-            balanceBefore = balance;
-            balanceBeforeTokenProgram = tokenProgram;
-            break; // Use whichever ATA has a balance (exists on-chain)
-          }
-        } catch {
-          // ATA doesn't exist for this token program. Try the other.
-        }
-      }
-    }
-
     let signature: string;
+    let balanceBefore: bigint | null = null;
+    let knownDestinationAta: string | null = matchedTransfer?.destination ?? null;
+    let balanceBeforeTokenProgram: string | null = matchedTransfer?.programId ?? null;
     try {
       // Extract feePayer from requirements (already validated in verify)
       const feePayer = requirements.extra.feePayer as Address;
 
       // Sign transaction with the feePayer's signer
-      const fullySignedTransaction = await this.signer.signTransaction(
+      const signPromise = this.signer.signTransaction(
         exactSvmPayload.transaction,
         feePayer,
         requirements.network,
       );
+      const balancePromise =
+        isSmartWalletSettlement &&
+        knownDestinationAta &&
+        typeof this.signer.getTokenAccountBalance === "function"
+          ? this.signer
+              .getTokenAccountBalance(knownDestinationAta, requirements.network)
+              .catch(() => null)
+          : Promise.resolve(null);
+
+      const [fullySignedTransaction, preBalance] = await Promise.all([signPromise, balancePromise]);
+      balanceBefore = preBalance;
 
       // Send transaction to network
       signature = await this.signer.sendTransaction(fullySignedTransaction, requirements.network);
@@ -542,7 +552,8 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
         requirements,
         signerAddresses,
         balanceBefore,
-        balanceBeforeTokenProgram?.toString() ?? null,
+        balanceBeforeTokenProgram,
+        knownDestinationAta,
       );
 
       if (!postVerify.verified) {
@@ -669,7 +680,7 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
    * @returns Whether the transaction has Path 1's static transfer shape
    */
   private hasStaticTransferLayout(transaction: Transaction): boolean {
-    const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
+    const compiled = compiledMessageDecoder.decode(transaction.messageBytes);
     const instructions = decompileTransactionMessage(compiled).instructions ?? [];
     if (instructions.length < 3 || instructions.length > 7) {
       return false;
@@ -757,16 +768,27 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       };
     }
 
+    let compiled;
+    try {
+      compiled = compiledMessageDecoder.decode(transaction.messageBytes);
+    } catch {
+      return {
+        response: {
+          isValid: false,
+          invalidReason: "invalid_exact_svm_payload_transaction_could_not_be_decoded",
+          payer: "",
+        },
+        verificationPath: null,
+      };
+    }
+
     // Signature count is a transaction-level property, so it is checked before
     // path dispatch: it bounds the base fee the facilitator pays regardless of
     // which verification strategy accepts the transaction, and it must not be
     // recoverable via the Path 2 fallthrough.
     const maxRequiredSignatures = this.options?.maxRequiredSignatures;
     if (maxRequiredSignatures !== undefined) {
-      const compiledForSignerCheck = getCompiledTransactionMessageDecoder().decode(
-        transaction.messageBytes,
-      );
-      const numRequiredSignatures = compiledForSignerCheck.header.numSignerAccounts;
+      const numRequiredSignatures = compiled.header.numSignerAccounts;
       if (numRequiredSignatures > maxRequiredSignatures) {
         return {
           response: {
@@ -779,9 +801,90 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       }
     }
 
+    const signatureCheck = await verifyRequiredSignatures(
+      transaction,
+      compiled,
+      requirements.extra.feePayer,
+    );
+    if (!signatureCheck.ok) {
+      return {
+        response: { isValid: false, invalidReason: signatureCheck.invalidReason, payer: "" },
+        verificationPath: null,
+      };
+    }
+
+    // Resolve address lookup tables once and reuse the map for every decompile.
+    // Standard-wallet payments have no lookups and pay no extra RPC.
+    let lookupMap: Record<string, Address[]> | undefined;
+    const lookups =
+      "addressTableLookups" in compiled && Array.isArray(compiled.addressTableLookups)
+        ? compiled.addressTableLookups
+        : [];
+    if (lookups.length > 0) {
+      if (typeof this.signer.fetchAddressLookupTables !== "function") {
+        return {
+          response: {
+            isValid: false,
+            invalidReason:
+              "smart_wallet_alt_resolution_not_available: transaction uses Address Lookup Tables " +
+              "but signer does not implement fetchAddressLookupTables",
+            payer: "",
+          },
+          verificationPath: null,
+        };
+      }
+      try {
+        const altAddresses = lookups.map(l =>
+          (l as { lookupTableAddress: { toString(): string } }).lookupTableAddress.toString(),
+        );
+        const resolved = await this.signer.fetchAddressLookupTables(
+          altAddresses,
+          requirements.network,
+        );
+        lookupMap = {};
+        for (const [key, addresses] of Object.entries(resolved)) {
+          lookupMap[key] = addresses.map(a => a as Address);
+        }
+      } catch (error) {
+        return {
+          response: {
+            isValid: false,
+            invalidReason:
+              error instanceof Error ? error.message : "smart_wallet_alt_resolution_failed",
+            payer: "",
+          },
+          verificationPath: null,
+        };
+      }
+    }
+
+    let decompiled;
+    try {
+      decompiled = lookupMap
+        ? decompileTransactionMessage(compiled, { addressesByLookupTableAddress: lookupMap })
+        : decompileTransactionMessage(compiled);
+    } catch {
+      return {
+        response: {
+          isValid: false,
+          invalidReason: "invalid_exact_svm_payload_transaction_could_not_be_decoded",
+          payer: "",
+        },
+        verificationPath: null,
+      };
+    }
+
+    const decodedView: DecodedTransactionView = {
+      transaction,
+      compiled,
+      decompiled,
+      resolvedAccountKeys: resolveAccountKeys(compiled, lookupMap),
+    };
+
     // ─── Path 1: Static validation (standard wallets) ───────────────────
     const staticResult = await this.verifyStaticPath(
       transaction,
+      decompiled,
       exactSvmPayload,
       requirements,
       signerAddresses,
@@ -809,15 +912,13 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
         this.options.smartWalletAllowedPrograms ?? DEFAULT_SMART_WALLET_ALLOWED_PROGRAMS,
       );
 
-      const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
-      const decompiledForCheck = decompileTransactionMessage(compiled);
       // ComputeBudget and Memo are category-exempt: compute budget is validated
       // by caps, and memo content is verified by Path 2's Step 4a. Neither is a
       // wallet program, so they must not be subject to the wallet-program
       // allowlist. Explicit for-loop instead of .map().filter() because strict
       // TypeScript inference on decompileTransactionMessage's return type is
       // sensitive to which @solana/kit version resolves across peer deps.
-      const rawInstructions = (decompiledForCheck.instructions ?? []) as ReadonlyArray<{
+      const rawInstructions = (decompiled.instructions ?? []) as ReadonlyArray<{
         programAddress: { toString(): string };
       }>;
       const topLevelPrograms: string[] = [];
@@ -853,10 +954,12 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
           maxComputeUnits: this.options.smartWalletMaxComputeUnits,
           maxPriorityFeeMicroLamports: this.options.smartWalletMaxPriorityFeeMicroLamports,
         },
+        decodedView,
       );
       return {
         response: smartWalletResult,
         verificationPath: smartWalletResult.isValid ? "smartWallet" : null,
+        matchedTransfer: smartWalletResult.matchedTransfer,
       };
     }
 
@@ -869,6 +972,7 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
    * transfer details. Unchanged from the original implementation.
    *
    * @param transaction - Decoded transaction to verify
+   * @param decompiled - Pre-decompiled message (lookups already resolved)
    * @param exactSvmPayload - The raw SVM payload containing the base64 transaction
    * @param requirements - Payment requirements to verify against
    * @param signerAddresses - Facilitator signer addresses (for self-spend protection)
@@ -876,12 +980,11 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
    */
   private async verifyStaticPath(
     transaction: ReturnType<typeof decodeTransactionFromPayload>,
+    decompiled: ReturnType<typeof decompileTransactionMessage>,
     exactSvmPayload: ExactSvmPayloadV2,
     requirements: PaymentRequirements,
     signerAddresses: string[],
   ): Promise<VerifyResponse> {
-    const compiled = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
-    const decompiled = decompileTransactionMessage(compiled);
     const instructions = decompiled.instructions ?? [];
 
     // Allow 3-7 instructions:
@@ -1072,18 +1175,11 @@ export class ExactSvmScheme implements SchemeNetworkFacilitator {
       }
     }
 
-    // Step 6: Sign and Simulate Transaction
+    // Step 6: Simulate Transaction
     // CRITICAL: Simulation proves transaction will succeed (catches insufficient balance, invalid accounts, etc)
+    // Signatures are verified locally; the fee-payer slot is unsigned until settle.
     try {
-      const feePayer = requirements.extra!.feePayer as Address;
-
-      const fullySignedTransaction = await this.signer.signTransaction(
-        exactSvmPayload.transaction,
-        feePayer,
-        requirements.network,
-      );
-
-      await this.signer.simulateTransaction(fullySignedTransaction, requirements.network);
+      await this.signer.simulateTransaction(exactSvmPayload.transaction, requirements.network);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return {
