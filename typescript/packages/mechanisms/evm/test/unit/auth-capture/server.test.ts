@@ -785,6 +785,33 @@ describe("AuthCaptureEvmScheme", () => {
       ).rejects.toThrow(/captureMode/);
     });
 
+    it("should throw on escrow sync for a custom operator", async () => {
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: {
+          address: "0x1111111111111111111111111111111111111111",
+          signTypedData: vi.fn(),
+        },
+      });
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({ captureMode: undefined, operatorType: "custom" }),
+      };
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/collect-only/);
+    });
+
+    it("should allow escrow deferred for a custom operator", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const result = await scheme.enhancePaymentRequirements(
+        { ...baseRequirements, extra: completeExtra({ operatorType: "custom" }) },
+        supportedKind,
+        [],
+      );
+      expect(result.extra?.captureMode).toBe("deferred");
+      expect(result.extra?.operatorType).toBe("custom");
+    });
+
     it("should write paymentFlow escrow onto extra for the default route", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const result = await scheme.enhancePaymentRequirements(

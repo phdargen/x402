@@ -301,12 +301,11 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
     } else {
       const captureMode = merged.captureMode === "deferred" ? "deferred" : "sync";
       merged.captureMode = captureMode;
+      if (captureMode === "sync" && operatorType === "custom") {
+        throw new Error('AuthCapture operatorType "custom" is collect-only');
+      }
       if (captureMode === "sync" && !this.receiverAuthorizerSigner) {
-        throw new Error(
-          "AuthCapture escrow sync routes require a receiverAuthorizerSigner on the scheme " +
-            "(to sign capture/void). Pass receiverAuthorizerSigner to AuthCaptureEvmScheme, " +
-            'or move the route to captureMode "deferred" / paymentFlow "authorization".',
-        );
+        throw new Error("AuthCapture escrow sync routes require a receiverAuthorizerSigner");
       }
     }
 

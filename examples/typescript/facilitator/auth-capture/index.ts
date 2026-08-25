@@ -9,7 +9,7 @@ import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
 import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/facilitator";
 import dotenv from "dotenv";
 import express from "express";
-import { createWalletClient, http, nonceManager, publicActions } from "viem";
+import { createWalletClient, getAddress, http, nonceManager, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 import { zeroAddress } from "viem";
@@ -47,12 +47,33 @@ const feeRecipient = (process.env.FEE_RECIPIENT?.trim() || zeroAddress) as `0x${
 const minFeeBps = Number(process.env.MIN_FEE_BPS ?? "0");
 const maxFeeBps = Number(process.env.MAX_FEE_BPS ?? "0");
 
+// Custom operators are admitted per address. An empty list admits none, leaving
+// only "delegated" routes through the relayer.
+const customOperators = (process.env.CUSTOM_OPERATOR_ALLOWLIST ?? "")
+  .split(",")
+  .map(entry => entry.trim())
+  .filter(entry => entry.length > 0);
+
+const malformedOperator = customOperators.find(entry => !/^0x[0-9a-fA-F]{40}$/.test(entry));
+if (malformedOperator) {
+  console.error(
+    `Invalid CUSTOM_OPERATOR_ALLOWLIST entry "${malformedOperator}" ` +
+      "(comma-separated 20-byte hex addresses, 0x-prefixed)",
+  );
+  process.exit(1);
+}
+
 console.info(`EVM Facilitator relayer: ${evmAccount.address}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver authorizer: ${authorizerSigner.address}`);
 } else {
   console.info("EVM Receiver authorizer: not configured");
 }
+console.info(
+  customOperators.length > 0
+    ? `EVM Custom operators admitted: ${customOperators.join(", ")}`
+    : "EVM Custom operators: none admitted",
+);
 
 const viemClient = createWalletClient({
   account: evmAccount,
@@ -85,7 +106,14 @@ const authCaptureConfig = {
   ...(minFeeBps > 0 || maxFeeBps > 0 || feeRecipient !== zeroAddress
     ? { feeTerms: { feeRecipient, minFeeBps, maxFeeBps } }
     : {}),
-  operators: [{ address: "*", operatorType: "custom" as const }],
+  ...(customOperators.length > 0
+    ? {
+        operators: customOperators.map(address => ({
+          address: getAddress(address),
+          operatorType: "custom" as const,
+        })),
+      }
+    : {}),
   customOperatorAuthorizeGasLimit: 1_000_000n,
   refundFunding: false,
 };

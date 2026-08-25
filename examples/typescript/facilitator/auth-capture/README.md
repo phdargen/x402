@@ -13,7 +13,11 @@ See the [v1.1 proposed specification](../../../../specs/proposed/scheme_auth_cap
 
 For local delegated **sync** flows, the server still needs its own authorizer key to sign capture/void during the request. The facilitator key is only advertised so merchants can omit `extra.receiverAuthorizer` when they prefer facilitator-delegated signing — this example keeps keys separate to mirror production separation of duties.
 
-The facilitator also advertises a wildcard custom-operator allowlist (`operators: [{ address: "*", operatorType: "custom" }]`) when `simulateCalls` is wired on the signer, so the [custom-escrow server example](../../servers/auth-capture/) can relay collect-only `authorize` through a deployed operator contract. Custom collect verification uses `eth_simulateV1` with a gas cap (`customOperatorAuthorizeGasLimit`, default `1_000_000`) and outcome checks before broadcast.
+## Custom-operator allowlist
+
+`CUSTOM_OPERATOR_ALLOWLIST` is a comma-separated list of operator addresses the facilitator will relay collect for, advertised in `/supported` as `extra.operators` when `simulateCalls` is wired on the signer. Leave it empty to admit no custom operator; set it to the operator address the [custom-escrow server example](../../servers/auth-capture/) deploys so that flow can relay collect-only `authorize` through it.
+
+Custom collect verification uses `eth_simulateV1` with a gas cap (`customOperatorAuthorizeGasLimit`, default `1_000_000`) and outcome checks before broadcast.
 
 ## Prerequisites
 
@@ -25,7 +29,8 @@ The facilitator also advertises a wildcard custom-operator allowlist (`operators
 
 ```bash
 cp .env-local .env
-# fill EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY, EVM_RPC_URL, PORT)
+# fill EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
+# CUSTOM_OPERATOR_ALLOWLIST, EVM_RPC_URL, PORT)
 
 cd ../../
 pnpm install && pnpm build
