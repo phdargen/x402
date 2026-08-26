@@ -9,11 +9,7 @@ import type {
 import type { PendingSettlementStore } from "@x402/core/facilitator";
 import { isAddressEqual } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
-import {
-  AUTH_CAPTURE_ESCROW_ADDRESS,
-  AUTH_CAPTURE_SCHEME,
-  OPERATOR_REFUND_COLLECTOR_ADDRESS,
-} from "../constants";
+import { AUTH_CAPTURE_SCHEME } from "../constants";
 import { computePaymentInfoHash, deriveBoundSalt, isNonZeroAddress } from "../nonce";
 import { resolveDataSuffix } from "../../shared/extensions";
 import {
@@ -35,6 +31,8 @@ import type {
 import { isCapturePayload, isRefundPayload, isVoidPayload } from "../types";
 import * as Errors from "../errors";
 import {
+  captureEscrowArgs,
+  captureFeeFromPayload,
   parseAuthCaptureExtra,
   resolveSettleTarget,
   validateSubmittedFee,
@@ -154,7 +152,7 @@ export async function verifyLifecycle(
   }
 
   const chainId = getEvmChainId(requirements.network);
-  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
   const now = Math.floor(Date.now() / 1000);
 
   if (!wirePayload.authorizerSignature) {
@@ -288,12 +286,14 @@ export async function settleLifecycle(
       );
       if (result.success && wirePayload.type === "capture" && wirePayload.voidAuthorizerSignature) {
         const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
-        const settleTarget = resolveSettleTarget(parsed.extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+        const settleTarget = resolveSettleTarget(parsed.extra);
         const dataSuffix = await resolveDataSuffix(context, {
           paymentPayload: payload,
           paymentRequirements: requirements,
         });
-        await submitEscrowCall(submitter, settleTarget, "void", [tuple], { dataSuffix });
+        await submitEscrowCall(submitter, settleTarget, "void", [tuple], parsed.extra.deployment, {
+          dataSuffix,
+        });
       }
       return result;
     }
@@ -332,16 +332,23 @@ export async function settleLifecycle(
     };
   }
   const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
-  const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+  const settleTarget = resolveSettleTarget(extra);
   const dataSuffix = await resolveDataSuffix(context, {
     paymentPayload: payload,
     paymentRequirements: requirements,
   });
 
   if (wirePayload.type === "void") {
-    const written = await writeEscrowCall(submitter, settleTarget, "void", [tuple], {
-      dataSuffix,
-    });
+    const written = await writeEscrowCall(
+      submitter,
+      settleTarget,
+      "void",
+      [tuple],
+      extra.deployment,
+      {
+        dataSuffix,
+      },
+    );
     if ("error" in written) {
       return {
         success: false,
@@ -368,7 +375,8 @@ export async function settleLifecycle(
       submitter,
       settleTarget,
       "refund",
-      [tuple, amount, OPERATOR_REFUND_COLLECTOR_ADDRESS, "0x"],
+      [tuple, amount, extra.deployment.operatorRefundCollector, "0x"],
+      extra.deployment,
       { dataSuffix },
     );
     if ("error" in written) {
@@ -393,11 +401,23 @@ export async function settleLifecycle(
 
   const capture = wirePayload;
   const amount = BigInt(capture.amount);
+  const captureFee = captureFeeFromPayload(extra, capture);
+  if (!captureFee) {
+    return {
+      success: false,
+      errorReason: Errors.ErrInvalidPayloadFormat,
+      transaction: "",
+      network: requirements.network,
+      payer,
+      amount: amount.toString(),
+    };
+  }
   const written = await writeEscrowCall(
     submitter,
     settleTarget,
     "capture",
-    [tuple, amount, capture.feeBps, capture.feeReceiver],
+    captureEscrowArgs(tuple, amount, captureFee),
+    extra.deployment,
     { dataSuffix },
   );
   if ("error" in written) {
@@ -429,7 +449,9 @@ export async function settleLifecycle(
     // succeeded whatever the void does. A remainder left behind — by a race that emptied the
     // hold, or by an RPC failure — stays voidable until authorizationExpiry, after which the
     // payer can reclaim it.
-    await submitEscrowCall(submitter, settleTarget, "void", [tuple], { dataSuffix });
+    await submitEscrowCall(submitter, settleTarget, "void", [tuple], extra.deployment, {
+      dataSuffix,
+    });
   }
 
   return result;
@@ -500,19 +522,37 @@ async function verifyCapturePayload(
   now: number,
 ): Promise<VerifyResponse> {
   const payer = paymentInfo.payer;
+  const captureFee = captureFeeFromPayload(extra, wirePayload);
+  if (!captureFee) {
+    return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
+  }
+
+  const captureDigest =
+    captureFee.version === "v1.0"
+      ? {
+          paymentInfoHash,
+          amount: wirePayload.amount,
+          feeBps: captureFee.feeBps,
+          feeReceiver: captureFee.feeReceiver,
+          expectedCapturableAmount: wirePayload.expectedCapturableAmount,
+          expectedRefundableAmount: wirePayload.expectedRefundableAmount,
+        }
+      : {
+          paymentInfoHash,
+          amount: wirePayload.amount,
+          feeAmount: captureFee.feeAmount,
+          feeReceiver: captureFee.feeReceiver,
+          expectedCapturableAmount: wirePayload.expectedCapturableAmount,
+          expectedRefundableAmount: wirePayload.expectedRefundableAmount,
+        };
+
   const ok = await verifyCapture(
     signer,
     extra.receiverAuthorizer,
     chainId,
     extra.captureAuthorizer,
-    {
-      paymentInfoHash,
-      amount: wirePayload.amount,
-      feeBps: wirePayload.feeBps,
-      feeReceiver: wirePayload.feeReceiver,
-      expectedCapturableAmount: wirePayload.expectedCapturableAmount,
-      expectedRefundableAmount: wirePayload.expectedRefundableAmount,
-    },
+    extra.deployment,
+    captureDigest,
     wirePayload.authorizerSignature,
   );
   if (!ok) {
@@ -533,7 +573,7 @@ async function verifyCapturePayload(
     }
   }
 
-  const feeError = validateSubmittedFee(extra, wirePayload.feeBps, wirePayload.feeReceiver);
+  const feeError = validateSubmittedFee(extra, wirePayload.amount, captureFee);
   if (feeError) {
     return { isValid: false, invalidReason: feeError, payer };
   }
@@ -549,6 +589,7 @@ async function verifyCapturePayload(
     paymentInfoHash,
     expectedCapturable,
     expectedRefundable,
+    extra.deployment.escrow,
   );
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
@@ -570,10 +611,11 @@ async function verifyCapturePayload(
   const tuple = paymentInfoToContractTuple(paymentInfo);
   const captureSim = await simulateEscrowCall(
     signer,
-    resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
+    resolveSettleTarget(extra),
     "capture",
-    [tuple, amount, wirePayload.feeBps, wirePayload.feeReceiver],
+    captureEscrowArgs(tuple, amount, captureFee),
     extra.captureAuthorizer,
+    extra.deployment,
   );
   if (captureSim !== "ok") {
     return { isValid: false, invalidReason: captureSim, payer };
@@ -581,10 +623,11 @@ async function verifyCapturePayload(
   if (wirePayload.voidAuthorizerSignature) {
     const voidSim = await simulateEscrowCall(
       signer,
-      resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
+      resolveSettleTarget(extra),
       "void",
       [tuple],
       extra.captureAuthorizer,
+      extra.deployment,
     );
     if (voidSim !== "ok") {
       return { isValid: false, invalidReason: voidSim, payer };
@@ -626,7 +669,7 @@ async function verifyVoidPayload(
     return { isValid: false, invalidReason: Errors.ErrAuthorizerSignature, payer };
   }
 
-  const state = await readPaymentStateOnce(signer, paymentInfoHash);
+  const state = await readPaymentStateOnce(signer, paymentInfoHash, extra.deployment.escrow);
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
   }
@@ -637,10 +680,11 @@ async function verifyVoidPayload(
   const tuple = paymentInfoToContractTuple(paymentInfo);
   const sim = await simulateEscrowCall(
     signer,
-    resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
+    resolveSettleTarget(extra),
     "void",
     [tuple],
     extra.captureAuthorizer,
+    extra.deployment,
   );
   if (sim !== "ok") {
     return { isValid: false, invalidReason: sim, payer };
@@ -678,7 +722,7 @@ async function verifyRefundPayload(
     {
       paymentInfoHash,
       amount: wirePayload.amount,
-      tokenCollector: OPERATOR_REFUND_COLLECTOR_ADDRESS,
+      tokenCollector: extra.deployment.operatorRefundCollector,
       expectedCapturableAmount: wirePayload.expectedCapturableAmount,
       expectedRefundableAmount: wirePayload.expectedRefundableAmount,
     },
@@ -699,6 +743,7 @@ async function verifyRefundPayload(
     paymentInfoHash,
     expectedCapturable,
     expectedRefundable,
+    extra.deployment.escrow,
   );
   if (!state) {
     return { isValid: false, invalidReason: Errors.ErrUnexpectedPaymentState, payer };
@@ -715,10 +760,11 @@ async function verifyRefundPayload(
   const tuple = paymentInfoToContractTuple(paymentInfo);
   const sim = await simulateEscrowCall(
     signer,
-    resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS),
+    resolveSettleTarget(extra),
     "refund",
-    [tuple, amount, OPERATOR_REFUND_COLLECTOR_ADDRESS, "0x"],
+    [tuple, amount, extra.deployment.operatorRefundCollector, "0x"],
     extra.captureAuthorizer,
+    extra.deployment,
   );
   if (sim !== "ok") {
     return { isValid: false, invalidReason: sim, payer };

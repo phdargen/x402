@@ -39,12 +39,14 @@ const PAYMENT_INFO_TYPEHASH = keccak256(
  * @param paymentInfo - Canonical PaymentInfo struct.
  * @param payer - Payer encoded in the struct hash. Pass `zeroAddress` for the
  *   payer-agnostic signature nonce.
+ * @param escrowAddress - AuthCaptureEscrow bound into the outer hash.
  * @returns The 32-byte hash.
  */
 function hashPaymentInfo(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
   payer: `0x${string}`,
+  escrowAddress: `0x${string}` = AUTH_CAPTURE_ESCROW_ADDRESS,
 ): `0x${string}` {
   const paymentInfoEncoded = encodeAbiParameters(
     [
@@ -86,7 +88,7 @@ function hashPaymentInfo(
       { name: "escrow", type: "address" },
       { name: "paymentInfoHash", type: "bytes32" },
     ],
-    [BigInt(chainId), AUTH_CAPTURE_ESCROW_ADDRESS, paymentInfoHash],
+    [BigInt(chainId), escrowAddress, paymentInfoHash],
   );
 
   return keccak256(outerEncoded);
@@ -105,13 +107,15 @@ function hashPaymentInfo(
  *
  * @param chainId - EVM chain id; binds the hash to a specific chain.
  * @param paymentInfo - The reconstructed PaymentInfo struct (canonical Solidity field names).
+ * @param escrowAddress - AuthCaptureEscrow bound into the outer hash.
  * @returns The 32-byte hash to use as the nonce on the wire.
  */
 export function computePayerAgnosticPaymentInfoHash(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
+  escrowAddress: `0x${string}` = AUTH_CAPTURE_ESCROW_ADDRESS,
 ): `0x${string}` {
-  return hashPaymentInfo(chainId, paymentInfo, zeroAddress);
+  return hashPaymentInfo(chainId, paymentInfo, zeroAddress, escrowAddress);
 }
 
 /**
@@ -120,13 +124,15 @@ export function computePayerAgnosticPaymentInfoHash(
  *
  * @param chainId - EVM chain id.
  * @param paymentInfo - PaymentInfo with the real payer.
+ * @param escrowAddress - AuthCaptureEscrow bound into the outer hash.
  * @returns The escrow payment identifier (`paymentInfoHash`).
  */
 export function computePaymentInfoHash(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
+  escrowAddress: `0x${string}` = AUTH_CAPTURE_ESCROW_ADDRESS,
 ): `0x${string}` {
-  return hashPaymentInfo(chainId, paymentInfo, paymentInfo.payer);
+  return hashPaymentInfo(chainId, paymentInfo, paymentInfo.payer, escrowAddress);
 }
 
 /**

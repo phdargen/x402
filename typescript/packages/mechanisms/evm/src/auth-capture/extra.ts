@@ -11,6 +11,11 @@ import type {
 } from "./types";
 import { isAuthCaptureExtra } from "./types";
 import * as Errors from "./errors";
+import {
+  type AuthCaptureDeployment,
+  feeAmountFromBps,
+  resolveAuthCaptureDeployment,
+} from "./constants";
 
 const MAX_FEE_BPS = 10_000;
 
@@ -21,7 +26,23 @@ export type NormalizedAuthCaptureExtra = AuthCaptureExtra & {
   receiverAuthorizer: `0x${string}`;
   policy: `0x${string}`;
   captureMode: AuthCaptureCaptureMode;
+  authCaptureEscrow: `0x${string}`;
+  deployment: AuthCaptureDeployment;
 };
+
+export type SubmittedFeeV1_0 = {
+  version: "v1.0";
+  feeBps: number;
+  feeReceiver: `0x${string}`;
+};
+
+export type SubmittedFeeV1_1 = {
+  version: "v1.1";
+  feeAmount: string;
+  feeReceiver: `0x${string}`;
+};
+
+export type SubmittedFee = SubmittedFeeV1_0 | SubmittedFeeV1_1;
 
 /**
  * Parse and validate `requirements.extra` into a normalized form with defaults
@@ -40,6 +61,11 @@ export function parseAuthCaptureExtra(
 
   if (raw.autoCapture === true) {
     return { error: Errors.ErrUnsupportedPaymentFlow };
+  }
+
+  const deployment = resolveAuthCaptureDeployment(raw.authCaptureEscrow);
+  if (!deployment) {
+    return { error: Errors.ErrInvalidAuthCaptureExtra };
   }
 
   const paymentFlow = raw.paymentFlow ?? "escrow";
@@ -103,26 +129,48 @@ export function parseAuthCaptureExtra(
       assetTransferMethod,
       receiverAuthorizer,
       policy: extraAddress(raw.policy),
+      authCaptureEscrow: deployment.escrow,
+      deployment,
     },
   };
 }
 
 /**
- * Validate submitted feeBps / feeReceiver against the client-signed extra bounds.
+ * Whether a wire payload uses the fee field expected for the resolved deployment.
+ *
+ * @param deployment - Resolved commerce-payments deployment.
+ * @param fields - Candidate fee fields from the payload.
+ * @param fields.feeBps - v1.0 basis-point fee, if present.
+ * @param fields.feeAmount - v1.1 absolute fee, if present.
+ * @returns True when the fee field matches the deployment ABI.
+ */
+export function feeFieldMatchesDeployment(
+  deployment: AuthCaptureDeployment,
+  fields: { feeBps?: unknown; feeAmount?: unknown },
+): boolean {
+  if (deployment.version === "v1.0") {
+    return fields.feeBps !== undefined && fields.feeAmount === undefined;
+  }
+  return fields.feeAmount !== undefined && fields.feeBps === undefined;
+}
+
+/**
+ * Validate submitted fee / feeReceiver against the client-signed extra bounds.
+ * v1.0 checks `feeBps`; v1.1 checks absolute `feeAmount` against the bps bounds.
  *
  * @param extra - Normalized extra.
- * @param feeBps - Fee submitted with charge/capture.
- * @param feeReceiver - Fee recipient submitted with charge/capture.
+ * @param amount - Collect or capture amount in atomic token units.
+ * @param fee - Submitted fee parameters (`feeBps` or `feeAmount` per deployment).
  * @returns An error code, or undefined when valid.
  */
 export function validateSubmittedFee(
   extra: NormalizedAuthCaptureExtra,
-  feeBps: number,
-  feeReceiver: `0x${string}`,
+  amount: bigint | string,
+  fee: SubmittedFee,
 ): string | undefined {
-  if (!Number.isInteger(feeBps) || feeBps < extra.minFeeBps || feeBps > extra.maxFeeBps) {
-    return Errors.ErrFeeBpsOutOfRange;
-  }
+  const amountBig = typeof amount === "bigint" ? amount : BigInt(amount);
+  const feeReceiver = fee.feeReceiver;
+
   if (!isAddress(feeReceiver)) {
     return Errors.ErrInvalidFeeReceiver;
   }
@@ -131,24 +179,71 @@ export function validateSubmittedFee(
     if (!isAddressEqual(receiver, extra.feeRecipient)) {
       return Errors.ErrInvalidFeeReceiver;
     }
-  } else if (isAddressEqual(receiver, zeroAddress) && feeBps !== 0) {
+  }
+
+  if (fee.version === "v1.0") {
+    const feeBps = fee.feeBps;
+    if (!Number.isInteger(feeBps) || feeBps < extra.minFeeBps || feeBps > extra.maxFeeBps) {
+      return Errors.ErrFeeBpsOutOfRange;
+    }
+    if (isAddressEqual(receiver, zeroAddress) && feeBps !== 0) {
+      return Errors.ErrZeroFeeReceiver;
+    }
+    return undefined;
+  }
+
+  let feeAmount: bigint;
+  try {
+    feeAmount = BigInt(fee.feeAmount);
+  } catch {
+    return Errors.ErrFeeBpsOutOfRange;
+  }
+  const minFee = feeAmountFromBps(amountBig, extra.minFeeBps);
+  const maxFee = feeAmountFromBps(amountBig, extra.maxFeeBps);
+  if (feeAmount < minFee || feeAmount > maxFee) {
+    return Errors.ErrFeeBpsOutOfRange;
+  }
+  if (isAddressEqual(receiver, zeroAddress) && feeAmount !== 0n) {
     return Errors.ErrZeroFeeReceiver;
   }
   return undefined;
 }
 
 /**
- * Default feeBps / feeReceiver for server-authored signed operations:
- * the minimum fee and extra.feeRecipient.
+ * Default submitted fee for server-authored signed operations: the minimum fee
+ * and extra.feeRecipient. v1.0 returns `feeBps`; v1.1 returns absolute `feeAmount`.
  *
  * @param extra - Normalized extra.
- * @returns Fee parameters to submit with charge.
+ * @param amount - Collect or capture amount in atomic token units.
+ * @returns Fee parameters to submit with charge/capture.
  */
-export function defaultSubmittedFee(extra: NormalizedAuthCaptureExtra): {
-  feeBps: number;
-  feeReceiver: `0x${string}`;
-} {
-  return { feeBps: extra.minFeeBps, feeReceiver: extra.feeRecipient };
+export function defaultSubmittedFee(
+  extra: NormalizedAuthCaptureExtra,
+  amount: bigint | string,
+): SubmittedFee {
+  const amountBig = typeof amount === "bigint" ? amount : BigInt(amount);
+  if (extra.deployment.version === "v1.0") {
+    return { version: "v1.0", feeBps: extra.minFeeBps, feeReceiver: extra.feeRecipient };
+  }
+  return {
+    version: "v1.1",
+    feeAmount: feeAmountFromBps(amountBig, extra.minFeeBps).toString(),
+    feeReceiver: extra.feeRecipient,
+  };
+}
+
+/**
+ * Absolute fee amount for balance-delta checks on charge/capture.
+ *
+ * @param fee - Submitted fee parameters.
+ * @param amount - Settled amount.
+ * @returns Fee in atomic token units.
+ */
+export function submittedFeeAmount(fee: SubmittedFee, amount: bigint): bigint {
+  if (fee.version === "v1.0") {
+    return feeAmountFromBps(amount, fee.feeBps);
+  }
+  return BigInt(fee.feeAmount);
 }
 
 /**
@@ -222,18 +317,14 @@ function isOperatorAdmitted(
 
 /**
  * Resolve the onchain target for a settle call from operatorType, not bytecode.
- * `"delegated"` always calls the canonical escrow; `"custom"` calls
+ * `"delegated"` always calls the resolved escrow; `"custom"` calls
  * extra.captureAuthorizer.
  *
  * @param extra - Normalized extra.
- * @param escrowAddress - Canonical AuthCaptureEscrow address.
  * @returns Address to pass to writeContract / simulate.
  */
-export function resolveSettleTarget(
-  extra: NormalizedAuthCaptureExtra,
-  escrowAddress: `0x${string}`,
-): `0x${string}` {
-  return extra.operatorType === "custom" ? extra.captureAuthorizer : escrowAddress;
+export function resolveSettleTarget(extra: NormalizedAuthCaptureExtra): `0x${string}` {
+  return extra.operatorType === "custom" ? extra.captureAuthorizer : extra.deployment.escrow;
 }
 
 /**
@@ -278,4 +369,123 @@ export function verifyCommon(
     return { error: operatorError };
   }
   return parsed;
+}
+
+/**
+ * Resolve and canonicalize `authCaptureEscrow` for publication.
+ *
+ * @param value - Merchant-provided escrow pin, if any.
+ * @returns Known escrow address for the wire.
+ */
+export function canonicalAuthCaptureEscrow(value: string | undefined): `0x${string}` {
+  const deployment = resolveAuthCaptureDeployment(value);
+  return (deployment ?? resolveAuthCaptureDeployment(undefined)!).escrow;
+}
+
+/**
+ * Read the submitted capture fee from a lifecycle payload.
+ *
+ * @param extra - Normalized extra.
+ * @param wirePayload - Capture envelope.
+ * @param wirePayload.feeBps - v1.0 basis-point fee, if present.
+ * @param wirePayload.feeAmount - v1.1 absolute fee, if present.
+ * @param wirePayload.feeReceiver - Fee recipient on the capture call.
+ * @returns Submitted fee, or undefined when fields mismatch the deployment.
+ */
+export function captureFeeFromPayload(
+  extra: NormalizedAuthCaptureExtra,
+  wirePayload: { feeBps?: number; feeAmount?: string; feeReceiver: `0x${string}` },
+): SubmittedFee | undefined {
+  if (!feeFieldMatchesDeployment(extra.deployment, wirePayload)) {
+    return undefined;
+  }
+  if (extra.deployment.version === "v1.0") {
+    return {
+      version: "v1.0",
+      feeBps: wirePayload.feeBps as number,
+      feeReceiver: wirePayload.feeReceiver,
+    };
+  }
+  return {
+    version: "v1.1",
+    feeAmount: wirePayload.feeAmount as string,
+    feeReceiver: wirePayload.feeReceiver,
+  };
+}
+
+/**
+ * Encode capture() arguments for the resolved deployment.
+ *
+ * @param tuple - PaymentInfo struct tuple for the escrow call.
+ * @param amount - Capture amount in atomic token units.
+ * @param fee - Submitted fee matching the deployment version.
+ * @returns Positional arguments for `capture`.
+ */
+export function captureEscrowArgs(
+  tuple: ReturnType<typeof import("./utils").paymentInfoToContractTuple>,
+  amount: bigint,
+  fee: SubmittedFee,
+): readonly unknown[] {
+  if (fee.version === "v1.0") {
+    return [tuple, amount, fee.feeBps, fee.feeReceiver] as const;
+  }
+  return [tuple, amount, BigInt(fee.feeAmount), fee.feeReceiver] as const;
+}
+
+/**
+ * Encode charge() arguments for the resolved deployment.
+ *
+ * @param tuple - PaymentInfo struct tuple for the escrow call.
+ * @param amount - Charge amount in atomic token units.
+ * @param tokenCollector - Collector contract used for this charge.
+ * @param collectorData - Collector-specific calldata.
+ * @param fee - Submitted fee matching the deployment version.
+ * @returns Positional arguments for `charge`.
+ */
+export function chargeEscrowArgs(
+  tuple: ReturnType<typeof import("./utils").paymentInfoToContractTuple>,
+  amount: bigint,
+  tokenCollector: `0x${string}`,
+  collectorData: `0x${string}`,
+  fee: SubmittedFee,
+): readonly unknown[] {
+  if (fee.version === "v1.0") {
+    return [tuple, amount, tokenCollector, collectorData, fee.feeBps, fee.feeReceiver] as const;
+  }
+  return [
+    tuple,
+    amount,
+    tokenCollector,
+    collectorData,
+    BigInt(fee.feeAmount),
+    fee.feeReceiver,
+  ] as const;
+}
+
+/**
+ * Read charge-completion fee fields from a collect payload.
+ *
+ * @param extra - Normalized extra (deployment and fee bounds).
+ * @param wirePayload - Collect payload fields including fee and feeReceiver.
+ * @returns Submitted fee, or undefined when fields mismatch the deployment.
+ */
+export function chargeFeeFromCollectPayload(
+  extra: NormalizedAuthCaptureExtra,
+  wirePayload: Record<string, unknown>,
+): SubmittedFee | undefined {
+  if (!feeFieldMatchesDeployment(extra.deployment, wirePayload)) {
+    return undefined;
+  }
+  if (extra.deployment.version === "v1.0") {
+    return {
+      version: "v1.0",
+      feeBps: wirePayload.feeBps as number,
+      feeReceiver: wirePayload.feeReceiver as `0x${string}`,
+    };
+  }
+  return {
+    version: "v1.1",
+    feeAmount: wirePayload.feeAmount as string,
+    feeReceiver: wirePayload.feeReceiver as `0x${string}`,
+  };
 }

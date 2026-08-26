@@ -14,11 +14,7 @@ import type {
 } from "@x402/core/types";
 import type { ClientEvmSigner } from "../../signer";
 import { hexToBigInt } from "viem";
-import {
-  AUTH_CAPTURE_SCHEME,
-  EIP3009_TOKEN_COLLECTOR_ADDRESS,
-  PERMIT2_TOKEN_COLLECTOR_ADDRESS,
-} from "../constants";
+import { AUTH_CAPTURE_SCHEME, resolveAuthCaptureDeployment } from "../constants";
 import {
   computePayerAgnosticPaymentInfoHash,
   deriveBoundSalt,
@@ -109,6 +105,10 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
     }
 
     const chainId = getEvmChainId(requirements.network);
+    const deployment = resolveAuthCaptureDeployment(extra.authCaptureEscrow);
+    if (!deployment) {
+      throw new Error(`Invalid authCaptureEscrow in payment requirements extra`);
+    }
     const maxAmount = requirements.amount;
     const nowSeconds = Math.floor(Date.now() / 1000);
     const preApprovalExpiry = nowSeconds + requirements.maxTimeoutSeconds;
@@ -141,7 +141,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
     };
 
     // Payer-agnostic PaymentInfo hash — used as ERC-3009 nonce or Permit2 nonce.
-    const nonce = computePayerAgnosticPaymentInfoHash(chainId, paymentInfo);
+    const nonce = computePayerAgnosticPaymentInfoHash(chainId, paymentInfo, deployment.escrow);
 
     if (assetTransferMethod === "permit2") {
       const permit2Authorization: Permit2Payload["permit2Authorization"] = {
@@ -150,7 +150,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
           token: requirements.asset as `0x${string}`,
           amount: maxAmount,
         },
-        spender: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
+        spender: deployment.permit2Collector,
         nonce: hexToBigInt(nonce).toString(),
         deadline: String(preApprovalExpiry),
       };
@@ -164,7 +164,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkClient {
     // Default: EIP-3009 ReceiveWithAuthorization to the canonical EIP-3009 token collector.
     const authorization: Eip3009Payload["authorization"] = {
       from: this.signer.address,
-      to: EIP3009_TOKEN_COLLECTOR_ADDRESS,
+      to: deployment.eip3009Collector,
       value: maxAmount,
       validAfter: "0",
       validBefore: String(preApprovalExpiry),

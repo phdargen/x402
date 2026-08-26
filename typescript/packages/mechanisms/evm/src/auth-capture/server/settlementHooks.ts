@@ -6,21 +6,15 @@ import type {
   VerifiedPaymentCanceledContext,
 } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
-import type { AssetTransferMethod } from "../../types";
 import { computePaymentInfoHash, isNonZeroAddress } from "../nonce";
-import { parseAuthCaptureExtra } from "../extra";
+import { parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
 import {
   buildCaptureEnrichment,
   buildChargeCompletionEnrichment,
   buildVoidEnrichment,
   paymentInfoFromCollect,
 } from "../lifecyclePayload";
-import type {
-  AuthCaptureCollectPayload,
-  AuthCaptureExtra,
-  AuthorizerSigner,
-  PaymentInfoStruct,
-} from "../types";
+import type { AuthCaptureCollectPayload, AuthorizerSigner, PaymentInfoStruct } from "../types";
 import { isAuthCaptureCollectPayload, isEip3009Payload } from "../types";
 import {
   applyCaptureBalances,
@@ -99,7 +93,7 @@ export class AuthCaptureSettlementHooks {
         extra,
         signer,
         chainId,
-        paymentInfoHash: computePaymentInfoHash(chainId, paymentInfo),
+        paymentInfoHash: computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow),
       });
     }
 
@@ -125,7 +119,7 @@ export class AuthCaptureSettlementHooks {
         amount: signedCollectAmount(collect),
       };
       const paymentInfo = paymentInfoFromCollect(collect, authorizeRequirements, extra);
-      const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+      const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
       const stored = await this.config.storage.get(paymentInfoHash);
       const trustedPaymentInfo = stored?.paymentInfo ?? paymentInfo;
       return buildCaptureEnrichment({
@@ -217,7 +211,11 @@ export class AuthCaptureSettlementHooks {
           | PaymentInfoStruct
           | undefined;
         if (paymentInfo) {
-          const hash = computePaymentInfoHash(getEvmChainId(ctx.requirements.network), paymentInfo);
+          const hash = computePaymentInfoHash(
+            getEvmChainId(ctx.requirements.network),
+            paymentInfo,
+            extra.deployment.escrow,
+          );
           await applyCaptureBalances(this.config.storage, hash, amount, voidRemainder);
         }
       }
@@ -227,7 +225,11 @@ export class AuthCaptureSettlementHooks {
         | PaymentInfoStruct
         | undefined;
       if (paymentInfo) {
-        const hash = computePaymentInfoHash(getEvmChainId(ctx.requirements.network), paymentInfo);
+        const hash = computePaymentInfoHash(
+          getEvmChainId(ctx.requirements.network),
+          paymentInfo,
+          extra.deployment.escrow,
+        );
         await this.config.storage.update(hash, current =>
           current ? { ...current, capturableAmount: "0" } : current,
         );
@@ -247,13 +249,7 @@ export class AuthCaptureSettlementHooks {
   private async persistCollect(
     collect: AuthCaptureCollectPayload,
     ctx: SettleResultContext,
-    extra: AuthCaptureExtra & {
-      paymentFlow: "escrow" | "authorization";
-      operatorType: "delegated" | "custom";
-      assetTransferMethod: AssetTransferMethod;
-      receiverAuthorizer: `0x${string}`;
-      policy: `0x${string}`;
-    },
+    extra: NormalizedAuthCaptureExtra,
     operation: "authorize" | "charge",
   ): Promise<void> {
     const paymentInfo = paymentInfoFromCollect(
@@ -262,7 +258,7 @@ export class AuthCaptureSettlementHooks {
       extra,
     );
     const chainId = getEvmChainId(ctx.requirements.network);
-    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
     const signedAmount = isEip3009Payload(collect)
       ? collect.authorization.value
       : collect.permit2Authorization.permitted.amount;

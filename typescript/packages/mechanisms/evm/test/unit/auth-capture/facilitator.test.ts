@@ -24,13 +24,15 @@ import {
 } from "../../../src/auth-capture/facilitator/utils";
 import {
   ESCROW_ABI_WITH_ERRORS,
-  ESCROW_EVENTS_ABI,
+  ESCROW_EVENTS_ABI_V1_1,
   PAYMENT_INFO_COMPONENTS,
 } from "../../../src/auth-capture/abi";
 import {
   AUTH_CAPTURE_ESCROW_ADDRESS,
+  AUTH_CAPTURE_ESCROW_V1_0_ADDRESS,
   DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
   EIP3009_TOKEN_COLLECTOR_ADDRESS,
+  EIP3009_TOKEN_COLLECTOR_V1_0_ADDRESS,
   OPERATOR_REFUND_COLLECTOR_ADDRESS,
   PERMIT2_TOKEN_COLLECTOR_ADDRESS,
 } from "../../../src/auth-capture/constants";
@@ -56,13 +58,13 @@ function makeEscrowEventLog(
   amount: bigint,
   tokenCollector: `0x${string}`,
   chainId: number,
-  fee?: { feeBps: number; feeReceiver: `0x${string}` },
+  fee?: { feeAmount: string | bigint; feeReceiver: `0x${string}` },
 ): Log {
   const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
   const tuple = paymentInfoToContractTuple(paymentInfo);
   if (eventName === "PaymentAuthorized") {
     const topics = encodeEventTopics({
-      abi: ESCROW_EVENTS_ABI,
+      abi: ESCROW_EVENTS_ABI_V1_1,
       eventName: "PaymentAuthorized",
       args: { paymentInfoHash },
     });
@@ -88,7 +90,7 @@ function makeEscrowEventLog(
   }
 
   const topics = encodeEventTopics({
-    abi: ESCROW_EVENTS_ABI,
+    abi: ESCROW_EVENTS_ABI_V1_1,
     eventName: "PaymentCharged",
     args: { paymentInfoHash },
   });
@@ -97,10 +99,10 @@ function makeEscrowEventLog(
       { type: "tuple", name: "paymentInfo", components: [...PAYMENT_INFO_COMPONENTS] },
       { type: "uint256", name: "amount" },
       { type: "address", name: "tokenCollector" },
-      { type: "uint16", name: "feeBps" },
+      { type: "uint256", name: "feeAmount" },
       { type: "address", name: "feeReceiver" },
     ],
-    [tuple, amount, tokenCollector, fee!.feeBps, fee!.feeReceiver],
+    [tuple, amount, tokenCollector, BigInt(fee!.feeAmount), fee!.feeReceiver],
   );
   return {
     address: AUTH_CAPTURE_ESCROW_ADDRESS,
@@ -179,7 +181,7 @@ describe("AuthCaptureEvmScheme", () => {
     settledFeeReceiverDelta?: bigint;
     settledFacilitatorDelta?: bigint;
     facilitatorAddress?: `0x${string}`;
-    feeBps?: number;
+    feeAmount?: string | bigint;
     feeReceiver?: `0x${string}`;
     receiptLogs?: Log[];
     rejectDataSuffix?: `0x${string}`;
@@ -187,14 +189,14 @@ describe("AuthCaptureEvmScheme", () => {
     const amount = opts.amount ?? BigInt("1000000");
     const tokenCollector = opts.tokenCollector ?? EIP3009_TOKEN_COLLECTOR_ADDRESS;
     const functionName = opts.functionName ?? "authorize";
-    const feeBps = opts.feeBps ?? 0;
+    const feeAmount = opts.feeAmount ?? 0;
     const feeReceiver = opts.feeReceiver ?? FEE_RECIPIENT;
     const logs =
       opts.logs ??
       (functionName === "charge"
         ? [
             makeEscrowEventLog("PaymentCharged", opts.paymentInfo, amount, tokenCollector, 84532, {
-              feeBps,
+              feeAmount,
               feeReceiver,
             }),
           ]
@@ -220,7 +222,7 @@ describe("AuthCaptureEvmScheme", () => {
     const postState = opts.postState ?? defaultPostState;
     const payerDelta = opts.payerDelta ?? -amount;
     const tokenStoreDelta = opts.tokenStoreDelta ?? (functionName === "authorize" ? amount : 0n);
-    const fee = (amount * BigInt(feeBps)) / 10_000n;
+    const fee = BigInt(feeAmount);
     const receiverDelta = opts.receiverDelta ?? (functionName === "charge" ? amount - fee : 0n);
     const feeReceiverDelta = opts.feeReceiverDelta ?? fee;
     const facilitatorDelta = opts.facilitatorDelta ?? 0n;
@@ -542,7 +544,7 @@ describe("AuthCaptureEvmScheme", () => {
       payload: {
         ...envelope.payload,
         amount: "1000000",
-        feeBps: 0,
+        feeAmount: "0",
         feeReceiver: FEE_RECIPIENT,
         authorizerSignature: "0xabcd" as `0x${string}`,
       },
@@ -579,7 +581,7 @@ describe("AuthCaptureEvmScheme", () => {
         salt: BOUND_SALT,
         saltNonce: SALT_NONCE,
         amount: "1000000",
-        feeBps: 0,
+        feeAmount: "0",
         feeReceiver: FEE_RECIPIENT,
         authorizerSignature: "0xabcd" as `0x${string}`,
       },
@@ -597,7 +599,7 @@ describe("AuthCaptureEvmScheme", () => {
         paymentInfo: boundPaymentInfo(),
         saltNonce: SALT_NONCE,
         amount: "500000",
-        feeBps: 0,
+        feeAmount: "0",
         feeReceiver: FEE_RECIPIENT,
         expectedCapturableAmount: "1000000",
         expectedRefundableAmount: "0",
@@ -783,7 +785,7 @@ describe("AuthCaptureEvmScheme", () => {
       expect(call.functionName).toBe("charge");
       expect(call.args).toHaveLength(6);
       expect(call.args[2]).toBe(EIP3009_TOKEN_COLLECTOR_ADDRESS);
-      expect(call.args[4]).toBe(0);
+      expect(call.args[4]).toBe(0n);
       expect(call.args[5]).toBe(FEE_RECIPIENT);
       expect(call.gas).toBe(DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT);
     });
@@ -1381,7 +1383,7 @@ describe("AuthCaptureEvmScheme", () => {
   });
 
   describe("settle — charge fee args (ABI 6-arg correctness)", () => {
-    it("should pass feeBps and feeReceiver as args[4] and args[5] for charge", async () => {
+    it("should pass feeAmount and feeReceiver as args[4] and args[5] for charge", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       const envelope = buildChargeEip3009Payload();
       await scheme.settle(envelope, envelope.accepted);
@@ -1389,17 +1391,61 @@ describe("AuthCaptureEvmScheme", () => {
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.functionName).toBe("charge");
       expect(call.args.length).toBe(6);
-      // Default minFeeBps is 0 when extra.minFeeBps is omitted (matches buildPaymentInfo).
-      expect(call.args[4]).toBe(0);
+      expect(call.args[4]).toBe(0n);
       expect(call.args[5]).toBe(FEE_RECIPIENT);
     });
 
-    it("should pass 4 args for authorize (no feeBps/feeReceiver)", async () => {
+    it("should pass 4 args for authorize (no feeAmount/feeReceiver)", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       await scheme.settle(buildEip3009Payload(), mockRequirements);
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.functionName).toBe("authorize");
       expect(call.args.length).toBe(4);
+    });
+
+    it("should use v1.0 feeBps wire and collectors when extra.authCaptureEscrow pins v1.0", async () => {
+      const paymentInfo = boundPaymentInfo();
+      const nonce = computePayerAgnosticPaymentInfoHash(
+        84532,
+        paymentInfo,
+        AUTH_CAPTURE_ESCROW_V1_0_ADDRESS,
+      );
+      const extra = boundExtra({
+        authCaptureEscrow: AUTH_CAPTURE_ESCROW_V1_0_ADDRESS,
+        paymentFlow: "authorization",
+      });
+      const accepted = { ...mockRequirements, extra };
+      const envelope = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        resource: { url: "https://example.com/weather", method: "GET" },
+        accepted,
+        payload: {
+          authorization: {
+            from: PAYER,
+            to: EIP3009_TOKEN_COLLECTOR_V1_0_ADDRESS,
+            value: "1000000",
+            validAfter: "0",
+            validBefore: String(futureSeconds),
+            nonce,
+          },
+          signature: "0xabcd" as `0x${string}`,
+          salt: BOUND_SALT,
+          saltNonce: SALT_NONCE,
+          amount: "1000000",
+          feeBps: 0,
+          feeReceiver: FEE_RECIPIENT,
+          authorizerSignature: "0xabcd" as `0x${string}`,
+        },
+      };
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      await scheme.settle(envelope, accepted);
+
+      const call = mockSigner.writeContract.mock.calls[0][0];
+      expect(call.address).toBe(AUTH_CAPTURE_ESCROW_V1_0_ADDRESS);
+      expect(call.functionName).toBe("charge");
+      expect(call.args[2]).toBe(EIP3009_TOKEN_COLLECTOR_V1_0_ADDRESS);
+      expect(call.args[4]).toBe(0);
     });
   });
 

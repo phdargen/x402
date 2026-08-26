@@ -100,6 +100,7 @@ export interface AuthCaptureExtra {
   maxFeeBps: number;
   name: string;
   version: string;
+  authCaptureEscrow?: `0x${string}`;
   paymentFlow?: AuthCapturePaymentFlow;
   captureMode?: AuthCaptureCaptureMode;
   receiverAuthorizer?: `0x${string}`;
@@ -165,10 +166,11 @@ export type AuthCaptureFacilitatorConfig = {
   pendingSettlementStore?: PendingSettlementStore;
 };
 
-export type CaptureOptions = { feeBps?: number; feeReceiver?: `0x${string}` } & (
-  | { amount?: string; voidRemainder?: false }
-  | { amount: string; voidRemainder: true }
-);
+export type CaptureOptions = {
+  feeReceiver?: `0x${string}`;
+  feeBps?: number;
+  feeAmount?: string;
+} & ({ amount?: string; voidRemainder?: false } | { amount: string; voidRemainder: true });
 
 /**
  * Type guard for AuthCaptureExtra. Checks the structural shape an auth-capture
@@ -193,16 +195,26 @@ export function isAuthCaptureExtra(value: unknown): value is AuthCaptureExtra {
   );
 }
 
-type ChargeCompletion = {
+type ChargeCompletionV1_0 = {
   amount: string;
   feeBps: number;
   feeReceiver: `0x${string}`;
   authorizerSignature: `0x${string}`;
 };
 
+type ChargeCompletionV1_1 = {
+  amount: string;
+  feeAmount: string;
+  feeReceiver: `0x${string}`;
+  authorizerSignature: `0x${string}`;
+};
+
+type ChargeCompletion = ChargeCompletionV1_0 | ChargeCompletionV1_1;
+
 type NoChargeCompletion = {
   amount?: never;
   feeBps?: never;
+  feeAmount?: never;
   feeReceiver?: never;
   authorizerSignature?: never;
 };
@@ -253,12 +265,11 @@ type LifecycleBase = {
 export type CapturePayload = LifecycleBase & {
   type: "capture";
   amount: string;
-  feeBps: number;
   feeReceiver: `0x${string}`;
   expectedCapturableAmount: string;
   expectedRefundableAmount: string;
   voidAuthorizerSignature?: `0x${string}`;
-};
+} & ({ feeBps: number; feeAmount?: never } | { feeAmount: string; feeBps?: never });
 
 export type VoidPayload = LifecycleBase & {
   type: "void";
@@ -299,11 +310,13 @@ export function isLifecyclePayload(value: unknown): value is AuthCaptureLifecycl
 export function isCapturePayload(value: unknown): value is CapturePayload {
   if (!isLifecyclePayload(value) || value.type !== "capture") return false;
   const v = value as Record<string, unknown>;
+  const hasFeeBps = typeof v.feeBps === "number";
+  const hasFeeAmount = typeof v.feeAmount === "string";
+  if (hasFeeBps === hasFeeAmount) return false;
   return (
     isPaymentInfoStruct(v.paymentInfo) &&
     typeof v.saltNonce === "string" &&
     typeof v.amount === "string" &&
-    typeof v.feeBps === "number" &&
     typeof v.feeReceiver === "string" &&
     typeof v.expectedCapturableAmount === "string" &&
     typeof v.expectedRefundableAmount === "string" &&
@@ -391,17 +404,37 @@ function isHexString(value: unknown): value is `0x${string}` {
  * @returns ChargeCompletion when all four are present and well-typed; undefined when all are absent.
  */
 function readChargeCompletion(v: Record<string, unknown>): ChargeCompletion | undefined {
-  const hasAny = "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
+  const hasAny =
+    "amount" in v ||
+    "feeBps" in v ||
+    "feeAmount" in v ||
+    "feeReceiver" in v ||
+    "authorizerSignature" in v;
   if (!hasAny) return undefined;
   if (
     typeof v.amount === "string" &&
     typeof v.feeBps === "number" &&
+    v.feeAmount === undefined &&
     typeof v.feeReceiver === "string" &&
     typeof v.authorizerSignature === "string"
   ) {
     return {
       amount: v.amount,
       feeBps: v.feeBps,
+      feeReceiver: v.feeReceiver as `0x${string}`,
+      authorizerSignature: v.authorizerSignature as `0x${string}`,
+    };
+  }
+  if (
+    typeof v.amount === "string" &&
+    typeof v.feeAmount === "string" &&
+    v.feeBps === undefined &&
+    typeof v.feeReceiver === "string" &&
+    typeof v.authorizerSignature === "string"
+  ) {
+    return {
+      amount: v.amount,
+      feeAmount: v.feeAmount,
       feeReceiver: v.feeReceiver as `0x${string}`,
       authorizerSignature: v.authorizerSignature as `0x${string}`,
     };
@@ -451,7 +484,11 @@ export function isEip3009Payload(value: unknown): value is Eip3009Payload {
   const saltFields = collectExtras(v);
   if (!saltFields) return false;
   const hasAnyCharge =
-    "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
+    "amount" in v ||
+    "feeBps" in v ||
+    "feeAmount" in v ||
+    "feeReceiver" in v ||
+    "authorizerSignature" in v;
   if (hasAnyCharge) {
     if (!saltFields.saltNonce) return false;
     return readChargeCompletion(v) !== undefined;
@@ -485,7 +522,11 @@ export function isPermit2Payload(value: unknown): value is Permit2Payload {
   const saltFields = collectExtras(v);
   if (!saltFields) return false;
   const hasAnyCharge =
-    "amount" in v || "feeBps" in v || "feeReceiver" in v || "authorizerSignature" in v;
+    "amount" in v ||
+    "feeBps" in v ||
+    "feeAmount" in v ||
+    "feeReceiver" in v ||
+    "authorizerSignature" in v;
   if (hasAnyCharge) {
     if (!saltFields.saltNonce) return false;
     return readChargeCompletion(v) !== undefined;

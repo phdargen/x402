@@ -1,11 +1,10 @@
 import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/core/types";
 import type { FacilitatorClient } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
-import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
+import { parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
 import { buildCapturePayload, buildRefundPayload, buildVoidPayload } from "../lifecyclePayload";
 import type {
-  AuthCaptureExtra,
   AuthorizerSigner,
   CaptureOptions,
   CapturePayload,
@@ -57,6 +56,7 @@ export class AuthCaptureLifecycleManager {
       chainId,
       amount,
       feeBps: opts?.feeBps,
+      feeAmount: opts?.feeAmount,
       feeReceiver: opts?.feeReceiver,
       voidRemainder: opts?.voidRemainder,
     });
@@ -229,15 +229,8 @@ export class AuthCaptureLifecycleManager {
  * @param record - Stored payment.
  * @returns Extra sufficient to reconstruct and settle lifecycle payloads.
  */
-function extraFromRecord(record: AuthorizedPayment): AuthCaptureExtra & {
-  paymentFlow: "escrow" | "authorization";
-  operatorType: "delegated" | "custom";
-  assetTransferMethod: AssetTransferMethod;
-  receiverAuthorizer: `0x${string}`;
-  policy: `0x${string}`;
-  captureMode: "sync" | "deferred";
-} {
-  return {
+function extraFromRecord(record: AuthorizedPayment): NormalizedAuthCaptureExtra {
+  const parsed = parseAuthCaptureExtra({
     captureAuthorizer: record.paymentInfo.operator,
     captureDeadline: record.paymentInfo.authorizationExpiry,
     refundDeadline: record.paymentInfo.refundExpiry,
@@ -252,7 +245,11 @@ function extraFromRecord(record: AuthorizedPayment): AuthCaptureExtra & {
     receiverAuthorizer: record.receiverAuthorizer,
     policy: record.policy,
     captureMode: record.paymentFlow === "escrow" ? "deferred" : "sync",
-  };
+  });
+  if ("error" in parsed) {
+    throw new Error(`AuthCapture: invalid stored extra: ${parsed.error}`);
+  }
+  return parsed.extra;
 }
 
 /**

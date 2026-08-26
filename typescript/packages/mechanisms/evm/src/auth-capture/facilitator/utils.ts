@@ -1,7 +1,8 @@
 import { BaseError, ContractFunctionRevertedError, isAddressEqual, type Log } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
-import { ESCROW_ABI_WITH_ERRORS, ESCROW_VIEW_ABI } from "../abi";
-import { AUTH_CAPTURE_ESCROW_ADDRESS } from "../constants";
+import { escrowAbiWithErrorsForDeployment } from "../abi";
+import { ESCROW_VIEW_ABI } from "../abi";
+import type { AuthCaptureDeployment } from "../constants";
 import type { AuthCaptureCollectPayload, PaymentState } from "../types";
 import { isEip3009Payload } from "../types";
 import { ESCROW_ERROR_TO_INVALID_REASON, ErrSimulationFailed } from "../errors";
@@ -118,6 +119,7 @@ export function collectPayer(wirePayload: AuthCaptureCollectPayload): `0x${strin
  * @param functionName - Escrow ABI function.
  * @param args - Encoded arguments.
  * @param account - msg.sender for the eth_call.
+ * @param deployment - Resolved escrow addresses and version.
  * @returns `"ok"` or a stable invalidReason.
  */
 export async function simulateEscrowCall(
@@ -126,11 +128,12 @@ export async function simulateEscrowCall(
   functionName: "authorize" | "charge" | "capture" | "void" | "refund",
   args: readonly unknown[],
   account: `0x${string}`,
+  deployment: AuthCaptureDeployment,
 ): Promise<"ok" | string> {
   try {
     await signer.readContract({
       address: target,
-      abi: ESCROW_ABI_WITH_ERRORS,
+      abi: escrowAbiWithErrorsForDeployment(deployment),
       functionName,
       args,
       account,
@@ -148,6 +151,7 @@ export async function simulateEscrowCall(
  * @param target - Contract to call.
  * @param functionName - Escrow ABI function.
  * @param args - Encoded arguments.
+ * @param deployment - Resolved escrow addresses and version.
  * @param options - Optional gas cap and extension calldata suffix.
  * @param options.gas - Hard gas limit for the write.
  * @param options.dataSuffix - Builder-code suffix appended to calldata.
@@ -158,12 +162,13 @@ export async function writeEscrowCall(
   target: `0x${string}`,
   functionName: "authorize" | "charge" | "capture" | "void" | "refund",
   args: readonly unknown[],
+  deployment: AuthCaptureDeployment,
   options?: { gas?: bigint; dataSuffix?: `0x${string}` },
 ): Promise<{ txHash: `0x${string}` } | { error: string }> {
   try {
     const txHash = await signer.writeContract({
       address: target,
-      abi: ESCROW_ABI_WITH_ERRORS,
+      abi: escrowAbiWithErrorsForDeployment(deployment),
       functionName,
       args,
       gas: options?.gas,
@@ -183,6 +188,7 @@ export async function writeEscrowCall(
  * @param target - Contract to call.
  * @param functionName - Escrow ABI function.
  * @param args - Encoded arguments.
+ * @param deployment - Resolved escrow addresses and version.
  * @param options - Optional gas cap and extension calldata suffix.
  * @param options.gas - Hard gas limit for the write.
  * @param options.dataSuffix - Builder-code suffix appended to calldata.
@@ -193,11 +199,12 @@ export async function submitEscrowCall(
   target: `0x${string}`,
   functionName: "authorize" | "charge" | "capture" | "void" | "refund",
   args: readonly unknown[],
+  deployment: AuthCaptureDeployment,
   options?: { gas?: bigint; dataSuffix?: `0x${string}` },
 ): Promise<
   { txHash: `0x${string}`; logs?: readonly Log[] } | { error: string; txHash?: `0x${string}` }
 > {
-  const written = await writeEscrowCall(signer, target, functionName, args, options);
+  const written = await writeEscrowCall(signer, target, functionName, args, deployment, options);
   if ("error" in written) {
     return { error: written.error };
   }
@@ -259,15 +266,17 @@ export function normalizePaymentState(raw: unknown): PaymentState | undefined {
  *
  * @param signer - Facilitator signer.
  * @param paymentInfoHash - Escrow payment identifier.
+ * @param escrowAddress - AuthCaptureEscrow to query.
  * @returns Onchain balances, or undefined when the read fails.
  */
 export async function readPaymentStateOnce(
   signer: FacilitatorEvmSigner,
   paymentInfoHash: `0x${string}`,
+  escrowAddress: `0x${string}`,
 ): Promise<PaymentState | undefined> {
   try {
     const raw = await signer.readContract({
-      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      address: escrowAddress,
       abi: ESCROW_VIEW_ABI,
       functionName: "paymentState",
       args: [paymentInfoHash],
@@ -338,6 +347,7 @@ function isLikelyStalePaymentState(
  * @param paymentInfoHash - Escrow payment identifier.
  * @param expectedCapturable - Signed expected capturable balance.
  * @param expectedRefundable - Signed expected refundable balance.
+ * @param escrowAddress - AuthCaptureEscrow to query.
  * @returns Parsed state and read metadata.
  */
 export async function readPaymentStateForBalances(
@@ -345,9 +355,10 @@ export async function readPaymentStateForBalances(
   paymentInfoHash: `0x${string}`,
   expectedCapturable: bigint,
   expectedRefundable: bigint,
+  escrowAddress: `0x${string}`,
 ): Promise<{ state?: PaymentState; readFailed: boolean; attempts: number }> {
   for (let attempt = 0; ; attempt++) {
-    const state = await readPaymentStateOnce(signer, paymentInfoHash);
+    const state = await readPaymentStateOnce(signer, paymentInfoHash, escrowAddress);
 
     if (state && paymentStateBalancesMatch(state, expectedCapturable, expectedRefundable)) {
       return { state, readFailed: false, attempts: attempt + 1 };

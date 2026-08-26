@@ -7,7 +7,7 @@ Two payment flows, selected per route by `extra.paymentFlow` (default `"escrow"`
 - **Escrow**: first settle is `authorize` (hold). After the resource runs, finalize with `capture` / `void` (`captureMode: "sync"`, default) or skip that settle and capture later (`captureMode: "deferred"`).
 - **Authorization**: verify, run the resource, then settle as a terminal `charge`. No hold, therefore no `capture` / `void`.
 
-See the [v1.1 proposed specification](../../../../../specs/proposed/scheme_auth_capture_evm.md) for protocol details.
+See the [auth-capture EVM specification](../../../../../specs/schemes/auth-capture/scheme_auth_capture_evm.md) for protocol details.
 
 ## Import Paths
 
@@ -122,6 +122,7 @@ The server-side fail-fast also covers the other directly-merchant-set fields (`c
 | `policy` | zero address | Reserved. Non-zero is rejected for `"delegated"` and `"custom"` (`operatorType: "policy"` is not implemented). Still bound into the salt derivation. |
 | `operatorType` | `"delegated"` | `"delegated"` (facilitator is the operator) or `"custom"` (allowlisted contract operator). `"policy"` is rejected. |
 | `assetTransferMethod` | `"eip3009"` | `"eip3009"` (ERC-3009) or `"permit2"` (Uniswap Permit2). See [Asset Transfer Methods](#asset-transfer-methods). |
+| `authCaptureEscrow` | v1.1 escrow | Selects the commerce-payments deployment (v1.1 default, or v1.0 when pinned). The server writes the resolved address out on publish. Collectors follow from the deployment — they are not on `extra`. |
 
 Fail-fast in `enhancePaymentRequirements`:
 
