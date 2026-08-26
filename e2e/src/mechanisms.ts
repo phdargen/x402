@@ -891,7 +891,10 @@ export function resolvePaymentRoutes(
 
     const caip2 = env(derivedNetworkKey(route.network)) ?? def.networks.testnet.caip2;
     const { price, extra: priceExtra } = resolvePrice(route, caip2, env);
-    let extra = mergeRouteExtra(priceExtra, route.paymentFlow);
+    let extra: Record<string, string | number | boolean> | undefined = mergeRouteExtra(
+      priceExtra,
+      route.paymentFlow,
+    );
     if (route.schemeExtra) {
       extra = { ...(extra ?? {}), ...route.schemeExtra };
     }
