@@ -6,6 +6,7 @@ import type {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
+import type { PendingSettlementStore } from "@x402/core/facilitator";
 import { isAddressEqual } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import {
@@ -15,6 +16,10 @@ import {
 } from "../constants";
 import { computePaymentInfoHash, deriveBoundSalt, isNonZeroAddress } from "../nonce";
 import { resolveDataSuffix } from "../../shared/extensions";
+import {
+  waitAndReturnSettleResponse,
+  withPendingSettlementStore,
+} from "../../shared/settleReceipt";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple } from "../utils";
 import { verifyCapture, verifyRefund, verifyVoid } from "../authorizerSigner";
@@ -43,6 +48,7 @@ import {
   resolveSubmitter,
   simulateEscrowCall,
   submitEscrowCall,
+  writeEscrowCall,
 } from "./utils";
 
 /**
@@ -189,6 +195,39 @@ export async function verifyLifecycle(
 }
 
 /**
+ * Wait for a lifecycle broadcast receipt with pending-settlement bookkeeping.
+ *
+ * @param store - Pending-settlement store keyed by authorizerSignature.
+ * @param pendingKey - Store lookup key.
+ * @param submitter - Facilitator submitter.
+ * @param tx - Broadcast transaction hash.
+ * @param network - CAIP-2 network.
+ * @param payer - PaymentInfo.payer.
+ * @param amount - Settled atomic amount on success.
+ * @returns SettleResponse after receipt confirmation or a retryable pending failure.
+ */
+async function awaitLifecycleSettlement(
+  store: PendingSettlementStore,
+  pendingKey: string | undefined,
+  submitter: FacilitatorEvmSigner,
+  tx: `0x${string}`,
+  network: Network,
+  payer: string,
+  amount: string,
+): Promise<SettleResponse> {
+  return withPendingSettlementStore(
+    store,
+    pendingKey,
+    () =>
+      waitAndReturnSettleResponse(submitter, tx, network, payer, {
+        failedStatusReason: Errors.ErrTransactionReverted,
+        amount,
+      }),
+    Errors.ErrTransactionReverted,
+  );
+}
+
+/**
  * Re-verify and settle a lifecycle payload.
  *
  * @param signers - Facilitator signer set.
@@ -196,6 +235,7 @@ export async function verifyLifecycle(
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Payload with a lifecycle `type`.
+ * @param store - Pending-settlement store keyed by authorizerSignature.
  * @param context - Optional facilitator context for extension hooks.
  * @returns SettleResponse.
  */
@@ -205,8 +245,60 @@ export async function settleLifecycle(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureLifecyclePayload,
+  store: PendingSettlementStore,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
+  const pendingKey = wirePayload.authorizerSignature;
+  const payer = wirePayload.paymentInfo.payer;
+
+  if (pendingKey) {
+    const cachedTx = await store.get(pendingKey);
+    if (cachedTx) {
+      await store.delete(pendingKey);
+      const parsed = parseAuthCaptureExtra(requirements.extra);
+      if ("error" in parsed) {
+        return {
+          success: false,
+          errorReason: parsed.error,
+          transaction: "",
+          network: requirements.network,
+          payer,
+        };
+      }
+      const submitter = resolveSubmitter(signers, parsed.extra);
+      if (!submitter) {
+        return {
+          success: false,
+          errorReason: Errors.ErrOperatorNotAdmitted,
+          transaction: "",
+          network: requirements.network,
+          payer,
+        };
+      }
+      const amount =
+        wirePayload.type === "refund" || wirePayload.type === "capture" ? wirePayload.amount : "0";
+      const result = await awaitLifecycleSettlement(
+        store,
+        pendingKey,
+        submitter,
+        cachedTx as `0x${string}`,
+        requirements.network,
+        payer,
+        amount,
+      );
+      if (result.success && wirePayload.type === "capture" && wirePayload.voidAuthorizerSignature) {
+        const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
+        const settleTarget = resolveSettleTarget(parsed.extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+        const dataSuffix = await resolveDataSuffix(context, {
+          paymentPayload: payload,
+          paymentRequirements: requirements,
+        });
+        await submitEscrowCall(submitter, settleTarget, "void", [tuple], { dataSuffix });
+      }
+      return result;
+    }
+  }
+
   const verification = await verifyLifecycle(signers, config, payload, requirements, wirePayload);
   if (!verification.isValid) {
     return {
@@ -241,42 +333,95 @@ export async function settleLifecycle(
   }
   const tuple = paymentInfoToContractTuple(wirePayload.paymentInfo);
   const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
-  const payer = wirePayload.paymentInfo.payer;
   const dataSuffix = await resolveDataSuffix(context, {
     paymentPayload: payload,
     paymentRequirements: requirements,
   });
 
   if (wirePayload.type === "void") {
-    const submitted = await submitEscrowCall(submitter, settleTarget, "void", [tuple], {
+    const written = await writeEscrowCall(submitter, settleTarget, "void", [tuple], {
       dataSuffix,
     });
-    return settleResult(submitted, requirements.network, payer, "0");
+    if ("error" in written) {
+      return {
+        success: false,
+        errorReason: written.error,
+        transaction: "",
+        network: requirements.network,
+        payer,
+      };
+    }
+    return awaitLifecycleSettlement(
+      store,
+      pendingKey,
+      submitter,
+      written.txHash,
+      requirements.network,
+      payer,
+      "0",
+    );
   }
 
   if (wirePayload.type === "refund") {
     const amount = BigInt(wirePayload.amount);
-    const submitted = await submitEscrowCall(
+    const written = await writeEscrowCall(
       submitter,
       settleTarget,
       "refund",
       [tuple, amount, OPERATOR_REFUND_COLLECTOR_ADDRESS, "0x"],
       { dataSuffix },
     );
-    return settleResult(submitted, requirements.network, payer, amount.toString());
+    if ("error" in written) {
+      return {
+        success: false,
+        errorReason: written.error,
+        transaction: "",
+        network: requirements.network,
+        payer,
+      };
+    }
+    return awaitLifecycleSettlement(
+      store,
+      pendingKey,
+      submitter,
+      written.txHash,
+      requirements.network,
+      payer,
+      amount.toString(),
+    );
   }
 
   const capture = wirePayload;
   const amount = BigInt(capture.amount);
-  const captureSubmitted = await submitEscrowCall(
+  const written = await writeEscrowCall(
     submitter,
     settleTarget,
     "capture",
     [tuple, amount, capture.feeBps, capture.feeReceiver],
     { dataSuffix },
   );
-  if ("error" in captureSubmitted) {
-    return settleResult(captureSubmitted, requirements.network, payer, amount.toString());
+  if ("error" in written) {
+    return {
+      success: false,
+      errorReason: written.error,
+      transaction: "",
+      network: requirements.network,
+      payer,
+      amount: amount.toString(),
+    };
+  }
+
+  const result = await awaitLifecycleSettlement(
+    store,
+    pendingKey,
+    submitter,
+    written.txHash,
+    requirements.network,
+    payer,
+    amount.toString(),
+  );
+  if (!result.success) {
+    return result;
   }
 
   if (capture.voidAuthorizerSignature) {
@@ -287,55 +432,7 @@ export async function settleLifecycle(
     await submitEscrowCall(submitter, settleTarget, "void", [tuple], { dataSuffix });
   }
 
-  return {
-    success: true,
-    transaction: captureSubmitted.txHash,
-    network: requirements.network,
-    payer,
-    amount: amount.toString(),
-  };
-}
-
-/**
- * Map a submit result onto a SettleResponse.
- *
- * @param submitted - Write result or error.
- * @param network - CAIP-2 network.
- * @param payer - PaymentInfo.payer.
- * @param amount - Settled atomic amount on success.
- * @returns SettleResponse.
- */
-function settleResult(
-  submitted: { txHash: `0x${string}` } | { error: string; txHash?: `0x${string}` },
-  network: Network,
-  payer: string,
-  amount: string,
-): SettleResponse {
-  if ("error" in submitted && submitted.error === "reverted") {
-    return {
-      success: false,
-      errorReason: Errors.ErrTransactionReverted,
-      transaction: submitted.txHash ?? "",
-      network,
-      payer,
-    };
-  }
-  if ("error" in submitted) {
-    return {
-      success: false,
-      errorReason: submitted.error,
-      transaction: "",
-      network,
-      payer,
-    };
-  }
-  return {
-    success: true,
-    transaction: submitted.txHash,
-    network,
-    payer,
-    amount,
-  };
+  return result;
 }
 
 /**
