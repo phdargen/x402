@@ -12,6 +12,7 @@
  * is added beside `salt`.
  */
 
+import type { PendingSettlementStore } from "@x402/core/facilitator";
 import type { TypedData } from "viem";
 import type { AssetTransferMethod } from "../types";
 
@@ -154,6 +155,14 @@ export type AuthCaptureFacilitatorConfig = {
    * so N keys mean N deployment costs and escrow-held balances split N ways.
    */
   refundFunding?: boolean;
+  /**
+   * Lets a retried settle for the same payload reconcile against an
+   * already-broadcast transaction instead of re-verifying and
+   * re-broadcasting (see {@link PendingSettlementStore}). Defaults to a
+   * fresh in-memory store shared across all settle calls on this scheme
+   * instance.
+   */
+  pendingSettlementStore?: PendingSettlementStore;
 };
 
 export type CaptureOptions = { feeBps?: number; feeReceiver?: `0x${string}` } & (

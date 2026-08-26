@@ -63,6 +63,7 @@ export const ErrRefundExceedsCapture = "invalid_auth_capture_evm_refund_exceeds_
 // Settle errors
 export const ErrVerificationFailed = "invalid_auth_capture_evm_verification_failed";
 export const ErrTransactionReverted = "invalid_auth_capture_evm_transaction_reverted";
+export const ErrSettlementPending = "settlement_pending";
 
 /**
  * Map an AuthCaptureEscrow custom-error name (decoded by viem from a

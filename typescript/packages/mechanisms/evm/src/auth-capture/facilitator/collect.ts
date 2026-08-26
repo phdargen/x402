@@ -1,10 +1,12 @@
 import type {
   FacilitatorContext,
+  Network,
   PaymentPayload,
   PaymentRequirements,
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
+import type { PendingSettlementStore } from "@x402/core/facilitator";
 import { encodeFunctionData, hexToBigInt, isAddressEqual, parseEventLogs, type Log } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import {
@@ -29,6 +31,10 @@ import {
   verifyPermit2Signature,
 } from "../nonce";
 import { appendDataSuffix, resolveDataSuffix } from "../../shared/extensions";
+import {
+  waitAndReturnSettleResponse,
+  withPendingSettlementStore,
+} from "../../shared/settleReceipt";
 import { classifyErc6492Payer } from "../../shared/verifySignature";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple, reconstructPaymentInfo, unpackForSettle } from "../utils";
@@ -57,7 +63,7 @@ import {
   readPaymentStateForBalances,
   resolveSubmitter,
   simulateEscrowCall,
-  submitEscrowCall,
+  writeEscrowCall,
   SAFETY_MARGIN_SECONDS,
 } from "./utils";
 
@@ -348,6 +354,320 @@ export async function verifyCollect(
   return { isValid: true, payer };
 }
 
+type CollectBalanceCheck = {
+  before: CollectBalanceSnapshot;
+  tokenStore: `0x${string}`;
+  facilitator: `0x${string}`;
+};
+
+type CollectSettleExecution = {
+  submitter: FacilitatorEvmSigner;
+  extra: NormalizedAuthCaptureExtra;
+  payer: `0x${string}`;
+  network: Network;
+  paymentInfo: PaymentInfoStruct;
+  paymentInfoHash: `0x${string}`;
+  functionName: "authorize" | "charge";
+  settleAmount: bigint;
+  feeBps: number;
+  feeReceiver: `0x${string}`;
+  tokenCollector: `0x${string}`;
+};
+
+/**
+ * Waits for a collect broadcast receipt and runs post-confirm checks, with
+ * pending-settlement store bookkeeping.
+ *
+ * @param store - Pending-settlement store keyed by the collect signature.
+ * @param pendingKey - Store lookup key (the collect signature).
+ * @param tx - Broadcast transaction hash to await.
+ * @param execution - Parsed collect execution context.
+ * @param customBalanceCheck - Pre-broadcast balance snapshot for custom operators.
+ * @param isReconcile - True on a cache-hit retry (skips balance-delta checks).
+ * @returns SettleResponse after receipt confirmation or a retryable pending failure.
+ */
+async function awaitCollectSettlement(
+  store: PendingSettlementStore,
+  pendingKey: string | undefined,
+  tx: `0x${string}`,
+  execution: CollectSettleExecution,
+  customBalanceCheck: CollectBalanceCheck | undefined,
+  isReconcile: boolean,
+): Promise<SettleResponse> {
+  const {
+    submitter,
+    extra,
+    payer,
+    network,
+    paymentInfo,
+    paymentInfoHash,
+    functionName,
+    settleAmount,
+    feeBps,
+    feeReceiver,
+    tokenCollector,
+  } = execution;
+  const expectedCapturable = functionName === "authorize" ? settleAmount : 0n;
+  const expectedRefundable = functionName === "charge" ? settleAmount : 0n;
+
+  return withPendingSettlementStore(
+    store,
+    pendingKey,
+    () =>
+      waitAndReturnSettleResponse(submitter, tx, network, payer, {
+        failedStatusReason: Errors.ErrTransactionReverted,
+        validateReceipt: receipt => {
+          if (extra.operatorType !== "custom") {
+            return undefined;
+          }
+          const eventOk =
+            functionName === "charge"
+              ? verifyPaymentChargedEvent(receipt.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+                  paymentInfoHash,
+                  amount: settleAmount,
+                  tokenCollector,
+                  operator: extra.captureAuthorizer,
+                  feeBps,
+                  feeReceiver,
+                })
+              : verifyPaymentAuthorizedEvent(receipt.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+                  paymentInfoHash,
+                  amount: settleAmount,
+                  tokenCollector,
+                  operator: extra.captureAuthorizer,
+                });
+          if (!eventOk) {
+            return {
+              success: false,
+              errorReason: Errors.ErrSimulationFailed,
+              transaction: tx,
+              network,
+              payer,
+            };
+          }
+          return undefined;
+        },
+        onSuccess: async () => {
+          const { state, readFailed } = await readPaymentStateForBalances(
+            submitter,
+            paymentInfoHash,
+            expectedCapturable,
+            expectedRefundable,
+          );
+          if (readFailed) {
+            throw new Error("payment state read failed after confirmed collect transaction");
+          }
+          if (
+            !state ||
+            !state.hasCollectedPayment ||
+            state.capturableAmount !== expectedCapturable ||
+            state.refundableAmount !== expectedRefundable
+          ) {
+            return {
+              success: false,
+              errorReason: Errors.ErrUnexpectedPaymentState,
+              transaction: tx,
+              network,
+              payer,
+            };
+          }
+
+          // Cache-hit reconcile has no pre-broadcast balance snapshot; still require escrow
+          // events (above) and post-confirm paymentState, but skip the delta check.
+          if (customBalanceCheck && !isReconcile) {
+            const after = await readCollectBalanceSnapshot(
+              submitter,
+              paymentInfo.token,
+              payer,
+              customBalanceCheck.tokenStore,
+              customBalanceCheck.facilitator,
+              functionName,
+              paymentInfo.receiver,
+              feeReceiver,
+            );
+            if (!after) {
+              throw new Error("balance read failed after confirmed collect transaction");
+            }
+            if (
+              !hasExpectedCollectBalanceChanges(
+                customBalanceCheck.before,
+                after,
+                functionName,
+                settleAmount,
+                feeBps,
+              )
+            ) {
+              return {
+                success: false,
+                errorReason: Errors.ErrSimulationFailed,
+                transaction: tx,
+                network,
+                payer,
+              };
+            }
+          }
+
+          return {
+            success: true,
+            transaction: tx,
+            network,
+            payer,
+            amount: settleAmount.toString(),
+          };
+        },
+      }),
+    Errors.ErrTransactionReverted,
+  );
+}
+
+/**
+ * Build collect execution context from a verified or reconciled payload.
+ *
+ * @param signers - Facilitator signer set.
+ * @param payload - Wire payment envelope.
+ * @param requirements - Published requirements.
+ * @param wirePayload - Narrowed collect payload.
+ * @param payerOverride - Payer when verify was skipped (cache-hit reconcile).
+ * @returns Execution context or a terminal SettleResponse.
+ */
+async function buildCollectSettleExecution(
+  signers: readonly FacilitatorEvmSigner[],
+  payload: PaymentPayload,
+  requirements: PaymentRequirements,
+  wirePayload: AuthCaptureCollectPayload,
+  payerOverride?: string,
+): Promise<CollectSettleExecution | SettleResponse> {
+  const parsed = parseAuthCaptureExtra(requirements.extra);
+  if ("error" in parsed) {
+    return {
+      success: false,
+      errorReason: parsed.error,
+      transaction: "",
+      network: requirements.network,
+      payer: payerOverride ?? collectPayer(wirePayload),
+    };
+  }
+  const extra = parsed.extra;
+  const submitter = resolveSubmitter(signers, extra);
+  if (!submitter) {
+    return {
+      success: false,
+      errorReason: Errors.ErrOperatorNotAdmitted,
+      transaction: "",
+      network: requirements.network,
+      payer: payerOverride ?? collectPayer(wirePayload),
+    };
+  }
+
+  const payer = (payerOverride ?? collectPayer(wirePayload)) as `0x${string}`;
+  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod);
+  const originalMax = payload.accepted.amount;
+  const paymentInfo = reconstructPaymentInfo(
+    payer,
+    unpacked.preApprovalExpiry,
+    wirePayload.salt,
+    { ...requirements, amount: originalMax },
+    extra,
+    originalMax,
+  );
+
+  const needsChargeCompletion = extra.paymentFlow === "authorization";
+  const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
+  let settleAmount = unpacked.amount;
+  let feeBps = defaultSubmittedFee(extra).feeBps;
+  let feeReceiver = defaultSubmittedFee(extra).feeReceiver;
+  if (needsChargeCompletion) {
+    settleAmount = BigInt(collectChargeAmount(wirePayload) ?? originalMax);
+    feeBps = wirePayload.feeBps as number;
+    feeReceiver = wirePayload.feeReceiver as `0x${string}`;
+  }
+
+  const chainId = getEvmChainId(requirements.network);
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+
+  return {
+    submitter,
+    extra,
+    payer,
+    network: requirements.network,
+    paymentInfo,
+    paymentInfoHash,
+    functionName,
+    settleAmount,
+    feeBps,
+    feeReceiver,
+    tokenCollector: unpacked.tokenCollector,
+  };
+}
+
+/**
+ * Snapshot payment-token balances before a custom-operator collect broadcast.
+ *
+ * @param submitter - Facilitator submitter.
+ * @param execution - Parsed collect execution context.
+ * @returns Balance snapshot context or a terminal SettleResponse.
+ */
+async function snapshotCustomOperatorBalances(
+  submitter: FacilitatorEvmSigner,
+  execution: CollectSettleExecution,
+): Promise<CollectBalanceCheck | SettleResponse | undefined> {
+  if (execution.extra.operatorType !== "custom") {
+    return undefined;
+  }
+
+  const { extra, payer, paymentInfo, functionName, feeReceiver } = execution;
+  const facilitator = submitter.getAddresses()[0];
+  if (!facilitator) {
+    return {
+      success: false,
+      errorReason: Errors.ErrSimulationFailed,
+      transaction: "",
+      network: execution.network,
+      payer,
+    };
+  }
+
+  let tokenStore: `0x${string}`;
+  try {
+    tokenStore = (await submitter.readContract({
+      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      abi: ESCROW_VIEW_ABI,
+      functionName: "getTokenStore",
+      args: [extra.captureAuthorizer],
+    })) as `0x${string}`;
+  } catch {
+    return {
+      success: false,
+      errorReason: Errors.ErrSimulationFailed,
+      transaction: "",
+      network: execution.network,
+      payer,
+    };
+  }
+
+  const before = await readCollectBalanceSnapshot(
+    submitter,
+    paymentInfo.token,
+    payer,
+    tokenStore,
+    facilitator,
+    functionName,
+    paymentInfo.receiver,
+    feeReceiver,
+  );
+  if (!before) {
+    return {
+      success: false,
+      errorReason: Errors.ErrSimulationFailed,
+      transaction: "",
+      network: execution.network,
+      payer,
+    };
+  }
+
+  return { before, tokenStore, facilitator };
+}
+
 /**
  * Re-verify and settle a collect payload.
  *
@@ -356,6 +676,7 @@ export async function verifyCollect(
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Narrowed collect payload.
+ * @param store - Pending-settlement store keyed by the collect signature.
  * @param context - Optional facilitator context for extension hooks.
  * @returns SettleResponse, including the settled amount.
  */
@@ -365,8 +686,37 @@ export async function settleCollect(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureCollectPayload,
+  store: PendingSettlementStore,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
+  const pendingKey = wirePayload.signature;
+  const payer = collectPayer(wirePayload);
+
+  if (pendingKey) {
+    const cachedTx = await store.get(pendingKey);
+    if (cachedTx) {
+      await store.delete(pendingKey);
+      const execution = await buildCollectSettleExecution(
+        signers,
+        payload,
+        requirements,
+        wirePayload,
+        payer,
+      );
+      if ("success" in execution) {
+        return execution;
+      }
+      return awaitCollectSettlement(
+        store,
+        pendingKey,
+        cachedTx as `0x${string}`,
+        execution,
+        undefined,
+        true,
+      );
+    }
+  }
+
   const dataSuffix = await resolveDataSuffix(context, {
     paymentPayload: payload,
     paymentRequirements: requirements,
@@ -390,239 +740,77 @@ export async function settleCollect(
     };
   }
 
-  const parsed = parseAuthCaptureExtra(requirements.extra);
-  if ("error" in parsed) {
-    return {
-      success: false,
-      errorReason: parsed.error,
-      transaction: "",
-      network: requirements.network,
-      payer: verification.payer,
-    };
-  }
-  const extra = parsed.extra;
-  const submitter = resolveSubmitter(signers, extra);
-  if (!submitter) {
-    return {
-      success: false,
-      errorReason: Errors.ErrOperatorNotAdmitted,
-      transaction: "",
-      network: requirements.network,
-      payer: verification.payer,
-    };
-  }
-  const payer = verification.payer as `0x${string}`;
-  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod);
-  const originalMax = payload.accepted.amount;
-  const paymentInfo = reconstructPaymentInfo(
-    payer,
-    unpacked.preApprovalExpiry,
-    wirePayload.salt,
-    { ...requirements, amount: originalMax },
-    extra,
-    originalMax,
+  const execution = await buildCollectSettleExecution(
+    signers,
+    payload,
+    requirements,
+    wirePayload,
+    verification.payer,
   );
-
-  const needsChargeCompletion = extra.paymentFlow === "authorization";
-  const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
-  let settleAmount = unpacked.amount;
-  let feeBps = defaultSubmittedFee(extra).feeBps;
-  let feeReceiver = defaultSubmittedFee(extra).feeReceiver;
-  if (needsChargeCompletion) {
-    settleAmount = BigInt(collectChargeAmount(wirePayload) ?? originalMax);
-    feeBps = wirePayload.feeBps as number;
-    feeReceiver = wirePayload.feeReceiver as `0x${string}`;
+  if ("success" in execution) {
+    return execution;
   }
 
-  const tuple = paymentInfoToContractTuple(paymentInfo);
+  const customBalanceSnapshot = await snapshotCustomOperatorBalances(
+    execution.submitter,
+    execution,
+  );
+  if (customBalanceSnapshot && "success" in customBalanceSnapshot) {
+    return customBalanceSnapshot;
+  }
+
+  const tuple = paymentInfoToContractTuple(execution.paymentInfo);
   const args =
-    functionName === "charge"
+    execution.functionName === "charge"
       ? ([
           tuple,
-          settleAmount,
-          unpacked.tokenCollector,
-          unpacked.collectorData,
-          feeBps,
-          feeReceiver,
+          execution.settleAmount,
+          execution.tokenCollector,
+          unpackForSettle(wirePayload, execution.extra.assetTransferMethod).collectorData,
+          execution.feeBps,
+          execution.feeReceiver,
         ] as const)
-      : ([tuple, settleAmount, unpacked.tokenCollector, unpacked.collectorData] as const);
+      : ([
+          tuple,
+          execution.settleAmount,
+          execution.tokenCollector,
+          unpackForSettle(wirePayload, execution.extra.assetTransferMethod).collectorData,
+        ] as const);
 
-  const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+  const settleTarget = resolveSettleTarget(execution.extra, AUTH_CAPTURE_ESCROW_ADDRESS);
   const customGasLimit =
-    extra.operatorType === "custom"
+    execution.extra.operatorType === "custom"
       ? (config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT)
       : undefined;
-  let customBalanceCheck:
-    | {
-        before: CollectBalanceSnapshot;
-        tokenStore: `0x${string}`;
-        facilitator: `0x${string}`;
-      }
-    | undefined;
-  if (extra.operatorType === "custom") {
-    const facilitator = submitter.getAddresses()[0];
-    if (!facilitator) {
-      return {
-        success: false,
-        errorReason: Errors.ErrSimulationFailed,
-        transaction: "",
-        network: requirements.network,
-        payer,
-      };
-    }
-    let tokenStore: `0x${string}`;
-    try {
-      tokenStore = (await submitter.readContract({
-        address: AUTH_CAPTURE_ESCROW_ADDRESS,
-        abi: ESCROW_VIEW_ABI,
-        functionName: "getTokenStore",
-        args: [extra.captureAuthorizer],
-      })) as `0x${string}`;
-    } catch {
-      return {
-        success: false,
-        errorReason: Errors.ErrSimulationFailed,
-        transaction: "",
-        network: requirements.network,
-        payer,
-      };
-    }
-    const before = await readCollectBalanceSnapshot(
-      submitter,
-      paymentInfo.token,
-      payer,
-      tokenStore,
-      facilitator,
-      functionName,
-      paymentInfo.receiver,
-      feeReceiver,
-    );
-    if (!before) {
-      return {
-        success: false,
-        errorReason: Errors.ErrSimulationFailed,
-        transaction: "",
-        network: requirements.network,
-        payer,
-      };
-    }
-    customBalanceCheck = { before, tokenStore, facilitator };
-  }
-  const submitted = await submitEscrowCall(submitter, settleTarget, functionName, args, {
-    gas: customGasLimit,
-    dataSuffix,
-  });
-  if ("error" in submitted && submitted.error === "reverted") {
+
+  const written = await writeEscrowCall(
+    execution.submitter,
+    settleTarget,
+    execution.functionName,
+    args,
+    {
+      gas: customGasLimit,
+      dataSuffix,
+    },
+  );
+  if ("error" in written) {
     return {
       success: false,
-      errorReason: Errors.ErrTransactionReverted,
-      transaction: submitted.txHash ?? "",
-      network: requirements.network,
-      payer,
-    };
-  }
-  if ("error" in submitted) {
-    return {
-      success: false,
-      errorReason: submitted.error,
+      errorReason: written.error,
       transaction: "",
       network: requirements.network,
-      payer,
+      payer: execution.payer,
     };
   }
 
-  const chainId = getEvmChainId(requirements.network);
-  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
-
-  if (extra.operatorType === "custom") {
-    const eventOk =
-      functionName === "charge"
-        ? verifyPaymentChargedEvent(submitted.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
-            paymentInfoHash,
-            amount: settleAmount,
-            tokenCollector: unpacked.tokenCollector,
-            operator: extra.captureAuthorizer,
-            feeBps,
-            feeReceiver,
-          })
-        : verifyPaymentAuthorizedEvent(submitted.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
-            paymentInfoHash,
-            amount: settleAmount,
-            tokenCollector: unpacked.tokenCollector,
-            operator: extra.captureAuthorizer,
-          });
-    if (!eventOk) {
-      return {
-        success: false,
-        errorReason: Errors.ErrSimulationFailed,
-        transaction: submitted.txHash,
-        network: requirements.network,
-        payer,
-      };
-    }
-  }
-
-  const expectedCapturable = functionName === "authorize" ? settleAmount : 0n;
-  const expectedRefundable = functionName === "charge" ? settleAmount : 0n;
-  const { state } = await readPaymentStateForBalances(
-    submitter,
-    paymentInfoHash,
-    expectedCapturable,
-    expectedRefundable,
+  return awaitCollectSettlement(
+    store,
+    pendingKey,
+    written.txHash,
+    execution,
+    customBalanceSnapshot,
+    false,
   );
-  if (
-    !state ||
-    !state.hasCollectedPayment ||
-    state.capturableAmount !== expectedCapturable ||
-    state.refundableAmount !== expectedRefundable
-  ) {
-    return {
-      success: false,
-      errorReason: Errors.ErrUnexpectedPaymentState,
-      transaction: submitted.txHash,
-      network: requirements.network,
-      payer,
-    };
-  }
-
-  if (customBalanceCheck) {
-    const after = await readCollectBalanceSnapshot(
-      submitter,
-      paymentInfo.token,
-      payer,
-      customBalanceCheck.tokenStore,
-      customBalanceCheck.facilitator,
-      functionName,
-      paymentInfo.receiver,
-      feeReceiver,
-    );
-    if (
-      !after ||
-      !hasExpectedCollectBalanceChanges(
-        customBalanceCheck.before,
-        after,
-        functionName,
-        settleAmount,
-        feeBps,
-      )
-    ) {
-      return {
-        success: false,
-        errorReason: Errors.ErrSimulationFailed,
-        transaction: submitted.txHash,
-        network: requirements.network,
-        payer,
-      };
-    }
-  }
-
-  return {
-    success: true,
-    transaction: submitted.txHash,
-    network: requirements.network,
-    payer,
-    amount: settleAmount.toString(),
-  };
 }
 
 /**

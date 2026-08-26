@@ -68,8 +68,6 @@ export function resolveSubmitter(
   return signers[0];
 }
 
-export const RECEIPT_TIMEOUT_MS = 60_000;
-
 /** Backoff delays between paymentState eth_call retries (RPC index lag after authorize). */
 export const PAYMENT_STATE_RETRY_DELAYS_MS = [200, 400, 800, 1600] as const;
 
@@ -144,7 +142,42 @@ export async function simulateEscrowCall(
 }
 
 /**
- * Submit a write and wait up to 60s for a successful receipt.
+ * Broadcast an escrow call without waiting for confirmation.
+ *
+ * @param signer - Facilitator signer.
+ * @param target - Contract to call.
+ * @param functionName - Escrow ABI function.
+ * @param args - Encoded arguments.
+ * @param options - Optional gas cap and extension calldata suffix.
+ * @param options.gas - Hard gas limit for the write.
+ * @param options.dataSuffix - Builder-code suffix appended to calldata.
+ * @returns Transaction hash, or a write failure reason with no hash.
+ */
+export async function writeEscrowCall(
+  signer: FacilitatorEvmSigner,
+  target: `0x${string}`,
+  functionName: "authorize" | "charge" | "capture" | "void" | "refund",
+  args: readonly unknown[],
+  options?: { gas?: bigint; dataSuffix?: `0x${string}` },
+): Promise<{ txHash: `0x${string}` } | { error: string }> {
+  try {
+    const txHash = await signer.writeContract({
+      address: target,
+      abi: ESCROW_ABI_WITH_ERRORS,
+      functionName,
+      args,
+      gas: options?.gas,
+      dataSuffix: options?.dataSuffix,
+    });
+    return { txHash };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Settlement failed" };
+  }
+}
+
+/**
+ * Broadcast an escrow call and wait for a successful receipt. Used for
+ * best-effort trailing lifecycle calls whose outcome is ignored.
  *
  * @param signer - Facilitator signer.
  * @param target - Contract to call.
@@ -164,29 +197,17 @@ export async function submitEscrowCall(
 ): Promise<
   { txHash: `0x${string}`; logs?: readonly Log[] } | { error: string; txHash?: `0x${string}` }
 > {
+  const written = await writeEscrowCall(signer, target, functionName, args, options);
+  if ("error" in written) {
+    return { error: written.error };
+  }
+
   try {
-    const txHash = await signer.writeContract({
-      address: target,
-      abi: ESCROW_ABI_WITH_ERRORS,
-      functionName,
-      args,
-      gas: options?.gas,
-      dataSuffix: options?.dataSuffix,
-    });
-
-    const receiptPromise = signer.waitForTransactionReceipt({ hash: txHash });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Transaction receipt timeout after 60s")),
-        RECEIPT_TIMEOUT_MS,
-      ),
-    );
-    const receipt = await Promise.race([receiptPromise, timeoutPromise]);
-
+    const receipt = await signer.waitForTransactionReceipt({ hash: written.txHash });
     if (receipt.status !== "success") {
-      return { error: "reverted", txHash };
+      return { error: "reverted", txHash: written.txHash };
     }
-    return { txHash, logs: receipt.logs };
+    return { txHash: written.txHash, logs: receipt.logs };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Settlement failed" };
   }

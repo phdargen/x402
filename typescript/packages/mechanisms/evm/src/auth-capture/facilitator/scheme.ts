@@ -18,6 +18,7 @@ import type {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
+import { InMemoryPendingSettlementStore, PendingSettlementStore } from "@x402/core/facilitator";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { resolveDataSuffix } from "../../shared/extensions";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
@@ -46,6 +47,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   readonly scheme = AUTH_CAPTURE_SCHEME;
   readonly caipFamily = "eip155:*";
   private readonly signers: readonly FacilitatorEvmSigner[];
+  private readonly pendingStore: PendingSettlementStore;
 
   /**
    * Construct a facilitator-side auth-capture scheme bound to one or more signers.
@@ -60,6 +62,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
     private config?: AuthCaptureFacilitatorConfig,
   ) {
     this.signers = Array.isArray(signer) ? [...signer] : [signer];
+    this.pendingStore = config?.pendingSettlementStore ?? new InMemoryPendingSettlementStore();
   }
 
   /**
@@ -154,10 +157,26 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   ): Promise<SettleResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
-      return settleLifecycle(this.signers, this.config, payload, requirements, raw, context);
+      return settleLifecycle(
+        this.signers,
+        this.config,
+        payload,
+        requirements,
+        raw,
+        this.pendingStore,
+        context,
+      );
     }
     if (isAuthCaptureCollectPayload(raw)) {
-      return settleCollect(this.signers, this.config, payload, requirements, raw, context);
+      return settleCollect(
+        this.signers,
+        this.config,
+        payload,
+        requirements,
+        raw,
+        this.pendingStore,
+        context,
+      );
     }
     return {
       success: false,

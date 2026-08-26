@@ -46,6 +46,7 @@ import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
 const DEPLOYED_BYTECODE = "0x6080604052" as const;
 const ERC1271_MAGIC_VALUE = "0x1626ba7e" as const;
+const MOCK_TX_HASH = ("0x" + "ab".repeat(32)) as `0x${string}`;
 const TOKEN_STORE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as `0x${string}`;
 const INITIAL_BALANCE = BigInt("1000000000");
 
@@ -139,7 +140,7 @@ describe("AuthCaptureEvmScheme", () => {
       }
       return INITIAL_BALANCE;
     }),
-    writeContract: vi.fn().mockResolvedValue("0xabcdef1234567890" as `0x${string}`),
+    writeContract: vi.fn().mockResolvedValue(MOCK_TX_HASH),
     verifyTypedData: vi.fn().mockResolvedValue(true),
     sendTransaction: vi.fn(),
     waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success" }),
@@ -297,7 +298,7 @@ describe("AuthCaptureEvmScheme", () => {
 
     mockSigner.writeContract.mockImplementation(async () => {
       settled = true;
-      return "0xabcdef1234567890" as `0x${string}`;
+      return MOCK_TX_HASH;
     });
     mockSigner.readContract.mockImplementation(
       async (args: { functionName: string; address?: string; args?: readonly unknown[] }) => {
@@ -1687,7 +1688,7 @@ describe("AuthCaptureEvmScheme", () => {
 
       expect(result.success).toBe(false);
       expect(result.errorReason).toBe("invalid_auth_capture_evm_simulation_failed");
-      expect(result.transaction).toBe("0xabcdef1234567890");
+      expect(result.transaction).toBe(MOCK_TX_HASH);
     });
 
     it("should fail settle when the mined call spends facilitator payment tokens", async () => {
