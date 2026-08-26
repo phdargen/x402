@@ -293,8 +293,85 @@ describe("SVM Signer Converters", () => {
 
       expect(simulateTransaction).toHaveBeenCalledWith(
         "tx",
-        expect.objectContaining({ sigVerify: false }),
+        expect.objectContaining({
+          sigVerify: false,
+          commitment: "confirmed",
+          encoding: "base64",
+        }),
       );
+    });
+
+    it("should honor simulateTransaction options", async () => {
+      const mockSigner = {
+        address: "FacilitatorAddress1111111111111111111111" as never,
+        signTransactions: vi.fn() as never,
+        signMessages: vi.fn().mockResolvedValue([{}]) as never,
+      };
+
+      const simulateTransaction = vi.fn().mockReturnValue({
+        send: vi.fn().mockResolvedValue({ value: { err: null } }),
+      });
+      const mockRpc = {
+        getBalance: vi.fn(),
+        getSlot: vi.fn(),
+        simulateTransaction,
+      } as never;
+
+      const facilitator = toFacilitatorSvmSigner(mockSigner as never, mockRpc);
+      await facilitator.simulateTransaction("tx", SOLANA_DEVNET_CAIP2, {
+        sigVerify: true,
+        commitment: "finalized",
+        encoding: "base64",
+        replaceRecentBlockhash: true,
+      });
+
+      expect(simulateTransaction).toHaveBeenCalledWith("tx", {
+        sigVerify: true,
+        replaceRecentBlockhash: true,
+        commitment: "finalized",
+        encoding: "base64",
+      });
+    });
+
+    it("should honor replaceRecentBlockhash on simulate", async () => {
+      const mockSigner = {
+        address: "FacilitatorAddress1111111111111111111" as never,
+        signTransactions: vi.fn() as never,
+        signMessages: vi.fn().mockResolvedValue([{}]) as never,
+      };
+
+      const simulateTransaction = vi.fn().mockReturnValue({
+        send: vi.fn().mockResolvedValue({ value: { err: null } }),
+      });
+      const mockRpc = {
+        getBalance: vi.fn(),
+        getSlot: vi.fn(),
+        simulateTransaction,
+      } as never;
+
+      const facilitator = toFacilitatorSvmSigner(mockSigner as never, mockRpc);
+      await facilitator.simulateTransaction("tx", SOLANA_DEVNET_CAIP2, {
+        replaceRecentBlockhash: true,
+      });
+
+      expect(simulateTransaction).toHaveBeenCalledWith(
+        "tx",
+        expect.objectContaining({ replaceRecentBlockhash: true }),
+      );
+    });
+
+    it("should expose upto read RPC helpers from the factory", () => {
+      const mockSigner = {
+        address: "FacilitatorAddress1111111111111111111" as never,
+        signTransactions: vi.fn() as never,
+        signMessages: vi.fn().mockResolvedValue([{}]) as never,
+      };
+
+      const facilitator = toFacilitatorSvmSigner(mockSigner as never);
+      expect(facilitator.getAccountInfo).toBeDefined();
+      expect(facilitator.getLatestBlockhash).toBeDefined();
+      expect(facilitator.getSlot).toBeDefined();
+      expect(facilitator.getProgramAccounts).toBeDefined();
     });
 
     it("should send with skipPreflight enabled", async () => {
