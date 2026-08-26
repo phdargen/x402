@@ -45,7 +45,7 @@ func (c *AuthCaptureEvmScheme) CreatePaymentPayload(
 	ctx context.Context,
 	requirements types.PaymentRequirements,
 ) (types.PaymentPayload, error) {
-	extra, err := parseAuthCaptureExtra(requirements)
+	extra, deployment, err := parseAuthCaptureExtra(requirements)
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
@@ -103,16 +103,16 @@ func (c *AuthCaptureEvmScheme) CreatePaymentPayload(
 		Salt:                salt,
 	}
 
-	nonce, err := authcapture.ComputePayerAgnosticPaymentInfoHash(chainID, paymentInfo)
+	nonce, err := authcapture.ComputePayerAgnosticPaymentInfoHash(chainID, paymentInfo, deployment.Escrow)
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
 
 	if assetTransferMethod == string(evm.AssetTransferMethodPermit2) {
-		return c.createPermit2Payload(ctx, requirements, bindOn, salt, saltNonce, nonce, preApprovalExpiry, chainID)
+		return c.createPermit2Payload(ctx, requirements, bindOn, salt, saltNonce, nonce, preApprovalExpiry, chainID, deployment)
 	}
 
-	return c.createEIP3009Payload(ctx, requirements, extra, bindOn, salt, saltNonce, nonce, preApprovalExpiry, chainID)
+	return c.createEIP3009Payload(ctx, requirements, extra, bindOn, salt, saltNonce, nonce, preApprovalExpiry, chainID, deployment)
 }
 
 func (c *AuthCaptureEvmScheme) createEIP3009Payload(
@@ -125,10 +125,11 @@ func (c *AuthCaptureEvmScheme) createEIP3009Payload(
 	nonce string,
 	preApprovalExpiry uint64,
 	chainID *big.Int,
+	deployment authcapture.AuthCaptureDeployment,
 ) (types.PaymentPayload, error) {
 	authorization := authcapture.Eip3009Authorization{
 		From:        c.signer.Address(),
-		To:          authcapture.EIP3009TokenCollectorAddress,
+		To:          deployment.EIP3009Collector,
 		Value:       requirements.Amount,
 		ValidAfter:  "0",
 		ValidBefore: fmt.Sprintf("%d", preApprovalExpiry),
@@ -171,6 +172,7 @@ func (c *AuthCaptureEvmScheme) createPermit2Payload(
 	nonce string,
 	preApprovalExpiry uint64,
 	chainID *big.Int,
+	deployment authcapture.AuthCaptureDeployment,
 ) (types.PaymentPayload, error) {
 	permitNonce, err := authcapture.NonceHexToDecimalString(nonce)
 	if err != nil {
@@ -183,7 +185,7 @@ func (c *AuthCaptureEvmScheme) createPermit2Payload(
 			Token:  requirements.Asset,
 			Amount: requirements.Amount,
 		},
-		Spender:  authcapture.Permit2TokenCollectorAddress,
+		Spender:  deployment.Permit2Collector,
 		Nonce:    permitNonce,
 		Deadline: fmt.Sprintf("%d", preApprovalExpiry),
 	}
@@ -217,45 +219,51 @@ func (c *AuthCaptureEvmScheme) createPermit2Payload(
 	}, nil
 }
 
-func parseAuthCaptureExtra(requirements types.PaymentRequirements) (authcapture.AuthCaptureExtra, error) {
+func parseAuthCaptureExtra(requirements types.PaymentRequirements) (authcapture.AuthCaptureExtra, authcapture.AuthCaptureDeployment, error) {
 	if requirements.Extra == nil {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'captureAuthorizer' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'captureAuthorizer' is required in payment requirements extra")
 	}
 	ex := requirements.Extra
 
 	name, _ := ex["name"].(string)
 	if name == "" {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("EIP-712 domain parameter 'name' is required in payment requirements for asset %s", requirements.Asset)
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("EIP-712 domain parameter 'name' is required in payment requirements for asset %s", requirements.Asset)
 	}
 	version, _ := ex["version"].(string)
 	if version == "" {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("EIP-712 domain parameter 'version' is required in payment requirements for asset %s", requirements.Asset)
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("EIP-712 domain parameter 'version' is required in payment requirements for asset %s", requirements.Asset)
 	}
 
 	captureAuthorizer, _ := ex["captureAuthorizer"].(string)
 	if captureAuthorizer == "" {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'captureAuthorizer' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'captureAuthorizer' is required in payment requirements extra")
 	}
 	feeRecipient, _ := ex["feeRecipient"].(string)
 	if feeRecipient == "" {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'feeRecipient' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'feeRecipient' is required in payment requirements extra")
 	}
 
 	captureDeadline, err := extraUint64(ex, "captureDeadline")
 	if err != nil {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'captureDeadline' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'captureDeadline' is required in payment requirements extra")
 	}
 	refundDeadline, err := extraUint64(ex, "refundDeadline")
 	if err != nil {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'refundDeadline' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'refundDeadline' is required in payment requirements extra")
 	}
 	minFeeBps, err := extraUint16(ex, "minFeeBps")
 	if err != nil {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'minFeeBps' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'minFeeBps' is required in payment requirements extra")
 	}
 	maxFeeBps, err := extraUint16(ex, "maxFeeBps")
 	if err != nil {
-		return authcapture.AuthCaptureExtra{}, fmt.Errorf("'maxFeeBps' is required in payment requirements extra")
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("'maxFeeBps' is required in payment requirements extra")
+	}
+
+	authCaptureEscrow := stringFromExtra(ex, "authCaptureEscrow")
+	deployment := authcapture.ResolveAuthCaptureDeployment(authCaptureEscrow)
+	if deployment == nil {
+		return authcapture.AuthCaptureExtra{}, authcapture.AuthCaptureDeployment{}, fmt.Errorf("invalid authCaptureEscrow in payment requirements extra")
 	}
 
 	extraOut := authcapture.AuthCaptureExtra{
@@ -273,8 +281,9 @@ func parseAuthCaptureExtra(requirements types.PaymentRequirements) (authcapture.
 		CaptureMode:         stringFromExtra(ex, "captureMode"),
 		OperatorType:        stringFromExtra(ex, "operatorType"),
 		AssetTransferMethod: stringFromExtra(ex, "assetTransferMethod"),
+		AuthCaptureEscrow:   deployment.Escrow,
 	}
-	return extraOut, nil
+	return extraOut, *deployment, nil
 }
 
 func stringFromExtra(ex map[string]interface{}, key string) string {

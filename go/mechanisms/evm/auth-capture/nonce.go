@@ -59,7 +59,7 @@ func init() {
 	}
 }
 
-func hashPaymentInfo(chainID *big.Int, paymentInfo PaymentInfoStruct, payer string) (string, error) {
+func hashPaymentInfo(chainID *big.Int, paymentInfo PaymentInfoStruct, payer string, escrowAddress string) (string, error) {
 	maxAmount, ok := new(big.Int).SetString(paymentInfo.MaxAmount, 10)
 	if !ok {
 		return "", fmt.Errorf("invalid maxAmount: %s", paymentInfo.MaxAmount)
@@ -91,7 +91,7 @@ func hashPaymentInfo(chainID *big.Int, paymentInfo PaymentInfoStruct, payer stri
 
 	outerEncoded, err := paymentInfoOuterABI.Pack(
 		chainID,
-		common.HexToAddress(AuthCaptureEscrowAddress),
+		common.HexToAddress(escrowAddress),
 		paymentInfoHash,
 	)
 	if err != nil {
@@ -102,9 +102,13 @@ func hashPaymentInfo(chainID *big.Int, paymentInfo PaymentInfoStruct, payer stri
 
 // ComputePayerAgnosticPaymentInfoHash returns the payer-agnostic PaymentInfo hash
 // used as the ERC-3009 nonce and Permit2 nonce (as uint256).
-func ComputePayerAgnosticPaymentInfoHash(chainID *big.Int, paymentInfo PaymentInfoStruct) (string, error) {
+func ComputePayerAgnosticPaymentInfoHash(chainID *big.Int, paymentInfo PaymentInfoStruct, escrowAddress ...string) (string, error) {
+	escrow := AuthCaptureEscrowAddress
+	if len(escrowAddress) > 0 && escrowAddress[0] != "" {
+		escrow = escrowAddress[0]
+	}
 	zero := "0x0000000000000000000000000000000000000000"
-	return hashPaymentInfo(chainID, paymentInfo, zero)
+	return hashPaymentInfo(chainID, paymentInfo, zero, escrow)
 }
 
 // SignERC3009 signs ReceiveWithAuthorization with the token EIP-712 domain from extra.

@@ -36,6 +36,7 @@ type AuthCaptureExtra struct {
 	Policy              string
 	OperatorType        string
 	AssetTransferMethod string
+	AuthCaptureEscrow   string
 }
 
 // Eip3009Authorization is the ERC-3009 ReceiveWithAuthorization message on the wire.
@@ -142,7 +143,7 @@ func collectSaltFields(v map[string]interface{}) (saltNonce string, ok bool) {
 
 func readChargeCompletion(v map[string]interface{}) bool {
 	hasAny := false
-	for _, key := range []string{"amount", "feeBps", "feeReceiver", "authorizerSignature"} {
+	for _, key := range []string{"amount", "feeBps", "feeAmount", "feeReceiver", "authorizerSignature"} {
 		if _, ok := v[key]; ok {
 			hasAny = true
 			break
@@ -152,13 +153,22 @@ func readChargeCompletion(v map[string]interface{}) bool {
 		return true
 	}
 	_, hasAmount := v["amount"].(string)
-	_, hasFeeBps := v["feeBps"].(float64)
-	if _, ok := v["feeBps"].(int); ok {
-		hasFeeBps = true
-	}
+	_, hasFeeBpsFloat := v["feeBps"].(float64)
+	_, hasFeeBpsInt := v["feeBps"].(int)
+	hasFeeBps := hasFeeBpsFloat || hasFeeBpsInt
+	_, hasFeeAmount := v["feeAmount"].(string)
 	_, hasFeeReceiver := v["feeReceiver"].(string)
 	_, hasAuthorizerSig := v["authorizerSignature"].(string)
-	return hasAmount && hasFeeBps && hasFeeReceiver && hasAuthorizerSig
+	if !hasAmount || !hasFeeReceiver || !hasAuthorizerSig {
+		return false
+	}
+	if hasFeeBps && !hasFeeAmount {
+		return true
+	}
+	if hasFeeAmount && !hasFeeBps {
+		return true
+	}
+	return false
 }
 
 // IsEip3009Payload reports whether value is an EIP-3009-shaped auth-capture collect payload.
@@ -182,7 +192,7 @@ func IsEip3009Payload(value interface{}) bool {
 		return false
 	}
 	hasAnyCharge := false
-	for _, key := range []string{"amount", "feeBps", "feeReceiver", "authorizerSignature"} {
+	for _, key := range []string{"amount", "feeBps", "feeAmount", "feeReceiver", "authorizerSignature"} {
 		if _, ok := v[key]; ok {
 			hasAnyCharge = true
 			break
@@ -240,7 +250,7 @@ func IsPermit2Payload(value interface{}) bool {
 		return false
 	}
 	hasAnyCharge := false
-	for _, key := range []string{"amount", "feeBps", "feeReceiver", "authorizerSignature"} {
+	for _, key := range []string{"amount", "feeBps", "feeAmount", "feeReceiver", "authorizerSignature"} {
 		if _, ok := v[key]; ok {
 			hasAnyCharge = true
 			break

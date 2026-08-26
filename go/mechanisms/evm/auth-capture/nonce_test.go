@@ -5,6 +5,36 @@ import (
 	"testing"
 )
 
+func TestResolveAuthCaptureDeployment(t *testing.T) {
+	v11 := ResolveAuthCaptureDeployment("")
+	if v11 == nil || v11.Version != AuthCaptureDeploymentV1_1 {
+		t.Fatalf("default deployment = %+v", v11)
+	}
+	if v11.Escrow != AuthCaptureEscrowV1_1Address {
+		t.Fatalf("default escrow = %q", v11.Escrow)
+	}
+
+	pinnedV11 := ResolveAuthCaptureDeployment(AuthCaptureEscrowV1_1Address)
+	if pinnedV11 == nil || pinnedV11.Version != AuthCaptureDeploymentV1_1 {
+		t.Fatalf("v1.1 pin = %+v", pinnedV11)
+	}
+
+	v10 := ResolveAuthCaptureDeployment(AuthCaptureEscrowV1_0Address)
+	if v10 == nil || v10.Version != AuthCaptureDeploymentV1_0 {
+		t.Fatalf("v1.0 pin = %+v", v10)
+	}
+	if v10.EIP3009Collector != EIP3009TokenCollectorV1_0Address {
+		t.Fatalf("v1.0 collector = %q", v10.EIP3009Collector)
+	}
+
+	if ResolveAuthCaptureDeployment("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef") != nil {
+		t.Fatal("expected unknown escrow to be rejected")
+	}
+	if ResolveAuthCaptureDeployment("not-an-address") != nil {
+		t.Fatal("expected invalid address to be rejected")
+	}
+}
+
 func mockPaymentInfo() PaymentInfoStruct {
 	return PaymentInfoStruct{
 		Operator:            "0x1111111111111111111111111111111111111111",
@@ -27,7 +57,7 @@ func TestComputePayerAgnosticPaymentInfoHash_Golden84532(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	want := "0x19de8ffcb747e5caadb3dda7435cf54992e87cdf0c90e5315ffa129dbb22461e"
+	want := "0x341988b065a5131b3a82818eb7aba9010135f326af1af7695fce4d2bbebd0b76"
 	if hash != want {
 		t.Fatalf("hash = %q, want %q", hash, want)
 	}
@@ -35,6 +65,28 @@ func TestComputePayerAgnosticPaymentInfoHash_Golden84532(t *testing.T) {
 
 func TestComputePayerAgnosticPaymentInfoHash_Golden8453(t *testing.T) {
 	hash, err := ComputePayerAgnosticPaymentInfoHash(big.NewInt(8453), mockPaymentInfo())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	want := "0xa393f8f76a2327a7678488b2d504bda611b7586bb3f334b255a11bb5a75e79ca"
+	if hash != want {
+		t.Fatalf("hash = %q, want %q", hash, want)
+	}
+}
+
+func TestComputePayerAgnosticPaymentInfoHash_Golden84532_V1_0(t *testing.T) {
+	hash, err := ComputePayerAgnosticPaymentInfoHash(big.NewInt(84532), mockPaymentInfo(), AuthCaptureEscrowV1_0Address)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	want := "0x19de8ffcb747e5caadb3dda7435cf54992e87cdf0c90e5315ffa129dbb22461e"
+	if hash != want {
+		t.Fatalf("hash = %q, want %q", hash, want)
+	}
+}
+
+func TestComputePayerAgnosticPaymentInfoHash_Golden8453_V1_0(t *testing.T) {
+	hash, err := ComputePayerAgnosticPaymentInfoHash(big.NewInt(8453), mockPaymentInfo(), AuthCaptureEscrowV1_0Address)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

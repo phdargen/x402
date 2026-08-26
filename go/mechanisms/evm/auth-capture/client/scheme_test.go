@@ -65,6 +65,36 @@ func TestAuthCaptureEvmScheme_Scheme(t *testing.T) {
 	}
 }
 
+func TestCreatePaymentPayload_InvalidAuthCaptureEscrow(t *testing.T) {
+	scheme := NewAuthCaptureEvmScheme(&mockSigner{address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+	req := mockRequirements(map[string]interface{}{
+		"authCaptureEscrow": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	})
+	if _, err := scheme.CreatePaymentPayload(context.Background(), req); err == nil || !strings.Contains(err.Error(), "authCaptureEscrow") {
+		t.Fatalf("expected authCaptureEscrow error, got %v", err)
+	}
+}
+
+func TestCreatePaymentPayload_V1_0EscrowPin(t *testing.T) {
+	signer := &mockSigner{
+		address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		sig:     []byte{0xde, 0xad, 0xbe, 0xef},
+	}
+	scheme := NewAuthCaptureEvmScheme(signer)
+	scheme.now = func() time.Time { return time.Unix(1700000000, 0) }
+
+	result, err := scheme.CreatePaymentPayload(context.Background(), mockRequirements(map[string]interface{}{
+		"authCaptureEscrow": authcapture.AuthCaptureEscrowV1_0Address,
+	}))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	auth := result.Payload["authorization"].(map[string]interface{})
+	if auth["to"] != authcapture.EIP3009TokenCollectorV1_0Address {
+		t.Fatalf("to = %v, want v1.0 collector", auth["to"])
+	}
+}
+
 func TestCreatePaymentPayload_EIP3009(t *testing.T) {
 	signer := &mockSigner{
 		address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
