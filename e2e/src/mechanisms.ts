@@ -140,6 +140,8 @@ export type RouteDefinition = {
   maxTimeoutSeconds?: number;
   /** Merged into the route payment option's `extra` (wire `PaymentRequirements.extra`). */
   requirementsExtra?: Record<string, unknown>;
+  /** Scheme-specific `accepts.extra` fields (e.g. auth-capture deadlines and flow). */
+  schemeExtra?: Record<string, string | number | boolean>;
 };
 
 /** Fixed success body for every paid route (`timestamp` is added by the server). */
@@ -1044,6 +1046,7 @@ export function resolvePaymentRoutes(
         : cardanoRouteExtra(route, env),
       route.paymentFlow,
     );
+    const mergedExtra = route.schemeExtra ? { ...(extra ?? {}), ...route.schemeExtra } : extra;
 
     resolved.push({
       path: route.path,
@@ -1052,7 +1055,7 @@ export function resolvePaymentRoutes(
       network: caip2,
       payTo,
       price,
-      ...(extra ? { extra } : {}),
+      ...(mergedExtra ? { extra: mergedExtra } : {}),
       ...(route.maxTimeoutSeconds ? { maxTimeoutSeconds: route.maxTimeoutSeconds } : {}),
       extensions: route.extensions ?? [],
       ...(route.settlementOverride ? { settlementOverride: route.settlementOverride } : {}),

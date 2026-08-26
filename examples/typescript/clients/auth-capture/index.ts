@@ -17,12 +17,12 @@ if (!evmPrivateKeyRaw) {
 const evmPrivateKey = evmPrivateKeyRaw as `0x${string}`;
 
 /**
- * Runs a single paid request against an auth-capture v1.1-protected endpoint.
+ * Runs a single paid request against an auth-capture-protected endpoint.
  *
  * The scheme signs a payer-agnostic PaymentInfo hash (as the ERC-3009 nonce by
  * default; Permit2 is also supported). The facilitator submits the resulting
- * collect authorization; escrow flows hold funds until capture/void, while
- * deferred and custom-operator routes finalize lifecycle out of band.
+ * authorization to the AuthCaptureEscrow contract; funds are locked there until
+ * the captureAuthorizer captures, voids, or the authorization expires.
  *
  * @returns Resolves after the request completes and the payment response is logged.
  */
