@@ -64,8 +64,10 @@ pnpm delegated-sync
 # or: pnpm delegated-deferred
 # or: pnpm custom-escrow
 
-# Terminal 2 — pay the endpoint
-cd ../../clients/auth-capture && pnpm start
+# Terminal 2 — pay the endpoint (TypeScript)
+cd ../../clients/fetch && pnpm start
+# or: cd ../../clients/axios && pnpm start
+# or (Go): cd ../../../go/clients/http && go run .
 
 # Terminal 3 (deferred only) — capture after the client pays
 cd ../../servers/auth-capture && pnpm capture-pending

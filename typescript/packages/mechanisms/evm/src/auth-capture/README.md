@@ -276,7 +276,7 @@ A server MAY advertise multiple `accepts[]` entries with different `assetTransfe
 
 ## Examples
 
-- [Client example](../../../../../examples/clients/auth-capture)
+- [Client example](../../../../../examples/typescript/clients/fetch)
 - [Server example](../../../../../examples/servers/auth-capture)
 - [Facilitator example](../../../../../examples/facilitator/auth-capture)
 

@@ -22,11 +22,10 @@ Clients that pay for x402-protected endpoints. See [`clients/`](./clients/).
 
 | Directory | Description |
 | --- | --- |
-| [`fetch/`](./clients/fetch/) | `@x402/fetch` wrapper around the native Fetch API |
-| [`axios/`](./clients/axios/) | `@x402/axios` payment interceptor |
+| [`fetch/`](./clients/fetch/) | `@x402/fetch` wrapper around the native Fetch API (exact, upto, auth-capture, and SVM schemes) |
+| [`axios/`](./clients/axios/) | `@x402/axios` payment interceptor (exact, upto, auth-capture, and SVM schemes) |
 | [`advanced/`](./clients/advanced/) | Builder-pattern registration, payment lifecycle hooks, network preferences |
 | [`custom/`](./clients/custom/) | Manual payment handling without `@x402/fetch` or `@x402/axios` |
-| [`auth-capture/`](./clients/auth-capture/) | Pays an auth-capture v1.1 endpoint (ERC-3009 collect authorization) |
 | [`batch-settlement/`](./clients/batch-settlement/) | Pays a sequence of requests over one payment channel using cumulative vouchers |
 | [`builder-code/`](./clients/builder-code/) | Verifies ERC-8021 builder-code attribution on the settlement transaction |
 | [`erc7702/`](./clients/erc7702/) | Paying from an ERC-7702 delegated EOA |
