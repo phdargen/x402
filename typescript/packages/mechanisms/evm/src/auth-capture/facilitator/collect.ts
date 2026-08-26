@@ -11,16 +11,15 @@ import { encodeFunctionData, hexToBigInt, isAddressEqual, parseEventLogs, type L
 import type { FacilitatorEvmSigner } from "../../signer";
 import {
   ERC20_BALANCE_OF_ABI,
-  ESCROW_ABI_WITH_ERRORS,
-  ESCROW_EVENTS_ABI,
+  escrowAbiWithErrorsForDeployment,
+  escrowEventsAbiForDeployment,
   ESCROW_VIEW_ABI,
 } from "../abi";
 import {
-  AUTH_CAPTURE_ESCROW_ADDRESS,
+  AUTH_CAPTURE_DEPLOYMENT_V1_1,
   AUTH_CAPTURE_SCHEME,
   DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT,
-  EIP3009_TOKEN_COLLECTOR_ADDRESS,
-  PERMIT2_TOKEN_COLLECTOR_ADDRESS,
+  type AuthCaptureDeployment,
 } from "../constants";
 import {
   computePayerAgnosticPaymentInfoHash,
@@ -49,12 +48,16 @@ import type {
 import { isEip3009Payload, isPermit2Payload } from "../types";
 import * as Errors from "../errors";
 import {
+  chargeEscrowArgs,
+  chargeFeeFromCollectPayload,
   defaultSubmittedFee,
   parseAuthCaptureExtra,
   resolveSettleTarget,
+  submittedFeeAmount,
   validateSubmittedFee,
   verifyCommon,
   type NormalizedAuthCaptureExtra,
+  type SubmittedFee,
 } from "../extra";
 import {
   collectPayer,
@@ -166,7 +169,7 @@ export async function verifyCollect(
   }
 
   const chainId = getEvmChainId(requirements.network);
-  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod);
+  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod, extra.deployment);
 
   if (unpacked.preApprovalExpiry <= now + SAFETY_MARGIN_SECONDS) {
     return { isValid: false, invalidReason: Errors.ErrAuthorizationExpired, payer };
@@ -181,7 +184,7 @@ export async function verifyCollect(
       return { isValid: false, invalidReason: Errors.ErrAuthorizationNotYetValid, payer };
     }
     if (
-      eipPayload.authorization.to.toLowerCase() !== EIP3009_TOKEN_COLLECTOR_ADDRESS.toLowerCase()
+      eipPayload.authorization.to.toLowerCase() !== extra.deployment.eip3009Collector.toLowerCase()
     ) {
       return { isValid: false, invalidReason: Errors.ErrTokenCollectorMismatch, payer };
     }
@@ -189,7 +192,7 @@ export async function verifyCollect(
     const permitPayload = wirePayload as Permit2Payload;
     if (
       permitPayload.permit2Authorization.spender.toLowerCase() !==
-      PERMIT2_TOKEN_COLLECTOR_ADDRESS.toLowerCase()
+      extra.deployment.permit2Collector.toLowerCase()
     ) {
       return { isValid: false, invalidReason: Errors.ErrTokenCollectorMismatch, payer };
     }
@@ -250,8 +253,7 @@ export async function verifyCollect(
   }
 
   let settleAmount = unpacked.amount;
-  let feeBps = defaultSubmittedFee(extra).feeBps;
-  let feeReceiver = defaultSubmittedFee(extra).feeReceiver;
+  let fee = defaultSubmittedFee(extra, settleAmount);
 
   if (hasChargeCompletion) {
     const chargeAmount = collectChargeAmount(wirePayload);
@@ -262,9 +264,12 @@ export async function verifyCollect(
     if (settleAmount <= 0n || settleAmount > unpacked.amount) {
       return { isValid: false, invalidReason: Errors.ErrAmountMismatch, payer };
     }
-    feeBps = wirePayload.feeBps as number;
-    feeReceiver = wirePayload.feeReceiver as `0x${string}`;
-    const feeError = validateSubmittedFee(extra, feeBps, feeReceiver);
+    const chargeFee = chargeFeeFromCollectPayload(extra, wirePayload as Record<string, unknown>);
+    if (!chargeFee) {
+      return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
+    }
+    fee = chargeFee;
+    const feeError = validateSubmittedFee(extra, settleAmount, fee);
     if (feeError) {
       return { isValid: false, invalidReason: feeError, payer };
     }
@@ -285,7 +290,11 @@ export async function verifyCollect(
     extra,
     originalMax,
   );
-  const expectedNonce = computePayerAgnosticPaymentInfoHash(chainId, paymentInfo);
+  const expectedNonce = computePayerAgnosticPaymentInfoHash(
+    chainId,
+    paymentInfo,
+    extra.deployment.escrow,
+  );
 
   if (extra.assetTransferMethod === "eip3009") {
     const wireNonce = (wirePayload as Eip3009Payload).authorization.nonce;
@@ -300,20 +309,32 @@ export async function verifyCollect(
   }
 
   if (hasChargeCompletion) {
-    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
+    const chargeDigest =
+      fee.version === "v1.0"
+        ? {
+            paymentInfoHash,
+            amount: settleAmount,
+            tokenCollector: unpacked.tokenCollector,
+            collectorData: unpacked.collectorData,
+            feeBps: fee.feeBps,
+            feeReceiver: fee.feeReceiver,
+          }
+        : {
+            paymentInfoHash,
+            amount: settleAmount,
+            tokenCollector: unpacked.tokenCollector,
+            collectorData: unpacked.collectorData,
+            feeAmount: fee.feeAmount,
+            feeReceiver: fee.feeReceiver,
+          };
     const ok = await verifyCharge(
       submitter,
       extra.receiverAuthorizer,
       chainId,
       extra.captureAuthorizer,
-      {
-        paymentInfoHash,
-        amount: settleAmount,
-        tokenCollector: unpacked.tokenCollector,
-        collectorData: unpacked.collectorData,
-        feeBps,
-        feeReceiver,
-      },
+      extra.deployment,
+      chargeDigest,
       wirePayload.authorizerSignature as `0x${string}`,
     );
     if (!ok) {
@@ -329,8 +350,7 @@ export async function verifyCollect(
     settleAmount,
     unpacked.tokenCollector,
     unpacked.collectorData,
-    feeBps,
-    feeReceiver,
+    fee,
     chainId,
     dataSuffix,
   );
@@ -369,8 +389,7 @@ type CollectSettleExecution = {
   paymentInfoHash: `0x${string}`;
   functionName: "authorize" | "charge";
   settleAmount: bigint;
-  feeBps: number;
-  feeReceiver: `0x${string}`;
+  fee: SubmittedFee;
   tokenCollector: `0x${string}`;
 };
 
@@ -403,8 +422,7 @@ async function awaitCollectSettlement(
     paymentInfoHash,
     functionName,
     settleAmount,
-    feeBps,
-    feeReceiver,
+    fee,
     tokenCollector,
   } = execution;
   const expectedCapturable = functionName === "authorize" ? settleAmount : 0n;
@@ -422,15 +440,14 @@ async function awaitCollectSettlement(
           }
           const eventOk =
             functionName === "charge"
-              ? verifyPaymentChargedEvent(receipt.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+              ? verifyPaymentChargedEvent(receipt.logs, extra.deployment, {
                   paymentInfoHash,
                   amount: settleAmount,
                   tokenCollector,
                   operator: extra.captureAuthorizer,
-                  feeBps,
-                  feeReceiver,
+                  fee,
                 })
-              : verifyPaymentAuthorizedEvent(receipt.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+              : verifyPaymentAuthorizedEvent(receipt.logs, extra.deployment.escrow, {
                   paymentInfoHash,
                   amount: settleAmount,
                   tokenCollector,
@@ -453,6 +470,7 @@ async function awaitCollectSettlement(
             paymentInfoHash,
             expectedCapturable,
             expectedRefundable,
+            extra.deployment.escrow,
           );
           if (readFailed) {
             throw new Error("payment state read failed after confirmed collect transaction");
@@ -483,7 +501,7 @@ async function awaitCollectSettlement(
               customBalanceCheck.facilitator,
               functionName,
               paymentInfo.receiver,
-              feeReceiver,
+              fee.feeReceiver,
             );
             if (!after) {
               throw new Error("balance read failed after confirmed collect transaction");
@@ -494,7 +512,7 @@ async function awaitCollectSettlement(
                 after,
                 functionName,
                 settleAmount,
-                feeBps,
+                fee,
               )
             ) {
               return {
@@ -560,7 +578,7 @@ async function buildCollectSettleExecution(
   }
 
   const payer = (payerOverride ?? collectPayer(wirePayload)) as `0x${string}`;
-  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod);
+  const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod, extra.deployment);
   const originalMax = payload.accepted.amount;
   const paymentInfo = reconstructPaymentInfo(
     payer,
@@ -574,16 +592,17 @@ async function buildCollectSettleExecution(
   const needsChargeCompletion = extra.paymentFlow === "authorization";
   const functionName = extra.paymentFlow === "authorization" ? "charge" : "authorize";
   let settleAmount = unpacked.amount;
-  let feeBps = defaultSubmittedFee(extra).feeBps;
-  let feeReceiver = defaultSubmittedFee(extra).feeReceiver;
+  let fee = defaultSubmittedFee(extra, settleAmount);
   if (needsChargeCompletion) {
     settleAmount = BigInt(collectChargeAmount(wirePayload) ?? originalMax);
-    feeBps = wirePayload.feeBps as number;
-    feeReceiver = wirePayload.feeReceiver as `0x${string}`;
+    const chargeFee = chargeFeeFromCollectPayload(extra, wirePayload as Record<string, unknown>);
+    if (chargeFee) {
+      fee = chargeFee;
+    }
   }
 
   const chainId = getEvmChainId(requirements.network);
-  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
 
   return {
     submitter,
@@ -594,8 +613,7 @@ async function buildCollectSettleExecution(
     paymentInfoHash,
     functionName,
     settleAmount,
-    feeBps,
-    feeReceiver,
+    fee,
     tokenCollector: unpacked.tokenCollector,
   };
 }
@@ -615,7 +633,7 @@ async function snapshotCustomOperatorBalances(
     return undefined;
   }
 
-  const { extra, payer, paymentInfo, functionName, feeReceiver } = execution;
+  const { extra, payer, paymentInfo, functionName, fee } = execution;
   const facilitator = submitter.getAddresses()[0];
   if (!facilitator) {
     return {
@@ -630,7 +648,7 @@ async function snapshotCustomOperatorBalances(
   let tokenStore: `0x${string}`;
   try {
     tokenStore = (await submitter.readContract({
-      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      address: extra.deployment.escrow,
       abi: ESCROW_VIEW_ABI,
       functionName: "getTokenStore",
       args: [extra.captureAuthorizer],
@@ -653,7 +671,7 @@ async function snapshotCustomOperatorBalances(
     facilitator,
     functionName,
     paymentInfo.receiver,
-    feeReceiver,
+    fee.feeReceiver,
   );
   if (!before) {
     return {
@@ -760,24 +778,28 @@ export async function settleCollect(
   }
 
   const tuple = paymentInfoToContractTuple(execution.paymentInfo);
+  const unpackedSettle = unpackForSettle(
+    wirePayload,
+    execution.extra.assetTransferMethod,
+    execution.extra.deployment,
+  );
   const args =
     execution.functionName === "charge"
-      ? ([
+      ? chargeEscrowArgs(
           tuple,
           execution.settleAmount,
           execution.tokenCollector,
-          unpackForSettle(wirePayload, execution.extra.assetTransferMethod).collectorData,
-          execution.feeBps,
-          execution.feeReceiver,
-        ] as const)
+          unpackedSettle.collectorData,
+          execution.fee,
+        )
       : ([
           tuple,
           execution.settleAmount,
           execution.tokenCollector,
-          unpackForSettle(wirePayload, execution.extra.assetTransferMethod).collectorData,
+          unpackedSettle.collectorData,
         ] as const);
 
-  const settleTarget = resolveSettleTarget(execution.extra, AUTH_CAPTURE_ESCROW_ADDRESS);
+  const settleTarget = resolveSettleTarget(execution.extra);
   const customGasLimit =
     execution.extra.operatorType === "custom"
       ? (config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT)
@@ -788,6 +810,7 @@ export async function settleCollect(
     settleTarget,
     execution.functionName,
     args,
+    execution.extra.deployment,
     {
       gas: customGasLimit,
       dataSuffix,
@@ -823,8 +846,7 @@ export async function settleCollect(
  * @param amount - Amount to collect.
  * @param tokenCollector - Canonical collector for the asset-transfer method.
  * @param collectorData - Raw signature bytes.
- * @param feeBps - Fee for charge; ignored for authorize.
- * @param feeReceiver - Fee recipient for charge; ignored for authorize.
+ * @param fee - Submitted fee for charge (`feeBps` or `feeAmount` per deployment); ignored for authorize.
  * @param chainId - EVM chain id for paymentInfoHash.
  * @param dataSuffix - Optional settlement suffix appended to the simulated calldata.
  * @returns `"ok"` or a stable invalidReason.
@@ -837,8 +859,7 @@ async function simulateCollect(
   amount: bigint,
   tokenCollector: `0x${string}`,
   collectorData: `0x${string}`,
-  feeBps: number,
-  feeReceiver: `0x${string}`,
+  fee: SubmittedFee,
   chainId: number,
   dataSuffix?: `0x${string}`,
 ): Promise<"ok" | string> {
@@ -846,13 +867,20 @@ async function simulateCollect(
   const tuple = paymentInfoToContractTuple(paymentInfo);
   const args =
     functionName === "charge"
-      ? ([tuple, amount, tokenCollector, collectorData, feeBps, feeReceiver] as const)
+      ? chargeEscrowArgs(tuple, amount, tokenCollector, collectorData, fee)
       : ([tuple, amount, tokenCollector, collectorData] as const);
 
   if (extra.operatorType === "delegated") {
     // Delegated collect calls the escrow directly; eth_call success is sufficient preflight.
-    const settleTarget = resolveSettleTarget(extra, AUTH_CAPTURE_ESCROW_ADDRESS);
-    return simulateEscrowCall(signer, settleTarget, functionName, args, extra.captureAuthorizer);
+    const settleTarget = resolveSettleTarget(extra);
+    return simulateEscrowCall(
+      signer,
+      settleTarget,
+      functionName,
+      args,
+      extra.captureAuthorizer,
+      extra.deployment,
+    );
   }
 
   // Custom operators relay through captureAuthorizer — require eth_simulateV1 outcome checks.
@@ -863,17 +891,19 @@ async function simulateCollect(
   const gasLimit =
     config?.customOperatorAuthorizeGasLimit ?? DEFAULT_CUSTOM_OPERATOR_AUTHORIZE_GAS_LIMIT;
   const facilitator = signer.getAddresses()[0]!;
-  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo);
+  const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
   const operator = extra.captureAuthorizer;
   const token = paymentInfo.token;
   const payer = paymentInfo.payer;
   const receiver = paymentInfo.receiver;
+  const feeReceiver = fee.feeReceiver;
+  const escrowAddress = extra.deployment.escrow;
 
   // Token store is CREATE2-predictable from the operator even before deployment.
   let tokenStore: `0x${string}`;
   try {
     tokenStore = (await signer.readContract({
-      address: AUTH_CAPTURE_ESCROW_ADDRESS,
+      address: escrowAddress,
       abi: ESCROW_VIEW_ABI,
       functionName: "getTokenStore",
       args: [operator],
@@ -892,7 +922,7 @@ async function simulateCollect(
 
   const paymentStateCall = () =>
     ({
-      to: AUTH_CAPTURE_ESCROW_ADDRESS,
+      to: escrowAddress,
       abi: ESCROW_VIEW_ABI,
       functionName: "paymentState",
       args: [paymentInfoHash],
@@ -908,9 +938,9 @@ async function simulateCollect(
 
   const forwardedData = appendDataSuffix(
     encodeFunctionData({
-      abi: ESCROW_ABI_WITH_ERRORS,
+      abi: escrowAbiWithErrorsForDeployment(extra.deployment),
       functionName,
-      args,
+      args: args as never,
     }),
     dataSuffix,
   );
@@ -965,15 +995,14 @@ async function simulateCollect(
   // (operator-emitted logs are ignored by filtering on escrow address).
   const eventOk =
     functionName === "charge"
-      ? verifyPaymentChargedEvent(forwarded.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+      ? verifyPaymentChargedEvent(forwarded.logs, extra.deployment, {
           paymentInfoHash,
           amount,
           tokenCollector,
           operator,
-          feeBps,
-          feeReceiver,
+          fee,
         })
-      : verifyPaymentAuthorizedEvent(forwarded.logs, AUTH_CAPTURE_ESCROW_ADDRESS, {
+      : verifyPaymentAuthorizedEvent(forwarded.logs, escrowAddress, {
           paymentInfoHash,
           amount,
           tokenCollector,
@@ -1036,7 +1065,7 @@ async function simulateCollect(
       !postState.hasCollectedPayment ||
       postState.capturableAmount !== amount ||
       postState.refundableAmount !== 0n ||
-      !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, feeBps)
+      !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, fee)
     ) {
       return Errors.ErrSimulationFailed;
     }
@@ -1067,7 +1096,7 @@ async function simulateCollect(
     !postState.hasCollectedPayment ||
     postState.capturableAmount !== 0n ||
     postState.refundableAmount !== amount ||
-    !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, feeBps)
+    !hasExpectedCollectBalanceChanges(beforeBalances, afterBalances, functionName, amount, fee)
   ) {
     return Errors.ErrSimulationFailed;
   }
@@ -1149,7 +1178,7 @@ async function readCollectBalanceSnapshot(
  * @param after - Balances after the transaction confirms.
  * @param functionName - Collect operation.
  * @param amount - Settled amount.
- * @param feeBps - Charge fee in basis points.
+ * @param fee - Submitted fee for charge (`feeBps` or `feeAmount` per deployment).
  * @returns True when all expected deltas match.
  */
 function hasExpectedCollectBalanceChanges(
@@ -1157,7 +1186,7 @@ function hasExpectedCollectBalanceChanges(
   after: CollectBalanceSnapshot,
   functionName: "authorize" | "charge",
   amount: bigint,
-  feeBps: number,
+  fee: SubmittedFee,
 ): boolean {
   if (after.facilitator < before.facilitator || after.payer !== before.payer - amount) {
     return false;
@@ -1173,11 +1202,11 @@ function hasExpectedCollectBalanceChanges(
   ) {
     return false;
   }
-  const fee = (amount * BigInt(feeBps)) / 10_000n;
+  const feeAmount = submittedFeeAmount(fee, amount);
   return (
     after.tokenStore === before.tokenStore &&
-    after.receiver === before.receiver + (amount - fee) &&
-    after.feeReceiver === before.feeReceiver + fee
+    after.receiver === before.receiver + (amount - feeAmount) &&
+    after.feeReceiver === before.feeReceiver + feeAmount
   );
 }
 
@@ -1215,7 +1244,7 @@ function verifyPaymentAuthorizedEvent(
   },
 ): boolean {
   const parsed = parseEventLogs({
-    abi: ESCROW_EVENTS_ABI,
+    abi: escrowEventsAbiForDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_1),
     eventName: "PaymentAuthorized",
     logs: escrowEventLogs(logs, escrowAddress),
   });
@@ -1232,40 +1261,55 @@ function verifyPaymentAuthorizedEvent(
  * Whether logs contain a PaymentCharged event matching the expected collect.
  *
  * @param logs - Logs from the forwarded call or mined receipt.
- * @param escrowAddress - Canonical AuthCaptureEscrow address.
+ * @param deployment - Resolved AuthCaptureEscrow deployment.
  * @param expected - Expected event fields.
  * @param expected.paymentInfoHash - Escrow payment identifier.
  * @param expected.amount - Charged amount.
  * @param expected.tokenCollector - Collector used for the collect.
  * @param expected.operator - PaymentInfo.operator.
- * @param expected.feeBps - Submitted fee in basis points.
- * @param expected.feeReceiver - Submitted fee recipient.
+ * @param expected.fee - Submitted fee (`feeBps` or `feeAmount` per deployment).
  * @returns True when a matching event is present.
  */
 function verifyPaymentChargedEvent(
   logs: readonly Log[] | undefined,
-  escrowAddress: `0x${string}`,
+  deployment: AuthCaptureDeployment,
   expected: {
     paymentInfoHash: `0x${string}`;
     amount: bigint;
     tokenCollector: `0x${string}`;
     operator: `0x${string}`;
-    feeBps: number;
-    feeReceiver: `0x${string}`;
+    fee: SubmittedFee;
   },
 ): boolean {
   const parsed = parseEventLogs({
-    abi: ESCROW_EVENTS_ABI,
+    abi: escrowEventsAbiForDeployment(deployment),
     eventName: "PaymentCharged",
-    logs: escrowEventLogs(logs, escrowAddress),
+    logs: escrowEventLogs(logs, deployment.escrow),
   });
-  return parsed.some(
-    event =>
-      event.args.paymentInfoHash?.toLowerCase() === expected.paymentInfoHash.toLowerCase() &&
-      event.args.amount === expected.amount &&
-      isAddressEqual(event.args.tokenCollector, expected.tokenCollector) &&
-      isAddressEqual(event.args.paymentInfo.operator, expected.operator) &&
-      event.args.feeBps === expected.feeBps &&
-      isAddressEqual(event.args.feeReceiver, expected.feeReceiver),
-  );
+  return parsed.some(event => {
+    const eventArgs = event.args as {
+      paymentInfoHash?: `0x${string}`;
+      amount?: bigint;
+      tokenCollector?: `0x${string}`;
+      paymentInfo?: { operator?: `0x${string}` };
+      feeReceiver?: `0x${string}`;
+      feeBps?: number;
+      feeAmount?: bigint;
+    };
+    const feeMatches =
+      expected.fee.version === "v1.0"
+        ? eventArgs.feeBps === expected.fee.feeBps
+        : eventArgs.feeAmount === BigInt(expected.fee.feeAmount);
+    return (
+      eventArgs.paymentInfoHash?.toLowerCase() === expected.paymentInfoHash.toLowerCase() &&
+      eventArgs.amount === expected.amount &&
+      eventArgs.tokenCollector !== undefined &&
+      isAddressEqual(eventArgs.tokenCollector, expected.tokenCollector) &&
+      eventArgs.paymentInfo?.operator !== undefined &&
+      isAddressEqual(eventArgs.paymentInfo.operator, expected.operator) &&
+      feeMatches &&
+      eventArgs.feeReceiver !== undefined &&
+      isAddressEqual(eventArgs.feeReceiver, expected.fee.feeReceiver)
+    );
+  });
 }

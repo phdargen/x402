@@ -1,8 +1,8 @@
 import type { PaymentRequirements } from "@x402/core/types";
-import { OPERATOR_REFUND_COLLECTOR_ADDRESS } from "./constants";
+import { feeAmountFromBps, resolveAuthCaptureDeployment } from "./constants";
 import { computePaymentInfoHash } from "./nonce";
 import { signCapture, signCharge, signRefund, signVoid } from "./authorizerSigner";
-import { defaultSubmittedFee, type NormalizedAuthCaptureExtra } from "./extra";
+import { defaultSubmittedFee, type NormalizedAuthCaptureExtra, type SubmittedFee } from "./extra";
 import { reconstructPaymentInfo, unpackForSettle } from "./utils";
 import type {
   AuthCaptureCollectPayload,
@@ -28,7 +28,8 @@ export function paymentInfoFromCollect(
   requirements: PaymentRequirements,
   extra: AuthCaptureExtra,
 ): PaymentInfoStruct {
-  const unpacked = unpackForSettle(collect, extra.assetTransferMethod ?? "eip3009");
+  const deployment = resolveAuthCaptureDeployment(extra.authCaptureEscrow)!;
+  const unpacked = unpackForSettle(collect, extra.assetTransferMethod ?? "eip3009", deployment);
   const payer = isEip3009Payload(collect)
     ? collect.authorization.from
     : collect.permit2Authorization.from;
@@ -44,13 +45,31 @@ export function paymentInfoFromCollect(
 
 export type SignedCaptureFields = {
   amount: string;
-  feeBps: number;
   feeReceiver: `0x${string}`;
   expectedCapturableAmount: string;
   expectedRefundableAmount: string;
   authorizerSignature: `0x${string}`;
   voidAuthorizerSignature?: `0x${string}`;
-};
+} & ({ feeBps: number; feeAmount?: never } | { feeAmount: string; feeBps?: never });
+
+/**
+ * Merge a submitted fee into signed capture fields for the deployment version.
+ *
+ * @param fee - Submitted fee (`feeBps` or `feeAmount`).
+ * @param fields - Capture fields excluding the version-specific fee amount.
+ * @returns Signed capture fields with the fee encoding for this deployment.
+ */
+function signedCaptureFieldsFromFee(
+  fee: SubmittedFee,
+  fields: Omit<SignedCaptureFields, "feeBps" | "feeAmount" | "feeReceiver"> & {
+    feeReceiver: `0x${string}`;
+  },
+): SignedCaptureFields {
+  if (fee.version === "v1.0") {
+    return { ...fields, feeBps: fee.feeBps, feeReceiver: fee.feeReceiver };
+  }
+  return { ...fields, feeAmount: fee.feeAmount, feeReceiver: fee.feeReceiver };
+}
 
 /**
  * Sign capture (and optionally void-remainder) authorizer digests shared by
@@ -64,7 +83,8 @@ export type SignedCaptureFields = {
  * @param params.amount - Atomic capture amount.
  * @param params.capturable - Expected capturable balance before capture.
  * @param params.refundable - Expected refundable balance before capture.
- * @param params.feeBps - Optional submitted fee basis points.
+ * @param params.feeBps - Optional submitted fee basis points (v1.0).
+ * @param params.feeAmount - Optional submitted absolute fee (v1.1).
  * @param params.feeReceiver - Optional fee recipient address.
  * @param params.voidRemainder - When true, sign a void digest for the remaining hold.
  * @param params.voidOnPartialCapture - When true and amount is below capturable, sign void.
@@ -79,37 +99,64 @@ export async function signCaptureFields(params: {
   capturable: string;
   refundable: string;
   feeBps?: number;
+  feeAmount?: string;
   feeReceiver?: `0x${string}`;
   /** Explicit void-remainder for deferred helper settles. */
   voidRemainder?: boolean;
   /** Sync enrichment: attach void sig when amount is below capturable. */
   voidOnPartialCapture?: boolean;
 }): Promise<SignedCaptureFields> {
-  const fee =
+  const defaultFee = defaultSubmittedFee(params.extra, params.amount);
+  const fee: SubmittedFee =
     params.feeBps !== undefined && params.feeReceiver !== undefined
-      ? { feeBps: params.feeBps, feeReceiver: params.feeReceiver }
-      : defaultSubmittedFee(params.extra);
+      ? params.extra.deployment.version === "v1.0"
+        ? { version: "v1.0", feeBps: params.feeBps, feeReceiver: params.feeReceiver }
+        : {
+            version: "v1.1",
+            feeAmount:
+              params.feeAmount ??
+              (defaultFee.version === "v1.1"
+                ? defaultFee.feeAmount
+                : feeAmountFromBps(BigInt(params.amount), params.feeBps).toString()),
+            feeReceiver: params.feeReceiver,
+          }
+      : params.feeAmount !== undefined && params.feeReceiver !== undefined
+        ? { version: "v1.1", feeAmount: params.feeAmount, feeReceiver: params.feeReceiver }
+        : defaultFee;
+
+  const captureDigest =
+    fee.version === "v1.0"
+      ? {
+          paymentInfoHash: params.paymentInfoHash,
+          amount: params.amount,
+          feeBps: fee.feeBps,
+          feeReceiver: fee.feeReceiver,
+          expectedCapturableAmount: params.capturable,
+          expectedRefundableAmount: params.refundable,
+        }
+      : {
+          paymentInfoHash: params.paymentInfoHash,
+          amount: params.amount,
+          feeAmount: fee.feeAmount,
+          feeReceiver: fee.feeReceiver,
+          expectedCapturableAmount: params.capturable,
+          expectedRefundableAmount: params.refundable,
+        };
+
   const authorizerSignature = await signCapture(
     params.signer,
     params.chainId,
     params.extra.captureAuthorizer,
-    {
-      paymentInfoHash: params.paymentInfoHash,
-      amount: params.amount,
-      feeBps: fee.feeBps,
-      feeReceiver: fee.feeReceiver,
-      expectedCapturableAmount: params.capturable,
-      expectedRefundableAmount: params.refundable,
-    },
+    params.extra.deployment,
+    captureDigest,
   );
-  const result: SignedCaptureFields = {
+  const result = signedCaptureFieldsFromFee(fee, {
     amount: params.amount,
-    feeBps: fee.feeBps,
-    feeReceiver: fee.feeReceiver,
     expectedCapturableAmount: params.capturable,
     expectedRefundableAmount: params.refundable,
     authorizerSignature,
-  };
+    feeReceiver: fee.feeReceiver,
+  });
   const needsVoidSig =
     params.voidRemainder === true ||
     (params.voidOnPartialCapture === true && BigInt(params.amount) < BigInt(params.capturable));
@@ -153,7 +200,11 @@ export async function buildCaptureEnrichment(params: {
 }): Promise<Record<string, unknown>> {
   const paymentInfo =
     params.paymentInfo ?? paymentInfoFromCollect(params.collect, params.requirements, params.extra);
-  const paymentInfoHash = computePaymentInfoHash(params.chainId, paymentInfo);
+  const paymentInfoHash = computePaymentInfoHash(
+    params.chainId,
+    paymentInfo,
+    params.extra.deployment.escrow,
+  );
   const signed = await signCaptureFields({
     signer: params.signer,
     chainId: params.chainId,
@@ -185,7 +236,8 @@ export async function buildCaptureEnrichment(params: {
  * @param params.signer - Authorizer signer for capture digests.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.amount - Atomic capture amount.
- * @param params.feeBps - Optional submitted fee basis points.
+ * @param params.feeBps - Optional submitted fee basis points (v1.0).
+ * @param params.feeAmount - Optional submitted absolute fee (v1.1).
  * @param params.feeReceiver - Optional fee recipient address.
  * @param params.voidRemainder - When true, void the remaining hold after capture.
  * @returns Capture payload ready for facilitator `/settle`.
@@ -203,6 +255,7 @@ export async function buildCapturePayload(params: {
   chainId: number;
   amount: string;
   feeBps?: number;
+  feeAmount?: string;
   feeReceiver?: `0x${string}`;
   voidRemainder?: boolean;
 }): Promise<CapturePayload> {
@@ -215,6 +268,7 @@ export async function buildCapturePayload(params: {
     capturable: params.record.capturableAmount,
     refundable: params.record.refundableAmount,
     feeBps: params.feeBps,
+    feeAmount: params.feeAmount,
     feeReceiver: params.feeReceiver,
     voidRemainder: params.voidRemainder,
   });
@@ -326,7 +380,7 @@ export async function buildRefundPayload(params: {
     {
       paymentInfoHash: params.record.paymentInfoHash,
       amount: params.amount,
-      tokenCollector: OPERATOR_REFUND_COLLECTOR_ADDRESS,
+      tokenCollector: params.extra.deployment.operatorRefundCollector,
       expectedCapturableAmount: params.record.capturableAmount,
       expectedRefundableAmount: params.record.refundableAmount,
     },
@@ -363,24 +417,53 @@ export async function buildChargeCompletionEnrichment(params: {
   amount: string;
 }): Promise<Record<string, unknown>> {
   const paymentInfo = paymentInfoFromCollect(params.collect, params.requirements, params.extra);
-  const unpacked = unpackForSettle(params.collect, params.extra.assetTransferMethod);
-  const fee = defaultSubmittedFee(params.extra);
+  const unpacked = unpackForSettle(
+    params.collect,
+    params.extra.assetTransferMethod,
+    params.extra.deployment,
+  );
+  const fee = defaultSubmittedFee(params.extra, params.amount);
+  const paymentInfoHash = computePaymentInfoHash(
+    params.chainId,
+    paymentInfo,
+    params.extra.deployment.escrow,
+  );
+  const chargeDigest =
+    fee.version === "v1.0"
+      ? {
+          paymentInfoHash,
+          amount: params.amount,
+          tokenCollector: unpacked.tokenCollector,
+          collectorData: unpacked.collectorData,
+          feeBps: fee.feeBps,
+          feeReceiver: fee.feeReceiver,
+        }
+      : {
+          paymentInfoHash,
+          amount: params.amount,
+          tokenCollector: unpacked.tokenCollector,
+          collectorData: unpacked.collectorData,
+          feeAmount: fee.feeAmount,
+          feeReceiver: fee.feeReceiver,
+        };
   const authorizerSignature = await signCharge(
     params.signer,
     params.chainId,
     params.extra.captureAuthorizer,
-    {
-      paymentInfoHash: computePaymentInfoHash(params.chainId, paymentInfo),
+    params.extra.deployment,
+    chargeDigest,
+  );
+  if (fee.version === "v1.0") {
+    return {
       amount: params.amount,
-      tokenCollector: unpacked.tokenCollector,
-      collectorData: unpacked.collectorData,
       feeBps: fee.feeBps,
       feeReceiver: fee.feeReceiver,
-    },
-  );
+      authorizerSignature,
+    };
+  }
   return {
     amount: params.amount,
-    feeBps: fee.feeBps,
+    feeAmount: fee.feeAmount,
     feeReceiver: fee.feeReceiver,
     authorizerSignature,
   };

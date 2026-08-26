@@ -1,5 +1,5 @@
 import type { PaymentRequirements } from "@x402/core/types";
-import { EIP3009_TOKEN_COLLECTOR_ADDRESS, PERMIT2_TOKEN_COLLECTOR_ADDRESS } from "./constants";
+import type { AuthCaptureDeployment } from "./constants";
 import type {
   AuthCaptureCollectPayload,
   AuthCaptureExtra,
@@ -70,11 +70,13 @@ export function paymentInfoToContractTuple(p: PaymentInfoStruct) {
  *
  * @param wirePayload - The verified collect payload (EIP-3009 or Permit2).
  * @param assetTransferMethod - Which envelope the payload uses.
+ * @param deployment - Resolved commerce-payments deployment.
  * @returns `preApprovalExpiry`, signed `amount`, `tokenCollector`, and `collectorData`.
  */
 export function unpackForSettle(
   wirePayload: AuthCaptureCollectPayload,
   assetTransferMethod: "eip3009" | "permit2",
+  deployment: AuthCaptureDeployment,
 ): {
   preApprovalExpiry: number;
   amount: bigint;
@@ -86,7 +88,7 @@ export function unpackForSettle(
     return {
       preApprovalExpiry: Number(p.authorization.validBefore),
       amount: BigInt(p.authorization.value),
-      tokenCollector: EIP3009_TOKEN_COLLECTOR_ADDRESS,
+      tokenCollector: deployment.eip3009Collector,
       collectorData: p.signature,
     };
   }
@@ -94,7 +96,7 @@ export function unpackForSettle(
   return {
     preApprovalExpiry: Number(p.permit2Authorization.deadline),
     amount: BigInt(p.permit2Authorization.permitted.amount),
-    tokenCollector: PERMIT2_TOKEN_COLLECTOR_ADDRESS,
+    tokenCollector: deployment.permit2Collector,
     collectorData: p.signature,
   };
 }

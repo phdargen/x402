@@ -84,6 +84,7 @@ export const ESCROW_ERROR_TO_INVALID_REASON: Record<string, string> = {
   FeeBpsOverflow: ErrInvalidFeeBps,
   InvalidFeeBpsRange: ErrInvalidFeeBpsRange,
   FeeBpsOutOfRange: ErrFeeBpsOutOfRange,
+  FeeAmountOutOfRange: ErrFeeBpsOutOfRange,
   ZeroFeeReceiver: ErrZeroFeeReceiver,
   InvalidFeeReceiver: ErrInvalidFeeReceiver,
   AfterAuthorizationExpiry: ErrCaptureDeadlineExpired,

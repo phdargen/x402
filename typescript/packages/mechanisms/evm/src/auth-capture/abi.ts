@@ -1,3 +1,5 @@
+import type { AuthCaptureDeployment, AuthCaptureDeploymentVersion } from "./constants";
+
 // PaymentInfo struct for AuthCaptureEscrow (matches base/commerce-payments contract).
 // Field names are canonical Solidity; do not rename. Spec-level field renames
 // (captureAuthorizer, captureDeadline, refundDeadline, feeRecipient) live at the
@@ -17,7 +19,7 @@ export const PAYMENT_INFO_COMPONENTS = [
   { name: "salt", type: "uint256" },
 ] as const;
 
-export const ESCROW_ABI = [
+const ESCROW_SHARED_ABI = [
   {
     name: "authorize",
     type: "function",
@@ -31,40 +33,6 @@ export const ESCROW_ABI = [
       { name: "amount", type: "uint256" },
       { name: "tokenCollector", type: "address" },
       { name: "collectorData", type: "bytes" },
-    ],
-    outputs: [],
-  },
-  {
-    name: "charge",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "paymentInfo",
-        type: "tuple",
-        components: PAYMENT_INFO_COMPONENTS,
-      },
-      { name: "amount", type: "uint256" },
-      { name: "tokenCollector", type: "address" },
-      { name: "collectorData", type: "bytes" },
-      { name: "feeBps", type: "uint16" },
-      { name: "feeReceiver", type: "address" },
-    ],
-    outputs: [],
-  },
-  {
-    name: "capture",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      {
-        name: "paymentInfo",
-        type: "tuple",
-        components: PAYMENT_INFO_COMPONENTS,
-      },
-      { name: "amount", type: "uint256" },
-      { name: "feeBps", type: "uint16" },
-      { name: "feeReceiver", type: "address" },
     ],
     outputs: [],
   },
@@ -99,6 +67,115 @@ export const ESCROW_ABI = [
   },
 ] as const;
 
+const CHARGE_V1_0_ABI = {
+  name: "charge",
+  type: "function",
+  stateMutability: "nonpayable",
+  inputs: [
+    {
+      name: "paymentInfo",
+      type: "tuple",
+      components: PAYMENT_INFO_COMPONENTS,
+    },
+    { name: "amount", type: "uint256" },
+    { name: "tokenCollector", type: "address" },
+    { name: "collectorData", type: "bytes" },
+    { name: "feeBps", type: "uint16" },
+    { name: "feeReceiver", type: "address" },
+  ],
+  outputs: [],
+} as const;
+
+const CAPTURE_V1_0_ABI = {
+  name: "capture",
+  type: "function",
+  stateMutability: "nonpayable",
+  inputs: [
+    {
+      name: "paymentInfo",
+      type: "tuple",
+      components: PAYMENT_INFO_COMPONENTS,
+    },
+    { name: "amount", type: "uint256" },
+    { name: "feeBps", type: "uint16" },
+    { name: "feeReceiver", type: "address" },
+  ],
+  outputs: [],
+} as const;
+
+const CHARGE_V1_1_ABI = {
+  name: "charge",
+  type: "function",
+  stateMutability: "nonpayable",
+  inputs: [
+    {
+      name: "paymentInfo",
+      type: "tuple",
+      components: PAYMENT_INFO_COMPONENTS,
+    },
+    { name: "amount", type: "uint256" },
+    { name: "tokenCollector", type: "address" },
+    { name: "collectorData", type: "bytes" },
+    { name: "feeAmount", type: "uint256" },
+    { name: "feeReceiver", type: "address" },
+  ],
+  outputs: [],
+} as const;
+
+const CAPTURE_V1_1_ABI = {
+  name: "capture",
+  type: "function",
+  stateMutability: "nonpayable",
+  inputs: [
+    {
+      name: "paymentInfo",
+      type: "tuple",
+      components: PAYMENT_INFO_COMPONENTS,
+    },
+    { name: "amount", type: "uint256" },
+    { name: "feeAmount", type: "uint256" },
+    { name: "feeReceiver", type: "address" },
+  ],
+  outputs: [],
+} as const;
+
+export const ESCROW_ABI_V1_0 = [
+  ...ESCROW_SHARED_ABI.slice(0, 1),
+  CHARGE_V1_0_ABI,
+  CAPTURE_V1_0_ABI,
+  ...ESCROW_SHARED_ABI.slice(1),
+] as const;
+
+export const ESCROW_ABI_V1_1 = [
+  ...ESCROW_SHARED_ABI.slice(0, 1),
+  CHARGE_V1_1_ABI,
+  CAPTURE_V1_1_ABI,
+  ...ESCROW_SHARED_ABI.slice(1),
+] as const;
+
+/** Default escrow ABI (v1.1). */
+export const ESCROW_ABI = ESCROW_ABI_V1_1;
+
+/**
+ * Escrow function ABI for a commerce-payments protocol version.
+ *
+ * @param version - Deployment version (`v1.0` or `v1.1`).
+ * @returns Charge/capture ABI matching that version's fee encoding.
+ */
+export function escrowAbiForVersion(version: AuthCaptureDeploymentVersion) {
+  return version === "v1.0" ? ESCROW_ABI_V1_0 : ESCROW_ABI_V1_1;
+}
+
+/**
+ * Escrow function ABI for a resolved commerce-payments deployment.
+ *
+ * @param deployment - Resolved escrow addresses and version.
+ * @returns Charge/capture ABI matching the deployment version.
+ */
+export function escrowAbiForDeployment(deployment: AuthCaptureDeployment) {
+  return escrowAbiForVersion(deployment.version);
+}
+
 // ERC-20 balanceOf ABI for balance checks
 export const ERC20_BALANCE_OF_ABI = [
   {
@@ -110,23 +187,23 @@ export const ERC20_BALANCE_OF_ABI = [
   },
 ] as const;
 
-// View functions on AuthCaptureEscrow used by verify (paymentState single-use
-// checks) and tests / introspection.
-export const ESCROW_EVENTS_ABI = [
-  {
-    type: "event",
-    name: "PaymentAuthorized",
-    inputs: [
-      { name: "paymentInfoHash", type: "bytes32", indexed: true },
-      {
-        name: "paymentInfo",
-        type: "tuple",
-        components: PAYMENT_INFO_COMPONENTS,
-      },
-      { name: "amount", type: "uint256", indexed: false },
-      { name: "tokenCollector", type: "address", indexed: false },
-    ],
-  },
+const PAYMENT_AUTHORIZED_EVENT = {
+  type: "event",
+  name: "PaymentAuthorized",
+  inputs: [
+    { name: "paymentInfoHash", type: "bytes32", indexed: true },
+    {
+      name: "paymentInfo",
+      type: "tuple",
+      components: PAYMENT_INFO_COMPONENTS,
+    },
+    { name: "amount", type: "uint256", indexed: false },
+    { name: "tokenCollector", type: "address", indexed: false },
+  ],
+} as const;
+
+export const ESCROW_EVENTS_ABI_V1_0 = [
+  PAYMENT_AUTHORIZED_EVENT,
   {
     type: "event",
     name: "PaymentCharged",
@@ -145,6 +222,41 @@ export const ESCROW_EVENTS_ABI = [
   },
 ] as const;
 
+export const ESCROW_EVENTS_ABI_V1_1 = [
+  PAYMENT_AUTHORIZED_EVENT,
+  {
+    type: "event",
+    name: "PaymentCharged",
+    inputs: [
+      { name: "paymentInfoHash", type: "bytes32", indexed: true },
+      {
+        name: "paymentInfo",
+        type: "tuple",
+        components: PAYMENT_INFO_COMPONENTS,
+      },
+      { name: "amount", type: "uint256", indexed: false },
+      { name: "tokenCollector", type: "address", indexed: false },
+      { name: "feeAmount", type: "uint256", indexed: false },
+      { name: "feeReceiver", type: "address", indexed: false },
+    ],
+  },
+] as const;
+
+/** Default escrow events ABI (v1.1). */
+export const ESCROW_EVENTS_ABI = ESCROW_EVENTS_ABI_V1_1;
+
+/**
+ * Escrow event ABI for a resolved commerce-payments deployment.
+ *
+ * @param deployment - Resolved escrow addresses and version.
+ * @returns PaymentCharged event ABI matching the deployment version.
+ */
+export function escrowEventsAbiForDeployment(deployment: AuthCaptureDeployment) {
+  return deployment.version === "v1.0" ? ESCROW_EVENTS_ABI_V1_0 : ESCROW_EVENTS_ABI_V1_1;
+}
+
+// View functions on AuthCaptureEscrow used by verify (paymentState single-use
+// checks) and tests / introspection.
 export const ESCROW_VIEW_ABI = [
   {
     name: "getTokenStore",
@@ -211,6 +323,11 @@ export const ESCROW_ERRORS_ABI = [
     name: "FeeBpsOutOfRange",
     inputs: [{ type: "uint16" }, { type: "uint16" }, { type: "uint16" }],
   },
+  {
+    type: "error",
+    name: "FeeAmountOutOfRange",
+    inputs: [{ type: "uint256" }, { type: "uint256" }, { type: "uint256" }],
+  },
   { type: "error", name: "ZeroFeeReceiver", inputs: [] },
   { type: "error", name: "InvalidFeeReceiver", inputs: [{ type: "address" }, { type: "address" }] },
   { type: "error", name: "InvalidCollectorForOperation", inputs: [] },
@@ -239,4 +356,18 @@ export const ESCROW_ERRORS_ABI = [
   },
 ] as const;
 
-export const ESCROW_ABI_WITH_ERRORS = [...ESCROW_ABI, ...ESCROW_ERRORS_ABI] as const;
+export const ESCROW_ABI_WITH_ERRORS_V1_0 = [...ESCROW_ABI_V1_0, ...ESCROW_ERRORS_ABI] as const;
+export const ESCROW_ABI_WITH_ERRORS_V1_1 = [...ESCROW_ABI_V1_1, ...ESCROW_ERRORS_ABI] as const;
+
+/** Default escrow ABI with errors (v1.1). */
+export const ESCROW_ABI_WITH_ERRORS = ESCROW_ABI_WITH_ERRORS_V1_1;
+
+/**
+ * Escrow ABI including custom errors for a resolved deployment.
+ *
+ * @param deployment - Resolved escrow addresses and version.
+ * @returns Function plus error ABI matching the deployment version.
+ */
+export function escrowAbiWithErrorsForDeployment(deployment: AuthCaptureDeployment) {
+  return deployment.version === "v1.0" ? ESCROW_ABI_WITH_ERRORS_V1_0 : ESCROW_ABI_WITH_ERRORS_V1_1;
+}

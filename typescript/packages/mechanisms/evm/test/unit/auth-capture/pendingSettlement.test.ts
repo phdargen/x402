@@ -152,7 +152,7 @@ function buildCapturePayload(authorizerSignature = "0xabcd" as `0x${string}`) {
       },
       saltNonce: SALT_NONCE,
       amount: "500000",
-      feeBps: 0,
+      feeAmount: "0",
       feeReceiver: FEE_RECIPIENT,
       expectedCapturableAmount: "1000000",
       expectedRefundableAmount: "0",

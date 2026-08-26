@@ -20,6 +20,7 @@ import { getAddress, isAddressEqual } from "viem";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
+import { canonicalAuthCaptureEscrow } from "../extra";
 import { isNonZeroAddress } from "../nonce";
 import type { AuthorizerSigner } from "../types";
 import { AuthCaptureLifecycleManager } from "./lifecycleManager";
@@ -319,6 +320,10 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
 
     // Facilitator-only allowlist from GET /supported — not part of the 402 wire.
     delete merged.operators;
+
+    merged.authCaptureEscrow = canonicalAuthCaptureEscrow(
+      typeof merged.authCaptureEscrow === "string" ? merged.authCaptureEscrow : undefined,
+    );
 
     return { ...requirements, extra: merged };
   }
