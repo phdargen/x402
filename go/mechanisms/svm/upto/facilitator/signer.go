@@ -13,7 +13,8 @@ import (
 
 // UptoFacilitatorSigner is FacilitatorSvmSigner narrowed to the read and
 // simulate RPC the `upto` facilitator requires at runtime. Exact-only signers
-// omit the extra methods.
+// omit the extra methods. GetProgramAccounts is optional and only needed for
+// RentCleanupManager.Discover(); assertProgramAccountsSigner checks it.
 type UptoFacilitatorSigner interface {
 	svm.FacilitatorSvmSigner
 
@@ -31,12 +32,6 @@ type UptoFacilitatorSigner interface {
 		network string,
 		opts *rpc.SimulateTransactionOpts,
 	) error
-	GetProgramAccounts(
-		ctx context.Context,
-		network string,
-		programID solana.PublicKey,
-		opts *rpc.GetProgramAccountsOpts,
-	) (rpc.GetProgramAccountsResult, error)
 }
 
 // assertUptoFacilitatorSigner validates that signer exposes every RPC cap the
@@ -71,20 +66,28 @@ func assertUptoFacilitatorSigner(signer svm.FacilitatorSvmSigner, label string) 
 	return signer.(UptoFacilitatorSigner)
 }
 
+// programAccountsGetter is the optional discovery sweep cap. It is not part of
+// UptoFacilitatorSigner so NewUptoSvmScheme can construct without it.
+type programAccountsGetter interface {
+	GetProgramAccounts(
+		context.Context,
+		string,
+		solana.PublicKey,
+		*rpc.GetProgramAccountsOpts,
+	) (rpc.GetProgramAccountsResult, error)
+}
+
 // assertProgramAccountsSigner validates GetProgramAccounts for discovery sweeps.
-func assertProgramAccountsSigner(signer svm.FacilitatorSvmSigner, label string) UptoFacilitatorSigner {
-	uptoSigner := assertUptoFacilitatorSigner(signer, label)
-	type programAccountsGetter interface {
-		GetProgramAccounts(context.Context, string, solana.PublicKey, *rpc.GetProgramAccountsOpts) (rpc.GetProgramAccountsResult, error)
-	}
-	if _, ok := signer.(programAccountsGetter); !ok {
+func assertProgramAccountsSigner(signer svm.FacilitatorSvmSigner, label string) programAccountsGetter {
+	gpa, ok := signer.(programAccountsGetter)
+	if !ok {
 		panic(fmt.Sprintf("%s requires GetProgramAccounts on the signer", label))
 	}
-	return uptoSigner
+	return gpa
 }
 
 type programAccountsQuerier struct {
-	signer  UptoFacilitatorSigner
+	signer  programAccountsGetter
 	network string
 }
 

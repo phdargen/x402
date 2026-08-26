@@ -756,9 +756,13 @@ export function toFacilitatorSvmSigner(
 
     getProgramAccounts: async (network, programId, config) => {
       const rpc = getRpcForNetwork(network);
-      const response = await rpc.getProgramAccounts(programId as never, config as never).send();
-      const rows = (response as { value?: readonly FacilitatorProgramAccount[] }).value;
-      return rows ?? [];
+      return await rpc
+        .getProgramAccounts(programId as Address, {
+          commitment: (config.commitment ?? "confirmed") as never,
+          encoding: "base64",
+          filters: config.filters as never,
+        })
+        .send();
     },
   };
 }

@@ -444,7 +444,10 @@ func (m *RentCleanupManager) Discover(ctx context.Context, opts DiscoveryOptions
 	m.passMu.Lock()
 	defer m.passMu.Unlock()
 
-	assertProgramAccountsSigner(m.signer, "RentCleanupManager.Discover")
+	querier := programAccountsQuerier{
+		signer:  assertProgramAccountsSigner(m.signer, "RentCleanupManager.Discover"),
+		network: m.network,
+	}
 	records, err := m.storage.List(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list stored channels: %w", err)
@@ -462,7 +465,7 @@ func (m *RentCleanupManager) Discover(ctx context.Context, opts DiscoveryOptions
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		found, err := paymentchannels.DiscoverChannelsByRentPayer(ctx, programAccountsQuerier{m.signer, m.network}, managed)
+		found, err := paymentchannels.DiscoverChannelsByRentPayer(ctx, querier, managed)
 		if err != nil {
 			opts.reportError(fmt.Errorf("discovery failed for rent payer %s: %w", managed, err), "")
 			continue
