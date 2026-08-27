@@ -36,10 +36,10 @@ describe("nonce utilities", () => {
 
     it("should produce fixed hashes for the default and v1.0 escrow domains", () => {
       expect(computePayerAgnosticPaymentInfoHash(84532, mockPaymentInfo)).toBe(
-        "0x341988b065a5131b3a82818eb7aba9010135f326af1af7695fce4d2bbebd0b76",
+        "0xabfa4347d9119b8da1991d399233436d6f556a502312f784c38d080a1e49f993",
       );
       expect(computePayerAgnosticPaymentInfoHash(8453, mockPaymentInfo)).toBe(
-        "0xa393f8f76a2327a7678488b2d504bda611b7586bb3f334b255a11bb5a75e79ca",
+        "0x9c63347600c217bfe7b607adfdef36a85d764610f1bdb19ed12fda5704b91528",
       );
       expect(
         computePayerAgnosticPaymentInfoHash(
