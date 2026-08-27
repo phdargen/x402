@@ -22,10 +22,10 @@ function createKeyedLock(): <T>(key: string, fn: () => Promise<T>) => Promise<T>
     const current = new Promise<void>(resolve => {
       release = resolve;
     });
-    const next = previous.catch(() => {}).then(() => current);
+    const next = previous.catch(() => { }).then(() => current);
     locks.set(key, next);
 
-    await previous.catch(() => {});
+    await previous.catch(() => { });
     try {
       return await fn();
     } finally {
@@ -53,6 +53,7 @@ export interface AuthorizedPayment {
   paymentFlow: AuthCapturePaymentFlow;
   operatorType: Exclude<AuthCaptureOperatorType, "policy">;
   assetTransferMethod: AssetTransferMethod;
+  authCaptureEscrow: `0x${string}`;
 }
 
 export interface AuthorizedPaymentUpdateResult {

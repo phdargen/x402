@@ -713,7 +713,6 @@ export async function settleCollect(
   if (pendingKey) {
     const cachedTx = await store.get(pendingKey);
     if (cachedTx) {
-      await store.delete(pendingKey);
       const execution = await buildCollectSettleExecution(
         signers,
         payload,
@@ -722,8 +721,15 @@ export async function settleCollect(
         payer,
       );
       if ("success" in execution) {
-        return execution;
+        return {
+          success: false,
+          errorReason: Errors.ErrSettlementPending,
+          transaction: cachedTx,
+          network: requirements.network,
+          payer,
+        };
       }
+      await store.delete(pendingKey);
       return awaitCollectSettlement(
         store,
         pendingKey,

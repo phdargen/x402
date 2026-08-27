@@ -245,6 +245,7 @@ function extraFromRecord(record: AuthorizedPayment): NormalizedAuthCaptureExtra 
     receiverAuthorizer: record.receiverAuthorizer,
     policy: record.policy,
     captureMode: record.paymentFlow === "escrow" ? "deferred" : "sync",
+    authCaptureEscrow: record.authCaptureEscrow,
   });
   if ("error" in parsed) {
     throw new Error(`AuthCapture: invalid stored extra: ${parsed.error}`);
