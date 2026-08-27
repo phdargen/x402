@@ -281,6 +281,7 @@ export class AuthCaptureSettlementHooks {
       paymentFlow: extra.paymentFlow,
       operatorType: extra.operatorType,
       assetTransferMethod: extra.assetTransferMethod,
+      authCaptureEscrow: extra.authCaptureEscrow,
     };
     // First write wins. A second collect for the same paymentInfoHash cannot succeed onchain
     // (the escrow marks it collected), so reaching here twice means a retry, and the stored

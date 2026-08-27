@@ -252,13 +252,12 @@ export async function settleLifecycle(
   if (pendingKey) {
     const cachedTx = await store.get(pendingKey);
     if (cachedTx) {
-      await store.delete(pendingKey);
       const parsed = parseAuthCaptureExtra(requirements.extra);
       if ("error" in parsed) {
         return {
           success: false,
-          errorReason: parsed.error,
-          transaction: "",
+          errorReason: Errors.ErrSettlementPending,
+          transaction: cachedTx,
           network: requirements.network,
           payer,
         };
@@ -267,12 +266,13 @@ export async function settleLifecycle(
       if (!submitter) {
         return {
           success: false,
-          errorReason: Errors.ErrOperatorNotAdmitted,
-          transaction: "",
+          errorReason: Errors.ErrSettlementPending,
+          transaction: cachedTx,
           network: requirements.network,
           payer,
         };
       }
+      await store.delete(pendingKey);
       const amount =
         wirePayload.type === "refund" || wirePayload.type === "capture" ? wirePayload.amount : "0";
       const result = await awaitLifecycleSettlement(
