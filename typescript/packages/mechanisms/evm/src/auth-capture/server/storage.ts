@@ -53,6 +53,7 @@ export interface AuthorizedPayment {
   paymentFlow: AuthCapturePaymentFlow;
   operatorType: Exclude<AuthCaptureOperatorType, "policy">;
   assetTransferMethod: AssetTransferMethod;
+  authCaptureEscrow: `0x${string}`;
 }
 
 export interface AuthorizedPaymentUpdateResult {

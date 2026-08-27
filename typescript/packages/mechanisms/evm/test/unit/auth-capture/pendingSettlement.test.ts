@@ -276,6 +276,48 @@ describe("AuthCaptureEvmScheme pending-settlement store integration", () => {
       expect(await store.get(signature)).toBeUndefined();
     });
 
+    it("cache-hit + extra re-parse fails keeps the hash and returns settlement_pending", async () => {
+      const facilitator = new AuthCaptureEvmScheme(mockFacilitatorSigner, {
+        pendingSettlementStore: store,
+      });
+      const payload = buildEip3009Payload();
+      const signature = payload.payload.signature;
+      await store.set(signature, MOCK_TX_HASH);
+      const brokenRequirements = {
+        ...payload.accepted,
+        extra: { ...payload.accepted.extra, captureAuthorizer: "not-an-address" },
+      };
+
+      const result = await facilitator.settle(payload, brokenRequirements);
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(Errors.ErrSettlementPending);
+      expect(result.transaction).toBe(MOCK_TX_HASH);
+      expect(mockFacilitatorSigner.writeContract).not.toHaveBeenCalled();
+      expect(await store.get(signature)).toBe(MOCK_TX_HASH);
+    });
+
+    it("cache-hit + submitter unresolved keeps the hash and returns settlement_pending", async () => {
+      mockFacilitatorSigner.getAddresses = vi
+        .fn()
+        .mockReturnValue(["0x9999999999999999999999999999999999999999"]);
+      const facilitator = new AuthCaptureEvmScheme(mockFacilitatorSigner, {
+        pendingSettlementStore: store,
+      });
+      const payload = buildEip3009Payload();
+      const signature = payload.payload.signature;
+      await store.set(signature, MOCK_TX_HASH);
+
+      const result = await facilitator.settle(payload, payload.accepted);
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(Errors.ErrSettlementPending);
+      expect(result.transaction).toBe(MOCK_TX_HASH);
+      expect(mockFacilitatorSigner.writeContract).not.toHaveBeenCalled();
+      expect(mockFacilitatorSigner.waitForTransactionReceipt).not.toHaveBeenCalled();
+      expect(await store.get(signature)).toBe(MOCK_TX_HASH);
+    });
+
     it("cache-hit still unconfirmed returns settlement_pending again without re-broadcasting", async () => {
       mockFacilitatorSigner.waitForTransactionReceipt = vi
         .fn()
@@ -407,6 +449,27 @@ describe("AuthCaptureEvmScheme pending-settlement store integration", () => {
       expect(result.transaction).toBe(MOCK_TX_HASH);
       expect(mockFacilitatorSigner.writeContract).not.toHaveBeenCalled();
       expect(await store.get(key)).toBeUndefined();
+    });
+
+    it("capture cache-hit + extra re-parse fails keeps the hash and returns settlement_pending", async () => {
+      const facilitator = new AuthCaptureEvmScheme(mockFacilitatorSigner, {
+        pendingSettlementStore: store,
+      });
+      const payload = buildCapturePayload();
+      const key = payload.payload.authorizerSignature;
+      await store.set(key, MOCK_TX_HASH);
+      const brokenRequirements = {
+        ...payload.accepted,
+        extra: { ...payload.accepted.extra, captureAuthorizer: "not-an-address" },
+      };
+
+      const result = await facilitator.settle(payload, brokenRequirements);
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(Errors.ErrSettlementPending);
+      expect(result.transaction).toBe(MOCK_TX_HASH);
+      expect(mockFacilitatorSigner.writeContract).not.toHaveBeenCalled();
+      expect(await store.get(key)).toBe(MOCK_TX_HASH);
     });
 
     it("void cache-hit still unconfirmed returns settlement_pending again", async () => {

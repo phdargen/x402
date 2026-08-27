@@ -3,7 +3,12 @@ import {
   AuthCaptureEvmScheme,
   InMemoryAuthorizedPaymentStorage,
 } from "../../../src/auth-capture/server/index";
-import { EIP3009_TOKEN_COLLECTOR_ADDRESS } from "../../../src/auth-capture/constants";
+import {
+  AUTH_CAPTURE_ESCROW_ADDRESS,
+  AUTH_CAPTURE_ESCROW_V1_0_ADDRESS,
+  CAPTURE_TYPES_V1_0,
+  EIP3009_TOKEN_COLLECTOR_ADDRESS,
+} from "../../../src/auth-capture/constants";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { AuthorizedPayment } from "../../../src/auth-capture/server/storage";
 
@@ -941,6 +946,7 @@ describe("AuthCaptureEvmScheme", () => {
         paymentFlow: "escrow",
         operatorType: "delegated",
         assetTransferMethod: "eip3009",
+        authCaptureEscrow: AUTH_CAPTURE_ESCROW_ADDRESS,
         ...overrides,
       };
     }
@@ -1123,6 +1129,59 @@ describe("AuthCaptureEvmScheme", () => {
       expect(listed[0]?.capturableAmount).toBe("1000000");
       expect(listed[0]?.refundableAmount).toBe("0");
       expect(listed[0]?.collectTransaction).toBe("0xauthorize");
+      expect(listed[0]?.authCaptureEscrow).toBe(AUTH_CAPTURE_ESCROW_ADDRESS);
+    });
+
+    it("should persist a v1.0 escrow pin and reconstruct it on lifecycle capture", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      const authorizerSigner = {
+        address: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+        signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
+      };
+      const settle = vi.fn().mockResolvedValue({
+        success: true,
+        transaction: "0xtx",
+        network: "eip155:84532",
+        payer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        amount: "1000000",
+      });
+      const scheme = new AuthCaptureEvmScheme({
+        storage,
+        receiverAuthorizerSigner: authorizerSigner,
+      });
+      const pinnedExtra = {
+        ...extra,
+        authCaptureEscrow: AUTH_CAPTURE_ESCROW_V1_0_ADDRESS,
+        receiverAuthorizer: authorizerSigner.address,
+      };
+      const pinnedRequirements = { ...requirements, extra: pinnedExtra };
+      const saltNonce = ("0x" + "22".repeat(32)) as `0x${string}`;
+      await scheme.schemeHooks.onAfterSettle!({
+        phase: "before-handler",
+        paymentPayload: {
+          ...paymentPayload,
+          accepted: pinnedRequirements,
+          payload: { ...paymentPayload.payload, saltNonce },
+        },
+        requirements: pinnedRequirements,
+        declaredExtensions: {},
+        result: authorizeResult,
+      } as never);
+
+      const [stored] = await storage.list();
+      expect(stored?.authCaptureEscrow).toBe(AUTH_CAPTURE_ESCROW_V1_0_ADDRESS);
+
+      const lifecycle = scheme.createLifecycleManager({ settle } as unknown as FacilitatorClient);
+      await lifecycle.capture(stored!.paymentInfoHash);
+
+      expect(settle).toHaveBeenCalledOnce();
+      const settledExtra = settle.mock.calls[0][1].extra as { authCaptureEscrow: string };
+      expect(settledExtra.authCaptureEscrow).toBe(AUTH_CAPTURE_ESCROW_V1_0_ADDRESS);
+      expect(settle.mock.calls[0][0].payload).toMatchObject({ type: "capture", feeBps: 0 });
+      expect(settle.mock.calls[0][0].payload.feeAmount).toBeUndefined();
+      expect(authorizerSigner.signTypedData).toHaveBeenCalledWith(
+        expect.objectContaining({ types: CAPTURE_TYPES_V1_0, primaryType: "Capture" }),
+      );
     });
 
     it("should leave balances alone when a retried settle persists the same payment", async () => {
