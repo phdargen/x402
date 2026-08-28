@@ -3,8 +3,8 @@
  * protocol family whose catalog-required env keys are set.
  *
  * Usage:
- *   pnpm wallets
- *   pnpm wallets --mainnet
+ *   pnpm wallet:status
+ *   pnpm wallet:status --mainnet
  *
  * Loads e2e/.env (does not override existing exports). Never prints keys.
  */
@@ -139,6 +139,23 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
 }
 
 async function rpcJson(url: string, method: string, params: unknown[]): Promise<unknown> {
+  const body = await fetchJson(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  if (!body || typeof body !== "object") {
+    throw new Error(`${method} returned a non-object`);
+  }
+  const payload = body as { error?: { message?: string }; result?: unknown };
+  if (payload.error) {
+    throw new Error(payload.error.message ?? `${method} RPC error`);
+  }
+  return payload.result;
+}
+
+/** NEAR JSON-RPC expects `params` as a single object, not an array. */
+async function nearRpcJson(url: string, method: string, params: Record<string, unknown>): Promise<unknown> {
   const body = await fetchJson(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -595,13 +612,11 @@ async function reportNear(mode: NetworkMode): Promise<FamilyReport> {
   const server = requireEnv(serverAddressKey("near"));
   const paymentAsset = env("SERVER_NEAR_ASSET") ?? "wrap.testnet";
   const native = await withBalance("NEAR", async () => {
-    const result = await rpcJson(net.rpcUrl, "query", [
-      {
-        request_type: "view_account",
-        finality: "final",
-        account_id: facilitator,
-      },
-    ]);
+    const result = await nearRpcJson(net.rpcUrl, "query", {
+      request_type: "view_account",
+      finality: "final",
+      account_id: facilitator,
+    });
     if (!isRecord(result) || typeof result.amount !== "string") {
       throw new Error("unexpected NEAR view_account response");
     }
@@ -612,15 +627,13 @@ async function reportNear(mode: NetworkMode): Promise<FamilyReport> {
     ? { symbol: "wNEAR", decimals: 24 }
     : getNearDefaultAsset(net.caip2);
   const payment = await withBalance(paymentIsWnear ? "wNEAR" : paymentMeta.symbol, async () => {
-    const result = await rpcJson(net.rpcUrl, "query", [
-      {
-        request_type: "call_function",
-        finality: "final",
-        account_id: paymentAsset,
-        method_name: "ft_balance_of",
-        args_base64: Buffer.from(JSON.stringify({ account_id: client })).toString("base64"),
-      },
-    ]);
+    const result = await nearRpcJson(net.rpcUrl, "query", {
+      request_type: "call_function",
+      finality: "final",
+      account_id: paymentAsset,
+      method_name: "ft_balance_of",
+      args_base64: Buffer.from(JSON.stringify({ account_id: client })).toString("base64"),
+    });
     if (!isRecord(result) || !Array.isArray(result.result)) {
       throw new Error("unexpected NEAR ft_balance_of response");
     }

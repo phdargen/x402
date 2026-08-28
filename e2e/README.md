@@ -118,8 +118,8 @@ go mod tidy && go build -o go .
 Print facilitator / client / server addresses plus facilitator native and client payment-token balances for every family whose catalog-required env keys are set.
 
 ```bash
-pnpm wallets
-pnpm wallets --mainnet
+pnpm wallet:status
+pnpm wallet:status --mainnet
 ```
 
 ## Usage
