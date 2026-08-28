@@ -8,13 +8,18 @@ The scheme supports **dynamic pricing**: the client authorizes a maximum per-req
 
 ---
 
+
+
 ## Channel Lifecycle
+
+
 
 ### Channel creation and deposits
 
 A channel is created implicitly on the first deposit. The client deposits funds from the `payer` address into an onchain escrow via one of two asset transfer methods: `eip3009` for tokens that support `receiveWithAuthorization` (e.g. USDC) or `permit2` as a universal fallback for any ERC-20. Deposits are sponsored by the facilitator (gasless for the client).
 
 Channel identity is derived from an immutable config struct:
+
 ```solidity
 struct ChannelConfig {
     address payer;              // Client wallet (EOA or smart wallet)
@@ -26,6 +31,7 @@ struct ChannelConfig {
     bytes32 salt;               // Differentiates channels with identical parameters
 }
 ```
+
 with `channelId = EIP712Hash(ChannelConfig)` under the `x402 Batch Settlement` domain. The hash binds the immutable config to the EVM `chainId` and deployed `x402BatchSettlement` address, so the same config produces different IDs across chains or deployments.
 
 ### Requests and vouchers
@@ -43,6 +49,7 @@ The server claims the latest voucher per channel onchain at its discretion. `cla
 ### Refund and withdrawal
 
 **Cooperative refund**: the receiver side can return up to `balance - totalClaimed` to the payer via two paths:
+
 - `refund(config, amount)`: direct call by `receiver` or `receiverAuthorizer`, no signature required.
 - `refundWithSignature(config, amount, nonce, sig)`: relay-friendly; anyone submits an EIP-712 `Refund` signature from `receiverAuthorizer`.
 
@@ -66,9 +73,38 @@ Channels are long-lived. After a refund, the client can top up and reuse the sam
 
 ---
 
+
+
+## Voucher Custody
+
+The scheme has two voucher-custody modes, selected by `PaymentRequirements.extra.voucherStore`. The client echoes this flag and does not interpret it.
+
+
+| Mode                    | `extra.voucherStore` | Voucher `/settle`            | Watermark and claim/settle schedule | Authoritative store  |
+| ----------------------- | -------------------- | ---------------------------- | ----------------------------------- | -------------------- |
+| **Self-managed**        | omitted or `false`   | No                           | Resource server                     | Server channel store |
+| **Facilitator-managed** | `true`               | Yes — durable offchain write | Facilitator                         | Facilitator          |
+
+
+**Facilitator-managed handshake.** The facilitator advertises `voucherStore: true` together with `receiverAuthorizer` and `withdrawDelay` on `/supported`. The server copies those fields onto the 402 and MUST NOT override `withdrawDelay`. A server MUST NOT set `voucherStore: true` unless the facilitator advertised it. Absence of the flag preserves self-managed behavior.
+
+In facilitator-managed mode the resource server is a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. The facilitator verifies every payload (no local EOA short-circuit), serializes per-channel requests at `/verify`, persists vouchers, `chargedCumulativeAmount`, and `chargeCount` on `/settle`, and claims/settles on a schedule — including before a timed withdrawal finalizes.
+
+**Charge count.** `chargeCount` is the unattested delta since the last confirmed onchain claim, not a lifetime total. On each paid offchain commit (`type: "voucher"`, and the voucher persisted with `type: "deposit"`), the facilitator increments it. Zero-charge refunds do not. Facilitator-managed `/settle` responses MUST include the current delta as `extra.chargeCount`. After a claim confirms, subtract the attested snapshot from the stored count so in-flight commits remain. The facilitator attests this delta onchain at claim time (see Claim & Settlement Strategy).
+
+**Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation). The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. Out-of-band caller authentication is optional; the facilitator MUST still accept the signature path. Idle facilitator-initiated refunds are out of scope.
+
+**Optional replica.** A managed server MAY persist a copy of the latest voucher after successful `/settle`. The replica MUST NOT drive cumulative checks, locks, or corrective 402s. It only enables out-of-band `claim()` / `refund()` as `receiver`, or `type: "claim"` through the facilitator.
+
+---
+
+
+
 ## 402 Response (PaymentRequirements)
 
 The 402 response contains pricing terms and the server's channel parameters. The client maps `payTo` → `ChannelConfig.receiver`, `extra.receiverAuthorizer` → `ChannelConfig.receiverAuthorizer`, `asset` → `ChannelConfig.token`, and `extra.withdrawDelay` → `ChannelConfig.withdrawDelay`, then fills in its own `payer`, `payerAuthorizer`, and `salt` to construct the full config.
+
+Self-managed:
 
 ```json
 {
@@ -87,17 +123,44 @@ The 402 response contains pricing terms and the server's channel parameters. The
 }
 ```
 
-| Field                       | Type     | Required | Description                                            |
-| --------------------------- | -------- | -------- | ------------------------------------------------------ |
-| `extra.receiverAuthorizer`  | `string` | yes      | Address that will authorize claims/refunds             |
-| `extra.withdrawDelay`       | `number` | yes      | Withdrawal delay in seconds (15 min – 30 days)         |
-| `extra.assetTransferMethod` | `string` | optional | `"eip3009"` (default) or `"permit2"`                   |
-| `extra.name`                | `string` | yes      | EIP-712 domain name of the token contract              |
-| `extra.version`             | `string` | yes      | EIP-712 domain version of the token contract           |
-| `extra.channelState`        | `object` | optional | Corrective-only server channel snapshot for cumulative amount resynchronization |
-| `extra.voucherState`        | `object` | optional | Corrective-only signed voucher proof for cumulative amount resynchronization |
+Facilitator-managed 402 (server copies `receiverAuthorizer`, `withdrawDelay`, and `voucherStore` from `/supported`):
+
+```json
+{
+  "scheme": "batch-settlement",
+  "network": "eip155:8453",
+  "amount": "100000",
+  "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "payTo": "0xServerReceiverAddress",
+  "maxTimeoutSeconds": 3600,
+  "extra": {
+    "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+    "withdrawDelay": 900,
+    "name": "USDC",
+    "version": "2",
+    "voucherStore": true,
+    "refundAuthorizer": "0xServerRefundAuthorizerAddress"
+  }
+}
+```
+
+
+| Field                       | Type      | Required        | Description                                                                                                                                              |
+| --------------------------- | --------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `extra.receiverAuthorizer`  | `string`  | yes             | Address that will authorize claims/refunds                                                                                                               |
+| `extra.withdrawDelay`       | `number`  | yes             | Withdrawal delay in seconds (15 min – 30 days)                                                                                                           |
+| `extra.assetTransferMethod` | `string`  | optional        | `"eip3009"` (default) or `"permit2"`                                                                                                                     |
+| `extra.name`                | `string`  | yes             | EIP-712 domain name of the token contract                                                                                                                |
+| `extra.version`             | `string`  | yes             | EIP-712 domain version of the token contract                                                                                                             |
+| `extra.voucherStore`        | `boolean` | optional        | If `true`, facilitator-managed voucher custody                                                                                                           |
+| `extra.refundAuthorizer`    | `string`  | managed refunds | Server EOA that consents to cooperative refunds. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) || bytes20(refundAuthorizer)`. |
+| `extra.channelState`        | `object`  | optional        | Corrective-only server channel snapshot for cumulative amount resynchronization                                                                          |
+| `extra.voucherState`        | `object`  | optional        | Corrective-only signed voucher proof for cumulative amount resynchronization                                                                             |
+
 
 ---
+
+
 
 ## Client: Payment Construction
 
@@ -106,6 +169,8 @@ The client constructs a payment payload whose type depends on channel state:
 - `deposit`: No channel exists or balance is exhausted — client signs a token authorization and voucher
 - `voucher`: Channel has sufficient balance — client signs a new cumulative voucher
 - `refund`: Client requests a cooperative refund — client signs a zero-charge voucher and optionally includes a refund amount
+
+
 
 ### Deposit Payload
 
@@ -159,6 +224,60 @@ The `deposit.authorization` field contains the token transfer authorization — 
 }
 ```
 
+Facilitator-managed deposit — `accepted.extra` matches the managed 402; `salt` uses the packed `refundAuthorizer` layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": {
+    "scheme": "batch-settlement",
+    "network": "eip155:8453",
+    "amount": "1000",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "payTo": "0xServerReceiverAddress",
+    "maxTimeoutSeconds": 3600,
+    "extra": {
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "withdrawDelay": 900,
+      "name": "USDC",
+      "version": "2",
+      "voucherStore": true,
+      "refundAuthorizer": "0xServerRefundAuthorizerAddress"
+    }
+  },
+  "payload": {
+    "type": "deposit",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "1000",
+      "signature": "0x...EIP-712 voucher signature"
+    },
+    "deposit": {
+      "amount": "100000",
+      "authorization": {
+        "erc3009Authorization": {
+          "validAfter": "0",
+          "validBefore": "1770000000",
+          "salt": "0x...authorization salt",
+          "signature": "0x...ERC-3009 signature"
+        }
+      }
+    }
+  }
+}
+```
+
+
+
 ### Voucher Payload
 
 ```json
@@ -184,6 +303,34 @@ The `deposit.authorization` field contains the token transfer authorization — 
   }
 }
 ```
+
+Facilitator-managed voucher — `accepted` echoes the managed 402; `salt` uses the packed layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": { "..." : "..." },
+  "payload": {
+    "type": "voucher",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "5000",
+      "signature": "0x...EIP-712 voucher signature"
+    }
+  }
+}
+```
+
+
 
 ### Refund Payload
 
@@ -214,51 +361,88 @@ The optional `amount` requests a partial refund; omit it for a full refund. The 
 }
 ```
 
+Facilitator-managed refund — `accepted` echoes the managed 402; `salt` uses the packed layout:
+
+```json
+{
+  "x402Version": 2,
+  "accepted": { "..." : "..." },
+  "payload": {
+    "type": "refund",
+    "channelConfig": {
+      "payer": "0xClientAddress",
+      "payerAuthorizer": "0xClientPayerAuthorizerEOA",
+      "receiver": "0xServerReceiverAddress",
+      "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "withdrawDelay": 900,
+      "salt": "0x000000000000000000000000aaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+    },
+    "voucher": {
+      "channelId": "0xabc123...channelId",
+      "maxClaimableAmount": "3200",
+      "signature": "0x...EIP-712 zero-charge voucher signature"
+    },
+    "amount": "1500"
+  }
+}
+```
+
 ---
+
+
 
 ## Server: State & Forwarding
 
-The server is the sole owner of per-channel state.
+In **self-managed** mode the server is the sole owner of per-channel state. In **facilitator-managed** mode the server is a pass-through (see Voucher Custody); the remainder of this section applies to self-managed mode except the payment-response contract, which is shared.
 
 ### Per-Channel State
 
 The server must maintain per-channel state, keyed by channel ID:
 
-| State Field               | Type            | Description                                                                                |
-| ------------------------- | --------------- | ------------------------------------------------------------------------------------------ |
-| `channelConfig`           | `ChannelConfig` | Full channel configuration object                                                          |
-| `chargedCumulativeAmount` | `uint128`       | Actual accumulated cost for this channel                                                   |
-| `signedMaxClaimable`      | `uint128`       | `maxClaimableAmount` from the latest client-signed voucher                                 |
-| `signature`               | `bytes`         | Client's voucher signature for the latest `signedMaxClaimable`                             |
-| `balance`                 | `uint128`       | Current channel balance (mirrored from onchain)                                            |
-| `totalClaimed`            | `uint128`       | Total claimed onchain (mirrored from onchain)                                              |
-| `withdrawRequestedAt`     | `uint64`        | Unix timestamp when timed withdrawal was initiated, or 0 if none (mirrored from onchain)   |
-| `refundNonce`             | `uint256`       | Next nonce required for `refundWithSignature` (mirrored from onchain)                      |
-| `onchainSyncedAt`         | `uint64`        | Local timestamp when mirrored onchain fields were refreshed                                |
-| `lastRequestTimestamp`    | `uint64`        | Timestamp of the last paid request                                                         |
+
+| State Field               | Type            | Description                                                                              |
+| ------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| `channelConfig`           | `ChannelConfig` | Full channel configuration object                                                        |
+| `chargedCumulativeAmount` | `uint128`       | Actual accumulated cost for this channel                                                 |
+| `signedMaxClaimable`      | `uint128`       | `maxClaimableAmount` from the latest client-signed voucher                               |
+| `signature`               | `bytes`         | Client's voucher signature for the latest `signedMaxClaimable`                           |
+| `balance`                 | `uint128`       | Current channel balance (mirrored from onchain)                                          |
+| `totalClaimed`            | `uint128`       | Total claimed onchain (mirrored from onchain)                                            |
+| `withdrawRequestedAt`     | `uint64`        | Unix timestamp when timed withdrawal was initiated, or 0 if none (mirrored from onchain) |
+| `refundNonce`             | `uint256`       | Next nonce required for `refundWithSignature` (mirrored from onchain)                    |
+| `onchainSyncedAt`         | `uint64`        | Local timestamp when mirrored onchain fields were refreshed                              |
+| `lastRequestTimestamp`    | `uint64`        | Timestamp of the last paid request                                                       |
+
+
+
 
 ### Request Processing
 
 The server must serialize request processing per channel and must not update voucher state until the resource handler has succeeded.
 
 1. **Verify**:
-   - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `invalid_batch_settlement_evm_cumulative_amount_mismatch` and return a corrective 402.
-   - For refund payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount` and skip the resource handler after facilitator verification.
-   - Always call facilitator `/verify` for `deposit` and `refund` payloads, as well as `voucher` payloads with EIP-1271 vouchers.
-   - A plain EOA-authorized `voucher` may be verified locally when the server's mirrored onchain state is fresh. 
+  - For `voucher` and `deposit` payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount + paymentRequirements.amount`. If this fails, reject with `invalid_batch_settlement_evm_cumulative_amount_mismatch` and return a corrective 402.
+  - For refund payloads, check that `payload.voucher.maxClaimableAmount == chargedCumulativeAmount` and skip the resource handler after facilitator verification.
+  - Always call facilitator `/verify` for `deposit` and `refund` payloads, as well as `voucher` payloads with EIP-1271 vouchers.
+  - A plain EOA-authorized `voucher` may be verified locally when the server's mirrored onchain state is fresh.
 2. **Execute**: Run the resource handler
 3. **On success** — commit state:
-   - `chargedCumulativeAmount += actualPrice` (where `actualPrice <= PaymentRequirements.amount`)
-   - Mirror `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce` from the facilitator response
+  - `chargedCumulativeAmount += actualPrice` (where `actualPrice <= PaymentRequirements.amount`)
+  - Mirror `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce` from the facilitator response
 4. **On failure**: State unchanged, client can retry the same voucher.
+
+
 
 ### Payment Response Contract
 
+Both custody modes produce this shape. In facilitator-managed mode the facilitator `/settle` response is the payment response.
+
 Successful paid responses distinguish onchain transfers from offchain charges:
 
-- Voucher-only response: `transaction` is `""`, top-level `amount` is `""`, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot.
-- Deposit response: `transaction` is the deposit transaction hash, top-level `amount` is the deposited amount, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot.
-- Refund response: `transaction` is the refund transaction hash, top-level `amount` is the refunded amount, `extra.channelState` carries the post-refund channel snapshot and `extra.chargedAmount` is omitted.
+- Voucher-only response: `transaction` is `""`, top-level `amount` is `""`, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot. Facilitator-managed settle also includes `extra.chargeCount`.
+- Deposit response: `transaction` is the deposit transaction hash, top-level `amount` is the deposited amount, `extra.chargedAmount` is the request charge, and `extra.channelState` carries the channel snapshot. Facilitator-managed settle also includes `extra.chargeCount`.
+- Refund response: `transaction` is the refund transaction hash, top-level `amount` is the refunded amount, `extra.channelState` carries the post-refund channel snapshot and `extra.chargedAmount` is omitted. Facilitator-managed settle also includes `extra.chargeCount`.
 
 ```json
 {
@@ -281,6 +465,8 @@ Successful paid responses distinguish onchain transfers from offchain charges:
 }
 ```
 
+
+
 ### Cooperative refund flow
 
 When the server receives a `type: "refund"` payload:
@@ -290,8 +476,8 @@ When the server receives a `type: "refund"` payload:
 3. **Complete the settlement payload**: resolve omitted `amount` to a full refund, validate any partial `amount`, add `refundNonce`, build `claims`, and add receiver-authorizer signatures when the server owns that key.
 4. **Submit onchain**: `claimWithSignature(claims, claimSig)` (no-op when `maxClaimableAmount == totalClaimed`) followed by `refundWithSignature(config, amount, nonce, refundSig)`. The contract increments `refundNonce` before applying the amount cap; even if no tokens move (zero available escrow), the nonce advances.
 5. **Update channel state**:
-   - **Full refund** (refunded amount equals the remainder): delete the channel record.
-   - **Partial refund**: keep the channel record, mirror the returned `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce`. If a timed withdrawal was pending, its recorded amount is reduced proportionally (or cancelled if the refund covers it entirely).
+  - **Full refund** (refunded amount equals the remainder): delete the channel record.
+  - **Partial refund**: keep the channel record, mirror the returned `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce`. If a timed withdrawal was pending, its recorded amount is reduced proportionally (or cancelled if the refund covers it entirely).
 6. Return the settle response in the standard `PAYMENT-RESPONSE` header.
 
 After the server completes the refund payload, the facilitator receives:
@@ -324,7 +510,36 @@ After the server completes the refund payload, the facilitator receives:
 
 `refundAuthorizerSignature` and `claimAuthorizerSignature` are included when the server owns the receiver-authorizer key. If the channel delegates receiver authorization to the facilitator, the server omits them and the facilitator signs before submitting the transaction.
 
+Facilitator-managed refund `/settle` — the server attaches `refundAuthorizerSignature` from `extra.refundAuthorizer`; the facilitator supplies the onchain `Refund` and `ClaimBatch` signatures:
+
+```json
+{
+  "type": "refund",
+  "channelConfig": { "..." : "..." },
+  "voucher": {
+    "channelId": "0xabc123...channelId",
+    "maxClaimableAmount": "3200",
+    "signature": "0x...EIP-712 zero-charge voucher signature"
+  },
+  "amount": "1500",
+  "refundNonce": "1",
+  "claims": [
+    {
+      "voucher": {
+        "channel": { "..." : "..." },
+        "maxClaimableAmount": "3200"
+      },
+      "signature": "0x...EIP-712 zero-charge voucher signature",
+      "totalClaimed": "3200"
+    }
+  ],
+  "refundAuthorizerSignature": "0x...refundAuthorizer Refund signature"
+}
+```
+
 ---
+
+
 
 ## Facilitator Interface
 
@@ -348,14 +563,80 @@ Verifies a deposit, voucher, or refund payment payload. Returns the onchain chan
 }
 ```
 
+Facilitator-managed `/verify` also returns the offchain watermark. The facilitator MUST take a short-lived exclusive lock per `channelId`; a second in-flight request returns `invalid_batch_settlement_evm_channel_busy`. The lock is not a payment commit — watermark does not advance until `/settle`. `/settle` commits and releases; TTL releases on handler crash.
+
+```json
+{
+  "isValid": true,
+  "payer": "0xPayerAddress",
+  "extra": {
+    "channelId": "0xabc123...",
+    "balance": "100000",
+    "totalClaimed": "3200",
+    "withdrawRequestedAt": 0,
+    "refundNonce": "1",
+    "chargedCumulativeAmount": "3900"
+  }
+}
+```
+
+Facilitator-managed refund `/verify` additionally sets `extra.skipHandler` so the resource is bypassed and `/settle` still runs:
+
+```json
+{
+  "isValid": true,
+  "payer": "0xPayerAddress",
+  "extra": {
+    "channelId": "0xabc123...",
+    "balance": "100000",
+    "totalClaimed": "3200",
+    "withdrawRequestedAt": 0,
+    "refundNonce": "1",
+    "chargedCumulativeAmount": "3200",
+    "skipHandler": true
+  }
+}
+```
+
+On `invalid_batch_settlement_evm_cumulative_amount_mismatch`, managed `/verify` returns `extra.channelState` and `extra.voucherState` (same objects as the corrective 402). The resource server copies those onto `accepts[].extra`.
+
 ### POST /settle
 
-| `payload.type` | When Used                     | Onchain Effect                                        |
-| -------------- | ----------------------------- | ----------------------------------------------------- |
-| `"deposit"`    | First request or top-up       | Deposit via the canonical ERC-3009 or Permit2 collector |
-| `"claim"`      | Server batches voucher claims | Validate vouchers, update accounting (no transfer)    |
-| `"settle"`     | Server transfers earned funds | Transfer unsettled amount to receiver                 |
-| `"refund"`     | Cooperative refund            | Return specified amount to payer, increment refund nonce |
+
+| `payload.type` | When Used                        | Onchain Effect                                                                       |
+| -------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `"deposit"`    | First request or top-up          | Deposit via the canonical ERC-3009 or Permit2 collector                              |
+| `"voucher"`    | Facilitator-managed paid request | None — persist voucher; `chargedCumulativeAmount += actual`; increment `chargeCount` |
+| `"claim"`      | Server batches voucher claims    | Validate vouchers, update accounting (no transfer)                                   |
+| `"settle"`     | Server transfers earned funds    | Transfer unsettled amount to receiver                                                |
+| `"refund"`     | Cooperative refund               | Return specified amount to payer, increment refund nonce                             |
+
+
+`type: "voucher"` is valid only in facilitator-managed mode (`extra.voucherStore === true`). Self-managed `/settle` rejects it with `invalid_batch_settlement_evm_payload_type`. The settle-time charge `actual` is `paymentRequirements.amount` on the settle call (verify saw the per-request maximum; settle MAY be lower). The facilitator MUST enforce `actual <=` the verified `amount` and `chargedCumulativeAmount + actual <= voucher.maxClaimableAmount`. Deposit `/settle` also persists the deposit's voucher, initializes the watermark, and increments `chargeCount`.
+
+Facilitator-managed voucher `/settle` response (no onchain transaction):
+
+```json
+{
+  "success": true,
+  "transaction": "",
+  "network": "eip155:8453",
+  "payer": "0xClientAddress",
+  "amount": "",
+  "extra": {
+    "chargedAmount": "700",
+    "chargeCount": 4,
+    "channelState": {
+      "channelId": "0xabc123...channelId",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1",
+      "chargedCumulativeAmount": "3900"
+    }
+  }
+}
+```
 
 Server-authored claim and settle payloads use the same `type` discriminator:
 
@@ -434,6 +715,31 @@ Example facilitator response for a deposit:
 }
 ```
 
+Facilitator-managed deposit `/settle` also persists the voucher and returns the payment-response extras:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "payer": "0xPayerAddress",
+  "amount": "100000",
+  "asset": "0xAssetAddress",
+  "extra": {
+    "chargedAmount": "700",
+    "chargeCount": 4,
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "100000",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "1",
+      "chargedCumulativeAmount": "3900"
+    }
+  }
+}
+```
+
 Example facilitator response for a refund:
 
 ```json
@@ -457,7 +763,30 @@ Example facilitator response for a refund:
 
 `amount` is the amount returned to the payer.
 
-If a `deposit`, `claim`, `settle`, or `refund` transaction broadcasts successfully but its confirmation cannot be established (e.g. a node/RPC error or timeout while waiting for the receipt), the facilitator MAY return `settlement_pending` (see [§9 Error Handling](../../x402-specification-v2.md#9-error-handling)) with the broadcast transaction hash in `transaction`, so the caller can reconcile on chain before retrying.
+Facilitator-managed refund `/settle` response:
+
+```json
+{
+  "success": true,
+  "transaction": "0x...transactionHash",
+  "network": "eip155:8453",
+  "payer": "0xPayerAddress",
+  "amount": "1500",
+  "extra": {
+    "chargeCount": 4,
+    "channelState": {
+      "channelId": "0xabc123...",
+      "balance": "98500",
+      "totalClaimed": "3200",
+      "withdrawRequestedAt": 0,
+      "refundNonce": "2",
+      "chargedCumulativeAmount": "3200"
+    }
+  }
+}
+```
+
+
 
 ### GET /supported
 
@@ -485,6 +814,34 @@ The facilitator MAY declare a receiver authorizer whose role is to produce EIP-7
 }
 ```
 
+Facilitator-managed:
+
+```json
+{
+  "kinds": [
+    {
+      "x402Version": 2,
+      "scheme": "batch-settlement",
+      "network": "eip155:8453",
+      "extra": {
+        "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+        "withdrawDelay": 900,
+        "voucherStore": true
+      }
+    }
+  ],
+  "extensions": [],
+  "signers": {
+    "eip155:*": [
+      "0xSignerAddress1",
+      "0xSignerAddress2"
+    ]
+  }
+}
+```
+
+
+
 ### Verification Rules
 
 A facilitator must enforce:
@@ -500,16 +857,31 @@ A facilitator must enforce:
 9. **Deposit sufficiency**: `maxClaimableAmount` must be at most `balance` (or `balance + depositAmount` for deposit payloads).
 10. **Not below claimed**: `maxClaimableAmount` must exceed onchain `totalClaimed`. For refund payloads (`payload.type == "refund"`), this rule is relaxed to `maxClaimableAmount >= totalClaimed`, since refund vouchers are zero-charge and may match the already-claimed total exactly.
 11. **Signed refunds**: the refund nonce must equal the onchain `refundNonce` at the time of submission; the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`) must bind the same `amount` submitted in the transaction. The contract increments the nonce before computing the capped transfer amount, so the nonce advances even when no tokens move.
+12. **Managed watermark** (`extra.voucherStore === true`): `maxClaimableAmount` must equal `chargedCumulativeAmount + paymentRequirements.amount`. For refund payloads, `maxClaimableAmount` must equal `chargedCumulativeAmount`. On mismatch, return `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `extra.channelState` and `extra.voucherState`.
+13. **Refund authorizer bind** (when `extra.refundAuthorizer` is present): the address unpacked from `channelConfig.salt` must equal `extra.refundAuthorizer`.
 
-The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` response `extra` field and in every `/settle` response under `extra.channelState`. If `withdrawRequestedAt` is non-zero, the server should claim outstanding vouchers promptly before the withdraw delay elapses.
+The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in every `/verify` response `extra` field and in every `/settle` response under `extra.channelState`. In facilitator-managed mode those objects MUST also include `chargedCumulativeAmount`. Facilitator-managed `/settle` responses MUST also include `extra.chargeCount`. If `withdrawRequestedAt` is non-zero, outstanding vouchers should be claimed promptly before the withdraw delay elapses.
 
 ---
 
+
+
 ## Claim & Settlement Strategy
+
+In self-managed mode the server runs this strategy. In facilitator-managed mode the facilitator does — including claiming before a timed withdrawal finalizes.
 
 `claim(voucherClaims)` validates payer voucher signatures and updates accounting for multiple channels; `msg.sender` must be `receiver` or `receiverAuthorizer` for every row. `claimWithSignature(claims, signature)` is the relay-friendly variant: anyone can submit it with a valid EIP-712 `ClaimBatch` signature from `receiverAuthorizer` covering all rows (all rows must share the same `receiverAuthorizer`). No token transfer occurs in either path.
 
+**Claim attestation.** In facilitator-managed mode, the facilitator SHOULD append a charge-count suffix to `claim` / `claimWithSignature` calldata after the encoded function arguments:
+
+`[function args][magic][abi.encode(uint64[] chargeCounts)][any further suffix]`
+
+`magic` is `0x50b180c6` (`bytes4(keccak256("x402ChargeCounts(uint64[])"))`). `chargeCounts` has one entry per `voucherClaims` row — that row's unattested delta (`chargeCount`), not a lifetime aggregate. Length MUST equal `voucherClaims.length`. Solidity ignores trailing calldata; the contract is unchanged and does not validate the suffix. When `builder-code` is also present, its ERC-8021 suffix is appended after this blob so the ERC-8021 marker remains at the end of calldata.
+
+Indexers ABI-decode the function, then if leftover starts with `magic`, decode the following `uint64[]` (stop before any later suffix) and join `chargeCounts[i]` to `voucherClaims[i]` by `channelId`, then to that channel's `Claimed` event in the same transaction. Empty leftover or no `magic` means no attestation. After the claim confirms, subtract each attested snapshot from the stored `chargeCount`; do not zero the field, or in-flight commits are lost.
+
 `settle(receiver, token)` transfers all claimed-but-unsettled funds for a receiver+token pair to the receiver in one transfer. Permissionless.
+
 
 | Strategy          | Description                                    | Trade-off                        |
 | ----------------- | ---------------------------------------------- | -------------------------------- |
@@ -517,25 +889,27 @@ The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `wi
 | **Threshold**     | Claim + settle when unclaimed amount exceeds T | Bounds server's risk exposure    |
 | **On withdrawal** | Claim + settle when withdrawal is initiated    | Minimum gas, maximum risk window |
 
-The server must claim all outstanding vouchers before the withdraw delay elapses. Unclaimed vouchers become unclaimable after `finalizeWithdraw()` reduces the channel balance.
+
+Outstanding vouchers must be claimed before the withdraw delay elapses. Unclaimed vouchers become unclaimable after `finalizeWithdraw()` reduces the channel balance.
 
 ---
 
+
+
 ## Client Verification Rules
+
+
 
 ### Steady State
 
-PAYMENT-RESPONSE extra is untrusted. The client updates local state
-from its own previous state plus `extra.chargedAmount` (missing is `0`).
-It MUST NOT copy `extra.channelState` into that local state.
+Before signing the next voucher, the client must verify from the payment response:
 
-The client applies that update only when `chargedAmount <=
-PaymentRequirements.amount` and, if present,
-`channelState.chargedCumulativeAmount` equals `previous + chargedAmount`.
-Otherwise it MUST leave local state unchanged.
+1. `extra.chargedAmount <= PaymentRequirements.amount`
+2. `extra.channelState.chargedCumulativeAmount == previous + extra.chargedAmount`
+3. `extra.channelState.balance` is consistent with the client's expectation
+4. `extra.channelState.channelId` matches
 
-The next voucher is signed from that local state. A skipped apply is
-not a new charge; desync is recovered via Corrective 402.
+If any check fails, the client must not sign further vouchers and should initiate withdrawal.
 
 ### Recovery After State Loss
 
@@ -548,9 +922,9 @@ The recovery baseline is:
 
 **Client cold start.** When the client has no local channel record, it reads onchain state and sets `chargedCumulativeAmount = totalClaimed`. If the next request would exceed the recovered `balance`, the client sends a deposit/top-up payload. Otherwise it signs a voucher for `totalClaimed + amount`.
 
-**Server state loss.** If the server has no local channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If the server lost unclaimed vouchers, those unclaimed charges are forfeited by the server.
+**Server state loss.** If the voucher custodian (server or facilitator) has no channel record, it sets `chargedCumulativeAmount = totalClaimed` as the baseline. If it lost unclaimed vouchers, those unclaimed charges are forfeited.
 
-**Corrective 402.** If the server has local channel state and rejects a paid payload (`deposit` or `voucher`) because the client's cumulative amount does not match the server's channel state, it returns `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`.  The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
+**Corrective 402.** If a paid payload (`deposit` or `voucher`) is rejected because the client's cumulative amount does not match the custodian's `chargedCumulativeAmount`, the 402 is `invalid_batch_settlement_evm_cumulative_amount_mismatch` with `accepts[].extra.channelState` containing the channel snapshot and `accepts[].extra.voucherState` containing `signedMaxClaimable` and `signature`. The client verifies the voucher signature before adopting `chargedCumulativeAmount` and retrying.
 
 ```json
 {
@@ -582,109 +956,155 @@ The recovery baseline is:
 }
 ```
 
+Facilitator-managed corrective 402 — same `channelState` / `voucherState`, plus the managed extra fields:
+
+```json
+{
+  "x402Version": 2,
+  "error": "invalid_batch_settlement_evm_cumulative_amount_mismatch",
+  "accepts": [
+    {
+      "scheme": "batch-settlement",
+      "extra": {
+        "receiverAuthorizer": "0xReceiverAuthorizerAddress",
+        "withdrawDelay": 900,
+        "name": "USDC",
+        "version": "2",
+        "voucherStore": true,
+        "refundAuthorizer": "0xServerRefundAuthorizerAddress",
+        "channelState": {
+          "channelId": "0xabc123...channelId",
+          "balance": "100000",
+          "totalClaimed": "500",
+          "withdrawRequestedAt": 0,
+          "refundNonce": "1",
+          "chargedCumulativeAmount": "3200"
+        },
+        "voucherState": {
+          "signedMaxClaimable": "3200",
+          "signature": "0x...last voucher signature"
+        }
+      }
+    }
+  ]
+}
+```
+
 ---
+
+
 
 ## Error Codes
 
-| Error Code                                                               | Description                                                                  |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| `invalid_batch_settlement_evm_authorizer_address_mismatch`               | Authorizer address does not match the expected receiver authorizer           |
-| `invalid_batch_settlement_evm_channel_busy`                              | Another request holds the per-channel lock; client should retry shortly      |
-| `invalid_batch_settlement_evm_channel_id_mismatch`                       | Channel config does not hash to the claimed channel ID                       |
-| `invalid_batch_settlement_evm_channel_not_found`                         | No channel with positive balance for the given channel ID                    |
-| `invalid_batch_settlement_evm_channel_state_read_failed`                 | Facilitator failed to read onchain channel state                             |
-| `invalid_batch_settlement_evm_charge_exceeds_signed_cumulative`          | Committing the charge would exceed the voucher's signed `maxClaimableAmount` |
-| `invalid_batch_settlement_evm_claim_payload`                             | Claim payload is malformed                                                   |
-| `invalid_batch_settlement_evm_claim_simulation_failed`                   | Claim simulation failed                                                      |
-| `invalid_batch_settlement_evm_claim_transaction_failed`                  | Onchain claim transaction failed                                             |
-| `invalid_batch_settlement_evm_cumulative_amount_mismatch`               | Corrective 402: client's cumulative voucher ceiling does not match the server's tracked `chargedCumulativeAmount` |
-| `invalid_batch_settlement_evm_cumulative_below_claimed`                  | Voucher `maxClaimableAmount` violates monotonicity vs onchain `totalClaimed` (non-refund: must be greater than `totalClaimed`; refund: must not be strictly below `totalClaimed`; deposit verify: must not be strictly below `totalClaimed`) |
-| `invalid_batch_settlement_evm_cumulative_exceeds_balance`                | Voucher `maxClaimableAmount` exceeds effective onchain balance               |
-| `invalid_batch_settlement_evm_deposit_payload`                           | Deposit payload is malformed                                                 |
-| `invalid_batch_settlement_evm_deposit_simulation_failed`                 | Deposit simulation failed                                                    |
-| `invalid_batch_settlement_evm_deposit_transaction_failed`                | Onchain deposit transaction failed                                           |
-| `invalid_batch_settlement_evm_eip2612_amount_mismatch`                   | EIP-2612 permit amount does not match the requested authorization          |
-| `invalid_batch_settlement_evm_eip2612_asset_mismatch`                    | EIP-2612 permit asset does not match the payment asset                       |
-| `invalid_batch_settlement_evm_eip2612_deadline_expired`                  | EIP-2612 permit deadline has expired                                         |
-| `invalid_batch_settlement_evm_eip2612_invalid_format`                    | EIP-2612 permit segment is malformed                                         |
-| `invalid_batch_settlement_evm_eip2612_invalid_signature`                 | EIP-2612 permit signature is invalid                                         |
-| `invalid_batch_settlement_evm_eip2612_owner_mismatch`                    | EIP-2612 permit owner does not match the payer                               |
-| `invalid_batch_settlement_evm_eip2612_spender_mismatch`                  | EIP-2612 permit spender does not match the expected spender                  |
-| `invalid_batch_settlement_evm_erc20_approval_asset_mismatch`             | ERC-20 approval asset does not match the payment asset                       |
-| `invalid_batch_settlement_evm_erc20_approval_broadcast_failed`           | Facilitator failed to broadcast the pre-signed ERC-20 approval transaction   |
-| `invalid_batch_settlement_evm_erc20_approval_from_mismatch`              | ERC-20 approval signer does not match the payer                              |
-| `invalid_batch_settlement_evm_erc20_approval_invalid_format`             | ERC-20 approval segment is malformed                                         |
-| `invalid_batch_settlement_evm_erc20_approval_unavailable`                | ERC-20 approval gas sponsorship is unavailable                               |
-| `invalid_batch_settlement_evm_erc20_approval_wrong_spender`              | ERC-20 approval spender is not Permit2                                       |
-| `invalid_batch_settlement_evm_erc3009_authorization_required`            | Deposit payload is missing the required `erc3009Authorization`               |
-| `invalid_batch_settlement_evm_insufficient_balance`                    | Client token balance is insufficient for the deposit                         |
-| `invalid_batch_settlement_evm_missing_channel`                           | Resource server has no channel session for the payload's channel ID          |
-| `invalid_batch_settlement_evm_missing_eip712_domain`                     | Token EIP-712 domain (`name`, `version`) is missing from payment requirements |
-| `invalid_batch_settlement_evm_network_mismatch`                          | Payment payload `accepted.network` does not match `paymentRequirements.network` on the verify request |
-| `invalid_batch_settlement_evm_payload_authorization_valid_after`         | ERC-3009 authorization `validAfter` is still in the future                   |
-| `invalid_batch_settlement_evm_payload_authorization_valid_before`        | ERC-3009 authorization `validBefore` has already passed                    |
-| `invalid_batch_settlement_evm_payload_type`                              | Payload `type` is not valid for the current verify/settle operation          |
-| `invalid_batch_settlement_evm_permit2_allowance_required`                | Permit2 allowance is required before deposit                                 |
-| `invalid_batch_settlement_evm_permit2_amount_mismatch`                   | Permit2 authorization amount does not match the requested deposit amount   |
-| `invalid_batch_settlement_evm_permit2_authorization_required`            | Deposit payload is missing the required Permit2 authorization              |
-| `invalid_batch_settlement_evm_permit2_deadline_expired`                  | Permit2 authorization deadline has expired                                   |
-| `invalid_batch_settlement_evm_permit2_invalid_signature`                 | Permit2 authorization signature is invalid                                   |
-| `invalid_batch_settlement_evm_permit2_invalid_spender`                   | Permit2 authorization spender is not the expected spender                  |
-| `invalid_batch_settlement_evm_receive_authorization_signature`           | ERC-3009 `receiveWithAuthorization` signature is invalid                     |
-| `invalid_batch_settlement_evm_receiver_authorizer_mismatch`              | Channel receiver authorizer does not match `extra.receiverAuthorizer`        |
-| `invalid_batch_settlement_evm_receiver_mismatch`                         | Channel receiver does not match `payTo`                                      |                         |
-| `invalid_batch_settlement_evm_refund_amount_invalid`                     | Refund `amount` is non-numeric or non-positive                               |
-| `invalid_batch_settlement_evm_refund_no_balance`                         | Cooperative refund requested but no refundable balance remains |
-| `invalid_batch_settlement_evm_refund_payload`                            | Refund payload is malformed                                                  |
-| `invalid_batch_settlement_evm_refund_simulation_failed`                  | Refund simulation failed                                                     |
-| `invalid_batch_settlement_evm_refund_transaction_failed`                 | Onchain refund transaction failed                                            |
-| `invalid_batch_settlement_evm_rpc_read_failed`                           | Facilitator failed to read required onchain data                             |
-| `invalid_batch_settlement_evm_scheme`                                    | `scheme` is not `batch-settlement`                                           |
-| `invalid_batch_settlement_evm_settle_payload`                            | Settle payload is malformed                                                  |
-| `invalid_batch_settlement_evm_nothing_to_settle`                         | Receiver/token pair has no claimed-but-unsettled funds |
-| `invalid_batch_settlement_evm_settle_simulation_failed`                  | Settle simulation failed                                                     |
-| `invalid_batch_settlement_evm_settle_transaction_failed`                 | Onchain settle transaction failed                                            |
-| `invalid_batch_settlement_evm_token_mismatch`                            | Channel token does not match the payment requirements asset                  |
-| `invalid_batch_settlement_evm_transaction_reverted`                      | Submitted transaction reverted                                               |
-| `invalid_batch_settlement_evm_unknown_settle_action`                     | Settle payload requested an unknown action                                   |
-| `invalid_batch_settlement_evm_voucher_payload`                           | Voucher payload is malformed                                                 |
-| `invalid_batch_settlement_evm_voucher_signature`                         | EIP-712 voucher signature does not recover to the expected signer          |
-| `invalid_batch_settlement_evm_wait_for_receipt_failed`                   | Facilitator failed while waiting for the transaction receipt                 |
-| `invalid_batch_settlement_evm_withdraw_delay_mismatch`                   | Channel withdraw delay does not match `extra.withdrawDelay`                  |
-| `invalid_batch_settlement_evm_withdraw_delay_out_of_range`               | Withdraw delay is outside the 15 min - 30 day bounds                         |
-| `settlement_pending`                                                     | Broadcast succeeded but confirmation could not be established — **non-terminal**; carries the broadcast `transaction` hash so the caller can reconcile on chain before retrying |
+
+| Error Code                                                        | Description                                                                                                                                                                                                                                  |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `invalid_batch_settlement_evm_authorizer_address_mismatch`        | Authorizer address does not match the expected receiver authorizer                                                                                                                                                                           |
+| `invalid_batch_settlement_evm_channel_busy`                       | Another request holds the per-channel lock; client should retry shortly                                                                                                                                                                      |
+| `invalid_batch_settlement_evm_channel_id_mismatch`                | Channel config does not hash to the claimed channel ID                                                                                                                                                                                       |
+| `invalid_batch_settlement_evm_channel_not_found`                  | No channel with positive balance for the given channel ID                                                                                                                                                                                    |
+| `invalid_batch_settlement_evm_channel_state_read_failed`          | Facilitator failed to read onchain channel state                                                                                                                                                                                             |
+| `invalid_batch_settlement_evm_charge_exceeds_signed_cumulative`   | Committing the charge would exceed the voucher's signed `maxClaimableAmount`                                                                                                                                                                 |
+| `invalid_batch_settlement_evm_claim_payload`                      | Claim payload is malformed                                                                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_claim_simulation_failed`            | Claim simulation failed                                                                                                                                                                                                                      |
+| `invalid_batch_settlement_evm_claim_transaction_failed`           | Onchain claim transaction failed                                                                                                                                                                                                             |
+| `invalid_batch_settlement_evm_cumulative_amount_mismatch`         | Corrective 402: client's cumulative voucher ceiling does not match the server's tracked `chargedCumulativeAmount`                                                                                                                            |
+| `invalid_batch_settlement_evm_cumulative_below_claimed`           | Voucher `maxClaimableAmount` violates monotonicity vs onchain `totalClaimed` (non-refund: must be greater than `totalClaimed`; refund: must not be strictly below `totalClaimed`; deposit verify: must not be strictly below `totalClaimed`) |
+| `invalid_batch_settlement_evm_cumulative_exceeds_balance`         | Voucher `maxClaimableAmount` exceeds effective onchain balance                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_deposit_payload`                    | Deposit payload is malformed                                                                                                                                                                                                                 |
+| `invalid_batch_settlement_evm_deposit_simulation_failed`          | Deposit simulation failed                                                                                                                                                                                                                    |
+| `invalid_batch_settlement_evm_deposit_transaction_failed`         | Onchain deposit transaction failed                                                                                                                                                                                                           |
+| `invalid_batch_settlement_evm_eip2612_amount_mismatch`            | EIP-2612 permit amount does not match the requested authorization                                                                                                                                                                            |
+| `invalid_batch_settlement_evm_eip2612_asset_mismatch`             | EIP-2612 permit asset does not match the payment asset                                                                                                                                                                                       |
+| `invalid_batch_settlement_evm_eip2612_deadline_expired`           | EIP-2612 permit deadline has expired                                                                                                                                                                                                         |
+| `invalid_batch_settlement_evm_eip2612_invalid_format`             | EIP-2612 permit segment is malformed                                                                                                                                                                                                         |
+| `invalid_batch_settlement_evm_eip2612_invalid_signature`          | EIP-2612 permit signature is invalid                                                                                                                                                                                                         |
+| `invalid_batch_settlement_evm_eip2612_owner_mismatch`             | EIP-2612 permit owner does not match the payer                                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_eip2612_spender_mismatch`           | EIP-2612 permit spender does not match the expected spender                                                                                                                                                                                  |
+| `invalid_batch_settlement_evm_erc20_approval_asset_mismatch`      | ERC-20 approval asset does not match the payment asset                                                                                                                                                                                       |
+| `invalid_batch_settlement_evm_erc20_approval_broadcast_failed`    | Facilitator failed to broadcast the pre-signed ERC-20 approval transaction                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_erc20_approval_from_mismatch`       | ERC-20 approval signer does not match the payer                                                                                                                                                                                              |
+| `invalid_batch_settlement_evm_erc20_approval_invalid_format`      | ERC-20 approval segment is malformed                                                                                                                                                                                                         |
+| `invalid_batch_settlement_evm_erc20_approval_unavailable`         | ERC-20 approval gas sponsorship is unavailable                                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_erc20_approval_wrong_spender`       | ERC-20 approval spender is not Permit2                                                                                                                                                                                                       |
+| `invalid_batch_settlement_evm_erc3009_authorization_required`     | Deposit payload is missing the required `erc3009Authorization`                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_insufficient_balance`               | Client token balance is insufficient for the deposit                                                                                                                                                                                         |
+| `invalid_batch_settlement_evm_missing_channel`                    | Resource server has no channel session for the payload's channel ID                                                                                                                                                                          |
+| `invalid_batch_settlement_evm_missing_eip712_domain`              | Token EIP-712 domain (`name`, `version`) is missing from payment requirements                                                                                                                                                                |
+| `invalid_batch_settlement_evm_network_mismatch`                   | Payment payload `accepted.network` does not match `paymentRequirements.network` on the verify request                                                                                                                                        |
+| `invalid_batch_settlement_evm_payload_authorization_valid_after`  | ERC-3009 authorization `validAfter` is still in the future                                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_payload_authorization_valid_before` | ERC-3009 authorization `validBefore` has already passed                                                                                                                                                                                      |
+| `invalid_batch_settlement_evm_payload_type`                       | Payload `type` is not valid for the current verify/settle operation                                                                                                                                                                          |
+| `invalid_batch_settlement_evm_permit2_allowance_required`         | Permit2 allowance is required before deposit                                                                                                                                                                                                 |
+| `invalid_batch_settlement_evm_permit2_amount_mismatch`            | Permit2 authorization amount does not match the requested deposit amount                                                                                                                                                                     |
+| `invalid_batch_settlement_evm_permit2_authorization_required`     | Deposit payload is missing the required Permit2 authorization                                                                                                                                                                                |
+| `invalid_batch_settlement_evm_permit2_deadline_expired`           | Permit2 authorization deadline has expired                                                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_permit2_invalid_signature`          | Permit2 authorization signature is invalid                                                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_permit2_invalid_spender`            | Permit2 authorization spender is not the expected spender                                                                                                                                                                                    |
+| `invalid_batch_settlement_evm_receive_authorization_signature`    | ERC-3009 `receiveWithAuthorization` signature is invalid                                                                                                                                                                                     |
+| `invalid_batch_settlement_evm_receiver_authorizer_mismatch`       | Channel receiver authorizer does not match `extra.receiverAuthorizer`                                                                                                                                                                        |
+| `invalid_batch_settlement_evm_receiver_mismatch`                  | Channel receiver does not match `payTo`                                                                                                                                                                                                      |
+| `invalid_batch_settlement_evm_refund_amount_invalid`              | Refund `amount` is non-numeric or non-positive                                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_refund_authorizer_mismatch`         | Address unpacked from `channelConfig.salt` does not match `extra.refundAuthorizer`                                                                                                                                                           |
+| `invalid_batch_settlement_evm_refund_authorizer_signature`        | `refundAuthorizerSignature` is missing or does not recover to `extra.refundAuthorizer`                                                                                                                                                       |
+| `invalid_batch_settlement_evm_refund_no_balance`                  | Cooperative refund requested but no refundable balance remains                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_refund_payload`                     | Refund payload is malformed                                                                                                                                                                                                                  |
+| `invalid_batch_settlement_evm_refund_simulation_failed`           | Refund simulation failed                                                                                                                                                                                                                     |
+| `invalid_batch_settlement_evm_refund_transaction_failed`          | Onchain refund transaction failed                                                                                                                                                                                                            |
+| `invalid_batch_settlement_evm_rpc_read_failed`                    | Facilitator failed to read required onchain data                                                                                                                                                                                             |
+| `invalid_batch_settlement_evm_scheme`                             | `scheme` is not `batch-settlement`                                                                                                                                                                                                           |
+| `invalid_batch_settlement_evm_settle_payload`                     | Settle payload is malformed                                                                                                                                                                                                                  |
+| `invalid_batch_settlement_evm_nothing_to_settle`                  | Receiver/token pair has no claimed-but-unsettled funds                                                                                                                                                                                       |
+| `invalid_batch_settlement_evm_settle_simulation_failed`           | Settle simulation failed                                                                                                                                                                                                                     |
+| `invalid_batch_settlement_evm_settle_transaction_failed`          | Onchain settle transaction failed                                                                                                                                                                                                            |
+| `invalid_batch_settlement_evm_token_mismatch`                     | Channel token does not match the payment requirements asset                                                                                                                                                                                  |
+| `invalid_batch_settlement_evm_transaction_reverted`               | Submitted transaction reverted                                                                                                                                                                                                               |
+| `invalid_batch_settlement_evm_unknown_settle_action`              | Settle payload requested an unknown action                                                                                                                                                                                                   |
+| `invalid_batch_settlement_evm_voucher_payload`                    | Voucher payload is malformed                                                                                                                                                                                                                 |
+| `invalid_batch_settlement_evm_voucher_signature`                  | EIP-712 voucher signature does not recover to the expected signer                                                                                                                                                                            |
+| `invalid_batch_settlement_evm_wait_for_receipt_failed`            | Facilitator failed while waiting for the transaction receipt                                                                                                                                                                                 |
+| `invalid_batch_settlement_evm_withdraw_delay_mismatch`            | Channel withdraw delay does not match `extra.withdrawDelay`                                                                                                                                                                                  |
+| `invalid_batch_settlement_evm_withdraw_delay_out_of_range`        | Withdraw delay is outside the 15 min - 30 day bounds                                                                                                                                                                                         |
+
+
+
 
 ---
+
+
 
 ## Security and Trust
 
 1. **Capital risk and cumulative replay protection**: Clients bear risk up to the signed `maxClaimableAmount`; the receiver authorizer determines actual `totalClaimed` onchain within that bound. Over-claiming is a trust violation, not a protocol violation. The cumulative model makes nonces unnecessary. As `totalClaimed` only increases, and old vouchers are naturally superseded.
-
 2. **Withdrawal delay as escape hatch**: The 15 min – 30 day bounds prevent a server from indefinitely trapping client funds while giving the server a fair window to claim outstanding vouchers. Cooperative refund returns unclaimed balance immediately when the server cooperates; timed withdrawal is the unilateral fallback. Servers bear the risk of vouchers left unclaimed when `finalizeWithdraw` completes.
-
 3. **Cross-function replay prevention**: `Voucher`, `Refund`, and `ClaimBatch` use distinct EIP-712 type hashes so a signature for one cannot be replayed as another. Refunds additionally carry a per-channel nonce.
-
 4. **Voucher expiry via escrow depletion**: Vouchers carry no expiry field. A voucher remains claimable as long as `balance - totalClaimed > 0`; `finalizeWithdraw` and `refundWithSignature` close the claim window by draining available escrow. The ERC-3009 `validBefore`/`validAfter` fields bound only the deposit authorization, not the voucher.
-
-5. **Refund authorization when the facilitator is `receiverAuthorizer`**: A cooperative refund bypasses the timed-withdrawal delay, so it must carry receiver-side consent. When a server supplies its own `refundAuthorizerSignature` that signature is the consent. When the server delegates `receiverAuthorizer` to the facilitator, the faciltator MUST authenticate that each `refund` request originates from the service that created the channel (e.g. SIWX, JWT, or API credential bound at channel-creation time) and reject all others. A facilitator with no such authentication mechanism MUST NOT advertise a `receiverAuthorizer` in `/supported`.
+5. **Refund authorization**: A cooperative refund bypasses the timed-withdrawal delay and must carry receiver-side consent — the `refundAuthorizerSignature` on the settle payload (self-managed: receiver-authorizer key; facilitator-managed: `extra.refundAuthorizer`, see Voucher Custody).
 
 ---
+
+
 
 ## Reference Implementation: `x402BatchSettlement`
 
 The `batch-settlement` scheme is implemented by the `x402BatchSettlement` contract alongside the `ERC3009DepositCollector` and `Permit2DepositCollector` deposit collector contracts. Each contract is deployed to a deterministic address across all supported EVM chains via CREATE2.
 
-| Contract | Canonical Address |
-| -------- | ------- |
-| `x402BatchSettlement` | `0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003` |
+
+| Contract                  | Canonical Address                            |
+| ------------------------- | -------------------------------------------- |
+| `x402BatchSettlement`     | `0x4020074e9dF2ce1deE5A9C1b5c3f541D02a10003` |
 | `ERC3009DepositCollector` | `0x4020806089470a89826cB9fB1f4059150b550004` |
 | `Permit2DepositCollector` | `0x4020425FAf3B746C082C2f942b4E5159887B0005` |
 
-The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
----
+
+## The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
+
+
 
 ## Version History
 
-| Version | Date       | Changes       | Authors                 |
-| ------- | ---------- | ------------- | ----------------------- |
-| v1.0    | 2025-04-28 | Initial draft | @phdargen @CarsonRoscoen @ilikesymmetry |
+
+| Version | Date       | Changes                                              | Authors                                 |
+| ------- | ---------- | ---------------------------------------------------- | --------------------------------------- |
+| v1.1    | 2026-08-25 | Facilitator-managed voucher custody (`voucherStore`) | @phdargen                               |
+| v1.0    | 2025-04-28 | Initial draft                                        | @phdargen @CarsonRoscoen @ilikesymmetry |
