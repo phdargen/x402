@@ -56,14 +56,28 @@ export class BatchChannelTracker {
     return this.chargedCumulativeAmount;
   }
 
-  async voucher(charge: bigint): Promise<BatchVoucher> {
+  /** Create, but do not commit, the next voucher. */
+  async previewVoucher(charge: bigint): Promise<BatchVoucher> {
     if (charge <= 0n) throw new Error("charge must be positive");
-    this.chargedCumulativeAmount += charge;
     return signBatchVoucher(this.signer, {
       channelId: this.channelId,
       expiresAt: 0,
-      maxClaimableAmount: this.chargedCumulativeAmount,
+      maxClaimableAmount: this.chargedCumulativeAmount + charge,
     });
+  }
+
+  /** Commit a cumulative amount confirmed by the resource server. */
+  commit(cumulative: bigint): void {
+    if (cumulative < this.chargedCumulativeAmount) {
+      throw new Error("confirmed cumulative amount cannot move backwards");
+    }
+    this.chargedCumulativeAmount = cumulative;
+  }
+
+  async voucher(charge: bigint): Promise<BatchVoucher> {
+    const voucher = await this.previewVoucher(charge);
+    this.commit(this.chargedCumulativeAmount + charge);
+    return voucher;
   }
 }
 
@@ -120,7 +134,9 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
     withdrawDelay: args.withdrawDelay,
   };
   const tracker = new BatchChannelTracker(open.channelId, channelConfig, args.payer);
-  const voucher = await tracker.voucher(args.firstCharge);
+  // A payment payload is only an authorization.  Do not advance local state
+  // until the resource server confirms it in PAYMENT-RESPONSE.
+  const voucher = await tracker.previewVoucher(args.firstCharge);
   return {
     channelId: open.channelId,
     payload: {

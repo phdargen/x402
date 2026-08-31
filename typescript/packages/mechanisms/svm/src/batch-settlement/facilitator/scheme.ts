@@ -27,6 +27,7 @@ import {
   findPaymentChannelPda,
   parseU64,
   verifyOpenTransaction,
+  verifyTopUpTransaction,
 } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { SettlementCache } from "../../settlement-cache";
@@ -89,6 +90,8 @@ type ValidatedDeposit = {
   terms: BatchTerms;
   channelId: string;
   deposit: bigint;
+  expectedDeposit: bigint;
+  isTopUp: boolean;
 };
 
 type ValidatedRefund = {
@@ -411,9 +414,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     const deposit = parseU64(payload.deposit.amount, "deposit.amount");
     const charge = parseU64(requirements.amount, "amount");
     const voucherAmount = parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount");
-    if (voucherAmount !== charge || voucherAmount > deposit) {
-      throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
-    }
     const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
     if (payload.voucher.channelId !== channelId) {
       throw new Error(`${BatchError.CHANNEL_ID_MISMATCH}: voucher channel mismatch`);
@@ -429,6 +429,34 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     });
     if (!voucherValid) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid voucher`);
     this.assertExpiry(payload.voucher.expiresAt);
+    const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
+    const existing = await fetchMaybeChannel(rpc, address(channelId));
+    if (existing.exists) {
+      this.assertClaimChannel(existing.data, payload.channelConfig, terms, requirements, [
+        ChannelStatus.Open,
+      ]);
+      const expectedDeposit = existing.data.deposit + deposit;
+      if (voucherAmount < charge || voucherAmount > expectedDeposit) {
+        throw new Error(
+          `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: voucher exceeds topped-up ceiling`,
+        );
+      }
+      await verifyTopUpTransaction(payload.deposit.transaction, {
+        amount: deposit,
+        channelId,
+        feePayer: terms.feePayer,
+        from: payload.channelConfig.payer,
+        maxComputeUnits: this.config.maxComputeUnits,
+        maxPriorityFeeMicroLamports: this.config.maxPriorityFeeMicroLamports,
+        memo: terms.memo,
+        mint: requirements.asset,
+        tokenProgram: terms.tokenProgram,
+      });
+      return { channelId, deposit, expectedDeposit, isTopUp: true, payload, terms };
+    }
+    if (voucherAmount !== charge || voucherAmount > deposit) {
+      throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
+    }
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
       authorizedSigner: payload.channelConfig.payerAuthorizer,
       feePayer: terms.feePayer,
@@ -449,7 +477,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     if (open.channelId !== channelId) {
       throw new Error(`${BatchError.CHANNEL_ID_MISMATCH}: setup transaction channel mismatch`);
     }
-    return { channelId, deposit, payload, terms };
+    return { channelId, deposit, expectedDeposit: deposit, isTopUp: false, payload, terms };
   }
 
   private async settleDeposit(
@@ -461,7 +489,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     const { channelId, terms } = validated;
     const key = `batch:deposit:${requirements.network}:${channelId}`;
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
-    if (await channelExists(rpc, channelId)) {
+    if ((await channelExists(rpc, channelId)) && !validated.isTopUp) {
       const existing = await this.fetchChannel(rpc, channelId);
       this.assertDepositChannel(existing, validated, requirements);
       return depositResponse(
@@ -476,19 +504,30 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     if (this.settlementCache.isDuplicate(key)) {
       return this.settleFailure(payment, "duplicate_settlement", payload.channelConfig.payer);
     }
-    await simulateOpenSettleDistribute(terms.feePayerSigner, rpc, {
-      channel: {
-        channelId,
-        mint: requirements.asset,
-        network: requirements.network,
-        payee: terms.feePayer,
-        payer: payload.channelConfig.payer,
-        rentPayer: terms.feePayer,
-        splits: [{ bps: 10_000, recipient: requirements.payTo }],
-        tokenProgram: terms.tokenProgram,
-      },
-      openTransactionBase64: payload.deposit.transaction,
-    });
+    if (validated.isTopUp) {
+      await this.signer.simulateTransaction(
+        await this.signer.signTransaction(
+          payload.deposit.transaction,
+          address(terms.feePayer),
+          requirements.network,
+        ),
+        requirements.network,
+      );
+    } else {
+      await simulateOpenSettleDistribute(terms.feePayerSigner, rpc, {
+        channel: {
+          channelId,
+          mint: requirements.asset,
+          network: requirements.network,
+          payee: terms.feePayer,
+          payer: payload.channelConfig.payer,
+          rentPayer: terms.feePayer,
+          splits: [{ bps: 10_000, recipient: requirements.payTo }],
+          tokenProgram: terms.tokenProgram,
+        },
+        openTransactionBase64: payload.deposit.transaction,
+      });
+    }
     await this.trackChannel({
       channelId,
       expiresAt: payload.voucher.expiresAt,
@@ -747,7 +786,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       requirements,
       [ChannelStatus.Open],
     );
-    if (channel.deposit !== validated.deposit) {
+    if (channel.deposit !== validated.expectedDeposit) {
       throw new Error(`${BatchError.CHANNEL_STATE}: confirmed deposit mismatch`);
     }
   }
