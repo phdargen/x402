@@ -119,6 +119,8 @@ export type RouteDefinition = {
    * route `extra.paymentFlow`, matching core wire rules.
    */
   paymentFlow?: PaymentFlow;
+  /** Omit this route unless the named env var is set (optional add-on routes). */
+  requiresEnv?: string;
 };
 
 /** Fixed success body for every paid route (`timestamp` is added by the server). */
@@ -440,6 +442,13 @@ export type RouteFilter = {
   excludeNetworks?: string[];
 };
 
+export function routeEnvSatisfied(route: SdkRoute, env: EnvLookup): boolean {
+  if (!route.requiresEnv) {
+    return true;
+  }
+  return Boolean(env(route.requiresEnv)?.trim());
+}
+
 export function filterRoutes(routes: SdkRoute[], filter?: RouteFilter): SdkRoute[] {
   if (!filter?.excludeSchemes?.length && !filter?.excludeNetworks?.length) {
     return routes;
@@ -449,8 +458,20 @@ export function filterRoutes(routes: SdkRoute[], filter?: RouteFilter): SdkRoute
   return routes.filter(route => !schemes.has(route.scheme) && !networks.has(route.network));
 }
 
-export function sdkRoutesToEndpoints(sdk: string, filter?: RouteFilter): EndpointLike[] {
-  return filterRoutes(sdkRoutesFor(sdk), filter).map(route => sdkRouteToEndpoint(route));
+export function availableRoutes(
+  routes: SdkRoute[],
+  env: EnvLookup,
+  filter?: RouteFilter,
+): SdkRoute[] {
+  return filterRoutes(routes, filter).filter(route => routeEnvSatisfied(route, env));
+}
+
+export function sdkRoutesToEndpoints(
+  sdk: string,
+  env: EnvLookup = key => process.env[key],
+  filter?: RouteFilter,
+): EndpointLike[] {
+  return availableRoutes(sdkRoutesFor(sdk), env, filter).map(route => sdkRouteToEndpoint(route));
 }
 
 /**
@@ -595,7 +616,7 @@ export function enrichConfigFromMechanisms(
     excludeSchemes: config.excludeSchemes as string[] | undefined,
     excludeNetworks: config.excludeNetworks as string[] | undefined,
   };
-  const routes = filterRoutes(sdkRoutesFor(sdk), filter);
+  const routes = availableRoutes(sdkRoutesFor(sdk), key => process.env[key], filter);
 
   const fromCatalog = NETWORK_IDS.filter(id => routes.some(route => route.network === id));
   const protocolFamilies =
@@ -882,7 +903,7 @@ export function resolvePaymentRoutes(
 ): ResolvedRoute[] {
   const resolved: ResolvedRoute[] = [];
 
-  for (const route of filterRoutes(sdkRoutesFor(sdk), filter)) {
+  for (const route of availableRoutes(sdkRoutesFor(sdk), env, filter)) {
     const def = getNetworkDefinition(route.network);
     const payTo = env(serverAddressEnvKey(route.network));
     if (!payTo) continue;

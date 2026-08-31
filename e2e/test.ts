@@ -1008,18 +1008,7 @@ async function runTest() {
     uniqueClients.set(scenario.client.name, scenario.client);
   });
 
-  // Validate environment variables for all selected facilitators and clients.
-  // Clients used to be silently skipped here: this loop printed "✅ All
-  // required environment variables are present" having checked only
-  // facilitators, then a family-scoped run could still crash deep inside a
-  // client (e.g. e2e/clients/typescript/client.ts's createE2EClient(), see
-  // x402-foundation/x402#3187) over a missing CLIENT_* credential this check
-  // never looked at. Each component type keeps its own catalog-declared
-  // `config.environment.required` list (client requirements can be more
-  // specific than the generic per-family baseline already enforced above,
-  // same reason the facilitator-specific check existed in the first place),
-  // so this validates every component type against its own list rather than
-  // assuming the earlier, family-generic check already covers it.
+  // Validate facilitator and client env against catalog-declared requirements.
   log('\n🔍 Validating facilitator and client environment variables...\n');
   const missingEnvVars: { componentName: string; missingVars: string[] }[] = [];
 
