@@ -86,7 +86,6 @@ async function approvePermit2Approval(evm: NetworkConfig, tokenAddress?: string)
     const child = spawn('tsx', args, {
       cwd: process.cwd(),
       stdio: 'pipe',
-      shell: true,
       env: { ...process.env, EVM_NETWORK: evm.caip2, EVM_RPC_URL: evm.rpcUrl },
     });
 
@@ -137,7 +136,6 @@ async function revokePermit2Approval(evm: NetworkConfig, tokenAddress?: string):
     const child = spawn('tsx', args, {
       cwd: process.cwd(),
       stdio: 'pipe',
-      shell: true,
       env: { ...process.env, EVM_NETWORK: evm.caip2, EVM_RPC_URL: evm.rpcUrl },
     });
 
@@ -188,7 +186,6 @@ async function setupSwigWallet(svmRpcUrl: string): Promise<boolean> {
     const child = spawn('tsx', ['scripts/swig-setup.ts'], {
       cwd: process.cwd(),
       stdio: 'pipe',
-      shell: true,
       env: {
         ...process.env,
         SVM_RPC_URL: svmRpcUrl,
