@@ -56,7 +56,12 @@ export class BatchChannelTracker {
     return this.chargedCumulativeAmount;
   }
 
-  /** Create, but do not commit, the next voucher. */
+  /**
+   * Create, but do not commit, the next voucher.
+   *
+   * @param charge - The amount to add to the confirmed cumulative allocation.
+   * @returns A signed voucher for the proposed cumulative allocation.
+   */
   async previewVoucher(charge: bigint): Promise<BatchVoucher> {
     if (charge <= 0n) throw new Error("charge must be positive");
     return signBatchVoucher(this.signer, {
@@ -66,7 +71,11 @@ export class BatchChannelTracker {
     });
   }
 
-  /** Commit a cumulative amount confirmed by the resource server. */
+  /**
+   * Commit a cumulative amount confirmed by the resource server.
+   *
+   * @param cumulative - The confirmed cumulative allocation.
+   */
   commit(cumulative: bigint): void {
     if (cumulative < this.chargedCumulativeAmount) {
       throw new Error("confirmed cumulative amount cannot move backwards");

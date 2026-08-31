@@ -51,14 +51,13 @@ export interface BatchSvmClientConfig extends ClientSvmConfig {
 
 export class BatchSvmScheme implements SchemeNetworkClient {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
-  private readonly channels = new Map<string, OpenChannel>();
-  private readonly pending = new Map<string, PendingChannel>();
-
   readonly schemeHooks: SchemeClientHooks = {
     onPaymentResponse: async ctx => {
       await this.handlePaymentResponse(ctx);
     },
   };
+  private readonly channels = new Map<string, OpenChannel>();
+  private readonly pending = new Map<string, PendingChannel>();
 
   constructor(
     private readonly signer: BatchClientSigner,
