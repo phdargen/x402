@@ -171,10 +171,10 @@ describe("batch-settlement SVM", () => {
         requirements: requirements(),
       };
       const beforeVerify = await server.schemeHooks.onBeforeVerify!(verifyContext);
-      expect(beforeVerify).toMatchObject({ skip: true, result: { isValid: true } });
+      expect(beforeVerify).toBeUndefined();
       await server.schemeHooks.onAfterVerify!({
         ...verifyContext,
-        result: (beforeVerify as { result: { isValid: true; payer: string } }).result,
+        result: { isValid: true, payer: payer.address },
       });
 
       expect(await store.get(channelId)).toMatchObject({
@@ -225,10 +225,10 @@ describe("batch-settlement SVM", () => {
         paymentPayload: payment,
         requirements: requirements(),
       };
-      const verified = await server.schemeHooks.onBeforeVerify!(context);
+      await server.schemeHooks.onBeforeVerify!(context);
       await server.schemeHooks.onAfterVerify!({
         ...context,
-        result: (verified as { result: { isValid: true; payer: string } }).result,
+        result: { isValid: true, payer: payer.address },
       });
       await server.schemeHooks.onVerifiedPaymentCanceled!({
         ...context,
@@ -266,10 +266,10 @@ describe("batch-settlement SVM", () => {
         paymentPayload: payment,
         requirements: requirements(),
       };
-      const verified = await server.schemeHooks.onBeforeVerify!(context);
+      await server.schemeHooks.onBeforeVerify!(context);
       const replay = await server.schemeHooks.onAfterVerify!({
         ...context,
-        result: (verified as { result: { isValid: true; payer: string } }).result,
+        result: { isValid: true, payer: payer.address },
       });
       expect(replay).toMatchObject({
         response: {

@@ -179,10 +179,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       } else {
         this.requestContexts.set(ctx.paymentPayload, { channelId });
       }
-      return {
-        skip: true,
-        result: { isValid: true, payer: raw.channelConfig.payer, extra: { channelId } },
-      };
+      // Deposits and refunds must be verified by the facilitator: it statically
+      // validates the client-signed transaction before the resource executes.
+      // Voucher verification also binds the cumulative authorization to the
+      // confirmed channel deposit. Keep the request context for afterVerify,
+      // but do not bypass facilitator verification here.
+      return;
     } catch (error) {
       return {
         abort: true,

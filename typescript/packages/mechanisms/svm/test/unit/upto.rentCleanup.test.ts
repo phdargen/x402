@@ -5,24 +5,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS } from "../../src/defaultAssets";
-import { AccountDiscriminator } from "../../src/payment-channels/generated/types/accountDiscriminator";
 import {
   buildReclaimInstruction,
   ChannelStatus,
   RECLAIM_DISCRIMINATOR,
 } from "../../src/payment-channels/onchain";
-import { SEAL_DISCRIMINATOR } from "../../src/payment-channels/generated/instructions/seal";
 import { OPEN_SLOT_WINDOW } from "../../src/payment-channels/open";
-import {
-  MAX_SAFE_RECLAIMS_PER_TX,
-  PaymentChannelRentCleanupManager,
-} from "../../src/payment-channels/rentCleanup";
-import {
-  InMemoryPaymentChannelStorage,
-  type PaymentChannelRecord,
-} from "../../src/payment-channels/storage";
 import type { FacilitatorSvmSigner } from "../../src/signer";
 import { toFacilitatorSvmSigner } from "../../src/signer";
+import { InMemoryUptoChannelStorage } from "../../src/upto/facilitator/channelStorage";
+import type { UptoChannelRecord } from "../../src/upto/facilitator/channelStorage";
+import {
+  MAX_SAFE_RECLAIMS_PER_TX,
+  UptoSvmRentCleanupManager,
+} from "../../src/upto/facilitator/rentCleanupManager";
 import { UptoSvmScheme } from "../../src/upto/facilitator/scheme";
 
 const NETWORK = SOLANA_DEVNET_CAIP2 as Network;
@@ -57,9 +53,9 @@ vi.mock("../../src/payment-channels/generated/accounts/channel", async () => {
   };
 });
 
-vi.mock("../../src/payment-channels/facilitator", async () => {
-  const actual = await vi.importActual<typeof import("../../src/payment-channels/facilitator")>(
-    "../../src/payment-channels/facilitator",
+vi.mock("../../src/upto/facilitator/channel", async () => {
+  const actual = await vi.importActual<typeof import("../../src/upto/facilitator/channel")>(
+    "../../src/upto/facilitator/channel",
   );
   return {
     ...actual,
@@ -90,10 +86,7 @@ vi.mock("../../src/utils", async () => {
 describe("payment-channel reclaim primitive", () => {
   it("exports OPEN_SLOT_WINDOW and builds reclaim with disc 9", async () => {
     expect(OPEN_SLOT_WINDOW).toBe(1_500n);
-    expect(AccountDiscriminator.Channel).toBe(1);
     expect(ChannelStatus.Open).toBe(0);
-    expect(ChannelStatus.Sealed).toBe(1);
-    expect(ChannelStatus.Closing).toBe(2);
     expect(ChannelStatus.Distributed).toBe(3);
 
     const channel = await generateKeyPairSigner();
@@ -114,12 +107,12 @@ describe("UptoChannelStorage + scheme wiring", () => {
     const feePayer = await generateKeyPairSigner();
     const channel = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
-    const storage = new InMemoryPaymentChannelStorage();
+    const storage = new InMemoryUptoChannelStorage();
     const scheme = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer), {
       channelStorage: storage,
     });
 
-    const record: PaymentChannelRecord = {
+    const record: UptoChannelRecord = {
       channelId: channel.address,
       payTo: payTo.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
@@ -148,8 +141,8 @@ describe("UptoChannelStorage + scheme wiring", () => {
     const feePayer = await generateKeyPairSigner();
     const scheme = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer));
     const manager = scheme.createRentCleanupManager(NETWORK);
-    expect(manager).toBeInstanceOf(PaymentChannelRentCleanupManager);
-    expect(scheme.getChannelStorage()).toBeInstanceOf(InMemoryPaymentChannelStorage);
+    expect(manager).toBeInstanceOf(UptoSvmRentCleanupManager);
+    expect(scheme.getChannelStorage()).toBeInstanceOf(InMemoryUptoChannelStorage);
   });
 });
 
@@ -157,16 +150,16 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
   let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payTo: Awaited<ReturnType<typeof generateKeyPairSigner>>;
-  let storage: InMemoryPaymentChannelStorage;
-  let manager: PaymentChannelRentCleanupManager;
+  let storage: InMemoryUptoChannelStorage;
+  let manager: UptoSvmRentCleanupManager;
 
   beforeEach(async () => {
     vi.clearAllMocks();
     feePayer = await generateKeyPairSigner();
     payer = await generateKeyPairSigner();
     payTo = await generateKeyPairSigner();
-    storage = new InMemoryPaymentChannelStorage();
-    manager = new PaymentChannelRentCleanupManager({
+    storage = new InMemoryUptoChannelStorage();
+    manager = new UptoSvmRentCleanupManager({
       network: NETWORK,
       signer: toFacilitatorSvmSigner(feePayer),
       storage,
@@ -190,8 +183,6 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     rentPayer?: string;
     payer?: string;
     mint?: string;
-    closureStartedAt?: bigint;
-    gracePeriod?: number;
   }) {
     return {
       exists: true as const,
@@ -202,8 +193,6 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
         rentPayer: overrides.rentPayer ?? feePayer.address,
         payer: overrides.payer ?? payer.address,
         mint: overrides.mint ?? USDC_DEVNET_ADDRESS,
-        closureStartedAt: overrides.closureStartedAt ?? 0n,
-        gracePeriod: overrides.gracePeriod ?? 900,
       },
     };
   }
@@ -211,11 +200,11 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
   /**
    * @param overrides - Record field overrides
    */
-  async function seed(overrides: Partial<PaymentChannelRecord> = {}) {
+  async function seed(overrides: Partial<UptoChannelRecord> = {}) {
     const channel = overrides.channelId
       ? { address: overrides.channelId }
       : await generateKeyPairSigner();
-    const record: PaymentChannelRecord = {
+    const record: UptoChannelRecord = {
       channelId: channel.address,
       payTo: overrides.payTo ?? payTo.address,
       tokenProgram: overrides.tokenProgram ?? TOKEN_PROGRAM_ADDRESS,
@@ -295,47 +284,15 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(instructions).toHaveLength(1);
   });
 
-  it("defers Closing channels until the onchain grace period elapses", async () => {
-    const nowSecs = Math.floor(Date.now() / 1_000);
+  it("defers Closing channels", async () => {
     await seed();
-    fetchMaybeChannelMock.mockResolvedValue(
-      channelAccount({
-        status: ChannelStatus.Closing,
-        closureStartedAt: BigInt(nowSecs - 30),
-        gracePeriod: 60,
-      }),
-    );
+    fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Closing }));
     const onClose = vi.fn();
     const onReclaim = vi.fn();
     await manager.cleanup({ onClose, onReclaim });
     expect(onClose).not.toHaveBeenCalled();
     expect(onReclaim).not.toHaveBeenCalled();
     expect(submitSettleMock).not.toHaveBeenCalled();
-  });
-
-  it("seals and distributes Closing channels after the onchain grace period", async () => {
-    const nowSecs = Math.floor(Date.now() / 1_000);
-    const record = await seed();
-    fetchMaybeChannelMock
-      .mockResolvedValueOnce(
-        channelAccount({
-          status: ChannelStatus.Closing,
-          closureStartedAt: BigInt(nowSecs - 60),
-          gracePeriod: 60,
-        }),
-      )
-      .mockResolvedValueOnce({ exists: false });
-
-    const onClose = vi.fn();
-    await manager.cleanup({ onClose });
-
-    expect(onClose).toHaveBeenCalledWith(
-      expect.objectContaining({ channelId: record.channelId, action: "forced_close" }),
-    );
-    const instructions = submitSettleMock.mock.calls[0]![2] as { data: Uint8Array }[];
-    expect(instructions).toHaveLength(2);
-    expect(instructions[0]?.data[0]).toBe(SEAL_DISCRIMINATOR);
-    expect(await storage.get(record.channelId)).toBeUndefined();
   });
 
   it("defers Distributed reclaim until the open-slot gate elapses", async () => {
@@ -714,8 +671,8 @@ function multiKeySigner(
 describe("UptoSvmRentCleanupManager — onchain discovery", () => {
   let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
-  let storage: InMemoryPaymentChannelStorage;
-  let manager: PaymentChannelRentCleanupManager;
+  let storage: InMemoryUptoChannelStorage;
+  let manager: UptoSvmRentCleanupManager;
   let discoveredChannelId: Address;
 
   beforeEach(async () => {
@@ -723,8 +680,8 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
     feePayer = await generateKeyPairSigner();
     payer = await generateKeyPairSigner();
     discoveredChannelId = (await generateKeyPairSigner()).address;
-    storage = new InMemoryPaymentChannelStorage();
-    manager = new PaymentChannelRentCleanupManager({
+    storage = new InMemoryUptoChannelStorage();
+    manager = new UptoSvmRentCleanupManager({
       network: NETWORK,
       signer: toFacilitatorSvmSigner(feePayer),
       storage,
@@ -817,7 +774,7 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
   // Discovery only knows what the chain proves, so overwriting a settle-time
   // record with a partial one would lose the payTo an abandon-close needs.
   it("never overwrites a channel already tracked in storage", async () => {
-    const tracked: PaymentChannelRecord = {
+    const tracked: UptoChannelRecord = {
       channelId: discoveredChannelId,
       expiresAt: FAR_FUTURE,
       firstSeenAt: Date.now(),
@@ -840,7 +797,7 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
 
   it("reports a sweep failure for one signer and continues", async () => {
     const other = await generateKeyPairSigner();
-    manager = new PaymentChannelRentCleanupManager({
+    manager = new UptoSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayer, other]),
       storage,
@@ -893,8 +850,8 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     const feePayerB = await generateKeyPairSigner();
     const payer = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
-    const storage = new InMemoryPaymentChannelStorage();
-    const manager = new PaymentChannelRentCleanupManager({
+    const storage = new InMemoryUptoChannelStorage();
+    const manager = new UptoSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayerA, feePayerB]),
       storage,
@@ -909,7 +866,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
       network: NETWORK,
       payTo: payTo.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    } as PaymentChannelRecord);
+    } as UptoChannelRecord);
     await storage.upsert({
       channelId: recordB,
       expiresAt: FAR_FUTURE,
@@ -917,7 +874,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
       network: NETWORK,
       payTo: payTo.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    } as PaymentChannelRecord);
+    } as UptoChannelRecord);
 
     getSlotMock.mockResolvedValue(CURRENT_SLOT_READY);
     fetchMaybeChannelMock.mockImplementation((_rpc: unknown, channelId: string) => {
@@ -962,8 +919,8 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     const feePayerB = await generateKeyPairSigner();
     const payer = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
-    const storage = new InMemoryPaymentChannelStorage();
-    const manager = new PaymentChannelRentCleanupManager({
+    const storage = new InMemoryUptoChannelStorage();
+    const manager = new UptoSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayerA, feePayerB]),
       storage,
@@ -980,7 +937,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
           network: NETWORK,
           payTo: payTo.address,
           tokenProgram: TOKEN_PROGRAM_ADDRESS,
-        } as PaymentChannelRecord);
+        } as UptoChannelRecord);
         channelIds.push(channel.address);
       }
     }

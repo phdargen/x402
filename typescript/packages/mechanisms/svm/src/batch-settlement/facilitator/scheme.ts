@@ -147,9 +147,10 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
    * @returns Canonical channels sponsored by any configured fee payer
    */
   async discoverChannels(network: Network): Promise<DiscoveredChannel[]> {
-    const rpc = createRpcClient(network, this.config.rpcUrl);
     const channels = await Promise.all(
-      this.signer.getAddresses().map(rentPayer => discoverChannelsByRentPayer(rpc, rentPayer)),
+      this.signer
+        .getAddresses()
+        .map(rentPayer => discoverChannelsByRentPayer(this.signer, network, rentPayer)),
     );
     return [...new Map(channels.flat().map(item => [item.channelId, item])).values()];
   }
@@ -463,7 +464,14 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     if (await channelExists(rpc, channelId)) {
       const existing = await this.fetchChannel(rpc, channelId);
       this.assertDepositChannel(existing, validated, requirements);
-      return depositResponse(channelId, existing, requirements.network, "");
+      return depositResponse(
+        channelId,
+        existing,
+        requirements.network,
+        "",
+        parseU64(requirements.amount, "amount"),
+        parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount"),
+      );
     }
     if (this.settlementCache.isDuplicate(key)) {
       return this.settleFailure(payment, "duplicate_settlement", payload.channelConfig.payer);
@@ -502,7 +510,14 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     }
     const channel = await this.fetchChannel(rpc, channelId);
     this.assertDepositChannel(channel, validated, requirements);
-    return depositResponse(channelId, channel, requirements.network, signature);
+    return depositResponse(
+      channelId,
+      channel,
+      requirements.network,
+      signature,
+      parseU64(requirements.amount, "amount"),
+      parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount"),
+    );
   }
 
   private async settleVoucher(
@@ -823,10 +838,17 @@ export function calculateDistributionAmount(
   }, 0n);
 }
 
-function snapshotChannel(channelId: string, channel: Channel): BatchChannelState {
+function snapshotChannel(
+  channelId: string,
+  channel: Channel,
+  chargedCumulativeAmount?: bigint,
+): BatchChannelState {
   return {
     balance: channel.deposit.toString(),
     channelId,
+    ...(chargedCumulativeAmount === undefined
+      ? {}
+      : { chargedCumulativeAmount: chargedCumulativeAmount.toString() }),
     totalClaimed: channel.settlement.settled.toString(),
     withdrawRequestedAt:
       channel.status === ChannelStatus.Closing ? Number(channel.closureStartedAt) : 0,
@@ -838,6 +860,8 @@ function depositResponse(
   channel: Channel,
   network: Network,
   transaction: string,
+  chargedAmount: bigint,
+  chargedCumulativeAmount: bigint,
 ): SettleResponse {
   return {
     amount: channel.deposit.toString(),
@@ -846,7 +870,9 @@ function depositResponse(
     success: true,
     transaction,
     extra: {
-      channelState: snapshotChannel(channelId, channel),
+      channelState: snapshotChannel(channelId, channel, chargedCumulativeAmount),
+      chargedAmount: chargedAmount.toString(),
+      commitmentId: `${channelId}:${chargedCumulativeAmount}`,
     },
   };
 }
