@@ -12,7 +12,7 @@ import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from "../../constan
 import { buildTopUpPaymentChannelTransaction, parseU64 } from "../../payment-channels/open";
 import type { ClientSvmConfig } from "../../signer";
 import { createRpcClient, resolveBlockhash, resolveOpenSlot } from "../../utils";
-import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
+import { BATCH_SETTLEMENT_SCHEME, isBatchPayload, type BatchPayload } from "../types";
 import {
   type BatchClientSigner,
   BatchChannelTracker,
@@ -25,7 +25,16 @@ interface OpenChannel {
   deposit: bigint;
 }
 
-type PendingChannel = OpenChannel & { key: string; cumulative: bigint };
+type PendingPayment = {
+  payload: Extract<BatchPayload, { type: "deposit" | "voucher" }>;
+  x402Version: number;
+};
+type PendingChannel = OpenChannel & {
+  key: string;
+  amount: string;
+  cumulative: bigint;
+  payment: PendingPayment;
+};
 type PaymentResponseContext = Parameters<NonNullable<SchemeClientHooks["onPaymentResponse"]>>[0];
 
 /** A serializable, confirmed client channel allocation. */
@@ -34,6 +43,12 @@ export interface BatchClientChannelRecord {
   channelId: string;
   chargedCumulativeAmount: string;
   deposit: string;
+  pending?: {
+    amount: string;
+    chargedCumulativeAmount: string;
+    deposit: string;
+    payment: PendingPayment;
+  };
 }
 
 /** Optional durable storage for confirmed client allocations. */
@@ -45,7 +60,7 @@ export interface BatchClientChannelStorage {
 export interface BatchSvmClientConfig extends ClientSvmConfig {
   /** Deposit used for a new channel. Defaults to one request charge. */
   depositAmount?: bigint | string | undefined;
-  /** Persists only PAYMENT-RESPONSE-confirmed allocation state. */
+  /** Persists confirmed state and a replayable pending allocation. */
   channelStorage?: BatchClientChannelStorage | undefined;
 }
 
@@ -73,20 +88,25 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (charge === 0n) throw new Error("batch-settlement amount must be positive");
     const key = this.channelKey(requirements, terms.feePayer, terms.withdrawDelay);
     const existing = await this.loadChannel(key);
-    if (this.pending.has(key)) {
-      throw new Error(
-        "batch-settlement channel has an unconfirmed request; wait for PAYMENT-RESPONSE",
-      );
+    const pending = this.pending.get(key);
+    if (pending) {
+      if (pending.amount !== requirements.amount) {
+        throw new Error("batch-settlement channel has a pending allocation for a different amount");
+      }
+      return pending.payment;
     }
     if (existing) {
       const cumulative = existing.tracker.cumulative + charge;
       const voucher = await existing.tracker.previewVoucher(charge);
       if (cumulative <= existing.deposit) {
-        this.pending.set(key, { ...existing, cumulative, key });
-        return {
+        const payment: PendingPayment = {
           x402Version,
           payload: { channelConfig: existing.tracker.channelConfig, type: "voucher", voucher },
         };
+        const next = { ...existing, amount: requirements.amount, cumulative, key, payment };
+        this.pending.set(key, next);
+        await this.persistPending(next);
+        return payment;
       }
       const configured = this.config.depositAmount
         ? parseU64(this.config.depositAmount, "depositAmount")
@@ -105,13 +125,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         payer: this.signer,
         tokenProgram: terms.tokenProgram,
       });
-      this.pending.set(key, {
-        ...existing,
-        cumulative,
-        deposit: existing.deposit + topUpAmount,
-        key,
-      });
-      return {
+      const payment: PendingPayment = {
         x402Version,
         payload: {
           channelConfig: existing.tracker.channelConfig,
@@ -120,6 +134,17 @@ export class BatchSvmScheme implements SchemeNetworkClient {
           voucher,
         },
       };
+      const next = {
+        ...existing,
+        amount: requirements.amount,
+        cumulative,
+        deposit: existing.deposit + topUpAmount,
+        key,
+        payment,
+      };
+      this.pending.set(key, next);
+      await this.persistPending(next);
+      return payment;
     }
 
     const deposit = this.config.depositAmount
@@ -145,13 +170,18 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       tokenProgram: terms.tokenProgram,
       withdrawDelay: terms.withdrawDelay,
     });
-    this.pending.set(key, {
+    const payment: PendingPayment = { payload: built.payload, x402Version };
+    const next = {
+      amount: requirements.amount,
       cumulative: charge,
       deposit,
       key,
+      payment,
       tracker: built.tracker,
-    });
-    return { payload: built.payload, x402Version };
+    };
+    this.pending.set(key, next);
+    await this.persistPending(next);
+    return payment;
   }
 
   /**
@@ -198,7 +228,32 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       ),
     };
     this.channels.set(key, channel);
+    if (saved.pending) {
+      this.pending.set(key, {
+        ...channel,
+        amount: saved.pending.amount,
+        cumulative: parseU64(saved.pending.chargedCumulativeAmount, "stored pending cumulative"),
+        deposit: parseU64(saved.pending.deposit, "stored pending deposit"),
+        key,
+        payment: saved.pending.payment,
+      });
+    }
     return channel;
+  }
+
+  private persistPending(pending: PendingChannel): Promise<void> | undefined {
+    return this.config.channelStorage?.set(pending.key, {
+      channelConfig: pending.tracker.channelConfig,
+      channelId: pending.tracker.channelId,
+      chargedCumulativeAmount: pending.tracker.cumulative.toString(),
+      deposit: pending.deposit.toString(),
+      pending: {
+        amount: pending.amount,
+        chargedCumulativeAmount: pending.cumulative.toString(),
+        deposit: pending.deposit.toString(),
+        payment: pending.payment,
+      },
+    });
   }
 
   private async handlePaymentResponse(ctx: PaymentResponseContext): Promise<void> {

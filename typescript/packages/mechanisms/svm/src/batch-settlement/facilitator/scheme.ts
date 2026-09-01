@@ -487,7 +487,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   ): Promise<SettleResponse> {
     const validated = await this.validateDeposit(payload, requirements);
     const { channelId, terms } = validated;
-    const key = `batch:deposit:${requirements.network}:${channelId}`;
+    // A channel can be opened once and topped up many times. Deduplicate only
+    // an identical signed setup transaction, never all deposits for a channel.
+    const key = `batch:deposit:${requirements.network}:${payload.deposit.transaction}`;
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
     if ((await channelExists(rpc, channelId)) && !validated.isTopUp) {
       const existing = await this.fetchChannel(rpc, channelId);
