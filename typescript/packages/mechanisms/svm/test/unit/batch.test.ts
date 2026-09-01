@@ -210,6 +210,74 @@ describe("batch-settlement SVM", () => {
       });
     });
 
+    it("records a top-up's escrow so the reported balance is not pinned at the open amount", async () => {
+      // `deposit` is written once when the channel is provisioned. If a top-up
+      // never reached stored state, the balance reported to the client would
+      // stay at the original open amount — and the client, which adopts that
+      // balance as its own ceiling, would top up again on the next request that
+      // exceeded it, and on every request after that, growing the escrow on
+      // chain while believing it never had.
+      const store = new MemoryChannelStore();
+      const server = new BatchServerScheme({ store });
+
+      const open = async (amount: bigint, confirmedBalance: string) => {
+        const voucher = await signedVoucher(amount);
+        const payment = {
+          accepted: requirements(),
+          payload: {
+            channelConfig,
+            deposit: { amount: "10000", transaction: "setup-transaction" },
+            type: "deposit" as const,
+            voucher,
+          },
+          x402Version: 2,
+        };
+        const verifyContext = {
+          declaredExtensions: {},
+          paymentPayload: payment,
+          requirements: requirements(),
+        };
+        await server.schemeHooks.onBeforeVerify!(verifyContext);
+        await server.schemeHooks.onAfterVerify!({
+          ...verifyContext,
+          result: { isValid: true, payer: payer.address },
+        });
+        await server.schemeHooks.onBeforeSettle!({ ...verifyContext, phase: "after-handler" });
+        await server.schemeHooks.onAfterSettle!({
+          ...verifyContext,
+          phase: "after-handler",
+          result: {
+            extra: {
+              channelState: {
+                balance: confirmedBalance,
+                totalClaimed: "0",
+                withdrawRequestedAt: 0,
+              },
+            },
+            network: SOLANA_DEVNET_CAIP2,
+            success: true,
+            transaction: "setup-signature",
+          },
+        });
+      };
+
+      // The channel opens with 10,000 escrowed.
+      await open(1_000n, "10000");
+      expect((await store.get(channelId))?.deposit).toBe(10_000n);
+
+      // A top-up confirms 25,000 on chain; the facilitator reports it, and the
+      // server must adopt it rather than keep reporting the open amount.
+      await open(2_000n, "25000");
+      expect((await store.get(channelId))?.deposit).toBe(25_000n);
+
+      // A stale or malformed read must never lower a ceiling the chain has
+      // already confirmed.
+      await open(3_000n, "9000");
+      expect((await store.get(channelId))?.deposit).toBe(25_000n);
+      await open(4_000n, "not-a-number");
+      expect((await store.get(channelId))?.deposit).toBe(25_000n);
+    });
+
     it("releases a reservation without charging when the handler fails", async () => {
       const store = new MemoryChannelStore();
       const server = new BatchServerScheme({ store });

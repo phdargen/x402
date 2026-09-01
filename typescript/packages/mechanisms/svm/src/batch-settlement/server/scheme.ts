@@ -325,10 +325,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         if (!current || current.pendingRequest?.id !== request.pendingId) {
           throw new Error(CHANNEL_BUSY);
         }
+        const confirmed = readChannelState(ctx.result);
         return {
           ...current,
+          // A top-up raises the escrow ceiling; without this the stored deposit
+          // would stay at the original open amount forever.
+          deposit: confirmedDeposit(current.deposit, confirmed.balance),
           openSignature: ctx.result.transaction,
-          settled: BigInt(readChannelState(ctx.result).totalClaimed),
+          settled: BigInt(confirmed.totalClaimed),
           chargedCumulativeAmount: BigInt(raw.voucher.maxClaimableAmount),
           highestVoucherExpiresAt: raw.voucher.expiresAt,
           highestVoucherSignature: raw.voucher.signature,
@@ -543,6 +547,7 @@ function snapshot(state: ChannelState) {
 }
 
 function readChannelState(result: SettleResponse): {
+  balance?: string;
   totalClaimed: string;
   withdrawRequestedAt: number;
 } {
@@ -552,10 +557,39 @@ function readChannelState(result: SettleResponse): {
   }
   const state = raw as Record<string, unknown>;
   return {
+    ...(typeof state.balance === "string" ? { balance: state.balance } : {}),
     totalClaimed: typeof state.totalClaimed === "string" ? state.totalClaimed : "0",
     withdrawRequestedAt:
       typeof state.withdrawRequestedAt === "number" ? state.withdrawRequestedAt : 0,
   };
+}
+
+/**
+ * The channel deposit after a confirmed setup transaction.
+ *
+ * `deposit` is written once when the channel is provisioned, so without this a
+ * top-up's escrow would never reach stored state: the balance reported to the
+ * client would stay pinned at the original `open` amount, and the client —
+ * which adopts that balance as its own ceiling — would top up again on the next
+ * request that exceeded it, and on every request after that. The escrow would
+ * grow on chain while the client believed it never had.
+ *
+ * The facilitator reports the freshly-fetched on-chain deposit, so it is the
+ * authority. It is taken as a maximum rather than assigned, so a stale or
+ * malformed read can never lower a ceiling the chain has already confirmed.
+ *
+ * @param current - Deposit currently in stored state
+ * @param confirmed - `channelState.balance` from the settlement response
+ * @returns The deposit to store
+ */
+function confirmedDeposit(current: bigint, confirmed: string | undefined): bigint {
+  if (confirmed === undefined) return current;
+  try {
+    const balance = parseU64(confirmed, "channelState.balance");
+    return balance > current ? balance : current;
+  } catch {
+    return current;
+  }
 }
 
 function classifyError(error: unknown): string {
