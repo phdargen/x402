@@ -10,6 +10,10 @@ import {
   signBatchVoucher,
 } from "../../src/batch-settlement/client/channel";
 import {
+  BatchSvmScheme as BatchClientScheme,
+  type BatchClientChannelStorage,
+} from "../../src/batch-settlement/client/scheme";
+import {
   BatchSvmScheme as BatchFacilitatorScheme,
   calculateDistributionAmount,
 } from "../../src/batch-settlement/facilitator/scheme";
@@ -341,6 +345,71 @@ describe("batch-settlement SVM", () => {
       expect((await tracker.voucher(1_000n)).maxClaimableAmount).toBe("1000");
       expect((await tracker.voucher(1_500n)).maxClaimableAmount).toBe("2500");
       expect(tracker.channelConfig).toEqual(channelConfig);
+    });
+
+    it("discards a recovered pending open when settlement fails", async () => {
+      const records = new Map();
+      const storage: BatchClientChannelStorage = {
+        delete: async key => {
+          records.delete(key);
+        },
+        get: async key => records.get(key),
+        set: async (key, record) => {
+          records.set(key, record);
+        },
+      };
+      const key = "recovered-pending-open";
+      const voucher = await signedVoucher(1_000n);
+      await storage.set(key, {
+        channelConfig,
+        channelId,
+        chargedCumulativeAmount: "0",
+        deposit: "0",
+        hasConfirmedState: false,
+        pending: {
+          amount: "1000",
+          chargedCumulativeAmount: "1000",
+          deposit: "10000",
+          payment: {
+            payload: {
+              channelConfig,
+              deposit: { amount: "10000", transaction: "open-transaction" },
+              type: "deposit",
+              voucher,
+            },
+            x402Version: 2,
+          },
+        },
+      });
+
+      const client = new BatchClientScheme(payer, { channelStorage: storage });
+      const recovered = await (
+        client as unknown as { loadChannel(channelKey: string): Promise<unknown> }
+      ).loadChannel(key);
+      expect(recovered).toBeUndefined();
+
+      await client.schemeHooks.onPaymentResponse!({
+        paymentPayload: {
+          accepted: requirements(),
+          payload: {
+            channelConfig,
+            deposit: { amount: "10000", transaction: "open-transaction" },
+            type: "deposit",
+            voucher,
+          },
+          x402Version: 2,
+        },
+        requirements: requirements(),
+        settleResponse: { success: false },
+      } as Parameters<NonNullable<typeof client.schemeHooks.onPaymentResponse>>[0]);
+
+      expect(await storage.get(key)).toBeUndefined();
+      const restarted = new BatchClientScheme(payer, { channelStorage: storage });
+      await expect(
+        (restarted as unknown as { loadChannel(channelKey: string): Promise<unknown> }).loadChannel(
+          key,
+        ),
+      ).resolves.toBeUndefined();
     });
 
     it("builds an open that binds the sponsor as payee/rent payer and receiver at 100%", async () => {
