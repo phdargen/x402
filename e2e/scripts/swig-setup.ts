@@ -67,7 +67,6 @@ import { Actions, createEd25519AuthorityInfo } from "@swig-wallet/lib";
 config();
 
 const DEVNET_RPC_URL = "https://api.devnet.solana.com";
-const DEVNET_WS_URL = "wss://api.devnet.solana.com";
 const USDC_DEVNET_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 const MIN_AUTHORITY_SOL = 5_000_000n;
 /** Standard e2e exact endpoint price: $0.001 USDC (6 decimals). */
@@ -79,9 +78,14 @@ type SwigConnection = {
   rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
 };
 
+function resolveRpcUrl(rpcUrl?: string): string {
+  const trimmed = rpcUrl?.trim();
+  return trimmed || DEVNET_RPC_URL;
+}
+
 function createConnection(rpcUrl?: string): SwigConnection {
-  const url = rpcUrl ?? DEVNET_RPC_URL;
-  const wsUrl = rpcUrl?.replace(/^http/i, "ws") ?? DEVNET_WS_URL;
+  const url = resolveRpcUrl(rpcUrl);
+  const wsUrl = url.replace(/^http/i, "ws");
   return {
     rpc: createSolanaRpc(url),
     rpcSubscriptions: createSolanaRpcSubscriptions(wsUrl),
@@ -313,13 +317,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const rpcUrl = process.env.SVM_RPC_URL;
+  const rpcUrl = resolveRpcUrl(process.env.SVM_RPC_URL);
   const mint = (process.env.SVM_USDC_MINT ?? USDC_DEVNET_MINT) as Address;
   const connection = createConnection(rpcUrl);
   const authority = await createKeyPairSignerFromBytes(base58.decode(privateKey));
 
   console.log(`\n🔑 Authority: ${authority.address}`);
-  console.log(`📍 RPC: ${rpcUrl ?? DEVNET_RPC_URL}`);
+  console.log(`📍 RPC: ${rpcUrl}`);
   console.log(`💰 Mint: ${mint}\n`);
 
   const resolved = await resolveSwigAccountAddress(connection, authority);
