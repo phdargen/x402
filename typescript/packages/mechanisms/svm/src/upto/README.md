@@ -45,10 +45,11 @@ Register `UptoSvmScheme` with an `x402ResourceServer` and use `setSettlementOver
 The `receiverAuthorizer` signs settlement vouchers and is committed as the channel `authorized_signer` at deposit:
 
 - **Self-managed** (recommended): pass a `receiverAuthorizerSigner` (a hot Ed25519 key; it does not need SOL or tokens). Channels survive facilitator changes — any facilitator can relay your signed vouchers.
-- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. The server needs no voucher-signing key; the facilitator signs after authenticating that the claim settle comes from the same service that opened the channel.
+- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. The server needs no voucher-signing key; the facilitator signs after authenticating that the claim settle comes from the same service that opened the channel. Delegation requires an out-of-band agreement with the facilitator plus authenticated server→facilitator settle calls — it is not part of the client payment flow.
+
+Self-managed:
 
 ```typescript
-import { paymentMiddleware, setSettlementOverrides, x402ResourceServer } from "@x402/express";
 import { UptoSvmScheme } from "@x402/svm/upto/server";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { base58 } from "@scure/base";
@@ -57,15 +58,33 @@ const receiverAuthorizerSigner = await createKeyPairSignerFromBytes(
   base58.decode(process.env.SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY!),
 );
 
+new UptoSvmScheme({
+  receiverAuthorizerSigner,
+  rpcUrl: process.env.SVM_RPC_URL, // optional: embeds recentBlockhash/recentSlot in 402
+});
+```
+
+Facilitator-delegated (omit `receiverAuthorizerSigner` only; `rpcUrl` unchanged):
+
+```typescript
+new UptoSvmScheme({
+  rpcUrl: process.env.SVM_RPC_URL, // optional: same as self-managed
+});
+```
+
+Full server wiring:
+
+```typescript
+import { paymentMiddleware, setSettlementOverrides, x402ResourceServer } from "@x402/express";
+import { UptoSvmScheme } from "@x402/svm/upto/server";
+
 const server = new x402ResourceServer(facilitatorClient).register(
   "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
   new UptoSvmScheme({
-    receiverAuthorizerSigner,
-    rpcUrl: process.env.SVM_RPC_URL, // optional: embeds recentBlockhash/recentSlot in 402
+    receiverAuthorizerSigner, // omit for facilitator-delegated mode
+    rpcUrl: process.env.SVM_RPC_URL,
   }),
 );
-
-// In your route config, `price` is the maximum authorized amount:
 const routes = {
   "GET /api/generate": {
     accepts: {
@@ -106,9 +125,12 @@ For custom facilitator implementations:
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
 
-const svmSigner = toFacilitatorSvmSigner(keypair);
+// Pass the RPC URL to the signer, not to UptoSvmScheme
+const svmSigner = toFacilitatorSvmSigner(
+  keypair,
+  process.env.SVM_RPC_URL ? { defaultRpcUrl: process.env.SVM_RPC_URL } : undefined,
+);
 const scheme = new UptoSvmScheme(svmSigner, {
-  rpcUrl: process.env.SVM_RPC_URL,
   maxChannelLifetimeSecs: 3600,
   // Optional: advertise a receiverAuthorizer so servers can delegate.
   // Requires resolveCallerIdentity — construction throws without it.
