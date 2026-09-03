@@ -111,6 +111,7 @@ export type UptoChannelStorageErrorContext = {
 
 /** Context passed to {@link UptoSvmFacilitatorConfig.resolveCallerIdentity}. */
 export type UptoDelegatedSettleContext = {
+  abortSignal?: AbortSignal;
   step: "deposit" | "claim";
   channelId: string;
   network: Network;
@@ -1491,7 +1492,12 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     if (!identity) {
       return this.settleFailure(payload, ERR_DELEGATED_SETTLE_UNAUTHENTICATED, p.from);
     }
-    const binding = await this.delegatedAuthStore.get(p.channelId, requirements.network);
+    let binding: Awaited<ReturnType<UptoDelegatedAuthStore["get"]>>;
+    try {
+      binding = await this.delegatedAuthStore.get(p.channelId, requirements.network);
+    } catch {
+      return this.settleFailure(payload, ERR_DELEGATED_SETTLE_UNAUTHENTICATED, p.from);
+    }
     if (!binding || binding.callerIdentity !== identity) {
       return this.settleFailure(payload, ERR_DELEGATED_SETTLE_UNAUTHENTICATED, p.from);
     }

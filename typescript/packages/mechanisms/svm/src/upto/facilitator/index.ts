@@ -25,7 +25,10 @@ export {
 export type { UptoSvmSigner } from "./channel";
 export { InMemoryUptoChannelStorage } from "./channelStorage";
 export type { UptoChannelRecord, UptoChannelStorage } from "./channelStorage";
-export { InMemoryUptoDelegatedAuthStore } from "./delegatedAuthStore";
+export {
+  InMemoryUptoDelegatedAuthStore,
+  UptoDelegatedAuthIdentityConflictError,
+} from "./delegatedAuthStore";
 export type { UptoDelegatedAuthBinding, UptoDelegatedAuthStore } from "./delegatedAuthStore";
 export {
   DEFAULT_ABANDON_GRACE_SECS,

@@ -64,7 +64,10 @@ import {
   ERR_UNEXPECTED_VOUCHER,
   UptoSvmScheme,
 } from "../../src/upto/facilitator/scheme";
-import { InMemoryUptoDelegatedAuthStore } from "../../src/upto/facilitator/delegatedAuthStore";
+import {
+  InMemoryUptoDelegatedAuthStore,
+  UptoDelegatedAuthIdentityConflictError,
+} from "../../src/upto/facilitator/delegatedAuthStore";
 import { ErrSettlementPending } from "../../src/exact/facilitator/errors";
 import {
   SettlementConfirmationTimeoutError,
@@ -1207,6 +1210,51 @@ describe("UptoSvmScheme facilitator channel lifecycle", () => {
       expect(
         () => new UptoSvmScheme(toFacilitatorSvmSigner(feePayer), { authorizerSigner }),
       ).toThrow(/resolveCallerIdentity/);
+    });
+
+    it("InMemoryUptoDelegatedAuthStore bind is first-writer-wins", async () => {
+      const store = new InMemoryUptoDelegatedAuthStore();
+      const expiresAt = Math.floor(Date.now() / 1000) + 3_600;
+      const binding = {
+        channelId: "ch-1",
+        network: SOLANA_DEVNET_CAIP2,
+        callerIdentity: "svc-1",
+        expiresAt,
+      };
+
+      await store.bind(binding);
+      await store.bind(binding);
+
+      await expect(store.bind({ ...binding, callerIdentity: "svc-2" })).rejects.toBeInstanceOf(
+        UptoDelegatedAuthIdentityConflictError,
+      );
+
+      expect(await store.get("ch-1", SOLANA_DEVNET_CAIP2)).toMatchObject({
+        callerIdentity: "svc-1",
+      });
+    });
+
+    it("InMemoryUptoDelegatedAuthStore bind replaces expired bindings", async () => {
+      const store = new InMemoryUptoDelegatedAuthStore();
+      const expiredAt = Math.floor(Date.now() / 1000) - 1;
+      const expiresAt = Math.floor(Date.now() / 1000) + 3_600;
+
+      await store.bind({
+        channelId: "ch-1",
+        network: SOLANA_DEVNET_CAIP2,
+        callerIdentity: "svc-1",
+        expiresAt: expiredAt,
+      });
+      await store.bind({
+        channelId: "ch-1",
+        network: SOLANA_DEVNET_CAIP2,
+        callerIdentity: "svc-2",
+        expiresAt,
+      });
+
+      expect(await store.get("ch-1", SOLANA_DEVNET_CAIP2)).toMatchObject({
+        callerIdentity: "svc-2",
+      });
     });
 
     it("routes a full-charge type=claim as a claim, not a deposit", async () => {

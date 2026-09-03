@@ -17,7 +17,28 @@ export interface UptoDelegatedAuthBinding {
   expiresAt: number;
 }
 
-/** Pluggable store of delegated deposit/claim caller-identity bindings. */
+/** Returned by {@link UptoDelegatedAuthStore.bind} when a different identity owns the key. */
+export class UptoDelegatedAuthIdentityConflictError extends Error {
+  /** Create an error when a channel already has a different delegated identity. */
+  constructor() {
+    super("delegated auth binding already exists for a different identity");
+    this.name = "UptoDelegatedAuthIdentityConflictError";
+  }
+}
+
+/**
+ * Pluggable store of delegated deposit/claim caller-identity bindings.
+ *
+ * `bind` is keyed by `(channelId, network)` and is first-writer-wins:
+ *
+ * - no existing row (or expired) → insert
+ * - existing row, same `callerIdentity` → success (idempotent retry after
+ *   bind-then-broadcast-fail)
+ * - existing row, different `callerIdentity` → {@link UptoDelegatedAuthIdentityConflictError}
+ *
+ * `get` returns `undefined` for not-found / expired and propagates store
+ * errors so a host can map infra failures separately from unauthenticated.
+ */
 export interface UptoDelegatedAuthStore {
   bind(binding: UptoDelegatedAuthBinding): Promise<void>;
   get(channelId: string, network: Network): Promise<UptoDelegatedAuthBinding | undefined>;
@@ -32,12 +53,21 @@ export class InMemoryUptoDelegatedAuthStore implements UptoDelegatedAuthStore {
   private readonly bindings = new Map<string, UptoDelegatedAuthBinding>();
 
   /**
-   * Record the caller identity for a channel.
+   * Record the caller identity for a channel. First writer wins: a later
+   * `bind` with the same identity is a no-op; a different identity is an error.
    *
    * @param binding - Channel, network, identity, and expiry
    */
   async bind(binding: UptoDelegatedAuthBinding): Promise<void> {
-    this.bindings.set(bindingKey(binding.channelId, binding.network), binding);
+    const key = bindingKey(binding.channelId, binding.network);
+    const existing = this.bindings.get(key);
+    if (existing && !delegatedAuthExpired(existing.expiresAt)) {
+      if (existing.callerIdentity === binding.callerIdentity) {
+        return;
+      }
+      throw new UptoDelegatedAuthIdentityConflictError();
+    }
+    this.bindings.set(key, binding);
   }
 
   /**
@@ -51,11 +81,11 @@ export class InMemoryUptoDelegatedAuthStore implements UptoDelegatedAuthStore {
     const key = bindingKey(channelId, network);
     const binding = this.bindings.get(key);
     if (!binding) return undefined;
-    if (binding.expiresAt <= Math.floor(Date.now() / 1000)) {
+    if (delegatedAuthExpired(binding.expiresAt)) {
       this.bindings.delete(key);
       return undefined;
     }
-    return binding;
+    return { ...binding };
   }
 
   /**
@@ -78,4 +108,14 @@ export class InMemoryUptoDelegatedAuthStore implements UptoDelegatedAuthStore {
  */
 function bindingKey(channelId: string, network: Network): string {
   return `${network}:${channelId}`;
+}
+
+/**
+ * Whether a delegated auth binding is past its payload `expiresAt`.
+ *
+ * @param expiresAt - Payload expiry (Unix seconds)
+ * @returns True when expired or at the expiry instant
+ */
+function delegatedAuthExpired(expiresAt: number): boolean {
+  return expiresAt <= Math.floor(Date.now() / 1000);
 }
