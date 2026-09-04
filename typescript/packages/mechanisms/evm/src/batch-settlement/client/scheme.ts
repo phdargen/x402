@@ -122,7 +122,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
    *
    * @param x402Version - Protocol version for the payload envelope.
    * @param paymentRequirements - Server payment requirements (scheme, network, asset, amount).
-   * @param context - Optional payment payload context with extension hints.
+   * @param context - Optional extensions and the resolved atomic spend cap.
    * @returns A {@link PaymentPayloadResult} ready to be sent as the `X-PAYMENT` header.
    */
   async createPaymentPayload(

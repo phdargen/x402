@@ -1988,5 +1988,58 @@ describe("x402Client", () => {
       );
       expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBeUndefined();
     });
+
+    it("omits the spend cap on context when the USD cap is disabled", async () => {
+      const { client, mockClient } = clientWithDefaultAsset(usdc, { maxAmountPerPayment: false });
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "5000000",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBeUndefined();
+    });
+
+    it("passes a custom Money USD cap on context in atomic units", async () => {
+      const { client, mockClient } = clientWithDefaultAsset(usdc, { maxAmountPerPayment: "$5" });
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "1000",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBe("5000000");
+    });
+
+    it("passes an allowedAssets atomic cap on context", async () => {
+      const { client, mockClient } = clientWithDefaultAsset(usdc, {
+        allowedAssets: [{ asset: usdc.asset, network, maxAmountPerPayment: "500000" }],
+      });
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "100",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBe("500000");
+    });
   });
 });
