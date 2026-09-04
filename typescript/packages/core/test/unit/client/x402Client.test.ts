@@ -1954,5 +1954,39 @@ describe("x402Client", () => {
         ),
       ).rejects.toThrow(/maxAmountPerPayment/);
     });
+
+    it("passes the resolved atomic spend cap on payment payload context", async () => {
+      const { client, mockClient } = clientWithDefaultAsset(usdc);
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "1000",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBe("1000000");
+    });
+
+    it("omits the spend cap on context when spend controls are disabled", async () => {
+      const { client, mockClient } = clientWithDefaultAsset(usdc, false);
+      await client.createPaymentPayload(
+        buildPaymentRequired({
+          accepts: [
+            buildPaymentRequirements({
+              scheme: "exact",
+              network,
+              asset: usdc.asset,
+              amount: "5000000",
+            }),
+          ],
+        }),
+      );
+      expect(mockClient.createPaymentPayloadCalls[0].context?.maxAmountPerPayment).toBeUndefined();
+    });
   });
 });

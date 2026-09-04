@@ -496,7 +496,10 @@ export class x402Client {
       const partialPayload = await schemeNetworkClient.createPaymentPayload(
         paymentRequired.x402Version,
         requirements,
-        { extensions: paymentRequired.extensions },
+        {
+          extensions: paymentRequired.extensions,
+          maxAmountPerPayment: this.resolveAtomicSpendCap(requirements, schemeNetworkClient),
+        },
       );
 
       let paymentPayload: PaymentPayload;
@@ -914,6 +917,53 @@ export class x402Client {
     }
 
     return filtered;
+  }
+
+  /**
+   * Resolves the atomic per-payment spend cap for a selected requirement.
+   *
+   * @param requirement - Selected payment requirement
+   * @param scheme - Registered scheme for default-asset lookup
+   * @returns Atomic cap string, or `undefined` when the asset is uncapped
+   */
+  private resolveAtomicSpendCap(
+    requirement: PaymentRequirements,
+    scheme: SchemeNetworkClient | undefined,
+  ): string | undefined {
+    const controls = this.spendControls;
+    if (controls === false) {
+      return undefined;
+    }
+
+    const defaultAsset = scheme?.findDefaultAsset?.(requirement.asset, requirement.network);
+    const assetEntries = controls.allowedAssets === true ? undefined : controls.allowedAssets;
+    const assetEntry = assetEntries?.find(entry => {
+      if (!networkMatchesPattern(entry.network, requirement.network)) {
+        return false;
+      }
+      if (entry.asset.toLowerCase() === requirement.asset.toLowerCase()) {
+        return true;
+      }
+      return (
+        defaultAsset != null && defaultAsset.symbol.toLowerCase() === entry.asset.toLowerCase()
+      );
+    });
+
+    if (assetEntry?.maxAmountPerPayment != null) {
+      if (!/^\d+$/.test(assetEntry.maxAmountPerPayment)) {
+        throw new Error(
+          `spendControls.allowedAssets[].maxAmountPerPayment must be an integer atomic amount, not a dollar value; got ${JSON.stringify(assetEntry.maxAmountPerPayment)}`,
+        );
+      }
+      return assetEntry.maxAmountPerPayment;
+    }
+
+    if (!defaultAsset || controls.maxAmountPerPayment === false) {
+      return undefined;
+    }
+
+    const usdLimit = controls.maxAmountPerPayment ?? DEFAULT_MAX_AMOUNT_PER_PAYMENT;
+    return convertToTokenAmount(parseMoney(usdLimit).amount, defaultAsset.decimals);
   }
 
   /**

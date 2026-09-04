@@ -54,6 +54,7 @@ export type PaymentPayloadResult = Pick<PaymentPayload, "x402Version" | "payload
  */
 export interface PaymentPayloadContext {
   extensions?: Record<string, unknown>;
+  maxAmountPerPayment?: string;
 }
 
 export interface SchemeClientHooks {

@@ -28,7 +28,9 @@ import {
   type BatchSettlementDepositStrategyContext,
   type BatchSettlementDepositPolicy,
   type BatchSettlementEvmSchemeOptions,
+  applyMaxDeposit,
   depositAmountForRequest,
+  maxDepositFromSpendCap,
   resolveClientOptions,
   validateDepositPolicy,
 } from "./config";
@@ -149,8 +151,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
     const needsTopUp = !needsInitialDeposit && BigInt(maxClaimableAmount) > currentBalance;
 
     if (needsInitialDeposit || needsTopUp) {
-      const computedDeposit = depositAmountForRequest(this.depositPolicy, requestAmount);
       const minimumDepositAmount = BigInt(maxClaimableAmount) - currentBalance;
+      const maxDeposit = maxDepositFromSpendCap(
+        context?.maxAmountPerPayment,
+        this.depositPolicy?.depositMultiplier ?? 5,
+      );
+      const computedDeposit = depositAmountForRequest(
+        this.depositPolicy,
+        requestAmount,
+        minimumDepositAmount,
+        paymentRequirements.extra,
+        maxDeposit,
+      );
       const depositAmount = await this.resolveDepositAmount({
         paymentRequirements,
         channelConfig: config,
@@ -161,6 +173,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
         currentBalance: currentBalance.toString(),
         minimumDepositAmount: minimumDepositAmount.toString(),
         depositAmount: computedDeposit,
+        ...(maxDeposit !== undefined ? { maxDeposit: maxDeposit.toString() } : {}),
       });
       if (depositAmount === false) {
         return this.createVoucherPayload(
@@ -288,7 +301,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkClient {
         `depositStrategy returned ${depositAmount}, below required top-up ${context.minimumDepositAmount}`,
       );
     }
-    return depositAmount;
+    return applyMaxDeposit(
+      BigInt(depositAmount),
+      BigInt(context.minimumDepositAmount),
+      context.maxDeposit === undefined ? undefined : BigInt(context.maxDeposit),
+    );
   }
 
   /**
