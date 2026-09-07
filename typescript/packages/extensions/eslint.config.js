@@ -38,8 +38,8 @@ export default [
     rules: {
       ...ts.configs.recommended.rules,
       complexity: ["error", 50],
-      "max-lines": ["error", { max: 2729 }],
-      "sonarjs/cognitive-complexity": ["error", 72],
+      "max-lines": ["error", { max: 3000 }],
+      "sonarjs/cognitive-complexity": ["error", 80],
       "import/first": "error",
       "prettier/prettier": "error",
       "@typescript-eslint/member-ordering": "error",

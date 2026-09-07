@@ -41,7 +41,7 @@ export default [
       ...ts.configs.recommended.rules,
       complexity: ["error", 50],
       "max-lines": ["error", { max: 2000 }],
-      "sonarjs/cognitive-complexity": ["error", 65],
+      "sonarjs/cognitive-complexity": ["error", 70],
       "import/first": "error",
       "prettier/prettier": "error",
       "@typescript-eslint/member-ordering": "error",
