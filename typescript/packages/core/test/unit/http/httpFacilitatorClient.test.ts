@@ -484,8 +484,8 @@ describe("request timeout", () => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults timeoutMs to 30 seconds", () => {
-    expect(new HTTPFacilitatorClient().timeoutMs).toBe(30_000);
+  it("defaults timeoutMs to 90 seconds", () => {
+    expect(new HTTPFacilitatorClient().timeoutMs).toBe(90_000);
     expect(new HTTPFacilitatorClient({ timeoutMs: 5_000 }).timeoutMs).toBe(5_000);
   });
 

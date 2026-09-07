@@ -383,18 +383,8 @@ describe("paymentMiddleware", () => {
     );
     const context = createMockContext();
 
-    // Create a proper Response mock with headers and clone method
-    const responseHeaders = new Headers();
-    const mockResponse = {
-      status: 200,
-      headers: responseHeaders,
-      clone: () => ({
-        arrayBuffer: async () => new ArrayBuffer(0),
-      }),
-    } as unknown as Response;
-
     const next = vi.fn().mockImplementation(async () => {
-      context.res = mockResponse;
+      context.res = new Response("", { status: 200 });
     });
 
     await middleware(context, next);
@@ -414,7 +404,85 @@ describe("paymentMiddleware", () => {
       undefined,
       undefined,
     );
-    expect(responseHeaders.get("PAYMENT-RESPONSE")).toBe("settled");
+    expect(context.res?.headers.get("PAYMENT-RESPONSE")).toBe("settled");
+  });
+
+  it("returns the protected body after a delayed settlement", async () => {
+    setupMockHttpServer({
+      type: "payment-verified",
+      paymentPayload: mockPaymentPayload,
+      paymentRequirements: mockPaymentRequirements,
+    });
+    mockProcessSettlement.mockImplementation(
+      async () =>
+        new Promise(resolve => {
+          setTimeout(() => {
+            resolve({ success: true, headers: { "PAYMENT-RESPONSE": "settled" } });
+          }, 25);
+        }),
+    );
+
+    const middleware = paymentMiddleware(
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    const context = createMockContext();
+    const original = new Response("protected-body", {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
+    const next = vi.fn().mockImplementation(async () => {
+      context.res = original;
+    });
+
+    await middleware(context, next);
+
+    expect(context.res).not.toBe(original);
+    expect(await context.res?.text()).toBe("protected-body");
+    expect(context.res?.headers.get("PAYMENT-RESPONSE")).toBe("settled");
+  });
+
+  it("fully buffers a streaming handler body before settlement", async () => {
+    setupMockHttpServer({
+      type: "payment-verified",
+      paymentPayload: mockPaymentPayload,
+      paymentRequirements: mockPaymentRequirements,
+    });
+    const original = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("chunk-1-"));
+          controller.enqueue(new TextEncoder().encode("chunk-2"));
+          controller.close();
+        },
+      }),
+      { status: 200, headers: { "content-type": "text/plain" } },
+    );
+    mockProcessSettlement.mockImplementation(async () => {
+      expect(original.bodyUsed).toBe(true);
+      return { success: true, headers: { "PAYMENT-RESPONSE": "settled" } };
+    });
+
+    const middleware = paymentMiddleware(
+      mockRoutes,
+      {} as unknown as x402ResourceServer,
+      undefined,
+      undefined,
+      false,
+    );
+    const context = createMockContext();
+    const next = vi.fn().mockImplementation(async () => {
+      context.res = original;
+    });
+
+    await middleware(context, next);
+
+    expect(context.res).not.toBe(original);
+    expect(await context.res?.text()).toBe("chunk-1-chunk-2");
+    expect(context.res?.headers.get("PAYMENT-RESPONSE")).toBe("settled");
   });
 
   it("strips settlement override header from client response", async () => {
@@ -436,24 +504,17 @@ describe("paymentMiddleware", () => {
     );
     const context = createMockContext();
 
-    const responseHeaders = new Headers();
-    responseHeaders.set("Settlement-Overrides", JSON.stringify({ amount: "32%" }));
-    const mockResponse = {
-      status: 200,
-      headers: responseHeaders,
-      clone: () => ({
-        arrayBuffer: async () => new ArrayBuffer(0),
-      }),
-    } as unknown as Response;
-
     const next = vi.fn().mockImplementation(async () => {
-      context.res = mockResponse;
+      context.res = new Response("", {
+        status: 200,
+        headers: { "Settlement-Overrides": JSON.stringify({ amount: "32%" }) },
+      });
     });
 
     await middleware(context, next);
 
-    expect(responseHeaders.has("Settlement-Overrides")).toBe(false);
-    expect(responseHeaders.get("PAYMENT-RESPONSE")).toBe("settled");
+    expect(context.res?.headers.has("Settlement-Overrides")).toBe(false);
+    expect(context.res?.headers.get("PAYMENT-RESPONSE")).toBe("settled");
   });
 
   it("skips settlement when handler returns >= 400", async () => {
@@ -594,15 +655,8 @@ describe("paymentMiddleware", () => {
     );
     const context = createMockContext();
 
-    const responseHeaders = new Headers();
     const next = vi.fn().mockImplementation(async () => {
-      context.res = {
-        status: 200,
-        headers: responseHeaders,
-        clone: () => ({
-          arrayBuffer: async () => new ArrayBuffer(0),
-        }),
-      } as unknown as Response;
+      context.res = new Response("", { status: 200 });
     });
 
     await middleware(context, next);
@@ -739,15 +793,8 @@ describe("paymentMiddleware", () => {
     );
     const context = createMockContext();
 
-    const responseHeaders = new Headers();
     const next = vi.fn().mockImplementation(async () => {
-      context.res = {
-        status: 200,
-        headers: responseHeaders,
-        clone: () => ({
-          arrayBuffer: async () => new ArrayBuffer(0),
-        }),
-      } as unknown as Response;
+      context.res = new Response("", { status: 200 });
     });
 
     await middleware(context, next);

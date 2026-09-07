@@ -359,6 +359,7 @@ describe("paymentProxy", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("X-Settlement")).toBe("complete");
+    expect(response.headers.get("x-middleware-next")).toBe("1");
     expect(mockServer.processSettlement).toHaveBeenCalledWith(
       mockPaymentPayload,
       mockPaymentRequirements,
