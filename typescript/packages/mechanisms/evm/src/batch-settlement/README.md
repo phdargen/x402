@@ -173,6 +173,24 @@ app.get("/api/generate", (req, res) => {
 
 `amount` accepts raw atomic units, percentages (`"50%"`), or dollar prices (`"$0.001"`).
 
+### Upfront payment flow (fixed-price routes)
+
+Use **`authorization`** (default) when the route price is a maximum and you bill actual usage with `setSettlementOverrides`. Use **`upfront`** when the advertised price is the final charge — the server commits payment before your handler runs.
+
+Opt in per route with `extra.paymentFlow: "upfront"`:
+
+```typescript
+app.use(
+  paymentMiddleware(server, {
+    "/api/fixed": {
+      price: "$0.01",
+      network: "eip155:84532",
+      extra: { paymentFlow: "upfront" },
+    },
+  }),
+);
+```
+
 ## Facilitator Usage
 
 ```typescript

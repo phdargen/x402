@@ -21,6 +21,7 @@ const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE
   | undefined;
 const storageDir = process.env.STORAGE_DIR;
 const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "86400");
+const paymentFlowRaw = process.env.PAYMENT_FLOW ?? "authorization";
 
 if (!evmAddress || !/^0x[0-9a-fA-F]{40}$/.test(evmAddress)) {
   console.error("Missing or invalid EVM_ADDRESS (checksummed 20-byte hex, 0x-prefixed)");
@@ -32,6 +33,13 @@ if (!facilitatorUrl) {
   console.error("Missing required FACILITATOR_URL environment variable");
   process.exit(1);
 }
+
+if (paymentFlowRaw !== "authorization" && paymentFlowRaw !== "upfront") {
+  console.error('Invalid PAYMENT_FLOW (expected "authorization" or "upfront")');
+  process.exit(1);
+}
+
+const paymentFlow = paymentFlowRaw as "authorization" | "upfront";
 
 const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
   ? privateKeyToAccount(receiverAuthorizerPrivateKey)
@@ -86,6 +94,7 @@ const httpServer = new x402HTTPResourceServer(resourceServer, {
       price: maxPrice,
       network: NETWORK,
       payTo: evmAddress,
+      ...(paymentFlow === "upfront" ? { extra: { paymentFlow: "upfront" as const } } : {}),
     },
     description: "Weather data",
     mimeType: "application/json",
@@ -103,8 +112,10 @@ async function main() {
   app.use(paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, false));
 
   app.get("/weather", (req, res) => {
-    const chargedPercent = 1 + Math.floor(Math.random() * 100);
-    setSettlementOverrides(res, { amount: `${chargedPercent}%` });
+    if (paymentFlow === "authorization") {
+      const chargedPercent = 1 + Math.floor(Math.random() * 100);
+      setSettlementOverrides(res, { amount: `${chargedPercent}%` });
+    }
 
     res.send({
       report: {
@@ -117,6 +128,7 @@ async function main() {
   app.listen(4021, () => {
     console.log("Batch-settlement server listening at http://localhost:4021");
     console.log("  GET /weather");
+    console.log(`  Payment flow: ${paymentFlow}`);
     if (receiverAuthorizerSigner) {
       console.log(`  Receiver authorizer: local signer ${receiverAuthorizerSigner.address}`);
     } else {

@@ -1,5 +1,97 @@
-import type { BatchSettlementChannelStateExtra } from "../types";
+import type {
+  BatchSettlementChannelStateExtra,
+  BatchSettlementDepositPayload,
+  BatchSettlementRefundPayload,
+  BatchSettlementVoucherPayload,
+} from "../types";
 import { ErrRefundPayload } from "../errors";
+import type { Channel } from "./storage";
+
+type BatchPayload =
+  | BatchSettlementVoucherPayload
+  | BatchSettlementDepositPayload
+  | BatchSettlementRefundPayload;
+
+export type OnchainMirrors = {
+  balance: string;
+  totalClaimed: string;
+  withdrawRequestedAt: number;
+  refundNonce: number;
+  onchainSyncedAt?: number;
+};
+
+const ZERO_ONCHAIN_MIRRORS: OnchainMirrors = {
+  balance: "0",
+  totalClaimed: "0",
+  withdrawRequestedAt: 0,
+  refundNonce: 0,
+};
+
+export function inferMissingLocalChargedAmount(
+  signedMaxClaimable: string,
+  price: string,
+  isPaidPayload: boolean,
+): string {
+  if (!isPaidPayload) {
+    return signedMaxClaimable;
+  }
+
+  const signed = BigInt(signedMaxClaimable);
+  const amount = BigInt(price);
+  if (signed < amount) {
+    return "0";
+  }
+  return (signed - amount).toString();
+}
+
+export function resolveChargedBaseline(
+  channelSnapshot: Channel | undefined,
+  signedMaxClaimable: string,
+  price: string,
+  isPaidPayload: boolean,
+): string {
+  return (
+    channelSnapshot?.chargedCumulativeAmount ??
+    inferMissingLocalChargedAmount(signedMaxClaimable, price, isPaidPayload)
+  );
+}
+
+export function readOnchainMirrors(
+  extra: Record<string, unknown> | undefined,
+  fallbacks: OnchainMirrors = ZERO_ONCHAIN_MIRRORS,
+): OnchainMirrors {
+  if (!extra) {
+    return fallbacks;
+  }
+  return {
+    balance: readExtraString(extra, "balance", fallbacks.balance),
+    totalClaimed: readExtraString(extra, "totalClaimed", fallbacks.totalClaimed),
+    withdrawRequestedAt: readExtraNumber(extra, "withdrawRequestedAt", fallbacks.withdrawRequestedAt),
+    refundNonce: readExtraNumber(extra, "refundNonce", fallbacks.refundNonce),
+    onchainSyncedAt: fallbacks.onchainSyncedAt,
+  };
+}
+
+export function buildChannelRow(
+  raw: BatchPayload,
+  chargedCumulativeAmount: string,
+  mirrors: OnchainMirrors,
+  now: number,
+): Channel {
+  return {
+    channelId: raw.voucher.channelId,
+    channelConfig: raw.channelConfig,
+    chargedCumulativeAmount,
+    signedMaxClaimable: raw.voucher.maxClaimableAmount,
+    signature: raw.voucher.signature,
+    balance: mirrors.balance,
+    totalClaimed: mirrors.totalClaimed,
+    withdrawRequestedAt: mirrors.withdrawRequestedAt,
+    refundNonce: mirrors.refundNonce,
+    onchainSyncedAt: mirrors.onchainSyncedAt,
+    lastRequestTimestamp: now,
+  };
+}
 
 /**
  * Reads the nested channel snapshot from payment response extra fields.

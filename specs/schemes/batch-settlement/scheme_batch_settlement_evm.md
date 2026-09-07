@@ -239,6 +239,10 @@ The server must maintain per-channel state, keyed by channel ID:
 
 ### Request Processing
 
+Routes may opt into the **`upfront`** payment flow via `extra.paymentFlow: "upfront"` (default: **`authorization`**). Dynamic pricing via settlement overrides applies only to **`authorization`**; upfront commits the advertised `amount` before the handler runs.
+
+#### Authorization flow (default)
+
 The server must serialize request processing per channel and must not update voucher state until the resource handler has succeeded.
 
 1. **Verify**:
@@ -251,6 +255,18 @@ The server must serialize request processing per channel and must not update vou
    - `chargedCumulativeAmount += actualPrice` (where `actualPrice <= PaymentRequirements.amount`)
    - Mirror `balance`, `totalClaimed`, `withdrawRequestedAt`, and `refundNonce` from the facilitator response
 4. **On failure**: State unchanged, client can retry the same voucher.
+
+#### Upfront flow (fixed-price routes)
+
+For fixed-price routes. Same verify rules and cumulative checks as authorization. The server commits voucher state **before** the resource handler; `actualPrice` equals `PaymentRequirements.amount`.
+
+1. **Verify**: Same rules as authorization.
+2. **Commit**: Before the handler — `chargedCumulativeAmount += actualPrice`, store the voucher, and mirror onchain fields when facilitator verification ran.
+3. **Execute**: Run the resource handler.
+4. **On handler failure**: Revert the local charge; the onchain deposit (if any) is unchanged. The client must receive a response that reflects the reverted cumulative.
+5. **Deposits and refunds**: Same facilitator `/verify` and `/settle` behavior as authorization. Refunds never increment `chargedCumulativeAmount`.
+
+Concurrent requests on the same channel rely on cumulative equality at commit time; losers reject with `invalid_batch_settlement_evm_cumulative_amount_mismatch`.
 
 ### Payment Response Contract
 
@@ -687,4 +703,5 @@ The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 tra
 
 | Version | Date       | Changes       | Authors                 |
 | ------- | ---------- | ------------- | ----------------------- |
+| v1.1    | 2026-09-07 | Optional `upfront` payment flow for fixed-price routes | @phdargen |
 | v1.0    | 2025-04-28 | Initial draft | @phdargen @CarsonRoscoen @ilikesymmetry |

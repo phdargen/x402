@@ -1,5 +1,6 @@
 import type { SettleResponse } from "@x402/core/types";
 import type { SettleContext, SettleFailureContext, SettleResultContext } from "@x402/core/server";
+import { resolvePaymentFlow } from "@x402/core/server";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import {
   isBatchSettlementDepositPayload,
@@ -12,10 +13,13 @@ import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
 import {
+  buildChannelRow,
   parseRefundSettlementSnapshot,
   readChannelStateExtra,
   readExtraNumber,
   readExtraString,
+  readOnchainMirrors,
+  resolveChargedBaseline,
 } from "./utils";
 
 /**
@@ -60,7 +64,17 @@ export async function handleBeforeSettle(
 ): Promise<
   void | { abort: true; reason: string; message?: string } | { skip: true; result: SettleResponse }
 > {
-  const { paymentPayload, requirements } = ctx;
+  const { paymentPayload, requirements, phase } = ctx;
+
+  if (resolvePaymentFlow(scheme, requirements).paymentFlow === "upfront") {
+    if (phase === "cancel") {
+      return handleUpfrontCancelSettle(scheme, ctx);
+    }
+    if (isBatchSettlementVoucherPayload(paymentPayload.payload)) {
+      return handleUpfrontVoucherBeforeSettle(scheme, ctx);
+    }
+    return;
+  }
 
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
@@ -161,6 +175,197 @@ export async function handleBeforeSettle(
 }
 
 /**
+ * Upfront voucher settle: one pre-handler CAS, then skip facilitator `/settle`.
+ *
+ * @param scheme - Owning scheme instance.
+ * @param ctx - Settle lifecycle context.
+ * @returns Skip result with the local charge receipt.
+ */
+async function handleUpfrontVoucherBeforeSettle(
+  scheme: BatchSettlementEvmScheme,
+  ctx: SettleContext,
+): Promise<
+  void | { abort: true; reason: string; message?: string } | { skip: true; result: SettleResponse }
+> {
+  const { paymentPayload, requirements } = ctx;
+  const raw = paymentPayload.payload;
+  if (!isBatchSettlementVoucherPayload(raw)) {
+    return;
+  }
+
+  const requestContext = scheme.readRequestContext(paymentPayload);
+  const now = Date.now();
+  const verifyExtra = requestContext?.verifyExtra;
+  const increment = BigInt(requirements.amount);
+  const signedCap = BigInt(raw.voucher.maxClaimableAmount);
+  let outcome:
+    | { status: "mismatch"; channel?: Channel }
+    | { status: "committed"; previous: Channel; current: Channel }
+    | undefined;
+
+  const updateResult = await scheme.getStorage().updateChannel(raw.voucher.channelId, current => {
+    if (!current) {
+      const chargedBaseline = requestContext?.chargedBaseline;
+      if (chargedBaseline === undefined) {
+        outcome = { status: "mismatch" };
+        return current;
+      }
+      current = buildChannelRow(
+        raw,
+        chargedBaseline,
+        { ...readOnchainMirrors(verifyExtra), onchainSyncedAt: verifyExtra ? now : undefined },
+        now,
+      );
+    }
+
+    const newCharged = BigInt(current.chargedCumulativeAmount) + increment;
+    if (signedCap !== newCharged) {
+      outcome = { status: "mismatch", channel: current };
+      return current;
+    }
+
+    const updatedChannel: Channel = {
+      ...current,
+      channelConfig: raw.channelConfig,
+      chargedCumulativeAmount: newCharged.toString(),
+      signedMaxClaimable: raw.voucher.maxClaimableAmount,
+      signature: raw.voucher.signature,
+      lastRequestTimestamp: now,
+      ...(verifyExtra
+        ? readOnchainMirrors(verifyExtra, {
+            balance: current.balance,
+            totalClaimed: current.totalClaimed,
+            withdrawRequestedAt: current.withdrawRequestedAt,
+            refundNonce: current.refundNonce,
+            onchainSyncedAt: now,
+          })
+        : {}),
+    };
+    outcome = { status: "committed", previous: current, current: updatedChannel };
+    return updatedChannel;
+  });
+
+  if (outcome?.status === "mismatch" || updateResult.status !== "updated") {
+    if (outcome?.status === "mismatch" && outcome.channel) {
+      scheme.rememberChannelSnapshot(paymentPayload, outcome.channel);
+    }
+    return {
+      abort: true,
+      reason: Errors.ErrCumulativeAmountMismatch,
+      message: "Client voucher base does not match server state",
+    };
+  }
+
+  if (outcome?.status !== "committed") {
+    return {
+      abort: true,
+      reason: Errors.ErrCumulativeAmountMismatch,
+      message: "Client voucher base does not match server state",
+    };
+  }
+
+  if (verifyExtra) {
+    scheme.rememberOnchainSyncedAt(raw.voucher.channelId, now);
+  }
+  scheme.rememberCachedChannel(outcome.current);
+  scheme.rememberChannelSnapshot(paymentPayload, outcome.current);
+
+  return {
+    skip: true,
+    result: {
+      success: true,
+      payer: outcome.previous.channelConfig.payer.toLowerCase() as `0x${string}`,
+      transaction: "",
+      network: requirements.network,
+      amount: "",
+      extra: {
+        channelState: channelStateExtra(outcome.previous, outcome.current.chargedCumulativeAmount),
+        chargedAmount: requirements.amount,
+      },
+    },
+  };
+}
+
+/**
+ * Upfront cancel settle: compensating CAS that decrements charged only.
+ *
+ * @param scheme - Owning scheme instance.
+ * @param ctx - Cancel-phase settle context.
+ * @returns Skip result with decremented cumulative and no chargedAmount.
+ */
+async function handleUpfrontCancelSettle(
+  scheme: BatchSettlementEvmScheme,
+  ctx: SettleContext,
+): Promise<
+  void | { abort: true; reason: string; message?: string } | { skip: true; result: SettleResponse }
+> {
+  const { paymentPayload, requirements } = ctx;
+  const raw = paymentPayload.payload;
+  if (!isBatchSettlementVoucherPayload(raw) && !isBatchSettlementDepositPayload(raw)) {
+    return;
+  }
+
+  const matchStoredVoucher = isBatchSettlementVoucherPayload(raw);
+  const decrement = BigInt(requirements.amount);
+  const now = Date.now();
+  let outcome:
+    | { status: "missing" }
+    | { status: "predicate_miss" }
+    | { status: "committed"; current: Channel }
+    | undefined;
+
+  const updateResult = await scheme.getStorage().updateChannel(raw.voucher.channelId, current => {
+    if (!current) {
+      outcome = { status: "missing" };
+      return current;
+    }
+    if (
+      matchStoredVoucher &&
+      (current.signedMaxClaimable !== raw.voucher.maxClaimableAmount ||
+        current.signature !== raw.voucher.signature)
+    ) {
+      outcome = { status: "predicate_miss" };
+      return current;
+    }
+    if (BigInt(current.chargedCumulativeAmount) < decrement) {
+      outcome = { status: "predicate_miss" };
+      return current;
+    }
+    const updated: Channel = {
+      ...current,
+      chargedCumulativeAmount: (BigInt(current.chargedCumulativeAmount) - decrement).toString(),
+      lastRequestTimestamp: now,
+    };
+    outcome = { status: "committed", current: updated };
+    return updated;
+  });
+
+  if (outcome?.status !== "committed" || updateResult.status !== "updated") {
+    return {
+      abort: true,
+      reason: Errors.ErrCumulativeAmountMismatch,
+      message: "Unable to revert upfront charge",
+    };
+  }
+
+  scheme.rememberChannelSnapshot(paymentPayload, outcome.current);
+
+  return {
+    skip: true,
+    result: {
+      success: true,
+      payer: outcome.current.channelConfig.payer.toLowerCase() as `0x${string}`,
+      transaction: "",
+      network: requirements.network,
+      amount: "",
+      extra: {
+        channelState: channelStateExtra(outcome.current, outcome.current.chargedCumulativeAmount),
+      },
+    },
+  };
+}
+
+/**
  * Enriches cooperative refund vouchers with facilitator settlement fields.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage and signer access.
@@ -186,8 +391,9 @@ export async function handleEnrichSettlementPayload(
   if (!channel) {
     throw new Error(Errors.ErrMissingChannel);
   }
+  const upfront = resolvePaymentFlow(scheme, requirements).paymentFlow === "upfront";
   const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
-  if (!pendingId || channel.pendingRequest?.pendingId !== pendingId) {
+  if (!upfront && (!pendingId || channel.pendingRequest?.pendingId !== pendingId)) {
     throw new Error(Errors.ErrChannelBusy);
   }
   if (BigInt(raw.voucher.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
@@ -279,6 +485,7 @@ export async function handleAfterSettle(
 
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
+  const upfront = resolvePaymentFlow(scheme, requirements).paymentFlow === "upfront";
 
   if (isBatchSettlementRefundPayload(raw)) {
     const channelId = computeChannelId(raw.channelConfig, requirements.network);
@@ -290,7 +497,7 @@ export async function handleAfterSettle(
       if (!current) {
         return current;
       }
-      if (!pendingId || current.pendingRequest?.pendingId !== pendingId) {
+      if (!upfront && (!pendingId || current.pendingRequest?.pendingId !== pendingId)) {
         return current;
       }
       if (BigInt(snapshot.balance) <= BigInt(current.chargedCumulativeAmount)) {
@@ -310,6 +517,7 @@ export async function handleAfterSettle(
     if (!updateResult.channel) {
       return;
     }
+    scheme.rememberOnchainSyncedAt(channelId, now);
     return;
   }
 
@@ -320,6 +528,7 @@ export async function handleAfterSettle(
   if (isBatchSettlementDepositPayload(raw)) {
     const channelId = raw.voucher.channelId;
     const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
+    const requestContext = scheme.readRequestContext(paymentPayload);
     const ex = result.extra ?? {};
     const channelState = readChannelStateExtra(ex);
     const config = raw.channelConfig;
@@ -327,34 +536,38 @@ export async function handleAfterSettle(
     const now = Date.now();
 
     const updateResult = await storage.updateChannel(channelId, current => {
-      if (!current) {
+      if (!upfront && !current) {
         return current;
       }
-      if (!pendingId || current.pendingRequest?.pendingId !== pendingId) {
+      if (!upfront && (!pendingId || current?.pendingRequest?.pendingId !== pendingId)) {
         return current;
       }
-      const chargedActual = (
-        BigInt(current.chargedCumulativeAmount) + BigInt(requirements.amount)
-      ).toString();
+      const chargedBaseline =
+        current?.chargedCumulativeAmount ??
+        requestContext?.chargedBaseline ??
+        resolveChargedBaseline(undefined, signedMaxClaimable, requirements.amount, true);
+      const chargedActual = (BigInt(chargedBaseline) + BigInt(requirements.amount)).toString();
       return {
         channelId,
         channelConfig: config,
         chargedCumulativeAmount: chargedActual,
         signedMaxClaimable,
         signature: raw.voucher.signature,
-        balance: readExtraString(channelState, "balance", current.balance),
-        totalClaimed: readExtraString(channelState, "totalClaimed", current.totalClaimed),
+        balance: readExtraString(channelState, "balance", current?.balance ?? "0"),
+        totalClaimed: readExtraString(channelState, "totalClaimed", current?.totalClaimed ?? "0"),
         withdrawRequestedAt: readExtraNumber(
           channelState,
           "withdrawRequestedAt",
-          current.withdrawRequestedAt,
+          current?.withdrawRequestedAt ?? 0,
         ),
-        refundNonce: readExtraNumber(channelState, "refundNonce", current.refundNonce),
+        refundNonce: readExtraNumber(channelState, "refundNonce", current?.refundNonce ?? 0),
         onchainSyncedAt: now,
         lastRequestTimestamp: now,
       };
     });
     if (updateResult.status === "updated" && updateResult.channel) {
+      scheme.rememberOnchainSyncedAt(channelId, now);
+      scheme.rememberCachedChannel(updateResult.channel);
       scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
       return;
     }

@@ -4,6 +4,7 @@ import type {
   VerifyFailureContext,
   VerifyResultContext,
 } from "@x402/core/server";
+import { resolvePaymentFlow } from "@x402/core/server";
 import type { VerifyResponse } from "@x402/core/types";
 import type { SchemePaymentRequiredContext } from "@x402/core/types";
 import { getAddress, verifyTypedData } from "viem";
@@ -16,14 +17,17 @@ import {
   isBatchSettlementVoucherPayload,
 } from "../types";
 import { BATCH_SETTLEMENT_SCHEME, voucherTypes } from "../constants";
-import type { ChannelConfig } from "../types";
 import { createNonce, getEvmChainId } from "../../utils";
 import { channelIdBindingError, computeChannelId, getBatchSettlementEip712Domain } from "../utils";
 import { validateChannelConfig } from "../facilitator/utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel, ChannelUpdateResult, PendingRequest } from "./storage";
-import { readExtraNumber, readExtraString } from "./utils";
+import {
+  buildChannelRow,
+  readOnchainMirrors,
+  resolveChargedBaseline,
+} from "./utils";
 
 // Framework cleanup hooks clear pending reservations for normal failures
 // This bounded TTL releases channels when cleanup cannot run or complete
@@ -122,26 +126,18 @@ export async function handleBeforeVerify(
 
     const channelId = raw.voucher.channelId;
     const now = Date.now();
-    const pendingId = createNonce();
+    const isUpfront = resolvePaymentFlow(scheme, requirements).paymentFlow === "upfront";
+    const channelSnapshot = isUpfront ? undefined : await scheme.getStorage().get(channelId);
+    const cumulative = checkCumulativeVoucherMatch(
+      raw,
+      channelSnapshot,
+      requirements.amount,
+      isPaidPayload,
+      isZeroChargePayload,
+    );
 
-    const channelSnapshot = await scheme.getStorage().get(channelId);
-
-    const chargedCumulativeAmount =
-      channelSnapshot?.chargedCumulativeAmount ??
-      inferMissingLocalChargedAmount(
-        raw.voucher.maxClaimableAmount,
-        requirements.amount,
-        isPaidPayload,
-      );
-    const expectedMaxClaimable = isZeroChargePayload
-      ? BigInt(chargedCumulativeAmount)
-      : BigInt(chargedCumulativeAmount) + BigInt(requirements.amount);
-
-    if (BigInt(raw.voucher.maxClaimableAmount) !== expectedMaxClaimable) {
-      scheme.rememberChannelSnapshot(
-        paymentPayload,
-        channelSnapshot ?? buildProvisionalChannel(raw, chargedCumulativeAmount),
-      );
+    if (!cumulative.ok) {
+      scheme.rememberChannelSnapshot(paymentPayload, cumulative.channel);
       return {
         abort: true,
         reason: Errors.ErrCumulativeAmountMismatch,
@@ -151,9 +147,51 @@ export async function handleBeforeVerify(
 
     scheme.mergeRequestContext(paymentPayload, {
       channelId,
-      pendingId,
-      channelSnapshot,
+      chargedBaseline: cumulative.chargedBaseline,
+      ...(isUpfront ? {} : { pendingId: createNonce(), channelSnapshot }),
     });
+
+    if (isUpfront) {
+      if (
+        isBatchSettlementVoucherPayload(raw) &&
+        raw.channelConfig.payerAuthorizer !== "0x0000000000000000000000000000000000000000" &&
+        isOnchainStateFresh(
+          { onchainSyncedAt: scheme.cachedOnchainSyncedAt(channelId) },
+          scheme.getOnchainStateTtlMs(),
+          now,
+        )
+      ) {
+        const storedBaseline = await validateUpfrontWarmChannelBaseline(
+          scheme,
+          paymentPayload,
+          raw,
+          channelId,
+          requirements.amount,
+          isPaidPayload,
+          isZeroChargePayload,
+        );
+        if (storedBaseline?.abort) {
+          return storedBaseline;
+        }
+
+        if (!(await verifyLocalVoucherSignature(raw, requirements.network))) {
+          return {
+            abort: true,
+            reason: Errors.ErrInvalidVoucherSignature,
+            message: "Voucher signature is invalid",
+          };
+        }
+        scheme.mergeRequestContext(paymentPayload, { localVerify: true });
+        return {
+          skip: true,
+          result: {
+            isValid: true,
+            payer: raw.channelConfig.payer,
+          },
+        };
+      }
+      return;
+    }
 
     if (isBatchSettlementVoucherPayload(raw)) {
       const localResult = await verifyVoucherLocally(
@@ -269,37 +307,56 @@ export async function handleAfterVerify(
   }
 
   const raw = paymentPayload.payload;
+  const isKnownPayload =
+    isBatchSettlementVoucherPayload(raw) ||
+    isBatchSettlementDepositPayload(raw) ||
+    isBatchSettlementRefundPayload(raw);
+  if (!isKnownPayload) {
+    return;
+  }
+
+  if (resolvePaymentFlow(scheme, requirements).paymentFlow === "upfront") {
+    const channelId = raw.voucher.channelId;
+    const requestContext = scheme.readRequestContext(paymentPayload);
+    if (requestContext?.localVerify !== true) {
+      scheme.mergeRequestContext(paymentPayload, {
+        channelId,
+        ...(result.extra ? { verifyExtra: result.extra } : {}),
+      });
+      scheme.rememberOnchainSyncedAt(channelId, Date.now());
+    }
+    if (isBatchSettlementRefundPayload(raw)) {
+      return {
+        skipHandler: true,
+        response: {
+          contentType: "application/json",
+          body: { message: "Refund acknowledged", channelId },
+        },
+      };
+    }
+    return;
+  }
+
   let channelId: string;
   let signedMaxClaimable: string;
-  let signature: `0x${string}`;
-  let channelConfig: ChannelConfig;
   let isRefundVoucher = false;
 
   if (isBatchSettlementDepositPayload(raw)) {
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
   } else if (isBatchSettlementVoucherPayload(raw)) {
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
   } else if (isBatchSettlementRefundPayload(raw)) {
     channelId = raw.voucher.channelId;
     signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
     isRefundVoucher = true;
   } else {
     return;
   }
 
   const ex = result.extra ?? {};
-  const balance = readExtraString(ex, "balance", "0");
-  const totalClaimed = readExtraString(ex, "totalClaimed", "0");
-  const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
-  const refundNonce = readExtraNumber(ex, "refundNonce", 0);
+  const mirrors = readOnchainMirrors(ex);
   const now = Date.now();
 
   const storage = scheme.getStorage();
@@ -324,14 +381,15 @@ export async function handleAfterVerify(
         return current;
       }
 
-      const base =
-        current?.chargedCumulativeAmount ??
-        inferMissingLocalChargedAmount(signedMaxClaimable, requirements.amount, !isRefundVoucher);
-      const expectedMaxClaimable = isRefundVoucher
-        ? BigInt(base)
-        : BigInt(base) + BigInt(requirements.amount);
-      if (BigInt(signedMaxClaimable) !== expectedMaxClaimable) {
-        outcome = { status: "stale", channel: current ?? buildProvisionalChannel(raw, base) };
+      const cumulative = checkCumulativeVoucherMatch(
+        raw,
+        current,
+        requirements.amount,
+        !isRefundVoucher,
+        isRefundVoucher,
+      );
+      if (!cumulative.ok) {
+        outcome = { status: "stale", channel: cumulative.channel };
         return current;
       }
 
@@ -340,23 +398,16 @@ export async function handleAfterVerify(
         signedMaxClaimable,
         expiresAt: pendingExpiresAt(requirements.maxTimeoutSeconds, now),
       };
-
       outcome = { status: "reserved" };
-      const channel: Channel = {
-        channelId,
-        channelConfig,
-        chargedCumulativeAmount: base,
-        signedMaxClaimable,
-        signature,
-        balance,
-        totalClaimed,
-        withdrawRequestedAt,
-        refundNonce,
-        onchainSyncedAt: localVerify ? current?.onchainSyncedAt : now,
-        lastRequestTimestamp: now,
+      return {
+        ...buildChannelRow(
+          raw,
+          cumulative.chargedBaseline,
+          { ...mirrors, onchainSyncedAt: localVerify ? current?.onchainSyncedAt : now },
+          now,
+        ),
         pendingRequest,
       };
-      return channel;
     });
   } catch {
     return verificationStateUnavailable();
@@ -505,7 +556,11 @@ async function verifyVoucherLocally(
  * @param now - Current wall-clock time in milliseconds.
  * @returns `true` if onchain sync time is present and still within `ttlMs` of `now`.
  */
-function isOnchainStateFresh(channel: Channel, ttlMs: number, now: number): boolean {
+function isOnchainStateFresh(
+  channel: Pick<Channel, "onchainSyncedAt">,
+  ttlMs: number,
+  now: number,
+): boolean {
   return channel.onchainSyncedAt !== undefined && now - channel.onchainSyncedAt <= ttlMs;
 }
 
@@ -549,51 +604,93 @@ function invalidVerifyResponse(payer: `0x${string}`, invalidReason: string): Ver
 }
 
 /**
- * Builds the minimal local channel record needed to reserve missing state.
+ * Re-validates an upfront warm-path voucher against persisted server state.
  *
- * @param raw - Batch-settlement payload containing channel config and voucher.
- * @param chargedCumulativeAmount - Local charged base inferred before facilitator verification.
- * @returns Provisional channel state.
- */
-function buildProvisionalChannel(
-  raw: BatchSettlementVoucherPayload | BatchSettlementDepositPayload | BatchSettlementRefundPayload,
-  chargedCumulativeAmount: string,
-): Channel {
-  return {
-    channelId: raw.voucher.channelId,
-    channelConfig: raw.channelConfig,
-    chargedCumulativeAmount,
-    signedMaxClaimable: raw.voucher.maxClaimableAmount,
-    signature: raw.voucher.signature,
-    balance: "0",
-    totalClaimed: "0",
-    withdrawRequestedAt: 0,
-    refundNonce: 0,
-    lastRequestTimestamp: Date.now(),
-  };
-}
-
-/**
- * Infers the local charged base when storage has no channel record.
+ * Uses the in-process channel cache when available; falls back to one storage
+ * read on cache miss (e.g. after server restart). Infer-only checks pass stale
+ * client vouchers when onchain TTL is fresh — this closes that gap without a
+ * storage read on every warm request once the cache is warm.
  *
- * @param signedMaxClaimable - Client-signed cumulative voucher cap.
+ * @param scheme - Owning scheme instance.
+ * @param paymentPayload - Request payment payload for snapshot enrichment.
+ * @param raw - Batch settlement voucher payload.
+ * @param channelId - Channel identifier.
  * @param price - Current request amount.
- * @param isPaidPayload - Whether the payload should add `price` to the local base.
- * @returns Inferred charged base as a decimal string.
+ * @param isPaidPayload - Whether the payload adds `price` to the local base.
+ * @param isRefundVoucher - Whether the payload is a zero-charge refund voucher.
+ * @returns Abort directive on mismatch; void when no stored baseline applies.
  */
-function inferMissingLocalChargedAmount(
-  signedMaxClaimable: string,
+async function validateUpfrontWarmChannelBaseline(
+  scheme: BatchSettlementEvmScheme,
+  paymentPayload: VerifyContext["paymentPayload"],
+  raw:
+    | BatchSettlementVoucherPayload
+    | BatchSettlementDepositPayload
+    | BatchSettlementRefundPayload,
+  channelId: string,
   price: string,
   isPaidPayload: boolean,
-): string {
-  if (!isPaidPayload) {
-    return signedMaxClaimable;
+  isRefundVoucher: boolean,
+): Promise<void | { abort: true; reason: string; message?: string }> {
+  let stored = scheme.cachedChannel(channelId);
+  if (!stored) {
+    stored = await scheme.getStorage().get(channelId);
+    if (stored) {
+      scheme.rememberCachedChannel(stored);
+    }
+  }
+  if (!stored) {
+    return;
   }
 
-  const signed = BigInt(signedMaxClaimable);
-  const amount = BigInt(price);
-  if (signed < amount) {
-    return "0";
+  const recheck = checkCumulativeVoucherMatch(
+    raw,
+    stored,
+    price,
+    isPaidPayload,
+    isRefundVoucher,
+  );
+  if (!recheck.ok) {
+    scheme.rememberChannelSnapshot(paymentPayload, recheck.channel);
+    return {
+      abort: true,
+      reason: Errors.ErrCumulativeAmountMismatch,
+      message: "Client voucher base does not match server state",
+    };
   }
-  return (signed - amount).toString();
+
+  scheme.mergeRequestContext(paymentPayload, { chargedBaseline: recheck.chargedBaseline });
+}
+
+function checkCumulativeVoucherMatch(
+  raw:
+    | BatchSettlementVoucherPayload
+    | BatchSettlementDepositPayload
+    | BatchSettlementRefundPayload,
+  channelSnapshot: Channel | undefined,
+  price: string,
+  isPaidPayload: boolean,
+  isRefundVoucher: boolean,
+):
+  | { ok: true; chargedBaseline: string }
+  | { ok: false; chargedBaseline: string; channel: Channel } {
+  const chargedBaseline = resolveChargedBaseline(
+    channelSnapshot,
+    raw.voucher.maxClaimableAmount,
+    price,
+    isPaidPayload,
+  );
+  const expected = isRefundVoucher
+    ? BigInt(chargedBaseline)
+    : BigInt(chargedBaseline) + BigInt(price);
+  if (BigInt(raw.voucher.maxClaimableAmount) !== expected) {
+    return {
+      ok: false,
+      chargedBaseline,
+      channel:
+        channelSnapshot ??
+        buildChannelRow(raw, chargedBaseline, readOnchainMirrors(undefined), Date.now()),
+    };
+  }
+  return { ok: true, chargedBaseline };
 }

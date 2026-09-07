@@ -2421,3 +2421,542 @@ describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () =>
     expect(result[0].channelId).toBe(id2);
   });
 });
+
+function makeUpfrontRequirements(
+  overrides: Partial<PaymentRequirements> = {},
+): PaymentRequirements {
+  return makeRequirements({
+    ...overrides,
+    extra: {
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
+      paymentFlow: "upfront",
+      ...overrides.extra,
+    },
+  });
+}
+
+describe("BatchSettlementEvmScheme — upfront payment flow", () => {
+  let server: BatchSettlementEvmScheme;
+  let storage: CountingChannelStorage;
+
+  beforeEach(() => {
+    storage = new CountingChannelStorage();
+    server = new BatchSettlementEvmScheme(RECEIVER, { storage, onchainStateTtlMs: 60_000 });
+  });
+
+  it("declares authorization and upfront with verifyBeforeHandler opt-in", () => {
+    expect(server.paymentFlows).toEqual({
+      eip3009: {
+        supported: ["authorization", "upfront"],
+        default: "authorization",
+        flowPhases: { upfront: { verifyBeforeHandler: true } },
+      },
+      permit2: {
+        supported: ["authorization", "upfront"],
+        default: "authorization",
+        flowPhases: { upfront: { verifyBeforeHandler: true } },
+      },
+    });
+  });
+
+  it("aligns upfront baseline with authorization on reused onchain channel", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "47100", config);
+
+    await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements,
+    } as never);
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: {
+          balance: "166100",
+          totalClaimed: "46100",
+          withdrawRequestedAt: 0,
+          refundNonce: "2",
+        },
+      } as VerifyResponse,
+    } as never);
+
+    const settleResult = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { skip: true; result: SettleResponse };
+
+    expect(settleResult.skip).toBe(true);
+    expect(settleResult.result.extra?.chargedAmount).toBe("1000");
+    const channel = await storage.get(channelId);
+    expect(channel?.chargedCumulativeAmount).toBe("47100");
+    expect(channel?.totalClaimed).toBe("46100");
+    expect(channel?.balance).toBe("166100");
+  });
+
+  it("warm EOA voucher: zero get calls, one CAS, no facilitator verify skip path", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    const firstPayload = await buildSignedVoucherPayload(channelId, "1000", config);
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload: firstPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+    const firstSettle = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: firstPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { skip: true };
+    expect(firstSettle.skip).toBe(true);
+
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+    storage.getCalls.length = 0;
+
+    const verifyResult = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements,
+    } as never);
+    expect(verifyResult).toMatchObject({ skip: true, result: { isValid: true, payer: PAYER } });
+    expect(storage.getCalls).toHaveLength(0);
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: (verifyResult as { result: VerifyResponse }).result,
+    } as never);
+    expect(storage.getCalls).toHaveLength(0);
+
+    storage.getCalls.length = 0;
+    const settleResult = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { skip: true; result: SettleResponse };
+
+    expect(settleResult.skip).toBe(true);
+    expect(settleResult.result.extra?.chargedAmount).toBe("1000");
+    expect(storage.getCalls).toHaveLength(0);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("2000");
+    expect((await storage.get(channelId))?.pendingRequest).toBeUndefined();
+  });
+
+  it("upfront warm EOA rejects stale client voucher via cached channel baseline", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const storedChannel: Channel = {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "127000",
+      signedMaxClaimable: "127000",
+      signature: "0xabcd",
+      balance: "137000",
+      totalClaimed: "97000",
+      withdrawRequestedAt: 0,
+      refundNonce: 4,
+      onchainSyncedAt: Date.now(),
+      lastRequestTimestamp: Date.now(),
+    };
+    await storeChannel(storage, channelId, storedChannel);
+    server.rememberOnchainSyncedAt(channelId, Date.now());
+    server.rememberCachedChannel(storedChannel);
+
+    const requirements = makeUpfrontRequirements({ amount: "10000" });
+    const staleClientPayload = await buildSignedVoucherPayload(channelId, "107000", config);
+    storage.getCalls.length = 0;
+
+    const verifyResult = (await server.schemeHooks.onBeforeVerify!({
+      paymentPayload: staleClientPayload,
+      requirements,
+    } as never)) as { abort: true; reason: string };
+
+    expect(verifyResult.abort).toBe(true);
+    expect(verifyResult.reason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(storage.getCalls).toHaveLength(0);
+  });
+
+  it("idle EOA after TTL falls through to facilitator verify then CAS", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "1000", config),
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+
+    vi.useFakeTimers({ now: Date.now() + server.getOnchainStateTtlMs() + 1 });
+    try {
+      const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+      const verifyResult = await server.schemeHooks.onBeforeVerify!({
+        paymentPayload,
+        requirements,
+      } as never);
+      expect(verifyResult).toBeUndefined();
+
+      await server.schemeHooks.onAfterVerify!({
+        paymentPayload,
+        requirements,
+        result: {
+          isValid: true,
+          payer: PAYER,
+          extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+        } as VerifyResponse,
+      } as never);
+
+      const settleResult = (await server.schemeHooks.onBeforeSettle!({
+        paymentPayload,
+        requirements,
+        phase: "before-handler",
+      } as never)) as { skip: true; result: SettleResponse };
+
+      expect(settleResult.skip).toBe(true);
+      expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("2000");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skip-then-stale race aborts when charged changes between skip and CAS", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload: await buildSignedVoucherPayload(channelId, "1000", config),
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+
+    await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements,
+    } as never);
+
+    await storage.updateChannel(channelId, current =>
+      current
+        ? { ...current, chargedCumulativeAmount: "1500", signedMaxClaimable: "2500" }
+        : current,
+    );
+
+    const settleResult = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { abort: true; reason: string };
+
+    expect(settleResult.abort).toBe(true);
+    expect(settleResult.reason).toBe(Errors.ErrCumulativeAmountMismatch);
+  });
+
+  it("concurrent upfront losers fail equality without channel_busy", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const first = await buildSignedVoucherPayload(channelId, "1000", config);
+    const second = await buildSignedVoucherPayload(channelId, "1000", config);
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+
+    for (const payload of [first, second]) {
+      await server.schemeHooks.onAfterVerify!({
+        paymentPayload: payload,
+        requirements,
+        result: {
+          isValid: true,
+          payer: PAYER,
+          extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+        } as VerifyResponse,
+      } as never);
+    }
+
+    const firstSettle = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: first,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { skip: true };
+    expect(firstSettle.skip).toBe(true);
+
+    const secondSettle = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload: second,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { abort: true; reason: string };
+    expect(secondSettle.abort).toBe(true);
+    expect(secondSettle.reason).toBe(Errors.ErrCumulativeAmountMismatch);
+  });
+
+  it("cancel revert decrements charged and omits chargedAmount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "2000",
+      signedMaxClaimable: paymentPayload.payload.voucher.maxClaimableAmount,
+      signature: paymentPayload.payload.voucher.signature,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    });
+
+    const cancelResult = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "cancel",
+    } as never)) as { skip: true; result: SettleResponse };
+
+    expect(cancelResult.skip).toBe(true);
+    expect(cancelResult.result.extra?.chargedAmount).toBeUndefined();
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("cancel fail-open aborts when the voucher predicate misses", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "2000",
+      signedMaxClaimable: "9999",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    });
+
+    const cancelResult = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "cancel",
+    } as never)) as { abort: true; reason: string };
+
+    expect(cancelResult.abort).toBe(true);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("2000");
+  });
+
+  it("deposit-on-upfront charges in afterSettle without pending reservations", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildDepositPayload(channelId, config, "5000", "1000");
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements,
+      result: {
+        success: true,
+        payer: PAYER,
+        transaction: "0xabc",
+        network: NETWORK,
+        amount: "5000",
+        extra: {
+          channelState: {
+            balance: "5000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: 0,
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    const channel = await storage.get(channelId);
+    expect(channel?.chargedCumulativeAmount).toBe("1000");
+    expect(channel?.pendingRequest).toBeUndefined();
+    expect(channel?.balance).toBe("5000");
+  });
+
+  it("refund never increments charged on upfront afterSettle", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1500",
+      signedMaxClaimable: "1500",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const paymentPayload = buildRefundPayload(channelId, "1500", config);
+    const requirements = makeUpfrontRequirements({ amount: "0" });
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements,
+      result: {
+        success: true,
+        payer: PAYER,
+        transaction: "0xrefund",
+        network: NETWORK,
+        amount: "8500",
+        extra: {
+          channelState: {
+            balance: "2000",
+            totalClaimed: "1500",
+            withdrawRequestedAt: 0,
+            refundNonce: 1,
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1500");
+  });
+
+  it("retry-safe charge rejects a duplicate commit for the same voucher base", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    const paymentPayload = await buildSignedVoucherPayload(channelId, "2000", config);
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+      } as VerifyResponse,
+    } as never);
+
+    const firstSettle = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { skip: true };
+    expect(firstSettle.skip).toBe(true);
+
+    const secondSettle = (await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+      phase: "before-handler",
+    } as never)) as { abort: true; reason: string };
+    expect(secondSettle.abort).toBe(true);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("2000");
+  });
+
+  it("settleOnCancel returns requirements for upfront voucher and deposit paths", () => {
+    const requirements = makeUpfrontRequirements({ amount: "1000" });
+    const payload = buildVoucherPayload(
+      computeChannelId(buildChannelConfig()),
+      "2000",
+      buildChannelConfig(),
+    );
+    expect(
+      server.settleOnCancel!({
+        paymentPayload: payload,
+        requirements,
+        declaredExtensions: {},
+        phase: "cancel",
+        reason: "handler_failed",
+        settledPhases: ["before-handler"],
+      }),
+    ).toEqual(requirements);
+    expect(
+      server.settleOnCancel!({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "1000" }),
+        declaredExtensions: {},
+        phase: "cancel",
+        reason: "handler_failed",
+        settledPhases: ["before-handler"],
+      }),
+    ).toBeUndefined();
+  });
+});

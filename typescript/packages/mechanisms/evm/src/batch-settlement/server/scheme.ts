@@ -11,9 +11,14 @@ import {
   SupportedKind,
 } from "@x402/core/types";
 import type { DeepReadonly } from "@x402/core/types";
-import type { SettleContext, SettleResultContext } from "@x402/core/server";
+import type {
+  SettleContext,
+  SettleResultContext,
+  VerifiedPaymentCanceledContext,
+} from "@x402/core/server";
 import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
+import { resolvePaymentFlow } from "@x402/core/server";
 import { getAddress } from "viem";
 import { BatchSettlementChannelManager } from "./channelManager";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
@@ -46,8 +51,10 @@ export interface BatchSettlementRequestContext {
   channelId?: string;
   pendingId?: string;
   channelSnapshot?: Channel;
+  chargedBaseline?: string;
   localVerify?: boolean;
   reservationCommitted?: boolean;
+  verifyExtra?: Record<string, unknown>;
 }
 
 /**
@@ -57,8 +64,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   readonly defaultAssetTransferMethod: BatchSettlementAssetTransferMethod = "eip3009";
   readonly paymentFlows = {
-    eip3009: { supported: ["authorization"], default: "authorization" },
-    permit2: { supported: ["authorization"], default: "authorization" },
+    eip3009: {
+      supported: ["authorization", "upfront"],
+      default: "authorization",
+      flowPhases: { upfront: { verifyBeforeHandler: true } },
+    },
+    permit2: {
+      supported: ["authorization", "upfront"],
+      default: "authorization",
+      flowPhases: { upfront: { verifyBeforeHandler: true } },
+    },
   } as const satisfies Record<BatchSettlementAssetTransferMethod, PaymentFlowConfig>;
   readonly schemeHooks: SchemeServerHooks;
 
@@ -72,6 +87,8 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   private readonly receiverAddress: `0x${string}`;
   private readonly withdrawDelay: number;
   private readonly onchainStateTtlMs: number;
+  private readonly onchainSyncedAtCache = new Map<string, number>();
+  private readonly channelCache = new Map<string, Channel>();
 
   /**
    * Constructs a batched server scheme.
@@ -385,6 +402,65 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   getOnchainStateTtlMs(): number {
     return this.onchainStateTtlMs;
+  }
+
+  /**
+   * Returns the in-process cached `onchainSyncedAt` for a channel, if any.
+   *
+   * @param channelId - Channel identifier.
+   * @returns Cached sync timestamp in milliseconds, or `undefined` when unset.
+   */
+  cachedOnchainSyncedAt(channelId: string): number | undefined {
+    return this.onchainSyncedAtCache.get(channelId.toLowerCase());
+  }
+
+  /**
+   * Records the in-process cached `onchainSyncedAt` for a channel.
+   *
+   * @param channelId - Channel identifier.
+   * @param syncedAt - Mirror sync timestamp in milliseconds.
+   */
+  rememberOnchainSyncedAt(channelId: string, syncedAt: number): void {
+    this.onchainSyncedAtCache.set(channelId.toLowerCase(), syncedAt);
+  }
+
+  /**
+   * Returns the in-process cached channel row for a channel, if any.
+   *
+   * @param channelId - Channel identifier.
+   * @returns Cached channel state, or `undefined` when unset.
+   */
+  cachedChannel(channelId: string): Channel | undefined {
+    return this.channelCache.get(channelId.toLowerCase());
+  }
+
+  /**
+   * Records the in-process cached channel row for a channel.
+   *
+   * @param channel - Channel state to cache.
+   */
+  rememberCachedChannel(channel: Channel): void {
+    this.channelCache.set(channel.channelId.toLowerCase(), channel);
+  }
+
+  /**
+   * Settle canceled upfront payments with a compensating local write.
+   *
+   * @param ctx - Cancellation context from the resource server.
+   * @returns Requirements for the cancel settle phase, or void to skip.
+   */
+  settleOnCancel(ctx: VerifiedPaymentCanceledContext): PaymentRequirements | void {
+    if (resolvePaymentFlow(this, ctx.requirements).paymentFlow !== "upfront") {
+      return;
+    }
+    if (
+      ctx.reason !== "handler_failed" &&
+      ctx.reason !== "handler_threw" &&
+      ctx.reason !== "after_verify_aborted"
+    ) {
+      return;
+    }
+    return { ...ctx.requirements };
   }
 
   /**
