@@ -698,6 +698,14 @@ describe("request timeout", () => {
       getFacilitatorResponseError(new Error("initialization failed", { cause: timeoutError })),
     ).toBe(timeoutError);
   });
+
+  it("returns null from getFacilitatorResponseError when no facilitator error is present", () => {
+    expect(getFacilitatorResponseError("not an error")).toBeNull();
+    expect(getFacilitatorResponseError(new Error("plain error"))).toBeNull();
+    expect(
+      getFacilitatorResponseError(new Error("wrapped", { cause: new Error("inner") })),
+    ).toBeNull();
+  });
 });
 
 describe("computeRetryDelay", () => {

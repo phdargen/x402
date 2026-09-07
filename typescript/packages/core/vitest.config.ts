@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => ({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "src/paywall/dist/**", "src/paywall/gen/**", "**/*.d.ts"],
+      exclude: ["src/**/*.test.ts", "**/*.d.ts"],
       reportsDirectory: "./coverage",
       reporter: ["text", "json-summary"],
       thresholds: {
