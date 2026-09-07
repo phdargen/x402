@@ -1983,11 +1983,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
   it("rejects a refund whose channelId does not match channelConfig", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    const payload = buildRefundPayload(
-      ("0x" + "11".repeat(32)) as `0x${string}`,
-      "500",
-      config,
-    );
+    const payload = buildRefundPayload(("0x" + "11".repeat(32)) as `0x${string}`, "500", config);
     await reservePending(server, payload, makeRequirements({ amount: "0" }));
     await expect(
       server.enrichSettlementPayload({
@@ -2375,7 +2371,12 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const enrichment = await server.enrichSettlementResponse({
       paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
       requirements: makeRequirements({ amount: "1000" }),
-      result: { success: true, transaction: "0xtx", network: NETWORK, payer: PAYER } as SettleResponse,
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+      } as SettleResponse,
     } as never);
     expect(enrichment).toBeUndefined();
   });
@@ -2405,7 +2406,12 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const enrichment = await server.enrichSettlementResponse({
       paymentPayload,
       requirements: makeRequirements(),
-      result: { success: true, transaction: "0xtx", network: NETWORK, payer: PAYER } as SettleResponse,
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+      } as SettleResponse,
     } as never);
     expect(enrichment).toEqual({
       channelState: { chargedCumulativeAmount: "2500" },

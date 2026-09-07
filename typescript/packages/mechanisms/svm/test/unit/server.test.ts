@@ -217,7 +217,9 @@ describe("ExactSvmScheme", () => {
   describe("getAssetDecimals", () => {
     it("returns decimals for a known mint and undefined for an unknown one", () => {
       expect(server.getAssetDecimals(USDC_MAINNET_ADDRESS, SOLANA_MAINNET_CAIP2)).toBe(6);
-      expect(server.getAssetDecimals("UnknownMint1111111111111111111111111111111", SOLANA_MAINNET_CAIP2)).toBeUndefined();
+      expect(
+        server.getAssetDecimals("UnknownMint1111111111111111111111111111111", SOLANA_MAINNET_CAIP2),
+      ).toBeUndefined();
     });
   });
 
@@ -274,7 +276,12 @@ describe("registerExactSvmScheme", () => {
   it("registers each explicit network", () => {
     const resourceServer = new x402ResourceServer({
       verify: async () => ({ isValid: true }),
-      settle: async () => ({ success: true, transaction: "", network: SOLANA_DEVNET_CAIP2, payer: "" }),
+      settle: async () => ({
+        success: true,
+        transaction: "",
+        network: SOLANA_DEVNET_CAIP2,
+        payer: "",
+      }),
       getSupported: async () => ({ kinds: [] }),
     } as never);
     registerExactSvmScheme(resourceServer, {

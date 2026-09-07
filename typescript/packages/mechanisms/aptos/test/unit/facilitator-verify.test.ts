@@ -24,7 +24,7 @@ import { ExactAptosScheme as ExactAptosFacilitator } from "../../src/exact/facil
 import { toFacilitatorAptosSigner } from "../../src/signer";
 import { createAptosClient, encodeAptosPayload } from "../../src/utils";
 
-vi.mock("../../src/utils", async (importOriginal) => {
+vi.mock("../../src/utils", async importOriginal => {
   const actual = await importOriginal<typeof import("../../src/utils")>();
   return { ...actual, createAptosClient: vi.fn() };
 });
@@ -462,17 +462,12 @@ describe("ExactAptosFacilitator.verify() - payload validation", () => {
     );
     const simpleTx = new SimpleTransaction(rawTx);
     const mismatchedAuth = wrongSigner.signTransactionWithAuthenticator(simpleTx);
-    const encodedTx = encodeAptosPayload(
-      simpleTx.bcsToBytes(),
-      mismatchedAuth.bcsToBytes(),
-    );
+    const encodedTx = encodeAptosPayload(simpleTx.bcsToBytes(), mismatchedAuth.bcsToBytes());
 
     const result = await facilitator.verify(buildPayload(encodedTx), buildRequirements());
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe(
-      "invalid_exact_aptos_payload_sender_authenticator_mismatch",
-    );
+    expect(result.invalidReason).toBe("invalid_exact_aptos_payload_sender_authenticator_mismatch");
   });
 
   it("rejects unsupported authenticator type", async () => {
@@ -710,7 +705,9 @@ describe("ExactAptosFacilitator.settle()", () => {
     sender = Account.generate();
     feePayerAccount = Account.generate();
     vi.mocked(createAptosClient).mockReturnValue({
-      getCurrentFungibleAssetBalances: vi.fn().mockResolvedValue([{ amount: TEST_AMOUNT.toString() }]),
+      getCurrentFungibleAssetBalances: vi
+        .fn()
+        .mockResolvedValue([{ amount: TEST_AMOUNT.toString() }]),
       transaction: { simulate: { simple: vi.fn().mockResolvedValue([{ success: true }]) } },
     } as unknown as ReturnType<typeof createAptosClient>);
   });

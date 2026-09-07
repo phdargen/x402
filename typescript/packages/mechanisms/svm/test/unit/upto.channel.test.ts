@@ -173,12 +173,12 @@ describe("upto SVM channel reads", () => {
 
   it("channelExists follows getAccountInfo presence", async () => {
     const getAccountInfo = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ data: "x" });
-    await expect(
-      channelExists({ getAccountInfo } as never, NETWORK, CHANNEL_ID),
-    ).resolves.toBe(false);
-    await expect(
-      channelExists({ getAccountInfo } as never, NETWORK, CHANNEL_ID),
-    ).resolves.toBe(true);
+    await expect(channelExists({ getAccountInfo } as never, NETWORK, CHANNEL_ID)).resolves.toBe(
+      false,
+    );
+    await expect(channelExists({ getAccountInfo } as never, NETWORK, CHANNEL_ID)).resolves.toBe(
+      true,
+    );
     expect(getAccountInfo).toHaveBeenCalledWith(CHANNEL_ID, NETWORK, {
       commitment: "confirmed",
       encoding: "base64",

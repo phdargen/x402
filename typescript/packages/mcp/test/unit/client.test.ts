@@ -304,7 +304,9 @@ describe("x402MCPClient", () => {
       mockMcpClient.readResource.mockResolvedValue(resourceResult);
 
       const templateArgs = { cursor: "page-2" };
-      const templateResult = { resourceTemplates: [{ uriTemplate: "file://{name}", name: "files" }] };
+      const templateResult = {
+        resourceTemplates: [{ uriTemplate: "file://{name}", name: "files" }],
+      };
       mockMcpClient.listResourceTemplates.mockResolvedValue(templateResult);
 
       const subscribeResult = { ok: true };
@@ -630,9 +632,7 @@ describe("x402MCPClient", () => {
     it("should abort a corrective retry when onPaymentRequired returns abort", async () => {
       client.onPaymentRequired(() => ({ abort: true }));
       mockPaymentClient.handlePaymentResponse.mockResolvedValueOnce({ recovered: true });
-      mockMcpClient.callTool.mockResolvedValueOnce(
-        createEmbeddedPaymentError(mockPaymentRequired),
-      );
+      mockMcpClient.callTool.mockResolvedValueOnce(createEmbeddedPaymentError(mockPaymentRequired));
 
       await expect(
         client.callToolWithPayment("paid_tool", { arg: "value" }, mockPaymentPayload),
@@ -677,9 +677,7 @@ describe("x402MCPClient", () => {
         { autoPayment: true, onPaymentRequested: approvalHook },
       );
       mockPaymentClient.handlePaymentResponse.mockResolvedValueOnce({ recovered: true });
-      mockMcpClient.callTool.mockResolvedValueOnce(
-        createEmbeddedPaymentError(mockPaymentRequired),
-      );
+      mockMcpClient.callTool.mockResolvedValueOnce(createEmbeddedPaymentError(mockPaymentRequired));
 
       await expect(
         client.callToolWithPayment("paid_tool", { arg: "value" }, mockPaymentPayload),
@@ -716,9 +714,9 @@ describe("x402MCPClient", () => {
     it("should throw when a paid call returns an invalid MCP result", async () => {
       mockMcpClient.callTool.mockResolvedValue({ ok: true });
 
-      await expect(
-        client.callToolWithPayment("tool", {}, mockPaymentPayload),
-      ).rejects.toThrow("Invalid MCP tool result: missing content array");
+      await expect(client.callToolWithPayment("tool", {}, mockPaymentPayload)).rejects.toThrow(
+        "Invalid MCP tool result: missing content array",
+      );
     });
   });
 
@@ -1268,12 +1266,10 @@ describe("x402MCPClient McpError(-32042) handling", () => {
         code: MCP_PAYMENT_REQUIRED_CODE,
         data: mockPaymentRequired,
       });
-      mockMcpClient.callTool
-        .mockRejectedValueOnce(err)
-        .mockResolvedValueOnce({
-          content: [{ type: "text", text: "paid result" }],
-          _meta: { "x402/payment-response": mockSettleResponse },
-        });
+      mockMcpClient.callTool.mockRejectedValueOnce(err).mockResolvedValueOnce({
+        content: [{ type: "text", text: "paid result" }],
+        _meta: { "x402/payment-response": mockSettleResponse },
+      });
 
       const result = await client.callTool("paid_tool");
 
@@ -1289,7 +1285,11 @@ describe("x402MCPClient McpError(-32042) handling", () => {
       mockMcpClient.callTool.mockRejectedValueOnce(missingData);
       await expect(client.callTool("tool")).rejects.toBe(missingData);
 
-      const badMessage = { code: MCP_PAYMENT_REQUIRED_CODE, message: 402, data: mockPaymentRequired };
+      const badMessage = {
+        code: MCP_PAYMENT_REQUIRED_CODE,
+        message: 402,
+        data: mockPaymentRequired,
+      };
       mockMcpClient.callTool.mockRejectedValueOnce(badMessage);
       await expect(client.callTool("tool")).rejects.toBe(badMessage);
     });

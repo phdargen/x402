@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isNodeEnoent, readJsonFile, resolveWithinDir, writeJsonAtomic } from "../../../src/batch-settlement/storage-utils";
+import {
+  isNodeEnoent,
+  readJsonFile,
+  resolveWithinDir,
+  writeJsonAtomic,
+} from "../../../src/batch-settlement/storage-utils";
 import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
 import { FileChannelStorage } from "../../../src/batch-settlement/server/fileStorage";
 import { FileClientChannelStorage } from "../../../src/batch-settlement/client/fileStorage";

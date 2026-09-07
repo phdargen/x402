@@ -176,7 +176,10 @@ describe("@x402/svm", () => {
       );
       expect(getStablecoinTokenProgram("SOL", SOLANA_MAINNET_CAIP2)).toBe(TOKEN_PROGRAM_ADDRESS);
       expect(
-        getStablecoinTokenProgram("UnknownMint111111111111111111111111111111", SOLANA_MAINNET_CAIP2),
+        getStablecoinTokenProgram(
+          "UnknownMint111111111111111111111111111111",
+          SOLANA_MAINNET_CAIP2,
+        ),
       ).toBe(TOKEN_PROGRAM_ADDRESS);
     });
   });

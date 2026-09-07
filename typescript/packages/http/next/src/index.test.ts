@@ -478,7 +478,9 @@ describe("paymentProxy", () => {
     const mockServer = createMockHttpServer({ type: "no-payment-required" });
     vi.mocked(mockServer.initialize).mockRejectedValue(
       new Error("Failed to initialize", {
-        cause: new FacilitatorResponseError("Facilitator supported returned invalid JSON: not-json"),
+        cause: new FacilitatorResponseError(
+          "Facilitator supported returned invalid JSON: not-json",
+        ),
       }),
     );
 
@@ -882,7 +884,9 @@ describe("withX402", () => {
     const mockServer = createMockHttpServer({ type: "no-payment-required" });
     vi.mocked(mockServer.initialize).mockRejectedValue(
       new Error("Failed to initialize", {
-        cause: new FacilitatorResponseError("Facilitator supported returned invalid JSON: not-json"),
+        cause: new FacilitatorResponseError(
+          "Facilitator supported returned invalid JSON: not-json",
+        ),
       }),
     );
     const handler = vi.fn().mockResolvedValue(NextResponse.json({ data: "protected" }));

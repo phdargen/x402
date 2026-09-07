@@ -668,9 +668,13 @@ describe("wrapAxiosWithPayment()", () => {
 
   it("should look up payment-response headers case-insensitively and ignore non-strings", async () => {
     const { x402HTTPClient: MockX402HTTPClient } = await import("@x402/core/client");
-    const successResponse = createAxiosResponse(200, { data: "success" }, {
-      "payment-response": "settled",
-    });
+    const successResponse = createAxiosResponse(
+      200,
+      { data: "success" },
+      {
+        "payment-response": "settled",
+      },
+    );
     (successResponse.headers as Record<string, unknown>)["x-count"] = 2;
     (mockAxiosClient.request as ReturnType<typeof vi.fn>).mockResolvedValue(successResponse);
     (
@@ -697,9 +701,13 @@ describe("wrapAxiosWithPayment()", () => {
   it("should look up recovery retry headers case-insensitively and ignore non-strings", async () => {
     const { x402HTTPClient: MockX402HTTPClient } = await import("@x402/core/client");
     const correctiveResponse = createAxiosResponse(402, validPaymentRequired);
-    const retryResponse = createAxiosResponse(200, { data: "success" }, {
-      "payment-response": "recovered",
-    });
+    const retryResponse = createAxiosResponse(
+      200,
+      { data: "success" },
+      {
+        "payment-response": "recovered",
+      },
+    );
     (retryResponse.headers as Record<string, unknown>)["x-count"] = 2;
     (mockAxiosClient.request as ReturnType<typeof vi.fn>)
       .mockResolvedValueOnce(correctiveResponse)

@@ -9,10 +9,7 @@ import {
   setTransactionMessageComputeUnitPrice,
 } from "@solana-program/compute-budget";
 import { TOKEN_PROGRAM_ADDRESS } from "@solana-program/token";
-import {
-  findAssociatedTokenPda,
-  getTransferCheckedInstruction,
-} from "@solana-program/token-2022";
+import { findAssociatedTokenPda, getTransferCheckedInstruction } from "@solana-program/token-2022";
 import {
   appendTransactionMessageInstructions,
   compileTransactionMessage,
@@ -174,10 +171,7 @@ export async function buildExactPaymentTransaction(args: {
     m => setTransactionMessageComputeUnitPrice(1, m),
     m => setTransactionMessageFeePayer(args.feePayer, m),
     m =>
-      prependTransactionMessageInstruction(
-        getSetComputeUnitLimitInstruction({ units: 20_000 }),
-        m,
-      ),
+      prependTransactionMessageInstruction(getSetComputeUnitLimitInstruction({ units: 20_000 }), m),
     m => appendTransactionMessageInstructions([transferIx, ...trailing], m),
     m => setTransactionMessageLifetimeUsingBlockhash(FAKE_BLOCKHASH, m),
   );

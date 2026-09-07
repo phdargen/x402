@@ -34,7 +34,8 @@ export default [
       "@typescript-eslint": ts,
       prettier: prettier,
       jsdoc: jsdoc,
-      import: importPlugin,      sonarjs,
+      import: importPlugin,
+      sonarjs,
     },
     rules: {
       ...ts.configs.recommended.rules,

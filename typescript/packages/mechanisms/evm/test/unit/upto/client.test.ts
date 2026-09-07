@@ -99,8 +99,9 @@ describe("UptoEvmScheme (Client)", () => {
       });
 
       expect(result.extensions?.erc20ApprovalGasSponsoring).toBeDefined();
-      const info = (result.extensions!.erc20ApprovalGasSponsoring as { info: { signedTransaction: string } })
-        .info;
+      const info = (
+        result.extensions!.erc20ApprovalGasSponsoring as { info: { signedTransaction: string } }
+      ).info;
       expect(info.signedTransaction).toBe(mockSignedTx);
     });
 

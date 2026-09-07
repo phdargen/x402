@@ -206,7 +206,9 @@ describe("parseEip3009TransferError", () => {
     expect(parseEip3009TransferError(new Error("transfer amount exceeds balance"))).toBe(
       Errors.ErrEip3009InsufficientBalance,
     );
-    expect(parseEip3009TransferError(new Error("invalid signature"))).toBe(Errors.ErrInvalidSignature);
+    expect(parseEip3009TransferError(new Error("invalid signature"))).toBe(
+      Errors.ErrInvalidSignature,
+    );
     expect(parseEip3009TransferError(new Error("SignerMismatch"))).toBe(Errors.ErrInvalidSignature);
     expect(parseEip3009TransferError("unknown boom")).toBe(Errors.ErrTransactionFailed);
   });
@@ -242,9 +244,10 @@ describe("diagnoseEip3009SimulationFailure", () => {
       { status: "success", result: "2" },
       { status: "success", result: true },
     ]);
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009NonceAlreadyUsed,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009NonceAlreadyUsed);
 
     mockedMulticall.mockResolvedValueOnce([
       { status: "success", result: 1000n },
@@ -252,9 +255,10 @@ describe("diagnoseEip3009SimulationFailure", () => {
       { status: "success", result: "2" },
       { status: "success", result: false },
     ]);
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009TokenNameMismatch,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009TokenNameMismatch);
 
     mockedMulticall.mockResolvedValueOnce([
       { status: "success", result: 1000n },
@@ -262,9 +266,10 @@ describe("diagnoseEip3009SimulationFailure", () => {
       { status: "success", result: "1" },
       { status: "success", result: false },
     ]);
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009TokenVersionMismatch,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009TokenVersionMismatch);
 
     mockedMulticall.mockResolvedValueOnce([
       { status: "success", result: 1n },
@@ -272,9 +277,10 @@ describe("diagnoseEip3009SimulationFailure", () => {
       { status: "success", result: "2" },
       { status: "success", result: false },
     ]);
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009InsufficientBalance,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009InsufficientBalance);
   });
 
   it("reports EIP-3009 unsupported when authorizationState cannot be read", async () => {
@@ -284,16 +290,18 @@ describe("diagnoseEip3009SimulationFailure", () => {
       { status: "success", result: "2" },
       { status: "failure", error: new Error("missing") },
     ]);
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009NotSupported,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009NotSupported);
   });
 
   it("falls back to simulation_failed when the diagnostic multicall itself throws", async () => {
     mockedMulticall.mockRejectedValueOnce(new Error("rpc down"));
-    expect((await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000")).invalidReason).toBe(
-      Errors.ErrEip3009SimulationFailed,
-    );
+    expect(
+      (await diagnoseEip3009SimulationFailure(signer, TOKEN, payload, requirements, "1000"))
+        .invalidReason,
+    ).toBe(Errors.ErrEip3009SimulationFailed);
   });
 });
 
@@ -348,16 +356,16 @@ describe("diagnosePermit2SimulationFailure / checkPermit2Prerequisites", () => {
       { status: "failure", error: new Error("missing") },
       { status: "success", result: 1000n },
     ]);
-    expect((await checkPermit2Prerequisites(config, signer, TOKEN, payer, "1000")).invalidReason).toBe(
-      Errors.ErrPermit2ProxyNotDeployed,
-    );
+    expect(
+      (await checkPermit2Prerequisites(config, signer, TOKEN, payer, "1000")).invalidReason,
+    ).toBe(Errors.ErrPermit2ProxyNotDeployed);
 
     mockedMulticall.mockResolvedValueOnce([
       { status: "success", result: PERMIT2_ADDRESS },
       { status: "success", result: 1n },
     ]);
-    expect((await checkPermit2Prerequisites(config, signer, TOKEN, payer, "1000")).invalidReason).toBe(
-      Errors.ErrPermit2InsufficientBalance,
-    );
+    expect(
+      (await checkPermit2Prerequisites(config, signer, TOKEN, payer, "1000")).invalidReason,
+    ).toBe(Errors.ErrPermit2InsufficientBalance);
   });
 });

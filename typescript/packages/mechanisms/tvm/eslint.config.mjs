@@ -56,6 +56,11 @@ export default [
       globals: {
         Buffer: "readonly",
         console: "readonly",
+        URL: "readonly",
+        fetch: "readonly",
+        Response: "readonly",
+        RequestInit: "readonly",
+        RequestInfo: "readonly",
       },
     },
     plugins: {

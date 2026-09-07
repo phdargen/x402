@@ -183,7 +183,9 @@ describe("AuthCaptureEvmScheme", () => {
           authCaptureEscrow: "0x0000000000000000000000000000000000000001" as `0x${string}`,
         },
       };
-      await expect(scheme.createPaymentPayload(2, bad)).rejects.toThrow("Invalid authCaptureEscrow");
+      await expect(scheme.createPaymentPayload(2, bad)).rejects.toThrow(
+        "Invalid authCaptureEscrow",
+      );
     });
 
     it("should set authorization.from to signer address", async () => {

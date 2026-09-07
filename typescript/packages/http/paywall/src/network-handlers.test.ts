@@ -280,7 +280,7 @@ describe("Network Handlers", () => {
       const html = svmPaywall.generateHtml(
         svmRequirement,
         { x402Version: 2, error: "Payment required", accepts: [svmRequirement] },
-        { currentUrl: "https://fallback.example/path", appName: "App \"Name\"" },
+        { currentUrl: "https://fallback.example/path", appName: 'App "Name"' },
       );
       expect(html).toContain("https://fallback.example/path");
       expect(html).toContain('appName: "App \\"Name\\""');
@@ -369,7 +369,7 @@ describe("Network Handlers", () => {
           testnet: false,
         },
       );
-      expect(html).toContain("https://example.com/path?q=\\\"x\\\"");
+      expect(html).toContain('https://example.com/path?q=\\"x\\"');
       expect(html).toContain("App\\nName");
       expect(html).toContain("https://cdn.example/logo.png");
       expect(html).not.toContain("console.log('EVM Payment required initialized:'");

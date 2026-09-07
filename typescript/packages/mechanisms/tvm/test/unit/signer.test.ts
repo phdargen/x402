@@ -1,12 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  Address,
-  beginCell,
-  Cell,
-  Dictionary,
-  external,
-  storeMessage,
-} from "@ton/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Address, beginCell, Cell, Dictionary, external, storeMessage } from "@ton/core";
 import { keyPairFromSeed } from "@ton/crypto";
 import {
   loadHighloadQueryState,
@@ -19,11 +12,9 @@ import {
   DEFAULT_HIGHLOAD_SUBWALLET_ID,
   DEFAULT_HIGHLOAD_TIMEOUT,
   DEFAULT_SETTLEMENT_BATCH_MAX_SIZE,
-  HIGHLOAD_V3_CODE_HASH,
   HIGHLOAD_V3_CODE_HEX,
   TVM_MAINNET,
   TVM_PROVIDER_TONAPI,
-  TVM_PROVIDER_TONCENTER,
   TVM_TESTNET,
 } from "../../src/constants";
 import {
@@ -33,7 +24,6 @@ import {
   ToncenterRestClient,
 } from "../../src/provider";
 import {
-  FacilitatorHighloadV3Signer,
   HighloadV3Config,
   toClientTvmSigner,
   toFacilitatorTvmSigner,
@@ -88,12 +78,14 @@ function bitmapWithBit(bitNumber: number): Cell {
   return builder.endCell();
 }
 
-function buildHighloadAccountState(options: {
-  lastCleanTime?: number;
-  timeout?: number;
-  processedQueryId?: number;
-  isActive?: boolean;
-} = {}): TvmAccountState {
+function buildHighloadAccountState(
+  options: {
+    lastCleanTime?: number;
+    timeout?: number;
+    processedQueryId?: number;
+    isActive?: boolean;
+  } = {},
+): TvmAccountState {
   const code = Cell.fromBoc(Buffer.from(HIGHLOAD_V3_CODE_HEX, "hex"))[0];
   const publicKey = Buffer.alloc(32, 9);
   const lastCleanTime = options.lastCleanTime ?? Math.floor(Date.now() / 1000);
@@ -380,7 +372,9 @@ describe("TVM provider clients", () => {
       }
       return jsonResponse({ accounts: [] });
     });
-    const retryClient = createTvmProviderClient(TVM_TESTNET, { baseUrl: "https://mock-empty.test" });
+    const retryClient = createTvmProviderClient(TVM_TESTNET, {
+      baseUrl: "https://mock-empty.test",
+    });
     await expect(retryClient.getJettonWalletData(TEST_ADDRESS)).rejects.toThrow(/incomplete stack/);
 
     installFetchMock((url, init) => {
@@ -395,13 +389,15 @@ describe("TVM provider clients", () => {
       }
       return jsonResponse({});
     });
-    const methodClient = createTvmProviderClient(TVM_TESTNET, { baseUrl: "https://mock-empty.test" });
+    const methodClient = createTvmProviderClient(TVM_TESTNET, {
+      baseUrl: "https://mock-empty.test",
+    });
     await expect(methodClient.runGetMethod(TEST_ADDRESS, "bad_method", [])).rejects.toThrow(
       /failed with exit code 1/,
     );
-    await expect(methodClient.runGetMethod(TEST_ADDRESS, "invalid_stack_method", [])).rejects.toThrow(
-      /invalid stack/,
-    );
+    await expect(
+      methodClient.runGetMethod(TEST_ADDRESS, "invalid_stack_method", []),
+    ).rejects.toThrow(/invalid stack/);
 
     installFetchMock((url, init) => {
       if (url.includes("/api/v3/message")) return jsonResponse({ message_hash: "legacy-hash" });
@@ -682,7 +678,7 @@ describe("FacilitatorHighloadV3Signer", () => {
     const signer = toFacilitatorTvmSigner(config, TVM_TESTNET);
     const facilitator = signer.getAddresses()[0]!;
 
-    installFetchMock((url) => {
+    installFetchMock(url => {
       if (url.includes("/api/v3/accountStates")) {
         return jsonResponse({
           accounts: [
@@ -707,7 +703,7 @@ describe("FacilitatorHighloadV3Signer", () => {
     vi.useFakeTimers();
     let calls = 0;
 
-    installFetchMock((url) => {
+    installFetchMock(url => {
       if (url.includes("/api/v3/traces")) {
         calls += 1;
         if (calls === 1) {

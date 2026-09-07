@@ -42,9 +42,7 @@ function makeComputeLimitData(units: number): Uint8Array {
   return new Uint8Array(buf);
 }
 
-function v2Requirements(
-  overrides: Partial<PaymentRequirements> = {},
-): PaymentRequirements {
+function v2Requirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
   return {
     scheme: "exact",
     network: SOLANA_DEVNET_CAIP2,
@@ -950,9 +948,12 @@ describe("ExactSvmScheme", () => {
 
     it("should reject a compute price instruction that cannot be parsed", () => {
       const facilitator = new ExactSvmScheme(mockSigner);
-      expect(() => callPrice(facilitator, { programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS, data: new Uint8Array([3]) })).toThrow(
-        "invalid_exact_svm_payload_transaction_instructions_compute_price_instruction",
-      );
+      expect(() =>
+        callPrice(facilitator, {
+          programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS,
+          data: new Uint8Array([3]),
+        }),
+      ).toThrow("invalid_exact_svm_payload_transaction_instructions_compute_price_instruction");
     });
 
     it("should reject a compute limit whose discriminator is not SetComputeUnitLimit", () => {
@@ -981,9 +982,12 @@ describe("ExactSvmScheme", () => {
 
     it("should reject a compute limit instruction that cannot be parsed", () => {
       const facilitator = new ExactSvmScheme(mockSigner);
-      expect(() => callLimit(facilitator, { programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS, data: new Uint8Array([2]) })).toThrow(
-        "invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction",
-      );
+      expect(() =>
+        callLimit(facilitator, {
+          programAddress: COMPUTE_BUDGET_PROGRAM_ADDRESS,
+          data: new Uint8Array([2]),
+        }),
+      ).toThrow("invalid_exact_svm_payload_transaction_instructions_compute_limit_instruction");
     });
   });
 

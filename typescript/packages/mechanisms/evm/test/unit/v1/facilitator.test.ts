@@ -333,9 +333,9 @@ describe("ExactEvmSchemeV1", () => {
           },
         },
       };
-      expect((await facilitator.verify(expired as never, requirements as never)).invalidReason).toBe(
-        Errors.ErrValidBeforeExpired,
-      );
+      expect(
+        (await facilitator.verify(expired as never, requirements as never)).invalidReason,
+      ).toBe(Errors.ErrValidBeforeExpired);
 
       const future: PaymentPayloadV1 = {
         ...expired,

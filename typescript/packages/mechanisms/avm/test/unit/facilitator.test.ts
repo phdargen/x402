@@ -172,9 +172,9 @@ describe("ExactAvm facilitator scheme", () => {
     const scheme = new ExactAvmFacilitator(mockFacilitatorSigner(facilitatorAddress));
     const payload = makePayload(paymentGroup, paymentIndex);
 
-    expect((await scheme.verify({ ...payload, x402Version: 1 }, baseRequirements)).invalidReason).toBe(
-      Errors.ErrInvalidVersion,
-    );
+    expect(
+      (await scheme.verify({ ...payload, x402Version: 1 }, baseRequirements)).invalidReason,
+    ).toBe(Errors.ErrInvalidVersion);
 
     const wrongSchemeReq = { ...baseRequirements, scheme: "permit" as "exact" };
     expect(
@@ -200,9 +200,9 @@ describe("ExactAvm facilitator scheme", () => {
       Errors.ErrInvalidPayload,
     );
 
-    expect((await scheme.verify(makePayload(paymentGroup, 99), baseRequirements)).invalidReason).toBe(
-      Errors.ErrInvalidPaymentIndex,
-    );
+    expect(
+      (await scheme.verify(makePayload(paymentGroup, 99), baseRequirements)).invalidReason,
+    ).toBe(Errors.ErrInvalidPaymentIndex);
   });
 
   it("rejects amount, receiver, and asset mismatches", async () => {
@@ -214,8 +214,12 @@ describe("ExactAvm facilitator scheme", () => {
       (await scheme.verify(payload, { ...baseRequirements, amount: "9999" })).invalidReason,
     ).toBe(Errors.ErrAmountMismatch);
     expect(
-      (await scheme.verify(payload, { ...baseRequirements, payTo: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" }))
-        .invalidReason,
+      (
+        await scheme.verify(payload, {
+          ...baseRequirements,
+          payTo: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        })
+      ).invalidReason,
     ).toBe(Errors.ErrReceiverMismatch);
     expect(
       (await scheme.verify(payload, { ...baseRequirements, asset: "99999999" })).invalidReason,
@@ -229,7 +233,8 @@ describe("ExactAvm facilitator scheme", () => {
     });
     const scheme = new ExactAvmFacilitator(mockFacilitatorSigner(facilitatorAddress));
     expect(
-      (await scheme.verify(makePayload(paymentGroup, paymentIndex), baseRequirements)).invalidReason,
+      (await scheme.verify(makePayload(paymentGroup, paymentIndex), baseRequirements))
+        .invalidReason,
     ).toBe(Errors.ErrFacilitatorTransferring);
 
     const client = toClientAvmSigner(CLIENT_KEY);
@@ -269,7 +274,8 @@ describe("ExactAvm facilitator scheme", () => {
     const { paymentGroup: otherGroup } = await buildPaymentGroup({ amount: 2000n });
     const mismatchedGroup = [paymentGroup[0], otherGroup[1]];
     expect(
-      (await scheme.verify(makePayload(mismatchedGroup, paymentIndex), baseRequirements)).invalidReason,
+      (await scheme.verify(makePayload(mismatchedGroup, paymentIndex), baseRequirements))
+        .invalidReason,
     ).toBe(Errors.ErrInvalidGroupId);
 
     const simFailScheme = new ExactAvmFacilitator(
@@ -291,7 +297,8 @@ describe("ExactAvm facilitator scheme", () => {
     });
     const scheme = new ExactAvmFacilitator(mockFacilitatorSigner(facilitatorAddress));
     expect(
-      (await scheme.verify(makePayload(paymentGroup, paymentIndex), baseRequirements)).invalidReason,
+      (await scheme.verify(makePayload(paymentGroup, paymentIndex), baseRequirements))
+        .invalidReason,
     ).toBe(Errors.ErrFeeTooHigh);
   });
 

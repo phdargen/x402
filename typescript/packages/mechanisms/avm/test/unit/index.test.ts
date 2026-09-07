@@ -255,30 +255,26 @@ describe("@x402/avm", () => {
   });
 
   describe("ExactAvm client scheme", () => {
-    it(
-      "creates a sponsored payment payload with fee payer",
-      { timeout: 20000 },
-      async () => {
-        const clientSigner = toClientAvmSigner(CLIENT_KEY);
-        const facilitator = toClientAvmSigner(FACIL_KEY);
-        const scheme = new ExactAvmClientScheme(clientSigner);
-        const requirements: PaymentRequirements = {
-          scheme: "exact",
-          network: ALGORAND_TESTNET_CAIP2,
-          asset: USDC_TESTNET_ASA_ID,
-          amount: "1000",
-          payTo: PAY_TO,
-          maxTimeoutSeconds: 3600,
-          extra: { feePayer: facilitator.address },
-        };
+    it("creates a sponsored payment payload with fee payer", { timeout: 20000 }, async () => {
+      const clientSigner = toClientAvmSigner(CLIENT_KEY);
+      const facilitator = toClientAvmSigner(FACIL_KEY);
+      const scheme = new ExactAvmClientScheme(clientSigner);
+      const requirements: PaymentRequirements = {
+        scheme: "exact",
+        network: ALGORAND_TESTNET_CAIP2,
+        asset: USDC_TESTNET_ASA_ID,
+        amount: "1000",
+        payTo: PAY_TO,
+        maxTimeoutSeconds: 3600,
+        extra: { feePayer: facilitator.address },
+      };
 
-        const result = await scheme.createPaymentPayload(2, requirements);
-        const payload = result.payload as { paymentGroup: string[]; paymentIndex: number };
-        expect(result.x402Version).toBe(2);
-        expect(payload.paymentGroup).toHaveLength(2);
-        expect(payload.paymentIndex).toBe(1);
-      },
-    );
+      const result = await scheme.createPaymentPayload(2, requirements);
+      const payload = result.payload as { paymentGroup: string[]; paymentIndex: number };
+      expect(result.x402Version).toBe(2);
+      expect(payload.paymentGroup).toHaveLength(2);
+      expect(payload.paymentIndex).toBe(1);
+    });
 
     it(
       "creates a non-sponsored payment payload and resolves numeric asset ids",

@@ -6,11 +6,7 @@ import {
   encodePaymentSignatureHeader,
 } from "../../../src/http";
 import { x402HTTPClient } from "../../../src/http/x402HTTPClient";
-import {
-  buildPaymentPayload,
-  buildPaymentRequired,
-  buildSettleResponse,
-} from "../../mocks";
+import { buildPaymentPayload, buildPaymentRequired, buildSettleResponse } from "../../mocks";
 
 describe("x402HTTPClient", () => {
   describe("encodePaymentSignatureHeader", () => {
@@ -55,7 +51,9 @@ describe("x402HTTPClient", () => {
       };
 
       expect(
-        httpClient.getPaymentRequiredResponse(name => headers[name as keyof typeof headers] ?? null),
+        httpClient.getPaymentRequiredResponse(
+          name => headers[name as keyof typeof headers] ?? null,
+        ),
       ).toEqual(paymentRequired);
     });
 
@@ -63,9 +61,9 @@ describe("x402HTTPClient", () => {
       const httpClient = new x402HTTPClient(new x402Client());
       const paymentRequired = buildPaymentRequired({ x402Version: 1 });
 
-      expect(
-        httpClient.getPaymentRequiredResponse(() => null, paymentRequired),
-      ).toEqual(paymentRequired);
+      expect(httpClient.getPaymentRequiredResponse(() => null, paymentRequired)).toEqual(
+        paymentRequired,
+      );
     });
 
     it("throws when neither a v2 header nor a v1 body is available", () => {
@@ -239,7 +237,10 @@ describe("x402HTTPClient", () => {
     });
 
     it("falls back to a v1 JSON body on 402 when settlement headers are absent", () => {
-      const paymentRequired = buildPaymentRequired({ x402Version: 1, error: "expired_authorization" });
+      const paymentRequired = buildPaymentRequired({
+        x402Version: 1,
+        error: "expired_authorization",
+      });
 
       const result = httpClient.parsePaymentResult({
         status: 402,

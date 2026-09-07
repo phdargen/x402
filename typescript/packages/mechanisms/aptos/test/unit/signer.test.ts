@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  Account,
-  AccountAuthenticator,
-  SimpleTransaction,
-} from "@aptos-labs/ts-sdk";
+import { Account, AccountAuthenticator, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import { createClientSigner, toFacilitatorAptosSigner } from "../../src/signer";
 
 const mockSubmitSimple = vi.fn();
@@ -11,7 +7,7 @@ const mockSignAsFeePayer = vi.fn();
 const mockSimulateSimple = vi.fn();
 const mockWaitForTransaction = vi.fn();
 
-vi.mock("@aptos-labs/ts-sdk", async (importOriginal) => {
+vi.mock("@aptos-labs/ts-sdk", async importOriginal => {
   const actual = await importOriginal<typeof import("@aptos-labs/ts-sdk")>();
   return {
     ...actual,
@@ -155,18 +151,18 @@ describe("Aptos Signer", () => {
       mockSimulateSimple.mockResolvedValueOnce([{ success: false, vm_status: "OUT_OF_GAS" }]);
       const facilitatorSigner = toFacilitatorAptosSigner(account);
 
-      await expect(
-        facilitatorSigner.simulateTransaction(transaction, "aptos:2"),
-      ).rejects.toThrow("Simulation failed: OUT_OF_GAS");
+      await expect(facilitatorSigner.simulateTransaction(transaction, "aptos:2")).rejects.toThrow(
+        "Simulation failed: OUT_OF_GAS",
+      );
     });
 
     it("simulateTransaction throws when simulation returns no results", async () => {
       mockSimulateSimple.mockResolvedValueOnce([]);
       const facilitatorSigner = toFacilitatorAptosSigner(account);
 
-      await expect(
-        facilitatorSigner.simulateTransaction(transaction, "aptos:2"),
-      ).rejects.toThrow("Simulation failed: unknown error");
+      await expect(facilitatorSigner.simulateTransaction(transaction, "aptos:2")).rejects.toThrow(
+        "Simulation failed: unknown error",
+      );
     });
 
     it("waitForTransaction delegates to Aptos client", async () => {

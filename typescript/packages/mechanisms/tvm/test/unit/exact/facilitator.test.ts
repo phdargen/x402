@@ -18,7 +18,6 @@ import {
   ERR_EXACT_TVM_INVALID_RECIPIENT,
   ERR_EXACT_TVM_INVALID_SEQNO,
   ERR_EXACT_TVM_INVALID_SETTLEMENT_BOC,
-  ERR_EXACT_TVM_INVALID_W5_ACTIONS,
   ERR_EXACT_TVM_INVALID_W5_MESSAGE,
   ERR_EXACT_TVM_INVALID_WALLET_ID,
   ERR_EXACT_TVM_SIMULATION_FAILED,
@@ -33,7 +32,12 @@ import {
   W5R1_CODE_HEX,
 } from "../../../src/constants";
 import { toClientTvmSigner, type FacilitatorTvmSigner } from "../../../src/signer";
-import type { ParsedTvmSettlement, TvmAccountState, TvmJettonWalletData, TvmRelayRequest } from "../../../src/types";
+import type {
+  ParsedTvmSettlement,
+  TvmAccountState,
+  TvmJettonWalletData,
+  TvmRelayRequest,
+} from "../../../src/types";
 import { parseExactTvmPayload } from "../../../src/exact/codec";
 import {
   messageBodyHashMatches,
@@ -392,21 +396,25 @@ describe("SettlementBatcher", () => {
     const fixture = await createFixture();
     const settlementVerifier = vi.fn(() => "confirmed-tx");
 
-    const failingBroadcastSigner = createMockSigner({ trace: traceForSettlement(fixture.settlement) });
-    failingBroadcastSigner.buildRelayExternalBocBatch.mockRejectedValue(new Error("broadcast failed"));
+    const failingBroadcastSigner = createMockSigner({
+      trace: traceForSettlement(fixture.settlement),
+    });
+    failingBroadcastSigner.buildRelayExternalBocBatch.mockRejectedValue(
+      new Error("broadcast failed"),
+    );
     const broadcastBatcher = new SettlementBatcher(failingBroadcastSigner, cache, {
       batchFlushSize: 1,
       settlementVerifier,
     });
-    await expect(
-      broadcastBatcher.enqueue(createQueuedSettlement(fixture)),
-    ).resolves.toMatchObject({
+    await expect(broadcastBatcher.enqueue(createQueuedSettlement(fixture))).resolves.toMatchObject({
       success: false,
       errorReason: ERR_EXACT_TVM_TRANSACTION_FAILED,
       errorMessage: "broadcast failed",
     });
 
-    const failingConfirmationSigner = createMockSigner({ trace: traceForSettlement(fixture.settlement) });
+    const failingConfirmationSigner = createMockSigner({
+      trace: traceForSettlement(fixture.settlement),
+    });
     failingConfirmationSigner.waitForTraceConfirmation.mockRejectedValue(
       new Error("confirmation failed"),
     );
@@ -454,7 +462,10 @@ describe("SettlementBatcher", () => {
 
     const resultPromise = batcher.enqueue(createQueuedSettlement(fixture));
     await vi.advanceTimersByTimeAsync(1000);
-    await expect(resultPromise).resolves.toMatchObject({ success: true, transaction: "confirmed-tx" });
+    await expect(resultPromise).resolves.toMatchObject({
+      success: true,
+      transaction: "confirmed-tx",
+    });
   });
 });
 

@@ -3,7 +3,11 @@ import {
   AUTH_CAPTURE_DEPLOYMENT_V1_0,
   AUTH_CAPTURE_DEPLOYMENT_V1_1,
 } from "../../../src/auth-capture/constants";
-import type { AuthCaptureExtra, Eip3009Payload, Permit2Payload } from "../../../src/auth-capture/types";
+import type {
+  AuthCaptureExtra,
+  Eip3009Payload,
+  Permit2Payload,
+} from "../../../src/auth-capture/types";
 import {
   paymentInfoToContractTuple,
   reconstructPaymentInfo,

@@ -7,10 +7,7 @@ import {
   verifySmartWalletTransaction,
 } from "../../src/exact/facilitator/smartWalletVerification";
 import * as Errors from "../../src/exact/facilitator/errors";
-import {
-  encodeSignedTransaction,
-  placeholderFeePayerSignature,
-} from "./helpers/signedTransaction";
+import { encodeSignedTransaction, placeholderFeePayerSignature } from "./helpers/signedTransaction";
 import {
   appendTransactionMessageInstruction,
   createTransactionMessage,

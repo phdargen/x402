@@ -71,9 +71,9 @@ describe("near server scheme", () => {
 
   it("returns decimals for known default assets", () => {
     const scheme = new ExactNearScheme();
-    expect(scheme.getAssetDecimals(getDefaultAsset(NEAR_TESTNET_CAIP2).asset, NEAR_TESTNET_CAIP2)).toBe(
-      6,
-    );
+    expect(
+      scheme.getAssetDecimals(getDefaultAsset(NEAR_TESTNET_CAIP2).asset, NEAR_TESTNET_CAIP2),
+    ).toBe(6);
     expect(scheme.getAssetDecimals("unknown.testnet", NEAR_TESTNET_CAIP2)).toBeUndefined();
   });
 

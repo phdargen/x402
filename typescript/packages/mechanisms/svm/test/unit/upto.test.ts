@@ -2926,53 +2926,44 @@ describe("upto SVM scheme", () => {
 
     it("resolveOpenSlot falls back to RPC when extra.recentSlot overflows u64", async () => {
       const getSlotSend = vi.fn().mockResolvedValue(99n);
-      const slot = await resolveOpenSlot(
-        { getSlot: () => ({ send: getSlotSend }) } as never,
-        {
-          scheme: "upto",
-          network: SOLANA_DEVNET_CAIP2,
-          asset: MINT,
-          amount: "1000000",
-          payTo: PAY_TO,
-          maxTimeoutSeconds: 300,
-          extra: { recentSlot: 1n << 64n },
-        },
-      );
+      const slot = await resolveOpenSlot({ getSlot: () => ({ send: getSlotSend }) } as never, {
+        scheme: "upto",
+        network: SOLANA_DEVNET_CAIP2,
+        asset: MINT,
+        amount: "1000000",
+        payTo: PAY_TO,
+        maxTimeoutSeconds: 300,
+        extra: { recentSlot: 1n << 64n },
+      });
       expect(slot).toBe(99n);
       expect(getSlotSend).toHaveBeenCalled();
     });
 
     it("resolveOpenSlot falls back to RPC when extra.recentSlot is not an unsigned integer", async () => {
       const getSlotSend = vi.fn().mockResolvedValue(7n);
-      const slot = await resolveOpenSlot(
-        { getSlot: () => ({ send: getSlotSend }) } as never,
-        {
-          scheme: "upto",
-          network: SOLANA_DEVNET_CAIP2,
-          asset: MINT,
-          amount: "1000000",
-          payTo: PAY_TO,
-          maxTimeoutSeconds: 300,
-          extra: { recentSlot: -1 },
-        },
-      );
+      const slot = await resolveOpenSlot({ getSlot: () => ({ send: getSlotSend }) } as never, {
+        scheme: "upto",
+        network: SOLANA_DEVNET_CAIP2,
+        asset: MINT,
+        amount: "1000000",
+        payTo: PAY_TO,
+        maxTimeoutSeconds: 300,
+        extra: { recentSlot: -1 },
+      });
       expect(slot).toBe(7n);
     });
 
     it("resolveOpenSlot falls back to RPC when extra.recentSlot is a non-numeric string", async () => {
       const getSlotSend = vi.fn().mockResolvedValue(3n);
-      const slot = await resolveOpenSlot(
-        { getSlot: () => ({ send: getSlotSend }) } as never,
-        {
-          scheme: "upto",
-          network: SOLANA_DEVNET_CAIP2,
-          asset: MINT,
-          amount: "1000000",
-          payTo: PAY_TO,
-          maxTimeoutSeconds: 300,
-          extra: { recentSlot: "latest" },
-        },
-      );
+      const slot = await resolveOpenSlot({ getSlot: () => ({ send: getSlotSend }) } as never, {
+        scheme: "upto",
+        network: SOLANA_DEVNET_CAIP2,
+        asset: MINT,
+        amount: "1000000",
+        payTo: PAY_TO,
+        maxTimeoutSeconds: 300,
+        extra: { recentSlot: "latest" },
+      });
       expect(slot).toBe(3n);
       expect(getSlotSend).toHaveBeenCalled();
     });

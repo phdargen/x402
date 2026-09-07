@@ -166,7 +166,11 @@ describe("EVM Utils", () => {
 describe("builder-code data suffix", () => {
   it("returns undefined without a context or when the extension emits an empty suffix", async () => {
     const ctx = {
-      paymentPayload: { x402Version: 2, accepted: { scheme: "exact", network: "eip155:84532" }, payload: {} },
+      paymentPayload: {
+        x402Version: 2,
+        accepted: { scheme: "exact", network: "eip155:84532" },
+        payload: {},
+      },
       paymentRequirements: {
         scheme: "exact",
         network: "eip155:84532",
@@ -178,12 +182,7 @@ describe("builder-code data suffix", () => {
     };
 
     expect(await resolveDataSuffix(undefined, ctx)).toBeUndefined();
-    expect(
-      await resolveDataSuffix(
-        { getExtension: () => undefined },
-        ctx,
-      ),
-    ).toBeUndefined();
+    expect(await resolveDataSuffix({ getExtension: () => undefined }, ctx)).toBeUndefined();
     expect(
       await resolveDataSuffix(
         {
@@ -203,7 +202,11 @@ describe("builder-code data suffix", () => {
 
   it("returns a single suffix unchanged", async () => {
     const ctx = {
-      paymentPayload: { x402Version: 2, accepted: { scheme: "exact", network: "eip155:84532" }, payload: {} },
+      paymentPayload: {
+        x402Version: 2,
+        accepted: { scheme: "exact", network: "eip155:84532" },
+        payload: {},
+      },
       paymentRequirements: {
         scheme: "exact",
         network: "eip155:84532",

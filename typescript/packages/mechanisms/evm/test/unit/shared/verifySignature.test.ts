@@ -234,9 +234,9 @@ describe("verifyHashSignature", () => {
 describe("isContractRevert", () => {
   it("treats revert-shaped errors as contract reverts and RPC/transport failures as not", () => {
     expect(isContractRevert(new Error("execution reverted: InvalidSignature"))).toBe(true);
-    expect(isContractRevert(new Error("Error: VM Exception while processing transaction: revert"))).toBe(
-      true,
-    );
+    expect(
+      isContractRevert(new Error("Error: VM Exception while processing transaction: revert")),
+    ).toBe(true);
     expect(isContractRevert("call reverted without a reason string")).toBe(true);
     expect(isContractRevert(new Error("fetch failed"))).toBe(false);
     expect(isContractRevert(new Error("HTTP request failed"))).toBe(false);

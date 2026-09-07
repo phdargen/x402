@@ -1,5 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Account, AccountAuthenticatorEd25519, AccountAddress, ChainId, Ed25519PublicKey, Ed25519Signature, EntryFunction, Identifier, ModuleId, RawTransaction, SimpleTransaction, StructTag, TransactionPayloadEntryFunction, TypeTagStruct, U64 } from "@aptos-labs/ts-sdk";
+import {
+  Account,
+  AccountAuthenticatorEd25519,
+  AccountAddress,
+  ChainId,
+  Ed25519PublicKey,
+  Ed25519Signature,
+  EntryFunction,
+  Identifier,
+  ModuleId,
+  RawTransaction,
+  SimpleTransaction,
+  StructTag,
+  TransactionPayloadEntryFunction,
+  TypeTagStruct,
+  U64,
+} from "@aptos-labs/ts-sdk";
 import { ExactAptosScheme as ExactAptosClient } from "../../src/exact/client/scheme";
 import { ExactAptosScheme as ExactAptosFacilitator } from "../../src/exact/facilitator/scheme";
 import { ExactAptosScheme as ExactAptosServer } from "../../src/exact/server/scheme";
@@ -23,7 +39,7 @@ import type { PaymentRequirements } from "@x402/core/types";
 
 const mockBuildSimple = vi.fn();
 
-vi.mock("@aptos-labs/ts-sdk", async (importOriginal) => {
+vi.mock("@aptos-labs/ts-sdk", async importOriginal => {
   const actual = await importOriginal<typeof import("@aptos-labs/ts-sdk")>();
   return {
     ...actual,
@@ -255,11 +271,7 @@ describe("@x402/aptos", () => {
             ),
           ),
         ],
-        [
-          AccountAddress.from(USDC_TESTNET_FA),
-          AccountAddress.from(payTo),
-          new U64(1000n),
-        ],
+        [AccountAddress.from(USDC_TESTNET_FA), AccountAddress.from(payTo), new U64(1000n)],
       );
       const rawTx = new RawTransaction(
         signer.accountAddress,
@@ -287,15 +299,15 @@ describe("@x402/aptos", () => {
 
     it("validates required payment requirement fields", async () => {
       const client = new ExactAptosClient(signer);
-      await expect(
-        client.createPaymentPayload(2, baseRequirements({ asset: "" })),
-      ).rejects.toThrow("Asset is required");
+      await expect(client.createPaymentPayload(2, baseRequirements({ asset: "" }))).rejects.toThrow(
+        "Asset is required",
+      );
       await expect(
         client.createPaymentPayload(2, baseRequirements({ asset: "not-an-address" })),
       ).rejects.toThrow("Invalid asset address");
-      await expect(
-        client.createPaymentPayload(2, baseRequirements({ payTo: "" })),
-      ).rejects.toThrow("Pay-to address is required");
+      await expect(client.createPaymentPayload(2, baseRequirements({ payTo: "" }))).rejects.toThrow(
+        "Pay-to address is required",
+      );
       await expect(
         client.createPaymentPayload(2, baseRequirements({ payTo: "bad" })),
       ).rejects.toThrow("Invalid pay-to address");
@@ -331,9 +343,7 @@ describe("@x402/aptos", () => {
       );
 
       expect(result.payload.transaction).toBeTypeOf("string");
-      expect(mockBuildSimple).toHaveBeenCalledWith(
-        expect.objectContaining({ withFeePayer: true }),
-      );
+      expect(mockBuildSimple).toHaveBeenCalledWith(expect.objectContaining({ withFeePayer: true }));
     });
   });
 });

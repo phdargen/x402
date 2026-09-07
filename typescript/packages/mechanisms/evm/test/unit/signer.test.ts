@@ -55,15 +55,17 @@ describe("EVM Signer Converters", () => {
       };
 
       const result = toClientEvmSigner(mockAccount);
-      expect(await result.signTransaction?.({
-        to: mockAccount.address,
-        data: "0x",
-        nonce: 0,
-        gas: 1n,
-        maxFeePerGas: 1n,
-        maxPriorityFeePerGas: 1n,
-        chainId: 84532,
-      })).toBe("0xsignedtx");
+      expect(
+        await result.signTransaction?.({
+          to: mockAccount.address,
+          data: "0x",
+          nonce: 0,
+          gas: 1n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: 84532,
+        }),
+      ).toBe("0xsignedtx");
       expect(await result.getTransactionCount?.({ address: mockAccount.address })).toBe(7);
       expect(await result.estimateFeesPerGas?.()).toEqual({
         maxFeePerGas: 10n,

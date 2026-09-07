@@ -2701,7 +2701,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", 
 describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
   const authorizer = buildAuthorizerSigner();
   const FACTORY = "0xca11bde05977b3631167028862be2a173976ca11" as `0x${string}`;
-  const ERC6492_MAGIC = "0x6492649264926492649264926492649264926492649264926492649264926492" as const;
+  const ERC6492_MAGIC =
+    "0x6492649264926492649264926492649264926492649264926492649264926492" as const;
 
   function wrapErc6492(
     factory: `0x${string}`,
@@ -2737,7 +2738,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
             validAfter: String(now - 600),
             validBefore: String(now + 3600),
             salt: "0x0000000000000000000000000000000000000000000000000000000000000001",
-            signature: wrapErc6492(FACTORY, "0xdeadbeef", ("0x" + "33".repeat(65)) as `0x${string}`),
+            signature: wrapErc6492(
+              FACTORY,
+              "0xdeadbeef",
+              ("0x" + "33".repeat(65)) as `0x${string}`,
+            ),
           },
         },
       },
@@ -2758,9 +2763,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
         { status: "failure", error: new Error("inner signature rejected") },
       ]);
     const signer = buildSigner({
-      getCode: vi.fn().mockImplementation(({ address }: { address: `0x${string}` }) =>
-        Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
-      ),
+      getCode: vi
+        .fn()
+        .mockImplementation(({ address }: { address: `0x${string}` }) =>
+          Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
+        ),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       eip6492AllowedFactories: [FACTORY],
@@ -2784,9 +2791,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
         { status: "success", result: undefined },
       ]);
     const signer = buildSigner({
-      getCode: vi.fn().mockImplementation(({ address }: { address: `0x${string}` }) =>
-        Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
-      ),
+      getCode: vi
+        .fn()
+        .mockImplementation(({ address }: { address: `0x${string}` }) =>
+          Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
+        ),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       eip6492AllowedFactories: [FACTORY],
@@ -2815,9 +2824,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
         { status: "success", result: 0n },
       ]);
     const signer = buildSigner({
-      getCode: vi.fn().mockImplementation(({ address }: { address: `0x${string}` }) =>
-        Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
-      ),
+      getCode: vi
+        .fn()
+        .mockImplementation(({ address }: { address: `0x${string}` }) =>
+          Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
+        ),
       sendTransaction: vi.fn().mockResolvedValue(("0x" + "dd".repeat(32)) as `0x${string}`),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
@@ -2847,9 +2858,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — ERC-6492 deposit", () => {
         { status: "success", result: undefined },
       ]);
     const signer = buildSigner({
-      getCode: vi.fn().mockImplementation(({ address }: { address: `0x${string}` }) =>
-        Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
-      ),
+      getCode: vi
+        .fn()
+        .mockImplementation(({ address }: { address: `0x${string}` }) =>
+          Promise.resolve(address.toLowerCase() === PAYER.toLowerCase() ? "0x" : "0x6080604052"),
+        ),
       sendTransaction: vi.fn().mockResolvedValue(("0x" + "dd".repeat(32)) as `0x${string}`),
       waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "reverted" }),
     });

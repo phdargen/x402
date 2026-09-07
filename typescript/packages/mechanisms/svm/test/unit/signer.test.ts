@@ -4,9 +4,10 @@ vi.mock("@solana/kit", async importOriginal => {
   const actual = await importOriginal<typeof import("@solana/kit")>();
   return {
     ...actual,
-    fetchAddressesForLookupTables: vi.fn((
-      ...args: Parameters<typeof actual.fetchAddressesForLookupTables>
-    ) => actual.fetchAddressesForLookupTables(...args)),
+    fetchAddressesForLookupTables: vi.fn(
+      (...args: Parameters<typeof actual.fetchAddressesForLookupTables>) =>
+        actual.fetchAddressesForLookupTables(...args),
+    ),
   };
 });
 
@@ -23,10 +24,7 @@ import {
 } from "../../src/signer";
 import type { ClientSvmSigner } from "../../src/signer";
 import { SOLANA_DEVNET_CAIP2, SOLANA_MAINNET_CAIP2 } from "../../src/constants";
-import {
-  encodeSignedTransaction,
-  placeholderFeePayerSignature,
-} from "./helpers/signedTransaction";
+import { encodeSignedTransaction, placeholderFeePayerSignature } from "./helpers/signedTransaction";
 
 describe("SVM Signer Converters", () => {
   describe("toClientSvmSigner", () => {
@@ -682,8 +680,12 @@ describe("SVM Signer Converters", () => {
       await expect(facilitator.getTokenAccountBalance!("ata", SOLANA_DEVNET_CAIP2)).resolves.toBe(
         42n,
       );
-      await expect(facilitator.getTokenAccountBalance!("ata", SOLANA_DEVNET_CAIP2)).resolves.toBeNull();
-      await expect(facilitator.getTokenAccountBalance!("ata", SOLANA_DEVNET_CAIP2)).resolves.toBeNull();
+      await expect(
+        facilitator.getTokenAccountBalance!("ata", SOLANA_DEVNET_CAIP2),
+      ).resolves.toBeNull();
+      await expect(
+        facilitator.getTokenAccountBalance!("ata", SOLANA_DEVNET_CAIP2),
+      ).resolves.toBeNull();
     });
 
     it("surfaces ALT resolution failures instead of returning an empty map", async () => {
@@ -698,25 +700,29 @@ describe("SVM Signer Converters", () => {
       } as never;
       const facilitator = toFacilitatorSvmSigner(mockSigner as never, mockRpc);
       await expect(
-        facilitator.fetchAddressLookupTables!(["Alt111111111111111111111111111111111"], SOLANA_DEVNET_CAIP2),
+        facilitator.fetchAddressLookupTables!(
+          ["Alt111111111111111111111111111111111"],
+          SOLANA_DEVNET_CAIP2,
+        ),
       ).rejects.toThrow("invalid_exact_svm_smart_wallet_alt_resolution_failed");
     });
 
     it("maps resolved ALT addresses onto the lookup-table keys", async () => {
       vi.mocked(fetchAddressesForLookupTables).mockResolvedValueOnce({
-        Alt111111111111111111111111111111111: [
-          "Resolved11111111111111111111111111" as Address,
-        ],
+        Alt111111111111111111111111111111111: ["Resolved11111111111111111111111111" as Address],
       } as never);
       const mockSigner = {
         address: "FacilitatorAddress1111111111111111111" as never,
         signTransactions: vi.fn() as never,
         signMessages: vi.fn().mockResolvedValue([{}]) as never,
       };
-      const facilitator = toFacilitatorSvmSigner(mockSigner as never, {
-        getBalance: vi.fn(),
-        getSlot: vi.fn(),
-      } as never);
+      const facilitator = toFacilitatorSvmSigner(
+        mockSigner as never,
+        {
+          getBalance: vi.fn(),
+          getSlot: vi.fn(),
+        } as never,
+      );
       await expect(
         facilitator.fetchAddressLookupTables!(
           ["Alt111111111111111111111111111111111"],
@@ -733,7 +739,11 @@ describe("SVM Signer Converters", () => {
         signTransactions: vi.fn() as never,
         signMessages: vi.fn().mockResolvedValue([{}]) as never,
       };
-      const account = { data: ["AQID", "base64"], owner: "11111111111111111111111111111111", lamports: 1n };
+      const account = {
+        data: ["AQID", "base64"],
+        owner: "11111111111111111111111111111111",
+        lamports: 1n,
+      };
       const getAccountInfo = vi.fn().mockReturnValue({
         send: vi.fn().mockResolvedValue({ value: account }),
       });

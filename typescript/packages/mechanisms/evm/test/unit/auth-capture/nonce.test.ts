@@ -272,9 +272,7 @@ describe("nonce utilities", () => {
         deadline: "9999999999",
       };
 
-      await expect(
-        verifyPermit2Signature(signer, permit, "0xdead", 84532),
-      ).resolves.toBe(false);
+      await expect(verifyPermit2Signature(signer, permit, "0xdead", 84532)).resolves.toBe(false);
 
       const signed = await signPermit2(
         {
@@ -330,7 +328,9 @@ describe("auth-capture deployment constants", () => {
       AUTH_CAPTURE_DEPLOYMENT_V1_0,
     );
     expect(resolveAuthCaptureDeployment("not-an-address")).toBeUndefined();
-    expect(resolveAuthCaptureDeployment("0x0000000000000000000000000000000000000001")).toBeUndefined();
+    expect(
+      resolveAuthCaptureDeployment("0x0000000000000000000000000000000000000001"),
+    ).toBeUndefined();
   });
 
   it("selects v1.0 vs v1.1 operator typed-data fields and computes escrow fee amounts", () => {

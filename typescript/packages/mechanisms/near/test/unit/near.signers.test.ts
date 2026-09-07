@@ -248,7 +248,9 @@ describe("createFacilitatorNearSigner", () => {
 
     mockProvider.viewAccessKey.mockResolvedValueOnce({
       nonce: 12,
-      permission: { functionCall: { allowance: "1", receiver_id: "token.testnet", method_names: [] } },
+      permission: {
+        functionCall: { allowance: "1", receiver_id: "token.testnet", method_names: [] },
+      },
     });
     await expect(
       signer.viewAccessKey({
@@ -352,9 +354,7 @@ describe("createFacilitatorNearSigner", () => {
     mockProvider.sendTransactionUntil.mockResolvedValueOnce({
       transaction_outcome: { id: "TX123" },
       status: { SuccessValue: "" },
-      receipts_outcome: [
-        { outcome: { executor_id: FIXTURE.asset, status: { SuccessValue: "" } } },
-      ],
+      receipts_outcome: [{ outcome: { executor_id: FIXTURE.asset, status: { SuccessValue: "" } } }],
     });
 
     const outcome = await signer.submitSignedDelegateAction({

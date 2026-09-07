@@ -440,7 +440,9 @@ describe("ExactSvmSchemeV1", () => {
         } as never,
       );
       expect(result.isValid).toBe(false);
-      expect(result.invalidReason).toBe("invalid_exact_svm_payload_transaction_instructions_length");
+      expect(result.invalidReason).toBe(
+        "invalid_exact_svm_payload_transaction_instructions_length",
+      );
     });
 
     it("should reject when the first instruction is not a compute limit", async () => {

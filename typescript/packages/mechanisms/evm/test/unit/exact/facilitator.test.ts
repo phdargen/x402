@@ -2527,10 +2527,12 @@ describe("shared Permit2 helpers", () => {
     expect(mapSettleError(new Error("UnauthorizedFacilitator"), payload, payer).errorReason).toBe(
       "upto_unauthorized_facilitator",
     );
-    expect(mapSettleError(new Error("something else exploded"), payload, payer).errorReason).toContain(
+    expect(
+      mapSettleError(new Error("something else exploded"), payload, payer).errorReason,
+    ).toContain(Errors.ErrTransactionFailed);
+    expect(mapSettleError("not-an-error", payload, payer).errorReason).toBe(
       Errors.ErrTransactionFailed,
     );
-    expect(mapSettleError("not-an-error", payload, payer).errorReason).toBe(Errors.ErrTransactionFailed);
 
     const sig = "aa".repeat(64) + "1b";
     expect(splitEip2612Signature(sig)).toEqual({
@@ -2557,16 +2559,29 @@ describe("shared Permit2 helpers", () => {
       isValid: true,
     });
     expect(
-      validateEip2612PermitForPayment({ ...valid, from: "0x0000000000000000000000000000000000000001" }, payer, token as `0x${string}`).invalidReason,
+      validateEip2612PermitForPayment(
+        { ...valid, from: "0x0000000000000000000000000000000000000001" },
+        payer,
+        token as `0x${string}`,
+      ).invalidReason,
     ).toBe(Errors.ErrEip2612FromMismatch);
     expect(
-      validateEip2612PermitForPayment({ ...valid, asset: "0x0000000000000000000000000000000000000002" }, payer, token as `0x${string}`).invalidReason,
+      validateEip2612PermitForPayment(
+        { ...valid, asset: "0x0000000000000000000000000000000000000002" },
+        payer,
+        token as `0x${string}`,
+      ).invalidReason,
     ).toBe(Errors.ErrEip2612AssetMismatch);
     expect(
-      validateEip2612PermitForPayment({ ...valid, spender: "0x0000000000000000000000000000000000000003" }, payer, token as `0x${string}`).invalidReason,
+      validateEip2612PermitForPayment(
+        { ...valid, spender: "0x0000000000000000000000000000000000000003" },
+        payer,
+        token as `0x${string}`,
+      ).invalidReason,
     ).toBe(Errors.ErrEip2612SpenderNotPermit2);
     expect(
-      validateEip2612PermitForPayment({ ...valid, deadline: "1" }, payer, token as `0x${string}`).invalidReason,
+      validateEip2612PermitForPayment({ ...valid, deadline: "1" }, payer, token as `0x${string}`)
+        .invalidReason,
     ).toBe(Errors.ErrEip2612DeadlineExpired);
   });
 });
@@ -2612,8 +2627,13 @@ describe("validateErc20ApprovalForPayment", () => {
 
   it("rejects invalid format, from/asset/spender mismatches, and parse failures", async () => {
     expect(
-      (await validateErc20ApprovalForPayment({ ...validInfo, from: "not-an-address" }, payer, token))
-        .invalidReason,
+      (
+        await validateErc20ApprovalForPayment(
+          { ...validInfo, from: "not-an-address" },
+          payer,
+          token,
+        )
+      ).invalidReason,
     ).toBe(Errors.ErrErc20ApprovalInvalidFormat);
     expect(
       (
@@ -2726,7 +2746,9 @@ describe("shared Permit2 simulation helpers", () => {
   };
 
   it("simulate helpers return false on RPC failure and when simulateTransactions is missing", async () => {
-    const signer = { readContract: vi.fn().mockRejectedValue(new Error("rpc")) } as unknown as FacilitatorEvmSigner;
+    const signer = {
+      readContract: vi.fn().mockRejectedValue(new Error("rpc")),
+    } as unknown as FacilitatorEvmSigner;
 
     const failing = await diagnosePermit2SimulationFailure(
       config,
@@ -2754,7 +2776,9 @@ describe("shared Permit2 simulation helpers", () => {
       }),
     ).toBe(false);
     expect(
-      await simulatePermit2SettleWithErc20Approval(config, signer, [], { signedTransaction: "0x01" }),
+      await simulatePermit2SettleWithErc20Approval(config, signer, [], {
+        signedTransaction: "0x01",
+      }),
     ).toBe(false);
     expect(
       await simulatePermit2SettleWithErc20Approval(
