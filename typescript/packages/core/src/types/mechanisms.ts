@@ -233,6 +233,9 @@ export interface PaymentFlowPhases {
   settleAfterHandler: boolean;
 }
 
+/** Partial overrides to a flow's default phase table in {@link PAYMENT_FLOWS}. */
+export type PaymentFlowPhaseOverrides = Partial<PaymentFlowPhases>;
+
 /**
  * Supported payment flows for one assetTransferMethod, plus the default when
  * `extra.paymentFlow` is omitted.
@@ -241,6 +244,8 @@ export interface PaymentFlowConfig {
   readonly supported: readonly PaymentFlowName[];
   /** Must be a member of {@link PaymentFlowConfig.supported}. */
   readonly default: PaymentFlowName;
+  /** Per-flow overrides to the default phase table for this ATM. */
+  readonly flowPhases?: Partial<Record<PaymentFlowName, PaymentFlowPhaseOverrides>>;
 }
 
 export interface SchemeNetworkServer {

@@ -655,8 +655,11 @@ export class x402HTTPResourceServer {
         };
       }
 
-      const flow = this.ResourceServer.getPaymentFlow(paymentPayload, matchingRequirements);
-      const phases = resolvePaymentFlowPhases(flow);
+      const resolved = this.ResourceServer.getResolvedPaymentFlow(
+        paymentPayload,
+        matchingRequirements,
+      );
+      const phases = resolvePaymentFlowPhases(resolved.paymentFlow, resolved.paymentFlowConfig);
 
       const verifyResult = await this.ResourceServer.verifyPayment(
         paymentPayload,
@@ -713,7 +716,7 @@ export class x402HTTPResourceServer {
         }))(beforeSettleResult);
         beforeHandlerSettlement = {
           phase: "before-handler",
-          flow,
+          flow: resolved.paymentFlow,
           result,
           requirements,
         };
@@ -784,10 +787,18 @@ export class x402HTTPResourceServer {
       };
     }
 
-    const flow =
-      beforeHandlerSettlement?.flow ??
-      this.ResourceServer.getPaymentFlow(paymentPayload, requirements);
-    const phases = resolvePaymentFlowPhases(flow);
+    const resolved =
+      beforeHandlerSettlement?.flow !== undefined
+        ? {
+            paymentFlow: beforeHandlerSettlement.flow,
+            paymentFlowConfig: this.ResourceServer.getResolvedPaymentFlow(
+              paymentPayload,
+              requirements,
+            ).paymentFlowConfig,
+          }
+        : this.ResourceServer.getResolvedPaymentFlow(paymentPayload, requirements);
+    const flow = resolved.paymentFlow;
+    const phases = resolvePaymentFlowPhases(flow, resolved.paymentFlowConfig);
 
     // After-handler path for flows that do not settle again: echo before-handler settle or no-op.
     if (phase !== "before-handler" && !phases.settleAfterHandler) {

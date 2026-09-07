@@ -35,6 +35,7 @@ export type {
   PaymentFlowName,
   PaymentFlowPhases,
   PaymentFlowConfig,
+  PaymentFlowPhaseOverrides,
   DefaultAsset,
   DefaultAssetTable,
   GetDefaultAsset,

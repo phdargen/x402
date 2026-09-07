@@ -1046,8 +1046,10 @@ export class x402ResourceServer {
       }
     }
 
+    const resolved = this.getResolvedPaymentFlow(paymentPayload, requirements);
     const { verifyBeforeHandler } = resolvePaymentFlowPhases(
-      this.getPaymentFlow(paymentPayload, requirements),
+      resolved.paymentFlow,
+      resolved.paymentFlowConfig,
     );
     if (!verifyBeforeHandler) {
       return { isValid: true };
@@ -1121,6 +1123,30 @@ export class x402ResourceServer {
   }
 
   /**
+   * Resolve assetTransferMethod, paymentFlow, and per-ATM config from requirements.
+   *
+   * @param _payload - Client payment payload (unused; flow is requirements-driven)
+   * @param requirements - Matched payment requirements
+   * @returns Resolved ATM, flow name, and payment flow config
+   */
+  getResolvedPaymentFlow(
+    _payload: DeepReadonly<PaymentPayload>,
+    requirements: DeepReadonly<PaymentRequirements>,
+  ): ReturnType<typeof resolvePaymentFlow> {
+    const scheme = findByNetworkAndScheme(
+      this.registeredServerSchemes,
+      requirements.scheme,
+      requirements.network as Network,
+    );
+    if (!scheme) {
+      throw new Error(
+        `[x402] No server implementation registered for scheme: ${requirements.scheme}, network: ${requirements.network}`,
+      );
+    }
+    return resolvePaymentFlow(scheme, requirements);
+  }
+
+  /**
    * Resolve the payment flow name for a payload/requirements pair from the
    * scheme's ATM-keyed {@link SchemeNetworkServer.paymentFlows} table.
    *
@@ -1132,17 +1158,7 @@ export class x402ResourceServer {
     _payload: DeepReadonly<PaymentPayload>,
     requirements: DeepReadonly<PaymentRequirements>,
   ): PaymentFlowName {
-    const scheme = findByNetworkAndScheme(
-      this.registeredServerSchemes,
-      requirements.scheme,
-      requirements.network as Network,
-    );
-    if (!scheme) {
-      throw new Error(
-        `[x402] No server implementation registered for scheme: ${requirements.scheme}, network: ${requirements.network}`,
-      );
-    }
-    return resolvePaymentFlow(scheme, requirements).paymentFlow;
+    return this.getResolvedPaymentFlow(_payload, requirements).paymentFlow;
   }
 
   /**

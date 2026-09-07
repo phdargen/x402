@@ -42,6 +42,7 @@ export type {
   PaymentFlowName,
   PaymentFlowPhases,
   PaymentFlowConfig,
+  PaymentFlowPhaseOverrides,
 } from "../types/mechanisms";
 
 export {

@@ -7,6 +7,7 @@ import {
   SDK_DEFAULT_ASSET_TRANSFER_METHOD,
   applyPaymentFlowWireExtra,
   resolvePaymentFlow,
+  resolvePaymentFlowPhases,
   resolveFailurePathSettlement,
 } from "../../../src/server";
 import { x402HTTPResourceServer } from "../../../src/http/x402HTTPResourceServer";
@@ -124,7 +125,11 @@ describe("payment flows", () => {
     it("omits ATM and paymentFlow to scheme defaults", () => {
       expect(
         resolvePaymentFlow(exactEvmLikeScheme, buildPaymentRequirements({ extra: {} })),
-      ).toEqual({ assetTransferMethod: "eip3009", paymentFlow: "authorization" });
+      ).toEqual({
+        assetTransferMethod: "eip3009",
+        paymentFlow: "authorization",
+        paymentFlowConfig: exactEvmLikeScheme.paymentFlows.eip3009,
+      });
     });
 
     it("resolves explicit defaults the same as omitted", () => {
@@ -135,7 +140,11 @@ describe("payment flows", () => {
             extra: { assetTransferMethod: "eip3009", paymentFlow: "authorization" },
           }),
         ),
-      ).toEqual({ assetTransferMethod: "eip3009", paymentFlow: "authorization" });
+      ).toEqual({
+        assetTransferMethod: "eip3009",
+        paymentFlow: "authorization",
+        paymentFlowConfig: exactEvmLikeScheme.paymentFlows.eip3009,
+      });
     });
 
     it("resolves upfront and permit2 ATM", () => {
@@ -146,7 +155,11 @@ describe("payment flows", () => {
             extra: { assetTransferMethod: "permit2", paymentFlow: "upfront" },
           }),
         ),
-      ).toEqual({ assetTransferMethod: "permit2", paymentFlow: "upfront" });
+      ).toEqual({
+        assetTransferMethod: "permit2",
+        paymentFlow: "upfront",
+        paymentFlowConfig: exactEvmLikeScheme.paymentFlows.permit2,
+      });
     });
 
     it("throws on unknown ATM", () => {
@@ -282,6 +295,43 @@ describe("payment flows", () => {
           { assetTransferMethod: SDK_DEFAULT_ASSET_TRANSFER_METHOD, paymentFlow: "authorization" },
         ),
       ).toEqual({ name: "USDC" });
+    });
+  });
+
+  describe("resolvePaymentFlowPhases", () => {
+    it("upfront defaults to no verifyBeforeHandler", () => {
+      expect(resolvePaymentFlowPhases("upfront")).toEqual(PAYMENT_FLOWS.upfront);
+      expect(resolvePaymentFlowPhases("upfront", {})).toEqual(PAYMENT_FLOWS.upfront);
+      expect(
+        resolvePaymentFlowPhases("upfront", {
+          flowPhases: { upfront: { verifyBeforeHandler: false } },
+        }),
+      ).toEqual(PAYMENT_FLOWS.upfront);
+    });
+
+    it("merges flowPhases overrides for the resolved flow", () => {
+      expect(
+        resolvePaymentFlowPhases("upfront", {
+          flowPhases: { upfront: { verifyBeforeHandler: true } },
+        }),
+      ).toEqual({
+        verifyBeforeHandler: true,
+        settleBeforeHandler: true,
+        settleAfterHandler: false,
+      });
+    });
+
+    it("ignores flowPhases entries for other flows", () => {
+      expect(
+        resolvePaymentFlowPhases("authorization", {
+          flowPhases: { upfront: { verifyBeforeHandler: true } },
+        }),
+      ).toEqual(PAYMENT_FLOWS.authorization);
+      expect(
+        resolvePaymentFlowPhases("escrow", {
+          flowPhases: { upfront: { verifyBeforeHandler: true } },
+        }),
+      ).toEqual(PAYMENT_FLOWS.escrow);
     });
   });
 
@@ -504,8 +554,9 @@ describe("payment flows", () => {
     /**
      *
      * @param flow
+     * @param upfrontVerifyBefore - When true, upfront runs facilitator /verify before settle
      */
-    async function setup(flow: PaymentFlowName) {
+    async function setup(flow: PaymentFlowName, upfrontVerifyBefore = false) {
       mockFacilitator = new MockFacilitatorClient(
         buildSupportedResponse({
           kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
@@ -514,7 +565,20 @@ describe("payment flows", () => {
         buildSettleResponse({ success: true, transaction: "0xtx" }),
       );
       ResourceServer = new x402ResourceServer(mockFacilitator);
-      ResourceServer.register("eip155:8453" as Network, schemeWithFlow(flow));
+      ResourceServer.register(
+        "eip155:8453" as Network,
+        Object.assign(schemeWithFlow(flow), {
+          paymentFlows: {
+            default: {
+              supported: [flow],
+              default: flow,
+              ...(upfrontVerifyBefore
+                ? { flowPhases: { upfront: { verifyBeforeHandler: true } } }
+                : {}),
+            },
+          },
+        }),
+      );
       await ResourceServer.initialize();
       return new x402HTTPResourceServer(ResourceServer, {
         "/api/test": {
@@ -637,6 +701,25 @@ describe("payment flows", () => {
         expect(settle.headers["PAYMENT-RESPONSE"]).toBeDefined();
         expect(settle.transaction).toBe("0xtx");
       }
+      expect(mockFacilitator.settleCalls).toHaveLength(1);
+      expect(phases).toEqual(["before-handler"]);
+    });
+
+    it("upfront with flowPhases override: runs /verify then before-handler settle", async () => {
+      const httpServer = await setup("upfront", true);
+      const phases: SettlePhase[] = [];
+      let afterVerifyRan = false;
+      ResourceServer.onAfterVerify(async () => {
+        afterVerifyRan = true;
+      });
+      ResourceServer.onBeforeSettle(async ctx => {
+        phases.push(ctx.phase);
+      });
+
+      const result = await verifiedRequest(httpServer, "upfront");
+      expect(result.type).toBe("payment-verified");
+      expect(afterVerifyRan).toBe(true);
+      expect(mockFacilitator.verifyCalls).toHaveLength(1);
       expect(mockFacilitator.settleCalls).toHaveLength(1);
       expect(phases).toEqual(["before-handler"]);
     });

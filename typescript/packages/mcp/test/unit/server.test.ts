@@ -20,6 +20,7 @@ interface MockResourceServer {
   validateExtensions: ReturnType<typeof vi.fn>;
   getRegisteredScheme: ReturnType<typeof vi.fn>;
   getPaymentFlow: ReturnType<typeof vi.fn>;
+  getResolvedPaymentFlow: ReturnType<typeof vi.fn>;
   verifyPayment: ReturnType<typeof vi.fn>;
   settlePayment: ReturnType<typeof vi.fn>;
   createPaymentRequiredResponse: ReturnType<typeof vi.fn>;
@@ -99,11 +100,12 @@ const mockPaymentRequired = {
  */
 function createMockResourceServer(): MockResourceServer {
   const cancel = vi.fn().mockResolvedValue(undefined);
-  return {
+  const server: MockResourceServer = {
     findMatchingRequirements: vi.fn().mockReturnValue(mockPaymentRequirements),
     validateExtensions: vi.fn().mockReturnValue({ valid: true }),
     getRegisteredScheme: vi.fn().mockReturnValue(mockSchemeServer),
     getPaymentFlow: vi.fn().mockReturnValue("authorization"),
+    getResolvedPaymentFlow: vi.fn(),
     verifyPayment: vi.fn().mockResolvedValue(mockVerifyResponse),
     settlePayment: vi.fn().mockResolvedValue(mockSettleResponse),
     createPaymentRequiredResponse: vi.fn().mockResolvedValue(mockPaymentRequired),
@@ -111,6 +113,12 @@ function createMockResourceServer(): MockResourceServer {
       cancel,
     }),
   };
+  server.getResolvedPaymentFlow.mockImplementation((_payload, _requirements) => ({
+    assetTransferMethod: "default",
+    paymentFlow: server.getPaymentFlow(_payload, _requirements),
+    paymentFlowConfig: mockSchemeServer.paymentFlows.default,
+  }));
+  return server;
 }
 
 // ============================================================================

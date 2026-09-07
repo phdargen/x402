@@ -1,4 +1,9 @@
-import type { PaymentFlowName, PaymentFlowPhases, SchemeNetworkServer } from "../types/mechanisms";
+import type {
+  PaymentFlowConfig,
+  PaymentFlowName,
+  PaymentFlowPhases,
+  SchemeNetworkServer,
+} from "../types/mechanisms";
 import type { PaymentPayload, PaymentRequirements, SettleResponse } from "../types";
 import type { DeepReadonly } from "../types/readonly";
 
@@ -46,7 +51,11 @@ export const PAYMENT_FLOWS: Record<PaymentFlowName, PaymentFlowPhases> = {
 export function resolvePaymentFlow(
   scheme: Pick<SchemeNetworkServer, "defaultAssetTransferMethod" | "paymentFlows" | "scheme">,
   requirements: DeepReadonly<PaymentRequirements>,
-): { assetTransferMethod: string; paymentFlow: PaymentFlowName } {
+): {
+  assetTransferMethod: string;
+  paymentFlow: PaymentFlowName;
+  paymentFlowConfig: PaymentFlowConfig;
+} {
   const atm =
     typeof requirements.extra?.assetTransferMethod === "string"
       ? requirements.extra.assetTransferMethod
@@ -76,7 +85,7 @@ export function resolvePaymentFlow(
     );
   }
 
-  return { assetTransferMethod: atm, paymentFlow: flow };
+  return { assetTransferMethod: atm, paymentFlow: flow, paymentFlowConfig: config };
 }
 
 /**
@@ -109,20 +118,28 @@ export function applyPaymentFlowWireExtra(
 }
 
 /**
- * Resolve the phase table for a payment flow name.
+ * Resolve the phase table for a payment flow name and optional ATM config.
  *
  * @param flow - Declared or default payment flow name
+ * @param paymentFlowConfig - Resolved per-ATM payment flow config (for phase overrides)
  * @returns Phase flags for verify/settle orchestration
  * @throws Error when `flow` is not one of the defined payment flows
  */
-export function resolvePaymentFlowPhases(flow: PaymentFlowName): PaymentFlowPhases {
+export function resolvePaymentFlowPhases(
+  flow: PaymentFlowName,
+  paymentFlowConfig?: Pick<PaymentFlowConfig, "flowPhases">,
+): PaymentFlowPhases {
   const phases: PaymentFlowPhases | undefined = PAYMENT_FLOWS[flow];
   if (!phases) {
     throw new Error(
       `[x402] Unknown payment flow "${flow}". Expected one of: ${Object.keys(PAYMENT_FLOWS).join(", ")}.`,
     );
   }
-  return phases;
+  const overrides = paymentFlowConfig?.flowPhases?.[flow];
+  if (!overrides) {
+    return phases;
+  }
+  return { ...phases, ...overrides };
 }
 
 /**

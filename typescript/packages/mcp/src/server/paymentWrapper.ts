@@ -322,8 +322,8 @@ async function processPaidToolCall<TArgs extends Record<string, unknown>>(
   }
 
   const extMap = config.extensions ?? {};
-  const flow = resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
-  const phases = resolvePaymentFlowPhases(flow);
+  const resolved = resourceServer.getResolvedPaymentFlow(paymentPayload, paymentRequirements);
+  const phases = resolvePaymentFlowPhases(resolved.paymentFlow, resolved.paymentFlowConfig);
 
   // Build hook context
   const hookContext: ServerHookContext = {
@@ -388,7 +388,7 @@ async function processPaidToolCall<TArgs extends Record<string, unknown>>(
       }
       beforeHandlerSettlement = {
         phase: "before-handler",
-        flow,
+        flow: resolved.paymentFlow,
         result: beforeSettle,
         requirements: paymentRequirements,
       };
@@ -548,10 +548,17 @@ async function settlePaymentResult(
   beforeHandlerSettlement?: CompletedSettlement,
 ): Promise<WrappedToolResult> {
   try {
-    const flow =
-      beforeHandlerSettlement?.flow ??
-      resourceServer.getPaymentFlow(paymentPayload, paymentRequirements);
-    const phases = resolvePaymentFlowPhases(flow);
+    const resolved =
+      beforeHandlerSettlement?.flow !== undefined
+        ? {
+            paymentFlow: beforeHandlerSettlement.flow,
+            paymentFlowConfig: resourceServer.getResolvedPaymentFlow(
+              paymentPayload,
+              paymentRequirements,
+            ).paymentFlowConfig,
+          }
+        : resourceServer.getResolvedPaymentFlow(paymentPayload, paymentRequirements);
+    const phases = resolvePaymentFlowPhases(resolved.paymentFlow, resolved.paymentFlowConfig);
 
     if (!phases.settleAfterHandler) {
       const settleResult = beforeHandlerSettlement?.result;
