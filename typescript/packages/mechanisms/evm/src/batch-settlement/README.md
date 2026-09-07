@@ -51,7 +51,7 @@ When the channel needs funding or top-up, the client deposits:
 
 A default `$1` USDC cap and multiplier `5` therefore locks at most `$5`. Raise `maxAmountPerPayment` or `depositMultiplier` for a larger lock.
 
-Uncapped payments leave deposits uncapped too: `spendControls: false`, `maxAmountPerPayment: false`, or an `allowedAssets` entry without a per-asset cap. Use `depositStrategy` only when you need a decision the multiplier cannot express.
+Uncapped payments leave deposits uncapped too: `spendControls: false`, `maxAmountPerPayment: false`, or an `allowedAssets` entry without a per-asset cap. An uncapped client accepts a server-sized deposit (`extra.minDeposit`), which is fully refundable but time-locked through `withdrawDelay`. Use `depositStrategy` when you need a decision the multiplier cannot express.
 
 | Field | Description |
 |-------|-------------|
