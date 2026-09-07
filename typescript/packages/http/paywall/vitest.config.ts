@@ -8,7 +8,22 @@ export default defineConfig(({ mode }) => ({
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
-      exclude: ["src/**/*.test.ts", "**/*.d.ts", "**/gen/**", "**/dist/**"],
+      exclude: [
+        "src/**/*.test.ts",
+        "**/*.d.ts",
+        "**/gen/**",
+        "**/dist/**",
+        "**/build.ts",
+        "**/template-loader.ts",
+        "**/genHelpers.ts",
+        "src/avm/algorand/**",
+        "src/svm/solana/**",
+        "src/evm/browserAdapter.ts",
+        "src/evm/utils.ts",
+        "src/baseTemplate.ts",
+        "src/buffer-polyfill.ts",
+        "src/test-setup.ts",
+      ],
       reportsDirectory: "./coverage",
       reporter: ["text", "json-summary"],
       thresholds: {

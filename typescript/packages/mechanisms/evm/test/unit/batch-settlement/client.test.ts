@@ -656,6 +656,34 @@ describe("updateChannelFromSettle / schemeHooks", () => {
     expect(await storage.get(channelId)).toBeUndefined();
   });
 
+  it("does nothing when PAYMENT-RESPONSE is absent", async () => {
+    const storage = new InMemoryClientChannelStorage();
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000001";
+    await processPaymentResponse(storage, () => undefined, {
+      channelId,
+      requestAmount: "1000",
+    });
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("rejects a PAYMENT-RESPONSE whose chargedAmount is not a string", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientChannelStorage();
+    const channelId = "0xabc1230000000000000000000000000000000000000000000000000000000001";
+    const { encodePaymentResponseHeader } = await import("@x402/core/http");
+    const responseHeader = encodePaymentResponseHeader(
+      makeSettle(signer.address, { chargedAmount: 1000 }),
+    );
+
+    await expect(
+      processPaymentResponse(
+        storage,
+        name => (name === "PAYMENT-RESPONSE" ? responseHeader : undefined),
+        { channelId, requestAmount: "1000" },
+      ),
+    ).rejects.toThrow(/chargedAmount/);
+  });
+
   it("deletes channel record after a full refund", async () => {
     const storage = new InMemoryClientChannelStorage();
 
@@ -1624,6 +1652,59 @@ describe("BatchSettlementEvmScheme — refund()", () => {
 
     await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
       /receiverAuthorizer/,
+    );
+  });
+
+  it("throws when the probe 402 is missing PAYMENT-REQUIRED", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const fetchImpl = makeFetch([async () => new Response(null, { status: 402 })]);
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /missing PAYMENT-REQUIRED/,
+    );
+  });
+
+  it("throws when the probe has no batch-settlement accept", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const { encodePaymentRequiredHeader } = await import("@x402/core/http");
+    const header = encodePaymentRequiredHeader({
+      x402Version: 2,
+      accepts: [{ ...buildRefundRequirements(), scheme: "exact" }],
+    } as unknown as PaymentRequired);
+    const fetchImpl = makeFetch([
+      async () => new Response(null, { status: 402, headers: { "PAYMENT-REQUIRED": header } }),
+    ]);
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /No batch-settlement payment option/,
+    );
+  });
+
+  it("throws when there is no local channel and no RPC to recover from", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const fetchImpl = makeFetch([async () => probe402Response()]);
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /existing channel record/,
+    );
+  });
+
+  it("throws when a 200 refund response is missing PAYMENT-RESPONSE", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const storage = new InMemoryClientChannelStorage();
+    const client = new BatchSettlementEvmScheme(signer, { storage });
+    const config = buildChannelConfig(makeDeps({ signer }), buildRefundRequirements());
+    await storage.set(computeChannelId(config).toLowerCase(), {
+      chargedCumulativeAmount: "500",
+      balance: "10000",
+      totalClaimed: "0",
+    });
+    const fetchImpl = makeFetch([
+      async () => probe402Response(),
+      async () => new Response(null, { status: 200 }),
+    ]);
+    await expect(client.refund(REFUND_URL, { fetch: fetchImpl })).rejects.toThrow(
+      /missing PAYMENT-RESPONSE/,
     );
   });
 });
