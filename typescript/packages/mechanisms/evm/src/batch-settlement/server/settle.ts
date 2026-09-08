@@ -74,9 +74,8 @@ function channelStateExtra(
  * Lifecycle hook: runs before the facilitator settles a payment.
  *
  * Voucher payloads increment `chargedCumulativeAmount` locally and return `skip` so
- * the middleware responds without an onchain settle. Refund payloads persist the
- * zero-charge voucher signature and mirrored onchain fields, then fall through to
- * settlement enrichment and facilitator settlement.
+ * the middleware responds without an onchain settle. Refund and deposit payloads
+ * fall through to facilitator settlement; their durable rows update in `afterSettle`.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Settle lifecycle context (payload and requirements).
@@ -92,81 +91,6 @@ export async function handleBeforeSettle(
 
   const raw = paymentPayload.payload;
   const storage = scheme.getStorage();
-
-  if (isBatchSettlementRefundPayload(raw)) {
-    const { voucher } = raw;
-    const channelId = voucher.channelId;
-    const requestContext = scheme.readRequestContext(paymentPayload);
-    const snapshot = requestContext?.channelSnapshot;
-    const localVerify = requestContext?.localVerify === true;
-    const now = Date.now();
-    let outcome:
-      | { status: "missing" }
-      | { status: "mismatch" }
-      | { status: "committed" }
-      | undefined;
-
-    const updateResult = await storage.updateChannel(channelId, current => {
-      const base = current ?? snapshot;
-      if (!base) {
-        outcome = { status: "missing" };
-        return current;
-      }
-
-      if (BigInt(voucher.maxClaimableAmount) !== BigInt(base.chargedCumulativeAmount)) {
-        outcome = { status: "mismatch" };
-        return current;
-      }
-
-      outcome = { status: "committed" };
-      const extras =
-        localVerify || !snapshot
-          ? {}
-          : {
-              balance: snapshot.balance,
-              totalClaimed: snapshot.totalClaimed,
-              withdrawRequestedAt: snapshot.withdrawRequestedAt,
-              refundNonce: snapshot.refundNonce,
-              onchainSyncedAt: now,
-            };
-      return {
-        ...base,
-        ...extras,
-        chargedCumulativeAmount: base.chargedCumulativeAmount,
-        signedMaxClaimable: voucher.maxClaimableAmount,
-        signature: voucher.signature,
-        lastRequestTimestamp: now,
-      };
-    });
-
-    await scheme.clearPendingRequest(paymentPayload);
-
-    if (outcome?.status === "missing") {
-      return {
-        abort: true,
-        reason: Errors.ErrMissingChannel,
-        message: "No channel record",
-      };
-    }
-
-    if (outcome?.status === "mismatch") {
-      return {
-        abort: true,
-        reason: Errors.ErrCumulativeAmountMismatch,
-        message: "Client voucher base does not match server state",
-      };
-    }
-
-    if (updateResult.status !== "updated" || outcome?.status !== "committed") {
-      return {
-        abort: true,
-        reason: Errors.ErrChannelBusy,
-        message: "Concurrent request modified channel state",
-      };
-    }
-
-    return;
-  }
 
   if (!isBatchSettlementVoucherPayload(raw)) {
     return;
@@ -286,13 +210,21 @@ export async function handleEnrichSettlementPayload(
     throw new Error("refund channelId does not match channelConfig");
   }
 
-  const channel =
-    (await scheme.getStorage().get(channelId)) ??
-    scheme.readRequestContext(paymentPayload)?.channelSnapshot;
+  const requestContext = scheme.readRequestContext(paymentPayload);
+  const snapshot = requestContext?.channelSnapshot;
+  const stored = await scheme.getStorage().get(channelId);
+  const channel: Channel | undefined = snapshot
+    ? {
+        ...(stored ?? snapshot),
+        ...snapshot,
+        chargedCumulativeAmount:
+          stored?.chargedCumulativeAmount ?? snapshot.chargedCumulativeAmount,
+      }
+    : stored;
   if (!channel) {
     throw new Error(Errors.ErrMissingChannel);
   }
-  const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
+  const pendingId = requestContext?.pendingId;
   if (await heldByOther(scheme, channelId, pendingId)) {
     throw new Error(Errors.ErrChannelBusy);
   }
