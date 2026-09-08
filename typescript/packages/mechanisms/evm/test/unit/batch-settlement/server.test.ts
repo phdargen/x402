@@ -2026,7 +2026,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     expect(await storage.isHeld(channelId)).toBe(false);
   });
 
-  it("persists a fresh refund voucher signature to durable storage at settle time", async () => {
+  it("enriches refund from verify snapshot without a pre-enrich durable write", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storeChannel(storage, channelId, {
@@ -2057,15 +2057,13 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
 
     expect((await storage.get(channelId))?.signature).toBe("0xlastpaymentsig");
 
-    await server.schemeHooks.onBeforeSettle!({
+    const enrichment = await server.enrichSettlementPayload({
       paymentPayload,
       requirements,
     } as never);
 
-    const stored = await storage.get(channelId);
-    expect(stored?.signature).toBe("0xdeadbeef");
-    expect(stored?.chargedCumulativeAmount).toBe("182800");
-    expect(stored?.balance).toBe("227000");
+    expect(enrichment?.amount).toBe("44200");
+    expect((await storage.get(channelId))?.signature).toBe("0xlastpaymentsig");
   });
 
   it("aborts when charged exceeds the signed cap", async () => {
@@ -2214,9 +2212,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
       requirements: makeRequirements({ amount: "0" }),
     } as never);
     expect(settleRet).toBeUndefined();
-    const persisted = await storage.get(channelId);
-    expect(persisted?.signature).toBe("0xdeadbeef");
-    expect(persisted?.chargedCumulativeAmount).toBe("1500");
+    expect(await storage.get(channelId)).toBeUndefined();
 
     const enrichment = await server.enrichSettlementPayload({
       paymentPayload: refundPayload,
@@ -2327,7 +2323,7 @@ describe("BatchSettlementEvmScheme — onBeforeSettle", () => {
     ).rejects.toThrow(Errors.ErrMissingChannel);
   });
 
-  it("rejects a refund enrich whose voucher signature does not match storage", async () => {
+  it("rejects a refund enrich whose voucher signature does not match the verify snapshot", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storeChannel(storage, channelId, {
