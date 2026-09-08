@@ -22,36 +22,23 @@ import { channelIdBindingError, computeChannelId, getBatchSettlementEip712Domain
 import { validateChannelConfig } from "../facilitator/utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import type { Channel, ChannelUpdateResult, PendingRequest } from "./storage";
+import type { Channel } from "./storage";
 import { readExtraNumber, readExtraString, readExtraUintString } from "./utils";
 
-// Framework cleanup hooks clear pending reservations for normal failures
+// Framework cleanup hooks release admission locks for normal failures
 // This bounded TTL releases channels when cleanup cannot run or complete
 const MIN_PENDING_TTL_MS = 5_000; // 5 seconds
 const MAX_PENDING_TTL_MS = 10 * 60 * 1000; // 600 seconds
 
 /**
- * Computes the bounded pending reservation expiry time.
+ * Computes the bounded admission-lock TTL.
  *
  * @param maxTimeoutSeconds - Resource timeout from payment requirements.
- * @param now - Current wall-clock time in milliseconds.
- * @returns Expiry timestamp in milliseconds.
+ * @returns TTL in milliseconds, clamped to 5s–600s.
  */
-function pendingExpiresAt(maxTimeoutSeconds: number | undefined, now: number): number {
+function pendingTtlMs(maxTimeoutSeconds: number | undefined): number {
   const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000;
-  const ttlMs = Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
-  return now + ttlMs;
-}
-
-/**
- * Checks whether a pending reservation still blocks same-channel work.
- *
- * @param pending - Pending reservation to inspect.
- * @param now - Current wall-clock time in milliseconds.
- * @returns Whether the reservation exists and has not expired.
- */
-function isPendingLive(pending: PendingRequest | undefined, now: number): boolean {
-  return pending !== undefined && pending.expiresAt > now;
+  return Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
 }
 
 /**
@@ -84,8 +71,8 @@ function verificationStateUnavailable(): {
  * the existing `chargedCumulativeAmount`.
  *
  * When no local channel record exists, verification is delegated to the facilitator (which checks onchain state);
- * `handleAfterVerify` then checks the voucher against the onchain `totalClaimed` baseline, creates the
- * reservation and rebuilds the channel record from the verify response.
+ * `handleAfterVerify` then checks the voucher against the onchain `totalClaimed` baseline, acquires an
+ * admission lock and stashes verify extras for the settle-time charge CAS.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Verify lifecycle context (payload, requirements, and related state).
@@ -248,8 +235,9 @@ export async function handleEnrichPaymentRequiredResponse(
 /**
  * Lifecycle hook: runs after the facilitator verifies a payment.
  *
- * Persists channel state (balance, totalClaimed, voucher info) so that
- * subsequent requests can correctly calculate cumulative amounts and detect stale state.
+ * Acquires a best-effort admission lock and stashes verify extras on the request
+ * context. Durable channel writes happen at settle. Lock-store failures are
+ * optimistic: verification continues and the charge CAS serializes commits.
  *
  * For refund payloads, additionally returns a `skipHandler` directive so that
  * the resource server bypasses the application handler and settles inline.
@@ -301,96 +289,41 @@ export async function handleAfterVerify(
     return;
   }
 
-  const ex = result.extra ?? {};
-  const balance = readExtraString(ex, "balance", "0");
-  const totalClaimed = readExtraUintString(ex, "totalClaimed");
-  const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
-  const refundNonce = readExtraNumber(ex, "refundNonce", 0);
-  const now = Date.now();
-
-  // The onchain totalClaimed is the charge baseline when no local record exists; fail closed without it.
-  if (totalClaimed === undefined) {
-    return verificationStateUnavailable();
-  }
-
-  const storage = scheme.getStorage();
   const requestContext = scheme.readRequestContext(paymentPayload);
   if (!requestContext?.pendingId) {
     return verificationStateUnavailable();
   }
   const pendingId = requestContext.pendingId;
   const localVerify = requestContext.localVerify === true;
+  const now = Date.now();
 
-  let outcome:
-    | { status: "reserved" }
-    | { status: "busy" }
-    | { status: "stale"; channel: Channel }
-    | undefined;
+  const ex = result.extra ?? {};
+  const balance = readExtraString(ex, "balance", "0");
+  const totalClaimed = readExtraUintString(ex, "totalClaimed");
+  const withdrawRequestedAt = readExtraNumber(ex, "withdrawRequestedAt", 0);
+  const refundNonce = readExtraNumber(ex, "refundNonce", 0);
 
-  let updateResult: ChannelUpdateResult;
-  try {
-    updateResult = await storage.updateChannel(channelId, current => {
-      if (isPendingLive(current?.pendingRequest, now)) {
-        outcome = { status: "busy" };
-        return current;
-      }
-
-      const base = current?.chargedCumulativeAmount ?? totalClaimed;
-      const expectedMaxClaimable = isRefundVoucher
-        ? BigInt(base)
-        : BigInt(base) + BigInt(requirements.amount);
-      if (BigInt(signedMaxClaimable) !== expectedMaxClaimable) {
-        outcome = {
-          status: "stale",
-          channel:
-            current ??
-            buildProvisionalChannel(raw, base, {
-              balance,
-              totalClaimed,
-              withdrawRequestedAt,
-              refundNonce,
-            }),
-        };
-        return current;
-      }
-
-      const pendingRequest: PendingRequest = {
-        pendingId,
-        signedMaxClaimable,
-        expiresAt: pendingExpiresAt(requirements.maxTimeoutSeconds, now),
-      };
-
-      outcome = { status: "reserved" };
-      const channel: Channel = {
-        channelId,
-        channelConfig,
-        chargedCumulativeAmount: base,
-        signedMaxClaimable,
-        signature,
-        balance,
-        totalClaimed,
-        withdrawRequestedAt,
-        refundNonce,
-        onchainSyncedAt: localVerify ? current?.onchainSyncedAt : now,
-        lastRequestTimestamp: now,
-        pendingRequest,
-      };
-      return channel;
-    });
-  } catch {
+  // The onchain totalClaimed is the charge baseline when no local record exists; fail closed without it.
+  if (totalClaimed === undefined) {
     return verificationStateUnavailable();
   }
 
-  if (outcome?.status === "busy") {
-    return {
-      abort: true,
-      reason: Errors.ErrChannelBusy,
-      message: "Channel is already processing a request",
-    };
-  }
-
-  if (outcome?.status === "stale") {
-    scheme.rememberChannelSnapshot(paymentPayload, outcome.channel);
+  const prior = requestContext.channelSnapshot;
+  const base = prior?.chargedCumulativeAmount ?? totalClaimed;
+  const expectedMaxClaimable = isRefundVoucher
+    ? BigInt(base)
+    : BigInt(base) + BigInt(requirements.amount);
+  if (BigInt(signedMaxClaimable) !== expectedMaxClaimable) {
+    scheme.rememberChannelSnapshot(
+      paymentPayload,
+      prior ??
+        buildProvisionalChannel(raw, base, {
+          balance,
+          totalClaimed,
+          withdrawRequestedAt,
+          refundNonce,
+        }),
+    );
     return {
       abort: true,
       reason: Errors.ErrCumulativeAmountMismatch,
@@ -398,12 +331,44 @@ export async function handleAfterVerify(
     };
   }
 
-  if (updateResult.status === "updated" && updateResult.channel) {
-    scheme.mergeRequestContext(paymentPayload, { reservationCommitted: true });
-    scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
+  let reserved = false;
+  try {
+    if (
+      !(await scheme
+        .getLockStorage()
+        .acquire(channelId, pendingId, pendingTtlMs(requirements.maxTimeoutSeconds)))
+    ) {
+      return {
+        abort: true,
+        reason: Errors.ErrChannelBusy,
+        message: "Channel is already processing a request",
+      };
+    }
+    reserved = true;
+  } catch {
+    // Lock-store throw: continue without a reservation; settle CAS serializes.
   }
 
-  if (isRefundVoucher && updateResult.status === "updated") {
+  const channelSnapshot: Channel = {
+    channelId,
+    channelConfig,
+    chargedCumulativeAmount: base,
+    signedMaxClaimable,
+    signature,
+    balance,
+    totalClaimed,
+    withdrawRequestedAt,
+    refundNonce,
+    onchainSyncedAt: localVerify ? prior?.onchainSyncedAt : now,
+    lastRequestTimestamp: now,
+  };
+
+  scheme.mergeRequestContext(paymentPayload, {
+    ...(reserved ? { reservationCommitted: true } : {}),
+    channelSnapshot,
+  });
+
+  if (isRefundVoucher) {
     return {
       skipHandler: true,
       response: {

@@ -70,6 +70,7 @@ async function main() {
       withdrawDelay,
       enforceMinDeposit: false,
       ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
+      // lockStorage: new RedisChannelLockStorage({ client }) when hosts do not share STORAGE_DIR
     });
     resourceServer = resourceServer.register(EVM_NETWORK, batchedEvmScheme);
 
@@ -82,9 +83,6 @@ async function main() {
       selectRefundChannels: (channels, context) =>
         channels.filter(channel => {
           if (BigInt(channel.balance) === 0n) return false;
-          if (channel.pendingRequest && channel.pendingRequest.expiresAt > context.now) {
-            return false;
-          }
           return context.now - channel.lastRequestTimestamp >= 180_000; // Refund channels after 3 minutes of inactivity
         }),
       onClaim: (r: { vouchers: number; transaction: string }) =>
