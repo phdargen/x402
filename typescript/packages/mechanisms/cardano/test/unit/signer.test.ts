@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { preprod, PrivateKey } from "@evolution-sdk/evolution";
 import {
   blockfrostQueries,
@@ -12,7 +12,10 @@ import {
   CARDANO_PREPROD_CIP34,
   LOVELACE_ASSET,
 } from "../../src/constants";
-import { MASUMI_DEFAULT_DEPLOYMENT } from "../../src/exact/masumi/blueprint";
+import {
+  MASUMI_DEFAULT_DEPLOYMENT,
+  masumiEscrowScriptHash,
+} from "../../src/exact/masumi/blueprint";
 import { MASUMI_MAX_DEADLINE_HORIZON_MS } from "../../src/exact/masumi/constants";
 import { verifyMasumiAuthorization } from "../../src/exact/masumi/verify";
 import type { CardanoExtraMasumi } from "../../src/types";
@@ -223,6 +226,14 @@ describe("facilitator signer construction", () => {
 // all fail before any provider call, so no network is involved.
 describe("client-side Masumi authorization", () => {
   const PAY_BY_TIME = BigInt(Date.now() + 5 * 60 * 1000);
+  const CUSTOM_DEPLOYMENT = {
+    ...MASUMI_DEFAULT_DEPLOYMENT,
+    cooldownPeriod: "999999",
+  };
+
+  beforeAll(() => {
+    masumiEscrowScriptHash(CUSTOM_DEPLOYMENT);
+  });
 
   const clientSigner = (
     config: Partial<Parameters<typeof toClientCardanoSigner>[0]> = {},
@@ -230,8 +241,15 @@ describe("client-side Masumi authorization", () => {
     toClientCardanoSigner({
       mnemonic: PrivateKey.generateMnemonic(),
       network: CARDANO_PREPROD_CAIP2,
-      provider: { blockfrost: { baseUrl: "http://offline.invalid" } },
       ...config,
+      provider: {
+        ...config.provider,
+        blockfrost: {
+          baseUrl: "http://offline.invalid",
+          requestTimeoutMs: 1000,
+          ...config.provider?.blockfrost,
+        },
+      },
     });
 
   /**
@@ -282,7 +300,7 @@ describe("client-side Masumi authorization", () => {
   });
 
   it("refuses a non-canonical deployment unless the application approves it", async () => {
-    const custom = { ...MASUMI_DEFAULT_DEPLOYMENT, cooldownPeriod: "999999" };
+    const custom = CUSTOM_DEPLOYMENT;
     const { requirements } = await issueMasumiRequirements({
       network: CARDANO_PREPROD_CAIP2,
       asset: LOVELACE_ASSET,

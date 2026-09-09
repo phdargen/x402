@@ -18,12 +18,12 @@ export default defineConfig(({ mode }) => ({
         statements: 80,
       },
     },
+    setupFiles: ["./test/setup.ts"],
     exclude: ["**/node_modules/**", "**/dist/**", "**/test/integrations/**"],
     // Deriving the Masumi escrow address applies parameters to a ~20k-character
-    // compiled validator. The result is memoized per parameterization, but each
-    // test file runs in its own worker and so pays that cost once — several
-    // seconds on a CI runner, past vitest's 5s default.
-    testTimeout: 30_000,
+    // compiled validator. On a CI runner a cache miss plus an offline provider
+    // round-trip can exceed 30s even when every assertion is correct.
+    testTimeout: 60_000,
     // Several Cardano files each spend seconds on synchronous validator work.
     // Running them in parallel on a CI runner can block worker IPC long enough
     // for vitest to report "[vitest-worker]: Timeout calling onTaskUpdate" even
