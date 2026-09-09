@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { preprod, PrivateKey } from "@evolution-sdk/evolution";
 import {
   blockfrostQueries,
@@ -12,10 +12,7 @@ import {
   CARDANO_PREPROD_CIP34,
   LOVELACE_ASSET,
 } from "../../src/constants";
-import {
-  MASUMI_DEFAULT_DEPLOYMENT,
-  masumiEscrowScriptHash,
-} from "../../src/exact/masumi/blueprint";
+import { MASUMI_DEFAULT_DEPLOYMENT } from "../../src/exact/masumi/blueprint";
 import { MASUMI_MAX_DEADLINE_HORIZON_MS } from "../../src/exact/masumi/constants";
 import { verifyMasumiAuthorization } from "../../src/exact/masumi/verify";
 import type { CardanoExtraMasumi } from "../../src/types";
@@ -230,10 +227,6 @@ describe("client-side Masumi authorization", () => {
     ...MASUMI_DEFAULT_DEPLOYMENT,
     cooldownPeriod: "999999",
   };
-
-  beforeAll(() => {
-    masumiEscrowScriptHash(CUSTOM_DEPLOYMENT);
-  });
 
   const clientSigner = (
     config: Partial<Parameters<typeof toClientCardanoSigner>[0]> = {},
