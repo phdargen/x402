@@ -7,7 +7,7 @@
       ]
     },
     "SERVER_CARDANO_SELLER_MNEMONIC": {
-      "required": false,
+      "required": true,
       "roles": [
         "server"
       ]
@@ -19,6 +19,24 @@
       ]
     },
     "SERVER_CARDANO_AMOUNT": {
+      "required": false,
+      "roles": [
+        "server"
+      ]
+    },
+    "SERVER_CARDANO_SCRIPT_ADDRESS": {
+      "required": false,
+      "roles": [
+        "server"
+      ]
+    },
+    "SERVER_CARDANO_SCRIPT_CODE": {
+      "required": false,
+      "roles": [
+        "server"
+      ]
+    },
+    "SERVER_CARDANO_SCRIPT_DATUM": {
       "required": false,
       "roles": [
         "server"
@@ -64,6 +82,7 @@
   "routes": {
     "/exact/cardano/default": {
       "scheme": "exact",
+      "assetTransferMethod": "default",
       "sdks": [
         "typescript"
       ],
@@ -79,6 +98,8 @@
     },
     "/exact/cardano/masumi": {
       "scheme": "exact",
+      "assetTransferMethod": "masumi",
+      "maxTimeoutSeconds": 600,
       "sdks": [
         "typescript"
       ],
@@ -94,6 +115,7 @@
     },
     "/exact/cardano/script": {
       "scheme": "exact",
+      "assetTransferMethod": "script",
       "sdks": [
         "typescript"
       ],

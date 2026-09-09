@@ -43,6 +43,9 @@ importers:
       '@x402/avm':
         specifier: workspace:*
         version: link:../typescript/packages/mechanisms/avm
+      '@x402/cardano':
+        specifier: workspace:*
+        version: link:../typescript/packages/mechanisms/cardano
       '@x402/concordium':
         specifier: workspace:*
         version: link:../typescript/packages/mechanisms/concordium
@@ -1443,6 +1446,9 @@ importers:
       '@typescript-eslint/parser':
         specifier: ^8.29.1
         version: 8.48.0(eslint@9.38.0(jiti@1.21.7))(typescript@5.8.3)
+      '@vitest/coverage-v8':
+        specifier: ^3.2.7
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.12)(@types/node@22.16.0)(jiti@1.21.7)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.2)(tsx@4.21.0)(yaml@2.8.1))
       eslint:
         specifier: ^9.24.0
         version: 9.38.0(jiti@1.21.7)
@@ -1455,6 +1461,9 @@ importers:
       eslint-plugin-prettier:
         specifier: ^5.2.6
         version: 5.5.4(eslint@9.38.0(jiti@1.21.7))(prettier@3.5.2)
+      eslint-plugin-sonarjs:
+        specifier: ^3.0.7
+        version: 3.0.7(eslint@9.38.0(jiti@1.21.7))
       prettier:
         specifier: 3.5.2
         version: 3.5.2
@@ -1474,7 +1483,7 @@ importers:
         specifier: ^5.1.4
         version: 5.1.4(typescript@5.8.3)(vite@6.4.1(@types/node@22.16.0)(jiti@1.21.7)(terser@5.46.2)(tsx@4.21.0)(yaml@2.8.1))
       vitest:
-        specifier: ^3.0.5
+        specifier: ^3.2.7
         version: 3.2.7(@types/debug@4.1.12)(@types/node@22.16.0)(jiti@1.21.7)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.2)(tsx@4.21.0)(yaml@2.8.1)
 
   ../typescript/packages/mechanisms/concordium:

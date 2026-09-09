@@ -315,8 +315,6 @@ if (process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIV
   console.info(`NEAR Facilitator relayer: ${process.env.FACILITATOR_NEAR_ACCOUNT_ID}`);
 }
 
-// Cardano only broadcasts the client's signed transaction, so the facilitator
-// runs provider-only unless FACILITATOR_CARDANO_MNEMONIC is set.
 let cardanoSigner: ReturnType<typeof toFacilitatorCardanoSigner> | undefined;
 if (process.env.BLOCKFROST_PROJECT_ID && CARDANO_RPC_URL) {
   cardanoSigner = toFacilitatorCardanoSigner({
@@ -325,9 +323,6 @@ if (process.env.BLOCKFROST_PROJECT_ID && CARDANO_RPC_URL) {
     provider: {
       blockfrost: { baseUrl: CARDANO_RPC_URL, projectId: process.env.BLOCKFROST_PROJECT_ID },
     },
-    // Return as soon as the node accepts the broadcast; the scheme polls
-    // Blockfrost for the evidence the route's confirmation policy requires and
-    // reports `settlement_pending` in between.
     awaitConfirmation: false,
   });
   console.info(
@@ -642,10 +637,6 @@ if (cardanoSigner) {
   facilitator.register(
     CARDANO_NETWORK as Network,
     new ExactCardanoFacilitatorScheme(cardanoSigner, {
-      // Mempool-level settlement is an explicit opt-in shared with the server
-      // routes (the server side accepts only the plain decimal form, so this
-      // string compare sees the same value); the default is the spec's one
-      // confirmation.
       acceptMempool: process.env.CARDANO_L1_CONFIRMATIONS?.trim() === "-1",
     }),
   );

@@ -267,7 +267,7 @@ export function scriptAddressFor(
     paymentCredential: hash,
   });
   return {
-    address: Address.toBech32(enterprise),
+    address: Address.toBech32(enterprise as unknown as Address.Address),
     scriptHash: ScriptHash.toHex(hash).toLowerCase(),
   };
 }

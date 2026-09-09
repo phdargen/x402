@@ -284,8 +284,6 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       client: new ExactNearClientScheme(nearSigner),
     });
   }
-  // Blockfrost needs an explicit base URL, so CARDANO_RPC_URL is part of the
-  // credential gate rather than optional as it is for NEAR/XRPL.
   if (
     process.env.CLIENT_CARDANO_MNEMONIC &&
     process.env.BLOCKFROST_PROJECT_ID &&
@@ -365,14 +363,9 @@ export type ClientScenarioDeps = {
 };
 
 /**
- * Waits until Blockfrost's address-UTXO index reflects a just-settled Cardano
- * payment before this client exits, so the next scenario's client does not
- * reselect the input this one spent. With the default confirmation policy
- * settlement already implies block inclusion, so this covers the index lag
- * behind it; with `CARDANO_L1_CONFIRMATIONS=-1` settlement returns on the
- * facilitator's broadcast acceptance and this also covers inclusion (~20s).
- * Best-effort and Cardano-only: any other network, a missing Blockfrost
- * config, or a timeout simply returns.
+ * Waits until Blockfrost lists this payment's change output. Sequential e2e
+ * clients are separate processes, and Blockfrost cannot observe mempool
+ * spends, so the next client would otherwise rebuild against the same input.
  *
  * @param result - The completed request result, carrying the settlement receipt.
  */

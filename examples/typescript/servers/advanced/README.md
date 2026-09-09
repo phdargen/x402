@@ -70,6 +70,7 @@ and fill required environment variables:
 - `AVM_ADDRESS` - Algorand address to receive payments (optional for `all-networks`)
 - `AVM_NETWORK` - Algorand network CAIP-2 (optional; defaults to canonical Algorand Testnet)
 - `CARDANO_ADDRESS` - Cardano `addr_test1...` address to receive payments (optional for `all-networks`)
+- `CARDANO_L1_CONFIRMATIONS` - Optional confirmation policy (`-1..20`; unset = 1 confirmation)
 - `APTOS_ADDRESS` - Aptos account address to receive payments (optional for `all-networks`)
 - `CCD_ADDRESS` - Concordium account address to receive payments (optional for `all-networks`)
 - `EVM_ADDRESS` - Ethereum address to receive payments

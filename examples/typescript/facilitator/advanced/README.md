@@ -37,6 +37,7 @@ and fill required environment variables:
 - `KEETA_MNEMONIC` - Keeta mnemonic
 - `CARDANO_MNEMONIC` - Cardano facilitator mnemonic (optional; only exposes an address — the facilitator needs no funds)
 - `CARDANO_NETWORK` - Cardano network (optional, defaults to `cardano:preprod`)
+- `CARDANO_L1_CONFIRMATIONS` - Optional confirmation policy (`-1..20`; `-1` enables mempool settlement)
 - `BLOCKFROST_PROJECT_ID` / `BLOCKFROST_PREPROD_URL` - Blockfrost project id + endpoint (required for Cardano chain queries and submission)
 - `XRPL_NETWORK` - XRPL network CAIP-2 (e.g., `xrpl:1` for XRPL Testnet); set to enable the keyless XRPL scheme (optional; `all-networks`)
 - `XRPL_WS_URL` - Custom XRPL WebSocket endpoint (optional, defaults to the public endpoint for `XRPL_NETWORK`)

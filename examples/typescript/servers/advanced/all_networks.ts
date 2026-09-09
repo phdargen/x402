@@ -114,12 +114,19 @@ if (aptosAddress) {
     payTo: aptosAddress,
   });
 }
+const cardanoL1Confirmations = process.env.CARDANO_L1_CONFIRMATIONS?.trim();
+const cardanoExtra =
+  cardanoL1Confirmations && /^-?(0|[1-9]\d?)$/.test(cardanoL1Confirmations)
+    ? { confirmationPolicy: { l1Confirmations: Number(cardanoL1Confirmations) } }
+    : undefined;
+
 if (cardanoAddress) {
   accepts.push({
     scheme: "exact",
     price: "$0.001",
     network: CARDANO_NETWORK,
     payTo: cardanoAddress,
+    ...(cardanoExtra ? { extra: cardanoExtra } : {}),
   });
 }
 if (ccdAddress) {
