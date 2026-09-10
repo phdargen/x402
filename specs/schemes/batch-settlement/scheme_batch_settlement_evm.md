@@ -86,13 +86,13 @@ The scheme has two voucher-custody modes, selected by `PaymentRequirements.extra
 | **Facilitator-managed** | `true`               | Yes — durable offchain write | Facilitator                         | Facilitator          |
 
 
-**Facilitator-managed handshake.** The facilitator advertises `voucherStore: true` together with `receiverAuthorizer` and `withdrawDelay` on `/supported`. The server copies those fields onto the 402 and MUST NOT override `withdrawDelay`. A server MUST NOT set `voucherStore: true` unless the facilitator advertised it. Absence of the flag preserves self-managed behavior.
+**Facilitator-managed handshake.** The facilitator advertises `voucherStore: true` together with `receiverAuthorizer` and `withdrawDelay` on `/supported`. The server copies those fields onto the 402 and MUST NOT override `withdrawDelay`. A server MUST NOT set `voucherStore: true` unless the facilitator advertised it. Absence of the flag preserves self-managed behavior. `receiverAuthorizer` is the onchain claim/refund signer. A facilitator that authenticates `/settle` callers and will honor unsigned refunds advertises `refundAuth: true` (also valid on a self-managed kind that advertises `receiverAuthorizer`). A server MUST NOT omit `extra.refundAuthorizer` on the 402 unless the facilitator advertised `refundAuth`.
 
 In facilitator-managed mode the resource server is a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. The facilitator verifies every payload (no local EOA short-circuit), serializes per-channel requests at `/verify`, persists vouchers, `chargedCumulativeAmount`, and `chargeCount` on `/settle`, and claims/settles on a schedule — including before a timed withdrawal finalizes.
 
 **Charge count.** `chargeCount` is the unattested delta since the last confirmed onchain claim, not a lifetime total. On each paid offchain commit (`type: "voucher"`, and the voucher persisted with `type: "deposit"`), the facilitator increments it. Zero-charge refunds do not. Facilitator-managed `/settle` responses MUST include the current delta as `extra.chargeCount`. After a claim confirms, subtract the attested snapshot from the stored count so in-flight commits remain. The facilitator attests this delta onchain at claim time (see Claim & Settlement Strategy).
 
-**Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation). The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. Out-of-band caller authentication is optional; the facilitator MUST still accept the signature path. Idle facilitator-initiated refunds are out of scope.
+**Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation) unless the facilitator advertised `refundAuth: true` and the server relies on that path. The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. The facilitator MUST still accept the signature path when `extra.refundAuthorizer` is present.
 
 **Optional replica.** A managed server MAY persist a copy of the latest voucher after successful `/settle`. The replica MUST NOT drive cumulative checks, locks, or corrective 402s. It only enables out-of-band `claim()` / `refund()` as `receiver`, or `type: "claim"` through the facilitator.
 
@@ -153,7 +153,7 @@ Facilitator-managed 402 (server copies `receiverAuthorizer`, `withdrawDelay`, an
 | `extra.name`                | `string`  | yes             | EIP-712 domain name of the token contract                                                                                                                |
 | `extra.version`             | `string`  | yes             | EIP-712 domain version of the token contract                                                                                                             |
 | `extra.voucherStore`        | `boolean` | optional        | If `true`, facilitator-managed voucher custody                                                                                                           |
-| `extra.refundAuthorizer`    | `string`  | managed refunds | Server EOA that consents to cooperative refunds. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) || bytes20(refundAuthorizer)`. |
+| `extra.refundAuthorizer`    | `string`  | managed refunds | Server EOA that consents to cooperative refunds. Required on a managed 402 unless the facilitator advertised `refundAuth: true`. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) || bytes20(refundAuthorizer)`. |
 | `extra.channelState`        | `object`  | optional        | Corrective-only server channel snapshot for cumulative amount resynchronization                                                                          |
 | `extra.voucherState`        | `object`  | optional        | Corrective-only signed voucher proof for cumulative amount resynchronization                                                                             |
 
@@ -772,7 +772,7 @@ Facilitator-managed refund `/settle` response:
 
 ### GET /supported
 
-The facilitator MAY declare a receiver authorizer whose role is to produce EIP-712 signatures for claims and refunds. The server may delegate to this address as its channel's `receiverAuthorizer`, or supply its own. Any address in `signers` may relay the resulting transactions.
+The facilitator MAY declare a receiver authorizer whose role is to produce EIP-712 signatures for claims and refunds. The server may delegate to this address as its channel's `receiverAuthorizer`, or supply its own. Any address in `signers` may relay the resulting transactions. A facilitator that will accept an unsigned cooperative refund (out-of-band `/settle` caller authentication) MUST advertise `extra.refundAuth: true` on that kind.
 
 ```json
 {
@@ -808,7 +808,8 @@ Facilitator-managed:
       "extra": {
         "receiverAuthorizer": "0xReceiverAuthorizerAddress",
         "withdrawDelay": 900,
-        "voucherStore": true
+        "voucherStore": true,
+        "refundAuth": true
       }
     }
   ],
@@ -1061,7 +1062,7 @@ Facilitator-managed corrective 402 — same `channelState` / `voucherState`, plu
 2. **Withdrawal delay as escape hatch**: The 15 min – 30 day bounds prevent a server from indefinitely trapping client funds while giving the server a fair window to claim outstanding vouchers. Cooperative refund returns unclaimed balance immediately when the server cooperates; timed withdrawal is the unilateral fallback. Servers bear the risk of vouchers left unclaimed when `finalizeWithdraw` completes.
 3. **Cross-function replay prevention**: `Voucher`, `Refund`, and `ClaimBatch` use distinct EIP-712 type hashes so a signature for one cannot be replayed as another. Refunds additionally carry a per-channel nonce.
 4. **Voucher expiry via escrow depletion**: Vouchers carry no expiry field. A voucher remains claimable as long as `balance - totalClaimed > 0`; `finalizeWithdraw` and `refundWithSignature` close the claim window by draining available escrow. The ERC-3009 `validBefore`/`validAfter` fields bound only the deposit authorization, not the voucher.
-5. **Refund authorization**: A cooperative refund bypasses the timed-withdrawal delay and must carry receiver-side consent — the `refundAuthorizerSignature` on the settle payload (self-managed: receiver-authorizer key; facilitator-managed: `extra.refundAuthorizer`, see Voucher Custody).
+5. **Refund authorization**: A cooperative refund bypasses the timed-withdrawal delay and must carry receiver-side consent — the `refundAuthorizerSignature` on the settle payload (self-managed: receiver-authorizer key; facilitator-managed: `extra.refundAuthorizer`), or out-of-band `/settle` authentication when the facilitator advertised `refundAuth` (see Voucher Custody).
 
 ---
 
@@ -1088,5 +1089,5 @@ The `batch-settlement` scheme is implemented by the `x402BatchSettlement` contra
 
 | Version | Date       | Changes                                              | Authors                                 |
 | ------- | ---------- | ---------------------------------------------------- | --------------------------------------- |
-| v1.1    | 2026-08-25 | Facilitator-managed voucher custody (`voucherStore`) | @phdargen                               |
+| v1.1    | 2026-08-25 | Facilitator-managed voucher custody (`voucherStore`); `/supported` `refundAuth` | @phdargen                               |
 | v1.0    | 2025-04-28 | Initial draft                                        | @phdargen @CarsonRoscoen @ilikesymmetry |
