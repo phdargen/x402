@@ -1,4 +1,4 @@
-import { getAddress, hashTypedData } from "viem";
+import { concat, getAddress, hashTypedData, slice } from "viem";
 import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN, channelConfigTypes } from "./constants";
 import { ErrChannelIdMismatch, ErrInvalidChannelId } from "./errors";
 import type { ChannelConfig } from "./types";
@@ -93,4 +93,28 @@ export function getBatchSettlementEip712Domain(chainId: number) {
     chainId,
     verifyingContract: getAddress(BATCH_SETTLEMENT_ADDRESS),
   } as const;
+}
+
+/**
+ * Packs `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`.
+ *
+ * @param entropy - Random or deterministic 32-byte salt; only the first 12 bytes are kept.
+ * @param refundAuthorizer - Server refund-authorizer address committed into the channel id.
+ * @returns A `bytes32` salt.
+ */
+export function packRefundAuthorizerSalt(
+  entropy: `0x${string}`,
+  refundAuthorizer: `0x${string}`,
+): `0x${string}` {
+  return concat([slice(entropy, 0, 12), getAddress(refundAuthorizer)]);
+}
+
+/**
+ * Unpacks the refund-authorizer address from a packed `ChannelConfig.salt`.
+ *
+ * @param salt - Channel salt (`bytes12 || bytes20`).
+ * @returns Checksummed refund-authorizer address.
+ */
+export function unpackRefundAuthorizer(salt: `0x${string}`): `0x${string}` {
+  return getAddress(slice(salt, 12, 32));
 }

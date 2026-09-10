@@ -1,4 +1,4 @@
-import { SettleResponse, PaymentRequirements } from "@x402/core/types";
+import { type Network, type SettleResponse } from "@x402/core/types";
 import { getAddress, isAddressEqual, parseEventLogs } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import { BatchSettlementSettlePayload } from "../types";
@@ -34,17 +34,16 @@ const SETTLE_GAS_LIMIT = 120_000n;
  *
  * @param signer - Facilitator signer used to submit the settlement transaction.
  * @param payload - Settle payload containing the receiver address and token address.
- * @param requirements - Payment requirements for network identification.
+ * @param network - CAIP-2 network identifier.
  * @param dataSuffix - Optional hex suffix appended to the settlement transaction.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeSettle(
   signer: FacilitatorEvmSigner,
   payload: BatchSettlementSettlePayload,
-  requirements: PaymentRequirements,
+  network: Network,
   dataSuffix?: `0x${string}`,
 ): Promise<SettleResponse> {
-  const network = requirements.network;
   const contractAddr = getAddress(BATCH_SETTLEMENT_ADDRESS);
   const receiver = getAddress(payload.receiver);
   const token = getAddress(payload.token);

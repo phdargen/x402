@@ -69,12 +69,14 @@ export type BatchSettlementDepositPayload = {
     amount: string;
     authorization: BatchSettlementDepositAuthorization;
   };
+  pendingId?: string;
 };
 
 export type BatchSettlementVoucherPayload = {
   type: "voucher";
   channelConfig: ChannelConfig;
   voucher: BatchSettlementVoucherFields;
+  pendingId?: string;
 };
 
 export type BatchSettlementRefundPayload = {
@@ -82,6 +84,7 @@ export type BatchSettlementRefundPayload = {
   channelConfig: ChannelConfig;
   voucher: BatchSettlementVoucherFields;
   amount?: string;
+  pendingId?: string;
 };
 
 export type BatchSettlementVoucherFields = {
@@ -119,18 +122,21 @@ export type BatchSettlementPaymentRequirementsExtra = {
   name: string;
   version: string;
   assetTransferMethod?: BatchSettlementAssetTransferMethod;
+  voucherStore?: boolean;
+  refundAuthorizer?: `0x${string}`;
+  refundAuth?: boolean;
   channelState?: BatchSettlementChannelStateExtra;
   voucherState?: BatchSettlementVoucherStateExtra;
 };
 
 export type FileChannelStorageOptions = {
-  /** Root directory; channels are stored under `{directory}/{client|server}/{channelId}.json`. */
   directory: string;
 };
 
 export type BatchSettlementPaymentResponseExtra = {
-  chargedAmount?: string;
   channelState?: BatchSettlementChannelStateExtra;
+  chargedAmount?: string;
+  chargeCount?: number;
   voucherState?: BatchSettlementVoucherStateExtra;
 };
 
