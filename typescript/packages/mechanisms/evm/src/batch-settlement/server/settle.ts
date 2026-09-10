@@ -6,9 +6,11 @@ import {
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
-import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherClaim } from "../types";
+import type { BatchSettlementVoucherClaim } from "../types";
 import { computeChannelId } from "../utils";
 import * as Errors from "../errors";
+import { channelStateExtra, commitVoucherCharge, paymentResponseExtra } from "../voucherStore";
+import type { AuthorizerSigner } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
 import {
@@ -47,30 +49,6 @@ async function heldByOther(
 }
 
 /**
- * Converts stored channel state into the public response snapshot shape.
- *
- * @param channel - Stored channel state.
- * @param chargedCumulativeAmount - Optional current charged cumulative amount.
- * @returns Response-ready channel snapshot.
- */
-function channelStateExtra(
-  channel: Pick<
-    Channel,
-    "channelId" | "balance" | "totalClaimed" | "withdrawRequestedAt" | "refundNonce"
-  >,
-  chargedCumulativeAmount?: string,
-): NonNullable<BatchSettlementPaymentResponseExtra["channelState"]> {
-  return {
-    channelId: channel.channelId as `0x${string}`,
-    balance: channel.balance,
-    totalClaimed: channel.totalClaimed,
-    withdrawRequestedAt: channel.withdrawRequestedAt,
-    refundNonce: String(channel.refundNonce),
-    ...(chargedCumulativeAmount !== undefined ? { chargedCumulativeAmount } : {}),
-  };
-}
-
-/**
  * Lifecycle hook: runs before the facilitator settles a payment.
  *
  * Voucher payloads increment `chargedCumulativeAmount` locally and return `skip` so
@@ -105,48 +83,18 @@ export async function handleBeforeSettle(
 
   const increment = BigInt(requirements.amount);
   const signedCap = BigInt(voucher.maxClaimableAmount);
-  let outcome:
-    | { status: "missing" }
-    | { status: "cap_exceeded"; charged: string }
-    | { status: "committed"; previous: Channel; current: Channel }
-    | undefined;
-
-  const updateResult = await storage.updateChannel(channelId, current => {
-    const base = current ?? snapshot;
-    if (!base) {
-      outcome = { status: "missing" };
-      return current;
-    }
-
-    const newCharged = BigInt(base.chargedCumulativeAmount) + increment;
-    if (newCharged > signedCap) {
-      outcome = { status: "cap_exceeded", charged: newCharged.toString() };
-      return current;
-    }
-
-    const updatedChannel: Channel = {
-      ...base,
-      ...(localVerify || !snapshot
-        ? {}
-        : {
-            balance: snapshot.balance,
-            totalClaimed: snapshot.totalClaimed,
-            withdrawRequestedAt: snapshot.withdrawRequestedAt,
-            refundNonce: snapshot.refundNonce,
-            onchainSyncedAt: now,
-          }),
-      chargedCumulativeAmount: newCharged.toString(),
-      signedMaxClaimable: voucher.maxClaimableAmount,
-      signature: voucher.signature,
-      lastRequestTimestamp: now,
-    };
-    outcome = { status: "committed", previous: base, current: updatedChannel };
-    return updatedChannel;
+  const outcome = await commitVoucherCharge(storage, channelId, {
+    increment,
+    signedCap,
+    voucher,
+    snapshot,
+    now,
+    localVerify,
   });
 
   await scheme.clearPendingRequest(paymentPayload);
 
-  if (outcome?.status === "missing") {
+  if (outcome.status === "missing") {
     return {
       abort: true,
       reason: Errors.ErrMissingChannel,
@@ -154,7 +102,7 @@ export async function handleBeforeSettle(
     };
   }
 
-  if (outcome?.status === "cap_exceeded") {
+  if (outcome.status === "cap_exceeded") {
     return {
       abort: true,
       reason: Errors.ErrChargeExceedsSignedCumulative,
@@ -162,7 +110,7 @@ export async function handleBeforeSettle(
     };
   }
 
-  if (updateResult.status !== "updated" || outcome?.status !== "committed") {
+  if (outcome.status !== "committed") {
     return {
       abort: true,
       reason: Errors.ErrChannelBusy,
@@ -170,10 +118,10 @@ export async function handleBeforeSettle(
     };
   }
 
-  const skipExtra: BatchSettlementPaymentResponseExtra = {
+  const skipExtra = paymentResponseExtra({
     channelState: channelStateExtra(outcome.current, outcome.current.chargedCumulativeAmount),
     chargedAmount: requirements.amount,
-  };
+  });
 
   return {
     skip: true,
@@ -235,28 +183,68 @@ export async function handleEnrichSettlementPayload(
     throw new Error(Errors.ErrInvalidVoucherSignature);
   }
 
-  const config = raw.channelConfig;
+  const fields = await buildRefundSettlementFields({
+    channel,
+    raw,
+    channelId,
+    network: requirements.network,
+    refundSigner: scheme.getReceiverAuthorizerSigner(),
+    includeClaimAuthorizerSignature: true,
+  });
 
+  scheme.rememberChannelSnapshot(paymentPayload, channel);
+  return fields;
+}
+
+/**
+ * Builds facilitator settlement fields for a cooperative refund.
+ *
+ * @param opts - Channel snapshot, raw refund payload, and optional signer.
+ * @param opts.channel - Channel snapshot used for amount and nonce.
+ * @param opts.raw - Refund payload fields.
+ * @param opts.raw.channelConfig - Channel config copied into the claim entry.
+ * @param opts.raw.voucher - Zero-charge voucher on the refund payload.
+ * @param opts.raw.voucher.maxClaimableAmount - Signed cumulative ceiling.
+ * @param opts.raw.voucher.signature - Client voucher signature.
+ * @param opts.raw.amount - Optional requested refund amount.
+ * @param opts.channelId - Canonical channel id.
+ * @param opts.network - CAIP-2 network for EIP-712 signatures.
+ * @param opts.refundSigner - Optional key that signs refund (and maybe claim) consent.
+ * @param opts.includeClaimAuthorizerSignature - Whether to also sign the claim batch.
+ * @returns Additive refund settlement fields.
+ */
+export async function buildRefundSettlementFields(opts: {
+  channel: Channel;
+  raw: {
+    channelConfig: Channel["channelConfig"];
+    voucher: { maxClaimableAmount: string; signature: `0x${string}` };
+    amount?: string;
+  };
+  channelId: string;
+  network: string;
+  refundSigner?: AuthorizerSigner;
+  includeClaimAuthorizerSignature: boolean;
+}): Promise<Record<string, unknown>> {
   const claimEntry: BatchSettlementVoucherClaim = {
     voucher: {
-      channel: config,
-      maxClaimableAmount: raw.voucher.maxClaimableAmount,
+      channel: opts.raw.channelConfig,
+      maxClaimableAmount: opts.raw.voucher.maxClaimableAmount,
     },
-    signature: raw.voucher.signature,
-    totalClaimed: channel.chargedCumulativeAmount,
+    signature: opts.raw.voucher.signature,
+    totalClaimed: opts.channel.chargedCumulativeAmount,
   };
 
-  const remainder = BigInt(channel.balance) - BigInt(channel.chargedCumulativeAmount);
+  const remainder = BigInt(opts.channel.balance) - BigInt(opts.channel.chargedCumulativeAmount);
   if (remainder <= 0n) {
     throw new Error(Errors.ErrRefundNoBalance);
   }
 
   let refundAmountBig = remainder;
-  if (raw.amount !== undefined) {
-    if (!/^\d+$/.test(raw.amount)) {
+  if (opts.raw.amount !== undefined) {
+    if (!/^\d+$/.test(opts.raw.amount)) {
       throw new Error(Errors.ErrRefundAmountInvalid);
     }
-    const requested = BigInt(raw.amount);
+    const requested = BigInt(opts.raw.amount);
     if (requested <= 0n) {
       throw new Error(Errors.ErrRefundAmountInvalid);
     }
@@ -264,28 +252,25 @@ export async function handleEnrichSettlementPayload(
   }
 
   const refundAmount = refundAmountBig.toString();
-  const nonce = String(channel.refundNonce ?? 0);
+  const nonce = String(opts.channel.refundNonce ?? 0);
 
-  const receiverAuthorizerSigner = scheme.getReceiverAuthorizerSigner();
-
-  const refundAuthorizerSignature = receiverAuthorizerSigner
+  const refundAuthorizerSignature = opts.refundSigner
     ? await signRefund(
-        receiverAuthorizerSigner,
-        channelId as `0x${string}`,
+        opts.refundSigner,
+        opts.channelId as `0x${string}`,
         refundAmount,
         nonce,
-        requirements.network,
+        opts.network,
       )
     : undefined;
 
-  const claimAuthorizerSignature = receiverAuthorizerSigner
-    ? await signClaimBatch(receiverAuthorizerSigner, [claimEntry], requirements.network)
-    : undefined;
-
-  scheme.rememberChannelSnapshot(paymentPayload, channel);
+  const claimAuthorizerSignature =
+    opts.includeClaimAuthorizerSignature && opts.refundSigner
+      ? await signClaimBatch(opts.refundSigner, [claimEntry], opts.network)
+      : undefined;
 
   return {
-    ...(raw.amount === undefined ? { amount: refundAmount } : {}),
+    ...(opts.raw.amount === undefined ? { amount: refundAmount } : {}),
     refundNonce: nonce,
     claims: [claimEntry],
     refundAuthorizerSignature,

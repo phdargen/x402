@@ -1,5 +1,11 @@
 export { BatchSettlementEvmScheme } from "./scheme";
-export type { BatchSettlementEvmSchemeServerConfig, BatchSettlementRequestContext } from "./scheme";
+export type {
+  BatchSettlementEvmSchemeServerConfig,
+  BatchSettlementSelfManagedServerConfig,
+  BatchSettlementFacilitatorManagedServerConfig,
+  BatchSettlementRequestContext,
+  VoucherStoreMode,
+} from "./scheme";
 export type { AuthorizerSigner } from "../types";
 export { ErrDepositBelowMinDeposit } from "../errors";
 export { InMemoryChannelStorage } from "./storage";

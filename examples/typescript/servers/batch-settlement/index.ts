@@ -1,5 +1,8 @@
 import { HTTPFacilitatorClient } from "@x402/core/server";
-import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/server";
+import {
+  BatchSettlementEvmScheme,
+  type BatchSettlementChannelManager,
+} from "@x402/evm/batch-settlement/server";
 import { FileChannelStorage } from "@x402/evm/batch-settlement/server/file-storage";
 import {
   paymentMiddlewareFromHTTPServer,
@@ -21,6 +24,11 @@ const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE
   | undefined;
 const storageDir = process.env.STORAGE_DIR;
 const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "86400");
+const voucherStoreMode =
+  process.env.VOUCHER_STORE_MODE?.trim().toLowerCase() === "facilitator"
+    ? ("facilitator" as const)
+    : ("self" as const);
+const refundAuthorizerPrivateKey = process.env.EVM_REFUND_AUTHORIZER_PRIVATE_KEY?.trim();
 
 if (!evmAddress || !/^0x[0-9a-fA-F]{40}$/.test(evmAddress)) {
   console.error("Missing or invalid EVM_ADDRESS (checksummed 20-byte hex, 0x-prefixed)");
@@ -37,41 +45,64 @@ const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
   ? privateKeyToAccount(receiverAuthorizerPrivateKey)
   : undefined;
 
+const refundAuthorizerSigner = refundAuthorizerPrivateKey
+  ? privateKeyToAccount(refundAuthorizerPrivateKey as `0x${string}`)
+  : undefined;
+
+if (voucherStoreMode === "facilitator" && receiverAuthorizerSigner) {
+  console.error(
+    "VOUCHER_STORE_MODE=facilitator cannot be combined with EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
+  );
+  process.exit(1);
+}
+
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
 
-const batchedScheme = new BatchSettlementEvmScheme(evmAddress, {
-  ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
-  withdrawDelay,
-  enforceMinDeposit: false,
-  ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
-  // lockStorage: new RedisChannelLockStorage({ client }) when hosts do not share STORAGE_DIR
-});
+const batchedScheme = new BatchSettlementEvmScheme(
+  evmAddress,
+  voucherStoreMode === "facilitator"
+    ? {
+        voucherStoreMode: "facilitator",
+        ...(refundAuthorizerSigner ? { refundAuthorizerSigner } : {}),
+        enforceMinDeposit: false,
+        ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
+      }
+    : {
+        ...(receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {}),
+        withdrawDelay,
+        enforceMinDeposit: false,
+        ...(storageDir ? { storage: new FileChannelStorage({ directory: storageDir }) } : {}),
+        // lockStorage: new RedisChannelLockStorage({ client }) when hosts do not share STORAGE_DIR
+      },
+);
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, batchedScheme);
 
-const channelManager = batchedScheme.createChannelManager(facilitatorClient, NETWORK);
-
-channelManager.start({
-  claimIntervalSecs: 60,
-  settleIntervalSecs: 120,
-  refundIntervalSecs: 180,
-  maxClaimsPerBatch: 100,
-  selectRefundChannels: (channels, context) =>
-    channels.filter(channel => {
-      if (BigInt(channel.balance) === 0n) return false;
-      return context.now - channel.lastRequestTimestamp >= 180_000; // Refund channels after 3 minutes of inactivity
-    }),
-  onClaim: (r: { vouchers: number; transaction: string }) =>
-    console.log(`Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
-  onSettle: (r: { transaction: string }) =>
-    console.log(`Settled to ${evmAddress} (tx: ${r.transaction})`),
-  onRefund: r => console.log(`Refunded channel ${r.channel} (tx: ${r.transaction})`),
-  onError: (e: unknown) => console.error("Settlement error:", e),
-});
+let channelManager: BatchSettlementChannelManager | undefined;
+if (voucherStoreMode === "self") {
+  channelManager = batchedScheme.createChannelManager(facilitatorClient, NETWORK);
+  channelManager.start({
+    claimIntervalSecs: 60,
+    settleIntervalSecs: 120,
+    refundIntervalSecs: 180,
+    maxClaimsPerBatch: 100,
+    selectRefundChannels: (channels, context) =>
+      channels.filter(channel => {
+        if (BigInt(channel.balance) === 0n) return false;
+        return context.now - channel.lastRequestTimestamp >= 180_000;
+      }),
+    onClaim: r => console.log(`Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+    onSettle: r => console.log(`Settled to ${evmAddress} (tx: ${r.transaction})`),
+    onRefund: r => console.log(`Refunded channel ${r.channel} (tx: ${r.transaction})`),
+    onError: e => console.error("Settlement error:", e),
+  });
+}
 
 process.on("SIGINT", async () => {
-  console.log("Shutting down — flushing pending claims…");
-  await channelManager.stop({ flush: true });
+  if (channelManager) {
+    console.log("Shutting down — flushing pending claims…");
+    await channelManager.stop({ flush: true });
+  }
   process.exit(0);
 });
 
@@ -120,7 +151,14 @@ async function main() {
   app.listen(4021, () => {
     console.log("Batch-settlement server listening at http://localhost:4021");
     console.log("  GET /weather");
-    if (receiverAuthorizerSigner) {
+    if (voucherStoreMode === "facilitator") {
+      console.log("  Voucher custody: facilitator-managed (pass-through verify/settle)");
+      if (refundAuthorizerSigner) {
+        console.log(`  Refund authorizer: local signer ${refundAuthorizerSigner.address}`);
+      } else {
+        console.log("  Refund authorizer: facilitator refundAuth (requires resolveCallerIdentity)");
+      }
+    } else if (receiverAuthorizerSigner) {
       console.log(`  Receiver authorizer: local signer ${receiverAuthorizerSigner.address}`);
     } else {
       console.log("  Receiver authorizer: facilitator");

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   isNodeEnoent,
   readJsonFile,
@@ -205,6 +205,7 @@ class MockRedisClient implements RedisChannelStorageClient {
   updateConflicts = 0;
   nextChannelGetDelay: Deferred<void> | undefined;
   nextUpdateEvalDelay: Deferred<void> | undefined;
+  forcedUpdateEvalResult: unknown | undefined;
 
   async get(key: string): Promise<string | null> {
     await this.maybeDelayChannelGet(key);
@@ -233,6 +234,9 @@ class MockRedisClient implements RedisChannelStorageClient {
   async eval(script: string, options: RedisEvalOptions): Promise<unknown> {
     const [key] = options.keys;
     this.expireKey(key);
+    if (this.forcedUpdateEvalResult !== undefined) {
+      return this.forcedUpdateEvalResult;
+    }
     if (!script.includes("expectedExists")) {
       const current = this.store.get(key);
       if (current?.value === options.arguments[0]) {
@@ -405,6 +409,23 @@ describe("RedisChannelStorage", () => {
     });
   });
 
+  it("rejects malformed compare-and-write responses from Redis", async () => {
+    client.forcedUpdateEvalResult = "not-an-array";
+    await expect(storage.updateChannel(CHANNEL_ID, () => buildSession())).rejects.toThrow(
+      /Unexpected Redis update response/,
+    );
+
+    client.forcedUpdateEvalResult = [2, null];
+    await expect(storage.updateChannel(CHANNEL_ID, () => buildSession())).rejects.toThrow(
+      /Unexpected Redis update status/,
+    );
+
+    client.forcedUpdateEvalResult = [1, { bad: true }];
+    await expect(storage.updateChannel(CHANNEL_ID, () => buildSession())).rejects.toThrow(
+      /Unexpected Redis update value/,
+    );
+  });
+
   it("retries concurrent updateChannel mutations after Redis compare conflicts", async () => {
     await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "0" }));
     const firstEvalDelay = deferred<void>();
@@ -435,6 +456,17 @@ describe("RedisChannelStorage", () => {
     expect(results.map(result => result.status)).toEqual(["updated", "updated"]);
     expect(client.updateConflicts).toBe(1);
     expect((await storage.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("2");
+  });
+
+  it("refreshes the lock TTL when the same pendingId re-acquires", async () => {
+    expect(await storage.acquire(CHANNEL_ID, "same", 60_000)).toBe(true);
+    const firstExpiry = client.store.get(`test:x402:server:lock:${CHANNEL_ID}`)?.expiresAt;
+    expect(await storage.acquire(CHANNEL_ID, "same", 120_000)).toBe(true);
+    const secondExpiry = client.store.get(`test:x402:server:lock:${CHANNEL_ID}`)?.expiresAt;
+    expect(secondExpiry).toBeDefined();
+    expect(firstExpiry).toBeDefined();
+    expect(secondExpiry!).toBeGreaterThanOrEqual(firstExpiry!);
+    expect(await storage.isHeld(CHANNEL_ID, "same")).toBe(true);
   });
 
   it("acquires with SET NX PX and compare-and-deletes only the matching pendingId", async () => {
@@ -522,6 +554,10 @@ describe("FileChannelStorage", () => {
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("list returns an empty array before any channel file exists", async () => {
+    expect(await storage.list()).toEqual([]);
   });
 
   it("round-trips a canonical id with a lowercased, byte-identical JSON file", async () => {
@@ -645,6 +681,23 @@ describe("FileChannelStorage", () => {
     await expect(storage.release(CHANNEL_ID, "missing")).resolves.toBeUndefined();
   });
 
+  it("list fails fast when a channel file contains invalid JSON", async () => {
+    await storage.updateChannel(CHANNEL_ID, () => buildSession());
+    await writeFile(join(root, "server", "0xbad.json"), "{not-json", "utf8");
+    await expect(storage.list()).rejects.toThrow();
+  });
+
+  it("refreshes the hold TTL when the same pendingId re-enters", async () => {
+    expect(await storage.acquire(CHANNEL_ID, "same-owner", 60_000)).toBe(true);
+    const holdPath = join(root, "server", `${CHANNEL_ID}.hold`);
+    const first = JSON.parse(await readFile(holdPath, "utf8")) as { expiresAt: number };
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(await storage.acquire(CHANNEL_ID, "same-owner", 60_000)).toBe(true);
+    const second = JSON.parse(await readFile(holdPath, "utf8")) as { expiresAt: number };
+    expect(second.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
+    expect(await storage.isHeld(CHANNEL_ID, "same-owner")).toBe(true);
+  });
+
   it("rethrows a corrupt hold file instead of treating it as free", async () => {
     expect(await storage.acquire(CHANNEL_ID, "ok", 60_000)).toBe(true);
     await writeFile(join(root, "server", `${CHANNEL_ID}.hold`), "{nope");
@@ -726,6 +779,9 @@ describe("FileClientChannelStorage", () => {
 
 describe("storage-utils", () => {
   it("rejects a filename that escapes the storage root", () => {
+    expect(resolveWithinDir("/tmp/x402-root", "channels.json")).toBe(
+      resolve("/tmp/x402-root/channels.json"),
+    );
     expect(() => resolveWithinDir("/tmp/x402-root", "../etc/passwd")).toThrow(
       "resolved channel path escapes storage root",
     );
@@ -756,6 +812,18 @@ describe("storage-utils", () => {
       const path = join(dir, "nested", "file.json");
       await writeJsonAtomic(path, { ok: true });
       expect(await readFile(path, "utf8")).toBe(`${JSON.stringify({ ok: true }, null, 2)}\n`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writeJsonAtomic overwrites an existing destination file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "x402-replace-"));
+    try {
+      const path = join(dir, "state.json");
+      await writeJsonAtomic(path, { version: 1 });
+      await writeJsonAtomic(path, { version: 2 });
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ version: 2 });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

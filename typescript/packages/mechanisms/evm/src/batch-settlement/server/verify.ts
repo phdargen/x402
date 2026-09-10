@@ -23,23 +23,9 @@ import { validateChannelConfig } from "../facilitator/utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
+import { pendingTtlMs } from "../voucherStore";
+import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import { readExtraNumber, readExtraString } from "./utils";
-
-// Framework cleanup hooks release admission locks for normal failures
-// This bounded TTL releases channels when cleanup cannot run or complete
-const MIN_PENDING_TTL_MS = 5_000; // 5 seconds
-const MAX_PENDING_TTL_MS = 10 * 60 * 1000; // 600 seconds
-
-/**
- * Computes the bounded admission-lock TTL.
- *
- * @param maxTimeoutSeconds - Resource timeout from payment requirements.
- * @returns TTL in milliseconds, clamped to 5s–600s.
- */
-function pendingTtlMs(maxTimeoutSeconds: number | undefined): number {
-  const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000;
-  return Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
-}
 
 /**
  * Builds a fail-closed response when local verification state cannot be established.
@@ -93,15 +79,9 @@ export async function handleBeforeVerify(
     return;
   }
 
-  if (scheme.getEnforceMinDeposit() && isBatchSettlementDepositPayload(raw)) {
-    const minDeposit = BigInt(await scheme.resolveMinDepositHint(requirements));
-    if (BigInt(raw.deposit.amount) < minDeposit) {
-      return {
-        abort: true,
-        reason: Errors.ErrDepositBelowMinDeposit,
-        message: "Deposit amount is below the server minimum",
-      };
-    }
+  const minDepositAbort = await abortIfBelowMinDeposit(scheme, raw, requirements);
+  if (minDepositAbort) {
+    return minDepositAbort;
   }
 
   try {
@@ -220,20 +200,67 @@ export async function handleEnrichPaymentRequiredResponse(
     return;
   }
 
-  accept.extra = {
-    ...accept.extra,
-    channelState: {
-      channelId: channel.channelId,
+  writeCorrectiveAcceptExtra(
+    accept,
+    {
+      channelId: channel.channelId as `0x${string}`,
       balance: channel.balance,
       totalClaimed: channel.totalClaimed,
       withdrawRequestedAt: channel.withdrawRequestedAt,
       refundNonce: String(channel.refundNonce),
       chargedCumulativeAmount: channel.chargedCumulativeAmount,
     },
-    voucherState: {
+    {
       signedMaxClaimable: channel.signedMaxClaimable,
       signature: channel.signature as `0x${string}`,
     },
+  );
+}
+
+/**
+ * Rejects a deposit below the announced `extra.minDeposit` when enforcement is on.
+ *
+ * @param scheme - Owning scheme for policy and hint resolution.
+ * @param raw - Decoded payload.
+ * @param requirements - Payment requirements for the current request.
+ * @returns An abort directive, or undefined when the check passes or does not apply.
+ */
+export async function abortIfBelowMinDeposit(
+  scheme: BatchSettlementEvmScheme,
+  raw: unknown,
+  requirements: VerifyContext["requirements"],
+): Promise<{ abort: true; reason: string; message: string } | undefined> {
+  if (!scheme.getEnforceMinDeposit() || !isBatchSettlementDepositPayload(raw)) {
+    return undefined;
+  }
+  const minDeposit = BigInt(await scheme.resolveMinDepositHint(requirements));
+  if (BigInt(raw.deposit.amount) < minDeposit) {
+    return {
+      abort: true,
+      reason: Errors.ErrDepositBelowMinDeposit,
+      message: "Deposit amount is below the server minimum",
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Copies corrective channel/voucher snapshots onto a matching 402 accept.
+ *
+ * @param accept - Payment requirement to enrich.
+ * @param accept.extra - Existing extra fields to preserve.
+ * @param channelState - Channel snapshot from the voucher store.
+ * @param voucherState - Last signed voucher proof.
+ */
+export function writeCorrectiveAcceptExtra(
+  accept: { extra?: Record<string, unknown> },
+  channelState: BatchSettlementChannelStateExtra,
+  voucherState: BatchSettlementVoucherStateExtra,
+): void {
+  accept.extra = {
+    ...accept.extra,
+    channelState,
+    voucherState,
   };
 }
 

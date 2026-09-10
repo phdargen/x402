@@ -6,7 +6,15 @@ import {
   VerifyResponse,
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
-import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
+import {
+  BatchSettlementEvmScheme,
+  InMemoryChannelStorage,
+  type FacilitatorChannelManager,
+  type FacilitatorClaimResult,
+  type FacilitatorRefundResult,
+  type FacilitatorSettleResult,
+} from "@x402/evm/batch-settlement/facilitator";
+import { FileChannelStorage } from "@x402/evm/batch-settlement/facilitator/file-storage";
 import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, http, nonceManager, publicActions } from "viem";
@@ -15,8 +23,55 @@ import { baseSepolia } from "viem/chains";
 
 dotenv.config();
 
+function envFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function debugLog(...args: unknown[]): void {
+  if (envFlag("DEBUG")) {
+    console.log(...args);
+  }
+}
+
+function batchPayloadType(payload: PaymentPayload): string {
+  const body = payload.payload as { type?: string } | undefined;
+  return typeof body?.type === "string" ? body.type : "unknown";
+}
+
+function logVerifyLine(payload: PaymentPayload, response: VerifyResponse): void {
+  const type = batchPayloadType(payload);
+  if (response.isValid) {
+    console.info(`POST /verify ${type} ok`);
+    return;
+  }
+  console.info(
+    `POST /verify ${type} failed ${response.invalidReason ?? "unknown"}${
+      response.invalidMessage ? `: ${response.invalidMessage}` : ""
+    }`,
+  );
+}
+
+function logSettleLine(payload: PaymentPayload, response: SettleResponse): void {
+  const type = batchPayloadType(payload);
+  if (response.success) {
+    console.info(`POST /settle ${type} ok tx=${response.transaction}`);
+    return;
+  }
+  console.info(
+    `POST /settle ${type} failed ${response.errorReason ?? "unknown"}${
+      response.errorMessage ? `: ${response.errorMessage}` : ""
+    }`,
+  );
+}
+
 // Configuration
 const PORT = process.env.PORT || "4022";
+const voucherStoreEnabled = envFlag("VOUCHER_STORE");
+const voucherStoreDir = process.env.VOUCHER_STORE_DIR?.trim();
+const voucherStoreWithdrawDelay = Number(
+  process.env.VOUCHER_STORE_WITHDRAW_DELAY_SECONDS ?? "900",
+);
 
 // Validate required environment variables
 if (!process.env.EVM_PRIVATE_KEY) {
@@ -29,6 +84,13 @@ const evmRpcUrl = process.env.EVM_RPC_URL ?? "https://sepolia.base.org";
 // Treat unset or blank as not configured
 const receiverAuthorizerPrivateKey =
   process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
+
+if (voucherStoreEnabled && !receiverAuthorizerPrivateKey) {
+  console.error(
+    "❌ VOUCHER_STORE requires EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY (facilitator-managed custody)",
+  );
+  process.exit(1);
+}
 
 // Initialize the EVM account from private key (submits transactions)
 const evmAccount = privateKeyToAccount(
@@ -56,6 +118,14 @@ if (authorizerSigner) {
   console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
 } else {
   console.info("EVM Receiver Authorizer: not configured");
+}
+if (voucherStoreEnabled) {
+  const backend = voucherStoreDir ? `file (${voucherStoreDir})` : "in-memory";
+  console.info(
+    `Facilitator voucher store: enabled (${backend}, withdrawDelay ${voucherStoreWithdrawDelay}s)`,
+  );
+} else {
+  console.info("Facilitator voucher store: disabled (self-managed server custody)");
 }
 
 // Create a Viem client with both wallet and public capabilities
@@ -90,30 +160,67 @@ const evmSigner = toFacilitatorEvmSigner({
 });
 
 const facilitator = new x402Facilitator()
-  .onBeforeVerify(async (context) => {
-    console.log("Before verify", context);
+  .onBeforeVerify(async context => {
+    debugLog("Before verify", context);
   })
-  .onAfterVerify(async (context) => {
-    console.log("After verify", context);
+  .onAfterVerify(async context => {
+    debugLog("After verify", context);
   })
-  .onVerifyFailure(async (context) => {
-    console.log("Verify failure", context);
+  .onVerifyFailure(async context => {
+    debugLog("Verify failure", context);
   })
-  .onBeforeSettle(async (context) => {
-    console.log("Before settle", context);
+  .onBeforeSettle(async context => {
+    debugLog("Before settle", context);
   })
-  .onAfterSettle(async (context) => {
-    console.log("After settle", context);
+  .onAfterSettle(async context => {
+    debugLog("After settle", context);
   })
-  .onSettleFailure(async (context) => {
-    console.log("Settle failure", context);
+  .onSettleFailure(async context => {
+    debugLog("Settle failure", context);
   });
 
+const batchSettlementScheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+  ...(voucherStoreEnabled
+    ? {
+        voucherStore: {
+          storage: voucherStoreDir
+            ? new FileChannelStorage({ directory: voucherStoreDir })
+            : new InMemoryChannelStorage(),
+          withdrawDelay: voucherStoreWithdrawDelay,
+        },
+      }
+    : {}),
+});
+
 // Register EVM schemes (batched: deposit / voucher / claim / settle)
-facilitator.register(
-  "eip155:84532",
-  new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
-); // Base Sepolia
+facilitator.register("eip155:84532", batchSettlementScheme); // Base Sepolia
+
+let channelManager: FacilitatorChannelManager | undefined;
+if (voucherStoreEnabled) {
+  channelManager = batchSettlementScheme.createChannelManager();
+  channelManager.start({
+    claimIntervalSecs: 60,
+    settleIntervalSecs: 120,
+    refundIntervalSecs: 180,
+    refundIdleSecs: 180,
+    maxClaimsPerBatch: 100,
+    onClaim: (r: FacilitatorClaimResult) =>
+      console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+    onSettle: (r: FacilitatorSettleResult) =>
+      console.log(`[voucher store] Settled ${r.receiver} (tx: ${r.transaction})`),
+    onRefund: (r: FacilitatorRefundResult) =>
+      console.log(`[voucher store] Refunded channel ${r.channel} (tx: ${r.transaction})`),
+    onError: e => console.error("[voucher store] Settlement error:", e),
+  });
+}
+
+process.on("SIGINT", async () => {
+  if (channelManager) {
+    console.log("Shutting down — flushing voucher-store claims…");
+    await channelManager.stop({ flush: true });
+  }
+  process.exit(0);
+});
 
 // Initialize Express app
 const app = express();
@@ -146,6 +253,7 @@ app.post("/verify", async (req, res) => {
       paymentRequirements,
     );
 
+    logVerifyLine(paymentPayload, response);
     res.json(response);
   } catch (error) {
     console.error("Verify error:", error);
@@ -180,6 +288,7 @@ app.post("/settle", async (req, res) => {
       paymentRequirements as PaymentRequirements,
     );
 
+    logSettleLine(paymentPayload as PaymentPayload, response);
     res.json(response);
   } catch (error) {
     console.error("Settle error:", error);

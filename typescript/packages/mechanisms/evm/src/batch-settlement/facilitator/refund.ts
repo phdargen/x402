@@ -1,4 +1,4 @@
-import { SettleResponse, PaymentRequirements } from "@x402/core/types";
+import { type Network, type SettleResponse } from "@x402/core/types";
 import { encodeFunctionData, getAddress } from "viem";
 import { FacilitatorEvmSigner } from "../../signer";
 import type {
@@ -18,6 +18,7 @@ import * as Errors from "../errors";
 import { truncateErrorMessage } from "../../utils";
 import { waitAndReturnSettleResponse } from "../../shared/settleReceipt";
 import { buildVoucherClaimArgs } from "./claim";
+import { shouldRelaySubmit, type SubmitContext } from "./submit";
 import { readChannelState, toContractChannelConfig } from "./utils";
 
 type RefundSettlementExtra = {
@@ -35,9 +36,14 @@ type RefundSettlementDetails = {
   extra: RefundSettlementExtra;
 };
 
+type RefundCall = {
+  functionName: "refund" | "refundWithSignature" | "multicall";
+  args: readonly unknown[];
+};
+
 /**
- * Computes the token amount that `refundWithSignature` would transfer after any
- * bundled claims are applied.
+ * Computes the token amount that a refund would transfer after any bundled claims
+ * are applied.
  *
  * @param payload - Refund payload containing requested refund amount and claims.
  * @param preState - Onchain channel state before the refund transaction.
@@ -177,33 +183,79 @@ function buildRefundExtraFromPostState(
 }
 
 /**
- * Executes a cooperative refund via `refundWithSignature`.
+ * Encodes a `refund` or `refundWithSignature` call, optionally batched with a claim via `multicall`.
  *
- * When `refundAuthorizerSignature` / `claimAuthorizerSignature` are present they are used
- * directly.  When absent the facilitator signs the missing digests using
- * `authorizerSigner`, after verifying that `config.receiverAuthorizer` matches
- * `authorizerSigner.address`.
+ * @param payload - Refund payload.
+ * @param mode - Direct (`refund` / `claim`) or relay (`*WithSignature`).
+ * @param refundSig - Authorizer signature required for the relay refund leg.
+ * @param claimSig - Authorizer signature required for a relay claim leg.
+ * @returns Function name and args for simulation and broadcast.
+ */
+function buildRefundCall(
+  payload: BatchSettlementEnrichedRefundPayload,
+  mode: "direct" | "relay",
+  refundSig?: `0x${string}`,
+  claimSig?: `0x${string}`,
+): RefundCall {
+  const config = toContractChannelConfig(payload.channelConfig);
+  const amount = BigInt(payload.amount);
+
+  const refundCalldata =
+    mode === "direct"
+      ? encodeFunctionData({
+          abi: batchSettlementABI,
+          functionName: "refund",
+          args: [config, amount],
+        })
+      : encodeFunctionData({
+          abi: batchSettlementABI,
+          functionName: "refundWithSignature",
+          args: [config, amount, BigInt(payload.refundNonce), refundSig ?? "0x"],
+        });
+
+  if (payload.claims.length === 0) {
+    if (mode === "direct") {
+      return { functionName: "refund", args: [config, amount] };
+    }
+    return {
+      functionName: "refundWithSignature",
+      args: [config, amount, BigInt(payload.refundNonce), refundSig ?? "0x"],
+    };
+  }
+
+  const claimCalldata =
+    mode === "direct"
+      ? encodeFunctionData({
+          abi: batchSettlementABI,
+          functionName: "claim",
+          args: [buildVoucherClaimArgs(payload.claims)],
+        })
+      : encodeFunctionData({
+          abi: batchSettlementABI,
+          functionName: "claimWithSignature",
+          args: [buildVoucherClaimArgs(payload.claims), claimSig ?? "0x"],
+        });
+
+  return { functionName: "multicall", args: [[claimCalldata, refundCalldata]] };
+}
+
+/**
+ * Simulates then broadcasts a refund (and optional bundled claim).
  *
- * If `payload.claims` is non-empty, the claim and refund are batched atomically via
- * the contract's `multicall`.
- *
- * @param signer - Facilitator signer used to submit the onchain transactions.
- * @param payload - Refund payload with optional signatures, amount, and nonce.
- * @param requirements - Payment requirements for network identification.
- * @param authorizerSigner - Optional dedicated key for producing EIP-712 signatures.
- *   When omitted, the payload must already carry the required authorizer signatures.
+ * @param signer - Wallet that submits the transaction.
+ * @param payload - Refund payload.
+ * @param network - CAIP-2 network identifier.
+ * @param call - Encoded onchain call.
  * @param dataSuffix - Optional hex suffix appended to the refund transaction.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
-export async function executeRefundWithSignature(
+async function submitRefundTransaction(
   signer: FacilitatorEvmSigner,
   payload: BatchSettlementEnrichedRefundPayload,
-  requirements: PaymentRequirements,
-  authorizerSigner: AuthorizerSigner | undefined,
+  network: Network,
+  call: RefundCall,
   dataSuffix?: `0x${string}`,
 ): Promise<SettleResponse> {
-  const network = requirements.network;
-
   try {
     const channelId = computeChannelId(payload.channelConfig, network);
     const preState = await readChannelState(signer, channelId);
@@ -220,133 +272,30 @@ export async function executeRefundWithSignature(
       };
     }
 
-    const hasClientSig = payload.refundAuthorizerSignature !== undefined;
-
-    if (!hasClientSig && !authorizerSigner) {
+    try {
+      await signer.readContract({
+        address: contractAddr,
+        abi: batchSettlementABI,
+        functionName: call.functionName,
+        args: call.args,
+      });
+    } catch (e) {
       return {
         success: false,
-        errorReason: Errors.ErrAuthorizerNotConfigured,
+        errorReason: Errors.ErrRefundSimulationFailed,
+        errorMessage: e instanceof Error ? e.message : String(e),
         transaction: "",
         network,
       };
     }
 
-    if (
-      !hasClientSig &&
-      authorizerSigner &&
-      getAddress(payload.channelConfig.receiverAuthorizer) !== getAddress(authorizerSigner.address)
-    ) {
-      return {
-        success: false,
-        errorReason: Errors.ErrAuthorizerAddressMismatch,
-        transaction: "",
-        network,
-      };
-    }
-
-    const refundSig =
-      payload.refundAuthorizerSignature ??
-      (await signRefund(
-        authorizerSigner!,
-        channelId,
-        payload.amount,
-        payload.refundNonce,
-        network,
-      ));
-
-    const refundCalldata = encodeFunctionData({
+    const tx = await signer.writeContract({
+      address: contractAddr,
       abi: batchSettlementABI,
-      functionName: "refundWithSignature",
-      args: [
-        toContractChannelConfig(payload.channelConfig),
-        BigInt(payload.amount),
-        BigInt(payload.refundNonce),
-        refundSig,
-      ],
+      functionName: call.functionName,
+      args: call.args,
+      dataSuffix,
     });
-
-    let tx: `0x${string}`;
-
-    if (payload.claims.length > 0) {
-      let claimSig = payload.claimAuthorizerSignature;
-      if (!claimSig) {
-        if (!authorizerSigner) {
-          return {
-            success: false,
-            errorReason: Errors.ErrAuthorizerNotConfigured,
-            transaction: "",
-            network,
-          };
-        }
-        claimSig = await signClaimBatch(authorizerSigner, payload.claims, network);
-      }
-
-      const claimCalldata = encodeFunctionData({
-        abi: batchSettlementABI,
-        functionName: "claimWithSignature",
-        args: [buildVoucherClaimArgs(payload.claims), claimSig],
-      });
-
-      try {
-        await signer.readContract({
-          address: contractAddr,
-          abi: batchSettlementABI,
-          functionName: "multicall",
-          args: [[claimCalldata, refundCalldata]],
-        });
-      } catch (e) {
-        return {
-          success: false,
-          errorReason: Errors.ErrRefundSimulationFailed,
-          errorMessage: e instanceof Error ? e.message : String(e),
-          transaction: "",
-          network,
-        };
-      }
-
-      tx = await signer.writeContract({
-        address: contractAddr,
-        abi: batchSettlementABI,
-        functionName: "multicall",
-        args: [[claimCalldata, refundCalldata]],
-        dataSuffix,
-      });
-    } else {
-      try {
-        await signer.readContract({
-          address: contractAddr,
-          abi: batchSettlementABI,
-          functionName: "refundWithSignature",
-          args: [
-            toContractChannelConfig(payload.channelConfig),
-            BigInt(payload.amount),
-            BigInt(payload.refundNonce),
-            refundSig,
-          ],
-        });
-      } catch (e) {
-        return {
-          success: false,
-          errorReason: Errors.ErrRefundSimulationFailed,
-          errorMessage: e instanceof Error ? e.message : String(e),
-          transaction: "",
-          network,
-        };
-      }
-
-      tx = await signer.writeContract({
-        address: contractAddr,
-        abi: batchSettlementABI,
-        functionName: "refundWithSignature",
-        args: [
-          toContractChannelConfig(payload.channelConfig),
-          BigInt(payload.amount),
-          BigInt(payload.refundNonce),
-          refundSig,
-        ],
-        dataSuffix,
-      });
-    }
 
     return await waitAndReturnSettleResponse(signer, tx, network, payload.channelConfig.payer, {
       failedStatusReason: Errors.ErrRefundTransactionFailed,
@@ -379,4 +328,156 @@ export async function executeRefundWithSignature(
       network,
     };
   }
+}
+
+/**
+ * Executes a cooperative refund via `refundWithSignature`.
+ *
+ * When `refundAuthorizerSignature` / `claimAuthorizerSignature` are present they are used
+ * directly.  When absent the facilitator signs the missing digests using
+ * `authorizerSigner`, after verifying that `config.receiverAuthorizer` matches
+ * `authorizerSigner.address`.
+ *
+ * If `payload.claims` is non-empty, the claim and refund are batched atomically via
+ * the contract's `multicall`.
+ *
+ * @param signer - Facilitator signer used to submit the onchain transactions.
+ * @param payload - Refund payload with optional signatures, amount, and nonce.
+ * @param network - CAIP-2 network identifier.
+ * @param authorizerSigner - Optional dedicated key for producing EIP-712 signatures.
+ *   When omitted, the payload must already carry the required authorizer signatures.
+ * @param dataSuffix - Optional hex suffix appended to the refund transaction.
+ * @returns A {@link SettleResponse} with the transaction hash on success.
+ */
+export async function executeRefundWithSignature(
+  signer: FacilitatorEvmSigner,
+  payload: BatchSettlementEnrichedRefundPayload,
+  network: Network,
+  authorizerSigner: AuthorizerSigner | undefined,
+  dataSuffix?: `0x${string}`,
+): Promise<SettleResponse> {
+  const hasClientSig = payload.refundAuthorizerSignature !== undefined;
+
+  if (!hasClientSig && !authorizerSigner) {
+    return {
+      success: false,
+      errorReason: Errors.ErrAuthorizerNotConfigured,
+      transaction: "",
+      network,
+    };
+  }
+
+  if (
+    !hasClientSig &&
+    authorizerSigner &&
+    getAddress(payload.channelConfig.receiverAuthorizer) !== getAddress(authorizerSigner.address)
+  ) {
+    return {
+      success: false,
+      errorReason: Errors.ErrAuthorizerAddressMismatch,
+      transaction: "",
+      network,
+    };
+  }
+
+  const channelId = computeChannelId(payload.channelConfig, network);
+  const refundSig =
+    payload.refundAuthorizerSignature ??
+    (await signRefund(authorizerSigner!, channelId, payload.amount, payload.refundNonce, network));
+
+  let claimSig = payload.claimAuthorizerSignature;
+  if (payload.claims.length > 0 && !claimSig) {
+    if (!authorizerSigner) {
+      return {
+        success: false,
+        errorReason: Errors.ErrAuthorizerNotConfigured,
+        transaction: "",
+        network,
+      };
+    }
+    claimSig = await signClaimBatch(authorizerSigner, payload.claims, network);
+  }
+
+  return submitRefundTransaction(
+    signer,
+    payload,
+    network,
+    buildRefundCall(payload, "relay", refundSig, claimSig),
+    dataSuffix,
+  );
+}
+
+/**
+ * Executes a cooperative refund via `refund()` as `msg.sender` (receiver or `receiverAuthorizer`).
+ *
+ * If `payload.claims` is non-empty, the claim and refund are batched atomically via
+ * the contract's `multicall` using `claim` + `refund`.
+ *
+ * @param signer - Authorizer submitter used to send the refund transaction.
+ * @param payload - Refund payload with amount, nonce, and optional bundled claims.
+ * @param network - CAIP-2 network identifier.
+ * @param dataSuffix - Optional hex suffix appended to the refund transaction.
+ * @returns A {@link SettleResponse} with the transaction hash on success.
+ */
+export async function executeRefund(
+  signer: FacilitatorEvmSigner,
+  payload: BatchSettlementEnrichedRefundPayload,
+  network: Network,
+  dataSuffix?: `0x${string}`,
+): Promise<SettleResponse> {
+  return submitRefundTransaction(
+    signer,
+    payload,
+    network,
+    buildRefundCall(payload, "direct"),
+    dataSuffix,
+  );
+}
+
+/**
+ * Dispatches a refund through the relay or direct submit path.
+ *
+ * A payload that already has `refundAuthorizerSignature` or `claimAuthorizerSignature`
+ * always uses the relay functions. Otherwise `submitMode` selects the path
+ * (`"relay"` when omitted). Direct mode requires `authorizerSubmitter`.
+ *
+ * @param input - Network, refund payload, and optional data suffix.
+ * @param input.network - CAIP-2 network identifier.
+ * @param input.payload - Enriched refund payload with amount, nonce, and optional claims.
+ * @param input.dataSuffix - Optional hex suffix appended to the refund transaction.
+ * @param ctx - Regular signer pool, dedicated authorizer, and submit mode.
+ * @returns A {@link SettleResponse} with the transaction hash on success.
+ */
+export async function submitRefund(
+  input: {
+    network: Network;
+    payload: BatchSettlementEnrichedRefundPayload;
+    dataSuffix?: `0x${string}`;
+  },
+  ctx: SubmitContext,
+): Promise<SettleResponse> {
+  const hasAuthorizerSignature =
+    input.payload.refundAuthorizerSignature !== undefined ||
+    input.payload.claimAuthorizerSignature !== undefined;
+
+  if (shouldRelaySubmit(ctx.submitMode, hasAuthorizerSignature)) {
+    return executeRefundWithSignature(
+      ctx.signer,
+      input.payload,
+      input.network,
+      ctx.authorizerSigner,
+      input.dataSuffix,
+    );
+  }
+
+  if (!ctx.authorizerSubmitter) {
+    return {
+      success: false,
+      errorReason: Errors.ErrAuthorizerNotConfigured,
+      transaction: "",
+      network: input.network,
+    };
+  }
+
+  return executeRefund(ctx.authorizerSubmitter, input.payload, input.network, input.dataSuffix);
 }

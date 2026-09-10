@@ -21,8 +21,11 @@ import type { AuthorizerSigner, BatchSettlementAssetTransferMethod } from "../ty
 import {
   BATCH_SETTLEMENT_SCHEME,
   DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER,
+  MAX_WITHDRAW_DELAY,
   MIN_WITHDRAW_DELAY,
 } from "../constants";
+import { isFacilitatorManaged, voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
+import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import {
   InMemoryChannelStorage,
   ChannelStorage,
@@ -44,15 +47,48 @@ import {
   handleEnrichSettlementResponse,
   handleSettleFailure,
 } from "./settle";
+import {
+  handleManagedAfterSettle,
+  handleManagedAfterVerify,
+  handleManagedBeforeSettle,
+  handleManagedBeforeVerify,
+  handleManagedEnrichPaymentRequiredResponse,
+  handleManagedEnrichSettlementPayload,
+  handleManagedEnrichSettlementResponse,
+  handleManagedSettleFailure,
+  handleManagedVerifiedPaymentCanceled,
+  handleManagedVerifyFailure,
+} from "./managed";
 
-export interface BatchSettlementEvmSchemeServerConfig {
+export type { VoucherStoreMode };
+
+type BatchSettlementEvmSchemeServerConfigBase = {
   storage?: ChannelStorage;
+  onchainStateTtlMs?: number;
+  enforceMinDeposit?: boolean;
+};
+
+/** Self-managed voucher store (default). `storage` is authoritative. */
+export type BatchSettlementSelfManagedServerConfig = BatchSettlementEvmSchemeServerConfigBase & {
+  voucherStoreMode?: "self";
   lockStorage?: ChannelLockStorage;
   receiverAuthorizerSigner?: AuthorizerSigner;
   withdrawDelay?: number;
-  onchainStateTtlMs?: number;
-  enforceMinDeposit?: boolean;
-}
+};
+
+/**
+ * Facilitator-managed voucher store. `storage` is a replica written after
+ * successful `/settle` and is never read on the hot path.
+ */
+export type BatchSettlementFacilitatorManagedServerConfig =
+  BatchSettlementEvmSchemeServerConfigBase & {
+    voucherStoreMode: "facilitator";
+    refundAuthorizerSigner?: AuthorizerSigner;
+  };
+
+export type BatchSettlementEvmSchemeServerConfig =
+  | BatchSettlementSelfManagedServerConfig
+  | BatchSettlementFacilitatorManagedServerConfig;
 
 export interface BatchSettlementRequestContext {
   channelId?: string;
@@ -60,7 +96,49 @@ export interface BatchSettlementRequestContext {
   channelSnapshot?: Channel;
   localVerify?: boolean;
   reservationCommitted?: boolean;
+  correctiveChannelState?: BatchSettlementChannelStateExtra;
+  correctiveVoucherState?: BatchSettlementVoucherStateExtra;
 }
+
+type VoucherStoreHandlers = {
+  onBeforeVerify: typeof handleBeforeVerify;
+  onAfterVerify: typeof handleAfterVerify;
+  onBeforeSettle: typeof handleBeforeSettle;
+  onAfterSettle: typeof handleAfterSettle;
+  onVerifyFailure: typeof handleVerifyFailure;
+  onSettleFailure: typeof handleSettleFailure;
+  onVerifiedPaymentCanceled: typeof handleVerifiedPaymentCanceled;
+  enrichPaymentRequiredResponse: typeof handleEnrichPaymentRequiredResponse;
+  enrichSettlementPayload: typeof handleEnrichSettlementPayload;
+  enrichSettlementResponse: typeof handleEnrichSettlementResponse;
+};
+
+const HANDLERS: Record<VoucherStoreMode, VoucherStoreHandlers> = {
+  self: {
+    onBeforeVerify: handleBeforeVerify,
+    onAfterVerify: handleAfterVerify,
+    onBeforeSettle: handleBeforeSettle,
+    onAfterSettle: handleAfterSettle,
+    onVerifyFailure: handleVerifyFailure,
+    onSettleFailure: handleSettleFailure,
+    onVerifiedPaymentCanceled: handleVerifiedPaymentCanceled,
+    enrichPaymentRequiredResponse: handleEnrichPaymentRequiredResponse,
+    enrichSettlementPayload: handleEnrichSettlementPayload,
+    enrichSettlementResponse: handleEnrichSettlementResponse,
+  },
+  facilitator: {
+    onBeforeVerify: handleManagedBeforeVerify,
+    onAfterVerify: handleManagedAfterVerify,
+    onBeforeSettle: handleManagedBeforeSettle,
+    onAfterSettle: handleManagedAfterSettle,
+    onVerifyFailure: handleManagedVerifyFailure,
+    onSettleFailure: handleManagedSettleFailure,
+    onVerifiedPaymentCanceled: handleManagedVerifiedPaymentCanceled,
+    enrichPaymentRequiredResponse: handleManagedEnrichPaymentRequiredResponse,
+    enrichSettlementPayload: handleManagedEnrichSettlementPayload,
+    enrichSettlementResponse: handleManagedEnrichSettlementResponse,
+  },
+};
 
 /**
  * Server-side implementation of the `batch-settlement` scheme for EVM networks.
@@ -82,36 +160,58 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   private readonly storage: ChannelStorage;
   private readonly lockStorage: ChannelLockStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
+  private readonly refundAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
   private readonly withdrawDelay: number;
   private readonly onchainStateTtlMs: number;
   private readonly enforceMinDeposit: boolean;
+  private readonly configuredMode: VoucherStoreMode;
 
   /**
    * Constructs a batched server scheme.
    *
    * @param receiverAddress - The server's receiver address (payTo).
-   * @param config - Optional configuration for storage, receiver-authorizer signer, and withdraw delay.
+   * @param config - Discriminated voucher-store config. Omit `voucherStoreMode`
+   *   (or pass `"self"`) for self-managed; pass `"facilitator"` for a replica store.
    */
-  constructor(receiverAddress: `0x${string}`, config?: BatchSettlementEvmSchemeServerConfig) {
+  constructor(receiverAddress: `0x${string}`, config: BatchSettlementEvmSchemeServerConfig = {}) {
     this.receiverAddress = receiverAddress;
-    this.storage = config?.storage ?? new InMemoryChannelStorage();
-    this.lockStorage =
-      config?.lockStorage ??
-      (isChannelLockStorage(this.storage) ? this.storage : new InMemoryChannelStorage());
-    this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
-    this.withdrawDelay = config?.withdrawDelay ?? MIN_WITHDRAW_DELAY;
-    this.onchainStateTtlMs =
-      config?.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
-    this.enforceMinDeposit = config?.enforceMinDeposit ?? false;
+    this.storage = config.storage ?? new InMemoryChannelStorage();
+    this.enforceMinDeposit = config.enforceMinDeposit ?? false;
+
+    if (config.voucherStoreMode === "facilitator") {
+      this.configuredMode = "facilitator";
+      this.receiverAuthorizerSigner = undefined;
+      this.refundAuthorizerSigner = config.refundAuthorizerSigner;
+      this.lockStorage = isChannelLockStorage(this.storage)
+        ? this.storage
+        : new InMemoryChannelStorage();
+      this.withdrawDelay = MIN_WITHDRAW_DELAY;
+      this.onchainStateTtlMs =
+        config.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
+    } else {
+      this.configuredMode = "self";
+      this.receiverAuthorizerSigner = config.receiverAuthorizerSigner;
+      this.refundAuthorizerSigner = undefined;
+      this.lockStorage =
+        config.lockStorage ??
+        (isChannelLockStorage(this.storage) ? this.storage : new InMemoryChannelStorage());
+      this.withdrawDelay = config.withdrawDelay ?? MIN_WITHDRAW_DELAY;
+      this.onchainStateTtlMs =
+        config.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
+    }
+
     this.schemeHooks = {
-      onBeforeVerify: ctx => handleBeforeVerify(this, ctx),
-      onAfterVerify: ctx => handleAfterVerify(this, ctx),
-      onBeforeSettle: ctx => handleBeforeSettle(this, ctx),
-      onAfterSettle: ctx => handleAfterSettle(this, ctx),
-      onVerifyFailure: ctx => handleVerifyFailure(this, ctx),
-      onSettleFailure: ctx => handleSettleFailure(this, ctx),
-      onVerifiedPaymentCanceled: ctx => handleVerifiedPaymentCanceled(this, ctx),
+      onBeforeVerify: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onBeforeVerify(this, ctx),
+      onAfterVerify: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onAfterVerify(this, ctx),
+      onBeforeSettle: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onBeforeSettle(this, ctx),
+      onAfterSettle: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onAfterSettle(this, ctx),
+      onVerifyFailure: ctx =>
+        HANDLERS[voucherStoreMode(ctx.requirements)].onVerifyFailure(this, ctx),
+      onSettleFailure: ctx =>
+        HANDLERS[voucherStoreMode(ctx.requirements)].onSettleFailure(this, ctx),
+      onVerifiedPaymentCanceled: ctx =>
+        HANDLERS[voucherStoreMode(ctx.requirements)].onVerifiedPaymentCanceled(this, ctx),
     };
   }
 
@@ -122,7 +222,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Additive payload fields, or nothing when no enrichment is needed.
    */
   enrichSettlementPayload = (ctx: SettleContext): Promise<Record<string, unknown> | void> =>
-    handleEnrichSettlementPayload(this, ctx);
+    HANDLERS[voucherStoreMode(ctx.requirements)].enrichSettlementPayload(this, ctx);
 
   /**
    * Adds corrective channel state to payment-required responses when available.
@@ -132,7 +232,14 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   enrichPaymentRequiredResponse = (
     ctx: Parameters<typeof handleEnrichPaymentRequiredResponse>[1],
-  ): Promise<PaymentRequirements[] | void> => handleEnrichPaymentRequiredResponse(this, ctx);
+  ): Promise<PaymentRequirements[] | void> => {
+    const mode = ctx.paymentPayload
+      ? voucherStoreMode(ctx.paymentPayload.accepted as PaymentRequirements)
+      : ctx.requirements.some(req => isFacilitatorManaged(req))
+        ? "facilitator"
+        : "self";
+    return HANDLERS[mode].enrichPaymentRequiredResponse(this, ctx);
+  };
 
   /**
    * Adds server-owned extra fields after facilitator settlement.
@@ -141,7 +248,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Additive response extra fields, or nothing when no enrichment is needed.
    */
   enrichSettlementResponse = (ctx: SettleResultContext): Promise<Record<string, unknown> | void> =>
-    handleEnrichSettlementResponse(this, ctx);
+    HANDLERS[voucherStoreMode(ctx.requirements)].enrichSettlementResponse(this, ctx);
 
   /**
    * Merges batch-settlement state into the current request context.
@@ -308,28 +415,66 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   ): Promise<PaymentRequirements> {
     void _extensionKeys;
 
-    const receiverAuthorizer =
-      this.receiverAuthorizerSigner?.address ??
-      (typeof supportedKind.extra?.receiverAuthorizer === "string"
-        ? supportedKind.extra.receiverAuthorizer
-        : undefined);
+    switch (this.configuredMode) {
+      case "facilitator": {
+        if (supportedKind.extra?.voucherStore !== true) {
+          throw new Error("Facilitator-managed mode requires advertised extra.voucherStore");
+        }
+        const advertisedAuthorizer = supportedKind.extra?.receiverAuthorizer;
+        if (
+          typeof advertisedAuthorizer !== "string" ||
+          getAddress(advertisedAuthorizer) === "0x0000000000000000000000000000000000000000"
+        ) {
+          throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
+        }
+        const advertisedDelay = supportedKind.extra?.withdrawDelay;
+        if (typeof advertisedDelay !== "number") {
+          throw new Error("Facilitator-managed mode requires advertised extra.withdrawDelay");
+        }
 
-    if (
-      !receiverAuthorizer ||
-      getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
-    ) {
-      throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
+        return {
+          ...paymentRequirements,
+          extra: {
+            ...paymentRequirements.extra,
+            receiverAuthorizer: getAddress(advertisedAuthorizer),
+            withdrawDelay: advertisedDelay,
+            voucherStore: true,
+            ...(this.refundAuthorizerSigner
+              ? { refundAuthorizer: getAddress(this.refundAuthorizerSigner.address) }
+              : {}),
+            minDeposit: await this.resolveMinDepositHint(paymentRequirements),
+          },
+        };
+      }
+      case "self": {
+        const receiverAuthorizer =
+          this.receiverAuthorizerSigner?.address ??
+          (typeof supportedKind.extra?.receiverAuthorizer === "string"
+            ? supportedKind.extra.receiverAuthorizer
+            : undefined);
+
+        if (
+          !receiverAuthorizer ||
+          getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
+        ) {
+          throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
+        }
+
+        return {
+          ...paymentRequirements,
+          extra: {
+            ...paymentRequirements.extra,
+            receiverAuthorizer: getAddress(receiverAuthorizer),
+            withdrawDelay: this.withdrawDelay,
+            minDeposit: await this.resolveMinDepositHint(paymentRequirements),
+          },
+        };
+      }
+      default: {
+        const _exhaustive: never = this.configuredMode;
+        throw new Error(`unhandled voucher store mode: ${_exhaustive}`);
+      }
     }
-
-    return {
-      ...paymentRequirements,
-      extra: {
-        ...paymentRequirements.extra,
-        receiverAuthorizer: getAddress(receiverAuthorizer),
-        withdrawDelay: this.withdrawDelay,
-        minDeposit: await this.resolveMinDepositHint(paymentRequirements),
-      },
-    };
   }
 
   /**
@@ -346,19 +491,51 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     supportedKind: SupportedKind,
     _: string[],
   ): string | void {
-    if (this.receiverAuthorizerSigner) return;
-
     const advertised = supportedKind.extra?.receiverAuthorizer;
-    const hasValid =
+    const hasValidAuthorizer =
       typeof advertised === "string" &&
       getAddress(advertised) !== "0x0000000000000000000000000000000000000000";
 
-    if (!hasValid) {
-      return (
-        `no receiverAuthorizerSigner is configured and the facilitator does not advertise a ` +
-        `receiverAuthorizer on ${network}. Configure a receiverAuthorizerSigner or use a ` +
-        `facilitator that advertises one.`
-      );
+    switch (this.configuredMode) {
+      case "facilitator": {
+        if (supportedKind.extra?.voucherStore !== true) {
+          return (
+            `voucherStoreMode "facilitator" is configured but the facilitator does not ` +
+            `advertise voucherStore on ${network}.`
+          );
+        }
+        if (!hasValidAuthorizer) {
+          return `voucherStore mode requires a non-zero advertised receiverAuthorizer on ${network}.`;
+        }
+        const delay = supportedKind.extra?.withdrawDelay;
+        if (typeof delay !== "number" || delay < MIN_WITHDRAW_DELAY || delay > MAX_WITHDRAW_DELAY) {
+          return `voucherStore mode requires an in-range advertised withdrawDelay on ${network}.`;
+        }
+        if (!this.refundAuthorizerSigner && supportedKind.extra?.refundAuth !== true) {
+          return (
+            `no refundAuthorizerSigner is configured and the facilitator does not advertise ` +
+            `refundAuth on ${network}. Configure a refundAuthorizerSigner or use a facilitator ` +
+            `that advertises refundAuth.`
+          );
+        }
+        return;
+      }
+      case "self": {
+        if (this.receiverAuthorizerSigner) return;
+
+        if (!hasValidAuthorizer) {
+          return (
+            `no receiverAuthorizerSigner is configured and the facilitator does not advertise a ` +
+            `receiverAuthorizer on ${network}. Configure a receiverAuthorizerSigner or use a ` +
+            `facilitator that advertises one.`
+          );
+        }
+        return;
+      }
+      default: {
+        const _exhaustive: never = this.configuredMode;
+        return `unhandled voucher store mode: ${_exhaustive}`;
+      }
     }
   }
 
@@ -410,7 +587,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Returns whether deposits below the announced `extra.minDeposit` hint are rejected.
    *
-   * @returns `true` when {@link BatchSettlementEvmSchemeServerConfig.enforceMinDeposit} is enabled.
+   * @returns `true` when `enforceMinDeposit` is enabled.
    */
   getEnforceMinDeposit(): boolean {
     return this.enforceMinDeposit;
@@ -423,6 +600,27 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   getReceiverAuthorizerSigner(): AuthorizerSigner | undefined {
     return this.receiverAuthorizerSigner;
+  }
+
+  /**
+   * Returns the signer used for managed refund consent.
+   * Self-managed uses `receiverAuthorizerSigner`; managed uses `refundAuthorizerSigner`.
+   *
+   * @returns Refund-authorizer signer, or `undefined` when not set.
+   */
+  getRefundAuthorizerSigner(): AuthorizerSigner | undefined {
+    return this.receiverAuthorizerSigner ?? this.refundAuthorizerSigner;
+  }
+
+  /**
+   * Returns whether this scheme is constructed for a facilitator voucher store.
+   *
+   * @param network - CAIP-2 network identifier (unused; mode is instance-wide).
+   * @returns True when constructed with `voucherStoreMode: "facilitator"`.
+   */
+  isFacilitatorManagedVoucherStore(network: Network): boolean {
+    void network;
+    return this.configuredMode === "facilitator";
   }
 
   /**

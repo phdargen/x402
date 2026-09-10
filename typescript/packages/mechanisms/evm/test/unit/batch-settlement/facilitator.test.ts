@@ -33,13 +33,20 @@ import {
   verifyPermit2DepositAuthorization,
 } from "../../../src/batch-settlement/facilitator/deposit-permit2";
 import { BatchSettlementEvmScheme } from "../../../src/batch-settlement/facilitator/scheme";
-import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
+import type { FacilitatorChannel } from "../../../src/batch-settlement/facilitator/types";
+import { InMemoryChannelStorage } from "../../../src/batch-settlement/storage/channel";
+import { InMemoryDelegatedAuthStore } from "../../../src/batch-settlement/storage/delegatedAuth";
+import {
+  computeChannelId as computeChannelIdForNetwork,
+  packRefundAuthorizerSalt,
+} from "../../../src/batch-settlement/utils";
 import {
   BATCH_SETTLEMENT_ADDRESS,
   ERC3009_DEPOSIT_COLLECTOR_ADDRESS,
   PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
 } from "../../../src/batch-settlement/constants";
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
+import { PERMIT2_ADDRESS } from "../../../src/constants";
 import * as Errors from "../../../src/batch-settlement/errors";
 import { ErrErc20ApprovalFromMismatch } from "../../../src/exact/facilitator/errors";
 import type {
@@ -56,6 +63,7 @@ import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { Erc20ApprovalGasSponsoringSigner } from "../../../src/exact/extensions";
 import { ERC20_APPROVAL_GAS_SPONSORING_KEY } from "../../../src/exact/extensions";
 import { signVoucher } from "../../../src/batch-settlement/client/voucher";
+import { signRefund } from "../../../src/batch-settlement/authorizerSigner";
 import type { FacilitatorContext, PaymentPayload, PaymentRequirements } from "@x402/core/types";
 
 const mockedMulticall = multicall as unknown as MockedFunction<typeof multicall>;
@@ -237,6 +245,36 @@ describe("BatchSettlementEvmScheme (Facilitator) — construction & metadata", (
   it("getSigners returns the facilitator addresses", () => {
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
     expect(scheme.getSigners(NETWORK)).toEqual([FACILITATOR_ADDRESS]);
+  });
+
+  it("throws when submitMode is direct without authorizerSubmitter", () => {
+    expect(
+      () =>
+        new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+          submitMode: "direct",
+        }),
+    ).toThrow('submitMode "direct" requires authorizerSubmitter');
+  });
+
+  it("throws when authorizerSubmitter is not exactly the authorizer address", () => {
+    expect(
+      () =>
+        new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+          submitMode: "direct",
+          authorizerSubmitter: buildSigner(),
+        }),
+    ).toThrow("authorizerSubmitter.getAddresses() must be exactly [authorizerSigner.address]");
+  });
+
+  it("advertises voucherStore and withdrawDelay when a managed store is configured", () => {
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage: new InMemoryChannelStorage() },
+    });
+    expect(scheme.getExtra(NETWORK)).toEqual({
+      receiverAuthorizer: authorizer.address,
+      withdrawDelay: 900,
+      voucherStore: true,
+    });
   });
 });
 
@@ -1172,6 +1210,66 @@ describe("deposit-permit2 helpers", () => {
     });
   });
 
+  it("rejects an ERC-20 approval branch with malformed extension info", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      erc20ApprovalGasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: ASSET,
+          spender: PERMIT2_ADDRESS,
+          amount: "10000",
+          signedTransaction: "not-a-transaction",
+          version: "1",
+        },
+        schema: {},
+      },
+    };
+    const context = {
+      getExtension: vi.fn().mockImplementation((key: string) => {
+        if (key === ERC20_APPROVAL_GAS_SPONSORING_KEY) {
+          return {
+            signer: {
+              sendTransactions: vi.fn(),
+              waitForTransactionReceipt: vi.fn(),
+            },
+          };
+        }
+        return undefined;
+      }),
+    } as unknown as FacilitatorContext;
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+      context,
+    );
+    expect(result).toMatchObject({ isValid: false, payer: PAYER });
+  });
+
   it("rejects an ERC-20 approval branch when the registered signer payload does not match the payer", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
@@ -1232,6 +1330,319 @@ describe("deposit-permit2 helpers", () => {
     expect(result).toMatchObject({
       isValid: false,
       invalidReason: ErrErc20ApprovalFromMismatch,
+      payer: PAYER,
+    });
+  });
+
+  it("rejects an EIP-2612 branch with malformed extension fields", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      eip2612GasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: ASSET,
+          spender: PERMIT2_ADDRESS,
+          amount: "not-an-integer",
+          nonce: "1",
+          deadline: String(now + 3600),
+          signature: `0x${"aa".repeat(65)}`,
+          version: "1",
+        },
+      },
+    };
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ isValid: false, payer: PAYER });
+  });
+
+  it("rejects an EIP-2612 branch whose spender is not Permit2", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      eip2612GasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: ASSET,
+          spender: "0x0000000000000000000000000000000000000002",
+          amount: "10000",
+          nonce: "1",
+          deadline: String(now + 3600),
+          signature: `0x${"aa".repeat(65)}`,
+          version: "1",
+        },
+      },
+    };
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ isValid: false, payer: PAYER });
+  });
+
+  it("rejects an EIP-2612 branch whose token does not match the payment asset", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      eip2612GasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: "0x0000000000000000000000000000000000000001",
+          spender: PERMIT2_ADDRESS,
+          amount: "10000",
+          nonce: "1",
+          deadline: String(now + 3600),
+          signature: `0x${"aa".repeat(65)}`,
+          version: "1",
+        },
+      },
+    };
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ isValid: false, payer: PAYER });
+  });
+
+  it("rejects an EIP-2612 branch whose deadline is too soon", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      eip2612GasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: ASSET,
+          spender: PERMIT2_ADDRESS,
+          amount: "10000",
+          nonce: "1",
+          deadline: String(now),
+          signature: `0x${"aa".repeat(65)}`,
+          version: "1",
+        },
+      },
+    };
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ isValid: false, payer: PAYER });
+  });
+
+  it("uses the EIP-2612 gas sponsoring branch when the bundled permit matches the deposit", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const payment = envelopeDeposit(payload);
+    payment.extensions = {
+      eip2612GasSponsoring: {
+        info: {
+          from: PAYER,
+          asset: ASSET,
+          spender: PERMIT2_ADDRESS,
+          amount: "10000",
+          nonce: "1",
+          deadline: String(now + 3600),
+          signature: `0x${"aa".repeat(65)}`,
+          version: "1",
+        },
+      },
+    };
+    const result = await resolvePermit2DepositBranch(
+      buildSigner(),
+      payment,
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ kind: "eip2612" });
+    if ("kind" in result && result.kind === "eip2612") {
+      expect(result.collectorData.startsWith("0x")).toBe(true);
+      expect(result.collectorData.length).toBeGreaterThan(2);
+    }
+  });
+
+  it("uses the standard branch when Permit2 allowance already covers the deposit", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const signer = buildSigner({
+      readContract: vi.fn().mockResolvedValue(20_000n),
+    });
+    const result = await resolvePermit2DepositBranch(
+      signer,
+      envelopeDeposit(payload),
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({ kind: "standard" });
+  });
+
+  it("rejects the standard branch when Permit2 allowance is below the deposit amount", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const payload: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafebabe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          permit2Authorization: {
+            from: PAYER,
+            permitted: { token: ASSET, amount: "10000" },
+            spender: PERMIT2_DEPOSIT_COLLECTOR_ADDRESS,
+            nonce: "123",
+            deadline: String(now + 3600),
+            witness: { channelId },
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const signer = buildSigner({
+      readContract: vi.fn().mockResolvedValue(100n),
+    });
+    const result = await resolvePermit2DepositBranch(
+      signer,
+      envelopeDeposit(payload),
+      payload,
+      makeRequirements(),
+    );
+    expect(result).toMatchObject({
+      isValid: false,
+      invalidReason: Errors.ErrPermit2AllowanceRequired,
       payer: PAYER,
     });
   });
@@ -1940,6 +2351,103 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(result.errorReason).toBe(Errors.ErrAuthorizerAddressMismatch);
   });
 
+  it("dispatches unsigned claims via claim() when submitMode is direct", async () => {
+    const pool = buildSigner();
+    const authorizerSubmitter = buildSigner({
+      getAddresses: () => [authorizer.address],
+    });
+    const scheme = new BatchSettlementEvmScheme(pool, authorizer, {
+      submitMode: "direct",
+      authorizerSubmitter,
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+    };
+    const result = await scheme.settle(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(true);
+    expect(authorizerSubmitter.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "claim" }),
+    );
+    expect(pool.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("relays a pre-signed claim even when submitMode is direct", async () => {
+    const pool = buildSigner();
+    const authorizerSubmitter = buildSigner({
+      getAddresses: () => [authorizer.address],
+    });
+    const scheme = new BatchSettlementEvmScheme(pool, authorizer, {
+      submitMode: "direct",
+      authorizerSubmitter,
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+      claimAuthorizerSignature: "0xpresigned",
+    };
+    const result = await scheme.settle(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(true);
+    expect(pool.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "claimWithSignature" }),
+    );
+    expect(authorizerSubmitter.writeContract).not.toHaveBeenCalled();
+  });
+
+  it("returns ErrClaimSimulationFailed for a stale direct claim without broadcasting", async () => {
+    const authorizerSubmitter = buildSigner({
+      getAddresses: () => [authorizer.address],
+      readContract: vi.fn().mockImplementation(args => {
+        if (args.functionName === "claim") {
+          return Promise.reject(new Error("execution reverted: NothingToClaim"));
+        }
+        return Promise.resolve(undefined);
+      }),
+    });
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      submitMode: "direct",
+      authorizerSubmitter,
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+    };
+    const result = await scheme.settle(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrClaimSimulationFailed);
+    expect(authorizerSubmitter.writeContract).not.toHaveBeenCalled();
+  });
+
   it("dispatches enriched refund payloads via executeRefundWithSignature", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
@@ -1981,6 +2489,45 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "refundWithSignature" }),
     );
+  });
+
+  it("dispatches unsigned refunds via refund() when submitMode is direct", async () => {
+    const pool = buildSigner();
+    const authorizerSubmitter = buildSigner({
+      getAddresses: () => [authorizer.address],
+    });
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 0n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const scheme = new BatchSettlementEvmScheme(pool, authorizer, {
+      submitMode: "direct",
+      authorizerSubmitter,
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: {
+        channelId,
+        maxClaimableAmount: "0",
+        signature: "0xdead",
+      },
+      amount: "9000",
+      refundNonce: "0",
+      claims: [],
+    };
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(true);
+    expect(authorizerSubmitter.writeContract).toHaveBeenCalledWith(
+      expect.objectContaining({ functionName: "refund" }),
+    );
+    expect(pool.writeContract).not.toHaveBeenCalled();
   });
 
   it("returns settlement_pending when the refund receipt wait fails", async () => {
@@ -2291,6 +2838,985 @@ describe("BatchSettlementEvmScheme (Facilitator) — settle routing", () => {
     );
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(Errors.ErrSettleTransactionFailed);
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", () => {
+  const authorizer = buildAuthorizerSigner();
+
+  function buildStoredChannel(
+    config: ChannelConfig,
+    overrides: Partial<FacilitatorChannel> = {},
+  ): FacilitatorChannel {
+    const channelId = computeChannelId(config);
+    return {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xcafe",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 4,
+      ...overrides,
+    };
+  }
+
+  it("applies afterClaim on a successful managed type:claim", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const stored = buildStoredChannel(config);
+    await storage.updateChannel(stored.channelId, () => stored);
+
+    const result = await scheme.settle(
+      envelopeSettle({
+        type: "claim",
+        claims: [
+          {
+            voucher: { channel: config, maxClaimableAmount: "1000" },
+            signature: "0xcafe",
+            totalClaimed: "1000",
+          },
+        ],
+      }),
+      makeRequirements({
+        extra: {
+          ...makeRequirements().extra,
+          voucherStore: true,
+        },
+      }),
+    );
+
+    expect(result.success).toBe(true);
+    const updated = await storage.get(stored.channelId);
+    expect(updated?.totalClaimed).toBe("1000");
+    expect(updated?.chargeCount).toBe(0);
+    expect(updated).toBeDefined();
+  });
+
+  it("leaves the store unchanged when a managed claim fails simulation", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const signer = buildSigner({
+      readContract: vi.fn().mockImplementation(args => {
+        if (args.functionName === "claimWithSignature") {
+          return Promise.reject(new Error("execution reverted: NothingToClaim"));
+        }
+        return Promise.resolve(undefined);
+      }),
+    });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
+      voucherStore: { storage },
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const stored = buildStoredChannel(config);
+    await storage.updateChannel(stored.channelId, () => stored);
+
+    const result = await scheme.settle(
+      envelopeSettle({
+        type: "claim",
+        claims: [
+          {
+            voucher: { channel: config, maxClaimableAmount: "1000" },
+            signature: "0xcafe",
+            totalClaimed: "1000",
+          },
+        ],
+      }),
+      makeRequirements({
+        extra: {
+          ...makeRequirements().extra,
+          voucherStore: true,
+        },
+      }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrClaimSimulationFailed);
+    const updated = await storage.get(stored.channelId);
+    expect(updated?.totalClaimed).toBe("0");
+    expect(updated?.chargeCount).toBe(4);
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after prior claim", () => {
+  const authorizer = buildAuthorizerSigner();
+
+  function managedRequirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
+    return makeRequirements({
+      amount: "10000",
+      extra: {
+        name: "USDC",
+        version: "2",
+        receiverAuthorizer: authorizer.address,
+        assetTransferMethod: "eip3009",
+        withdrawDelay: 900,
+        voucherStore: true,
+      },
+      ...overrides,
+    });
+  }
+
+  function buildManagedDeposit(maxClaimableAmount: string): {
+    payload: PaymentPayload;
+    channelId: `0x${string}`;
+    config: ChannelConfig;
+  } {
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    const now = Math.floor(Date.now() / 1000);
+    const dp: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount, signature: "0xcafebabe" },
+      deposit: {
+        amount: "100000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x0000000000000000000000000000000000000000000000000000000000000001",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    return { payload: envelopeDeposit(dp), channelId, config };
+  }
+
+  function mockClaimedChannelMulticall(totalClaimed: bigint, balance = totalClaimed): void {
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [balance, totalClaimed] },
+        { status: "success", result: 1_000_000n },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [balance + 100_000n, totalClaimed] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1n },
+      ]);
+  }
+
+  it("accepts a top-up deposit whose voucher continues from onchain totalClaimed", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockClaimedChannelMulticall(19_200n);
+    const { payload } = buildManagedDeposit("29200");
+
+    const result = await scheme.verify(payload, managedRequirements());
+    expect(result.isValid).toBe(true);
+    expect(result.extra?.chargedCumulativeAmount).toBe("19200");
+  });
+
+  it("rejects a top-up deposit whose voucher does not continue from onchain totalClaimed", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockClaimedChannelMulticall(19_200n);
+    // Passes the onchain "above claimed" check (24200 > 19200) but is not
+    // charged(19200) + amount(10000).
+    const { payload, channelId } = buildManagedDeposit("24200");
+
+    const result = await scheme.verify(payload, managedRequirements());
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(result.extra).toMatchObject({
+      channelState: {
+        channelId,
+        chargedCumulativeAmount: "19200",
+        totalClaimed: "19200",
+      },
+    });
+  });
+
+  it("commits a managed deposit charge from onchain totalClaimed, not zero", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockClaimedChannelMulticall(19_200n);
+    const { payload, channelId } = buildManagedDeposit("29200");
+
+    const result = await scheme.settle(payload, managedRequirements());
+    expect(result.success).toBe(true);
+    expect(result.extra).toMatchObject({
+      chargedAmount: "10000",
+      chargeCount: 1,
+      channelState: {
+        channelId,
+        chargedCumulativeAmount: "29200",
+        totalClaimed: "19200",
+      },
+    });
+    expect(Object.keys(result.extra ?? {})).toEqual([
+      "channelState",
+      "chargedAmount",
+      "chargeCount",
+    ]);
+    const stored = await storage.get(channelId);
+    expect(stored?.chargedCumulativeAmount).toBe("29200");
+    expect(stored?.totalClaimed).toBe("19200");
+  });
+
+  it("overlays a stored row with the post-deposit confirm snapshot on top-up", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const { payload, channelId, config } = buildManagedDeposit("29200");
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "19200",
+      signedMaxClaimable: "19200",
+      signature: "0xold",
+      balance: "19200",
+      totalClaimed: "19200",
+      withdrawRequestedAt: 0,
+      refundNonce: 1,
+      lastRequestTimestamp: 1,
+      network: NETWORK,
+      chargeCount: 3,
+    }));
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockClaimedChannelMulticall(19_200n);
+
+    const result = await scheme.settle(payload, managedRequirements());
+    expect(result.success).toBe(true);
+    expect(result.extra).toMatchObject({
+      chargedAmount: "10000",
+      chargeCount: 4,
+      channelState: {
+        channelId,
+        balance: "119200",
+        chargedCumulativeAmount: "29200",
+        totalClaimed: "19200",
+        refundNonce: "1",
+      },
+    });
+    expect(Object.keys(result.extra ?? {})).toEqual([
+      "channelState",
+      "chargedAmount",
+      "chargeCount",
+    ]);
+    const stored = await storage.get(channelId);
+    expect(stored?.balance).toBe("119200");
+    expect(stored?.chargedCumulativeAmount).toBe("29200");
+    expect(stored?.chargeCount).toBe(4);
+  });
+
+  it("still returns onchain deposit success when the managed charge would exceed the signed cap", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockClaimedChannelMulticall(19_200n);
+    const { payload, channelId, config } = buildManagedDeposit("20100");
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "20000",
+      signedMaxClaimable: "20000",
+      signature: "0xold",
+      balance: "119200",
+      totalClaimed: "19200",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 2,
+    }));
+
+    const result = await scheme.settle(payload, managedRequirements());
+    expect(result.success).toBe(true);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("20000");
+    expect((await storage.get(channelId))?.chargeCount).toBe(2);
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge cases", () => {
+  const authorizer = buildAuthorizerSigner();
+  const refundAuthorizer = buildAuthorizerSigner();
+
+  function managedRequirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
+    return makeRequirements({
+      amount: "1000",
+      extra: {
+        name: "USDC",
+        version: "2",
+        receiverAuthorizer: authorizer.address,
+        assetTransferMethod: "eip3009",
+        withdrawDelay: 900,
+        voucherStore: true,
+      },
+      ...overrides,
+    });
+  }
+
+  function mockOpenChannelMulticall(balance = 10_000n, totalClaimed = 0n): void {
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [balance, totalClaimed] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+  }
+
+  function buildManagedVoucher(
+    maxClaimableAmount: string,
+    configOverrides: Partial<ChannelConfig> = {},
+  ): { payload: PaymentPayload; channelId: `0x${string}`; config: ChannelConfig } {
+    const config = buildChannelConfig({
+      receiverAuthorizer: authorizer.address,
+      ...configOverrides,
+    });
+    const channelId = computeChannelId(config);
+    const vp: BatchSettlementVoucherPayload = {
+      type: "voucher",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount, signature: "0xfeedface" },
+    };
+    return { payload: envelopeVoucher(vp), channelId, config };
+  }
+
+  async function seedStoredChannel(
+    storage: InMemoryChannelStorage<FacilitatorChannel>,
+    config: ChannelConfig,
+    overrides: Partial<FacilitatorChannel> = {},
+  ): Promise<FacilitatorChannel> {
+    const channelId = computeChannelId(config);
+    const row: FacilitatorChannel = {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xoldsig",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 2,
+      ...overrides,
+    };
+    await storage.updateChannel(channelId, () => row);
+    return row;
+  }
+
+  it("rejects verify when another admission lock is already held on the channel", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const { payload, channelId } = buildManagedVoucher("6000");
+    await storage.acquire(channelId, "other-pending", 60_000);
+
+    const result = await scheme.verify(payload, managedRequirements());
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrChannelBusy);
+  });
+
+  it("rejects verify when advertised receiverAuthorizer does not match the facilitator key", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const { payload } = buildManagedVoucher("6000");
+
+    const result = await scheme.verify(
+      payload,
+      managedRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+        },
+      }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrReceiverAuthorizerMismatch);
+  });
+
+  it("rejects verify when withdrawDelay disagrees with the facilitator store config", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage, withdrawDelay: 1800 },
+    });
+    mockOpenChannelMulticall();
+    const { payload } = buildManagedVoucher("6000");
+
+    const result = await scheme.verify(payload, managedRequirements());
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrWithdrawDelayMismatch);
+  });
+
+  it("rejects verify when packed refundAuthorizer in salt disagrees with the 402", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const { payload } = buildManagedVoucher("6000", { salt });
+
+    const result = await scheme.verify(
+      payload,
+      managedRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrRefundAuthorizerMismatch);
+  });
+
+  it("requires a refund voucher ceiling equal to the stored watermark, not watermark plus amount", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    await seedStoredChannel(storage, config);
+    const channelId = computeChannelId(config);
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "6000", signature: "0xdead" },
+    });
+
+    const result = await scheme.verify(payload, managedRequirements({ amount: "0" }));
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountMismatch);
+  });
+
+  it("rejects managed voucher settle when the charge would exceed the signed cumulative cap", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const { payload, config, channelId } = buildManagedVoucher("3000");
+    await seedStoredChannel(storage, config, { chargedCumulativeAmount: "2500" });
+    await storage.acquire(channelId, "0xpending", 60_000);
+
+    const result = await scheme.settle(
+      {
+        ...payload,
+        payload: { ...payload.payload, pendingId: "0xpending" },
+      },
+      managedRequirements({ amount: "1000" }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrChargeExceedsSignedCumulative);
+  });
+
+  it("increments chargeCount on a successful managed voucher settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const { payload, config, channelId } = buildManagedVoucher("6000");
+    await seedStoredChannel(storage, config);
+    await storage.acquire(channelId, "0xpending", 60_000);
+
+    const result = await scheme.settle(
+      {
+        ...payload,
+        payload: { ...payload.payload, pendingId: "0xpending" },
+      },
+      managedRequirements({ amount: "1000" }),
+    );
+    expect(result.success).toBe(true);
+    expect(result.extra?.chargeCount).toBe(3);
+    expect(result.transaction).toBe("");
+    const stored = await storage.get(channelId);
+    expect(stored?.chargedCumulativeAmount).toBe("6000");
+  });
+
+  it("rejects managed refund settle without refundAuthorizer consent signature", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config);
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "1000",
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+  });
+
+  it("settles a managed refund when refundAuthorizer EIP-712 consent matches the request", async () => {
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [10000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [5000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1n },
+      ]);
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config, {
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      balance: "10000",
+      totalClaimed: "0",
+      chargeCount: 0,
+      signature: "0xdead",
+    });
+    const refundAmount = "5000";
+    const refundAuthorizerSignature = await signRefund(
+      refundAuthorizer,
+      channelId,
+      refundAmount,
+      "0",
+      NETWORK,
+    );
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: refundAmount,
+      refundAuthorizerSignature,
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("allows a managed refund without authorizer signature when caller identity matches the store", async () => {
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [10000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [5000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1n },
+      ]);
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config, {
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      balance: "10000",
+      totalClaimed: "0",
+      chargeCount: 0,
+      callerIdentity: "tenant-42",
+      signature: "0xdead",
+    });
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+      resolveCallerIdentity: async () => "tenant-42",
+    });
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "5000",
+    });
+
+    const result = await scheme.settle(payload, managedRequirements({ amount: "0" }));
+    expect(result.success).toBe(true);
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("charges the first managed voucher against onchain totalClaimed when the store is empty", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const { payload, channelId } = buildManagedVoucher("1000");
+
+    const result = await scheme.settle(payload, managedRequirements({ amount: "1000" }));
+    expect(result.success).toBe(true);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("rejects managed refund settle when EIP-712 consent does not match the requested amount", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config, {
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdead",
+    });
+    const refundAuthorizerSignature = await signRefund(
+      refundAuthorizer,
+      channelId,
+      "4999",
+      "0",
+      NETWORK,
+    );
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "5000",
+      refundAuthorizerSignature,
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+  });
+
+  it("updates the store after a partial managed refund instead of deleting the row", async () => {
+    mockedMulticall
+      .mockResolvedValueOnce([
+        { status: "success", result: [10000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 0n },
+      ])
+      .mockResolvedValue([
+        { status: "success", result: [6000n, 5000n] },
+        { status: "success", result: [0n, 0n] },
+        { status: "success", result: 1n },
+      ]);
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config, {
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      balance: "10000",
+      totalClaimed: "0",
+      chargeCount: 1,
+      signature: "0xdead",
+    });
+    const refundAmount = "4000";
+    const refundAuthorizerSignature = await signRefund(
+      refundAuthorizer,
+      channelId,
+      refundAmount,
+      "0",
+      NETWORK,
+    );
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: refundAmount,
+      refundAuthorizerSignature,
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+    expect(result.success).toBe(true);
+    const stored = await storage.get(channelId);
+    expect(stored?.balance).toBe("6000");
+    expect(stored?.totalClaimed).toBe("5000");
+    expect(stored?.chargeCount).toBe(1);
+  });
+
+  it("returns voucherState on managed verify when the watermark disagrees with a stored row", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    mockOpenChannelMulticall();
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    await seedStoredChannel(storage, config, {
+      signedMaxClaimable: "5000",
+      signature: "0xstoredsig",
+    });
+    const channelId = computeChannelId(config);
+    const payload = envelopeVoucher({
+      type: "voucher",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "7000", signature: "0xfeedface" },
+    });
+
+    const result = await scheme.verify(payload, managedRequirements({ amount: "1000" }));
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(result.extra?.voucherState).toEqual({
+      signedMaxClaimable: "5000",
+      signature: "0xstoredsig",
+    });
+  });
+
+  it("rejects managed refund settle when caller identity does not match the stored binding", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config, {
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      callerIdentity: "tenant-a",
+      signature: "0xdead",
+    });
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+      resolveCallerIdentity: async () => "tenant-b",
+    });
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "1000",
+    });
+
+    const result = await scheme.settle(payload, managedRequirements({ amount: "0" }));
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+  });
+
+  it("rejects managed verify for payload types the voucher store does not admit", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const cp: BatchSettlementClaimPayload = {
+      type: "claim",
+      claims: [
+        {
+          voucher: { channel: config, maxClaimableAmount: "1000" },
+          signature: "0xcafe",
+          totalClaimed: "1000",
+        },
+      ],
+    };
+
+    const result = await scheme.verify(
+      envelopeSettle(cp as unknown as Record<string, unknown>),
+      managedRequirements(),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrInvalidPayloadType);
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — managed store availability", () => {
+  it("returns VoucherStoreUnavailable when managed verify is requested without a store", async () => {
+    const authorizer = buildAuthorizerSigner();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    const payload = envelopeVoucher({
+      type: "voucher",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xfeedface" },
+    });
+
+    const result = await scheme.verify(
+      payload,
+      makeRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+        },
+      }),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrVoucherStoreUnavailable);
+  });
+
+  it("returns VoucherStoreUnavailable when managed settle is requested without a store", async () => {
+    const authorizer = buildAuthorizerSigner();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config);
+    const payload = envelopeVoucher({
+      type: "voucher",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xfeedface" },
+    });
+
+    const result = await scheme.settle(
+      payload,
+      makeRequirements({
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrVoucherStoreUnavailable);
+  });
+
+  it("exposes createChannelManager only when the voucher store is configured", () => {
+    const authorizer = buildAuthorizerSigner();
+    const withoutStore = new BatchSettlementEvmScheme(buildSigner(), authorizer);
+    expect(() => withoutStore.createChannelManager()).toThrow(/voucherStore/);
+
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const withStore = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    expect(withStore.createChannelManager()).toBeDefined();
+  });
+});
+
+describe("BatchSettlementEvmScheme (Facilitator) — self-managed refund identity", () => {
+  it("rejects an unsigned self-managed refund when delegated auth disagrees with the caller", async () => {
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 0n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const authorizer = buildAuthorizerSigner();
+    const delegatedAuthStore = new InMemoryDelegatedAuthStore();
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await delegatedAuthStore.bind({
+      channelId,
+      network: NETWORK,
+      callerIdentity: "bound-service",
+    });
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      resolveCallerIdentity: async () => "other-service",
+      delegatedAuthStore,
+    });
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+      amount: "1000",
+      refundNonce: "0",
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
   });
 });
 

@@ -3100,3 +3100,581 @@ describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () =>
     expect(result[0].channelId).toBe(id2);
   });
 });
+
+describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () => {
+  const refundSigner = buildAuthorizerSigner();
+
+  function managedSupportedKind(extra: Record<string, unknown> = {}) {
+    return {
+      x402Version: 2 as const,
+      scheme: "batch-settlement",
+      network: NETWORK,
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        withdrawDelay: 900,
+        voucherStore: true,
+        ...extra,
+      },
+    };
+  }
+
+  it("throws at enhance time when the facilitator did not advertise voucherStore", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    await expect(
+      server.enhancePaymentRequirements(
+        makeRequirements(),
+        managedSupportedKind({ voucherStore: false }),
+        [],
+      ),
+    ).rejects.toThrow(/advertised extra\.voucherStore/);
+  });
+
+  it("copies facilitator withdrawDelay and sets voucherStore on the 402", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const enhanced = await server.enhancePaymentRequirements(
+      makeRequirements(),
+      managedSupportedKind({ withdrawDelay: 1200 }),
+      [],
+    );
+    expect(enhanced.extra?.voucherStore).toBe(true);
+    expect(enhanced.extra?.withdrawDelay).toBe(1200);
+    expect(enhanced.extra?.refundAuthorizer).toBe(refundSigner.address);
+  });
+
+  it("reports startup problems when refund consent is not configured", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStoreMode: "facilitator" });
+    const problem = server.validateFacilitatorSupport(NETWORK, managedSupportedKind() as never, []);
+    expect(problem).toMatch(/refundAuthorizerSigner|refundAuth/);
+  });
+
+  it("does not abort voucher settle locally when the replica store is empty", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const requirements = makeRequirements({
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+    });
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+
+    const result = await server.schemeHooks.onBeforeSettle!({
+      paymentPayload,
+      requirements,
+    } as never);
+    expect(result).toBeUndefined();
+  });
+
+  it("skips the resource handler for refund verify and stashes a snapshot", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildRefundPayload(channelId, "5000", config);
+    const requirements = makeRequirements({
+      amount: "0",
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+    });
+    await runBeforeVerify(server, paymentPayload, requirements);
+
+    const directive = await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: {
+          balance: "10000",
+          totalClaimed: "0",
+          refundNonce: "0",
+          chargedCumulativeAmount: "5000",
+        },
+      } as VerifyResponse,
+    } as never);
+
+    expect(directive?.skipHandler).toBe(true);
+    expect(
+      server.readRequestContext(paymentPayload)?.channelSnapshot?.chargedCumulativeAmount,
+    ).toBe("5000");
+  });
+
+  it("writes corrective accepts from stashed managed verify context", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const managedReq = makeRequirements({
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherStore: true,
+        withdrawDelay: 900,
+      },
+    });
+    const paymentPayload = {
+      ...buildVoucherPayload(channelId, "7000", config),
+      accepted: managedReq,
+    };
+    server.mergeRequestContext(paymentPayload, {
+      correctiveChannelState: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "0",
+        chargedCumulativeAmount: "5000",
+      },
+      correctiveVoucherState: {
+        signedMaxClaimable: "5000",
+        signature: "0xdeadbeef",
+      },
+    });
+    const requirements = [managedReq];
+
+    await server.enrichPaymentRequiredResponse({
+      requirements,
+      paymentPayload,
+      resourceInfo: { url: "https://example.com" },
+      error: Errors.ErrCumulativeAmountMismatch,
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: requirements,
+      },
+    });
+
+    expect(requirements[0].extra?.voucherState).toEqual({
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+    });
+  });
+
+  it("replica storage upserts facilitator channel state after a managed voucher settle", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements: makeRequirements({
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherStore: true,
+          withdrawDelay: 900,
+        },
+      }),
+      result: {
+        success: true,
+        transaction: "0xabc",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+            chargedCumulativeAmount: "1000",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+    });
+  });
+
+  it("stashes corrective channel and voucher state after a managed verify mismatch", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "7000", config);
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements: makeRequirements({
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      }),
+      result: {
+        isValid: false,
+        invalidReason: Errors.ErrCumulativeAmountMismatch,
+        extra: {
+          channelState: { channelId, balance: "10000", totalClaimed: "0" },
+          voucherState: { signedMaxClaimable: "5000", signature: "0xdeadbeef" },
+        },
+      } as VerifyResponse,
+    } as never);
+
+    expect(server.readRequestContext(paymentPayload)?.correctiveChannelState).toMatchObject({
+      channelId,
+      balance: "10000",
+    });
+    expect(server.readRequestContext(paymentPayload)?.correctiveVoucherState).toEqual({
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+    });
+  });
+
+  it("replica storage drops a channel after a managed refund fully closes escrow", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    });
+    const paymentPayload = buildRefundPayload(channelId, "5000", config);
+    server.mergeRequestContext(paymentPayload, {
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "5000",
+        signedMaxClaimable: "5000",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: Date.now(),
+      },
+    });
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements: makeRequirements({
+        amount: "0",
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherStore: true,
+          withdrawDelay: 900,
+        },
+      }),
+      result: {
+        success: true,
+        transaction: "0xabc",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "5000",
+            totalClaimed: "5000",
+            chargedCumulativeAmount: "5000",
+            withdrawRequestedAt: 0,
+            refundNonce: "1",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("enriches managed refund settle payloads with consent but not claim authorizer signatures", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildRefundPayload(channelId, "5000", config);
+    const requirements = makeRequirements({
+      amount: "0",
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+    });
+    server.mergeRequestContext(paymentPayload, {
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "5000",
+        signedMaxClaimable: "5000",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: Date.now(),
+      },
+    });
+
+    const fields = await server.enrichSettlementPayload({
+      paymentPayload,
+      requirements,
+    } as never);
+
+    expect(fields?.refundAuthorizerSignature).toMatch(/^0x/);
+    expect(fields?.claimAuthorizerSignature).toBeUndefined();
+    expect(fields?.amount).toBe("5000");
+  });
+
+  it("does not abort beforeVerify for managed claim payloads (facilitator-only)", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = {
+      x402Version: 2,
+      accepted: makeRequirements(),
+      payload: { type: "claim", claims: [] },
+    } as PaymentPayload;
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements: makeRequirements({
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      }),
+    } as never);
+
+    expect(result).toBeUndefined();
+    expect(server.readRequestContext(paymentPayload)).toBeUndefined();
+    void channelId;
+  });
+
+  it("stashes a channel snapshot after successful managed voucher verify", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+    });
+    await runBeforeVerify(server, paymentPayload, requirements);
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements,
+      result: {
+        isValid: true,
+        payer: PAYER,
+        extra: {
+          balance: "10000",
+          totalClaimed: "0",
+          refundNonce: "0",
+          chargedCumulativeAmount: "0",
+        },
+      } as VerifyResponse,
+    } as never);
+
+    expect(server.readRequestContext(paymentPayload)?.channelSnapshot).toMatchObject({
+      channelId,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "1000",
+    });
+  });
+
+  it("stashes only the corrective channel snapshot when voucher proof is absent", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "7000", config);
+
+    await server.schemeHooks.onAfterVerify!({
+      paymentPayload,
+      requirements: makeRequirements({
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      }),
+      result: {
+        isValid: false,
+        invalidReason: Errors.ErrCumulativeAmountMismatch,
+        extra: { channelState: { channelId, balance: "10000" } },
+      } as VerifyResponse,
+    } as never);
+
+    expect(server.readRequestContext(paymentPayload)?.correctiveChannelState).toMatchObject({
+      channelId,
+      balance: "10000",
+    });
+    expect(server.readRequestContext(paymentPayload)?.correctiveVoucherState).toBeUndefined();
+  });
+
+  it("does not write corrective accepts when enrichPaymentRequired sees a different error", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const requirements = makeRequirements({
+      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+    });
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+    server.mergeRequestContext(paymentPayload, {
+      correctiveChannelState: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: "0",
+        chargedCumulativeAmount: "0",
+      },
+      correctiveVoucherState: { signedMaxClaimable: "1000", signature: "0xdeadbeef" },
+    });
+
+    await server.enrichPaymentRequiredResponse({
+      requirements: [requirements],
+      paymentPayload,
+      resourceInfo: { url: "https://example.com" },
+      error: Errors.ErrChannelBusy,
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: [requirements],
+      },
+    });
+
+    expect(requirements.extra?.voucherState).toBeUndefined();
+  });
+
+  it("does not touch replica storage when managed afterSettle sees a failed facilitator response", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    });
+    const paymentPayload = buildVoucherPayload(channelId, "1000", config);
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements: makeRequirements({
+        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      }),
+      result: {
+        success: false,
+        errorReason: Errors.ErrInvalidVoucherSignature,
+        transaction: "",
+        network: NETWORK,
+      } as SettleResponse,
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({ chargedCumulativeAmount: "1000" });
+  });
+
+  it("updates replica storage after a partial managed refund leaves escrow open", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+      refundAuthorizerSigner: refundSigner,
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    });
+    const paymentPayload = buildRefundPayload(channelId, "5000", config, "4000");
+    server.mergeRequestContext(paymentPayload, {
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "5000",
+        signedMaxClaimable: "5000",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: Date.now(),
+      },
+    });
+
+    await server.schemeHooks.onAfterSettle!({
+      paymentPayload,
+      requirements: makeRequirements({
+        amount: "0",
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherStore: true,
+          withdrawDelay: 900,
+        },
+      }),
+      result: {
+        success: true,
+        transaction: "0xabc",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "6000",
+            totalClaimed: "5000",
+            chargedCumulativeAmount: "5000",
+            withdrawRequestedAt: 0,
+            refundNonce: "1",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      balance: "6000",
+      totalClaimed: "5000",
+      refundNonce: 1,
+    });
+  });
+});
