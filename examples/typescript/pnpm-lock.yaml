@@ -2574,6 +2574,9 @@ importers:
       '@x402/evm':
         specifier: workspace:*
         version: link:../../../../typescript/packages/mechanisms/evm
+      '@x402/extensions':
+        specifier: workspace:*
+        version: link:../../../../typescript/packages/extensions
       '@x402/svm':
         specifier: workspace:*
         version: link:../../../../typescript/packages/mechanisms/svm
