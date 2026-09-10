@@ -14,7 +14,8 @@ export { signVoucher } from "./voucher";
 export { refundChannel } from "./refund";
 export type { RefundOptions } from "./refund";
 export { createBatchSettlementClientHooks } from "./hooks";
-export { computeChannelId } from "../utils";
+export { computeChannelId, normalizeChannelSalt } from "../utils";
+export type { ChannelSalt } from "../utils";
 
 export {
   applyMaxDeposit,

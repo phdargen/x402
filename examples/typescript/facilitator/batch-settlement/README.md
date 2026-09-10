@@ -45,11 +45,14 @@ EVM_REFUND_AUTHORIZER_PRIVATE_KEY=0x...
 
 See the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md#facilitator-managed-custody) for production notes (shared Redis locks, `refundAuth`, retention).
 
+Optional `FACILITATOR_BUILDER_CODE` registers `BuilderCodeFacilitatorExtension` so scheduled claims append an ERC-8021 suffix **after** the `x402ChargeCounts` attestation. The manager `onClaim` hook parses both from the claim transaction (and joins `Claimed` logs by `channelId`). Builder-code is omitted when the env var is unset; the hook still logs charge counts.
+
 ## Setup
 
 ```bash
 cp .env-local .env
-# fill EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY, EVM_RPC_URL, PORT)
+# fill EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
+# FACILITATOR_BUILDER_CODE, EVM_RPC_URL, PORT)
 
 cd ../../
 pnpm install && pnpm build

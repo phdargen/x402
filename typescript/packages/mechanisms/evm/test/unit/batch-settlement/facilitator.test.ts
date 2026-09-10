@@ -2868,7 +2868,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
 
   it("applies afterClaim on a successful managed type:claim", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
-    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       voucherStore: { storage },
     });
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
@@ -2899,6 +2900,54 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
     expect(updated?.totalClaimed).toBe("1000");
     expect(updated?.chargeCount).toBe(0);
     expect(updated).toBeDefined();
+    const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      dataSuffix?: `0x${string}`;
+    };
+    expect(write.dataSuffix?.startsWith("0x50b180c6")).toBe(true);
+  });
+
+  it("composes charge-count and builder-code suffixes on a managed type:claim", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const signer = buildSigner();
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
+      voucherStore: { storage },
+    });
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const stored = buildStoredChannel(config, { chargeCount: 6 });
+    await storage.updateChannel(stored.channelId, () => stored);
+    const builderSuffix = "0x8021abcd" as `0x${string}`;
+
+    const result = await scheme.settle(
+      envelopeSettle({
+        type: "claim",
+        claims: [
+          {
+            voucher: { channel: config, maxClaimableAmount: "1000" },
+            signature: "0xcafe",
+            totalClaimed: "1000",
+          },
+        ],
+      }),
+      makeRequirements({
+        extra: {
+          ...makeRequirements().extra,
+          voucherStore: true,
+        },
+      }),
+      {
+        getExtension: () => ({
+          key: "builder-code",
+          buildDataSuffix: () => builderSuffix,
+        }),
+      },
+    );
+
+    expect(result.success).toBe(true);
+    const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      dataSuffix?: `0x${string}`;
+    };
+    expect(write.dataSuffix?.startsWith("0x50b180c6")).toBe(true);
+    expect(write.dataSuffix?.endsWith("8021abcd")).toBe(true);
   });
 
   it("leaves the store unchanged when a managed claim fails simulation", async () => {
@@ -3630,7 +3679,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     const stored = await storage.get(channelId);
     expect(stored?.balance).toBe("6000");
     expect(stored?.totalClaimed).toBe("5000");
-    expect(stored?.chargeCount).toBe(1);
+    expect(stored?.chargeCount).toBe(0);
   });
 
   it("returns voucherState on managed verify when the watermark disagrees with a stored row", async () => {
@@ -3871,6 +3920,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", 
     expect(signer.writeContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "claimWithSignature" }),
     );
+    const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      dataSuffix?: `0x${string}`;
+    };
+    expect(write.dataSuffix).toBeUndefined();
   });
 
   it("returns AuthorizerNotConfigured for a refund without a client signature", async () => {

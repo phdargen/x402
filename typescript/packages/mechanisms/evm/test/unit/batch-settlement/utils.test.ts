@@ -1,11 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
-import { decodeAbiParameters, getAddress } from "viem";
+import { concat, decodeAbiParameters, getAddress, slice } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   channelIdBindingError,
   computeChannelId as computeChannelIdForNetwork,
   isCanonicalChannelId,
   normalizeChannelId,
+  normalizeChannelSalt,
+  packRefundAuthorizerSalt,
+  unpackRefundAuthorizer,
 } from "../../../src/batch-settlement/utils";
 import {
   buildEip2612PermitData,
@@ -82,6 +85,52 @@ describe("getEvmChainId", () => {
     expect(getEvmChainId("eip155:84532")).toBe(84532);
     expect(() => getEvmChainId("solana:mainnet")).toThrow(/Unsupported network format/);
     expect(() => getEvmChainId("eip155:not-a-number")).toThrow(/Invalid CAIP-2 chain ID/);
+  });
+});
+
+describe("normalizeChannelSalt", () => {
+  const bytes32One = "0x0000000000000000000000000000000000000000000000000000000000000001" as const;
+
+  it("left-pads number, bigint, and short hex to the same bytes32", () => {
+    expect(normalizeChannelSalt(1)).toBe(bytes32One);
+    expect(normalizeChannelSalt(1n)).toBe(bytes32One);
+    expect(normalizeChannelSalt("0x1")).toBe(bytes32One);
+    expect(normalizeChannelSalt(bytes32One)).toBe(bytes32One);
+  });
+
+  it("rejects negative, non-integer, and oversized values", () => {
+    expect(() => normalizeChannelSalt(-1)).toThrow(/non-negative safe integer/);
+    expect(() => normalizeChannelSalt(1.5)).toThrow(/non-negative safe integer/);
+    expect(() => normalizeChannelSalt(-1n)).toThrow(/fits in 32 bytes/);
+    expect(() => normalizeChannelSalt((1n << 256n) as bigint)).toThrow(/fits in 32 bytes/);
+    expect(() => normalizeChannelSalt("0xzz")).toThrow(/0x-prefixed hex/);
+  });
+});
+
+describe("packRefundAuthorizerSalt", () => {
+  const refundAuthorizer = "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd" as `0x${string}`;
+
+  it("packs increment-style salts from the low 96 bits", () => {
+    const a = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000011",
+      refundAuthorizer,
+    );
+    const b = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000012",
+      refundAuthorizer,
+    );
+    expect(a).not.toBe(b);
+    expect(a).toBe(packRefundAuthorizerSalt("0x11", refundAuthorizer));
+    expect(unpackRefundAuthorizer(a)).toBe(getAddress(refundAuthorizer));
+    expect(unpackRefundAuthorizer(b)).toBe(getAddress(refundAuthorizer));
+  });
+
+  it("keeps the first 12 bytes when the high 12 are nonzero", () => {
+    const salt =
+      "0xabc1230000000000000000000000000000000000000000000000000000000099" as `0x${string}`;
+    expect(packRefundAuthorizerSalt(salt, refundAuthorizer)).toBe(
+      concat([slice(salt, 0, 12), getAddress(refundAuthorizer)]),
+    );
   });
 });
 

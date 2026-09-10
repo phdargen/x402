@@ -40,6 +40,7 @@ import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { verifyDeposit, settleDeposit } from "./deposit";
 import { verifyVoucher } from "./voucher";
+import { encodeChargeCountsSuffix } from "./chargeCounts";
 import { submitRefund } from "./refund";
 import { readChannelState } from "./utils";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
@@ -442,6 +443,7 @@ async function settleManagedRefund(
     }
 
     const claims = rebuildClaims(stored);
+    const attested = claims.length > 0 ? stored.chargeCount : 0;
     const amount = resolveRefundAmount(raw, stored);
     const nonce = String(stored.refundNonce ?? 0);
     const enriched: BatchSettlementEnrichedRefundPayload = {
@@ -458,6 +460,7 @@ async function settleManagedRefund(
         network: requirements.network,
         payload: enriched,
         dataSuffix,
+        ...(claims.length > 0 ? { claimDataSuffix: encodeChargeCountsSuffix([attested]) } : {}),
       },
       {
         submitMode: deps.submitMode,
@@ -473,23 +476,24 @@ async function settleManagedRefund(
     const extraState = settled.extra as { channelState?: Record<string, unknown> } | undefined;
     const balance = String(extraState?.channelState?.balance ?? stored.balance);
     const totalClaimed = String(extraState?.channelState?.totalClaimed ?? stored.totalClaimed);
-    const closed = BigInt(balance) <= BigInt(totalClaimed) && stored.chargeCount === 0;
 
-    if (closed) {
-      await deps.storage.updateChannel(channelId, current => (current ? undefined : current));
-    } else {
-      await deps.storage.updateChannel(channelId, current => {
-        if (!current) return current;
-        return {
-          ...current,
-          balance,
-          totalClaimed,
-          withdrawRequestedAt: Number(extraState?.channelState?.withdrawRequestedAt ?? 0),
-          refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
-          lastRequestTimestamp: Date.now(),
-        };
-      });
-    }
+    await deps.storage.updateChannel(channelId, current => {
+      if (!current) {
+        return current;
+      }
+      const chargeCount = Math.max(0, current.chargeCount - attested);
+      const next = {
+        ...current,
+        balance,
+        totalClaimed,
+        chargeCount,
+        withdrawRequestedAt: Number(extraState?.channelState?.withdrawRequestedAt ?? 0),
+        refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
+        lastRequestTimestamp: Date.now(),
+      };
+      const closed = BigInt(balance) <= BigInt(totalClaimed) && chargeCount === 0;
+      return closed ? undefined : next;
+    });
 
     const mirrored = await deps.storage.get(channelId);
     return {
@@ -499,7 +503,7 @@ async function settleManagedRefund(
           ...(typeof extraState?.channelState === "object" ? extraState.channelState : {}),
           chargedCumulativeAmount: stored.chargedCumulativeAmount,
         },
-        chargeCount: mirrored?.chargeCount ?? (closed ? 0 : stored.chargeCount),
+        chargeCount: mirrored?.chargeCount ?? 0,
       }),
     };
   } finally {
