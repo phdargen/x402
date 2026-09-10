@@ -30,7 +30,8 @@ import { submitRefund } from "./refund";
 import { resolveDataSuffix } from "../../shared/extensions";
 import * as Errors from "../errors";
 import { settleManaged, verifyManaged, type VoucherStoreDeps } from "./voucherStore";
-import { afterClaim, FacilitatorChannelManager } from "./channelManager";
+import { composeClaimDataSuffix } from "./chargeCounts";
+import { afterClaim, FacilitatorChannelManager, snapshotClaimChargeCounts } from "./channelManager";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
 import { assertDirectAuthorizerSubmitter, type SubmitContext, type SubmitMode } from "./submit";
 
@@ -345,21 +346,33 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (isBatchSettlementClaimPayload(rawPayload)) {
+      let claimSuffix = dataSuffix;
+      let attested: Map<string, number> | undefined;
+      if (isFacilitatorManaged(requirements) && this.voucherStore) {
+        const snapshot = await snapshotClaimChargeCounts(
+          this.voucherStore.storage,
+          rawPayload.claims,
+          requirements.network,
+        );
+        attested = snapshot.attested;
+        claimSuffix = composeClaimDataSuffix(snapshot.counts, dataSuffix);
+      }
       const settled = await submitClaim(
         {
           network: requirements.network,
           claims: rawPayload.claims,
           signature: rawPayload.claimAuthorizerSignature,
-          dataSuffix,
+          dataSuffix: claimSuffix,
         },
         this.submitContext(),
       );
-      if (settled.success && isFacilitatorManaged(requirements) && this.voucherStore) {
+      if (settled.success && attested && this.voucherStore) {
         await afterClaim(
           this.voucherStore.storage,
           this.voucherStore.lockStorage,
           rawPayload.claims,
           requirements.network,
+          attested,
         );
       }
       return settled;
@@ -405,10 +418,11 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   /**
    * Creates a {@link FacilitatorChannelManager} wired to this scheme's voucher store.
    *
+   * @param context - Optional extension context so scheduled claim, settle, and refund txs can append builder-code.
    * @returns A ready-to-use manager.
    * @throws When no voucher store or authorizer signer is configured.
    */
-  createChannelManager(): FacilitatorChannelManager {
+  createChannelManager(context?: FacilitatorContext): FacilitatorChannelManager {
     if (!this.voucherStore || !this.authorizerSigner) {
       throw new Error("createChannelManager requires voucherStore and authorizerSigner");
     }
@@ -419,6 +433,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       authorizerSigner: this.authorizerSigner,
       authorizerSubmitter: this.authorizerSubmitter,
       submitMode: this.submitMode,
+      context,
     });
   }
 

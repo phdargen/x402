@@ -67,10 +67,10 @@ pnpm start
 
 ## Concurrent requests
 
-Use the concurrent example to send requests over multiple channels in parallel. Each slot uses a unique salt derived from `CHANNEL_SALT`, so the server can serialize work per channel while still processing channels concurrently.
+Use the concurrent example to send requests over multiple channels in parallel. Each slot uses `CHANNEL_SALT + index` (`0`, `1`, `2`, …). The SDK treats that as a channel index, so the server serializes work per channel while still processing channels concurrently.
 
 ```bash
-CONCURRENCY=3 NUMBER_OF_ROUNDS=3 pnpm dev:concurrent
+NUMBER_OF_CHANNELS=3 NUMBER_OF_REQUESTS=3 pnpm dev:concurrent
 ```
 
 ## Environment
@@ -85,12 +85,11 @@ CONCURRENCY=3 NUMBER_OF_ROUNDS=3 pnpm dev:concurrent
 | `SVM_SERVER_SIGNED_MAX_DEPOSIT` | no | USD cap (e.g. `$0.05`, default) on the escrow locked per channel under a trusted operator, for default assets; server `minDeposit` hints above it are clamped. Non-default tokens need an `allowedAssets` entry with an atomic cap in code. |
 | `RESOURCE_SERVER_URL` | no | Server base URL (default `http://localhost:4021`) |
 | `ENDPOINT_PATH` | no | Path on the server (default `/weather`) |
-| `CHANNEL_SALT` | no | EVM `bytes32` salt for channel id; change to open a fresh channel |
+| `CHANNEL_SALT` | no | EVM channel index (hex). Concurrent slots add `0`, `1`, `2`, … to this value |
 | `SVM_CHANNEL_SALT` | no | SVM decimal `u64` channel salt (default `0`); change to open a fresh channel |
 | `DEPOSIT_MULTIPLIER` | no | Deposit target is `amount ×` this multiplier when `extra.minDeposit` is absent; lock ceiling is `spendCap ×` this multiplier (integer **≥ 3**; default `5`) |
 | `STORAGE_DIR` | no | Persist client session state (defaults to in-memory) |
 | `NUMBER_OF_REQUESTS` | no | How many paid requests to issue (default 3) |
-| `CONCURRENCY` | no | How many channels to run in parallel in `pnpm dev:concurrent` (default 3) |
-| `NUMBER_OF_ROUNDS` | no | How many concurrent rounds to run in `pnpm dev:concurrent` (default 3) |
+| `NUMBER_OF_CHANNELS` | no | How many channels to run in parallel in `pnpm dev:concurrent` (default 3) |
 | `REFUND_AFTER_REQUESTS` | no | If `true`, issue a self-contained refund via `scheme.refund(url)` after the request loop |
 | `REFUND_AMOUNT` | no | Partial EVM refund amount in base units; omit for a full refund. SVM supports full refund only. |

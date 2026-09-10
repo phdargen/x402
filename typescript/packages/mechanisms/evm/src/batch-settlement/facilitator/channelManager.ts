@@ -1,10 +1,22 @@
-import type { Network, SettleResponse } from "@x402/core/types";
+import type {
+  FacilitatorContext,
+  Network,
+  PaymentRequirements,
+  SettleResponse,
+} from "@x402/core/types";
+import { resolveDataSuffix, type DataSuffixContext } from "../../shared/extensions";
 import type { FacilitatorEvmSigner } from "../../signer";
-import type { AuthorizerSigner, BatchSettlementVoucherClaim } from "../types";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import type {
+  AuthorizerSigner,
+  BatchSettlementSettlePayload,
+  BatchSettlementVoucherClaim,
+} from "../types";
 import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
 import { computeChannelId } from "../utils";
 import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
 import { isChannelLockStorage } from "../storage/channel";
+import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "./chargeCounts";
 import { submitClaim } from "./claim";
 import { submitRefund } from "./refund";
 import { executeSettle } from "./settle";
@@ -24,6 +36,11 @@ export interface FacilitatorChannelManagerConfig {
   authorizerSubmitter?: FacilitatorEvmSigner;
   submitMode?: SubmitMode;
   retention?: FacilitatorRetention;
+  /**
+   * Optional facilitator extension context so scheduled claim, settle, and
+   * refund txs can append builder-code (`w` / `serviceCode` only).
+   */
+  context?: FacilitatorContext;
 }
 
 export interface FacilitatorClaimOptions {
@@ -101,6 +118,7 @@ async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promi
  * @param lockStorage - Optional admission lock store used for closed-row deletion.
  * @param claims - Submitted claims.
  * @param network - Network for channel-id recomputation.
+ * @param attested - Charge-count snapshot encoded on the claim (do not re-read the store).
  * @param retention - Row retention policy.
  */
 export async function afterClaim(
@@ -108,17 +126,9 @@ export async function afterClaim(
   lockStorage: ChannelLockStorage | undefined,
   claims: BatchSettlementVoucherClaim[],
   network: Network,
+  attested: ReadonlyMap<string, number>,
   retention: FacilitatorRetention = "until-closed",
 ): Promise<void> {
-  const attested = new Map<string, number>();
-  for (const claim of claims) {
-    const channelId = computeChannelId(claim.voucher.channel, network);
-    const stored = await storage.get(channelId);
-    if (stored) {
-      attested.set(channelId.toLowerCase(), stored.chargeCount);
-    }
-  }
-
   await applyClaimedTotals(storage, claims, network);
 
   for (const claim of claims) {
@@ -153,6 +163,33 @@ export async function afterClaim(
 }
 
 /**
+ * Snapshots each claim row's unattested `chargeCount` in batch order.
+ *
+ * Encode this snapshot on the claim, then pass the same map to {@link afterClaim}.
+ *
+ * @param storage - Facilitator voucher store.
+ * @param claims - Claims about to be submitted.
+ * @param network - Network for channel-id recomputation.
+ * @returns Counts for the calldata suffix and the map used to subtract after confirm.
+ */
+export async function snapshotClaimChargeCounts(
+  storage: ChannelStorage<FacilitatorChannel>,
+  claims: BatchSettlementVoucherClaim[],
+  network: Network,
+): Promise<{ counts: bigint[]; attested: Map<string, number> }> {
+  const counts: bigint[] = [];
+  const attested = new Map<string, number>();
+  for (const claim of claims) {
+    const channelId = computeChannelId(claim.voucher.channel, network);
+    const stored = await storage.get(channelId);
+    const count = stored?.chargeCount ?? 0;
+    counts.push(BigInt(count));
+    attested.set(channelId.toLowerCase(), count);
+  }
+  return { counts, attested };
+}
+
+/**
  * Facilitator-side claim / settle / idle-refund scheduler for the voucher store.
  */
 export class FacilitatorChannelManager {
@@ -163,6 +200,7 @@ export class FacilitatorChannelManager {
   private readonly authorizerSubmitter: FacilitatorEvmSigner | undefined;
   private readonly submitMode: SubmitMode;
   private readonly retention: FacilitatorRetention;
+  private readonly context: FacilitatorContext | undefined;
 
   private timers: Partial<Record<AutoJob, ReturnType<typeof setInterval>>> = {};
   private running = false;
@@ -191,6 +229,7 @@ export class FacilitatorChannelManager {
     this.authorizerSubmitter = config.authorizerSubmitter;
     this.submitMode = config.submitMode ?? "relay";
     this.retention = config.retention ?? "until-closed";
+    this.context = config.context;
   }
 
   /**
@@ -221,9 +260,9 @@ export class FacilitatorChannelManager {
 
       for (let i = 0; i < claims.length; i += maxClaimsPerBatch) {
         const batch = claims.slice(i, i + maxClaimsPerBatch);
-        const result = await this.submitClaimBatch(network, batch);
+        const { result, attested } = await this.submitClaimBatch(network, batch);
         results.push(result);
-        await afterClaim(this.storage, this.lockStorage, batch, network, this.retention);
+        await afterClaim(this.storage, this.lockStorage, batch, network, attested, this.retention);
       }
     }
 
@@ -265,11 +304,18 @@ export class FacilitatorChannelManager {
 
     const results: FacilitatorSettleResult[] = [];
     for (const pair of pairs.values()) {
-      const response = await executeSettle(
-        this.signer,
-        { type: "settle", receiver: pair.receiver, token: pair.token },
+      const payload: BatchSettlementSettlePayload = {
+        type: "settle",
+        receiver: pair.receiver,
+        token: pair.token,
+      };
+      const dataSuffix = await this.resolveBuilderSuffix(
         pair.network,
+        payload,
+        pair.token,
+        pair.receiver,
       );
+      const response = await executeSettle(this.signer, payload, pair.network, dataSuffix);
       if (!response.success) {
         if (response.errorReason === Errors.ErrNothingToSettle) {
           continue;
@@ -378,12 +424,25 @@ export class FacilitatorChannelManager {
   private async submitClaimBatch(
     network: Network,
     claims: BatchSettlementVoucherClaim[],
-  ): Promise<FacilitatorClaimResult> {
-    const response = await submitClaim({ network, claims }, this.submitContext());
+  ): Promise<{ result: FacilitatorClaimResult; attested: Map<string, number> }> {
+    const { counts, attested } = await snapshotClaimChargeCounts(this.storage, claims, network);
+    const builderSuffix = await this.resolveBuilderSuffix(
+      network,
+      { type: "claim", claims },
+      claims[0]?.voucher.channel.token ?? "0x0000000000000000000000000000000000000000",
+      claims[0]?.voucher.channel.receiver ?? "0x0000000000000000000000000000000000000000",
+    );
+    const response = await submitClaim(
+      { network, claims, dataSuffix: composeClaimDataSuffix(counts, builderSuffix) },
+      this.submitContext(),
+    );
     if (!response.success) {
       throw new Error(formatFailure("Claim", response));
     }
-    return { network, vouchers: claims.length, transaction: response.transaction };
+    return {
+      result: { network, vouchers: claims.length, transaction: response.transaction },
+      attested,
+    };
   }
 
   /**
@@ -423,8 +482,15 @@ export class FacilitatorChannelManager {
     }
 
     if (refundAmount <= 0n) {
-      const result = await this.submitClaimBatch(target.network, claims);
-      await afterClaim(this.storage, this.lockStorage, claims, target.network, this.retention);
+      const { result, attested } = await this.submitClaimBatch(target.network, claims);
+      await afterClaim(
+        this.storage,
+        this.lockStorage,
+        claims,
+        target.network,
+        attested,
+        this.retention,
+      );
       return {
         network: target.network,
         channel: target.channelId,
@@ -432,21 +498,32 @@ export class FacilitatorChannelManager {
       };
     }
 
+    const payload = {
+      type: "refund" as const,
+      channelConfig: target.channelConfig,
+      voucher: {
+        channelId: target.channelId as `0x${string}`,
+        maxClaimableAmount: target.signedMaxClaimable,
+        signature: target.signature as `0x${string}`,
+      },
+      amount: refundAmount.toString(),
+      refundNonce: String(target.refundNonce ?? 0),
+      claims,
+    };
+    const dataSuffix = await this.resolveBuilderSuffix(
+      target.network,
+      payload,
+      target.channelConfig.token,
+      target.channelConfig.receiver,
+    );
     const response = await submitRefund(
       {
         network: target.network,
-        payload: {
-          type: "refund",
-          channelConfig: target.channelConfig,
-          voucher: {
-            channelId: target.channelId as `0x${string}`,
-            maxClaimableAmount: target.signedMaxClaimable,
-            signature: target.signature as `0x${string}`,
-          },
-          amount: refundAmount.toString(),
-          refundNonce: String(target.refundNonce ?? 0),
-          claims,
-        },
+        payload,
+        dataSuffix,
+        ...(claims.length > 0
+          ? { claimDataSuffix: encodeChargeCountsSuffix([target.chargeCount]) }
+          : {}),
       },
       this.submitContext(),
     );
@@ -718,6 +795,24 @@ export class FacilitatorChannelManager {
   }
 
   /**
+   * Resolves an optional builder-code suffix for a scheduled claim, settle, or refund.
+   *
+   * @param network - Network of the transaction.
+   * @param payload - Synthetic payload (`type` plus operation fields).
+   * @param asset - Token address used as `accepted.asset`.
+   * @param payTo - Receiver address used as `accepted.payTo`.
+   * @returns ERC-8021 suffix, or `undefined` when no extension produces one.
+   */
+  private async resolveBuilderSuffix(
+    network: Network,
+    payload: Record<string, unknown>,
+    asset: `0x${string}`,
+    payTo: `0x${string}`,
+  ): Promise<`0x${string}` | undefined> {
+    return resolveDataSuffix(this.context, scheduledSuffixContext(network, payload, asset, payTo));
+  }
+
+  /**
    * Builds the submit context for claim and refund dispatchers.
    *
    * @returns Signers and submit mode.
@@ -730,6 +825,40 @@ export class FacilitatorChannelManager {
       authorizerSubmitter: this.authorizerSubmitter,
     };
   }
+}
+
+/**
+ * Builds a synthetic settle context for scheduled txs (no client `a`/`s`).
+ *
+ * @param network - Network of the transaction.
+ * @param payload - Synthetic payload body.
+ * @param asset - Token address.
+ * @param payTo - Receiver address.
+ * @returns Context passed to `resolveDataSuffix`.
+ */
+function scheduledSuffixContext(
+  network: Network,
+  payload: Record<string, unknown>,
+  asset: `0x${string}`,
+  payTo: `0x${string}`,
+): DataSuffixContext {
+  const accepted: PaymentRequirements = {
+    scheme: BATCH_SETTLEMENT_SCHEME,
+    network,
+    asset,
+    amount: "0",
+    payTo,
+    maxTimeoutSeconds: 0,
+    extra: {},
+  };
+  return {
+    paymentPayload: {
+      x402Version: 2,
+      accepted,
+      payload,
+    },
+    paymentRequirements: accepted,
+  };
 }
 
 /**

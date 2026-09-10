@@ -20,6 +20,10 @@ function buildConfig(saltSuffix = "00"): ChannelConfig {
   };
 }
 
+function attestedMap(...channels: FacilitatorChannel[]): Map<string, number> {
+  return new Map(channels.map(channel => [channel.channelId.toLowerCase(), channel.chargeCount]));
+}
+
 function buildChannel(overrides: Partial<FacilitatorChannel> = {}): FacilitatorChannel {
   const channelConfig = overrides.channelConfig ?? buildConfig();
   const channelId = overrides.channelId ?? computeChannelId(channelConfig, NETWORK);
@@ -57,10 +61,36 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      attestedMap(channel),
     );
 
     expect((await storage.get(channel.channelId))?.totalClaimed).toBe("5000");
     expect((await storage.get(channel.channelId))?.chargeCount).toBe(0);
+  });
+
+  it("preserves in-flight increments when subtracting the encoded snapshot", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const channel = buildChannel({ balance: "10000", chargeCount: 3 });
+    await storage.updateChannel(channel.channelId, () => channel);
+    await storage.updateChannel(channel.channelId, current =>
+      current ? { ...current, chargeCount: 5 } : current,
+    );
+
+    await afterClaim(
+      storage,
+      storage,
+      [
+        {
+          voucher: { channel: channel.channelConfig, maxClaimableAmount: "5000" },
+          signature: "0xdeadbeef",
+          totalClaimed: "5000",
+        },
+      ],
+      NETWORK,
+      attestedMap(channel),
+    );
+
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(2);
   });
 
   it("deletes a closed channel row after claim when retention is until-closed", async () => {
@@ -79,6 +109,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      attestedMap(channel),
       "until-closed",
     );
 
@@ -101,6 +132,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      attestedMap(channel),
       "forever",
     );
 
@@ -122,6 +154,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      new Map([[channel.channelId.toLowerCase(), 3]]),
     );
 
     expect(await storage.get(channel.channelId)).toBeUndefined();
@@ -144,6 +177,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      attestedMap(channel),
     );
 
     expect(await storage.get(channel.channelId)).toBeDefined();
@@ -172,6 +206,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
+      attestedMap(channel),
     );
 
     expect(await storage.get(channel.channelId)).toBeUndefined();
