@@ -9,7 +9,7 @@ import type {
   BatchSettlementPaymentRequirementsExtra,
   ChannelConfig,
 } from "../types";
-import { computeChannelId } from "../utils";
+import { computeChannelId, packRefundAuthorizerSalt } from "../utils";
 import type { BatchSettlementClientContext, ClientChannelStorage } from "./storage";
 
 /**
@@ -27,6 +27,10 @@ export interface BatchSettlementClientDeps {
 /**
  * Constructs the immutable {@link ChannelConfig} from payment requirements and
  * a client deps bag (signer, salt, optional payerAuthorizer / voucherSigner).
+ *
+ * When `extra.refundAuthorizer` is present, the channel salt is
+ * `bytes12(entropy) || bytes20(refundAuthorizer)` so `recoverChannel` and
+ * `refund()` recompute the same `channelId`.
  *
  * @param deps - Client identity inputs.
  * @param paymentRequirements - Server payment requirements providing receiver, asset, and extra fields.
@@ -47,6 +51,12 @@ export function buildChannelConfig(
     throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
   }
 
+  const refundAuthorizer = extra?.refundAuthorizer;
+  const salt =
+    typeof refundAuthorizer === "string"
+      ? packRefundAuthorizerSalt(deps.salt, refundAuthorizer)
+      : deps.salt;
+
   return {
     payer: deps.signer.address,
     payerAuthorizer: getAddress(
@@ -57,7 +67,7 @@ export function buildChannelConfig(
     token: paymentRequirements.asset as `0x${string}`,
     withdrawDelay:
       typeof extra?.withdrawDelay === "number" ? extra.withdrawDelay : MIN_WITHDRAW_DELAY,
-    salt: deps.salt,
+    salt,
   };
 }
 

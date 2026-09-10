@@ -17,7 +17,15 @@ import {
   VerifyResponse,
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
-import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
+import {
+  BatchSettlementEvmScheme,
+  InMemoryChannelStorage,
+  type FacilitatorChannelManager,
+  type FacilitatorClaimResult,
+  type FacilitatorRefundResult,
+  type FacilitatorSettleResult,
+} from "@x402/evm/batch-settlement/facilitator";
+import { FileChannelStorage } from "@x402/evm/batch-settlement/facilitator/file-storage";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import {
   BatchSvmRentCleanupManager,
@@ -34,6 +42,48 @@ import { baseSepolia } from "viem/chains";
 
 dotenv.config();
 
+function envFlag(name: string): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+function debugLog(...args: unknown[]): void {
+  if (envFlag("DEBUG")) {
+    console.log(...args);
+  }
+}
+
+function batchPayloadType(payload: PaymentPayload): string {
+  const body = payload.payload as { type?: string } | undefined;
+  return typeof body?.type === "string" ? body.type : "unknown";
+}
+
+function logVerifyLine(payload: PaymentPayload, response: VerifyResponse): void {
+  const type = batchPayloadType(payload);
+  if (response.isValid) {
+    console.info(`POST /verify ${type} ok`);
+    return;
+  }
+  console.info(
+    `POST /verify ${type} failed ${response.invalidReason ?? "unknown"}${
+      response.invalidMessage ? `: ${response.invalidMessage}` : ""
+    }`,
+  );
+}
+
+function logSettleLine(payload: PaymentPayload, response: SettleResponse): void {
+  const type = batchPayloadType(payload);
+  if (response.success) {
+    console.info(`POST /settle ${type} ok tx=${response.transaction}`);
+    return;
+  }
+  console.info(
+    `POST /settle ${type} failed ${response.errorReason ?? "unknown"}${
+      response.errorMessage ? `: ${response.errorMessage}` : ""
+    }`,
+  );
+}
+
 // Configuration
 const PORT = process.env.PORT || "4022";
 const EVM_NETWORK = "eip155:84532" as Network;
@@ -43,6 +93,11 @@ const evmPrivateKey = process.env.EVM_PRIVATE_KEY?.trim();
 const svmPrivateKey = process.env.SVM_PRIVATE_KEY?.trim();
 const evmRpcUrl = process.env.EVM_RPC_URL ?? "https://sepolia.base.org";
 const svmRpcUrl = process.env.SVM_RPC_URL;
+const voucherStoreEnabled = envFlag("VOUCHER_STORE");
+const voucherStoreDir = process.env.VOUCHER_STORE_DIR?.trim();
+const voucherStoreWithdrawDelay = Number(
+  process.env.VOUCHER_STORE_WITHDRAW_DELAY_SECONDS ?? "900",
+);
 
 // Validate required environment variables
 if (!evmPrivateKey && !svmPrivateKey) {
@@ -56,6 +111,18 @@ if (!evmPrivateKey && !svmPrivateKey) {
 const receiverAuthorizerPrivateKey =
   process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
 
+if (voucherStoreEnabled && !evmPrivateKey) {
+  console.error("❌ VOUCHER_STORE requires EVM_PRIVATE_KEY (EVM only)");
+  process.exit(1);
+}
+
+if (voucherStoreEnabled && !receiverAuthorizerPrivateKey) {
+  console.error(
+    "❌ VOUCHER_STORE requires EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY (facilitator-managed custody)",
+  );
+  process.exit(1);
+}
+
 const rentCleanupIntervalSecs = Number.parseInt(
   process.env.RENT_CLEANUP_INTERVAL_SECS ?? "30",
   10,
@@ -67,26 +134,27 @@ const abandonGraceSecs = Number.parseInt(
 
 const channelStorage = new InMemoryBatchChannelStorage();
 const facilitator = new x402Facilitator()
-  .onBeforeVerify(async (context) => {
-    console.log("Before verify", context);
+  .onBeforeVerify(async context => {
+    debugLog("Before verify", context);
   })
-  .onAfterVerify(async (context) => {
-    console.log("After verify", context);
+  .onAfterVerify(async context => {
+    debugLog("After verify", context);
   })
-  .onVerifyFailure(async (context) => {
-    console.log("Verify failure", context);
+  .onVerifyFailure(async context => {
+    debugLog("Verify failure", context);
   })
-  .onBeforeSettle(async (context) => {
-    console.log("Before settle", context);
+  .onBeforeSettle(async context => {
+    debugLog("Before settle", context);
   })
-  .onAfterSettle(async (context) => {
-    console.log("After settle", context);
+  .onAfterSettle(async context => {
+    debugLog("After settle", context);
   })
-  .onSettleFailure(async (context) => {
-    console.log("Settle failure", context);
+  .onSettleFailure(async context => {
+    debugLog("Settle failure", context);
   });
 
 let rentCleanupManager: BatchSvmRentCleanupManager | undefined;
+let voucherStoreChannelManager: FacilitatorChannelManager | undefined;
 
 if (evmPrivateKey) {
   // Initialize the EVM account from private key (submits transactions)
@@ -146,11 +214,48 @@ if (evmPrivateKey) {
       viemClient.waitForTransactionReceipt(args),
   });
 
+  if (voucherStoreEnabled) {
+    const backend = voucherStoreDir ? `file (${voucherStoreDir})` : "in-memory";
+    console.info(
+      `Facilitator voucher store: enabled (${backend}, withdrawDelay ${voucherStoreWithdrawDelay}s)`,
+    );
+  } else {
+    console.info("Facilitator voucher store: disabled (self-managed server custody)");
+  }
+
+  const batchSettlementScheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+    ...(voucherStoreEnabled
+      ? {
+          voucherStore: {
+            storage: voucherStoreDir
+              ? new FileChannelStorage({ directory: voucherStoreDir })
+              : new InMemoryChannelStorage(),
+            withdrawDelay: voucherStoreWithdrawDelay,
+          },
+        }
+      : {}),
+  });
+
   // Register EVM scheme (batched: deposit / voucher / claim / settle)
-  facilitator.register(
-    EVM_NETWORK,
-    new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
-  ); // Base Sepolia
+  facilitator.register(EVM_NETWORK, batchSettlementScheme); // Base Sepolia
+
+  if (voucherStoreEnabled) {
+    voucherStoreChannelManager = batchSettlementScheme.createChannelManager();
+    voucherStoreChannelManager.start({
+      claimIntervalSecs: 60,
+      settleIntervalSecs: 120,
+      refundIntervalSecs: 180,
+      refundIdleSecs: 180,
+      maxClaimsPerBatch: 100,
+      onClaim: (r: FacilitatorClaimResult) =>
+        console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+      onSettle: (r: FacilitatorSettleResult) =>
+        console.log(`[voucher store] Settled ${r.receiver} (tx: ${r.transaction})`),
+      onRefund: (r: FacilitatorRefundResult) =>
+        console.log(`[voucher store] Refunded channel ${r.channel} (tx: ${r.transaction})`),
+      onError: e => console.error("[voucher store] Settlement error:", e),
+    });
+  }
 }
 
 if (svmPrivateKey) {
@@ -225,6 +330,7 @@ app.post("/verify", async (req, res) => {
       paymentRequirements,
     );
 
+    logVerifyLine(paymentPayload, response);
     res.json(response);
   } catch (error) {
     console.error("Verify error:", error);
@@ -259,6 +365,7 @@ app.post("/settle", async (req, res) => {
       paymentRequirements as PaymentRequirements,
     );
 
+    logSettleLine(paymentPayload as PaymentPayload, response);
     res.json(response);
   } catch (error) {
     console.error("Settle error:", error);
@@ -316,6 +423,10 @@ app.listen(parseInt(PORT), () => {
 
 async function shutdown(): Promise<void> {
   await rentCleanupManager?.stop();
+  if (voucherStoreChannelManager) {
+    console.log("Shutting down — flushing voucher-store claims…");
+    await voucherStoreChannelManager.stop({ flush: true });
+  }
   process.exit(0);
 }
 

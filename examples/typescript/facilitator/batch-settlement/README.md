@@ -25,6 +25,26 @@ If `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is omitted, this example registers `Bat
 - Base Sepolia ETH on the **relayer** address (gas)
 - Optional: a separate **authorizer** key (`EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`; no gas required)
 
+## Facilitator-managed voucher custody (optional)
+
+Spec v1.1 lets this facilitator own the voucher store, per-channel locks, and the claim/settle/refund schedule. Set `VOUCHER_STORE=true` (requires `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`). Storage defaults to **in-memory**; set `VOUCHER_STORE_DIR` only when you need persistence across restarts. The example then registers a `voucherStore`, advertises `extra.voucherStore: true` on `/supported`, and starts a `FacilitatorChannelManager` loop (same intervals as the [server example](../../servers/batch-settlement) demo).
+
+Pair with the server example using `VOUCHER_STORE_MODE=facilitator` and **without** `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` on the server. For cooperative refunds without implementing `resolveCallerIdentity`, set `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` on the server.
+
+```bash
+# facilitator .env
+EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...
+VOUCHER_STORE=true
+# VOUCHER_STORE_DIR=./voucher-store   # optional persistence
+VOUCHER_STORE_WITHDRAW_DELAY_SECONDS=900
+
+# server .env
+VOUCHER_STORE_MODE=facilitator
+EVM_REFUND_AUTHORIZER_PRIVATE_KEY=0x...
+```
+
+See the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md#facilitator-managed-custody) for production notes (shared Redis locks, `refundAuth`, retention).
+
 ## Setup
 
 ```bash
@@ -53,7 +73,7 @@ Standard x402 facilitator endpoints: `POST /verify`, `POST /settle`, `GET /suppo
 
 `/verify` and `/settle` always return the onchain channel snapshot (`balance`, `totalClaimed`, `withdrawRequestedAt`, `refundNonce`) in the `extra` field — the resource server mirrors these into its session state.
 
-`GET /supported` includes `extra.receiverAuthorizer` only when `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is set:
+`GET /supported` includes `extra.receiverAuthorizer` when `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is set. With `VOUCHER_STORE=true`, it also includes `voucherStore: true` and `withdrawDelay`:
 
 ```json
 {
@@ -62,7 +82,11 @@ Standard x402 facilitator endpoints: `POST /verify`, `POST /settle`, `GET /suppo
       "x402Version": 2,
       "scheme": "batch-settlement",
       "network": "eip155:84532",
-      "extra": { "receiverAuthorizer": "0x..." }
+      "extra": {
+        "receiverAuthorizer": "0x...",
+        "voucherStore": true,
+        "withdrawDelay": 900
+      }
     }
   ],
   "signers": { "eip155:*": ["0x..."] }

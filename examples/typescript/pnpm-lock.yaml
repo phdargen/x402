@@ -3337,7 +3337,7 @@ importers:
         version: 5.9.3
 
   servers/cdp-dev:
-    dependencies:
+      dependencies:
       '@coinbase/cdp-sdk':
         specifier: ^1.39.0
         version: 1.39.0(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.21.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))

@@ -7,9 +7,10 @@ import type {
 import type { FacilitatorClient } from "@x402/core/server";
 import type { BatchSettlementVoucherClaim } from "../types";
 import type { BatchSettlementEvmScheme } from "./scheme";
-import { computeChannelId } from "../utils";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import * as Errors from "../errors";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
+import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
 import type { Channel, ChannelLockStorage } from "./storage";
 import { rethrowLockImplementationError } from "./storage";
 
@@ -166,6 +167,10 @@ export class BatchSettlementChannelManager {
 
     const response = await this.facilitator.settle(paymentPayload, requirements);
     if (!response.success) {
+      if (response.errorReason === Errors.ErrNothingToSettle) {
+        this.pendingSettle = false;
+        return { transaction: "" };
+      }
       throw new Error(formatFacilitatorFailure("Settle", response));
     }
 
@@ -200,6 +205,7 @@ export class BatchSettlementChannelManager {
    * @returns One result per successfully refunded channel.
    */
   async refund(channelIds?: string[]): Promise<RefundResult[]> {
+    this.assertRefundAllowed();
     const storage = this.scheme.getStorage();
     const lock = this.scheme.getLockStorage();
     const channels = await storage.list();
@@ -230,6 +236,7 @@ export class BatchSettlementChannelManager {
    * @returns One result per successfully refunded channel.
    */
   async refundIdleChannels(opts: { idleSecs: number }): Promise<RefundResult[]> {
+    this.assertRefundAllowed();
     const channels = await this.getIdleChannelsForRefund(opts.idleSecs);
     return this.refundChannels(channels);
   }
@@ -278,7 +285,9 @@ export class BatchSettlementChannelManager {
 
     this.startAutoTimer("claim", config.claimIntervalSecs);
     this.startAutoTimer("settle", config.settleIntervalSecs);
-    this.startAutoTimer("refund", config.refundIntervalSecs);
+    if (!this.scheme.isFacilitatorManagedVoucherStore(this.network)) {
+      this.startAutoTimer("refund", config.refundIntervalSecs);
+    }
   }
 
   /**
@@ -456,6 +465,10 @@ export class BatchSettlementChannelManager {
       case "refund":
         await this.runRefundJob();
         return;
+      default: {
+        const _exhaustive: never = job;
+        throw new Error(`unhandled auto job: ${_exhaustive}`);
+      }
     }
   }
 
@@ -508,6 +521,9 @@ export class BatchSettlementChannelManager {
    * Runs the refund auto job.
    */
   private async runRefundJob(): Promise<void> {
+    if (this.scheme.isFacilitatorManagedVoucherStore(this.network)) {
+      return;
+    }
     const cfg = this.autoSettleConfig;
     if (!cfg.selectRefundChannels) {
       return;
@@ -651,30 +667,10 @@ export class BatchSettlementChannelManager {
     channels: Channel[],
     opts?: { idleSecs?: number },
   ): BatchSettlementVoucherClaim[] {
-    const now = Date.now();
-    const claims: BatchSettlementVoucherClaim[] = [];
-
-    for (const c of channels) {
-      if (BigInt(c.chargedCumulativeAmount) <= BigInt(c.totalClaimed)) {
-        continue;
-      }
-      if (opts?.idleSecs !== undefined) {
-        const idleMs = now - c.lastRequestTimestamp;
-        if (idleMs < opts.idleSecs * 1000) {
-          continue;
-        }
-      }
-      claims.push({
-        voucher: {
-          channel: c.channelConfig,
-          maxClaimableAmount: c.signedMaxClaimable,
-        },
-        signature: c.signature as `0x${string}`,
-        totalClaimed: c.chargedCumulativeAmount,
-      });
-    }
-
-    return claims;
+    return selectClaimableVouchers(channels, {
+      now: Date.now(),
+      ...(opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : {}),
+    });
   }
 
   /**
@@ -788,26 +784,15 @@ export class BatchSettlementChannelManager {
    * @param claims - Voucher claims that were included in the submitted settlement transaction.
    */
   private async updateClaimedSessions(claims: BatchSettlementVoucherClaim[]): Promise<void> {
-    const storage = this.scheme.getStorage();
-    for (const claim of claims) {
-      const channelId = computeChannelId(claim.voucher.channel, this.network);
-      const channel = await storage.get(channelId);
-      if (!channel) {
-        continue;
-      }
-      const claimedAmount = BigInt(claim.totalClaimed);
-      if (claimedAmount <= BigInt(channel.totalClaimed)) {
-        continue;
-      }
-      await storage.updateChannel(channelId, current => {
-        if (!current || claimedAmount <= BigInt(current.totalClaimed)) {
-          return current;
-        }
-        return {
-          ...current,
-          totalClaimed: claimedAmount.toString(),
-        };
-      });
+    await applyClaimedTotals(this.scheme.getStorage(), claims, this.network);
+  }
+
+  /**
+   * Throws when this manager is attached to a facilitator-managed server.
+   */
+  private assertRefundAllowed(): void {
+    if (this.scheme.isFacilitatorManagedVoucherStore(this.network)) {
+      throw new Error("cooperative refunds are client-initiated in facilitator-managed mode");
     }
   }
 }
