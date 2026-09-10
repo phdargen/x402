@@ -31,6 +31,20 @@ new BatchSettlementEvmScheme(evmAddress, { /* no receiverAuthorizerSigner */ });
 
 This is simpler operationally but binds each channel to the current facilitator authorizer. **Switching facilitators (or rotating their authorizer key) requires opening new channels.** Before swapping, claim outstanding vouchers and refund remaining balances on the old channels.
 
+### 3. Facilitator-managed custody (spec v1.1)
+
+Set `VOUCHER_STORE_MODE=facilitator` and run a facilitator with `VOUCHER_STORE=true` (see the [facilitator example](../../facilitator/batch-settlement)). The server becomes a pass-through: every voucher goes through facilitator `/verify` and `/settle`; the facilitator `ChannelManager` owns claim/settle/refund scheduling.
+
+```typescript
+new BatchSettlementEvmScheme(evmAddress, {
+  voucherStoreMode: "facilitator",
+  refundAuthorizerSigner, // or rely on facilitator refundAuth
+  storage: new FileChannelStorage({ directory: "./channels" }), // optional replica
+});
+```
+
+Do **not** set `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` in this mode. Optional `STORAGE_DIR` is a replica updated after successful `/settle` (not used on the verify hot path). Do **not** start a server `ChannelManager` — claim, settle, and idle refunds run on the facilitator.
+
 ## Settlement Policy
 
 Clients can call `initiateWithdraw` directly onchain at any time, **outside the request flow**. After the channel's `withdrawDelay` elapses, `finalizeWithdraw` drains the escrow and any unclaimed vouchers become unclaimable forever.
@@ -105,6 +119,8 @@ demo for stable assertions across stacks.
 |----------|----------|-------------|
 | `EVM_ADDRESS` | yes | `payTo` address (channel receiver) |
 | `FACILITATOR_URL` | yes | Batch-settlement facilitator endpoint |
-| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate to facilitator) |
+| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate to facilitator; incompatible with `VOUCHER_STORE_MODE=facilitator`) |
+| `VOUCHER_STORE_MODE` | no | `facilitator` for facilitator-managed custody; default is self-managed |
+| `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` | no | Managed mode only: signs cooperative refunds when the facilitator does not advertise `refundAuth` |
 | `STORAGE_DIR` | no | Persist channel sessions on disk (defaults to in-memory) |
-| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Channel `withdrawDelay`; defaults to 86,400 (1 day) |
+| `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Self-managed channel `withdrawDelay`; ignored in facilitator-managed mode (facilitator advertises `withdrawDelay`) |

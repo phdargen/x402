@@ -94,7 +94,7 @@ In facilitator-managed mode the resource server is a pass-through: it calls `/ve
 
 **Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation) unless the facilitator advertised `refundAuth: true` and the server relies on that path. The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. The facilitator MUST still accept the signature path when `extra.refundAuthorizer` is present.
 
-**Optional replica.** A managed server MAY persist a copy of the latest voucher after successful `/settle`. The replica MUST NOT drive cumulative checks, locks, or corrective 402s. It only enables out-of-band `claim()` / `refund()` as `receiver`, or `type: "claim"` through the facilitator.
+**Optional replica.** A managed server MAY persist a copy of the latest voucher after successful `/settle`. The replica MUST NOT drive cumulative checks, locks, or corrective 402s. It only enables out-of-band `claim()` / `refund()`.
 
 ---
 
@@ -563,7 +563,7 @@ Verifies a deposit, voucher, or refund payment payload. Returns the onchain chan
 }
 ```
 
-Facilitator-managed `/verify` also returns the offchain watermark. The facilitator MUST take a short-lived exclusive lock per `channelId`; a second in-flight request returns `invalid_batch_settlement_evm_channel_busy`. The lock is not a payment commit — watermark does not advance until `/settle`. `/settle` commits and releases; TTL releases on handler crash.
+Facilitator-managed `/verify` also returns the offchain watermark and `extra.pendingId` (per-request lock owner; not a PAYMENT-RESPONSE field). The facilitator MUST take a short-lived exclusive lock per `channelId`; a second in-flight request returns `invalid_batch_settlement_evm_channel_busy`. The lock is not a payment commit — watermark does not advance until `/settle`. `/settle` commits and releases `payload.pendingId` (server echo of `extra.pendingId`); omitted `pendingId` is the lock-lost path (full re-verify). TTL releases on handler crash.
 
 ```json
 {
@@ -575,7 +575,8 @@ Facilitator-managed `/verify` also returns the offchain watermark. The facilitat
     "totalClaimed": "3200",
     "withdrawRequestedAt": 0,
     "refundNonce": "1",
-    "chargedCumulativeAmount": "3900"
+    "chargedCumulativeAmount": "3900",
+    "pendingId": "0x...per-request lock owner"
   }
 }
 ```
@@ -851,7 +852,7 @@ The facilitator must return the channel snapshot (`balance`, `totalClaimed`, `wi
 
 ## Claim & Settlement Strategy
 
-In self-managed mode the server runs this strategy. In facilitator-managed mode the facilitator does — including claiming before a timed withdrawal finalizes.
+In self-managed mode the server runs this strategy. In facilitator-managed mode the facilitator does — including claiming before a timed withdrawal finalizes and refunding idle channels.
 
 `claim(voucherClaims)` validates payer voucher signatures and updates accounting for multiple channels; `msg.sender` must be `receiver` or `receiverAuthorizer` for every row. `claimWithSignature(claims, signature)` is the relay-friendly variant: anyone can submit it with a valid EIP-712 `ClaimBatch` signature from `receiverAuthorizer` covering all rows (all rows must share the same `receiverAuthorizer`). No token transfer occurs in either path.
 

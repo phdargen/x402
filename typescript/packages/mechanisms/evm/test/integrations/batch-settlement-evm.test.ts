@@ -23,6 +23,7 @@ import { updateChannelFromSettle } from "../../src/batch-settlement/client/chann
 import { InMemoryClientChannelStorage } from "../../src/batch-settlement/client/storage";
 import { BatchSettlementEvmScheme as BatchSettlementEvmServer } from "../../src/batch-settlement/server/scheme";
 import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryChannelStorage as FacilitatorChannelStorage } from "../../src/batch-settlement/storage/channel";
 import type { AuthorizerSigner } from "../../src/batch-settlement/types";
 import { privateKeyToAccount } from "viem/accounts";
 import { createWalletClient, createPublicClient, http, getAddress } from "viem";
@@ -231,6 +232,102 @@ function buildPipeline(): {
   };
 }
 
+/**
+ * Same as {@link buildPipeline} but wires facilitator-managed voucher custody.
+ */
+function buildManagedPipeline(): ReturnType<typeof buildPipeline> & {
+  facilitatorStorage: FacilitatorChannelStorage;
+} {
+  const clientAccount = privateKeyToAccount(CLIENT_PRIVATE_KEY!);
+  const facilitatorAccount = privateKeyToAccount(FACILITATOR_PRIVATE_KEY!);
+  const authorizerAccount = privateKeyToAccount(
+    RECEIVER_AUTHORIZER_PRIVATE_KEY ?? FACILITATOR_PRIVATE_KEY!,
+  );
+  const refundAuthorizerAccount = privateKeyToAccount(
+    RECEIVER_AUTHORIZER_PRIVATE_KEY ?? FACILITATOR_PRIVATE_KEY!,
+  );
+
+  const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+  const facilitatorWalletClient = createWalletClient({
+    account: facilitatorAccount,
+    chain: baseSepolia,
+    transport: http(),
+  });
+
+  const facilitatorSigner = toFacilitatorEvmSigner({
+    address: facilitatorAccount.address,
+    readContract: args => publicClient.readContract({ ...args, args: args.args || [] } as never),
+    verifyTypedData: args => publicClient.verifyTypedData(args as never),
+    writeContract: args =>
+      facilitatorWalletClient.writeContract({ ...args, args: args.args || [] } as never),
+    sendTransaction: args => facilitatorWalletClient.sendTransaction(args),
+    waitForTransactionReceipt: args => publicClient.waitForTransactionReceipt(args),
+    getCode: args => publicClient.getCode(args),
+  });
+
+  const authorizerSigner: AuthorizerSigner = {
+    address: authorizerAccount.address,
+    signTypedData: msg =>
+      authorizerAccount.signTypedData({
+        domain: msg.domain,
+        types: msg.types,
+        primaryType: msg.primaryType,
+        message: msg.message,
+      } as Parameters<typeof authorizerAccount.signTypedData>[0]),
+  };
+
+  const refundAuthorizerSigner: AuthorizerSigner = {
+    address: refundAuthorizerAccount.address,
+    signTypedData: msg =>
+      refundAuthorizerAccount.signTypedData({
+        domain: msg.domain,
+        types: msg.types,
+        primaryType: msg.primaryType,
+        message: msg.message,
+      } as Parameters<typeof refundAuthorizerAccount.signTypedData>[0]),
+  };
+
+  const facilitatorStorage = new FacilitatorChannelStorage();
+  const facilitator = new x402Facilitator().register(
+    NETWORK,
+    new BatchSettlementEvmFacilitator(facilitatorSigner, authorizerSigner, {
+      voucherStore: { storage: facilitatorStorage },
+    }),
+  );
+  const facilitatorClient = new EvmFacilitatorClient(facilitator);
+
+  const clientSigner = toClientEvmSigner(clientAccount, publicClient);
+  const channelSalt = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+  const batchSettlementStorage = new InMemoryClientChannelStorage();
+  const batchSettlementClient = new BatchSettlementEvmClient(clientSigner, {
+    depositPolicy: { depositMultiplier: 3 },
+    salt: channelSalt,
+    storage: batchSettlementStorage,
+  });
+  const client = new x402Client().register(NETWORK, batchSettlementClient);
+
+  const server = new x402ResourceServer(facilitatorClient);
+  server.register(
+    NETWORK,
+    new BatchSettlementEvmServer(facilitatorAccount.address, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner,
+    }),
+  );
+
+  return {
+    client,
+    server,
+    receiverAddress: facilitatorAccount.address,
+    clientAddress: clientAccount.address,
+    authorizerSigner,
+    publicClient,
+    batchSettlementClient,
+    batchSettlementStorage,
+    facilitatorStorage,
+  };
+}
+
 describe("Batch-Settlement EVM Integration Tests", () => {
   describeOnChain("x402Client / x402ResourceServer / x402Facilitator - direct API", () => {
     let client: x402Client;
@@ -316,6 +413,78 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         const settle2 = await server.settlePayment(secondPayload, accepted2!);
         expect(settle2.success, JSON.stringify(settle2)).toBe(true);
         expect(settle2.payer?.toLowerCase()).toBe(clientAddress.toLowerCase());
+      },
+    );
+
+    it(
+      "facilitator-managed custody persists vouchers offchain and returns chargeCount on voucher settle",
+      { timeout: 90000 },
+      async () => {
+        const pipeline = buildManagedPipeline();
+        await pipeline.server.initialize();
+
+        const accepts = [
+          buildBatchSettlementRequirements(
+            pipeline.receiverAddress,
+            "1000",
+            pipeline.authorizerSigner.address,
+          ),
+        ];
+        const resource = {
+          url: "https://example.com/api/managed",
+          description: "Managed custody resource",
+          mimeType: "application/json",
+        };
+
+        const paymentRequired = await pipeline.server.createPaymentRequiredResponse(
+          accepts,
+          resource,
+        );
+        expect(paymentRequired.accepts[0].extra?.voucherStore).toBe(true);
+
+        const firstPayload = await pipeline.client.createPaymentPayload(paymentRequired);
+        const accepted = pipeline.server.findMatchingRequirements(accepts, firstPayload);
+        expect(await pipeline.server.verifyPayment(firstPayload, accepted!)).toMatchObject({
+          isValid: true,
+        });
+
+        const depositSettle = await pipeline.server.settlePayment(firstPayload, accepted!);
+        expect(depositSettle.success, JSON.stringify(depositSettle)).toBe(true);
+        expect(typeof depositSettle.extra?.chargeCount).toBe("number");
+
+        const depositChannelId = (firstPayload.payload as { voucher: { channelId: `0x${string}` } })
+          .voucher.channelId;
+        await waitForChannelBalanceOnChain(pipeline.publicClient, depositChannelId);
+
+        const depositAmount = (firstPayload.payload as { deposit: { amount: string } }).deposit
+          .amount;
+        await updateChannelFromSettle(pipeline.batchSettlementStorage, {
+          server: { chargedAmount: depositSettle.extra?.chargedAmount },
+          local: {
+            channelId: depositChannelId,
+            requestAmount: accepted!.amount,
+            depositAmount,
+          },
+        });
+
+        const followupRequired = await pipeline.server.createPaymentRequiredResponse(
+          accepts,
+          resource,
+        );
+        const voucherPayload = await pipeline.client.createPaymentPayload(followupRequired);
+        const accepted2 = pipeline.server.findMatchingRequirements(accepts, voucherPayload);
+        expect(await pipeline.server.verifyPayment(voucherPayload, accepted2!)).toMatchObject({
+          isValid: true,
+        });
+
+        const voucherSettle = await pipeline.server.settlePayment(voucherPayload, accepted2!);
+        expect(voucherSettle.success, JSON.stringify(voucherSettle)).toBe(true);
+        expect(voucherSettle.transaction).toBe("");
+        expect(voucherSettle.extra?.chargeCount).toBeGreaterThan(0);
+
+        const facilitatorRow = await pipeline.facilitatorStorage.get(depositChannelId);
+        expect(facilitatorRow?.chargedCumulativeAmount).toBeDefined();
+        expect(BigInt(facilitatorRow!.chargedCumulativeAmount)).toBeGreaterThan(0n);
       },
     );
   });

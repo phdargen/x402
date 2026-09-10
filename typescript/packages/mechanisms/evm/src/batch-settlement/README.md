@@ -86,6 +86,8 @@ await scheme.refund(url, { amount: "1000000" });
 
 The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or `amount` to the payer.
 
+When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed. No extra client option is required.
+
 ### Persistence
 
 By default, channel state is stored in memory. For long-lived clients, use `FileClientChannelStorage`:
@@ -102,7 +104,7 @@ If state is lost, the client recovers from onchain `channels(channelId)` plus co
 
 ## Server Usage
 
-Register the scheme with an `x402ResourceServer` and pair it with a `ChannelManager` to handle batched claims, settlements, and refunds.
+Register the scheme with an `x402ResourceServer` and pair it with a `ChannelManager` to handle batched claims, settlements, and refunds. Omit `voucherStoreMode` (or pass `"self"`) for self-managed custody — the default, and the mode the rest of this section describes.
 
 ```typescript
 import { x402ResourceServer } from "@x402/core/server";
@@ -111,6 +113,7 @@ import { FileChannelStorage } from "@x402/evm/batch-settlement/server/file-stora
 import { RedisChannelStorage } from "@x402/evm/batch-settlement/server/redis-storage";
 
 const scheme = new BatchSettlementEvmScheme(receiverAddress, {
+  voucherStoreMode: "self",        // default; omit for the same effect
   receiverAuthorizerSigner,        // optional: self-managed authorizer (recommended)
   withdrawDelay: 900,              // 15 min – 30 days
   enforceMinDeposit: false,        // hint only; set true to reject smaller deposits
@@ -164,7 +167,9 @@ await manager.claimAndSettle({
 The `receiverAuthorizer` signs `ClaimBatch` and `Refund` EIP-712 messages and is committed into the channel's identity at deposit time:
 
 - **Self-managed** (recommended): pass a `receiverAuthorizerSigner` (an EOA you control). Channels survive facilitator changes — any facilitator can relay your signed claims and refunds.
-- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so claim and refund existing channels first with.
+- **Facilitator-delegated**: omit `receiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so claim and refund existing channels first.
+
+These two options are self-managed custody (`voucherStoreMode: "self"`). Facilitator-managed custody is a separate constructor mode — see [Facilitator-managed custody](#facilitator-managed-custody).
 
 ### Pricing
 
@@ -230,9 +235,92 @@ const facilitator = new x402Facilitator().register(
 );
 ```
 
-The optional `authorizerSigner` produces the EIP-712 signatures advertised in `/supported.kinds[].extra.receiverAuthorizer`. Servers may delegate to it (see above) or supply their own. The `evmSigner` (the wallet account) submits transactions for `deposit`, `claimWithSignature`, `settle`, and `refundWithSignature` — anyone can submit a valid claim/refund tx, but only the configured signer here will be used by this facilitator.
+The optional `authorizerSigner` is a **dedicated, unrotated** `receiverAuthorizer` advertised in `/supported.kinds[].extra.receiverAuthorizer`. Do not add it to the regular `evmSigner` gas pool. Servers may delegate to it (see above) or supply their own.
 
-A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
+`submitMode` selects how facilitator-owned `claim` / `refund` transactions are submitted (`"relay"` by default):
+
+| Mode | Tx sender | Onchain |
+|------|-----------|---------|
+| **Relay** (default) | Any regular `evmSigner` address | `claimWithSignature` / `refundWithSignature` (authorizer EIP-712) |
+| **Direct** | `authorizerSubmitter` (must be exactly `[authorizerSigner.address]`) | `claim` / `refund` (no signature) |
+
+A payload that already carries `claimAuthorizerSignature` / `refundAuthorizerSignature` always relays (server-owned key or pre-signed). `settle` is permissionless and always uses the regular signer pool.
+
+A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). Wire that via `resolveCallerIdentity` (and a shared `delegatedAuthStore` on multi-replica hosts); `/supported` then includes `extra.refundAuth: true`. If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
+
+```typescript
+const scheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+  resolveCallerIdentity: ctx => currentRequestAuth(ctx).subject,
+  // Optional: shared store for multi-replica facilitators. Default is in-memory.
+});
+```
+
+The default identity store is in-memory. A multi-replica facilitator must inject a shared `delegatedAuthStore`; a lost binding fails closed.
+
+## Facilitator-managed custody
+
+Spec v1.1 lets the facilitator own the durable voucher store, per-channel lock, watermark, and claim/settle schedule. The resource server becomes a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. A single facilitator instance can serve both modes; the per-request discriminant is `requirements.extra.voucherStore === true`.
+
+### Facilitator
+
+Configure a `voucherStore` (requires `authorizerSigner`). `/supported` then advertises `receiverAuthorizer`, `withdrawDelay`, and `voucherStore: true`. Add `resolveCallerIdentity` to also advertise `refundAuth: true` and accept unsigned cooperative refunds.
+
+```typescript
+import { x402Facilitator } from "@x402/core/facilitator";
+import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
+import { FileChannelStorage } from "@x402/evm/batch-settlement/facilitator/file-storage";
+
+const scheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+  voucherStore: {
+    storage: new FileChannelStorage({ directory: "./voucher-store" }),
+    // lockStorage is inferred when storage implements ChannelLockStorage
+    // withdrawDelay defaults to 900 (15 min)
+  },
+  resolveCallerIdentity: ctx => currentRequestAuth(ctx).subject,
+});
+
+const facilitator = new x402Facilitator().register("eip155:84532", scheme);
+
+const manager = scheme.createChannelManager();
+manager.start({
+  claimIntervalSecs: 60,
+  settleIntervalSecs: 300,
+  refundIntervalSecs: 3600,
+  refundIdleSecs: 3600,
+  maxClaimsPerBatch: 100,
+  onClaim: result => console.log("claimed", result),
+  onSettle: result => console.log("settled", result),
+  onRefund: result => console.log("refunded", result),
+  onError: err => console.error(err),
+});
+```
+
+`createChannelManager()` throws if `voucherStore` or `authorizerSigner` is missing. The facilitator manager is the intended schedule: it groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels (`refundIdleChannels` / the refund interval). After a claim confirms — including a managed HTTP `type: "claim"` from a replica — `afterClaim` subtracts the attested `chargeCount` snapshot (it does not zero the field). A stale replica claim (voucher already at or below onchain `totalClaimed`) fails simulation and is not broadcast, so the store is left alone. Rows are deleted when closed (`chargeCount === 0`, no admission lock, `balance <= totalClaimed`), not merely because a voucher was claimed.
+
+Facilitator-initiated refunds claim the store voucher first, then return `balance - chargedCumulativeAmount`. Client `type: "refund"` through `/verify` + `/settle` stays on the voucher-store path. The managed server replica must not refund.
+
+Construction throws when `voucherStore` is set without `authorizerSigner`, or when `storage` does not implement `ChannelLockStorage` and no `lockStorage` is passed.
+
+### Server
+
+Opt in with `voucherStoreMode: "facilitator"`. Mode is constructor-wide — it is not inferred from `/supported`. `initialize()` fails if the facilitator does not advertise `voucherStore`, a non-zero `receiverAuthorizer`, and an in-range `withdrawDelay`. The 402 copies those three fields from `/supported` (the server must not override `withdrawDelay`) and sets `voucherStore: true`.
+
+Refund consent is one of:
+
+- `refundAuthorizerSigner` — the 402 includes `extra.refundAuthorizer`; the client packs it into salt; `/settle` attaches `refundAuthorizerSignature`
+- facilitator `refundAuth` — omit `refundAuthorizerSigner`; `initialize()` fails unless `/supported` advertises `refundAuth: true`
+
+```typescript
+const scheme = new BatchSettlementEvmScheme(receiverAddress, {
+  voucherStoreMode: "facilitator",
+  refundAuthorizerSigner, // omit when relying on facilitator refundAuth
+  storage: new FileChannelStorage({ directory: "./channels" }), // replica only
+});
+```
+
+`storage` is a replica written after successful `/settle`. It is never read on the verify/settle hot path (no local watermark, lock, or corrective 402). `createChannelManager` can still `claim()` / `settle()` from the replica (claims go unsigned; the facilitator signs as `receiverAuthorizer` and runs `afterClaim` on success). `refund()`, `refundIdleChannels()`, and `refundIntervalSecs` stay blocked — a replica voucher is not the watermark, so a replica refund can return already-earned escrow. Cooperative refunds are facilitator-scheduled idle refunds or client-initiated `/settle` in this mode. The facilitator manager is the intended claim/settle/refund loop; a server auto-claim loop is optional and redundant (extra simulations), not unsafe.
+
+A configured `receiverAuthorizerSigner` is self-managed only and cannot be combined with `voucherStoreMode: "facilitator"`.
 
 ## Supported Networks
 
