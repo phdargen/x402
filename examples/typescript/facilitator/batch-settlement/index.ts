@@ -9,15 +9,30 @@ import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
 import {
   BatchSettlementEvmScheme,
   InMemoryChannelStorage,
+  batchSettlementABI,
+  computeChannelId,
+  parseChargeCountsFromCalldata,
   type FacilitatorChannelManager,
   type FacilitatorClaimResult,
   type FacilitatorRefundResult,
   type FacilitatorSettleResult,
 } from "@x402/evm/batch-settlement/facilitator";
 import { FileChannelStorage } from "@x402/evm/batch-settlement/facilitator/file-storage";
+import {
+  BuilderCodeFacilitatorExtension,
+  parseBuilderCodeSuffixFromCalldata,
+} from "@x402/extensions/builder-code";
 import dotenv from "dotenv";
 import express from "express";
-import { createWalletClient, http, nonceManager, publicActions } from "viem";
+import {
+  createWalletClient,
+  decodeFunctionData,
+  http,
+  nonceManager,
+  parseEventLogs,
+  publicActions,
+  type Hex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
@@ -50,6 +65,63 @@ function logVerifyLine(payload: PaymentPayload, response: VerifyResponse): void 
       response.invalidMessage ? `: ${response.invalidMessage}` : ""
     }`,
   );
+}
+
+async function logClaimAttestation(
+  result: FacilitatorClaimResult,
+  client: {
+    getTransaction: (args: { hash: Hex }) => Promise<{ input: Hex }>;
+    getTransactionReceipt: (args: { hash: Hex }) => Promise<{ logs: readonly unknown[] }>;
+  },
+): Promise<void> {
+  if (!result.transaction) {
+    return;
+  }
+  const hash = result.transaction as Hex;
+  const [tx, receipt] = await Promise.all([
+    client.getTransaction({ hash }),
+    client.getTransactionReceipt({ hash }),
+  ]);
+  const chargeCounts = parseChargeCountsFromCalldata(tx.input);
+  const builderCode = parseBuilderCodeSuffixFromCalldata(tx.input);
+  const decoded = decodeFunctionData({ abi: batchSettlementABI, data: tx.input });
+  if (decoded.functionName !== "claim" && decoded.functionName !== "claimWithSignature") {
+    console.log("[voucher store] Claim attestation: not a claim function", {
+      tx: hash,
+      functionName: decoded.functionName,
+    });
+    return;
+  }
+  const voucherClaims = decoded.args[0];
+  const claimed = parseEventLogs({
+    abi: batchSettlementABI,
+    eventName: "Claimed",
+    logs: receipt.logs as Parameters<typeof parseEventLogs>[0]["logs"],
+  });
+  const rows = voucherClaims.map((claim: (typeof voucherClaims)[number], index: number) => {
+    const channelId = computeChannelId(
+      {
+        ...claim.voucher.channel,
+        withdrawDelay: Number(claim.voucher.channel.withdrawDelay),
+      },
+      result.network,
+    );
+    const log = claimed.find(
+      entry => entry.args.channelId?.toLowerCase() === channelId.toLowerCase(),
+    );
+    return {
+      channelId,
+      chargeCount: chargeCounts?.[index]?.toString(),
+      claimAmount: log?.args.claimAmount?.toString(),
+      newTotalClaimed: log?.args.newTotalClaimed?.toString(),
+    };
+  });
+  console.log("[voucher store] Claim attestation", {
+    tx: hash,
+    chargeCounts: chargeCounts?.map((count: bigint) => count.toString()),
+    builderCode: builderCode ?? null,
+    channels: rows,
+  });
 }
 
 function logSettleLine(payload: PaymentPayload, response: SettleResponse): void {
@@ -179,6 +251,14 @@ const facilitator = new x402Facilitator()
     debugLog("Settle failure", context);
   });
 
+const facilitatorBuilderCode = process.env.FACILITATOR_BUILDER_CODE?.trim();
+if (facilitatorBuilderCode) {
+  facilitator.registerExtension(
+    new BuilderCodeFacilitatorExtension({ builderCode: facilitatorBuilderCode }),
+  );
+  console.info(`Facilitator builder code: ${facilitatorBuilderCode}`);
+}
+
 const batchSettlementScheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
   ...(voucherStoreEnabled
     ? {
@@ -197,15 +277,21 @@ facilitator.register("eip155:84532", batchSettlementScheme); // Base Sepolia
 
 let channelManager: FacilitatorChannelManager | undefined;
 if (voucherStoreEnabled) {
-  channelManager = batchSettlementScheme.createChannelManager();
+  channelManager = batchSettlementScheme.createChannelManager({
+    getExtension: (key: string) => facilitator.getExtension(key),
+  });
   channelManager.start({
     claimIntervalSecs: 60,
     settleIntervalSecs: 120,
     refundIntervalSecs: 180,
     refundIdleSecs: 180,
     maxClaimsPerBatch: 100,
-    onClaim: (r: FacilitatorClaimResult) =>
-      console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+    onClaim: (r: FacilitatorClaimResult) => {
+      console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`);
+      void logClaimAttestation(r, viemClient).catch(err =>
+        console.error("[voucher store] Failed to parse claim attestation:", err),
+      );
+    },
     onSettle: (r: FacilitatorSettleResult) =>
       console.log(`[voucher store] Settled ${r.receiver} (tx: ${r.transaction})`),
     onRefund: (r: FacilitatorRefundResult) =>

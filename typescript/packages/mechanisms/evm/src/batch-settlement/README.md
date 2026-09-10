@@ -32,6 +32,7 @@ const signer = toClientEvmSigner(account, publicClient);
 
 const scheme = new BatchSettlementEvmScheme(signer, {
   depositPolicy: { depositMultiplier: 5 },
+  salt: 0, // channel index; use 1, 2, … for additional channels
 });
 
 const client = new x402Client();
@@ -86,7 +87,7 @@ await scheme.refund(url, { amount: "1000000" });
 
 The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or `amount` to the payer.
 
-When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed. No extra client option is required.
+When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed.
 
 ### Persistence
 
@@ -281,7 +282,9 @@ const scheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
 
 const facilitator = new x402Facilitator().register("eip155:84532", scheme);
 
-const manager = scheme.createChannelManager();
+const manager = scheme.createChannelManager({
+  getExtension: key => facilitator.getExtension(key), // optional; builder-code on scheduled claims
+});
 manager.start({
   claimIntervalSecs: 60,
   settleIntervalSecs: 300,
@@ -295,7 +298,7 @@ manager.start({
 });
 ```
 
-`createChannelManager()` throws if `voucherStore` or `authorizerSigner` is missing. The facilitator manager is the intended schedule: it groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels (`refundIdleChannels` / the refund interval). After a claim confirms — including a managed HTTP `type: "claim"` from a replica — `afterClaim` subtracts the attested `chargeCount` snapshot (it does not zero the field). A stale replica claim (voucher already at or below onchain `totalClaimed`) fails simulation and is not broadcast, so the store is left alone. Rows are deleted when closed (`chargeCount === 0`, no admission lock, `balance <= totalClaimed`), not merely because a voucher was claimed.
+`createChannelManager()` throws if `voucherStore` or `authorizerSigner` is missing. Pass optional `{ getExtension }` so scheduled claim, settle, and refund txs can append builder-code (`w` / `serviceCode` only). On claims the builder-code trails the charge-count blob. The facilitator manager is the intended schedule: it groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels (`refundIdleChannels` / the refund interval). Managed claims attest each row's unattested `chargeCount` onchain (`x402ChargeCounts` calldata suffix). Builder-code is optional and trails that blob so the ERC-8021 marker stays last. After a claim confirms — including a managed HTTP `type: "claim"` from a replica — `afterClaim` subtracts the attested snapshot (it does not zero the field). A stale replica claim (voucher already at or below onchain `totalClaimed`) fails simulation and is not broadcast, so the store is left alone. Rows are deleted when closed (`chargeCount === 0`, no admission lock, `balance <= totalClaimed`), not merely because a voucher was claimed.
 
 Facilitator-initiated refunds claim the store voucher first, then return `balance - chargedCumulativeAmount`. Client `type: "refund"` through `/verify` + `/settle` stays on the voucher-store path. The managed server replica must not refund.
 

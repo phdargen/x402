@@ -1,6 +1,15 @@
 export { BatchSettlementEvmScheme } from "./scheme";
 export type { BatchSettlementEvmSchemeConfig } from "./scheme";
-export { FacilitatorChannelManager, afterClaim } from "./channelManager";
+export { FacilitatorChannelManager, afterClaim, snapshotClaimChargeCounts } from "./channelManager";
+export {
+  CHARGE_COUNTS_MAGIC,
+  composeClaimDataSuffix,
+  encodeChargeCountsSuffix,
+  parseChargeCountsFromCalldata,
+  parseChargeCountsSuffix,
+} from "./chargeCounts";
+export { batchSettlementABI } from "../abi";
+export { computeChannelId } from "../utils";
 export type {
   FacilitatorAutoConfig,
   FacilitatorChannelManagerConfig,

@@ -30,7 +30,9 @@ export interface BatchSettlementClientDeps {
  *
  * When `extra.refundAuthorizer` is present, the channel salt is
  * `bytes12(entropy) || bytes20(refundAuthorizer)` so `recoverChannel` and
- * `refund()` recompute the same `channelId`.
+ * `refund()` recompute the same `channelId`. Left-padded indexes (`0`, `1`,
+ * `2`) use the low 96 bits as entropy; a full `bytes32` with a nonzero
+ * 12-byte prefix keeps the first 12 bytes.
  *
  * @param deps - Client identity inputs.
  * @param paymentRequirements - Server payment requirements providing receiver, asset, and extra fields.

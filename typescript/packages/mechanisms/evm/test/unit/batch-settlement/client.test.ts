@@ -44,12 +44,6 @@ import type {
   PaymentRequired,
 } from "@x402/core/types";
 import * as Errors from "../../../src/batch-settlement/errors";
-import {
-  applyMaxDeposit,
-  depositAmountForRequest,
-  maxDepositFromSpendCap,
-  parseAnnouncedMinDeposit,
-} from "../../../src/batch-settlement/client/config";
 
 const PAYER_PRIVATE_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const VOUCHER_PRIVATE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
@@ -368,6 +362,26 @@ describe("buildChannelConfig", () => {
     );
     expect(cfg.salt).toBe(packRefundAuthorizerSalt(salt, refundAuthorizer));
     expect(unpackRefundAuthorizer(cfg.salt)).toBe(getAddress(refundAuthorizer));
+  });
+
+  it("packs increment-style salts to distinct channel ids when refundAuthorizer is set", () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const refundAuthorizer = "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd" as `0x${string}`;
+    const requirements = makeRequirements({
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        withdrawDelay: 900,
+        refundAuthorizer,
+      },
+    });
+    const saltA =
+      "0x0000000000000000000000000000000000000000000000000000000000000011" as `0x${string}`;
+    const saltB =
+      "0x0000000000000000000000000000000000000000000000000000000000000012" as `0x${string}`;
+    const a = buildChannelConfig(makeDeps({ signer, salt: saltA }), requirements);
+    const b = buildChannelConfig(makeDeps({ signer, salt: saltB }), requirements);
+    expect(a.salt).not.toBe(b.salt);
+    expect(computeChannelId(a)).not.toBe(computeChannelId(b));
   });
 });
 
@@ -1990,6 +2004,15 @@ describe("resolveClientOptions", () => {
     const opts = resolveClientOptions(policy);
     expect(opts.depositPolicy).toBe(policy);
     expect(opts.storage).toBeDefined();
+  });
+
+  it("coerces numeric and short-hex salt to the same left-padded bytes32", () => {
+    const padded =
+      "0x0000000000000000000000000000000000000000000000000000000000000001" as `0x${string}`;
+    expect(resolveClientOptions({ salt: 1 }).salt).toBe(padded);
+    expect(resolveClientOptions({ salt: 1n }).salt).toBe(padded);
+    expect(resolveClientOptions({ salt: "0x1" }).salt).toBe(padded);
+    expect(resolveClientOptions({ salt: padded }).salt).toBe(padded);
   });
 });
 

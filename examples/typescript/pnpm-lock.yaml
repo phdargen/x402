@@ -2486,6 +2486,9 @@ importers:
       '@x402/evm':
         specifier: workspace:*
         version: link:../../../../typescript/packages/mechanisms/evm
+      '@x402/extensions':
+        specifier: workspace:*
+        version: link:../../../../typescript/packages/extensions
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
