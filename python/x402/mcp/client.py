@@ -147,9 +147,7 @@ class x402MCPSession:
         payload_dict = payment_payload.model_dump(by_alias=True)
 
         accepted = payment_payload.accepted
-        max_timeout_seconds = (
-            accepted.max_timeout_seconds if accepted is not None else None
-        )
+        max_timeout_seconds = accepted.max_timeout_seconds if accepted is not None else None
         paid_timeout = paid_read_timeout_seconds(
             read_timeout_seconds,
             max_timeout_seconds,
@@ -308,9 +306,7 @@ class x402MCPClientSync:
             "_meta": {MCP_PAYMENT_META_KEY: payload_dict},
         }
         accepted = payment_payload.accepted
-        max_timeout_seconds = (
-            accepted.max_timeout_seconds if accepted is not None else None
-        )
+        max_timeout_seconds = accepted.max_timeout_seconds if accepted is not None else None
         paid_timeout = paid_read_timeout_seconds(
             kwargs.get("read_timeout_seconds"),
             max_timeout_seconds,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
 from typing import Any
 
 from ..schemas import PaymentPayload, PaymentRequired

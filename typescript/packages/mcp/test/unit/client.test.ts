@@ -1440,6 +1440,12 @@ describe("x402MCPClient McpError(-32042) handling", () => {
   });
 
   describe("callTool - request timeouts", () => {
+    /**
+     * Builds PaymentRequired with a custom accept timeout.
+     *
+     * @param maxTimeoutSeconds - Accept timeout hint
+     * @returns PaymentRequired fixture
+     */
     function paymentRequiredWithTimeout(maxTimeoutSeconds: number): PaymentRequired {
       return {
         ...mockPaymentRequired,
@@ -1447,6 +1453,12 @@ describe("x402MCPClient McpError(-32042) handling", () => {
       };
     }
 
+    /**
+     * Builds PaymentPayload with a custom accept timeout.
+     *
+     * @param maxTimeoutSeconds - Accept timeout hint
+     * @returns PaymentPayload fixture
+     */
     function payloadWithTimeout(maxTimeoutSeconds: number): PaymentPayload {
       return {
         ...mockPaymentPayload,
@@ -1454,6 +1466,12 @@ describe("x402MCPClient McpError(-32042) handling", () => {
       };
     }
 
+    /**
+     * Reads callTool options.timeout from a mock call record.
+     *
+     * @param call - mockMcpClient.callTool mock invocation
+     * @returns timeout ms from third argument
+     */
     function thirdArgTimeout(call: unknown): number | undefined {
       const args = call as [unknown, unknown, { timeout?: number } | undefined];
       return args[2]?.timeout;

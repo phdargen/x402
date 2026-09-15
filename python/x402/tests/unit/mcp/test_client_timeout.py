@@ -259,9 +259,9 @@ async def test_session_paid_timeout_honours_raised_cap() -> None:
     )
     x402_client = SimpleNamespace(create_payment_payload=AsyncMock(return_value=_payload(900)))
 
-    await x402MCPSession(
-        session, x402_client, max_request_timeout_seconds=900
-    ).call_tool("paid_tool", {})
+    await x402MCPSession(session, x402_client, max_request_timeout_seconds=900).call_tool(
+        "paid_tool", {}
+    )
 
     _, paid_call = session.call_tool.await_args_list
     assert _read_timeout(paid_call) == timedelta(seconds=900)

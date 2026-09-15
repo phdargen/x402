@@ -29,12 +29,17 @@ import {
 } from "../types";
 import { extractPaymentResponseFromMeta } from "../utils";
 
-/** Same timer-safe ceiling as HTTP facilitator client (`2^31 - 1` ms). */
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_PROBE_TIMEOUT_SECONDS = 300;
 const DEFAULT_ACCEPT_TIMEOUT_SECONDS = 300;
 const DEFAULT_MAX_REQUEST_TIMEOUT_SECONDS = 600;
 
+/**
+ * Normalizes client maxRequestTimeoutSeconds (default 600).
+ *
+ * @param explicit - Constructor option
+ * @returns Cap in seconds
+ */
 function resolveMaxRequestTimeoutSeconds(explicit: number | undefined): number {
   if (explicit === undefined) {
     return DEFAULT_MAX_REQUEST_TIMEOUT_SECONDS;
@@ -47,6 +52,12 @@ function resolveMaxRequestTimeoutSeconds(explicit: number | undefined): number {
   return explicit;
 }
 
+/**
+ * Accept maxTimeoutSeconds when valid, else 300.
+ *
+ * @param maxTimeoutSeconds - From payment accept
+ * @returns Timeout in seconds
+ */
 function effectiveAcceptTimeoutSeconds(maxTimeoutSeconds: number | undefined): number {
   if (
     maxTimeoutSeconds !== undefined &&
@@ -58,11 +69,24 @@ function effectiveAcceptTimeoutSeconds(maxTimeoutSeconds: number | undefined): n
   return DEFAULT_ACCEPT_TIMEOUT_SECONDS;
 }
 
+/**
+ * Converts seconds to milliseconds capped for timer safety.
+ *
+ * @param seconds - Duration in seconds
+ * @returns Milliseconds
+ */
 function clampTimeoutMs(seconds: number): number {
   const ms = Math.floor(seconds * 1000);
   return Math.min(ms, MAX_TIMEOUT_MS);
 }
 
+/**
+ * Probe call timeout in milliseconds.
+ *
+ * @param perCallTimeoutMs - Explicit callTool timeout override
+ * @param capSeconds - Client maxRequestTimeoutSeconds
+ * @returns Milliseconds for MCP SDK
+ */
 function probeTimeoutMs(
   perCallTimeoutMs: number | undefined,
   capSeconds: number,
@@ -73,6 +97,14 @@ function probeTimeoutMs(
   return clampTimeoutMs(Math.min(DEFAULT_PROBE_TIMEOUT_SECONDS, capSeconds));
 }
 
+/**
+ * Paid retry timeout in milliseconds.
+ *
+ * @param perCallTimeoutMs - Explicit callTool timeout override
+ * @param maxTimeoutSeconds - From signed accept
+ * @param capSeconds - Client maxRequestTimeoutSeconds
+ * @returns Milliseconds for MCP SDK
+ */
 function paidTimeoutMs(
   perCallTimeoutMs: number | undefined,
   maxTimeoutSeconds: number | undefined,
