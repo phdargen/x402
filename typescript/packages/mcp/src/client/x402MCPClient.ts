@@ -29,6 +29,62 @@ import {
 } from "../types";
 import { extractPaymentResponseFromMeta } from "../utils";
 
+/** Same timer-safe ceiling as HTTP facilitator client (`2^31 - 1` ms). */
+const MAX_TIMEOUT_MS = 2_147_483_647;
+const DEFAULT_PROBE_TIMEOUT_SECONDS = 300;
+const DEFAULT_ACCEPT_TIMEOUT_SECONDS = 300;
+const DEFAULT_MAX_REQUEST_TIMEOUT_SECONDS = 600;
+
+function resolveMaxRequestTimeoutSeconds(explicit: number | undefined): number {
+  if (explicit === undefined) {
+    return DEFAULT_MAX_REQUEST_TIMEOUT_SECONDS;
+  }
+  if (!Number.isFinite(explicit) || explicit <= 0) {
+    throw new Error(
+      `maxRequestTimeoutSeconds must be a positive finite number, got ${explicit}`,
+    );
+  }
+  return explicit;
+}
+
+function effectiveAcceptTimeoutSeconds(maxTimeoutSeconds: number | undefined): number {
+  if (
+    maxTimeoutSeconds !== undefined &&
+    Number.isFinite(maxTimeoutSeconds) &&
+    maxTimeoutSeconds > 0
+  ) {
+    return maxTimeoutSeconds;
+  }
+  return DEFAULT_ACCEPT_TIMEOUT_SECONDS;
+}
+
+function clampTimeoutMs(seconds: number): number {
+  const ms = Math.floor(seconds * 1000);
+  return Math.min(ms, MAX_TIMEOUT_MS);
+}
+
+function probeTimeoutMs(
+  perCallTimeoutMs: number | undefined,
+  capSeconds: number,
+): number {
+  if (perCallTimeoutMs !== undefined) {
+    return perCallTimeoutMs;
+  }
+  return clampTimeoutMs(Math.min(DEFAULT_PROBE_TIMEOUT_SECONDS, capSeconds));
+}
+
+function paidTimeoutMs(
+  perCallTimeoutMs: number | undefined,
+  maxTimeoutSeconds: number | undefined,
+  capSeconds: number,
+): number {
+  if (perCallTimeoutMs !== undefined) {
+    return perCallTimeoutMs;
+  }
+  const acceptSeconds = effectiveAcceptTimeoutSeconds(maxTimeoutSeconds);
+  return clampTimeoutMs(Math.min(acceptSeconds, capSeconds));
+}
+
 // ============================================================================
 // MCP SDK Result Types
 // ============================================================================
@@ -172,7 +228,9 @@ export interface x402MCPToolCallResult {
 export class x402MCPClient {
   private readonly mcpClient: Client;
   private readonly _paymentClient: x402Client;
-  private readonly options: Required<x402MCPClientOptions>;
+  private readonly options: Required<Omit<x402MCPClientOptions, "maxRequestTimeoutSeconds">> & {
+    maxRequestTimeoutSeconds: number;
+  };
   private readonly paymentRequiredHooks: PaymentRequiredHook[] = [];
   private readonly beforePaymentHooks: BeforePaymentHook[] = [];
   private readonly afterPaymentHooks: AfterPaymentHook[] = [];
@@ -194,6 +252,9 @@ export class x402MCPClient {
     this.options = {
       autoPayment: options.autoPayment ?? true,
       onPaymentRequested: options.onPaymentRequested ?? (() => true),
+      maxRequestTimeoutSeconds: resolveMaxRequestTimeoutSeconds(
+        options.maxRequestTimeoutSeconds,
+      ),
     };
   }
 
@@ -471,7 +532,11 @@ export class x402MCPClient {
     args: Record<string, unknown> = {},
     options?: { timeout?: number; signal?: AbortSignal; resetTimeoutOnProgress?: boolean },
   ): Promise<x402MCPToolCallResult> {
-    const probeOptions = { ...options, timeout: options?.timeout ?? 300_000 };
+    const capSeconds = this.options.maxRequestTimeoutSeconds;
+    const probeOptions = {
+      ...options,
+      timeout: probeTimeoutMs(options?.timeout, capSeconds),
+    };
 
     // First attempt without payment
     let result: MCPCallToolResult;
@@ -527,7 +592,7 @@ export class x402MCPClient {
         }
         if (hookResult.payment) {
           // Use the hook-provided payment
-          return this.callToolWithPayment(name, args, hookResult.payment, probeOptions);
+          return this.callToolWithPayment(name, args, hookResult.payment, options);
         }
       }
     }
@@ -566,7 +631,7 @@ export class x402MCPClient {
     const paymentPayload = await this._paymentClient.createPaymentPayload(paymentRequired);
 
     // Retry with payment
-    return this.callToolWithPayment(name, args, paymentPayload, probeOptions);
+    return this.callToolWithPayment(name, args, paymentPayload, options);
   }
 
   /**
@@ -592,9 +657,11 @@ export class x402MCPClient {
   ): Promise<x402MCPToolCallResult> {
     const paidOptions = {
       ...options,
-      timeout:
-        options?.timeout ??
-        (paymentPayload.accepted?.maxTimeoutSeconds ?? 300) * 1000,
+      timeout: paidTimeoutMs(
+        options?.timeout,
+        paymentPayload.accepted?.maxTimeoutSeconds,
+        this.options.maxRequestTimeoutSeconds,
+      ),
     };
 
     // Build the call parameters with payment metadata
@@ -693,8 +760,11 @@ export class x402MCPClient {
       };
       const retryPaidOptions = {
         ...options,
-        timeout:
-          options?.timeout ?? (freshPayload.accepted?.maxTimeoutSeconds ?? 300) * 1000,
+        timeout: paidTimeoutMs(
+          options?.timeout,
+          freshPayload.accepted?.maxTimeoutSeconds,
+          this.options.maxRequestTimeoutSeconds,
+        ),
       };
       const retryResult = await this.mcpClient.callTool(retryCallParams, undefined, retryPaidOptions);
 
