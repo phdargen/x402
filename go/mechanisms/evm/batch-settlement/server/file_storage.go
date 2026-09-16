@@ -166,22 +166,9 @@ func (s *FileChannelStorage) UpdateChannel(channelId string, update func(current
 		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
 	}
 
-	// Spin-lock until we acquire the exclusive lock file. Concurrent writers see
-	// ErrExist and retry; bounded retries keep this from hanging on stale locks.
-	const maxAttempts = 50
-	var lockFile *os.File
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			lockFile = f
-			break
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, err)
-		}
-	}
-	if lockFile == nil {
-		return nil, fmt.Errorf("acquire lock %s: contended", lockPath)
+	lockFile, err := acquireExclusiveFile(lockPath, nil)
+	if err != nil {
+		return nil, err
 	}
 	defer func() {
 		_ = lockFile.Close()
@@ -342,7 +329,7 @@ func (s *FileChannelStorage) withHoldLock(channelId string, fn func() error) err
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
 	}
-	lockFile, err := acquireExclusiveFile(lockPath)
+	lockFile, err := acquireExclusiveFile(lockPath, nil)
 	if err != nil {
 		return err
 	}
@@ -353,9 +340,37 @@ func (s *FileChannelStorage) withHoldLock(channelId string, fn func() error) err
 	return fn()
 }
 
-func acquireExclusiveFile(lockPath string) (*os.File, error) {
-	const maxAttempts = 50
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+type acquireExclusiveFileOptions struct {
+	maxAttempts   int
+	retryInterval time.Duration
+	staleAfter    time.Duration
+}
+
+func (o *acquireExclusiveFileOptions) withDefaults() acquireExclusiveFileOptions {
+	out := *o
+	if out.maxAttempts <= 0 {
+		out.maxAttempts = 50
+	}
+	if out.retryInterval <= 0 {
+		out.retryInterval = 10 * time.Millisecond
+	}
+	if out.staleAfter <= 0 {
+		out.staleAfter = 2 * time.Second
+	}
+	return out
+}
+
+// acquireExclusiveFile creates lockPath with O_EXCL, polling until the marker is
+// free or stale (mtime older than staleAfter). Stale markers are unlinked so a
+// crash cannot pin the channel forever.
+func acquireExclusiveFile(lockPath string, opts *acquireExclusiveFileOptions) (*os.File, error) {
+	var cfg acquireExclusiveFileOptions
+	if opts != nil {
+		cfg = opts.withDefaults()
+	} else {
+		cfg = (&acquireExclusiveFileOptions{}).withDefaults()
+	}
+	for attempt := 0; attempt < cfg.maxAttempts; attempt++ {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
 			return f, nil
@@ -363,7 +378,18 @@ func acquireExclusiveFile(lockPath string) (*os.File, error) {
 		if !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, err)
 		}
-		time.Sleep(time.Millisecond)
+		info, statErr := os.Stat(lockPath)
+		if statErr != nil {
+			if batchsettlement.IsNotExist(statErr) {
+				continue
+			}
+			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, statErr)
+		}
+		if time.Since(info.ModTime()) > cfg.staleAfter {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		time.Sleep(cfg.retryInterval)
 	}
 	return nil, fmt.Errorf("acquire lock %s: contended", lockPath)
 }

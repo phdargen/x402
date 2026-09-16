@@ -13,6 +13,7 @@ import (
 const (
 	defaultRedisKeyPrefix      = "x402:batch-settlement"
 	defaultLockRetryIntervalMs = 10
+	defaultMaxUpdateWaitMs     = 5000
 	defaultRedisScanCount      = 100
 	redisUpdateExpectedMissing = "0"
 	redisUpdateExpectedPresent = "1"
@@ -41,6 +42,7 @@ end
 
 if operation == "delete" then
   redis.call("DEL", KEYS[1])
+  redis.call("DEL", KEYS[2])
   return {1, false}
 end
 
@@ -83,6 +85,7 @@ type RedisChannelStorageOptions struct {
 	Client              RedisChannelStorageClient
 	KeyPrefix           string
 	LockRetryIntervalMs int
+	MaxUpdateWaitMs     int
 	ScanCount           int
 }
 
@@ -165,6 +168,7 @@ type RedisChannelStorage struct {
 	*RedisChannelLockStorage
 	channelKeyPrefix  string
 	lockRetryInterval time.Duration
+	maxUpdateWait     time.Duration
 	scanCount         int
 }
 
@@ -180,6 +184,10 @@ func NewRedisChannelStorage(opts RedisChannelStorageOptions) *RedisChannelStorag
 	if retryMs <= 0 {
 		retryMs = defaultLockRetryIntervalMs
 	}
+	maxUpdateMs := opts.MaxUpdateWaitMs
+	if maxUpdateMs <= 0 {
+		maxUpdateMs = defaultMaxUpdateWaitMs
+	}
 	scanCount := opts.ScanCount
 	if scanCount <= 0 {
 		scanCount = defaultRedisScanCount
@@ -188,6 +196,7 @@ func NewRedisChannelStorage(opts RedisChannelStorageOptions) *RedisChannelStorag
 		RedisChannelLockStorage: lock,
 		channelKeyPrefix:        lock.keyPrefix + ":server:channel",
 		lockRetryInterval:       time.Duration(retryMs) * time.Millisecond,
+		maxUpdateWait:           time.Duration(maxUpdateMs) * time.Millisecond,
 		scanCount:               scanCount,
 	}
 }
@@ -226,7 +235,14 @@ func (s *RedisChannelStorage) Delete(channelId string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.client.Del(key)
+	lockKey, err := s.lockKey(channelId)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.Del(key); err != nil {
+		return err
+	}
+	_, err = s.client.Del(lockKey)
 	return err
 }
 
@@ -268,7 +284,11 @@ func (s *RedisChannelStorage) UpdateChannel(channelId string, update func(curren
 	if err != nil {
 		return nil, err
 	}
+	deadline := time.Now().Add(s.maxUpdateWait)
 	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("channel update contended")
+		}
 		currentRaw, current, err := s.readChannelRaw(key)
 		if err != nil {
 			return nil, err
@@ -276,7 +296,7 @@ func (s *RedisChannelStorage) UpdateChannel(channelId string, update func(curren
 		next := update(current)
 
 		if next == current {
-			applied, err := s.commitUpdate(key, currentRaw, redisUpdateOperationKeep, "")
+			applied, err := s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationKeep, "")
 			if err != nil {
 				return nil, err
 			}
@@ -288,7 +308,7 @@ func (s *RedisChannelStorage) UpdateChannel(channelId string, update func(curren
 		}
 
 		if next == nil {
-			applied, err := s.commitUpdate(key, currentRaw, redisUpdateOperationDelete, "")
+			applied, err := s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationDelete, "")
 			if err != nil {
 				return nil, err
 			}
@@ -307,7 +327,7 @@ func (s *RedisChannelStorage) UpdateChannel(channelId string, update func(curren
 		if err != nil {
 			return nil, err
 		}
-		applied, err := s.commitUpdate(key, currentRaw, redisUpdateOperationSet, string(nextRaw))
+		applied, err := s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationSet, string(nextRaw))
 		if err != nil {
 			return nil, err
 		}
@@ -338,14 +358,18 @@ func (s *RedisChannelStorage) readChannelRaw(key string) (*string, *ChannelSessi
 	return &raw, session, nil
 }
 
-func (s *RedisChannelStorage) commitUpdate(key string, expectedRaw *string, operation, nextRaw string) (bool, error) {
+func (s *RedisChannelStorage) commitUpdate(channelId, key string, expectedRaw *string, operation, nextRaw string) (bool, error) {
+	lockKey, err := s.lockKey(channelId)
+	if err != nil {
+		return false, err
+	}
 	expectedExists := redisUpdateExpectedMissing
 	expected := ""
 	if expectedRaw != nil {
 		expectedExists = redisUpdateExpectedPresent
 		expected = *expectedRaw
 	}
-	value, err := s.client.Eval(updateChannelScript, []string{key}, []string{expectedExists, expected, operation, nextRaw})
+	value, err := s.client.Eval(updateChannelScript, []string{key, lockKey}, []string{expectedExists, expected, operation, nextRaw})
 	if err != nil {
 		return false, err
 	}

@@ -1005,6 +1005,33 @@ func TestBeforeSettleHook_VoucherExceedsSignedCapAborts(t *testing.T) {
 	}
 }
 
+func TestBeforeSettleHook_SnapshotOnlyLockDownMissingChannel(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: throwingLockStorage{},
+	})
+	fx := newSignedVoucherFixture(t)
+	stub := &stubPayload{data: fx.payload(t, "10")}
+	if res := runBeforeVerify(t, s, stub); res != nil {
+		t.Fatalf("BeforeVerify: %+v", res)
+	}
+	if res := runAfterVerify(t, s, stub, validVerifyResult()); res != nil {
+		t.Fatalf("AfterVerify: %+v", res)
+	}
+	res, err := s.BeforeSettleHook()(x402.SettleContext{
+		Payload:      stub,
+		Requirements: batchedReqs(),
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if res == nil || !res.Abort || res.Reason != batchsettlement.ErrMissingChannel {
+		t.Fatalf("got %+v", res)
+	}
+	if got, _ := s.GetSession(fx.channelId); got != nil {
+		t.Fatalf("must not upsert durable row without admission self: %+v", got)
+	}
+}
+
 func TestBeforeSettleHook_UpsertsFirstSeenChannelAtSettle(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
@@ -1829,6 +1856,119 @@ func TestEnrichSettlementPayload_MissingChannel(t *testing.T) {
 	})
 	if err == nil || err.Error() != batchsettlement.ErrMissingChannel {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestEnrichSettlementPayload_SnapshotOnlyLockDownMissingChannel(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: throwingLockStorage{},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	snap := sampleSession(id, "10")
+	snap.ChannelConfig = testConfig()
+	snap.Balance = "1000"
+	snap.SignedMaxClaimable = "10"
+	snap.Signature = "0xsig"
+	stub := &stubPayload{data: refundPayload(id, "10", "0xsig")}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:       id,
+		PendingId:       "p-refund",
+		ChannelSnapshot: snap,
+	})
+	_, err := s.EnrichSettlementPayload(x402.SettleContext{
+		Payload:      stub,
+		Requirements: batchedReqs(),
+	})
+	if err == nil || err.Error() != batchsettlement.ErrMissingChannel {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAfterSettleHook_DepositSnapshotOnlyLockDownBusy(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: throwingLockStorage{},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	snap := sampleSession(id, "0")
+	snap.ChannelConfig = testConfig()
+	stub := &stubPayload{data: depositPayloadFor(id, "100", "0xsig")}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:       id,
+		PendingId:       "p-dep",
+		ChannelSnapshot: snap,
+	})
+	err := s.AfterSettleHook()(x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      stub,
+			Requirements: batchedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "10000",
+					"totalClaimed": "0",
+					"refundNonce":  "0",
+				},
+			},
+		},
+	})
+	if err == nil || err.Error() != batchsettlement.ErrChannelBusy {
+		t.Fatalf("got %v", err)
+	}
+	if got, _ := s.GetSession(id); got != nil {
+		t.Fatalf("storage must stay empty: %+v", got)
+	}
+}
+
+func TestAfterSettleHook_RefundSnapshotOnlyLockDownBusy(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: throwingLockStorage{},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	snap := sampleSession(id, "100")
+	snap.ChannelConfig = testConfig()
+	snap.Balance = "1000"
+	stub := &stubPayload{data: map[string]interface{}{
+		"type":          "refund",
+		"channelConfig": batchsettlement.ChannelConfigToMap(testConfig()),
+		"voucher": map[string]interface{}{
+			"channelId":          id,
+			"maxClaimableAmount": "100",
+			"signature":          "0xsig",
+		},
+		"amount":      "100",
+		"refundNonce": "0",
+		"claims":      []interface{}{},
+	}}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:       id,
+		PendingId:       "p-refund",
+		ChannelSnapshot: snap,
+	})
+	err := s.AfterSettleHook()(x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      stub,
+			Requirements: batchedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "900",
+					"totalClaimed": "100",
+					"refundNonce":  "1",
+				},
+			},
+		},
+	})
+	if err == nil || err.Error() != batchsettlement.ErrChannelBusy {
+		t.Fatalf("got %v", err)
+	}
+	if got, _ := s.GetSession(id); got != nil {
+		t.Fatalf("storage must stay empty: %+v", got)
 	}
 }
 
