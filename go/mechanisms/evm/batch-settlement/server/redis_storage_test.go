@@ -261,11 +261,10 @@ func TestRedisChannelStorage_Delete(t *testing.T) {
 	}
 }
 
-func TestRedisChannelStorage_ListSortedSkipsLockKeys(t *testing.T) {
-	s, client := newRedisStore(t)
+func TestRedisChannelStorage_ListSorted(t *testing.T) {
+	s, _ := newRedisStore(t)
 	_ = s.Set(testChB, sampleSession(testChB, "2"))
 	_ = s.Set(testChA, sampleSession(testChA, "1"))
-	_, _ = client.Set(redisTestPrefix+":server:channel:"+testChA+":lock", "other", nil)
 
 	got, err := s.List()
 	if err != nil {

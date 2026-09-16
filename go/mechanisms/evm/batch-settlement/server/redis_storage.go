@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
@@ -15,7 +14,6 @@ const (
 	defaultRedisKeyPrefix      = "x402:batch-settlement"
 	defaultLockRetryIntervalMs = 10
 	defaultRedisScanCount      = 100
-	redisChannelLockKeySuffix  = ":lock"
 	redisUpdateExpectedMissing = "0"
 	redisUpdateExpectedPresent = "1"
 	redisUpdateOperationDelete = "delete"
@@ -239,9 +237,6 @@ func (s *RedisChannelStorage) List() ([]*ChannelSession, error) {
 	}
 	sessions := make([]*ChannelSession, 0, len(keys))
 	for _, key := range keys {
-		if strings.HasSuffix(key, redisChannelLockKeySuffix) {
-			continue
-		}
 		session, err := s.loadChannel(key)
 		if err != nil {
 			return nil, fmt.Errorf("unmarshal %s: %w", key, err)

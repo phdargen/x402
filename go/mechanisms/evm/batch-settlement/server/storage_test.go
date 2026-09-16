@@ -88,14 +88,39 @@ func TestInMemoryChannelStorage_ReturnsCopy(t *testing.T) {
 func TestInMemoryChannelStorage_Delete(t *testing.T) {
 	s := NewInMemoryChannelStorage()
 	_ = s.Set(testChA, sampleSession(testChA, "10"))
+	ok, err := s.Acquire(testChA, "pending", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
 	if err := s.Delete(testChA); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if got, _ := s.Get(testChA); got != nil {
 		t.Fatalf("expected nil after delete")
 	}
+	held, err := s.IsHeld(testChA, "")
+	if err != nil || held {
+		t.Fatalf("Delete must drop admission lock: held=%v err=%v", held, err)
+	}
 	if err := s.Delete("missing"); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Delete missing: expected ErrInvalidChannelId, got %v", err)
+	}
+}
+
+func TestInMemoryChannelStorage_UpdateChannelDeleteClearsAdmissionLock(t *testing.T) {
+	s := NewInMemoryChannelStorage()
+	_ = s.Set(testChA, sampleSession(testChA, "10"))
+	ok, err := s.Acquire(testChA, "pending", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
+	res, err := s.UpdateChannel(testChA, func(*ChannelSession) *ChannelSession { return nil })
+	if err != nil || res.Status != ChannelDeleted {
+		t.Fatalf("UpdateChannel delete: res=%+v err=%v", res, err)
+	}
+	held, err := s.IsHeld(testChA, "")
+	if err != nil || held {
+		t.Fatalf("UpdateChannel delete must drop admission lock: held=%v err=%v", held, err)
 	}
 }
 
