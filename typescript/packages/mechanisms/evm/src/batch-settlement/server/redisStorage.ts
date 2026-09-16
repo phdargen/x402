@@ -196,7 +196,6 @@ export class RedisChannelStorage extends RedisChannelLockStorage implements Chan
     })) {
       const keys = Array.isArray(keyOrKeys) ? keyOrKeys : [keyOrKeys];
       for (const key of keys) {
-        if (key.endsWith(":lock")) continue;
         const raw = await this.client.get(key);
         if (!raw) continue;
         channels.push(JSON.parse(raw) as Channel);

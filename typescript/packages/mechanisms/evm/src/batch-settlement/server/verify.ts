@@ -6,7 +6,7 @@ import type {
 } from "@x402/core/server";
 import type { VerifyResponse } from "@x402/core/types";
 import type { SchemePaymentRequiredContext } from "@x402/core/types";
-import { getAddress, verifyTypedData } from "viem";
+import { getAddress, hashTypedData, isAddressEqual, recoverAddress } from "viem";
 import {
   type BatchSettlementDepositPayload,
   type BatchSettlementRefundPayload,
@@ -30,6 +30,7 @@ import { readExtraNumber, readExtraString } from "./utils";
 // This bounded TTL releases channels when cleanup cannot run or complete
 const MIN_PENDING_TTL_MS = 5_000; // 5 seconds
 const MAX_PENDING_TTL_MS = 10 * 60 * 1000; // 600 seconds
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /**
  * Computes the bounded admission-lock TTL.
@@ -62,17 +63,13 @@ function verificationStateUnavailable(): {
 /**
  * Lifecycle hook: runs before the facilitator verifies a payment.
  *
- * This phase performs no storage mutation. It binds the claimed `channelId` to the
- * payload's `channelConfig` and network, then reads a channel snapshot to detect a
- * cumulative-base mismatch. When the claimed id is malformed or does not match the
- * config, verification aborts before any storage access, so an unauthenticated
- * request can neither target another channel's file nor escape the storage root.
+ * Cheap rejects (binding, config, amounts, EOA ECDSA) run with no lock. Then
+ * this hook acquires an admission lock, performs one `storage.get`, and re-checks
+ * the cumulative base under that reservation. Local voucher verify may skip the
+ * facilitator; otherwise the lock is held across facilitator `/verify`.
  *
  * Refund vouchers are zero-charge: the expected `maxClaimableAmount` equals
  * the existing `chargedCumulativeAmount`.
- *
- * When no local channel record exists, verification is delegated to the facilitator (which checks onchain state);
- * `handleAfterVerify` then acquires an admission lock and stashes verify extras for the settle-time charge CAS.
  *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Verify lifecycle context (payload, requirements, and related state).
@@ -94,6 +91,27 @@ export async function handleBeforeVerify(
     return;
   }
 
+  const bindErr = channelIdBindingError(
+    raw.channelConfig,
+    raw.voucher.channelId,
+    requirements.network,
+  );
+  if (bindErr) {
+    return {
+      abort: true,
+      reason: bindErr,
+      message: "Channel id does not match channel config",
+    };
+  }
+
+  if (
+    !isNonNegativeIntegerString(raw.voucher.maxClaimableAmount) ||
+    !isNonNegativeIntegerString(requirements.amount) ||
+    (isBatchSettlementDepositPayload(raw) && !isNonNegativeIntegerString(raw.deposit.amount))
+  ) {
+    return verificationStateUnavailable();
+  }
+
   if (scheme.getEnforceMinDeposit() && isBatchSettlementDepositPayload(raw)) {
     const minDeposit = BigInt(await scheme.resolveMinDepositHint(requirements));
     if (BigInt(raw.deposit.amount) < minDeposit) {
@@ -105,70 +123,104 @@ export async function handleBeforeVerify(
     }
   }
 
+  const configErr = validateChannelConfig(
+    raw.channelConfig,
+    raw.voucher.channelId,
+    requirements as Parameters<typeof validateChannelConfig>[2],
+  );
+  if (configErr) {
+    return {
+      abort: true,
+      reason: configErr,
+      message: "Channel config does not match payment requirements",
+    };
+  }
+
+  if (isBatchSettlementVoucherPayload(raw) && raw.channelConfig.payerAuthorizer !== ZERO_ADDRESS) {
+    const signatureOk = await verifyEoaVoucherSignature(raw, requirements.network);
+    if (!signatureOk) {
+      return {
+        abort: true,
+        reason: Errors.ErrInvalidVoucherSignature,
+        message: "Voucher signature is invalid",
+      };
+    }
+  }
+
+  const channelId = raw.voucher.channelId;
+  const now = Date.now();
+  const pendingId = createNonce();
+  scheme.mergeRequestContext(paymentPayload, { channelId, pendingId });
+
   try {
-    const bindErr = channelIdBindingError(
-      raw.channelConfig,
-      raw.voucher.channelId,
-      requirements.network,
+    if (
+      !(await scheme
+        .getLockStorage()
+        .acquire(channelId, pendingId, pendingTtlMs(requirements.maxTimeoutSeconds)))
+    ) {
+      scheme.takeRequestContext(paymentPayload);
+      return {
+        abort: true,
+        reason: Errors.ErrChannelBusy,
+        message: "Channel is already processing a request",
+      };
+    }
+    scheme.mergeRequestContext(paymentPayload, { reservationCommitted: true });
+  } catch (err) {
+    rethrowLockImplementationError(err);
+    // Lock-store I/O: continue without a reservation; settle CAS serializes.
+  }
+
+  let channelSnapshot: Channel | undefined;
+  try {
+    channelSnapshot = await scheme.getStorage().get(channelId);
+  } catch {
+    await forgetPendingRequest(scheme, paymentPayload);
+    return verificationStateUnavailable();
+  }
+
+  const chargedCumulativeAmount =
+    channelSnapshot?.chargedCumulativeAmount ??
+    inferMissingLocalChargedAmount(
+      raw.voucher.maxClaimableAmount,
+      requirements.amount,
+      isPaidPayload,
     );
-    if (bindErr) {
-      return {
-        abort: true,
-        reason: bindErr,
-        message: "Channel id does not match channel config",
-      };
+  const expectedMaxClaimable = isZeroChargePayload
+    ? BigInt(chargedCumulativeAmount)
+    : BigInt(chargedCumulativeAmount) + BigInt(requirements.amount);
+
+  if (BigInt(raw.voucher.maxClaimableAmount) !== expectedMaxClaimable) {
+    scheme.rememberChannelSnapshot(
+      paymentPayload,
+      channelSnapshot ?? buildProvisionalChannel(raw, chargedCumulativeAmount),
+    );
+    await scheme.clearPendingRequest(paymentPayload);
+    return {
+      abort: true,
+      reason: Errors.ErrCumulativeAmountMismatch,
+      message: "Client voucher base does not match server state",
+    };
+  }
+
+  scheme.mergeRequestContext(paymentPayload, { channelSnapshot });
+
+  if (isBatchSettlementVoucherPayload(raw)) {
+    let localResult: VerifyResponse | undefined;
+    try {
+      localResult = await verifyVoucherLocally(scheme, raw, requirements, channelSnapshot, now);
+    } catch {
+      await forgetPendingRequest(scheme, paymentPayload);
+      return verificationStateUnavailable();
     }
-
-    const channelId = raw.voucher.channelId;
-    const now = Date.now();
-    const pendingId = createNonce();
-
-    const channelSnapshot = await scheme.getStorage().get(channelId);
-
-    const chargedCumulativeAmount =
-      channelSnapshot?.chargedCumulativeAmount ??
-      inferMissingLocalChargedAmount(
-        raw.voucher.maxClaimableAmount,
-        requirements.amount,
-        isPaidPayload,
-      );
-    const expectedMaxClaimable = isZeroChargePayload
-      ? BigInt(chargedCumulativeAmount)
-      : BigInt(chargedCumulativeAmount) + BigInt(requirements.amount);
-
-    if (BigInt(raw.voucher.maxClaimableAmount) !== expectedMaxClaimable) {
-      scheme.rememberChannelSnapshot(
-        paymentPayload,
-        channelSnapshot ?? buildProvisionalChannel(raw, chargedCumulativeAmount),
-      );
-      return {
-        abort: true,
-        reason: Errors.ErrCumulativeAmountMismatch,
-        message: "Client voucher base does not match server state",
-      };
-    }
-
-    scheme.mergeRequestContext(paymentPayload, {
-      channelId,
-      pendingId,
-      channelSnapshot,
-    });
-
-    if (isBatchSettlementVoucherPayload(raw)) {
-      const localResult = await verifyVoucherLocally(
-        scheme,
-        raw,
-        requirements,
-        channelSnapshot,
-        now,
-      );
-      if (localResult) {
-        scheme.mergeRequestContext(paymentPayload, { localVerify: true });
+    if (localResult) {
+      if (!localResult.isValid) {
+        await forgetPendingRequest(scheme, paymentPayload);
         return { skip: true, result: localResult };
       }
+      scheme.mergeRequestContext(paymentPayload, { localVerify: true });
+      return { skip: true, result: localResult };
     }
-  } catch {
-    return verificationStateUnavailable();
   }
 }
 
@@ -241,10 +293,8 @@ export async function handleEnrichPaymentRequiredResponse(
 /**
  * Lifecycle hook: runs after the facilitator verifies a payment.
  *
- * Acquires a best-effort admission lock and stashes verify extras on the request
- * context. Durable channel writes happen at settle. Lock-store I/O failures are
- * optimistic: verification continues and the charge CAS serializes commits.
- * Implementation/parse errors from acquire fail closed.
+ * Stashes facilitator extras on the request snapshot. Admission is reserved in
+ * `handleBeforeVerify`; this hook does not acquire or read storage.
  *
  * For refund payloads, additionally returns a `skipHandler` directive so that
  * the resource server bypasses the application handler and settles inline.
@@ -300,28 +350,8 @@ export async function handleAfterVerify(
   if (!requestContext?.pendingId) {
     return verificationStateUnavailable();
   }
-  const pendingId = requestContext.pendingId;
   const localVerify = requestContext.localVerify === true;
   const now = Date.now();
-
-  let reserved = false;
-  try {
-    if (
-      !(await scheme
-        .getLockStorage()
-        .acquire(channelId, pendingId, pendingTtlMs(requirements.maxTimeoutSeconds)))
-    ) {
-      return {
-        abort: true,
-        reason: Errors.ErrChannelBusy,
-        message: "Channel is already processing a request",
-      };
-    }
-    reserved = true;
-  } catch (err) {
-    rethrowLockImplementationError(err);
-    // Lock-store I/O: continue without a reservation; settle CAS serializes.
-  }
 
   const ex = result.extra ?? {};
   const prior = requestContext.channelSnapshot;
@@ -343,10 +373,7 @@ export async function handleAfterVerify(
     lastRequestTimestamp: now,
   };
 
-  scheme.mergeRequestContext(paymentPayload, {
-    ...(reserved ? { reservationCommitted: true } : {}),
-    channelSnapshot,
-  });
+  scheme.mergeRequestContext(paymentPayload, { channelSnapshot });
 
   if (isRefundVoucher) {
     return {
@@ -369,7 +396,7 @@ export async function handleVerifyFailure(
   scheme: BatchSettlementEvmScheme,
   ctx: VerifyFailureContext,
 ): Promise<void> {
-  await scheme.clearPendingRequest(ctx.paymentPayload);
+  await forgetPendingRequest(scheme, ctx.paymentPayload);
 }
 
 /**
@@ -389,7 +416,7 @@ export async function handleVerifiedPaymentCanceled(
   ) {
     return;
   }
-  await scheme.clearPendingRequest(ctx.paymentPayload);
+  await forgetPendingRequest(scheme, ctx.paymentPayload);
 }
 
 /**
@@ -413,7 +440,7 @@ async function verifyVoucherLocally(
     return;
   }
 
-  if (raw.channelConfig.payerAuthorizer === "0x0000000000000000000000000000000000000000") {
+  if (raw.channelConfig.payerAuthorizer === ZERO_ADDRESS) {
     return;
   }
 
@@ -434,7 +461,7 @@ async function verifyVoucherLocally(
     return invalidVerifyResponse(payer, Errors.ErrChannelIdMismatch);
   }
 
-  const signatureOk = await verifyLocalVoucherSignature(raw, requirements.network);
+  const signatureOk = await verifyEoaVoucherSignature(raw, requirements.network);
   if (!signatureOk) {
     return invalidVerifyResponse(payer, Errors.ErrInvalidVoucherSignature);
   }
@@ -474,19 +501,19 @@ function isOnchainStateFresh(channel: Channel, ttlMs: number, now: number): bool
 }
 
 /**
- * Verifies the EIP-712 voucher signature against the payer authorizer.
+ * Verifies an EOA voucher via `ecrecover`, matching
+ * `x402BatchSettlement._processVoucherClaim`. Does not need a channel row.
  *
  * @param raw - Decoded batch-settlement voucher payload.
  * @param network - EVM network identifier for chain ID / domain.
- * @returns Whether the typed-data signature is valid.
+ * @returns Whether the recovered signer is `payerAuthorizer`.
  */
-async function verifyLocalVoucherSignature(
+async function verifyEoaVoucherSignature(
   raw: BatchSettlementVoucherPayload,
   network: string,
 ): Promise<boolean> {
   try {
-    return await verifyTypedData({
-      address: getAddress(raw.channelConfig.payerAuthorizer),
+    const digest = hashTypedData({
       domain: getBatchSettlementEip712Domain(getEvmChainId(network)),
       types: voucherTypes,
       primaryType: "Voucher",
@@ -494,11 +521,41 @@ async function verifyLocalVoucherSignature(
         channelId: raw.voucher.channelId,
         maxClaimableAmount: BigInt(raw.voucher.maxClaimableAmount),
       },
+    });
+    const recovered = await recoverAddress({
+      hash: digest,
       signature: raw.voucher.signature,
     });
+    return isAddressEqual(recovered, getAddress(raw.channelConfig.payerAuthorizer));
   } catch {
     return false;
   }
+}
+
+/**
+ * Releases this request's admission lock and drops the request-context entry.
+ *
+ * Used on terminal verify paths that no longer need the snapshot.
+ *
+ * @param scheme - Owning scheme for lock and request-context access.
+ * @param paymentPayload - Request-scoped payment payload object.
+ */
+async function forgetPendingRequest(
+  scheme: BatchSettlementEvmScheme,
+  paymentPayload: Parameters<BatchSettlementEvmScheme["clearPendingRequest"]>[0],
+): Promise<void> {
+  await scheme.clearPendingRequest(paymentPayload);
+  scheme.takeRequestContext(paymentPayload);
+}
+
+/**
+ * Returns whether `value` is a non-negative integer decimal string.
+ *
+ * @param value - Candidate amount string.
+ * @returns `true` when `value` matches `/^\d+$/`.
+ */
+function isNonNegativeIntegerString(value: string): boolean {
+  return /^\d+$/.test(value);
 }
 
 /**

@@ -106,8 +106,10 @@ describe("InMemoryChannelStorage", () => {
 
     it("deletes a session", async () => {
       await storage.updateChannel(CHANNEL_ID, () => buildSession());
+      expect(await storage.acquire(CHANNEL_ID, "pending", 60_000)).toBe(true);
       await storage.updateChannel(CHANNEL_ID, () => undefined);
       expect(await storage.get(CHANNEL_ID)).toBeUndefined();
+      expect(await storage.isHeld(CHANNEL_ID)).toBe(false);
     });
 
     it("delete is a no-op when nothing is stored", async () => {
@@ -372,7 +374,7 @@ describe("RedisChannelStorage", () => {
     const id2 = "0x1111111111111111111111111111111111111111111111111111111111111111";
     await storage.updateChannel(id1, () => buildSession({ channelId: id1 }));
     await storage.updateChannel(id2, () => buildSession({ channelId: id2 }));
-    await client.set(`test:x402:server:channel:${id1}:lock`, "other");
+    await client.set(`test:x402:server:lock:${id1}`, "other");
 
     expect((await storage.list()).map(channel => channel.channelId)).toEqual([id2, id1]);
   });
@@ -581,10 +583,15 @@ describe("FileChannelStorage", () => {
 
   it("deletes a stored channel and treats a second delete as unchanged", async () => {
     await storage.updateChannel(CHANNEL_ID, () => buildSession());
+    expect(await storage.acquire(CHANNEL_ID, "pending", 60_000)).toBe(true);
     await expect(storage.updateChannel(CHANNEL_ID, () => undefined)).resolves.toEqual({
       channel: undefined,
       status: "deleted",
     });
+    expect(await storage.isHeld(CHANNEL_ID)).toBe(false);
+    expect((await readdir(join(root, "server"))).filter(name => name.endsWith(".hold"))).toEqual(
+      [],
+    );
     await expect(storage.updateChannel(CHANNEL_ID, () => undefined)).resolves.toEqual({
       channel: undefined,
       status: "unchanged",
@@ -637,6 +644,17 @@ describe("FileChannelStorage", () => {
     await new Promise(resolve => setTimeout(resolve, 5));
     expect(await storage.acquire(CHANNEL_ID, "next", 60_000)).toBe(true);
     expect(await storage.isHeld(CHANNEL_ID, "expired")).toBe(false);
+    expect(await storage.isHeld(CHANNEL_ID, "next")).toBe(true);
+  });
+
+  it("does not drop a newer holder when an expired pendingId is released", async () => {
+    expect(await storage.acquire(CHANNEL_ID, "expired", 1)).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const [acquired] = await Promise.all([
+      storage.acquire(CHANNEL_ID, "next", 60_000),
+      storage.release(CHANNEL_ID, "expired"),
+    ]);
+    expect(acquired).toBe(true);
     expect(await storage.isHeld(CHANNEL_ID, "next")).toBe(true);
   });
 

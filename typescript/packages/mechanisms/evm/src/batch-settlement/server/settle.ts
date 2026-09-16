@@ -148,6 +148,7 @@ export async function handleBeforeSettle(
   });
 
   await scheme.clearPendingRequest(paymentPayload);
+  scheme.takeRequestContext(paymentPayload);
 
   if (outcome?.status === "missing") {
     return {
@@ -419,6 +420,7 @@ export async function handleSettleFailure(
   ctx: SettleFailureContext,
 ): Promise<void> {
   await scheme.clearPendingRequest(ctx.paymentPayload);
+  scheme.takeRequestContext(ctx.paymentPayload);
 }
 
 /**
