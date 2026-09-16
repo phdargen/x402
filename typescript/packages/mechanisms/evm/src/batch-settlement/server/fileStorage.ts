@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -102,6 +102,7 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
         } catch (err: unknown) {
           if (!isNodeEnoent(err)) throw err;
         }
+        await this.dropHold(channelId);
         return { channel: undefined, status: current ? "deleted" : "unchanged" };
       }
 
@@ -114,7 +115,10 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
   }
 
   /**
-   * Acquires a per-channel admission lock via an exclusive sidecar hold file.
+   * Acquires a per-channel admission lock via a sidecar hold file.
+   *
+   * Serialized with {@link FileChannelStorage.release} and {@link FileChannelStorage.isHeld}
+   * on `{id}.hold.lock` so an expired hold cannot be unlinked out from under a new holder.
    *
    * @param channelId - The channel identifier.
    * @param pendingId - Request-scoped lock owner.
@@ -122,40 +126,21 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
    * @returns Whether this request now holds the lock.
    */
   async acquire(channelId: string, pendingId: string, ttlMs: number): Promise<boolean> {
-    const path = this.holdPath(channelId);
-    await mkdir(dirname(path), { recursive: true });
-    const record = JSON.stringify({ pendingId, expiresAt: Date.now() + ttlMs });
-
-    while (true) {
+    return this.withHoldLock(channelId, async () => {
+      const path = this.holdPath(channelId);
+      await mkdir(dirname(path), { recursive: true });
       try {
-        const handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-        try {
-          await handle.writeFile(record, "utf8");
-        } finally {
-          await handle.close();
-        }
-        return true;
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      }
-
-      let existing: { pendingId: string; expiresAt: number };
-      try {
-        existing = JSON.parse(await readFile(path, "utf8")) as {
+        const existing = JSON.parse(await readFile(path, "utf8")) as {
           pendingId: string;
           expiresAt: number;
         };
-      } catch (err: unknown) {
-        if (isNodeEnoent(err)) continue;
-        throw err;
-      }
-      if (existing.expiresAt > Date.now()) return false;
-      try {
-        await unlink(path);
+        if (existing.expiresAt > Date.now()) return false;
       } catch (err: unknown) {
         if (!isNodeEnoent(err)) throw err;
       }
-    }
+      await writeFile(path, JSON.stringify({ pendingId, expiresAt: Date.now() + ttlMs }), "utf8");
+      return true;
+    });
   }
 
   /**
@@ -165,14 +150,16 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
    * @param pendingId - Request-scoped lock owner.
    */
   async release(channelId: string, pendingId: string): Promise<void> {
-    const path = this.holdPath(channelId);
-    try {
-      const hold = JSON.parse(await readFile(path, "utf8")) as { pendingId: string };
-      if (hold.pendingId !== pendingId) return;
-      await unlink(path);
-    } catch (err: unknown) {
-      if (!isNodeEnoent(err)) throw err;
-    }
+    await this.withHoldLock(channelId, async () => {
+      const path = this.holdPath(channelId);
+      try {
+        const hold = JSON.parse(await readFile(path, "utf8")) as { pendingId: string };
+        if (hold.pendingId !== pendingId) return;
+        await unlink(path);
+      } catch (err: unknown) {
+        if (!isNodeEnoent(err)) throw err;
+      }
+    });
   }
 
   /**
@@ -183,17 +170,19 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
    * @returns Whether a live lock (or this request's lock) is present.
    */
   async isHeld(channelId: string, pendingId?: string): Promise<boolean> {
-    try {
-      const hold = JSON.parse(await readFile(this.holdPath(channelId), "utf8")) as {
-        pendingId: string;
-        expiresAt: number;
-      };
-      if (hold.expiresAt <= Date.now()) return false;
-      return pendingId === undefined || hold.pendingId === pendingId;
-    } catch (err: unknown) {
-      if (isNodeEnoent(err)) return false;
-      throw err;
-    }
+    return this.withHoldLock(channelId, async () => {
+      try {
+        const hold = JSON.parse(await readFile(this.holdPath(channelId), "utf8")) as {
+          pendingId: string;
+          expiresAt: number;
+        };
+        if (hold.expiresAt <= Date.now()) return false;
+        return pendingId === undefined || hold.pendingId === pendingId;
+      } catch (err: unknown) {
+        if (isNodeEnoent(err)) return false;
+        throw err;
+      }
+    });
   }
 
   /**
@@ -217,6 +206,40 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
   private holdPath(channelId: string): string {
     const id = normalizeChannelId(channelId);
     return resolveWithinDir(join(this.root, "server"), `${id}.hold`);
+  }
+
+  /**
+   * Drops the admission hold for a deleted channel row.
+   *
+   * @param channelId - The channel identifier.
+   */
+  private async dropHold(channelId: string): Promise<void> {
+    await this.withHoldLock(channelId, async () => {
+      try {
+        await unlink(this.holdPath(channelId));
+      } catch (err: unknown) {
+        if (!isNodeEnoent(err)) throw err;
+      }
+    });
+  }
+
+  /**
+   * Serializes acquire, release, and isHeld on the `.hold` sidecar.
+   *
+   * @param channelId - The channel identifier.
+   * @param fn - Work to run while holding `{id}.hold.lock`.
+   * @returns The resolved result of `fn`.
+   */
+  private async withHoldLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+    const lockPath = this.holdPath(channelId) + ".lock";
+    await mkdir(dirname(lockPath), { recursive: true });
+    const lockHandle = await this.acquireLock(lockPath);
+    try {
+      return await fn();
+    } finally {
+      await lockHandle.close();
+      await unlink(lockPath).catch(() => {});
+    }
   }
 
   /**

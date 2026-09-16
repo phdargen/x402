@@ -59,8 +59,9 @@ export interface ChannelLockStorage {
  * Rethrows lock-store implementation/parse failures so callers fail closed.
  *
  * {@link TypeError}, {@link SyntaxError}, and {@link RangeError} indicate a broken
- * backend or unreadable hold record. Other errors (network, timeout, I/O) are ignored
- * so callers can treat the lock as absent.
+ * backend or unreadable hold record (including corrupt File `.hold` JSON). Redis
+ * lock I/O (network, timeout) is not in this set and stays optimistic: callers
+ * treat the lock as absent and the charge CAS still serializes commits.
  *
  * @param err - Error from acquire, release, or isHeld.
  */
@@ -136,6 +137,7 @@ export class InMemoryChannelStorage implements ChannelStorage, ChannelLockStorag
 
       if (!next) {
         this.channels.delete(key);
+        this.admissionLocks.delete(key);
         return { channel: undefined, status: current ? "deleted" : "unchanged" };
       }
 
