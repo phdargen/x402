@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -224,4 +227,25 @@ func TestInMemoryChannelStorage_Concurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestRethrowLockImplementationError(t *testing.T) {
+	if got := RethrowLockImplementationError(nil); got != nil {
+		t.Fatalf("nil: %v", got)
+	}
+	if got := RethrowLockImplementationError(errors.New("lock down")); got != nil {
+		t.Fatalf("io: %v", got)
+	}
+	syntax := &json.SyntaxError{}
+	if got := RethrowLockImplementationError(syntax); got != syntax {
+		t.Fatalf("syntax: %v", got)
+	}
+	unmarshalType := &json.UnmarshalTypeError{Value: "string", Offset: 1}
+	if got := RethrowLockImplementationError(unmarshalType); got != unmarshalType {
+		t.Fatalf("unmarshal type: %v", got)
+	}
+	wrapped := fmt.Errorf("hold: %w", syntax)
+	if got := RethrowLockImplementationError(wrapped); got != wrapped {
+		t.Fatalf("wrapped: %v", got)
+	}
 }

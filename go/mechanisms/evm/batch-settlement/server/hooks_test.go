@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -167,6 +168,36 @@ func (throwingLockStorage) Release(string, string) error {
 }
 func (throwingLockStorage) IsHeld(string, string) (bool, error) {
 	return false, errors.New("lock down")
+}
+
+type errLockStorage struct {
+	acquireErr error
+	releaseErr error
+	isHeldErr  error
+}
+
+func (s errLockStorage) Acquire(string, string, int64) (bool, error) {
+	if s.acquireErr != nil {
+		return false, s.acquireErr
+	}
+	return true, nil
+}
+func (s errLockStorage) Release(string, string) error { return s.releaseErr }
+func (s errLockStorage) IsHeld(string, string) (bool, error) {
+	if s.isHeldErr != nil {
+		return false, s.isHeldErr
+	}
+	return false, nil
+}
+
+func corruptHoldError() error { return &json.SyntaxError{} }
+
+func requireSyntaxError(t *testing.T, err error) {
+	t.Helper()
+	var syn *json.SyntaxError
+	if !errors.As(err, &syn) {
+		t.Fatalf("expected *json.SyntaxError, got %v", err)
+	}
 }
 
 // ----- BeforeVerifyHook -----
@@ -991,6 +1022,40 @@ func TestAfterVerifyHook_ContinuesWhenLockAcquireThrows(t *testing.T) {
 	}
 }
 
+func TestAfterVerifyHook_AcquireSyntaxErrorFailsClosed(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: errLockStorage{acquireErr: corruptHoldError()},
+	})
+	id := testChannelId(t)
+	stub := &stubPayload{data: voucherPayload(id, "10", "0xsig")}
+	if res := runBeforeVerify(t, s, stub); res != nil {
+		t.Fatalf("BeforeVerify: %+v", res)
+	}
+	_, err := s.AfterVerifyHook()(x402.VerifyResultContext{
+		VerifyContext: x402.VerifyContext{Payload: stub, Requirements: batchedReqs()},
+		Result:        validVerifyResult(),
+	})
+	requireSyntaxError(t, err)
+}
+
+func TestClearPendingRequest_ReleaseSyntaxErrorFailsClosed(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: errLockStorage{releaseErr: corruptHoldError()},
+	})
+	id := testChannelId(t)
+	stub := &stubPayload{data: voucherPayload(id, "10", "0xsig")}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p1",
+		ReservationCommitted: true,
+	})
+	requireSyntaxError(t, s.ClearPendingRequest(stub))
+	rc := s.ReadRequestContext(stub)
+	if rc == nil || !rc.ReservationCommitted {
+		t.Fatalf("expected reservationCommitted still true, got %+v", rc)
+	}
+}
+
 // reserveRefundPending acquires an admission lock and stamps voucher fields so
 // EnrichSettlementPayload's holder check and signature match pass.
 func reserveRefundPending(t *testing.T, s *BatchSettlementEvmScheme, id, pendingId, signedMax, sig string) {
@@ -1525,6 +1590,66 @@ func TestAfterSettleHook_DepositHeldByOtherBusy(t *testing.T) {
 	}
 }
 
+func TestAfterSettleHook_DepositIsHeldSyntaxErrorFailsClosed(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: errLockStorage{isHeldErr: corruptHoldError()},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	err := s.AfterSettleHook()(x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      &stubPayload{data: depositPayloadFor(id, "100", "0xsig")},
+			Requirements: batchedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "10000",
+					"totalClaimed": "0",
+					"refundNonce":  "0",
+				},
+			},
+		},
+	})
+	requireSyntaxError(t, err)
+}
+
+func TestAfterSettleHook_DepositIsHeldLockDownStillCharges(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		Storage:     inner,
+		LockStorage: throwingLockStorage{},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	err := s.AfterSettleHook()(x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      &stubPayload{data: depositPayloadFor(id, "100", "0xsig")},
+			Requirements: batchedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "10000",
+					"totalClaimed": "0",
+					"refundNonce":  "0",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	got, _ := s.GetSession(id)
+	if got == nil || got.ChargedCumulativeAmount != "10" {
+		t.Fatalf("session = %+v", got)
+	}
+}
+
 func TestEnrichSettlementPayload_HeldByOtherBusy(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
@@ -1539,6 +1664,51 @@ func TestEnrichSettlementPayload_HeldByOtherBusy(t *testing.T) {
 	})
 	if err == nil || err.Error() != batchsettlement.ErrChannelBusy {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestEnrichSettlementPayload_IsHeldSyntaxErrorFailsClosed(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		LockStorage: errLockStorage{isHeldErr: corruptHoldError()},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	sess := sampleSession(id, "500")
+	sess.ChannelConfig = testConfig()
+	sess.Balance = "10000"
+	_ = s.UpdateSession(id, sess)
+	_, err := s.EnrichSettlementPayload(x402.SettleContext{
+		Payload:      &stubPayload{data: refundPayload(id, "500", "0xsig")},
+		Requirements: batchedReqs(),
+	})
+	requireSyntaxError(t, err)
+}
+
+func TestEnrichSettlementPayload_IsHeldLockDownStillProceeds(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		Storage:     inner,
+		LockStorage: throwingLockStorage{},
+	})
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	sess := sampleSession(id, "10")
+	sess.ChannelConfig = testConfig()
+	sess.Balance = "1000"
+	sess.SignedMaxClaimable = "10"
+	sess.Signature = "0xsig"
+	_ = s.UpdateSession(id, sess)
+	payload := refundPayload(id, "10", "0xsig")
+	stub := &stubPayload{data: payload}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{ChannelId: id, PendingId: "p-refund"})
+
+	out, err := s.EnrichSettlementPayload(x402.SettleContext{
+		Payload:      stub,
+		Requirements: batchedReqs(),
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if out["refundNonce"] == nil || out["claims"] == nil {
+		t.Fatalf("missing additive fields: %+v", out)
 	}
 }
 

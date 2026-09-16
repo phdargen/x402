@@ -40,23 +40,30 @@ func pendingTtlMs(maxTimeoutSeconds int) int64 {
 
 // heldByOther reports whether a different pendingId currently holds the
 // admission lock. This request proceeds when it holds the lock or no lock is
-// present (lost/expired). Lock-store failures are optimistic.
-func heldByOther(scheme *BatchSettlementEvmScheme, channelId, pendingId string) bool {
+// present (lost/expired). Lock-store I/O is optimistic; implementation/parse
+// errors fail closed.
+func heldByOther(scheme *BatchSettlementEvmScheme, channelId, pendingId string) (bool, error) {
 	locks := scheme.GetLockStorage()
 	if pendingId != "" {
 		held, err := locks.IsHeld(channelId, pendingId)
+		if impl := RethrowLockImplementationError(err); impl != nil {
+			return false, impl
+		}
 		if err != nil {
-			return false
+			return false, nil
 		}
 		if held {
-			return false
+			return false, nil
 		}
 	}
 	held, err := locks.IsHeld(channelId, "")
-	if err != nil {
-		return false
+	if impl := RethrowLockImplementationError(err); impl != nil {
+		return false, impl
 	}
-	return held
+	if err != nil {
+		return false, nil
+	}
+	return held, nil
 }
 
 func verificationStateUnavailable() *x402.BeforeHookResult {
@@ -369,8 +376,8 @@ func buildProvisionalChannelFromPayload(
 
 // AfterVerifyHook acquires a best-effort admission lock and stashes verify
 // extras on the request context. Durable channel writes happen at settle.
-// Lock-store failures are optimistic: verification continues and the charge
-// CAS serializes commits.
+// Lock-store I/O is optimistic: verification continues and the charge CAS
+// serializes commits. Implementation/parse errors fail closed.
 //
 // For refund vouchers (refund: true), additionally returns a SkipHandler
 // directive so the resource server bypasses the application handler and
@@ -491,6 +498,9 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 
 		reserved := false
 		acquired, acquireErr := s.lockStorage.Acquire(normalizedId, pendingId, pendingTtlMs(ctx.Requirements.GetMaxTimeoutSeconds()))
+		if impl := RethrowLockImplementationError(acquireErr); impl != nil {
+			return nil, impl
+		}
 		if acquireErr == nil {
 			if !acquired {
 				return &x402.AfterVerifyResult{
@@ -758,7 +768,11 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 	if session == nil {
 		return nil, errors.New(batchsettlement.ErrMissingChannel)
 	}
-	if heldByOther(s, channelIdStr, pendingId) {
+	busy, holdErr := heldByOther(s, channelIdStr, pendingId)
+	if holdErr != nil {
+		return nil, holdErr
+	}
+	if busy {
 		return nil, errors.New(batchsettlement.ErrChannelBusy)
 	}
 
@@ -892,7 +906,11 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				reqAmount = big.NewInt(0)
 			}
 
-			if heldByOther(s, normalizedId, pendingId) {
+			busy, holdErr := heldByOther(s, normalizedId, pendingId)
+			if holdErr != nil {
+				return holdErr
+			}
+			if busy {
 				return errors.New(batchsettlement.ErrChannelBusy)
 			}
 			var recovered *ChannelSession
@@ -973,7 +991,11 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				return nil
 			}
 			now := time.Now().UnixMilli()
-			if heldByOther(s, normalizedId, pendingId) {
+			busy, holdErr := heldByOther(s, normalizedId, pendingId)
+			if holdErr != nil {
+				return holdErr
+			}
+			if busy {
 				return errors.New(batchsettlement.ErrChannelBusy)
 			}
 			var recovered *ChannelSession

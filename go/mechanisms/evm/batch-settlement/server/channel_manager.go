@@ -147,14 +147,17 @@ func NewBatchSettlementChannelManager(config ChannelManagerConfig) *BatchSettlem
 	}
 }
 
-// channelIsHeld returns whether a live admission lock is held, treating
-// lock-store errors as not held.
-func channelIsHeld(lock ChannelLockStorage, channelId string) bool {
+// channelIsHeld returns whether a live admission lock is held. Lock-store I/O
+// is treated as not held; implementation/parse errors fail closed.
+func channelIsHeld(lock ChannelLockStorage, channelId string) (bool, error) {
 	held, err := lock.IsHeld(channelId, "")
-	if err != nil {
-		return false
+	if impl := RethrowLockImplementationError(err); impl != nil {
+		return false, impl
 	}
-	return held
+	if err != nil {
+		return false, nil
+	}
+	return held, nil
 }
 
 // formatFacilitatorFailure renders a SettleResponse error consistently across
@@ -273,7 +276,11 @@ func (m *BatchSettlementChannelManager) Refund(ctx context.Context, channelIds [
 	live := make([]*ChannelSession, 0, len(targets))
 	lock := m.scheme.GetLockStorage()
 	for _, c := range targets {
-		if !channelIsHeld(lock, c.ChannelId) {
+		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		if holdErr != nil {
+			return nil, holdErr
+		}
+		if !held {
 			live = append(live, c)
 		}
 	}
@@ -290,7 +297,10 @@ func (m *BatchSettlementChannelManager) RefundIdleChannels(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	idle := m.getIdleChannelsForRefund(channels, idleSecs)
+	idle, idleErr := m.getIdleChannelsForRefund(channels, idleSecs)
+	if idleErr != nil {
+		return nil, idleErr
+	}
 	if len(idle) == 0 {
 		return nil, nil
 	}
@@ -679,7 +689,11 @@ func (m *BatchSettlementChannelManager) refundChannels(ctx context.Context, chan
 	results := make([]RefundResult, 0, len(channels))
 	lock := m.scheme.GetLockStorage()
 	for _, c := range channels {
-		if channelIsHeld(lock, c.ChannelId) {
+		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		if holdErr != nil {
+			return results, holdErr
+		}
+		if held {
 			continue
 		}
 		res, err := m.refundChannel(ctx, c)
@@ -764,7 +778,11 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 		return nil, fmt.Errorf("%s", formatFacilitatorFailure("Refund", resp))
 	}
 
-	if channelIsHeld(m.scheme.GetLockStorage(), normalizedId) {
+	held, holdErr := channelIsHeld(m.scheme.GetLockStorage(), normalizedId)
+	if holdErr != nil {
+		return nil, holdErr
+	}
+	if held {
 		return &RefundResult{Channel: normalizedId, Transaction: resp.Transaction}, nil
 	}
 
@@ -817,13 +835,14 @@ func (m *BatchSettlementChannelManager) updateClaimedSessions(claims []batchsett
 
 // getIdleChannelsForRefund returns channels that have been idle for at least
 // `idleSecs` seconds and still hold a non-zero balance. Skips channels with a
-// live admission lock.
+// live admission lock. Lock-store I/O is treated as not held;
+// implementation/parse errors fail closed.
 //
 // Callers wanting "refund all idle channels" should inline this predicate
 // inside their SelectRefundChannels callback.
-func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(channels []*ChannelSession, idleSecs int) []*ChannelSession {
+func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(channels []*ChannelSession, idleSecs int) ([]*ChannelSession, error) {
 	if idleSecs <= 0 {
-		return nil
+		return nil, nil
 	}
 	now := time.Now().UnixMilli()
 	idleMs := int64(idleSecs) * 1000
@@ -834,7 +853,11 @@ func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(channels []*Cha
 		if balance == nil || balance.Sign() == 0 {
 			continue
 		}
-		if channelIsHeld(lock, c.ChannelId) {
+		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		if holdErr != nil {
+			return nil, holdErr
+		}
+		if held {
 			continue
 		}
 		if now-c.LastRequestTimestamp < idleMs {
@@ -842,7 +865,7 @@ func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(channels []*Cha
 		}
 		out = append(out, c)
 	}
-	return out
+	return out, nil
 }
 
 // buildSettlePaymentPayloadMap produces the v2 PaymentPayload JSON map for

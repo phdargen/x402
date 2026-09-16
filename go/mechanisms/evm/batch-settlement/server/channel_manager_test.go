@@ -421,6 +421,23 @@ func TestRefund_StillRefundsWhenLockStoreThrows(t *testing.T) {
 	}
 }
 
+func TestRefund_IsHeldSyntaxErrorFailsClosed(t *testing.T) {
+	storage := NewInMemoryChannelStorage()
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		Storage:     storage,
+		LockStorage: errLockStorage{isHeldErr: corruptHoldError()},
+	})
+	sess := sampleSession(testChA, "1000")
+	sess.Balance = "10000"
+	sess.ChargedCumulativeAmount = "1000"
+	_ = s.UpdateSession(testChA, sess)
+
+	f := &fakeFacilitator{}
+	m := newManager(s, f)
+	_, err := m.Refund(context.Background(), []string{testChA})
+	requireSyntaxError(t, err)
+}
+
 func TestClaim_PreservesLiveAdmissionLock(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	sess := sampleSession(testChA, "100")
