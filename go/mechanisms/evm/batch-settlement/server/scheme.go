@@ -22,7 +22,16 @@ type BatchSettlementRequestContext struct {
 	PendingId            string
 	ChannelSnapshot      *ChannelSession
 	LocalVerify          bool
-	ReservationCommitted bool
+	ReservationCommitted *bool
+}
+
+func reservationFlag(committed bool) *bool {
+	value := committed
+	return &value
+}
+
+func reservationCommitted(rc *BatchSettlementRequestContext) bool {
+	return rc != nil && rc.ReservationCommitted != nil && *rc.ReservationCommitted
 }
 
 const (
@@ -239,10 +248,16 @@ func (s *BatchSettlementEvmScheme) MergeRequestContext(payload any, partial Batc
 	if partial.LocalVerify {
 		merged.LocalVerify = true
 	}
-	if partial.ReservationCommitted {
-		merged.ReservationCommitted = true
+	if partial.ReservationCommitted != nil {
+		merged.ReservationCommitted = partial.ReservationCommitted
 	}
 	s.requestContexts[key] = &merged
+}
+
+func (s *BatchSettlementEvmScheme) requestContextCount() int {
+	s.requestContextsMu.Lock()
+	defer s.requestContextsMu.Unlock()
+	return len(s.requestContexts)
 }
 
 // ReadRequestContext returns the per-payload request context without clearing it.
@@ -290,18 +305,28 @@ func (s *BatchSettlementEvmScheme) TakeChannelSnapshot(payload any) *ChannelSess
 	return rc.ChannelSnapshot
 }
 
-// ClearPendingRequest releases this request's admission lock without touching
-// a newer holder. Lock-store I/O is ignored; implementation/parse errors fail closed.
-func (s *BatchSettlementEvmScheme) ClearPendingRequest(payload any) error {
+// ReleasePendingRequest releases this request's admission lock without
+// touching a newer holder or deleting the request-context entry. Lock-store
+// I/O is ignored; implementation/parse errors fail closed.
+func (s *BatchSettlementEvmScheme) ReleasePendingRequest(payload any) error {
 	rc := s.ReadRequestContext(payload)
-	if rc == nil || !rc.ReservationCommitted || rc.ChannelId == "" || rc.PendingId == "" {
+	if !reservationCommitted(rc) || rc.ChannelId == "" || rc.PendingId == "" {
 		return nil
 	}
 	if impl := RethrowLockImplementationError(s.lockStorage.Release(rc.ChannelId, rc.PendingId)); impl != nil {
 		return impl
 	}
-	rc.ReservationCommitted = false
+	s.MergeRequestContext(payload, BatchSettlementRequestContext{ReservationCommitted: reservationFlag(false)})
 	return nil
+}
+
+// ClearPendingRequest releases this request's admission lock, then deletes the
+// request-context map entry. Use on terminal paths that no longer need the
+// snapshot. ReleasePendingRequest is release-only and keeps the entry.
+func (s *BatchSettlementEvmScheme) ClearPendingRequest(payload any) error {
+	err := s.ReleasePendingRequest(payload)
+	s.TakeRequestContext(payload)
+	return err
 }
 
 // EnrichPaymentRequiredResponse implements x402.PaymentRequiredEnricher.

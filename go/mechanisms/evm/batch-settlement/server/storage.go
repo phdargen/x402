@@ -80,8 +80,9 @@ type ChannelLockStorage interface {
 // implementation/parse failure so callers fail closed.
 //
 // json.SyntaxError and json.UnmarshalTypeError indicate a broken backend or
-// unreadable hold record. Other errors (network, timeout, I/O) are ignored so
-// callers can treat the lock as absent.
+// unreadable File .hold JSON. Redis lock I/O (network, timeout) is not in this
+// set and stays optimistic: callers treat the lock as absent and the charge
+// CAS still serializes commits.
 func RethrowLockImplementationError(err error) error {
 	if err == nil {
 		return nil
@@ -168,6 +169,7 @@ func (s *InMemoryChannelStorage) Delete(channelId string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, key)
+	delete(s.admissionLocks, key)
 	// NOTE: the per-channel lock entry is intentionally retained. Removing it
 	// would let a stale lockFor caller (already holding the old *sync.Mutex)
 	// race with a fresh caller (allocating a new *sync.Mutex) for the same
@@ -233,6 +235,7 @@ func (s *InMemoryChannelStorage) UpdateChannel(channelId string, update func(cur
 	if next == nil {
 		if exists {
 			delete(s.sessions, key)
+			delete(s.admissionLocks, key)
 			return &ChannelUpdateResult{Channel: nil, Status: ChannelDeleted}, nil
 		}
 		return &ChannelUpdateResult{Channel: nil, Status: ChannelUnchanged}, nil

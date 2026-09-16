@@ -82,9 +82,34 @@ func verificationStateUnavailableAfter() *x402.AfterVerifyResult {
 	}
 }
 
-// BeforeVerifyHook binds the claimed channelId and reads a channel snapshot.
-// This phase performs no storage mutation. Reservation + persist happen in
-// AfterVerifyHook after successful verification.
+func isNonNegativeIntegerString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func paymentRequirementsFromView(v x402.PaymentRequirementsView) types.PaymentRequirements {
+	return types.PaymentRequirements{
+		Scheme:            v.GetScheme(),
+		Network:           v.GetNetwork(),
+		Asset:             v.GetAsset(),
+		Amount:            v.GetAmount(),
+		PayTo:             v.GetPayTo(),
+		MaxTimeoutSeconds: v.GetMaxTimeoutSeconds(),
+		Extra:             v.GetExtra(),
+	}
+}
+
+// BeforeVerifyHook runs cheap rejects with no lock, then acquires an admission
+// lock, performs one storage.Get, and re-checks the cumulative base under that
+// reservation. Local voucher verify may skip the facilitator; otherwise the
+// lock is held across facilitator /verify.
 func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 	return func(ctx x402.VerifyContext) (*x402.BeforeHookResult, error) {
 		if ctx.Requirements.GetScheme() != batchsettlement.SchemeBatched {
@@ -142,6 +167,45 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 			}, nil
 		}
 
+		if !isNonNegativeIntegerString(signedMaxStr) ||
+			!isNonNegativeIntegerString(ctx.Requirements.GetAmount()) {
+			return verificationStateUnavailable(), nil
+		}
+		if batchsettlement.IsDepositPayload(payload) {
+			deposit, _ := payload["deposit"].(map[string]interface{})
+			depositAmount, _ := deposit["amount"].(string)
+			if !isNonNegativeIntegerString(depositAmount) {
+				return verificationStateUnavailable(), nil
+			}
+		}
+
+		if cfgErr := facilitator.ValidateChannelConfig(cfg, rawChannelId, paymentRequirementsFromView(ctx.Requirements)); cfgErr != nil {
+			reason := facilitator.ErrChannelIdMismatch
+			var ve *x402.VerifyError
+			if errors.As(cfgErr, &ve) && ve.InvalidReason != "" {
+				reason = ve.InvalidReason
+			}
+			return &x402.BeforeHookResult{
+				Abort:   true,
+				Reason:  reason,
+				Message: "Channel config does not match payment requirements",
+			}, nil
+		}
+
+		if batchsettlement.IsVoucherPayload(payload) && !strings.EqualFold(cfg.PayerAuthorizer, zeroAddress) {
+			vp, parseErr := batchsettlement.VoucherPayloadFromMap(payload)
+			if parseErr != nil {
+				return verificationStateUnavailable(), nil //nolint:nilerr // map parse failures to fail-closed abort
+			}
+			if !verifyEoaVoucherSignature(vp, ctx.Requirements.GetNetwork()) {
+				return &x402.BeforeHookResult{
+					Abort:   true,
+					Reason:  facilitator.ErrVoucherSignatureInvalid,
+					Message: "Voucher signature is invalid",
+				}, nil
+			}
+		}
+
 		channelId := rawChannelId
 		if normalized, err := batchsettlement.NormalizeChannelId(rawChannelId); err == nil {
 			channelId = normalized
@@ -153,9 +217,31 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 			return verificationStateUnavailable(), nil //nolint:nilerr // map nonce failures to fail-closed abort
 		}
 		pendingId := pendingNonce
+		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{
+			ChannelId: channelId,
+			PendingId: pendingId,
+		})
+
+		acquired, acquireErr := s.lockStorage.Acquire(channelId, pendingId, pendingTtlMs(ctx.Requirements.GetMaxTimeoutSeconds()))
+		if impl := RethrowLockImplementationError(acquireErr); impl != nil {
+			s.TakeRequestContext(ctx.Payload)
+			return nil, impl
+		}
+		if acquireErr == nil {
+			if !acquired {
+				s.TakeRequestContext(ctx.Payload)
+				return &x402.BeforeHookResult{
+					Abort:   true,
+					Reason:  batchsettlement.ErrChannelBusy,
+					Message: "Channel is already processing a request",
+				}, nil
+			}
+			s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{ReservationCommitted: reservationFlag(true)})
+		}
 
 		channelSnapshot, getErr := s.storage.Get(channelId)
 		if getErr != nil {
+			_ = s.ClearPendingRequest(ctx.Payload)
 			return verificationStateUnavailable(), nil //nolint:nilerr // map storage failures to fail-closed abort
 		}
 
@@ -182,6 +268,7 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 
 			if signedMax.Cmp(expectedMax) != 0 {
 				s.RememberChannelSnapshot(ctx.Payload, channelSnapshot)
+				_ = s.ReleasePendingRequest(ctx.Payload)
 				return &x402.BeforeHookResult{
 					Abort:   true,
 					Reason:  batchsettlement.ErrCumulativeAmountMismatch,
@@ -190,15 +277,18 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 			}
 		}
 
-		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{
-			ChannelId:       channelId,
-			PendingId:       pendingId,
-			ChannelSnapshot: channelSnapshot,
-		})
+		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{ChannelSnapshot: channelSnapshot})
 
 		if batchsettlement.IsVoucherPayload(payload) {
 			localResult := s.verifyVoucherLocally(ctx.Requirements, payload, channelSnapshot, now)
 			if localResult != nil {
+				if !localResult.IsValid {
+					_ = s.ClearPendingRequest(ctx.Payload)
+					return &x402.BeforeHookResult{
+						Skip:             true,
+						SkipVerifyResult: localResult,
+					}, nil
+				}
 				s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{LocalVerify: true})
 				return &x402.BeforeHookResult{
 					Skip:             true,
@@ -245,18 +335,7 @@ func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 
 	payer := vp.ChannelConfig.Payer
 
-	// Construct a types.PaymentRequirements from the view to reuse the
-	// shared validator (avoids duplicating receiver/token/delay/channelId checks).
-	reqs := types.PaymentRequirements{
-		Scheme:            requirements.GetScheme(),
-		Network:           requirements.GetNetwork(),
-		Asset:             requirements.GetAsset(),
-		Amount:            requirements.GetAmount(),
-		PayTo:             requirements.GetPayTo(),
-		MaxTimeoutSeconds: requirements.GetMaxTimeoutSeconds(),
-		Extra:             requirements.GetExtra(),
-	}
-	if cfgErr := facilitator.ValidateChannelConfig(vp.ChannelConfig, vp.Voucher.ChannelId, reqs); cfgErr != nil {
+	if cfgErr := facilitator.ValidateChannelConfig(vp.ChannelConfig, vp.Voucher.ChannelId, paymentRequirementsFromView(requirements)); cfgErr != nil {
 		reason := facilitator.ErrChannelIdMismatch
 		var ve *x402.VerifyError
 		if errors.As(cfgErr, &ve) && ve.InvalidReason != "" {
@@ -270,37 +349,7 @@ func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 		return invalidLocalVerifyResponse(payer, facilitator.ErrChannelIdMismatch)
 	}
 
-	// Verify the EIP-712 voucher signature against the channel's
-	// payerAuthorizer using ECDSA. Smart-wallet (ERC-1271) signatures are
-	// intentionally not supported here — the early `vp.ChannelConfig
-	// .PayerAuthorizer == zeroAddress` skip above ensures this path only
-	// runs against EOA payerAuthorizers.
-	sigOk := false
-	chainID, sigErr := evm.GetEvmChainId(requirements.GetNetwork())
-	if sigErr == nil {
-		maxClaimable, ok := new(big.Int).SetString(vp.Voucher.MaxClaimableAmount, 10)
-		if !ok {
-			return invalidLocalVerifyResponse(payer, facilitator.ErrVoucherSignatureInvalid)
-		}
-		hash, hashErr := evm.HashTypedData(
-			batchsettlement.GetBatchSettlementEip712Domain(chainID),
-			batchsettlement.VoucherTypes,
-			"Voucher",
-			map[string]interface{}{
-				"channelId":          vp.Voucher.ChannelId,
-				"maxClaimableAmount": maxClaimable,
-			},
-		)
-		if hashErr == nil {
-			sigBytes := common.FromHex(vp.Voucher.Signature)
-			sigOk, sigErr = evm.VerifyEOASignature(
-				hash, sigBytes, common.HexToAddress(vp.ChannelConfig.PayerAuthorizer),
-			)
-		} else {
-			sigErr = hashErr
-		}
-	}
-	if sigErr != nil || !sigOk {
+	if !verifyEoaVoucherSignature(vp, requirements.GetNetwork()) {
 		return invalidLocalVerifyResponse(payer, facilitator.ErrVoucherSignatureInvalid)
 	}
 
@@ -334,6 +383,35 @@ func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 			"refundNonce":         fmt.Sprintf("%d", channel.RefundNonce),
 		},
 	}
+}
+
+// verifyEoaVoucherSignature verifies an EOA voucher via ecrecover, matching
+// x402BatchSettlement._processVoucherClaim. It does not need a channel row.
+func verifyEoaVoucherSignature(vp *batchsettlement.BatchSettlementVoucherPayload, network string) bool {
+	chainID, err := evm.GetEvmChainId(network)
+	if err != nil {
+		return false
+	}
+	maxClaimable, ok := new(big.Int).SetString(vp.Voucher.MaxClaimableAmount, 10)
+	if !ok {
+		return false
+	}
+	hash, err := evm.HashTypedData(
+		batchsettlement.GetBatchSettlementEip712Domain(chainID),
+		batchsettlement.VoucherTypes,
+		"Voucher",
+		map[string]interface{}{
+			"channelId":          vp.Voucher.ChannelId,
+			"maxClaimableAmount": maxClaimable,
+		},
+	)
+	if err != nil {
+		return false
+	}
+	ok, err = evm.VerifyEOASignature(
+		hash, common.FromHex(vp.Voucher.Signature), common.HexToAddress(vp.ChannelConfig.PayerAuthorizer),
+	)
+	return err == nil && ok
 }
 
 // invalidLocalVerifyResponse builds a failed VerifyResponse preserving the
@@ -374,10 +452,9 @@ func buildProvisionalChannelFromPayload(
 	}
 }
 
-// AfterVerifyHook acquires a best-effort admission lock and stashes verify
-// extras on the request context. Durable channel writes happen at settle.
-// Lock-store I/O is optimistic: verification continues and the charge CAS
-// serializes commits. Implementation/parse errors fail closed.
+// AfterVerifyHook stashes facilitator extras on the request snapshot.
+// Admission is reserved in BeforeVerifyHook; this hook does not acquire
+// and does not read storage.
 //
 // For refund vouchers (refund: true), additionally returns a SkipHandler
 // directive so the resource server bypasses the application handler and
@@ -439,7 +516,6 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 		if rc == nil || rc.PendingId == "" {
 			return verificationStateUnavailableAfter(), nil
 		}
-		pendingId := rc.PendingId
 		localVerify := rc.LocalVerify
 		now := time.Now().UnixMilli()
 
@@ -489,27 +565,12 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 				stale.RefundNonce = refundNonce
 			}
 			s.RememberChannelSnapshot(ctx.Payload, stale)
+			_ = s.ReleasePendingRequest(ctx.Payload)
 			return &x402.AfterVerifyResult{
 				Abort:   true,
 				Reason:  batchsettlement.ErrCumulativeAmountMismatch,
 				Message: "Client voucher base does not match server state",
 			}, nil
-		}
-
-		reserved := false
-		acquired, acquireErr := s.lockStorage.Acquire(normalizedId, pendingId, pendingTtlMs(ctx.Requirements.GetMaxTimeoutSeconds()))
-		if impl := RethrowLockImplementationError(acquireErr); impl != nil {
-			return nil, impl
-		}
-		if acquireErr == nil {
-			if !acquired {
-				return &x402.AfterVerifyResult{
-					Abort:   true,
-					Reason:  batchsettlement.ErrChannelBusy,
-					Message: "Channel is already processing a request",
-				}, nil
-			}
-			reserved = true
 		}
 
 		onchainSyncedAt := now
@@ -531,11 +592,7 @@ func (s *BatchSettlementEvmScheme) AfterVerifyHook() x402.AfterVerifyHook {
 			LastRequestTimestamp:    now,
 		}
 
-		partial := BatchSettlementRequestContext{ChannelSnapshot: channelSnapshot}
-		if reserved {
-			partial.ReservationCommitted = true
-		}
-		s.MergeRequestContext(ctx.Payload, partial)
+		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{ChannelSnapshot: channelSnapshot})
 
 		if isRefundVoucher {
 			return &x402.AfterVerifyResult{
@@ -961,7 +1018,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 			}
 			if updateRes.Status == ChannelUpdated && updateRes.Channel != nil {
 				s.RememberChannelSnapshot(ctx.Payload, updateRes.Channel)
-				_ = s.ClearPendingRequest(ctx.Payload)
+				_ = s.ReleasePendingRequest(ctx.Payload)
 				return nil
 			}
 			return errors.New(batchsettlement.ErrChannelBusy)
@@ -1047,7 +1104,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 			if updateRes.Status == ChannelUnchanged {
 				return errors.New(batchsettlement.ErrChannelBusy)
 			}
-			_ = s.ClearPendingRequest(ctx.Payload)
+			_ = s.ReleasePendingRequest(ctx.Payload)
 			return nil
 		}
 

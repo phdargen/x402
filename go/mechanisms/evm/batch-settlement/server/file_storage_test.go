@@ -63,13 +63,24 @@ func TestServerFileStorage_PathLowercased(t *testing.T) {
 }
 
 func TestServerFileStorage_Delete(t *testing.T) {
-	s, _ := newServerFileStore(t)
+	s, dir := newServerFileStore(t)
 	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	ok, err := s.Acquire(testChA, "pending", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
 	if err := s.Delete(testChA); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if got, _ := s.Get(testChA); got != nil {
 		t.Fatalf("expected nil after delete")
+	}
+	held, err := s.IsHeld(testChA, "")
+	if err != nil || held {
+		t.Fatalf("Delete must drop hold: held=%v err=%v", held, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "server", testChA+".hold")); !os.IsNotExist(err) {
+		t.Fatalf("hold file should be gone: %v", err)
 	}
 	if err := s.Delete(testChA); err != nil {
 		t.Fatalf("Delete-missing should not error: %v", err)
@@ -305,6 +316,26 @@ func TestServerFileStorage_HoldSidecarDoesNotWritePendingOntoChannelJSON(t *test
 		if strings.HasSuffix(e.Name(), ".hold") {
 			t.Fatalf("hold file left behind: %s", e.Name())
 		}
+	}
+}
+
+func TestServerFileStorage_ReleaseExpiredPendingIdDoesNotDropNewerHolder(t *testing.T) {
+	s, _ := newServerFileStore(t)
+	ok, err := s.Acquire(testChA, "expired", 1)
+	if err != nil || !ok {
+		t.Fatalf("Acquire expired: ok=%v err=%v", ok, err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	ok, err = s.Acquire(testChA, "next", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire next: ok=%v err=%v", ok, err)
+	}
+	if err := s.Release(testChA, "expired"); err != nil {
+		t.Fatalf("Release expired: %v", err)
+	}
+	held, err := s.IsHeld(testChA, "next")
+	if err != nil || !held {
+		t.Fatalf("newer holder must remain: held=%v err=%v", held, err)
 	}
 }
 

@@ -74,7 +74,7 @@ func (s *FileChannelStorage) Delete(channelId string) error {
 	if err := os.Remove(path); err != nil && !batchsettlement.IsNotExist(err) {
 		return err
 	}
-	return nil
+	return s.dropHold(channelId)
 }
 
 func (s *FileChannelStorage) List() ([]*ChannelSession, error) {
@@ -207,6 +207,9 @@ func (s *FileChannelStorage) UpdateChannel(channelId string, update func(current
 		if rmErr := os.Remove(path); rmErr != nil && !batchsettlement.IsNotExist(rmErr) {
 			return nil, rmErr
 		}
+		if dropErr := s.dropHold(channelId); dropErr != nil {
+			return nil, dropErr
+		}
 		return &ChannelUpdateResult{Status: ChannelDeleted}, nil
 	case current != nil && next == current:
 		return &ChannelUpdateResult{Channel: current, Status: ChannelUnchanged}, nil
@@ -219,102 +222,148 @@ func (s *FileChannelStorage) UpdateChannel(channelId string, update func(current
 }
 
 func (s *FileChannelStorage) Acquire(channelId string, pendingId string, ttlMs int64) (bool, error) {
-	path, err := s.holdPath(channelId)
-	if err != nil {
-		return false, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
-	}
-	record, err := json.Marshal(admissionLock{PendingId: pendingId, ExpiresAt: time.Now().UnixMilli() + ttlMs})
-	if err != nil {
-		return false, err
-	}
-
-	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			_, writeErr := f.Write(record)
-			closeErr := f.Close()
-			if writeErr != nil {
-				_ = os.Remove(path)
-				return false, writeErr
-			}
-			if closeErr != nil {
-				return false, closeErr
-			}
-			return true, nil
+	var acquired bool
+	err := s.withHoldLock(channelId, func() error {
+		path, err := s.holdPath(channelId)
+		if err != nil {
+			return err
 		}
-		if !errors.Is(err, os.ErrExist) {
-			return false, err
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 		}
-
 		raw, readErr := os.ReadFile(path)
-		if readErr != nil {
-			if batchsettlement.IsNotExist(readErr) {
-				continue
+		if readErr != nil && !batchsettlement.IsNotExist(readErr) {
+			return readErr
+		}
+		if readErr == nil {
+			var existing admissionLock
+			if unmarshalErr := json.Unmarshal(raw, &existing); unmarshalErr != nil {
+				return unmarshalErr
 			}
-			return false, readErr
+			if existing.ExpiresAt > time.Now().UnixMilli() {
+				acquired = false
+				return nil
+			}
 		}
-		var existing admissionLock
-		if unmarshalErr := json.Unmarshal(raw, &existing); unmarshalErr != nil {
-			return false, unmarshalErr
+		record, err := json.Marshal(admissionLock{PendingId: pendingId, ExpiresAt: time.Now().UnixMilli() + ttlMs})
+		if err != nil {
+			return err
 		}
-		if existing.ExpiresAt > time.Now().UnixMilli() {
-			return false, nil
+		if err := os.WriteFile(path, record, 0o644); err != nil {
+			return err
 		}
-		if rmErr := os.Remove(path); rmErr != nil && !batchsettlement.IsNotExist(rmErr) {
-			return false, rmErr
-		}
-	}
+		acquired = true
+		return nil
+	})
+	return acquired, err
 }
 
 func (s *FileChannelStorage) Release(channelId string, pendingId string) error {
-	path, err := s.holdPath(channelId)
-	if err != nil {
-		return err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if batchsettlement.IsNotExist(err) {
+	return s.withHoldLock(channelId, func() error {
+		path, err := s.holdPath(channelId)
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if batchsettlement.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		var hold admissionLock
+		if err := json.Unmarshal(raw, &hold); err != nil {
+			return err
+		}
+		if hold.PendingId != pendingId {
 			return nil
 		}
-		return err
-	}
-	var hold admissionLock
-	if err := json.Unmarshal(raw, &hold); err != nil {
-		return err
-	}
-	if hold.PendingId != pendingId {
+		if rmErr := os.Remove(path); rmErr != nil && !batchsettlement.IsNotExist(rmErr) {
+			return rmErr
+		}
 		return nil
-	}
-	if rmErr := os.Remove(path); rmErr != nil && !batchsettlement.IsNotExist(rmErr) {
-		return rmErr
-	}
-	return nil
+	})
 }
 
 func (s *FileChannelStorage) IsHeld(channelId string, pendingId string) (bool, error) {
+	var held bool
+	err := s.withHoldLock(channelId, func() error {
+		path, err := s.holdPath(channelId)
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if batchsettlement.IsNotExist(err) {
+				held = false
+				return nil
+			}
+			return err
+		}
+		var hold admissionLock
+		if err := json.Unmarshal(raw, &hold); err != nil {
+			return err
+		}
+		if hold.ExpiresAt <= time.Now().UnixMilli() {
+			held = false
+			return nil
+		}
+		if pendingId == "" {
+			held = true
+			return nil
+		}
+		held = hold.PendingId == pendingId
+		return nil
+	})
+	return held, err
+}
+
+func (s *FileChannelStorage) dropHold(channelId string) error {
+	return s.withHoldLock(channelId, func() error {
+		path, err := s.holdPath(channelId)
+		if err != nil {
+			return err
+		}
+		if rmErr := os.Remove(path); rmErr != nil && !batchsettlement.IsNotExist(rmErr) {
+			return rmErr
+		}
+		return nil
+	})
+}
+
+// withHoldLock serializes Acquire, Release, and IsHeld on {id}.hold.lock so an
+// expired hold cannot be unlinked out from under a new holder.
+func (s *FileChannelStorage) withHoldLock(channelId string, fn func() error) error {
 	path, err := s.holdPath(channelId)
 	if err != nil {
-		return false, err
+		return err
 	}
-	raw, err := os.ReadFile(path)
+	lockPath := path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
+	}
+	lockFile, err := acquireExclusiveFile(lockPath)
 	if err != nil {
-		if batchsettlement.IsNotExist(err) {
-			return false, nil
+		return err
+	}
+	defer func() {
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
+	}()
+	return fn()
+}
+
+func acquireExclusiveFile(lockPath string) (*os.File, error) {
+	const maxAttempts = 50
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			return f, nil
 		}
-		return false, err
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, err)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	var hold admissionLock
-	if err := json.Unmarshal(raw, &hold); err != nil {
-		return false, err
-	}
-	if hold.ExpiresAt <= time.Now().UnixMilli() {
-		return false, nil
-	}
-	if pendingId == "" {
-		return true, nil
-	}
-	return hold.PendingId == pendingId, nil
+	return nil, fmt.Errorf("acquire lock %s: contended", lockPath)
 }
