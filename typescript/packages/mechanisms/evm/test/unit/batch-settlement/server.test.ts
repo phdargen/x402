@@ -1431,6 +1431,39 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(await storage.isHeld(channelId)).toBe(true);
   });
 
+  it("clamps admission-lock TTL to 5s–600s from maxTimeoutSeconds", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    const acquire = vi.spyOn(storage, "acquire").mockResolvedValue(true);
+    const payload = await buildSignedVoucherPayload(channelId, "1000", config);
+
+    await runBeforeVerify(
+      server,
+      payload,
+      makeRequirements({ amount: "1000", maxTimeoutSeconds: 3600 }),
+    );
+    expect(acquire).toHaveBeenLastCalledWith(channelId, expect.any(String), 600_000);
+
+    await runBeforeVerify(
+      server,
+      payload,
+      makeRequirements({ amount: "1000", maxTimeoutSeconds: 0 }),
+    );
+    expect(acquire).toHaveBeenLastCalledWith(channelId, expect.any(String), 5_000);
+  });
+
   it("never acquires on a cheap bind or EOA signature reject", async () => {
     const config = buildChannelConfig();
     const acquire = vi.spyOn(storage, "acquire");
@@ -1814,6 +1847,181 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
         } as SettleResponse,
       } as never),
     ).rejects.toThrow(TypeError);
+  });
+
+  it("does not resurrect a voucher row from snapshot when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = await buildSignedVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({ amount: "1000" });
+    scheme.mergeRequestContext(payload, {
+      channelId,
+      pendingId: "self",
+      reservationCommitted: true,
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "0",
+        signedMaxClaimable: "0",
+        signature: "0x",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: 0,
+      },
+    });
+
+    const result = (await scheme.schemeHooks.onBeforeSettle!({
+      paymentPayload: payload,
+      requirements,
+    } as never)) as { abort: true; reason: string };
+
+    expect(result?.abort).toBe(true);
+    expect(result?.reason).toBe(Errors.ErrMissingChannel);
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("rejects refund enrich from snapshot alone when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildRefundPayload(channelId, "500", config);
+    scheme.mergeRequestContext(payload, {
+      channelId,
+      pendingId: "self",
+      reservationCommitted: true,
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "500",
+        signedMaxClaimable: "500",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: 0,
+      },
+    });
+
+    await expect(
+      scheme.enrichSettlementPayload({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "0" }),
+      } as never),
+    ).rejects.toThrow(Errors.ErrMissingChannel);
+  });
+
+  it("does not resurrect a refund row from snapshot when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildRefundPayload(channelId, "500", config);
+    scheme.mergeRequestContext(payload, {
+      channelId,
+      pendingId: "self",
+      reservationCommitted: true,
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "500",
+        signedMaxClaimable: "500",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: 0,
+      },
+    });
+
+    await expect(
+      scheme.schemeHooks.onAfterSettle!({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "0" }),
+        result: {
+          success: true,
+          transaction: "0xref",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "8000",
+              totalClaimed: "500",
+              withdrawRequestedAt: 0,
+              refundNonce: "1",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow(Errors.ErrChannelBusy);
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("does not resurrect a deposit row from snapshot when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildDepositPayload(channelId, config, "10000", "1000");
+    scheme.mergeRequestContext(payload, {
+      channelId,
+      pendingId: "self",
+      reservationCommitted: true,
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "0",
+        signedMaxClaimable: "0",
+        signature: "0x",
+        balance: "0",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: 0,
+      },
+    });
+
+    await expect(
+      scheme.schemeHooks.onAfterSettle!({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "1000" }),
+        result: {
+          success: true,
+          transaction: "0xtx",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "10000",
+              totalClaimed: "0",
+              withdrawRequestedAt: 0,
+              refundNonce: "0",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow(Errors.ErrChannelBusy);
+    expect(await storage.get(channelId)).toBeUndefined();
   });
 
   it("still charges a deposit afterSettle when isHeld throws a store I/O error", async () => {

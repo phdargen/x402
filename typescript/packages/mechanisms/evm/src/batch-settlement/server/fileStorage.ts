@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -8,6 +8,16 @@ import type { FileChannelStorageOptions } from "../types";
 import type { ChannelLockStorage, ChannelStorage, Channel, ChannelUpdateResult } from "./storage";
 
 export type { FileChannelStorageOptions };
+
+const FILE_LOCK_MAX_ATTEMPTS = 50;
+const FILE_LOCK_RETRY_INTERVAL_MS = 10;
+const FILE_LOCK_STALE_MS = 2_000;
+
+export type AcquireExclusiveFileOptions = {
+  maxAttempts?: number;
+  retryIntervalMs?: number;
+  staleMs?: number;
+};
 
 /**
  * Node.js file-backed {@link ChannelStorage} for the batched server scheme.
@@ -79,7 +89,7 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
   ): Promise<ChannelUpdateResult> {
     const lockPath = this.filePath(channelId) + ".lock";
     await mkdir(dirname(lockPath), { recursive: true });
-    const lockHandle = await this.acquireLock(lockPath);
+    const lockHandle = await acquireExclusiveFile(lockPath);
 
     try {
       const path = this.filePath(channelId);
@@ -233,7 +243,7 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
   private async withHoldLock<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
     const lockPath = this.holdPath(channelId) + ".lock";
     await mkdir(dirname(lockPath), { recursive: true });
-    const lockHandle = await this.acquireLock(lockPath);
+    const lockHandle = await acquireExclusiveFile(lockPath);
     try {
       return await fn();
     } finally {
@@ -241,23 +251,54 @@ export class FileChannelStorage implements ChannelStorage, ChannelLockStorage {
       await unlink(lockPath).catch(() => {});
     }
   }
+}
 
-  /**
-   * Creates an exclusive lock file, polling until no other process holds it.
-   *
-   * @param lockPath - Absolute path for the lock file (created with `O_EXCL`).
-   * @returns Writable file handle for the lock file; caller must close it to release.
-   */
-  private async acquireLock(lockPath: string) {
-    while (true) {
-      try {
-        return await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-      } catch (err: unknown) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw err;
-        }
-        await new Promise(resolve => setTimeout(resolve, 10));
+/**
+ * Creates an exclusive lock file, stealing markers whose mtime is older than `staleMs`.
+ *
+ * @param lockPath - Absolute path for the lock file (created with `O_EXCL`).
+ * @param options - Attempt, retry, and stale-mtime bounds.
+ * @returns Writable file handle for the lock file; caller must close it to release.
+ * @throws When the lock remains contended after `maxAttempts`.
+ */
+export async function acquireExclusiveFile(
+  lockPath: string,
+  options: AcquireExclusiveFileOptions = {},
+) {
+  const maxAttempts = options.maxAttempts ?? FILE_LOCK_MAX_ATTEMPTS;
+  const retryIntervalMs = options.retryIntervalMs ?? FILE_LOCK_RETRY_INTERVAL_MS;
+  const staleMs = options.staleMs ?? FILE_LOCK_STALE_MS;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw err;
       }
+      if (await isStaleLock(lockPath, staleMs)) {
+        await unlink(lockPath).catch(() => {});
+        continue;
+      }
+      await new Promise(resolve => setTimeout(resolve, retryIntervalMs));
     }
+  }
+  throw new Error(`acquire lock ${lockPath}: contended`);
+}
+
+/**
+ * Returns whether `lockPath` is missing or older than `staleMs`.
+ *
+ * @param lockPath - Absolute path for the lock file.
+ * @param staleMs - Age after which a leftover marker is treated as crash debris.
+ * @returns Whether the caller may unlink and retry exclusive create.
+ */
+async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
+  try {
+    const info = await stat(lockPath);
+    return Date.now() - info.mtimeMs >= staleMs;
+  } catch (err: unknown) {
+    if (isNodeEnoent(err)) return true;
+    throw err;
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,7 +9,10 @@ import {
   writeJsonAtomic,
 } from "../../../src/batch-settlement/storage-utils";
 import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
-import { FileChannelStorage } from "../../../src/batch-settlement/server/fileStorage";
+import {
+  FileChannelStorage,
+  acquireExclusiveFile,
+} from "../../../src/batch-settlement/server/fileStorage";
 import { FileClientChannelStorage } from "../../../src/batch-settlement/client/fileStorage";
 import {
   RedisChannelLockStorage,
@@ -205,6 +208,7 @@ type RedisValue = {
 class MockRedisClient implements RedisChannelStorageClient {
   readonly store = new Map<string, RedisValue>();
   updateConflicts = 0;
+  forceUpdateConflict = false;
   nextChannelGetDelay: Deferred<void> | undefined;
   nextUpdateEvalDelay: Deferred<void> | undefined;
 
@@ -252,7 +256,9 @@ class MockRedisClient implements RedisChannelStorageClient {
 
     const [expectedExists, expected, operation, nextValue] = options.arguments;
     const current = this.store.get(key);
-    const matches = expectedExists === "0" ? current === undefined : current?.value === expected;
+    const matches =
+      !this.forceUpdateConflict &&
+      (expectedExists === "0" ? current === undefined : current?.value === expected);
 
     if (!matches) {
       this.updateConflicts += 1;
@@ -261,6 +267,8 @@ class MockRedisClient implements RedisChannelStorageClient {
 
     if (operation === "delete") {
       this.store.delete(key);
+      const lockKey = options.keys[1];
+      if (lockKey) this.store.delete(lockKey);
       return [1, null];
     }
 
@@ -389,15 +397,18 @@ describe("RedisChannelStorage", () => {
     });
   });
 
-  it("deletes a channel", async () => {
+  it("deletes a channel and drops the admission lock key", async () => {
     const channel = buildSession();
     await storage.updateChannel(CHANNEL_ID, () => channel);
+    expect(await storage.acquire(CHANNEL_ID, "pending", 60_000)).toBe(true);
 
     await expect(storage.updateChannel(CHANNEL_ID, () => undefined)).resolves.toEqual({
       channel: undefined,
       status: "deleted",
     });
     expect(await storage.get(CHANNEL_ID)).toBeUndefined();
+    expect(await storage.isHeld(CHANNEL_ID)).toBe(false);
+    expect(client.store.has(`test:x402:server:lock:${CHANNEL_ID}`)).toBe(false);
   });
 
   it("delete is a no-op when nothing is stored", async () => {
@@ -405,6 +416,24 @@ describe("RedisChannelStorage", () => {
       channel: undefined,
       status: "unchanged",
     });
+  });
+
+  it("throws when Redis compare conflicts exceed maxUpdateWaitMs", async () => {
+    await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "0" }));
+    const contended = new RedisChannelStorage({
+      client,
+      keyPrefix: "test:x402",
+      lockRetryIntervalMs: 1,
+      maxUpdateWaitMs: 20,
+    });
+    client.forceUpdateConflict = true;
+
+    await expect(
+      contended.updateChannel(CHANNEL_ID, current =>
+        current ? { ...current, chargedCumulativeAmount: "1" } : current,
+      ),
+    ).rejects.toThrow(/contended/);
+    expect(client.updateConflicts).toBeGreaterThan(0);
   });
 
   it("retries concurrent updateChannel mutations after Redis compare conflicts", async () => {
@@ -669,6 +698,29 @@ describe("FileChannelStorage", () => {
     await expect(storage.isHeld(CHANNEL_ID)).rejects.toThrow();
     await expect(storage.release(CHANNEL_ID, "ok")).rejects.toThrow();
     await expect(storage.acquire(CHANNEL_ID, "next", 60_000)).rejects.toThrow();
+  });
+
+  it("steals a stale hold.lock marker left after a crash", async () => {
+    const serverDir = join(root, "server");
+    await mkdir(serverDir, { recursive: true });
+    const lockPath = join(serverDir, `${CHANNEL_ID}.hold.lock`);
+    await writeFile(lockPath, "");
+    const stale = new Date(Date.now() - 3_000);
+    await utimes(lockPath, stale, stale);
+
+    expect(await storage.acquire(CHANNEL_ID, "next", 60_000)).toBe(true);
+    expect(await storage.isHeld(CHANNEL_ID, "next")).toBe(true);
+  });
+
+  it("rejects live lock-file contention after bounded attempts", async () => {
+    const serverDir = join(root, "server");
+    await mkdir(serverDir, { recursive: true });
+    const lockPath = join(serverDir, "probe.lock");
+    await writeFile(lockPath, "");
+
+    await expect(
+      acquireExclusiveFile(lockPath, { maxAttempts: 2, retryIntervalMs: 1, staleMs: 60_000 }),
+    ).rejects.toThrow(/contended/);
   });
 });
 
