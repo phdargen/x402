@@ -11,6 +11,7 @@ import { computeChannelId } from "../utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
+import { rethrowLockImplementationError } from "./storage";
 import {
   parseRefundSettlementSnapshot,
   readChannelStateExtra,
@@ -23,7 +24,8 @@ import {
  *
  * Used for deposit/refund holder checks. Voucher settle relies on the charge CAS.
  * This request proceeds when it holds the lock or no lock is present (lost/expired).
- * Lock-store failures are optimistic.
+ * Lock-store I/O failures are optimistic (treat as not held). Implementation/parse
+ * errors fail closed and propagate to the caller.
  *
  * @param scheme - Owning scheme for lock-store access.
  * @param channelId - Channel to inspect.
@@ -41,7 +43,8 @@ async function heldByOther(
       return false;
     }
     return await locks.isHeld(channelId);
-  } catch {
+  } catch (err) {
+    rethrowLockImplementationError(err);
     return false;
   }
 }

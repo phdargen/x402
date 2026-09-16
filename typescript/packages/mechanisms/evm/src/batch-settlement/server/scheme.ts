@@ -28,6 +28,7 @@ import {
   ChannelStorage,
   ChannelLockStorage,
   isChannelLockStorage,
+  rethrowLockImplementationError,
   type Channel,
 } from "./storage";
 import {
@@ -221,8 +222,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 
     try {
       await this.lockStorage.release(context.channelId, context.pendingId);
-    } catch {
-      // Lock-store loss is optimistic: the charge CAS still serializes commits.
+    } catch (err) {
+      rethrowLockImplementationError(err);
+      // Lock-store I/O loss is optimistic: the charge CAS still serializes commits.
     }
     this.mergeRequestContext(payload, { reservationCommitted: false });
   }

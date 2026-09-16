@@ -96,7 +96,10 @@ export class RedisChannelLockStorage implements ChannelLockStorage {
   }
 
   /**
-   * Acquires a per-channel admission lock with `SET NX PX`.
+   * Acquires a per-channel admission lock with a single atomic `SET NX PX`.
+   *
+   * Intentionally not re-entrant: do not add a GET-then-SET PX refresh for the same
+   * `pendingId`; that pattern races and can extend another holder's lock.
    *
    * @param channelId - The channel identifier.
    * @param pendingId - Request-scoped lock owner stored as the key value.
