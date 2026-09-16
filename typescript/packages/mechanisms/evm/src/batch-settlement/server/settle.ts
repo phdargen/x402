@@ -148,7 +148,6 @@ export async function handleBeforeSettle(
   });
 
   await scheme.clearPendingRequest(paymentPayload);
-  scheme.takeRequestContext(paymentPayload);
 
   if (outcome?.status === "missing") {
     return {
@@ -350,7 +349,7 @@ export async function handleAfterSettle(
     if (updateResult.status === "unchanged") {
       throw new Error(Errors.ErrChannelBusy);
     }
-    await scheme.clearPendingRequest(paymentPayload);
+    await scheme.releasePendingRequest(paymentPayload);
     if (!updateResult.channel) {
       return;
     }
@@ -402,7 +401,7 @@ export async function handleAfterSettle(
     });
     if (updateResult.status === "updated" && updateResult.channel) {
       scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
-      await scheme.clearPendingRequest(paymentPayload);
+      await scheme.releasePendingRequest(paymentPayload);
       return;
     }
     throw new Error(Errors.ErrChannelBusy);
@@ -420,7 +419,6 @@ export async function handleSettleFailure(
   ctx: SettleFailureContext,
 ): Promise<void> {
   await scheme.clearPendingRequest(ctx.paymentPayload);
-  scheme.takeRequestContext(ctx.paymentPayload);
 }
 
 /**

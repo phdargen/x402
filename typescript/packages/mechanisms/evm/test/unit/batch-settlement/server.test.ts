@@ -1900,7 +1900,7 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
     ).rejects.toThrow(SyntaxError);
   });
 
-  it("rejects clearPendingRequest when release throws a TypeError", async () => {
+  it("rejects releasePendingRequest when release throws a TypeError", async () => {
     const storage = new InMemoryChannelStorage();
     const scheme = new BatchSettlementEvmScheme(RECEIVER, { storage });
     const config = buildChannelConfig();
@@ -1909,7 +1909,7 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
     await reservePending(scheme, payload, makeRequirements({ amount: "1000" }));
     vi.spyOn(storage, "release").mockRejectedValueOnce(new TypeError("broken release"));
 
-    await expect(scheme.clearPendingRequest(payload)).rejects.toThrow(TypeError);
+    await expect(scheme.releasePendingRequest(payload)).rejects.toThrow(TypeError);
     expect(scheme.readRequestContext(payload)?.reservationCommitted).toBe(true);
   });
 });
@@ -1999,7 +1999,7 @@ describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
     await reservePending(server, payload, makeRequirements({ amount: "1000" }));
     vi.spyOn(storage, "release").mockRejectedValueOnce(new Error("lock down"));
 
-    await server.clearPendingRequest(payload);
+    await server.releasePendingRequest(payload);
 
     expect(server.readRequestContext(payload)?.reservationCommitted).toBe(false);
   });

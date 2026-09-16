@@ -210,11 +210,12 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Releases this request's admission lock without touching a newer holder.
+   * Releases this request's admission lock without touching a newer holder or
+   * deleting the request-context entry.
    *
    * @param payload - Request-scoped payment payload object.
    */
-  async clearPendingRequest(payload: DeepReadonly<PaymentPayload>): Promise<void> {
+  async releasePendingRequest(payload: DeepReadonly<PaymentPayload>): Promise<void> {
     const context = this.readRequestContext(payload);
     if (!context?.reservationCommitted || !context.channelId || !context.pendingId) {
       return;
@@ -227,6 +228,17 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       // Lock-store I/O loss is optimistic: the charge CAS still serializes commits.
     }
     this.mergeRequestContext(payload, { reservationCommitted: false });
+  }
+
+  /**
+   * Releases this request's admission lock, then deletes the request-context entry.
+   * Use on terminal paths that no longer need the snapshot.
+   *
+   * @param payload - Request-scoped payment payload object.
+   */
+  async clearPendingRequest(payload: DeepReadonly<PaymentPayload>): Promise<void> {
+    await this.releasePendingRequest(payload);
+    this.takeRequestContext(payload);
   }
 
   /**
