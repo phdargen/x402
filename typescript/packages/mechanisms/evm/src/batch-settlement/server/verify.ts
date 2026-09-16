@@ -175,7 +175,7 @@ export async function handleBeforeVerify(
   try {
     channelSnapshot = await scheme.getStorage().get(channelId);
   } catch {
-    await forgetPendingRequest(scheme, paymentPayload);
+    await scheme.clearPendingRequest(paymentPayload);
     return verificationStateUnavailable();
   }
 
@@ -195,7 +195,7 @@ export async function handleBeforeVerify(
       paymentPayload,
       channelSnapshot ?? buildProvisionalChannel(raw, chargedCumulativeAmount),
     );
-    await scheme.clearPendingRequest(paymentPayload);
+    await scheme.releasePendingRequest(paymentPayload);
     return {
       abort: true,
       reason: Errors.ErrCumulativeAmountMismatch,
@@ -210,12 +210,12 @@ export async function handleBeforeVerify(
     try {
       localResult = await verifyVoucherLocally(scheme, raw, requirements, channelSnapshot, now);
     } catch {
-      await forgetPendingRequest(scheme, paymentPayload);
+      await scheme.clearPendingRequest(paymentPayload);
       return verificationStateUnavailable();
     }
     if (localResult) {
       if (!localResult.isValid) {
-        await forgetPendingRequest(scheme, paymentPayload);
+        await scheme.clearPendingRequest(paymentPayload);
         return { skip: true, result: localResult };
       }
       scheme.mergeRequestContext(paymentPayload, { localVerify: true });
@@ -396,7 +396,7 @@ export async function handleVerifyFailure(
   scheme: BatchSettlementEvmScheme,
   ctx: VerifyFailureContext,
 ): Promise<void> {
-  await forgetPendingRequest(scheme, ctx.paymentPayload);
+  await scheme.clearPendingRequest(ctx.paymentPayload);
 }
 
 /**
@@ -416,7 +416,7 @@ export async function handleVerifiedPaymentCanceled(
   ) {
     return;
   }
-  await forgetPendingRequest(scheme, ctx.paymentPayload);
+  await scheme.clearPendingRequest(ctx.paymentPayload);
 }
 
 /**
@@ -530,22 +530,6 @@ async function verifyEoaVoucherSignature(
   } catch {
     return false;
   }
-}
-
-/**
- * Releases this request's admission lock and drops the request-context entry.
- *
- * Used on terminal verify paths that no longer need the snapshot.
- *
- * @param scheme - Owning scheme for lock and request-context access.
- * @param paymentPayload - Request-scoped payment payload object.
- */
-async function forgetPendingRequest(
-  scheme: BatchSettlementEvmScheme,
-  paymentPayload: Parameters<BatchSettlementEvmScheme["clearPendingRequest"]>[0],
-): Promise<void> {
-  await scheme.clearPendingRequest(paymentPayload);
-  scheme.takeRequestContext(paymentPayload);
 }
 
 /**
