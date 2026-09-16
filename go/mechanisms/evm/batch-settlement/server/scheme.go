@@ -291,13 +291,15 @@ func (s *BatchSettlementEvmScheme) TakeChannelSnapshot(payload any) *ChannelSess
 }
 
 // ClearPendingRequest releases this request's admission lock without touching
-// a newer holder.
+// a newer holder. Lock-store I/O is ignored; implementation/parse errors fail closed.
 func (s *BatchSettlementEvmScheme) ClearPendingRequest(payload any) error {
 	rc := s.ReadRequestContext(payload)
 	if rc == nil || !rc.ReservationCommitted || rc.ChannelId == "" || rc.PendingId == "" {
 		return nil
 	}
-	_ = s.lockStorage.Release(rc.ChannelId, rc.PendingId)
+	if impl := RethrowLockImplementationError(s.lockStorage.Release(rc.ChannelId, rc.PendingId)); impl != nil {
+		return impl
+	}
 	rc.ReservationCommitted = false
 	return nil
 }

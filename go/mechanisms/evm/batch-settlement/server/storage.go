@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -62,7 +64,8 @@ type SessionStorage interface {
 
 // ChannelLockStorage is a best-effort per-channel admission lock. Loss or
 // unavailability degrades to optimistic mode: the durable charge CAS still
-// serializes commits.
+// serializes commits. Implementation/parse errors (unreadable hold records)
+// fail closed at the caller.
 type ChannelLockStorage interface {
 	// Acquire is SET NX + TTL. Value is pendingId. Expired keys are free.
 	Acquire(channelId string, pendingId string, ttlMs int64) (bool, error)
@@ -71,6 +74,24 @@ type ChannelLockStorage interface {
 	// IsHeld reports any live lock, or this pendingId when provided (empty
 	// pendingId means any live lock).
 	IsHeld(channelId string, pendingId string) (bool, error)
+}
+
+// RethrowLockImplementationError returns err when it is a lock-store
+// implementation/parse failure so callers fail closed.
+//
+// json.SyntaxError and json.UnmarshalTypeError indicate a broken backend or
+// unreadable hold record. Other errors (network, timeout, I/O) are ignored so
+// callers can treat the lock as absent.
+func RethrowLockImplementationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var syntax *json.SyntaxError
+	var unmarshalType *json.UnmarshalTypeError
+	if errors.As(err, &syntax) || errors.As(err, &unmarshalType) {
+		return err
+	}
+	return nil
 }
 
 type admissionLock struct {
