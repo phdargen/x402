@@ -391,6 +391,41 @@ func TestServerFileStorage_CorruptHoldRethrows(t *testing.T) {
 	}
 }
 
+func TestServerFileStorage_StealsStaleHoldLock(t *testing.T) {
+	s, dir := newServerFileStore(t)
+	holdLock := filepath.Join(dir, "server", testChA+".hold.lock")
+	if err := os.MkdirAll(filepath.Dir(holdLock), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(holdLock, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	stale := time.Now().Add(-3 * time.Second)
+	if err := os.Chtimes(holdLock, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	ok, err := s.Acquire(testChA, "fresh", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire after stale steal: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAcquireExclusiveFile_ContendedWhenLockFresh(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "marker.lock")
+	if err := os.WriteFile(lockPath, []byte("held"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := acquireExclusiveFile(lockPath, &acquireExclusiveFileOptions{
+		maxAttempts:   2,
+		retryInterval: time.Millisecond,
+		staleAfter:    60 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "contended") {
+		t.Fatalf("expected contended, got %v", err)
+	}
+}
+
 func TestFileDurableWithSeparateLockStore(t *testing.T) {
 	file, _ := newServerFileStore(t)
 	memLock := NewInMemoryChannelStorage()

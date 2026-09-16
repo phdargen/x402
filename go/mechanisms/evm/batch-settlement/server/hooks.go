@@ -38,32 +38,42 @@ func pendingTtlMs(maxTimeoutSeconds int) int64 {
 	return ttl
 }
 
-// heldByOther reports whether a different pendingId currently holds the
-// admission lock. This request proceeds when it holds the lock or no lock is
-// present (lost/expired). Lock-store I/O is optimistic; implementation/parse
-// errors fail closed.
-func heldByOther(scheme *BatchSettlementEvmScheme, channelId, pendingId string) (bool, error) {
+type admissionHold int
+
+const (
+	admissionSelf admissionHold = iota
+	admissionOther
+	admissionNone
+)
+
+// inspectAdmission classifies whether this request still holds the admission
+// lock, another request holds it, or no lock is present (lost/expired or lock
+// store I/O down). Implementation/parse errors fail closed.
+func inspectAdmission(scheme *BatchSettlementEvmScheme, channelId, pendingId string) (admissionHold, error) {
 	locks := scheme.GetLockStorage()
 	if pendingId != "" {
 		held, err := locks.IsHeld(channelId, pendingId)
 		if impl := RethrowLockImplementationError(err); impl != nil {
-			return false, impl
+			return admissionNone, impl
 		}
 		if err != nil {
-			return false, nil //nolint:nilerr // lock I/O failure → optimistic proceed
+			return admissionNone, nil //nolint:nilerr // lock I/O failure → optimistic none
 		}
 		if held {
-			return false, nil
+			return admissionSelf, nil
 		}
 	}
 	held, err := locks.IsHeld(channelId, "")
 	if impl := RethrowLockImplementationError(err); impl != nil {
-		return false, impl
+		return admissionNone, impl
 	}
 	if err != nil {
-		return false, nil //nolint:nilerr // lock I/O failure → optimistic proceed
+		return admissionNone, nil //nolint:nilerr // lock I/O failure → optimistic none
 	}
-	return held, nil
+	if held {
+		return admissionOther, nil
+	}
+	return admissionNone, nil
 }
 
 func verificationStateUnavailable() *x402.BeforeHookResult {
@@ -280,7 +290,7 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{ChannelSnapshot: channelSnapshot})
 
 		if batchsettlement.IsVoucherPayload(payload) {
-			localResult := s.verifyVoucherLocally(ctx.Requirements, payload, channelSnapshot, now)
+			localResult := s.evaluateVoucherAgainstCachedState(ctx.Requirements, payload, channelSnapshot, now)
 			if localResult != nil {
 				if !localResult.IsValid {
 					_ = s.ClearPendingRequest(ctx.Payload)
@@ -300,16 +310,17 @@ func (s *BatchSettlementEvmScheme) BeforeVerifyHook() x402.BeforeVerifyHook {
 	}
 }
 
-// verifyVoucherLocally returns a successful VerifyResponse when the voucher can
-// be verified entirely against locally cached channel state — i.e. the cache is
-// within the configured TTL of last onchain sync, the channel config validates,
-// the recomputed channelId matches, and the voucher signature recovers to the
-// payerAuthorizer. Returns nil on any check that requires falling back to the
-// facilitator, and an explicit invalid VerifyResponse when a local check fails.
+// evaluateVoucherAgainstCachedState returns a successful VerifyResponse when the
+// voucher can be verified entirely against locally cached channel state — i.e.
+// the cache is within the configured TTL of last onchain sync, the channel
+// config validates, the recomputed channelId matches, and balance/claimed
+// bounds hold. EOA signature validity is enforced earlier in BeforeVerify.
+// Returns nil on any check that requires falling back to the facilitator, and
+// an explicit invalid VerifyResponse when a local check fails.
 //
 // The smart-wallet (ERC-1271) path is intentionally not supported — vouchers
 // signed by a non-zero EOA payerAuthorizer are the only candidates.
-func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
+func (s *BatchSettlementEvmScheme) evaluateVoucherAgainstCachedState(
 	requirements x402.PaymentRequirementsView,
 	payload map[string]interface{},
 	channel *ChannelSession,
@@ -347,10 +358,6 @@ func (s *BatchSettlementEvmScheme) verifyVoucherLocally(
 	computed, err := batchsettlement.ComputeChannelId(vp.ChannelConfig, requirements.GetNetwork())
 	if err != nil || !strings.EqualFold(computed, channel.ChannelId) {
 		return invalidLocalVerifyResponse(payer, facilitator.ErrChannelIdMismatch)
-	}
-
-	if !verifyEoaVoucherSignature(vp, requirements.GetNetwork()) {
-		return invalidLocalVerifyResponse(payer, facilitator.ErrVoucherSignatureInvalid)
 	}
 
 	maxClaimable, ok := new(big.Int).SetString(vp.Voucher.MaxClaimableAmount, 10)
@@ -658,9 +665,11 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 		sig, _ := voucherMap["signature"].(string)
 		rc := s.ReadRequestContext(ctx.Payload)
 		var snapshot *ChannelSession
+		var pendingId string
 		localVerify := false
 		if rc != nil {
 			snapshot = rc.ChannelSnapshot
+			pendingId = rc.PendingId
 			localVerify = rc.LocalVerify
 		}
 		now := time.Now().UnixMilli()
@@ -673,46 +682,74 @@ func (s *BatchSettlementEvmScheme) BeforeSettleHook() x402.BeforeSettleHook {
 			committedNewCharged *big.Int
 		)
 
-		updateRes, updateErr := s.storage.UpdateChannel(channelId, func(current *ChannelSession) *ChannelSession {
-			base := current
-			if base == nil {
-				base = snapshot
-			}
-			if base == nil {
-				outcome = "missing"
-				return current
-			}
-			curCharged, _ := new(big.Int).SetString(base.ChargedCumulativeAmount, 10)
-			if curCharged == nil {
-				curCharged = big.NewInt(0)
-			}
-			next := new(big.Int).Add(curCharged, increment)
-			cap2, _ := new(big.Int).SetString(maxClaimable, 10)
-			if cap2 != nil && next.Cmp(cap2) > 0 {
-				outcome = "cap_exceeded"
-				capExceededAmount = next.String()
-				return current
-			}
-			updated := *base
-			if !localVerify && snapshot != nil {
-				updated.Balance = snapshot.Balance
-				updated.TotalClaimed = snapshot.TotalClaimed
-				updated.WithdrawRequestedAt = snapshot.WithdrawRequestedAt
-				updated.RefundNonce = snapshot.RefundNonce
-				updated.OnchainSyncedAt = now
-			}
-			updated.ChargedCumulativeAmount = next.String()
-			updated.SignedMaxClaimable = maxClaimable
-			updated.Signature = sig
-			updated.LastRequestTimestamp = now
-			outcome = "committed"
-			committedPrev = base
-			committedNew = &updated
-			committedNewCharged = next
-			return &updated
-		})
+		chargeUpdate := func(useSnapshot bool) (*ChannelUpdateResult, error) {
+			outcome = ""
+			capExceededAmount = ""
+			committedPrev = nil
+			committedNew = nil
+			committedNewCharged = nil
+			return s.storage.UpdateChannel(channelId, func(current *ChannelSession) *ChannelSession {
+				base := current
+				if base == nil && useSnapshot {
+					base = snapshot
+				}
+				if base == nil {
+					outcome = "missing"
+					return current
+				}
+				curCharged, _ := new(big.Int).SetString(base.ChargedCumulativeAmount, 10)
+				if curCharged == nil {
+					curCharged = big.NewInt(0)
+				}
+				next := new(big.Int).Add(curCharged, increment)
+				cap2, _ := new(big.Int).SetString(maxClaimable, 10)
+				if cap2 != nil && next.Cmp(cap2) > 0 {
+					outcome = "cap_exceeded"
+					capExceededAmount = next.String()
+					return current
+				}
+				updated := *base
+				if !localVerify && snapshot != nil {
+					updated.Balance = snapshot.Balance
+					updated.TotalClaimed = snapshot.TotalClaimed
+					updated.WithdrawRequestedAt = snapshot.WithdrawRequestedAt
+					updated.RefundNonce = snapshot.RefundNonce
+					updated.OnchainSyncedAt = now
+				}
+				updated.ChargedCumulativeAmount = next.String()
+				updated.SignedMaxClaimable = maxClaimable
+				updated.Signature = sig
+				updated.LastRequestTimestamp = now
+				outcome = "committed"
+				committedPrev = base
+				committedNew = &updated
+				committedNewCharged = next
+				return &updated
+			})
+		}
+
+		updateRes, updateErr := chargeUpdate(false)
 		if updateErr != nil {
 			return nil, updateErr
+		}
+		if outcome == "missing" && snapshot != nil {
+			hold, holdErr := inspectAdmission(s, channelId, pendingId)
+			if holdErr != nil {
+				return nil, holdErr
+			}
+			switch hold {
+			case admissionOther:
+				return &x402.BeforeHookResult{
+					Abort:   true,
+					Reason:  batchsettlement.ErrChannelBusy,
+					Message: "Concurrent request holds channel admission lock",
+				}, nil
+			case admissionSelf:
+				updateRes, updateErr = chargeUpdate(true)
+				if updateErr != nil {
+					return nil, updateErr
+				}
+			}
 		}
 
 		_ = s.ClearPendingRequest(ctx.Payload)
@@ -812,6 +849,16 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 	if storageErr != nil {
 		return nil, storageErr
 	}
+	hold, holdErr := inspectAdmission(s, channelIdStr, pendingId)
+	if holdErr != nil {
+		return nil, holdErr
+	}
+	if stored == nil && snapshot != nil && hold != admissionSelf {
+		return nil, errors.New(batchsettlement.ErrMissingChannel)
+	}
+	if hold == admissionOther {
+		return nil, errors.New(batchsettlement.ErrChannelBusy)
+	}
 	var session *ChannelSession
 	if snapshot != nil {
 		merged := *snapshot
@@ -824,13 +871,6 @@ func (s *BatchSettlementEvmScheme) EnrichSettlementPayload(ctx x402.SettleContex
 	}
 	if session == nil {
 		return nil, errors.New(batchsettlement.ErrMissingChannel)
-	}
-	busy, holdErr := heldByOther(s, channelIdStr, pendingId)
-	if holdErr != nil {
-		return nil, holdErr
-	}
-	if busy {
-		return nil, errors.New(batchsettlement.ErrChannelBusy)
 	}
 
 	maxClaimable, _ := voucherMap["maxClaimableAmount"].(string)
@@ -963,11 +1003,11 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				reqAmount = big.NewInt(0)
 			}
 
-			busy, holdErr := heldByOther(s, normalizedId, pendingId)
+			hold, holdErr := inspectAdmission(s, normalizedId, pendingId)
 			if holdErr != nil {
 				return holdErr
 			}
-			if busy {
+			if hold == admissionOther {
 				return errors.New(batchsettlement.ErrChannelBusy)
 			}
 			var recovered *ChannelSession
@@ -977,7 +1017,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 
 			updateRes, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
 				existing := current
-				if existing == nil {
+				if existing == nil && hold == admissionSelf {
 					existing = recovered
 				}
 				if existing == nil {
@@ -1048,11 +1088,11 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 				return nil
 			}
 			now := time.Now().UnixMilli()
-			busy, holdErr := heldByOther(s, normalizedId, pendingId)
+			hold, holdErr := inspectAdmission(s, normalizedId, pendingId)
 			if holdErr != nil {
 				return holdErr
 			}
-			if busy {
+			if hold == admissionOther {
 				return errors.New(batchsettlement.ErrChannelBusy)
 			}
 			var recovered *ChannelSession
@@ -1062,7 +1102,7 @@ func (s *BatchSettlementEvmScheme) AfterSettleHook() x402.AfterSettleHook {
 
 			updateRes, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
 				existing := current
-				if existing == nil {
+				if existing == nil && hold == admissionSelf {
 					existing = recovered
 				}
 				if existing == nil {

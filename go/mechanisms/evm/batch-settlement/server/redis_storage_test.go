@@ -23,6 +23,7 @@ type mockRedisClient struct {
 	mu                  sync.Mutex
 	store               map[string]mockRedisValue
 	updateConflicts     int
+	forceUpdateConflict bool
 	nextUpdateEvalDelay chan struct{}
 	evalStarted         chan struct{}
 }
@@ -116,7 +117,7 @@ func (c *mockRedisClient) Eval(script string, keys []string, args []string) (any
 	} else {
 		matches = exists && current.value == expected
 	}
-	if !matches {
+	if !matches || c.forceUpdateConflict {
 		c.updateConflicts++
 		if exists {
 			return []any{int64(0), current.value}, nil
@@ -126,6 +127,9 @@ func (c *mockRedisClient) Eval(script string, keys []string, args []string) (any
 	switch operation {
 	case redisUpdateOperationDelete:
 		delete(c.store, key)
+		if len(keys) > 1 {
+			delete(c.store, keys[1])
+		}
 		return []any{int64(1), nil}, nil
 	case redisUpdateOperationSet:
 		c.store[key] = mockRedisValue{value: nextValue}
@@ -445,6 +449,78 @@ func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 	got, _ := s.Get(testChA)
 	if got == nil || got.ChargedCumulativeAmount != "2" {
 		t.Fatalf("final charged = %+v", got)
+	}
+}
+
+func TestRedisChannelStorage_UpdateChannelDeleteDropsLockKey(t *testing.T) {
+	s, client := newRedisStore(t)
+	lockKey := redisTestPrefix + ":server:lock:" + testChA
+	if _, err := s.UpdateChannel(testChA, func(*ChannelSession) *ChannelSession {
+		return sampleSession(testChA, "5")
+	}); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	ok, err := s.Acquire(testChA, "pending", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
+	if !client.hasKey(lockKey) {
+		t.Fatal("expected lock key after Acquire")
+	}
+	result, err := s.UpdateChannel(testChA, func(*ChannelSession) *ChannelSession { return nil })
+	if err != nil {
+		t.Fatalf("UpdateChannel delete: %v", err)
+	}
+	if result.Status != ChannelDeleted {
+		t.Fatalf("delete result: %+v", result)
+	}
+	if client.hasKey(lockKey) {
+		t.Fatal("delete branch should drop :server:lock:")
+	}
+}
+
+func TestRedisChannelStorage_UpdateChannelContendedAfterMaxWait(t *testing.T) {
+	client := newMockRedisClient()
+	s := NewRedisChannelStorage(RedisChannelStorageOptions{
+		Client:              client,
+		KeyPrefix:           redisTestPrefix,
+		LockRetryIntervalMs: 1,
+		MaxUpdateWaitMs:     20,
+	})
+	if _, err := s.UpdateChannel(testChA, func(*ChannelSession) *ChannelSession {
+		return sampleSession(testChA, "0")
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	client.mu.Lock()
+	client.forceUpdateConflict = true
+	client.mu.Unlock()
+
+	_, err := s.UpdateChannel(testChA, func(current *ChannelSession) *ChannelSession {
+		next := sampleSession(testChA, "0")
+		if current != nil {
+			next.ChargedCumulativeAmount = strconv.Itoa(atoiOrZero(current.ChargedCumulativeAmount) + 1)
+		}
+		return next
+	})
+	if err == nil || !strings.Contains(err.Error(), "channel update contended") {
+		t.Fatalf("expected contended, got %v", err)
+	}
+}
+
+func TestRedisChannelStorage_DeleteDropsLockKey(t *testing.T) {
+	s, client := newRedisStore(t)
+	lockKey := redisTestPrefix + ":server:lock:" + testChA
+	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	ok, err := s.Acquire(testChA, "pending", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
+	if err := s.Delete(testChA); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if client.hasKey(redisTestPrefix+":server:channel:"+testChA) || client.hasKey(lockKey) {
+		t.Fatal("Delete should drop channel and lock keys")
 	}
 }
 
