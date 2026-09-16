@@ -50,7 +50,7 @@ func heldByOther(scheme *BatchSettlementEvmScheme, channelId, pendingId string) 
 			return false, impl
 		}
 		if err != nil {
-			return false, nil
+			return false, nil //nolint:nilerr // lock I/O failure → optimistic proceed
 		}
 		if held {
 			return false, nil
@@ -61,7 +61,7 @@ func heldByOther(scheme *BatchSettlementEvmScheme, channelId, pendingId string) 
 		return false, impl
 	}
 	if err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // lock I/O failure → optimistic proceed
 	}
 	return held, nil
 }

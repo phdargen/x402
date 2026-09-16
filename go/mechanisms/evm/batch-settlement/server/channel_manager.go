@@ -155,7 +155,7 @@ func channelIsHeld(lock ChannelLockStorage, channelId string) (bool, error) {
 		return false, impl
 	}
 	if err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // lock I/O failure → treat as not held
 	}
 	return held, nil
 }
