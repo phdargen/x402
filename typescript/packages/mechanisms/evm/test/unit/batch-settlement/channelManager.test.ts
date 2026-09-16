@@ -392,6 +392,30 @@ describe("BatchSettlementChannelManager — refund()", () => {
     expect(result).toEqual([{ channel: session.channelId, transaction: "0xtx" }]);
   });
 
+  it("rejects refund when isHeld throws a TypeError", async () => {
+    const storage = new InMemoryChannelStorage();
+    const lockStorage: ChannelLockStorage = {
+      acquire: async () => true,
+      release: async () => undefined,
+      isHeld: async () => {
+        throw new TypeError("corrupt hold");
+      },
+    };
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, { storage, lockStorage });
+    const facilitator = buildFacilitator();
+    const manager = new BatchSettlementChannelManager({
+      scheme,
+      facilitator,
+      receiver: RECEIVER,
+      token: TOKEN,
+      network: NETWORK,
+    });
+    const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
+    await storeChannel(storage, session);
+
+    await expect(manager.refund()).rejects.toThrow(TypeError);
+  });
+
   it("returns no channels when storage is empty", async () => {
     const { manager, facilitator } = buildManager();
     const result = await manager.refund();

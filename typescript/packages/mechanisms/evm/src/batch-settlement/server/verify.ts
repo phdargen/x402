@@ -23,6 +23,7 @@ import { validateChannelConfig } from "../facilitator/utils";
 import * as Errors from "../errors";
 import type { BatchSettlementEvmScheme } from "./scheme";
 import type { Channel } from "./storage";
+import { rethrowLockImplementationError } from "./storage";
 import { readExtraNumber, readExtraString } from "./utils";
 
 // Framework cleanup hooks release admission locks for normal failures
@@ -241,8 +242,9 @@ export async function handleEnrichPaymentRequiredResponse(
  * Lifecycle hook: runs after the facilitator verifies a payment.
  *
  * Acquires a best-effort admission lock and stashes verify extras on the request
- * context. Durable channel writes happen at settle. Lock-store failures are
+ * context. Durable channel writes happen at settle. Lock-store I/O failures are
  * optimistic: verification continues and the charge CAS serializes commits.
+ * Implementation/parse errors from acquire fail closed.
  *
  * For refund payloads, additionally returns a `skipHandler` directive so that
  * the resource server bypasses the application handler and settles inline.
@@ -316,8 +318,9 @@ export async function handleAfterVerify(
       };
     }
     reserved = true;
-  } catch {
-    // Lock-store throw: continue without a reservation; settle CAS serializes.
+  } catch (err) {
+    rethrowLockImplementationError(err);
+    // Lock-store I/O: continue without a reservation; settle CAS serializes.
   }
 
   const ex = result.extra ?? {};

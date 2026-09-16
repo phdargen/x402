@@ -1709,6 +1709,211 @@ describe("BatchSettlementEvmScheme — two-phase reservation (security)", () => 
   });
 });
 
+describe("BatchSettlementEvmScheme — lock-store implementation errors", () => {
+  const validResult = {
+    isValid: true,
+    payer: PAYER,
+    extra: { balance: "10000", totalClaimed: "0", refundNonce: "0" },
+  } as VerifyResponse;
+
+  function lockStorageThrowingOnIsHeld(err: Error): ChannelLockStorage {
+    return {
+      acquire: async () => true,
+      release: async () => undefined,
+      isHeld: async () => {
+        throw err;
+      },
+    };
+  }
+
+  it("rejects refund enrich when isHeld throws a TypeError", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new TypeError("corrupt hold")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "500",
+      signedMaxClaimable: "500",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    const payload = buildRefundPayload(channelId, "500", config);
+    await reservePending(scheme, payload, makeRequirements({ amount: "0" }));
+
+    await expect(
+      scheme.enrichSettlementPayload({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "0" }),
+      } as never),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("still enriches a refund when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "500",
+      signedMaxClaimable: "500",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    const payload = buildRefundPayload(channelId, "500", config);
+    await reservePending(scheme, payload, makeRequirements({ amount: "0" }));
+
+    const enrichment = await scheme.enrichSettlementPayload({
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "0" }),
+    } as never);
+    expect(enrichment?.refundNonce).toBe("0");
+  });
+
+  it("rejects deposit afterSettle when isHeld throws a TypeError", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new TypeError("corrupt hold")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    await expect(
+      scheme.schemeHooks.onAfterSettle!({
+        paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+        requirements: makeRequirements({ amount: "1000" }),
+        result: {
+          success: true,
+          transaction: "0xtx",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "10000",
+              totalClaimed: "0",
+              withdrawRequestedAt: 0,
+              refundNonce: "0",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("still charges a deposit afterSettle when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, {
+      storage,
+      lockStorage: lockStorageThrowingOnIsHeld(new Error("lock down")),
+    });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+
+    await scheme.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("rejects afterVerify when acquire throws a TypeError", async () => {
+    const lockStorage: ChannelLockStorage = {
+      acquire: async () => {
+        throw new TypeError("broken acquire");
+      },
+      release: async () => undefined,
+      isHeld: async () => false,
+    };
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, { storage, lockStorage });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildVoucherPayload(channelId, "1000", config);
+    const requirements = makeRequirements({ amount: "1000" });
+    await runBeforeVerify(scheme, payload, requirements);
+
+    await expect(
+      scheme.schemeHooks.onAfterVerify!({
+        paymentPayload: payload,
+        requirements,
+        result: validResult,
+      } as never),
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("rejects clearPendingRequest when release throws a TypeError", async () => {
+    const storage = new InMemoryChannelStorage();
+    const scheme = new BatchSettlementEvmScheme(RECEIVER, { storage });
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildVoucherPayload(channelId, "1000", config);
+    await reservePending(scheme, payload, makeRequirements({ amount: "1000" }));
+    vi.spyOn(storage, "release").mockRejectedValueOnce(new TypeError("broken release"));
+
+    await expect(scheme.clearPendingRequest(payload)).rejects.toThrow(TypeError);
+    expect(scheme.readRequestContext(payload)?.reservationCommitted).toBe(true);
+  });
+});
+
 describe("BatchSettlementEvmScheme — pending cleanup hooks", () => {
   let server: BatchSettlementEvmScheme;
   let storage: InMemoryChannelStorage;

@@ -56,6 +56,21 @@ export interface ChannelLockStorage {
 }
 
 /**
+ * Rethrows lock-store implementation/parse failures so callers fail closed.
+ *
+ * {@link TypeError}, {@link SyntaxError}, and {@link RangeError} indicate a broken
+ * backend or unreadable hold record. Other errors (network, timeout, I/O) are ignored
+ * so callers can treat the lock as absent.
+ *
+ * @param err - Error from acquire, release, or isHeld.
+ */
+export function rethrowLockImplementationError(err: unknown): void {
+  if (err instanceof TypeError || err instanceof SyntaxError || err instanceof RangeError) {
+    throw err;
+  }
+}
+
+/**
  * Returns whether `value` implements {@link ChannelLockStorage}.
  *
  * @param value - Storage object to inspect.
