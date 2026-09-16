@@ -251,6 +251,20 @@ export function isBatchSettlementRefundPayload(
 }
 
 /**
+ * Type guard for {@link BatchSettlementPayload} (deposit, voucher, or refund).
+ *
+ * @param payload - Unknown payload to check.
+ * @returns True if `payload` is a client request payload with channel config and voucher fields.
+ */
+export function isBatchSettlementPayload(payload: unknown): payload is BatchSettlementPayload {
+  return (
+    isBatchSettlementDepositPayload(payload) ||
+    isBatchSettlementVoucherPayload(payload) ||
+    isBatchSettlementRefundPayload(payload)
+  );
+}
+
+/**
  * Type guard for {@link BatchSettlementClaimPayload}.
  *
  * @param payload - Unknown payload to check.

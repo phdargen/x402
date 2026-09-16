@@ -24,7 +24,8 @@ import {
   MAX_WITHDRAW_DELAY,
   MIN_WITHDRAW_DELAY,
 } from "../constants";
-import { isFacilitatorManaged, voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
+import { voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
+import * as Errors from "../errors";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import {
   InMemoryChannelStorage,
@@ -202,17 +203,22 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         config.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
     }
 
+    const mismatch = voucherStoreModeMismatchAbort();
     this.schemeHooks = {
-      onBeforeVerify: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onBeforeVerify(this, ctx),
-      onAfterVerify: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onAfterVerify(this, ctx),
-      onBeforeSettle: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onBeforeSettle(this, ctx),
-      onAfterSettle: ctx => HANDLERS[voucherStoreMode(ctx.requirements)].onAfterSettle(this, ctx),
+      onBeforeVerify: ctx =>
+        this.runHook(ctx.requirements, h => h.onBeforeVerify(this, ctx), mismatch),
+      onAfterVerify: ctx =>
+        this.runHook(ctx.requirements, h => h.onAfterVerify(this, ctx), mismatch),
+      onBeforeSettle: ctx =>
+        this.runHook(ctx.requirements, h => h.onBeforeSettle(this, ctx), mismatch),
+      onAfterSettle: ctx =>
+        this.runHook(ctx.requirements, h => h.onAfterSettle(this, ctx), undefined),
       onVerifyFailure: ctx =>
-        HANDLERS[voucherStoreMode(ctx.requirements)].onVerifyFailure(this, ctx),
+        this.runHook(ctx.requirements, h => h.onVerifyFailure(this, ctx), undefined),
       onSettleFailure: ctx =>
-        HANDLERS[voucherStoreMode(ctx.requirements)].onSettleFailure(this, ctx),
+        this.runHook(ctx.requirements, h => h.onSettleFailure(this, ctx), undefined),
       onVerifiedPaymentCanceled: ctx =>
-        HANDLERS[voucherStoreMode(ctx.requirements)].onVerifiedPaymentCanceled(this, ctx),
+        this.runHook(ctx.requirements, h => h.onVerifiedPaymentCanceled(this, ctx), undefined),
     };
   }
 
@@ -223,7 +229,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Additive payload fields, or nothing when no enrichment is needed.
    */
   enrichSettlementPayload = (ctx: SettleContext): Promise<Record<string, unknown> | void> =>
-    HANDLERS[voucherStoreMode(ctx.requirements)].enrichSettlementPayload(this, ctx);
+    this.requireHandlers(ctx.requirements).enrichSettlementPayload(this, ctx);
 
   /**
    * Adds corrective channel state to payment-required responses when available.
@@ -234,12 +240,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   enrichPaymentRequiredResponse = (
     ctx: Parameters<typeof handleEnrichPaymentRequiredResponse>[1],
   ): Promise<PaymentRequirements[] | void> => {
-    const mode = ctx.paymentPayload
-      ? voucherStoreMode(ctx.paymentPayload.accepted as PaymentRequirements)
-      : ctx.requirements.some(req => isFacilitatorManaged(req))
-        ? "facilitator"
-        : "self";
-    return HANDLERS[mode].enrichPaymentRequiredResponse(this, ctx);
+    if (ctx.paymentPayload) {
+      const accepted = ctx.paymentPayload.accepted as PaymentRequirements;
+      if (!this.handlersFor(accepted)) {
+        return Promise.resolve();
+      }
+    }
+    return HANDLERS[this.configuredMode].enrichPaymentRequiredResponse(this, ctx);
   };
 
   /**
@@ -249,7 +256,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Additive response extra fields, or nothing when no enrichment is needed.
    */
   enrichSettlementResponse = (ctx: SettleResultContext): Promise<Record<string, unknown> | void> =>
-    HANDLERS[voucherStoreMode(ctx.requirements)].enrichSettlementResponse(this, ctx);
+    this.runHook(ctx.requirements, h => h.enrichSettlementResponse(this, ctx), undefined);
 
   /**
    * Merges batch-settlement state into the current request context.
@@ -623,7 +630,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @returns Refund-authorizer signer, or `undefined` when not set.
    */
   getRefundAuthorizerSigner(): AuthorizerSigner | undefined {
-    return this.receiverAuthorizerSigner ?? this.refundAuthorizerSigner;
+    switch (this.configuredMode) {
+      case "self":
+        return this.receiverAuthorizerSigner;
+      case "facilitator":
+        return this.refundAuthorizerSigner;
+      default: {
+        const _exhaustive: never = this.configuredMode;
+        return _exhaustive;
+      }
+    }
   }
 
   /**
@@ -726,12 +742,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   }
 
   /**
-   * Parses a human-readable money string (e.g. `"$1.50"`) into a decimal number.
-   *
-   * @param money - Money string (may include `$`) or numeric amount.
-   * @returns Parsed finite number.
-   */
-  /**
    * Converts a decimal dollar amount to the network's default token amount.
    *
    * @param amount - Decimal amount in display units.
@@ -763,6 +773,50 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       },
     };
   }
+
+  /**
+   * Returns this instance's handler table when request extras match constructor mode.
+   *
+   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @returns The configured-mode handlers, or `undefined` on mismatch.
+   */
+  private handlersFor(requirements: PaymentRequirements): VoucherStoreHandlers | undefined {
+    if (voucherStoreMode(requirements) !== this.configuredMode) {
+      return undefined;
+    }
+    return HANDLERS[this.configuredMode];
+  }
+
+  /**
+   * Runs a hook against the configured handler table, or the mismatch fallback.
+   *
+   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @param run - Hook invocation on the matched handler table.
+   * @param onMismatch - Value used when extras disagree with constructor mode.
+   * @returns The hook result, always as a Promise so `SchemeServerHooks` type-checks.
+   */
+  private runHook<T>(
+    requirements: PaymentRequirements,
+    run: (handlers: VoucherStoreHandlers) => T | Promise<T>,
+    onMismatch: T,
+  ): Promise<T> {
+    const handlers = this.handlersFor(requirements);
+    return Promise.resolve(handlers ? run(handlers) : onMismatch);
+  }
+
+  /**
+   * Returns the configured handler table, or throws on mode mismatch.
+   *
+   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @returns The configured-mode handlers.
+   */
+  private requireHandlers(requirements: PaymentRequirements): VoucherStoreHandlers {
+    const handlers = this.handlersFor(requirements);
+    if (!handlers) {
+      throw new Error(Errors.ErrVoucherStoreModeMismatch);
+    }
+    return handlers;
+  }
 }
 
 /**
@@ -774,4 +828,21 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
   const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1000;
   return Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(withdrawDelayMs / 3)));
+}
+
+/**
+ * Abort used when request `extra.voucherStore` disagrees with constructor mode.
+ *
+ * @returns Lifecycle abort for verify/settle hooks.
+ */
+function voucherStoreModeMismatchAbort(): {
+  abort: true;
+  reason: string;
+  message: string;
+} {
+  return {
+    abort: true,
+    reason: Errors.ErrVoucherStoreModeMismatch,
+    message: "Payment requirements voucherStore does not match the server voucherStoreMode",
+  };
 }

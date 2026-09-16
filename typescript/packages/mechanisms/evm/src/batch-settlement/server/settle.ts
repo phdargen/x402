@@ -448,14 +448,6 @@ export async function handleEnrichSettlementResponse(
     return;
   }
 
-  if (isBatchSettlementRefundPayload(raw)) {
-    return {
-      channelState: {
-        chargedCumulativeAmount: channel.chargedCumulativeAmount,
-      },
-    };
-  }
-
   if (isBatchSettlementDepositPayload(raw)) {
     return {
       channelState: {
@@ -464,6 +456,7 @@ export async function handleEnrichSettlementResponse(
       chargedAmount: ctx.requirements.amount,
     };
   }
+
   return {
     channelState: {
       chargedCumulativeAmount: channel.chargedCumulativeAmount,
