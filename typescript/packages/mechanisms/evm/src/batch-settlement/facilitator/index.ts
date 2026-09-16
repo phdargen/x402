@@ -5,9 +5,12 @@ export {
   CHARGE_COUNTS_MAGIC,
   composeClaimDataSuffix,
   encodeChargeCountsSuffix,
+  extractClaimCalldata,
   parseChargeCountsFromCalldata,
   parseChargeCountsSuffix,
-} from "./chargeCounts";
+} from "../chargeCounts";
+export { decodeClaimAttestation } from "../attestation";
+export type { ClaimAttestation, ClaimAttestationRow } from "../attestation";
 export { batchSettlementABI } from "../abi";
 export { computeChannelId } from "../utils";
 export type {

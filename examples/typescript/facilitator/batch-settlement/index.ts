@@ -17,12 +17,10 @@ import {
   VerifyResponse,
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
+import { decodeClaimAttestation } from "@x402/evm/batch-settlement";
 import {
   BatchSettlementEvmScheme,
   InMemoryChannelStorage,
-  batchSettlementABI,
-  computeChannelId,
-  parseChargeCountsFromCalldata,
   type FacilitatorChannelManager,
   type FacilitatorClaimResult,
   type FacilitatorRefundResult,
@@ -45,7 +43,6 @@ import dotenv from "dotenv";
 import express from "express";
 import {
   createWalletClient,
-  decodeFunctionData,
   http,
   nonceManager,
   parseEventLogs,
@@ -56,6 +53,18 @@ import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
 dotenv.config();
+
+const refundedEventABI = [
+  {
+    type: "event",
+    name: "Refunded",
+    inputs: [
+      { name: "channelId", type: "bytes32", indexed: true },
+      { name: "sender", type: "address", indexed: true },
+      { name: "amount", type: "uint128", indexed: false },
+    ],
+  },
+] as const;
 
 function envFlag(name: string): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
@@ -86,11 +95,24 @@ function logVerifyLine(payload: PaymentPayload, response: VerifyResponse): void 
   );
 }
 
-async function logClaimAttestation(
-  result: FacilitatorClaimResult,
+/**
+ * Logs claim attestation for a settlement transaction using the single SDK helper
+ * {@link decodeClaimAttestation} (handles `claim` and bundled `multicall([claim, refund])`).
+ *
+ * @param label - Log label (`Claim` for `onClaim`, `Refund` for `onRefund`).
+ * @param result - Channel-manager result with the settlement transaction hash and network.
+ * @param client - Viem client used to fetch the transaction and receipt.
+ * @param client.getTransaction - Fetches a transaction by hash.
+ * @param client.getTransactionReceipt - Fetches a transaction receipt by hash.
+ */
+async function logSettlementAttestation(
+  label: "Claim" | "Refund",
+  result: FacilitatorClaimResult | FacilitatorRefundResult,
   client: {
     getTransaction: (args: { hash: Hex }) => Promise<{ input: Hex }>;
-    getTransactionReceipt: (args: { hash: Hex }) => Promise<{ logs: readonly unknown[] }>;
+    getTransactionReceipt: (args: {
+      hash: Hex;
+    }) => Promise<{ logs: readonly unknown[] }>;
   },
 ): Promise<void> {
   if (!result.transaction) {
@@ -101,45 +123,48 @@ async function logClaimAttestation(
     client.getTransaction({ hash }),
     client.getTransactionReceipt({ hash }),
   ]);
-  const chargeCounts = parseChargeCountsFromCalldata(tx.input);
+  const attestation = decodeClaimAttestation(
+    tx.input,
+    receipt.logs,
+    result.network,
+  );
   const builderCode = parseBuilderCodeSuffixFromCalldata(tx.input);
-  const decoded = decodeFunctionData({ abi: batchSettlementABI, data: tx.input });
-  if (decoded.functionName !== "claim" && decoded.functionName !== "claimWithSignature") {
-    console.log("[voucher store] Claim attestation: not a claim function", {
+
+  if (label === "Refund") {
+    const refunded = parseEventLogs({
+      abi: refundedEventABI,
+      eventName: "Refunded",
+      logs: receipt.logs as Parameters<typeof parseEventLogs>[0]["logs"],
+    });
+    const channel = (result as FacilitatorRefundResult).channel;
+    const refundLog = refunded.find(
+      (entry) => entry.args.channelId?.toLowerCase() === channel.toLowerCase(),
+    );
+    console.log("[voucher store] Refund attestation", {
       tx: hash,
-      functionName: decoded.functionName,
+      channelId: channel,
+      functionName: attestation.functionName,
+      claimFunctionName: attestation.claimFunctionName ?? null,
+      chargeCounts:
+        attestation.chargeCounts?.map((count: bigint) => count.toString()) ??
+        null,
+      builderCode: builderCode ?? null,
+      channels: attestation.channels,
+      refundAmount: refundLog?.args.amount?.toString(),
+      refundSender: refundLog?.args.sender,
     });
     return;
   }
-  const voucherClaims = decoded.args[0];
-  const claimed = parseEventLogs({
-    abi: batchSettlementABI,
-    eventName: "Claimed",
-    logs: receipt.logs as Parameters<typeof parseEventLogs>[0]["logs"],
-  });
-  const rows = voucherClaims.map((claim: (typeof voucherClaims)[number], index: number) => {
-    const channelId = computeChannelId(
-      {
-        ...claim.voucher.channel,
-        withdrawDelay: Number(claim.voucher.channel.withdrawDelay),
-      },
-      result.network,
-    );
-    const log = claimed.find(
-      entry => entry.args.channelId?.toLowerCase() === channelId.toLowerCase(),
-    );
-    return {
-      channelId,
-      chargeCount: chargeCounts?.[index]?.toString(),
-      claimAmount: log?.args.claimAmount?.toString(),
-      newTotalClaimed: log?.args.newTotalClaimed?.toString(),
-    };
-  });
+
   console.log("[voucher store] Claim attestation", {
     tx: hash,
-    chargeCounts: chargeCounts?.map((count: bigint) => count.toString()),
+    functionName: attestation.functionName,
+    claimFunctionName: attestation.claimFunctionName ?? null,
+    chargeCounts:
+      attestation.chargeCounts?.map((count: bigint) => count.toString()) ??
+      null,
     builderCode: builderCode ?? null,
-    channels: rows,
+    channels: attestation.channels,
   });
 }
 
@@ -331,14 +356,18 @@ if (evmPrivateKey) {
       maxClaimsPerBatch: 100,
       onClaim: (r: FacilitatorClaimResult) => {
         console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`);
-        void logClaimAttestation(r, viemClient).catch(err =>
+        void logSettlementAttestation("Claim", r, viemClient).catch(err =>
           console.error("[voucher store] Failed to parse claim attestation:", err),
         );
       },
       onSettle: (r: FacilitatorSettleResult) =>
         console.log(`[voucher store] Settled ${r.receiver} (tx: ${r.transaction})`),
-      onRefund: (r: FacilitatorRefundResult) =>
-        console.log(`[voucher store] Refunded channel ${r.channel} (tx: ${r.transaction})`),
+      onRefund: (r: FacilitatorRefundResult) => {
+        console.log(`[voucher store] Refunded channel ${r.channel} (tx: ${r.transaction})`);
+        void logSettlementAttestation("Refund", r, viemClient).catch(err =>
+          console.error("[voucher store] Failed to parse refund attestation:", err),
+        );
+      },
       onError: e => console.error("[voucher store] Settlement error:", e),
     });
   }
