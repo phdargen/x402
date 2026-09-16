@@ -69,7 +69,7 @@ The contract emits `ChannelCreated(channelId, config)` on the first deposit into
 
 ### Channel reuse and parameter changes
 
-Channels are long-lived. After a refund, the client can top up and reuse the same channel. However, the channel config is immutable. If any parameter needs to change, a new channel is required. If delegating `receiverAuthorizer` to a facilitator, the server should claim all outstanding vouchers and refund remaining balances on old channels before switching to another facilitator.
+Channels are long-lived. After a refund, the client can top up and reuse the same channel. However, the channel config is immutable. If any parameter needs to change, a new channel is required — including `receiverAuthorizer` and `extra.refundAuthorizer` (the latter is packed into `salt`). If delegating `receiverAuthorizer` to a facilitator, the server should claim all outstanding vouchers and refund remaining balances on old channels before switching to another facilitator.
 
 ---
 
@@ -153,7 +153,7 @@ Facilitator-managed 402 (server copies `receiverAuthorizer`, `withdrawDelay`, an
 | `extra.name`                | `string`  | yes             | EIP-712 domain name of the token contract                                                                                                                |
 | `extra.version`             | `string`  | yes             | EIP-712 domain version of the token contract                                                                                                             |
 | `extra.voucherStore`        | `boolean` | optional        | If `true`, facilitator-managed voucher custody                                                                                                           |
-| `extra.refundAuthorizer`    | `string`  | managed refunds | Server EOA that consents to cooperative refunds. Required on a managed 402 unless the facilitator advertised `refundAuth: true`. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) || bytes20(refundAuthorizer)`. Entropy is a 12-byte channel index: if the caller salt's high 12 bytes are zero (left-padded `0`, `1`, `2`, …), use the low 96 bits; otherwise keep the first 12 bytes of a 32-byte salt. |
+| `extra.refundAuthorizer`    | `string`  | managed refunds | Server EOA that consents to cooperative refunds. Required on a managed 402 unless the facilitator advertised `refundAuth: true`. When present, the client MUST set `ChannelConfig.salt = bytes12(entropy) || bytes20(refundAuthorizer)`. Entropy is a 12-byte channel index: if the caller salt's high 12 bytes are zero (left-padded `0`, `1`, `2`, …), use the low 96 bits; otherwise keep the first 12 bytes of a 32-byte salt. Changing this address is a new channel. |
 | `extra.channelState`        | `object`  | optional        | Corrective-only server channel snapshot for cumulative amount resynchronization                                                                          |
 | `extra.voucherState`        | `object`  | optional        | Corrective-only signed voucher proof for cumulative amount resynchronization                                                                             |
 
@@ -862,7 +862,9 @@ In self-managed mode the server runs this strategy. In facilitator-managed mode 
 
 `magic` is `0x50b180c6` (`bytes4(keccak256("x402ChargeCounts(uint64[])"))`). `chargeCounts` has one entry per `voucherClaims` row — that row's unattested delta (`chargeCount`), not a lifetime aggregate. Length MUST equal `voucherClaims.length`. Solidity ignores trailing calldata; the contract is unchanged and does not validate the suffix. When `builder-code` is also present, its ERC-8021 suffix is appended after this blob so the ERC-8021 marker remains at the end of calldata.
 
-Indexers ABI-decode the function, then if leftover starts with `magic`, decode the following `uint64[]` (stop before any later suffix) and join `chargeCounts[i]` to `voucherClaims[i]` by `channelId`, then to that channel's `Claimed` event in the same transaction. Empty leftover or no `magic` means no attestation. After the claim confirms, subtract each attested snapshot from the stored `chargeCount`; do not zero the field, or in-flight commits are lost.
+When a claim is batched with a refund via `multicall(bytes[])`, the suffix stays on the inner `claim` / `claimWithSignature` bytes, not the outer transaction. Indexers unwrap `multicall` first (first inner claim wins; production batches `[claim, refund]`), then ABI-decode the inner claim and read the leftover magic as below.
+
+Indexers ABI-decode the function (unwrapping `multicall` first), then if leftover starts with `magic`, decode the following `uint64[]` (stop before any later suffix) and join `chargeCounts[i]` to `voucherClaims[i]` by `channelId`, then to that channel's `Claimed` event in the same transaction. Empty leftover or no `magic` means no attestation. After the claim confirms, subtract each attested snapshot from the stored `chargeCount`; do not zero the field, or in-flight commits are lost.
 
 `settle(receiver, token)` transfers all claimed-but-unsettled funds for a receiver+token pair to the receiver in one transfer. Permissionless.
 
@@ -897,7 +899,7 @@ If any check fails, the client must not sign further vouchers and should initiat
 
 ### Recovery After State Loss
 
-Channel identity is deterministic. The client can recompute `channelId` from the 402 response plus its own channel parameters (`payer`, `payerAuthorizer`, `salt`), then read `channels(channelId)` to recover the onchain `balance` and `totalClaimed`.
+Channel identity is deterministic. The client can recompute `channelId` from the 402 response plus its own channel parameters (`payer`, `payerAuthorizer`, `salt`), then read `channels(channelId)` to recover the onchain `balance` and `totalClaimed`. When `extra.refundAuthorizer` is present, `salt` is `bytes12(entropy) || bytes20(refundAuthorizer)` — recovery must use the same address that opened the channel.
 
 The recovery baseline is:
 

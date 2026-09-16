@@ -30,7 +30,7 @@ import { submitRefund } from "./refund";
 import { resolveDataSuffix } from "../../shared/extensions";
 import * as Errors from "../errors";
 import { settleManaged, verifyManaged, type VoucherStoreDeps } from "./voucherStore";
-import { composeClaimDataSuffix } from "./chargeCounts";
+import { composeClaimDataSuffix } from "../chargeCounts";
 import { afterClaim, FacilitatorChannelManager, snapshotClaimChargeCounts } from "./channelManager";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
 import { assertDirectAuthorizerSubmitter, type SubmitContext, type SubmitMode } from "./submit";

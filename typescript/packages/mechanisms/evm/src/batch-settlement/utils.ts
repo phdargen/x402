@@ -140,6 +140,8 @@ export function getBatchSettlementEip712Domain(chainId: number) {
  * entropy is the low 96 bits so incrementing the salt opens distinct channels.
  * Otherwise the first 12 bytes are kept (full `bytes32` / random-salt compat).
  *
+ * Changing `refundAuthorizer` changes `salt` and therefore `channelId`.
+ *
  * @param entropy - Channel index or 32-byte salt.
  * @param refundAuthorizer - Server refund-authorizer address committed into the channel id.
  * @returns A `bytes32` salt.

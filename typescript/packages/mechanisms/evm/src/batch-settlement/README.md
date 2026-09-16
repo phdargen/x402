@@ -87,7 +87,7 @@ await scheme.refund(url, { amount: "1000000" });
 
 The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or `amount` to the payer.
 
-When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed.
+When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
 
 ### Persistence
 
@@ -310,7 +310,7 @@ Opt in with `voucherStoreMode: "facilitator"`. Mode is constructor-wide — it i
 
 Refund consent is one of:
 
-- `refundAuthorizerSigner` — the 402 includes `extra.refundAuthorizer`; the client packs it into salt; `/settle` attaches `refundAuthorizerSignature`
+- `refundAuthorizerSigner` — the 402 includes `extra.refundAuthorizer`; the client packs it into salt; `/settle` attaches `refundAuthorizerSignature`. Changing this key opens new channels.
 - facilitator `refundAuth` — omit `refundAuthorizerSigner`; `initialize()` fails unless `/supported` advertises `refundAuth: true`
 
 ```typescript

@@ -1,8 +1,12 @@
 /**
- * @file Onchain `x402ChargeCounts` calldata suffix for facilitator-managed claims.
+ * @file Onchain `x402ChargeCounts` calldata suffix for batch-settlement claims.
  *
  * Spec layout: `[function args][magic][abi.encode(uint64[] chargeCounts)][any further suffix]`.
  * `chargeCounts[i]` is the unattested delta for `voucherClaims[i]`, not a lifetime total.
+ *
+ * Encoding is produced by the facilitator when submitting claims; decoding helpers are
+ * neutral and can be used by clients, indexers, or any third party reading settlement
+ * transactions.
  */
 import {
   decodeAbiParameters,
@@ -11,8 +15,8 @@ import {
   encodeFunctionData,
   type Hex,
 } from "viem";
-import { appendDataSuffix } from "../../shared/extensions";
-import { batchSettlementABI } from "../abi";
+import { appendDataSuffix } from "../shared/extensions";
+import { batchSettlementABI } from "./abi";
 
 /** `bytes4(keccak256("x402ChargeCounts(uint64[])"))`. */
 export const CHARGE_COUNTS_MAGIC = "0x50b180c6" as const;
@@ -55,7 +59,51 @@ export function composeClaimDataSuffix(
 }
 
 /**
+ * Extracts the inner `claim` / `claimWithSignature` calldata from full transaction input.
+ *
+ * Production refunds batch `[claim+suffix, refund]` via `multicall(bytes[])`, with the
+ * charge-count suffix kept on the inner claim bytes (the outer `dataSuffix` stays
+ * ERC-8021 builder-code). This helper unwraps one level of `multicall` recursively and
+ * returns the first inner claim found, so indexers and loggers can ABI-decode the claim
+ * and its leftover magic without custom unwrap logic.
+ *
+ * @param calldata - Full transaction input (may be a top-level `multicall`).
+ * @returns Inner claim calldata, or `undefined` when no claim leg is present.
+ */
+export function extractClaimCalldata(calldata: Hex): Hex | undefined {
+  let decoded: ReturnType<typeof decodeFunctionData<typeof batchSettlementABI>>;
+  try {
+    decoded = decodeFunctionData({ abi: batchSettlementABI, data: calldata });
+  } catch {
+    return undefined;
+  }
+
+  if (decoded.functionName === "claim" || decoded.functionName === "claimWithSignature") {
+    return calldata;
+  }
+
+  if (decoded.functionName === "multicall") {
+    const inner = decoded.args[0] as readonly Hex[];
+    for (const item of inner) {
+      const found = extractClaimCalldata(item);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+
+  return undefined;
+}
+
+/**
  * ABI-decodes a `claim` / `claimWithSignature` transaction and reads the charge-count suffix.
+ *
+ * Full transaction input is accepted, including a top-level `multicall(bytes[])` that
+ * batches `[claim+suffix, refund]`: the inner claim is unwrapped via
+ * {@link extractClaimCalldata} first, then the existing leftover + magic parse runs.
+ * The suffix lives on the inner claim bytes, not the outer tx; builder-code stays on
+ * the outer tx.
  *
  * Empty leftover or no magic means no attestation. A later suffix (including ERC-8021)
  * is ignored: the `uint64[]` is sized as `64 + n*32` bytes after the magic.
@@ -64,7 +112,11 @@ export function composeClaimDataSuffix(
  * @returns Decoded counts, or `undefined` when the calldata is not a claim or has no suffix.
  */
 export function parseChargeCountsFromCalldata(calldata: Hex): bigint[] | undefined {
-  const leftover = leftoverAfterClaimArgs(calldata);
+  const claimCalldata = extractClaimCalldata(calldata);
+  if (claimCalldata === undefined) {
+    return undefined;
+  }
+  const leftover = leftoverAfterClaimArgs(claimCalldata);
   if (leftover === undefined) {
     return undefined;
   }

@@ -5,9 +5,10 @@ import {
   CHARGE_COUNTS_MAGIC,
   composeClaimDataSuffix,
   encodeChargeCountsSuffix,
+  extractClaimCalldata,
   parseChargeCountsFromCalldata,
   parseChargeCountsSuffix,
-} from "../../../src/batch-settlement/facilitator/chargeCounts";
+} from "../../../src/batch-settlement/chargeCounts";
 import { appendDataSuffix } from "../../../src/shared/extensions";
 import type { ChannelConfig } from "../../../src/batch-settlement/types";
 import { toContractChannelConfig } from "../../../src/batch-settlement/facilitator/utils";
@@ -129,5 +130,70 @@ describe("parseChargeCountsFromCalldata", () => {
     expect(
       parseChargeCountsFromCalldata(appendDataSuffix(settle, encodeChargeCountsSuffix([1]))),
     ).toBeUndefined();
+  });
+
+  it("unwraps multicall([claim+suffix, refund]) from the encoded outer calldata", () => {
+    const innerClaim = appendDataSuffix(claimCalldata("claim"), encodeChargeCountsSuffix([4]));
+    const refund = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "refund",
+      args: [toContractChannelConfig(CHANNEL), 100n],
+    });
+    const outer = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "multicall",
+      args: [[innerClaim, refund]],
+    });
+    expect(extractClaimCalldata(outer)).toBe(innerClaim);
+    expect(parseChargeCountsFromCalldata(outer)).toEqual([4n]);
+  });
+
+  it("unwraps multicall when trailing ERC-8021 builder-code is on the outer tx", () => {
+    const innerClaim = appendDataSuffix(
+      claimCalldata("claimWithSignature"),
+      encodeChargeCountsSuffix([4]),
+    );
+    const refund = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "refund",
+      args: [toContractChannelConfig(CHANNEL), 100n],
+    });
+    const outer = appendDataSuffix(
+      encodeFunctionData({
+        abi: batchSettlementABI,
+        functionName: "multicall",
+        args: [[innerClaim, refund]],
+      }),
+      "0x8021abcd",
+    );
+    expect(parseChargeCountsFromCalldata(outer)).toEqual([4n]);
+  });
+
+  it("returns undefined for refund-only and non-claim multicall legs", () => {
+    const refund = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "refund",
+      args: [toContractChannelConfig(CHANNEL), 100n],
+    });
+    const refundOnly = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "multicall",
+      args: [[refund]],
+    });
+    expect(extractClaimCalldata(refundOnly)).toBeUndefined();
+    expect(parseChargeCountsFromCalldata(refundOnly)).toBeUndefined();
+
+    const settle = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "settle",
+      args: [CHANNEL.receiver, CHANNEL.token],
+    });
+    const nonClaim = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "multicall",
+      args: [[settle, refund]],
+    });
+    expect(extractClaimCalldata(nonClaim)).toBeUndefined();
+    expect(parseChargeCountsFromCalldata(nonClaim)).toBeUndefined();
   });
 });

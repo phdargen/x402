@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { MockedFunction } from "vitest";
+import { encodeFunctionData } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   FacilitatorChannelManager,
@@ -11,7 +12,9 @@ import {
   CHARGE_COUNTS_MAGIC,
   parseChargeCountsFromCalldata,
   parseChargeCountsSuffix,
-} from "../../../src/batch-settlement/facilitator/chargeCounts";
+} from "../../../src/batch-settlement/chargeCounts";
+import { batchSettlementABI } from "../../../src/batch-settlement/abi";
+import { appendDataSuffix } from "../../../src/shared/extensions";
 import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import type { AuthorizerSigner, ChannelConfig } from "../../../src/batch-settlement/types";
 import type { FacilitatorContext } from "@x402/core/types";
@@ -574,6 +577,12 @@ describe("FacilitatorChannelManager — refund()", () => {
     expect(write.dataSuffix).toBeUndefined();
     const claimCalldata = (write.args[0] as `0x${string}`[])[0];
     expect(parseChargeCountsFromCalldata(claimCalldata)).toEqual([4n]);
+    const txInput = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "multicall",
+      args: write.args as [`0x${string}`[]],
+    });
+    expect(parseChargeCountsFromCalldata(txInput)).toEqual([4n]);
   });
 
   it("appends builder-code on the outer refund tx when context is provided", async () => {
@@ -608,6 +617,15 @@ describe("FacilitatorChannelManager — refund()", () => {
     expect(write.functionName).toBe("multicall");
     expect(write.dataSuffix).toBe(builderSuffix);
     expect(parseChargeCountsFromCalldata((write.args[0] as `0x${string}`[])[0])).toEqual([4n]);
+    const txInput = appendDataSuffix(
+      encodeFunctionData({
+        abi: batchSettlementABI,
+        functionName: "multicall",
+        args: write.args as [`0x${string}`[]],
+      }),
+      write.dataSuffix,
+    );
+    expect(parseChargeCountsFromCalldata(txInput)).toEqual([4n]);
   });
 
   it("does not idle-refund channels whose escrow balance is zero", async () => {

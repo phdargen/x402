@@ -16,7 +16,7 @@ import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
 import { computeChannelId } from "../utils";
 import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
 import { isChannelLockStorage } from "../storage/channel";
-import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "./chargeCounts";
+import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitClaim } from "./claim";
 import { submitRefund } from "./refund";
 import { executeSettle } from "./settle";
