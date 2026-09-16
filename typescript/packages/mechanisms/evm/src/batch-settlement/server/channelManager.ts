@@ -11,6 +11,7 @@ import { computeChannelId } from "../utils";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import type { Channel, ChannelLockStorage } from "./storage";
+import { rethrowLockImplementationError } from "./storage";
 
 export interface ChannelManagerConfig {
   scheme: BatchSettlementEvmScheme;
@@ -85,7 +86,8 @@ function formatFacilitatorFailure(operation: string, response: SettleResponse): 
 }
 
 /**
- * Returns whether a live admission lock is held, treating lock-store errors as not held.
+ * Returns whether a live admission lock is held. Lock-store I/O failures are optimistic
+ * (treat as not held). Implementation/parse errors fail closed and propagate.
  *
  * @param lock - Admission lock store.
  * @param channelId - Channel to inspect.
@@ -94,7 +96,8 @@ function formatFacilitatorFailure(operation: string, response: SettleResponse): 
 async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promise<boolean> {
   try {
     return await lock.isHeld(channelId);
-  } catch {
+  } catch (err) {
+    rethrowLockImplementationError(err);
     return false;
   }
 }
