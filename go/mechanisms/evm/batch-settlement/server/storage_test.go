@@ -237,15 +237,15 @@ func TestRethrowLockImplementationError(t *testing.T) {
 		t.Fatalf("io: %v", got)
 	}
 	syntax := &json.SyntaxError{}
-	if got := RethrowLockImplementationError(syntax); got != syntax {
+	if got := RethrowLockImplementationError(syntax); !errors.Is(got, syntax) {
 		t.Fatalf("syntax: %v", got)
 	}
 	unmarshalType := &json.UnmarshalTypeError{Value: "string", Offset: 1}
-	if got := RethrowLockImplementationError(unmarshalType); got != unmarshalType {
+	if got := RethrowLockImplementationError(unmarshalType); !errors.Is(got, unmarshalType) {
 		t.Fatalf("unmarshal type: %v", got)
 	}
 	wrapped := fmt.Errorf("hold: %w", syntax)
-	if got := RethrowLockImplementationError(wrapped); got != wrapped {
+	if got := RethrowLockImplementationError(wrapped); !errors.Is(got, wrapped) {
 		t.Fatalf("wrapped: %v", got)
 	}
 }

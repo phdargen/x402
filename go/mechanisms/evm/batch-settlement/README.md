@@ -164,6 +164,27 @@ manager.Start(server.AutoSettlementConfig{
 defer manager.Stop(ctx, &server.StopOptions{Flush: true})
 ```
 
+For serverless or multi-instance servers, use `RedisChannelStorage` so sessions survive cold starts and update atomically across processes. Wrap your Redis/Valkey client as `RedisChannelStorageClient`. The SDK does not import a Redis library. Pass one object as `Storage` when the backend implements both roles (`InMemoryChannelStorage`, `FileChannelStorage`, `RedisChannelStorage`); admission locks are inferred. File locks are shared only by processes that use the same directory. Hosts that do not share that directory need an explicit `LockStorage` (Redis); otherwise each host admits independently and only the charge CAS protects revenue:
+
+```go
+// Redis for durable state and locks (one object, lock inferred)
+scheme := server.NewBatchSettlementEvmScheme(receiverAddress, &server.BatchSettlementEvmSchemeServerConfig{
+    Storage: server.NewRedisChannelStorage(server.RedisChannelStorageOptions{
+        Client: redisAdapter,
+    }),
+})
+
+// File durable, Redis lock (multi-host without a shared filesystem)
+scheme = server.NewBatchSettlementEvmScheme(receiverAddress, &server.BatchSettlementEvmSchemeServerConfig{
+    Storage: server.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
+        Directory: "./sessions",
+    }),
+    LockStorage: server.NewRedisChannelLockStorage(server.RedisChannelStorageOptions{
+        Client: redisAdapter,
+    }),
+})
+```
+
 ### Receiver Authorizer
 
 The `receiverAuthorizer` signs `ClaimBatch` and `Refund` EIP-712 messages and is committed into the channel's identity at deposit time:
