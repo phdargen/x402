@@ -12,6 +12,7 @@ import type { FacilitatorEvmSigner } from "../../signer";
 import type { AuthorizerSigner } from "../types";
 import {
   isBatchSettlementDepositPayload,
+  isBatchSettlementPayload,
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
@@ -114,11 +115,7 @@ export async function verifyManaged(
   context?: FacilitatorContext,
 ): Promise<VerifyResponse> {
   const raw = payload.payload;
-  if (
-    !isBatchSettlementDepositPayload(raw) &&
-    !isBatchSettlementVoucherPayload(raw) &&
-    !isBatchSettlementRefundPayload(raw)
-  ) {
+  if (!isBatchSettlementPayload(raw)) {
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
   }
 

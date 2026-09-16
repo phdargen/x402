@@ -1,24 +1,21 @@
 import type {
   SettleContext,
-  SettleFailureContext,
   SettleResultContext,
-  VerifiedPaymentCanceledContext,
   VerifyContext,
-  VerifyFailureContext,
   VerifyResultContext,
 } from "@x402/core/server";
 import type { SchemePaymentRequiredContext } from "@x402/core/types";
-import {
-  isBatchSettlementDepositPayload,
-  isBatchSettlementRefundPayload,
-  isBatchSettlementVoucherPayload,
-} from "../types";
+import { isBatchSettlementPayload, isBatchSettlementRefundPayload } from "../types";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
-import { channelIdBindingError } from "../utils";
 import * as Errors from "../errors";
 import type { Channel } from "./storage";
-import { abortIfBelowMinDeposit, writeCorrectiveAcceptExtra } from "./verify";
+import {
+  abortIfBelowMinDeposit,
+  abortIfChannelUnbound,
+  skipHandlerForRefund,
+  writeCorrectiveAcceptExtra,
+} from "./verify";
 import { buildRefundSettlementFields } from "./settle";
 import { readChannelStateExtra, readExtraNumber, readExtraString } from "./utils";
 import type { BatchSettlementEvmScheme } from "./scheme";
@@ -36,10 +33,7 @@ export async function handleManagedBeforeVerify(
 ): Promise<void | { abort: true; reason: string; message?: string }> {
   const { paymentPayload, requirements } = ctx;
   const raw = paymentPayload.payload;
-  const isPaidPayload =
-    isBatchSettlementVoucherPayload(raw) || isBatchSettlementDepositPayload(raw);
-  const isZeroChargePayload = isBatchSettlementRefundPayload(raw);
-  if (!isPaidPayload && !isZeroChargePayload) {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
 
@@ -48,18 +42,7 @@ export async function handleManagedBeforeVerify(
     return minDepositAbort;
   }
 
-  const bindErr = channelIdBindingError(
-    raw.channelConfig,
-    raw.voucher.channelId,
-    requirements.network,
-  );
-  if (bindErr) {
-    return {
-      abort: true,
-      reason: bindErr,
-      message: "Channel id does not match channel config",
-    };
-  }
+  return abortIfChannelUnbound(raw, requirements.network);
 }
 
 /**
@@ -80,11 +63,7 @@ export async function handleManagedAfterVerify(
 > {
   const { paymentPayload, result } = ctx;
   const raw = paymentPayload.payload;
-  if (
-    !isBatchSettlementVoucherPayload(raw) &&
-    !isBatchSettlementDepositPayload(raw) &&
-    !isBatchSettlementRefundPayload(raw)
-  ) {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
 
@@ -127,13 +106,7 @@ export async function handleManagedAfterVerify(
   });
 
   if (isBatchSettlementRefundPayload(raw)) {
-    return {
-      skipHandler: true,
-      response: {
-        contentType: "application/json",
-        body: { message: "Refund acknowledged", channelId: raw.voucher.channelId },
-      },
-    };
+    return skipHandlerForRefund(raw.voucher.channelId);
   }
 }
 
@@ -170,19 +143,14 @@ export async function handleManagedEnrichPaymentRequiredResponse(
   writeCorrectiveAcceptExtra(accept, channelState, voucherState);
 }
 
-/**
- * Managed settle is always forwarded; no local voucher short-circuit.
- *
- * @param _scheme - Owning scheme (unused).
- * @param _ctx - Settle context (unused).
- */
-export async function handleManagedBeforeSettle(
-  _scheme: BatchSettlementEvmScheme,
-  _ctx: SettleContext,
-): Promise<void> {
-  void _scheme;
-  void _ctx;
-}
+/** Managed mode has no local admission lock or settle short-circuit. */
+async function noopManagedHook(): Promise<void> {}
+
+export const handleManagedBeforeSettle = noopManagedHook;
+export const handleManagedEnrichSettlementResponse = noopManagedHook;
+export const handleManagedVerifyFailure = noopManagedHook;
+export const handleManagedSettleFailure = noopManagedHook;
+export const handleManagedVerifiedPaymentCanceled = noopManagedHook;
 
 /**
  * Echoes verify `pendingId` onto `/settle` and completes a managed refund.
@@ -198,6 +166,10 @@ export async function handleManagedEnrichSettlementPayload(
 ): Promise<Record<string, unknown> | void> {
   const { paymentPayload, requirements } = ctx;
   const raw = paymentPayload.payload;
+  if (!isBatchSettlementPayload(raw)) {
+    return;
+  }
+
   const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
   const pendingFields = pendingId ? { pendingId } : {};
 
@@ -220,9 +192,7 @@ export async function handleManagedEnrichSettlementPayload(
     };
   }
 
-  if (isBatchSettlementVoucherPayload(raw) || isBatchSettlementDepositPayload(raw)) {
-    return pendingId ? pendingFields : undefined;
-  }
+  return pendingId ? pendingFields : undefined;
 }
 
 /**
@@ -241,11 +211,7 @@ export async function handleManagedAfterSettle(
   }
 
   const raw = paymentPayload.payload;
-  if (
-    !isBatchSettlementVoucherPayload(raw) &&
-    !isBatchSettlementDepositPayload(raw) &&
-    !isBatchSettlementRefundPayload(raw)
-  ) {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
 
@@ -285,62 +251,6 @@ export async function handleManagedAfterSettle(
       lastRequestTimestamp: now,
     };
   });
-}
-
-/**
- * No-op: managed settlement extras come from the facilitator `/settle` response.
- *
- * @param _scheme - Owning scheme (unused).
- * @param _ctx - Settlement result context (unused).
- */
-export async function handleManagedEnrichSettlementResponse(
-  _scheme: BatchSettlementEvmScheme,
-  _ctx: SettleResultContext,
-): Promise<void> {
-  void _scheme;
-  void _ctx;
-}
-
-/**
- * No-op: managed mode holds no local admission lock.
- *
- * @param _scheme - Owning scheme (unused).
- * @param _ctx - Verify failure context (unused).
- */
-export async function handleManagedVerifyFailure(
-  _scheme: BatchSettlementEvmScheme,
-  _ctx: VerifyFailureContext,
-): Promise<void> {
-  void _scheme;
-  void _ctx;
-}
-
-/**
- * No-op: managed mode holds no local admission lock.
- *
- * @param _scheme - Owning scheme (unused).
- * @param _ctx - Settle failure context (unused).
- */
-export async function handleManagedSettleFailure(
-  _scheme: BatchSettlementEvmScheme,
-  _ctx: SettleFailureContext,
-): Promise<void> {
-  void _scheme;
-  void _ctx;
-}
-
-/**
- * No-op: managed mode holds no local admission lock.
- *
- * @param _scheme - Owning scheme (unused).
- * @param _ctx - Cancellation context (unused).
- */
-export async function handleManagedVerifiedPaymentCanceled(
-  _scheme: BatchSettlementEvmScheme,
-  _ctx: VerifiedPaymentCanceledContext,
-): Promise<void> {
-  void _scheme;
-  void _ctx;
 }
 
 /**
