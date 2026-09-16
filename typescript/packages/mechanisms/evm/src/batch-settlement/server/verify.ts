@@ -10,11 +10,12 @@ import { getAddress, hashTypedData, isAddressEqual, recoverAddress } from "viem"
 import {
   type BatchSettlementChannelStateExtra,
   type BatchSettlementDepositPayload,
+  type BatchSettlementPayload,
   type BatchSettlementRefundPayload,
   type BatchSettlementVoucherPayload,
   type BatchSettlementVoucherStateExtra,
-  type ChannelConfig,
   isBatchSettlementDepositPayload,
+  isBatchSettlementPayload,
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
@@ -71,24 +72,14 @@ export async function handleBeforeVerify(
   const { paymentPayload, requirements } = ctx;
 
   const raw = paymentPayload.payload;
-  const isPaidPayload =
-    isBatchSettlementVoucherPayload(raw) || isBatchSettlementDepositPayload(raw);
-  const isZeroChargePayload = isBatchSettlementRefundPayload(raw);
-  if (!isPaidPayload && !isZeroChargePayload) {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
+  const isRefund = isBatchSettlementRefundPayload(raw);
 
-  const bindErr = channelIdBindingError(
-    raw.channelConfig,
-    raw.voucher.channelId,
-    requirements.network,
-  );
-  if (bindErr) {
-    return {
-      abort: true,
-      reason: bindErr,
-      message: "Channel id does not match channel config",
-    };
+  const bindAbort = abortIfChannelUnbound(raw, requirements.network);
+  if (bindAbort) {
+    return bindAbort;
   }
 
   if (
@@ -165,9 +156,9 @@ export async function handleBeforeVerify(
     inferMissingLocalChargedAmount(
       raw.voucher.maxClaimableAmount,
       requirements.amount,
-      isPaidPayload,
+      !isRefund,
     );
-  const expectedMaxClaimable = isZeroChargePayload
+  const expectedMaxClaimable = isRefund
     ? BigInt(chargedCumulativeAmount)
     : BigInt(chargedCumulativeAmount) + BigInt(requirements.amount);
 
@@ -231,11 +222,7 @@ export async function handleEnrichPaymentRequiredResponse(
   }
 
   const raw = paymentPayload.payload;
-  if (
-    !isBatchSettlementVoucherPayload(raw) &&
-    !isBatchSettlementDepositPayload(raw) &&
-    !isBatchSettlementRefundPayload(raw)
-  ) {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
 
@@ -305,6 +292,47 @@ export async function abortIfBelowMinDeposit(
 }
 
 /**
+ * Aborts when the claimed channel id does not match `channelConfig` on this network.
+ *
+ * @param raw - Decoded client request payload.
+ * @param network - Payment requirement network.
+ * @returns An abort directive, or undefined when the id binds.
+ */
+export function abortIfChannelUnbound(
+  raw: BatchSettlementPayload,
+  network: string,
+): { abort: true; reason: string; message: string } | undefined {
+  const bindErr = channelIdBindingError(raw.channelConfig, raw.voucher.channelId, network);
+  if (!bindErr) {
+    return undefined;
+  }
+  return {
+    abort: true,
+    reason: bindErr,
+    message: "Channel id does not match channel config",
+  };
+}
+
+/**
+ * Resource-handler skip used after a verified refund voucher.
+ *
+ * @param channelId - Channel that was refunded.
+ * @returns `skipHandler` directive with the acknowledged-refund body.
+ */
+export function skipHandlerForRefund(channelId: string): {
+  skipHandler: true;
+  response: { contentType: string; body: { message: string; channelId: string } };
+} {
+  return {
+    skipHandler: true,
+    response: {
+      contentType: "application/json",
+      body: { message: "Refund acknowledged", channelId },
+    },
+  };
+}
+
+/**
  * Copies corrective channel/voucher snapshots onto a matching 402 accept.
  *
  * @param accept - Payment requirement to enrich.
@@ -354,31 +382,15 @@ export async function handleAfterVerify(
   }
 
   const raw = paymentPayload.payload;
-  let channelId: string;
-  let signedMaxClaimable: string;
-  let signature: `0x${string}`;
-  let channelConfig: ChannelConfig;
-  let isRefundVoucher = false;
-
-  if (isBatchSettlementDepositPayload(raw)) {
-    channelId = raw.voucher.channelId;
-    signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
-  } else if (isBatchSettlementVoucherPayload(raw)) {
-    channelId = raw.voucher.channelId;
-    signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
-  } else if (isBatchSettlementRefundPayload(raw)) {
-    channelId = raw.voucher.channelId;
-    signedMaxClaimable = raw.voucher.maxClaimableAmount;
-    signature = raw.voucher.signature;
-    channelConfig = raw.channelConfig;
-    isRefundVoucher = true;
-  } else {
+  if (!isBatchSettlementPayload(raw)) {
     return;
   }
+
+  const channelId = raw.voucher.channelId;
+  const signedMaxClaimable = raw.voucher.maxClaimableAmount;
+  const signature = raw.voucher.signature;
+  const channelConfig = raw.channelConfig;
+  const isRefundVoucher = isBatchSettlementRefundPayload(raw);
 
   const requestContext = scheme.readRequestContext(paymentPayload);
   if (!requestContext?.pendingId) {
@@ -410,13 +422,7 @@ export async function handleAfterVerify(
   scheme.mergeRequestContext(paymentPayload, { channelSnapshot });
 
   if (isRefundVoucher) {
-    return {
-      skipHandler: true,
-      response: {
-        contentType: "application/json",
-        body: { message: "Refund acknowledged", channelId },
-      },
-    };
+    return skipHandlerForRefund(channelId);
   }
 }
 
