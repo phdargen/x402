@@ -19,33 +19,35 @@ import {
   readExtraString,
 } from "./utils";
 
+type AdmissionHold = "self" | "other" | "none";
+
 /**
- * Returns whether another request holds a live admission lock.
+ * Inspects the admission lock for this request.
  *
- * Used for deposit/refund holder checks. Voucher settle relies on the charge CAS.
- * This request proceeds when it holds the lock or no lock is present (lost/expired).
- * Lock-store I/O failures are optimistic (treat as not held). Implementation/parse
+ * Used for deposit/refund holder checks and snapshot recovery. This request
+ * proceeds when it holds the lock or no lock is present (lost/expired).
+ * Lock-store I/O failures are optimistic (`none`). Implementation/parse
  * errors fail closed and propagate to the caller.
  *
  * @param scheme - Owning scheme for lock-store access.
  * @param channelId - Channel to inspect.
  * @param pendingId - This request's lock owner, if any.
- * @returns Whether a different `pendingId` currently holds the lock.
+ * @returns `self` when `pendingId` holds; `other` when a different holder is live; `none` otherwise.
  */
-async function heldByOther(
+async function inspectAdmission(
   scheme: BatchSettlementEvmScheme,
   channelId: string,
   pendingId: string | undefined,
-): Promise<boolean> {
+): Promise<AdmissionHold> {
   try {
     const locks = scheme.getLockStorage();
     if (pendingId && (await locks.isHeld(channelId, pendingId))) {
-      return false;
+      return "self";
     }
-    return await locks.isHeld(channelId);
+    return (await locks.isHeld(channelId)) ? "other" : "none";
   } catch (err) {
     rethrowLockImplementationError(err);
-    return false;
+    return "none";
   }
 }
 
@@ -114,8 +116,7 @@ export async function handleBeforeSettle(
     | { status: "committed"; previous: Channel; current: Channel }
     | undefined;
 
-  const updateResult = await storage.updateChannel(channelId, current => {
-    const base = current ?? snapshot;
+  const charge = (current: Channel | undefined, base: Channel | undefined): Channel | undefined => {
     if (!base) {
       outcome = { status: "missing" };
       return current;
@@ -145,7 +146,18 @@ export async function handleBeforeSettle(
     };
     outcome = { status: "committed", previous: base, current: updatedChannel };
     return updatedChannel;
-  });
+  };
+
+  let updateResult = await storage.updateChannel(channelId, current => charge(current, current));
+  if (
+    outcome?.status === "missing" &&
+    snapshot &&
+    (await inspectAdmission(scheme, channelId, requestContext?.pendingId)) === "self"
+  ) {
+    updateResult = await storage.updateChannel(channelId, current =>
+      charge(current, current ?? snapshot),
+    );
+  }
 
   await scheme.clearPendingRequest(paymentPayload);
 
@@ -216,6 +228,11 @@ export async function handleEnrichSettlementPayload(
   const requestContext = scheme.readRequestContext(paymentPayload);
   const snapshot = requestContext?.channelSnapshot;
   const stored = await scheme.getStorage().get(channelId);
+  const pendingId = requestContext?.pendingId;
+  const hold = await inspectAdmission(scheme, channelId, pendingId);
+  if (!stored && snapshot && hold !== "self") {
+    throw new Error(Errors.ErrMissingChannel);
+  }
   const channel: Channel | undefined = snapshot
     ? {
         ...(stored ?? snapshot),
@@ -227,8 +244,7 @@ export async function handleEnrichSettlementPayload(
   if (!channel) {
     throw new Error(Errors.ErrMissingChannel);
   }
-  const pendingId = requestContext?.pendingId;
-  if (await heldByOther(scheme, channelId, pendingId)) {
+  if (hold === "other") {
     throw new Error(Errors.ErrChannelBusy);
   }
   if (BigInt(raw.voucher.maxClaimableAmount) !== BigInt(channel.chargedCumulativeAmount)) {
@@ -328,11 +344,12 @@ export async function handleAfterSettle(
 
     const snapshot = parseRefundSettlementSnapshot(result.extra);
     const recovered = scheme.readRequestContext(paymentPayload)?.channelSnapshot;
-    if (await heldByOther(scheme, channelId, pendingId)) {
+    const hold = await inspectAdmission(scheme, channelId, pendingId);
+    if (hold === "other") {
       throw new Error(Errors.ErrChannelBusy);
     }
     const updateResult = await storage.updateChannel(channelId, current => {
-      const existing = current ?? recovered;
+      const existing = current ?? (hold === "self" ? recovered : undefined);
       if (!existing) {
         return current;
       }
@@ -369,12 +386,13 @@ export async function handleAfterSettle(
     const signedMaxClaimable = raw.voucher.maxClaimableAmount;
     const now = Date.now();
 
-    if (await heldByOther(scheme, channelId, pendingId)) {
+    const hold = await inspectAdmission(scheme, channelId, pendingId);
+    if (hold === "other") {
       throw new Error(Errors.ErrChannelBusy);
     }
     const recovered = scheme.readRequestContext(paymentPayload)?.channelSnapshot;
     const updateResult = await storage.updateChannel(channelId, current => {
-      const existing = current ?? recovered;
+      const existing = current ?? (hold === "self" ? recovered : undefined);
       if (!existing) {
         return current;
       }

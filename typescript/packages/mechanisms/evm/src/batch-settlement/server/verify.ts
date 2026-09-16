@@ -208,7 +208,13 @@ export async function handleBeforeVerify(
   if (isBatchSettlementVoucherPayload(raw)) {
     let localResult: VerifyResponse | undefined;
     try {
-      localResult = await verifyVoucherLocally(scheme, raw, requirements, channelSnapshot, now);
+      localResult = evaluateVoucherAgainstCachedState(
+        scheme,
+        raw,
+        requirements,
+        channelSnapshot,
+        now,
+      );
     } catch {
       await scheme.clearPendingRequest(paymentPayload);
       return verificationStateUnavailable();
@@ -420,7 +426,10 @@ export async function handleVerifiedPaymentCanceled(
 }
 
 /**
- * Verifies a voucher against locally cached channel state when that state is fresh.
+ * Evaluates a voucher against locally cached channel state when that state is fresh.
+ *
+ * Signature is already checked in {@link handleBeforeVerify}. This only decides
+ * facilitator skip vs cached-state accept/reject (freshness, balance, claimed).
  *
  * @param scheme - Batch settlement scheme (TTL for onchain sync freshness).
  * @param raw - Decoded batch-settlement voucher payload.
@@ -429,13 +438,13 @@ export async function handleVerifiedPaymentCanceled(
  * @param now - Current wall-clock time in milliseconds.
  * @returns A {@link VerifyResponse}, or `undefined` to fall back to facilitator verification.
  */
-async function verifyVoucherLocally(
+function evaluateVoucherAgainstCachedState(
   scheme: BatchSettlementEvmScheme,
   raw: BatchSettlementVoucherPayload,
   requirements: VerifyContext["requirements"],
   channel: Channel | undefined,
   now: number,
-): Promise<VerifyResponse | undefined> {
+): VerifyResponse | undefined {
   if (!channel || !isOnchainStateFresh(channel, scheme.getOnchainStateTtlMs(), now)) {
     return;
   }
@@ -459,11 +468,6 @@ async function verifyVoucherLocally(
     channel.channelId.toLowerCase()
   ) {
     return invalidVerifyResponse(payer, Errors.ErrChannelIdMismatch);
-  }
-
-  const signatureOk = await verifyEoaVoucherSignature(raw, requirements.network);
-  if (!signatureOk) {
-    return invalidVerifyResponse(payer, Errors.ErrInvalidVoucherSignature);
   }
 
   const maxClaimableAmount = BigInt(raw.voucher.maxClaimableAmount);
