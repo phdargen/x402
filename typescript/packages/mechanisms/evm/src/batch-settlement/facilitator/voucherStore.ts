@@ -41,7 +41,7 @@ import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { verifyDeposit, settleDeposit } from "./deposit";
 import { verifyVoucher } from "./voucher";
-import { encodeChargeCountsSuffix } from "./chargeCounts";
+import { encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitRefund } from "./refund";
 import { readChannelState } from "./utils";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
