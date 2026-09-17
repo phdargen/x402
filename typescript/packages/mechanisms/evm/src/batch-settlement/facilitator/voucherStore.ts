@@ -338,6 +338,11 @@ async function settleManagedCancel(
 /**
  * Commits an offchain voucher charge.
  *
+ * The stored row is the charge base, passed as the CAS callback's `current`
+ * rather than as a snapshot, so a settle never claims onchain freshness it did
+ * not read. Only the missing-row retry carries a snapshot, and that one comes
+ * from {@link provisionalFromOnchain}, which does read onchain.
+ *
  * @param deps - Store dependencies.
  * @param raw - Voucher payload.
  * @param requirements - Payment requirements.
@@ -374,18 +379,27 @@ async function settleManagedVoucher(
     }
 
     const increment = BigInt(requirements.amount);
-    const stored = await deps.storage.get(channelId);
-    const snapshot = stored ?? (await provisionalFromOnchain(deps, raw, requirements));
-    const outcome = await commitVoucherCharge(deps.storage, channelId, {
+    const signedCap = BigInt(raw.voucher.maxClaimableAmount);
+    const map =
+      increment === 0n
+        ? undefined
+        : (channel: FacilitatorChannel) => incrementChargeCount(channel, requirements.network);
+    let outcome = await commitVoucherCharge(deps.storage, channelId, {
       increment,
-      signedCap: BigInt(raw.voucher.maxClaimableAmount),
+      signedCap,
       voucher: raw.voucher,
-      snapshot,
-      map:
-        increment === 0n
-          ? undefined
-          : channel => incrementChargeCount(channel, requirements.network),
+      map,
     });
+
+    if (outcome.status === "missing") {
+      outcome = await commitVoucherCharge(deps.storage, channelId, {
+        increment,
+        signedCap,
+        voucher: raw.voucher,
+        snapshot: await provisionalFromOnchain(deps, raw, requirements),
+        map,
+      });
+    }
 
     if (outcome.status === "missing") {
       return failSettle(requirements, Errors.ErrMissingChannel);
@@ -526,12 +540,12 @@ async function settleManagedRefund(
     if (amountError) {
       return failSettle(requirements, amountError);
     }
-    const consentErr = await checkRefundConsent(deps, payment, raw, requirements, context);
+    const stored = await deps.storage.get(channelId);
+    const consentErr = await checkRefundConsent(deps, payment, raw, requirements, context, stored);
     if (consentErr) {
       return failSettle(requirements, consentErr);
     }
 
-    const stored = await deps.storage.get(channelId);
     if (
       !stored ||
       BigInt(raw.voucher.maxClaimableAmount) !== BigInt(stored.chargedCumulativeAmount)
@@ -574,7 +588,7 @@ async function settleManagedRefund(
     const balance = String(extraState?.channelState?.balance ?? stored.balance);
     const totalClaimed = String(extraState?.channelState?.totalClaimed ?? stored.totalClaimed);
 
-    await deps.storage.updateChannel(channelId, current => {
+    const updated = await deps.storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
       }
@@ -592,7 +606,6 @@ async function settleManagedRefund(
       return closed ? undefined : next;
     });
 
-    const mirrored = await deps.storage.get(channelId);
     return {
       ...settled,
       extra: paymentResponseExtra({
@@ -600,7 +613,7 @@ async function settleManagedRefund(
           ...(typeof extraState?.channelState === "object" ? extraState.channelState : {}),
           chargedCumulativeAmount: stored.chargedCumulativeAmount,
         },
-        chargeCount: mirrored?.chargeCount ?? 0,
+        chargeCount: updated.channel?.chargeCount ?? 0,
       }),
     };
   } finally {
@@ -653,6 +666,7 @@ function managedRequirementError(
  * @param raw - Refund payload.
  * @param requirements - Payment requirements.
  * @param context - Facilitator extension context.
+ * @param stored - Channel row the caller already read, if any.
  * @returns Error code, or undefined when consent is valid.
  */
 async function checkRefundConsent(
@@ -661,6 +675,7 @@ async function checkRefundConsent(
   raw: BatchSettlementRefundPayload,
   requirements: PaymentRequirements,
   context: FacilitatorContext | undefined,
+  stored: FacilitatorChannel | undefined,
 ): Promise<string | undefined> {
   const amountError = refundAmountError(raw);
   if (amountError) {
@@ -685,11 +700,8 @@ async function checkRefundConsent(
     if (!signature) {
       return Errors.ErrRefundAuthorizerSignature;
     }
-    const amount = resolveRefundAmount(
-      raw,
-      (await deps.storage.get(raw.voucher.channelId)) ?? undefined,
-    );
-    const nonce = String((await deps.storage.get(raw.voucher.channelId))?.refundNonce ?? 0);
+    const amount = resolveRefundAmount(raw, stored);
+    const nonce = String(stored?.refundNonce ?? 0);
     try {
       const recovered = await recoverTypedDataAddress({
         domain: getBatchSettlementEip712Domain(getEvmChainId(requirements.network)),
@@ -733,7 +745,6 @@ async function checkRefundConsent(
     return Errors.ErrRefundAuthorizerSignature;
   }
 
-  const stored = await deps.storage.get(raw.voucher.channelId);
   const bound = stored?.callerIdentity;
   let storeIdentity: string | undefined;
   try {

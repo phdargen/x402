@@ -639,9 +639,14 @@ describe("createPaymentWrapper", () => {
       const handler = vi.fn().mockRejectedValue(error);
       const wrappedHandler = paid(handler);
 
-      await expect(
-        wrappedHandler({ test: "arg" }, { _meta: { "x402/payment": mockPaymentPayload } }),
-      ).rejects.toThrow("handler failed");
+      const result = await wrappedHandler(
+        { test: "arg" },
+        { _meta: { "x402/payment": mockPaymentPayload } },
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: "Internal Server Error" }]);
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toBeUndefined();
 
       const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results[0]
         .value as { cancel: ReturnType<typeof vi.fn> };
@@ -719,7 +724,7 @@ describe("createPaymentWrapper", () => {
       expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual(cancelReceipt);
     });
 
-    it("returns internal error with cancel receipt when handler throws without before-handler settle", async () => {
+    it("returns internal error without payment receipt when handler throws without before-handler settle", async () => {
       const cancelReceipt: SettleResponse = {
         success: true,
         amount: "0",
@@ -746,7 +751,13 @@ describe("createPaymentWrapper", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toEqual([{ type: "text", text: "Internal Server Error" }]);
-      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toEqual(cancelReceipt);
+      expect(result._meta?.[MCP_PAYMENT_RESPONSE_META_KEY]).toBeUndefined();
+      const dispatcher = mockResourceServer.createPaymentCancellationDispatcher.mock.results.at(-1)
+        ?.value as { cancel: ReturnType<typeof vi.fn> };
+      expect(dispatcher.cancel).toHaveBeenCalledWith({
+        reason: "handler_threw",
+        error: expect.any(Error),
+      });
     });
 
     it("should settle skipHandler responses without executing the tool", async () => {
