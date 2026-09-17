@@ -522,7 +522,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
 
   /**
    * Checks unsigned self-managed refunds against the deposit-time identity.
-   * A missing binding is allowed (legacy / cross-facilitator). Store errors fail closed.
+   * Missing bindings fail closed. Store errors fail closed.
    *
    * @param payload - Payment envelope.
    * @param raw - Enriched refund payload.
@@ -536,6 +536,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
     context?: FacilitatorContext,
   ): Promise<string | undefined> {
+    if (typeof raw.amount !== "string" || !/^\d+$/.test(raw.amount)) {
+      return Errors.ErrRefundAmountInvalid;
+    }
+    try {
+      if (BigInt(raw.amount) <= 0n) {
+        return Errors.ErrRefundAmountInvalid;
+      }
+    } catch {
+      return Errors.ErrRefundAmountInvalid;
+    }
     if (raw.refundAuthorizerSignature || !this.resolveCallerIdentity) {
       return undefined;
     }
@@ -567,7 +577,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       return Errors.ErrRefundAuthorizerSignature;
     }
     if (!binding) {
-      return undefined;
+      return Errors.ErrRefundAuthorizerSignature;
     }
     if (binding.callerIdentity !== identity) {
       return Errors.ErrRefundAuthorizerSignature;
