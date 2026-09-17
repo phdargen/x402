@@ -18,7 +18,10 @@ import {
 } from "../types";
 import type {
   BatchSettlementDepositPayload,
+  BatchSettlementEnrichedDepositPayload,
   BatchSettlementEnrichedRefundPayload,
+  BatchSettlementEnrichedVoucherPayload,
+  BatchSettlementPayload,
   BatchSettlementRefundPayload,
   BatchSettlementVoucherClaim,
   BatchSettlementVoucherPayload,
@@ -76,6 +79,18 @@ export type VoucherStoreDeps = {
   eip6492AllowedFactories: string[];
   pendingStore: PendingSettlementStore;
 };
+
+/**
+ * True when `/settle` carries a server-authored cancel flag.
+ *
+ * @param raw - Client payload that may include settle enrichment fields.
+ * @returns True when `cancel` is exactly `true`.
+ */
+function isCancelSettlePayload(
+  raw: BatchSettlementPayload,
+): raw is BatchSettlementPayload & { pendingId?: string; cancel: true } {
+  return "cancel" in raw && raw.cancel === true;
+}
 
 /**
  * Lock-store owner for a settle that echoed `pendingId`.
@@ -143,6 +158,14 @@ export async function verifyManaged(
   const raw = payload.payload;
   if (!isBatchSettlementPayload(raw)) {
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadType };
+  }
+
+  if ("cancel" in raw && raw.cancel !== undefined) {
+    return {
+      isValid: false,
+      invalidReason: Errors.ErrUnexpectedCancel,
+      payer: raw.channelConfig.payer,
+    };
   }
 
   const managedErr = managedRequirementError(deps, raw.channelConfig.salt, requirements);
@@ -267,6 +290,9 @@ export async function settleManaged(
   dataSuffix?: `0x${string}`,
 ): Promise<SettleResponse> {
   const raw = payload.payload;
+  if (isBatchSettlementPayload(raw) && isCancelSettlePayload(raw)) {
+    return settleManagedCancel(deps, raw, requirements);
+  }
   if (isBatchSettlementVoucherPayload(raw)) {
     return settleManagedVoucher(deps, raw, requirements);
   }
@@ -285,6 +311,31 @@ export async function settleManaged(
 }
 
 /**
+ * Drops the admission lock without charging, depositing, or refunding.
+ *
+ * @param deps - Store dependencies.
+ * @param raw - Original payload plus server-authored `cancel` / `pendingId`.
+ * @param requirements - Payment requirements.
+ * @returns Offchain success with an empty transaction.
+ */
+async function settleManagedCancel(
+  deps: VoucherStoreDeps,
+  raw: BatchSettlementPayload & { pendingId?: string; cancel?: boolean },
+  requirements: PaymentRequirements,
+): Promise<SettleResponse> {
+  const channelId = raw.voucher.channelId;
+  const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
+  await releaseAdmission(deps, channelId, owner);
+  return {
+    success: true,
+    transaction: "",
+    network: requirements.network,
+    payer: raw.channelConfig.payer.toLowerCase() as `0x${string}`,
+    amount: "",
+  };
+}
+
+/**
  * Commits an offchain voucher charge.
  *
  * @param deps - Store dependencies.
@@ -294,7 +345,7 @@ export async function settleManaged(
  */
 async function settleManagedVoucher(
   deps: VoucherStoreDeps,
-  raw: BatchSettlementVoucherPayload,
+  raw: BatchSettlementEnrichedVoucherPayload,
   requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   const channelId = raw.voucher.channelId;
@@ -322,14 +373,18 @@ async function settleManagedVoucher(
       }
     }
 
+    const increment = BigInt(requirements.amount);
     const stored = await deps.storage.get(channelId);
     const snapshot = stored ?? (await provisionalFromOnchain(deps, raw, requirements));
     const outcome = await commitVoucherCharge(deps.storage, channelId, {
-      increment: BigInt(requirements.amount),
+      increment,
       signedCap: BigInt(raw.voucher.maxClaimableAmount),
       voucher: raw.voucher,
       snapshot,
-      map: channel => incrementChargeCount(channel, requirements.network),
+      map:
+        increment === 0n
+          ? undefined
+          : channel => incrementChargeCount(channel, requirements.network),
     });
 
     if (outcome.status === "missing") {
@@ -373,7 +428,7 @@ async function settleManagedVoucher(
 async function settleManagedDeposit(
   deps: VoucherStoreDeps,
   payment: PaymentPayload,
-  raw: BatchSettlementDepositPayload,
+  raw: BatchSettlementEnrichedDepositPayload,
   requirements: PaymentRequirements,
   context: FacilitatorContext | undefined,
   dataSuffix: `0x${string}` | undefined,
@@ -459,7 +514,7 @@ async function settleManagedDeposit(
 async function settleManagedRefund(
   deps: VoucherStoreDeps,
   payment: PaymentPayload,
-  raw: BatchSettlementRefundPayload,
+  raw: BatchSettlementRefundPayload & { pendingId?: string; cancel?: boolean },
   requirements: PaymentRequirements,
   context: FacilitatorContext | undefined,
   dataSuffix: `0x${string}` | undefined,
@@ -726,6 +781,7 @@ async function releaseLock(
 
 /**
  * Increments `chargeCount` and stamps `network` on a committed record.
+ * Callers skip this map when `increment` is `0n`.
  *
  * @param channel - Record after the charge CAS fields are applied.
  * @param network - CAIP-2 network.

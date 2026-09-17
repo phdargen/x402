@@ -338,27 +338,29 @@ export async function handleAfterSettle(
     if (hold === "other") {
       throw new Error(Errors.ErrChannelBusy);
     }
-    const updateResult = await storage.updateChannel(channelId, current => {
-      const existing = current ?? (hold === "self" ? recovered : undefined);
-      if (!existing) {
-        return current;
+    try {
+      const updateResult = await storage.updateChannel(channelId, current => {
+        const existing = current ?? (hold === "self" ? recovered : undefined);
+        if (!existing) {
+          return current;
+        }
+        if (BigInt(snapshot.balance) <= BigInt(existing.chargedCumulativeAmount)) {
+          return undefined;
+        }
+        return {
+          ...existing,
+          ...snapshot,
+          onchainSyncedAt: now,
+          lastRequestTimestamp: now,
+        };
+      });
+      if (updateResult.status === "unchanged") {
+        throw new Error(Errors.ErrChannelBusy);
       }
-      if (BigInt(snapshot.balance) <= BigInt(existing.chargedCumulativeAmount)) {
-        return undefined;
+    } finally {
+      if (hold === "self") {
+        await scheme.releasePendingRequest(paymentPayload);
       }
-      return {
-        ...existing,
-        ...snapshot,
-        onchainSyncedAt: now,
-        lastRequestTimestamp: now,
-      };
-    });
-    if (updateResult.status === "unchanged") {
-      throw new Error(Errors.ErrChannelBusy);
-    }
-    await scheme.releasePendingRequest(paymentPayload);
-    if (!updateResult.channel) {
-      return;
     }
     return;
   }
@@ -381,38 +383,43 @@ export async function handleAfterSettle(
       throw new Error(Errors.ErrChannelBusy);
     }
     const recovered = scheme.readRequestContext(paymentPayload)?.channelSnapshot;
-    const updateResult = await storage.updateChannel(channelId, current => {
-      const existing = current ?? (hold === "self" ? recovered : undefined);
-      if (!existing) {
-        return current;
+    try {
+      const updateResult = await storage.updateChannel(channelId, current => {
+        const existing = current ?? (hold === "self" ? recovered : undefined);
+        if (!existing) {
+          return current;
+        }
+        const chargedActual = (
+          BigInt(existing.chargedCumulativeAmount) + BigInt(requirements.amount)
+        ).toString();
+        return {
+          channelId,
+          channelConfig: config,
+          chargedCumulativeAmount: chargedActual,
+          signedMaxClaimable,
+          signature: raw.voucher.signature,
+          balance: readExtraString(channelState, "balance", existing.balance),
+          totalClaimed: readExtraString(channelState, "totalClaimed", existing.totalClaimed),
+          withdrawRequestedAt: readExtraNumber(
+            channelState,
+            "withdrawRequestedAt",
+            existing.withdrawRequestedAt,
+          ),
+          refundNonce: readExtraNumber(channelState, "refundNonce", existing.refundNonce),
+          onchainSyncedAt: now,
+          lastRequestTimestamp: now,
+        };
+      });
+      if (updateResult.status === "updated" && updateResult.channel) {
+        scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
+        return;
       }
-      const chargedActual = (
-        BigInt(existing.chargedCumulativeAmount) + BigInt(requirements.amount)
-      ).toString();
-      return {
-        channelId,
-        channelConfig: config,
-        chargedCumulativeAmount: chargedActual,
-        signedMaxClaimable,
-        signature: raw.voucher.signature,
-        balance: readExtraString(channelState, "balance", existing.balance),
-        totalClaimed: readExtraString(channelState, "totalClaimed", existing.totalClaimed),
-        withdrawRequestedAt: readExtraNumber(
-          channelState,
-          "withdrawRequestedAt",
-          existing.withdrawRequestedAt,
-        ),
-        refundNonce: readExtraNumber(channelState, "refundNonce", existing.refundNonce),
-        onchainSyncedAt: now,
-        lastRequestTimestamp: now,
-      };
-    });
-    if (updateResult.status === "updated" && updateResult.channel) {
-      scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
-      await scheme.releasePendingRequest(paymentPayload);
-      return;
+      throw new Error(Errors.ErrChannelBusy);
+    } finally {
+      if (hold === "self") {
+        await scheme.releasePendingRequest(paymentPayload);
+      }
     }
-    throw new Error(Errors.ErrChannelBusy);
   }
 }
 

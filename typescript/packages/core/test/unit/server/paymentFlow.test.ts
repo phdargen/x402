@@ -271,19 +271,45 @@ describe("payment flows", () => {
         transaction: "",
         network,
       });
+      const beforeHandlerSettlement = {
+        result: buildSettleResponse({
+          success: true,
+          amount: "100000",
+          transaction: "0xdeposit",
+          network,
+        }),
+      };
 
       expect(
         resolveFailurePathSettlement(
           cancelSettlement,
-          undefined,
+          beforeHandlerSettlement,
           buildPaymentPayload({ payload: { channelId: "" } }),
         ),
       ).toEqual(
         expect.objectContaining({
           success: false,
-          extra: {},
+          extra: {
+            depositTransaction: "0xdeposit",
+            depositAmount: "100000",
+          },
         }),
       );
+    });
+
+    it("omits lock-only cancel receipts when no before-handler settle ran", () => {
+      const cancelSettlement = buildSettleResponse({
+        success: true,
+        amount: "0",
+        transaction: "",
+        network,
+      });
+      expect(resolveFailurePathSettlement(cancelSettlement)).toBeUndefined();
+      expect(
+        resolveFailurePathSettlement(
+          buildSettleResponse({ success: false, errorReason: "lock_release_failed", network }),
+        ),
+      ).toBeUndefined();
     });
 
     it("echoes before-handler deposit when cancel returns undefined", () => {
