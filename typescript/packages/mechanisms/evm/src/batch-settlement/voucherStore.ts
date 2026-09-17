@@ -142,6 +142,10 @@ export function paymentResponseExtra(extra: {
 /**
  * Atomically increments `chargedCumulativeAmount` under the storage CAS.
  *
+ * Any storage outcome other than `{ status: "updated" }` with a committed callback result
+ * (including `{ status: "conflict" }` from a contended compare-and-write) maps to
+ * `{ status: "conflict" }`.
+ *
  * @param storage - Durable channel store.
  * @param channelId - Channel to update.
  * @param input - Charge increment, signed cap, voucher, and optional snapshot/map.
