@@ -1152,7 +1152,7 @@ export class x402ResourceServer {
    * @param requirements - Requirements matched to the payload
    * @param declaredExtensions - Optional per-extension declarations for the request
    * @param transportContext - Optional transport-specific context
-   * @param settledPhases - Settle phases already completed before the handler (for settleOnCancel)
+   * @param settledPhases - Settle phases already completed for this payment
    * @returns Dispatcher with cancel only
    */
   createPaymentCancellationDispatcher(
@@ -1824,7 +1824,7 @@ export class x402ResourceServer {
       matchedScheme.scheme,
       matchedScheme.network,
     );
-    if (!scheme?.settleOnCancel || !settledPhases.includes("before-handler")) {
+    if (!scheme?.settleOnCancel) {
       return;
     }
 

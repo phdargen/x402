@@ -9,6 +9,7 @@ import {
   handleManagedEnrichSettlementPayload,
   handleManagedEnrichSettlementResponse,
   handleManagedSettleFailure,
+  handleManagedSettleOnCancel,
   handleManagedVerifiedPaymentCanceled,
   handleManagedVerifyFailure,
 } from "../../../src/batch-settlement/server/managed";
@@ -82,6 +83,73 @@ function voucherPayload(channelId: string, maxClaimable = "1000"): PaymentPayloa
   } as PaymentPayload;
 }
 
+function depositPayload(channelId: string): PaymentPayload {
+  const config = buildConfig();
+  return {
+    x402Version: 2,
+    accepted: { scheme: "batch-settlement", network: NETWORK },
+    payload: {
+      type: "deposit",
+      channelConfig: config,
+      voucher: {
+        channelId: channelId as `0x${string}`,
+        maxClaimableAmount: "1000",
+        signature: "0xdeadbeef",
+      },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: "0",
+            validBefore: "9999999999",
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    },
+  } as PaymentPayload;
+}
+
+function refundPayload(channelId: string): PaymentPayload {
+  const config = buildConfig();
+  return {
+    x402Version: 2,
+    accepted: { scheme: "batch-settlement", network: NETWORK },
+    payload: {
+      type: "refund",
+      channelConfig: config,
+      voucher: {
+        channelId: channelId as `0x${string}`,
+        maxClaimableAmount: "1000",
+        signature: "0xdeadbeef",
+      },
+    },
+  } as PaymentPayload;
+}
+
+function cancelContext(
+  paymentPayload: PaymentPayload,
+  reason: "handler_failed" | "handler_threw" | "after_verify_aborted" = "handler_failed",
+) {
+  return {
+    paymentPayload,
+    requirements: {
+      scheme: "batch-settlement",
+      network: NETWORK,
+      amount: "1000",
+      asset: TOKEN,
+      payTo: RECEIVER,
+      maxTimeoutSeconds: 3600,
+      extra: { voucherStore: true },
+    },
+    declaredExtensions: {},
+    phase: "cancel" as const,
+    reason,
+    settledPhases: [] as const,
+  };
+}
+
 describe("facilitator-managed server hooks", () => {
   it("rejects a client-supplied pendingId on the managed verify path", async () => {
     const server = buildManagedServer();
@@ -111,6 +179,37 @@ describe("facilitator-managed server hooks", () => {
     expect(result).toMatchObject({
       abort: true,
       reason: Errors.ErrUnexpectedPendingId,
+    });
+  });
+
+  it("rejects a client-supplied cancel flag on the managed verify path", async () => {
+    const server = buildManagedServer();
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    const result = await handleManagedBeforeVerify(server, {
+      paymentPayload: {
+        x402Version: 2,
+        accepted: { scheme: "batch-settlement", network: NETWORK },
+        payload: {
+          type: "voucher",
+          channelConfig: config,
+          voucher: { channelId, maxClaimableAmount: "1000", signature: "0xdeadbeef" },
+          cancel: true,
+        },
+      } as PaymentPayload,
+      requirements: {
+        scheme: "batch-settlement",
+        network: NETWORK,
+        amount: "1000",
+        asset: TOKEN,
+        payTo: RECEIVER,
+        maxTimeoutSeconds: 3600,
+        extra: { voucherStore: true },
+      },
+    } as never);
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrUnexpectedCancel,
     });
   });
 
@@ -468,6 +567,124 @@ describe("facilitator-managed server hooks", () => {
     await expect(
       handleManagedEnrichSettlementResponse(server, {} as never),
     ).resolves.toBeUndefined();
+  });
+
+  it.each(["handler_failed", "handler_threw", "after_verify_aborted"] as const)(
+    "returns a zero-amount settle for managed cancel on %s",
+    reason => {
+      const server = buildManagedServer();
+      const config = buildConfig();
+      const channelId = computeChannelId(config);
+      const expected = {
+        scheme: "batch-settlement",
+        network: NETWORK,
+        amount: "0",
+        asset: TOKEN,
+        payTo: RECEIVER,
+        maxTimeoutSeconds: 3600,
+        extra: { voucherStore: true },
+      };
+      expect(handleManagedSettleOnCancel(cancelContext(voucherPayload(channelId), reason))).toEqual(
+        expected,
+      );
+      expect(handleManagedSettleOnCancel(cancelContext(depositPayload(channelId), reason))).toEqual(
+        expected,
+      );
+      expect(handleManagedSettleOnCancel(cancelContext(refundPayload(channelId), reason))).toEqual(
+        expected,
+      );
+      expect(server.settleOnCancel(cancelContext(voucherPayload(channelId), reason))).toEqual(
+        expected,
+      );
+    },
+  );
+
+  it("stamps pendingId and cancel on managed cancel settle enrichment", async () => {
+    const server = buildManagedServer();
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = voucherPayload(channelId);
+    server.mergeRequestContext(paymentPayload, { pendingId: "0xabc123" });
+
+    const fields = await handleManagedEnrichSettlementPayload(server, {
+      paymentPayload,
+      requirements: { network: NETWORK, amount: "1000" } as never,
+      phase: "cancel",
+    } as never);
+    expect(fields).toEqual({ pendingId: "0xabc123", cancel: true });
+  });
+
+  it("stamps cancel on deposit and refund enrich without building refund fields", async () => {
+    const server = buildManagedServer();
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+
+    await expect(
+      handleManagedEnrichSettlementPayload(server, {
+        paymentPayload: depositPayload(channelId),
+        requirements: { network: NETWORK, amount: "1000" } as never,
+        phase: "cancel",
+      } as never),
+    ).resolves.toEqual({ cancel: true });
+
+    await expect(
+      handleManagedEnrichSettlementPayload(server, {
+        paymentPayload: refundPayload(channelId),
+        requirements: { network: NETWORK, amount: "0" } as never,
+        phase: "cancel",
+      } as never),
+    ).resolves.toEqual({ cancel: true });
+  });
+
+  it("does not settle on cancel in self-managed mode", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    expect(server.settleOnCancel(cancelContext(voucherPayload(channelId)))).toBeUndefined();
+  });
+
+  it("does not upsert the replica on a managed cancel settle", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId),
+      requirements: { network: NETWORK } as never,
+      phase: "cancel",
+      result: {
+        success: true,
+        transaction: "",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "1",
+            totalClaimed: "999",
+            chargedCumulativeAmount: "1000",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "1000",
+      balance: "10000",
+      totalClaimed: "0",
+    });
   });
 
   it("records a verify snapshot after a successful managed voucher verify", async () => {
