@@ -627,8 +627,8 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcher(
 // The HTTP transport calls this after a successful Verify but before/instead
 // of Settle when the resource handler errors or returns a non-2xx response.
 //
-// settledPhases lists settle phases already completed before the handler (for
-// settleOnCancel). Pass nil when none have completed.
+// settledPhases lists settle phases that already completed for this payment.
+// Pass nil when none have completed.
 //
 // Hook execution order (mirrors verify/settle): manual → matched scheme →
 // declared extensions. Extension hooks gate on `declaredExtensions[key]`
@@ -672,24 +672,25 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 				_ = lh.Hook(cancelCtx)
 			}
 
-			return s.settleOnCancelAfterHooks(ctx, payload, requirements, declaredExtensions, resolvedSettledPhases, cancelCtx, scheme)
+			return s.settleOnCancelAfterHooks(ctx, payload, requirements, declaredExtensions, cancelCtx, scheme)
 		},
 	}
 }
 
 // settleOnCancelAfterHooks asks the matched scheme for cancel settle requirements
-// when before-handler settle completed. Settlement errors become a failed receipt.
+// and settles once when provided. After-handler schemes (no before-handler
+// deposit) still run this path so they can release admission locks. Settlement
+// errors become a failed receipt.
 func (s *x402ResourceServer) settleOnCancelAfterHooks(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	declaredExtensions map[string]interface{},
-	settledPhases []SettlePhase,
 	cancelCtx VerifiedPaymentCanceledContext,
 	scheme SchemeNetworkServer,
 ) *SettleResponse {
 	provider, ok := scheme.(SettleOnCancelProvider)
-	if !ok || !settledPhasesContain(settledPhases, SettlePhaseBeforeHandler) {
+	if !ok {
 		return nil
 	}
 
@@ -711,15 +712,6 @@ func (s *x402ResourceServer) settleOnCancelAfterHooks(
 		return failedCancelSettleResponse(requirements, settleErr)
 	}
 	return settleResp
-}
-
-func settledPhasesContain(phases []SettlePhase, want SettlePhase) bool {
-	for _, p := range phases {
-		if p == want {
-			return true
-		}
-	}
-	return false
 }
 
 func failedCancelSettleResponse(requirements types.PaymentRequirements, err error) *SettleResponse {
