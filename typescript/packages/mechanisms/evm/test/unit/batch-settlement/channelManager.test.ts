@@ -436,13 +436,12 @@ describe("BatchSettlementChannelManager — refund()", () => {
     expect(facilitator.settle).not.toHaveBeenCalled();
   });
 
-  it("filters by provided channel ids (case-insensitive)", async () => {
+  it("refunds remaining escrow", async () => {
     const { manager, storage, facilitator } = buildManager();
     const session = buildSession({ chargedCumulativeAmount: "1000", balance: "10000" });
     await storeChannel(storage, session);
 
-    const idUpper = session.channelId.toUpperCase().replace("0X", "0x");
-    const result = await manager.refund([idUpper]);
+    const result = await manager.refund();
 
     expect(result).toEqual([{ channel: session.channelId, transaction: "0xtx" }]);
     expect(facilitator.settle).toHaveBeenCalledTimes(1);
