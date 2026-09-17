@@ -13,6 +13,7 @@ export type CommitVoucherChargeInput<T extends Channel = Channel> = {
   signedCap: bigint;
   voucher: { maxClaimableAmount: string; signature: string };
   snapshot?: Channel;
+  recoverFromSnapshot?: boolean;
   now?: number;
   localVerify?: boolean;
   /** Applied after charge fields. Use to set facilitator extras (network, chargeCount). */
@@ -124,7 +125,8 @@ export async function commitVoucherCharge<T extends Channel = Channel>(
   let outcome: CommitVoucherChargeResult<T> | undefined;
 
   const updateResult = await storage.updateChannel(channelId, current => {
-    const base = (current ?? input.snapshot) as T | undefined;
+    const recover = input.recoverFromSnapshot !== false;
+    const base = (current ?? (recover ? input.snapshot : undefined)) as T | undefined;
     if (!base) {
       outcome = { status: "missing" };
       return current;
