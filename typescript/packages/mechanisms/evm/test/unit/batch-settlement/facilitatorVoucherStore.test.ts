@@ -1076,9 +1076,9 @@ describe("facilitator verifyManaged / settleManaged", () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config, NETWORK);
-    const commitSpy = vi
-      .spyOn(sharedVoucherStore, "commitVoucherCharge")
-      .mockResolvedValueOnce({ status: "missing" });
+    const commitSpy = vi.spyOn(sharedVoucherStore, "commitVoucherCharge").mockResolvedValue({
+      status: "missing",
+    });
 
     const result = await settleManaged(
       buildDeps(storage, authorizer),

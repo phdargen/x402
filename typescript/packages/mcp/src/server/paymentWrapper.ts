@@ -442,7 +442,10 @@ async function processPaidToolCall<TArgs extends Record<string, unknown>>(
       paymentPayload,
     );
     if (!failureReceipt) {
-      throw error;
+      return {
+        content: [{ type: "text", text: "Internal Server Error" }],
+        isError: true,
+      };
     }
     return {
       content: [{ type: "text", text: "Internal Server Error" }],
