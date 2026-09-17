@@ -1,5 +1,6 @@
 import type { PaymentRequirements } from "@x402/core/types";
-import type { BatchSettlementPaymentResponseExtra } from "./types";
+import { keccak256, toHex } from "viem";
+import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherFields } from "./types";
 import type { Channel, ChannelStorage } from "./storage/channel";
 
 const MIN_PENDING_TTL_MS = 5_000;
@@ -58,6 +59,36 @@ export function voucherStoreMode(requirements: PaymentRequirements): VoucherStor
 export function pendingTtlMs(maxTimeoutSeconds: number | undefined): number {
   const requestedMs = Math.max(0, maxTimeoutSeconds ?? 0) * 1000;
   return Math.min(MAX_PENDING_TTL_MS, Math.max(MIN_PENDING_TTL_MS, requestedMs));
+}
+
+/**
+ * Derives a reasonable onchain state freshness window from the channel withdraw delay.
+ *
+ * @param withdrawDelaySeconds - Onchain withdraw delay for the channel, in seconds.
+ * @returns TTL in milliseconds, clamped between 30 seconds and 5 minutes.
+ */
+export function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
+  const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1000;
+  return Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(withdrawDelayMs / 3)));
+}
+
+/**
+ * Binds a server-authored `pendingId` to the voucher it reserved.
+ *
+ * The lock store only holds one owner string, so the reservation key is this
+ * hash rather than the wire `pendingId`. A settle that echoes `pendingId` with
+ * a different voucher cannot present as the holder.
+ *
+ * @param pendingId - Server-minted admission nonce returned from `/verify`.
+ * @param voucher - Voucher fields that `/verify` reserved.
+ * @returns Lock-store owner for `acquire` / `isHeld` / `release`.
+ */
+export function admissionOwner(pendingId: string, voucher: BatchSettlementVoucherFields): string {
+  return keccak256(
+    toHex(
+      `${pendingId}|${voucher.channelId}|${voucher.maxClaimableAmount}|${voucher.signature}`.toLowerCase(),
+    ),
+  );
 }
 
 /**

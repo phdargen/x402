@@ -9,6 +9,8 @@ import {
   normalizeChannelSalt,
   packRefundAuthorizerSalt,
   unpackRefundAuthorizer,
+  validateChannelConfig,
+  isOnchainStateFresh,
 } from "../../../src/batch-settlement/utils";
 import {
   buildEip2612PermitData,
@@ -18,7 +20,6 @@ import {
 } from "../../../src/batch-settlement/encoding";
 import {
   channelIdsEqual,
-  validateChannelConfig,
   erc3009AuthorizationTimeInvalidReason,
   verifyBatchSettlementVoucherTypedData,
 } from "../../../src/batch-settlement/facilitator/utils";
@@ -222,6 +223,18 @@ describe("normalizeChannelId", () => {
     [`0x${"a".repeat(30)}\\${"b".repeat(32)}`],
   ])("throws ErrInvalidChannelId for %s", value => {
     expect(() => normalizeChannelId(value)).toThrow(ErrInvalidChannelId);
+  });
+});
+
+describe("isOnchainStateFresh", () => {
+  const now = 1_000_000;
+
+  it("is false when ttlMs is 0 even if the row was just synced", () => {
+    expect(isOnchainStateFresh({ onchainSyncedAt: now }, 0, now)).toBe(false);
+  });
+
+  it("is true when the sync is still inside a positive ttl", () => {
+    expect(isOnchainStateFresh({ onchainSyncedAt: now - 1_000 }, 5_000, now)).toBe(true);
   });
 });
 

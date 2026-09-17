@@ -83,6 +83,37 @@ function voucherPayload(channelId: string, maxClaimable = "1000"): PaymentPayloa
 }
 
 describe("facilitator-managed server hooks", () => {
+  it("rejects a client-supplied pendingId on the managed verify path", async () => {
+    const server = buildManagedServer();
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    const result = await handleManagedBeforeVerify(server, {
+      paymentPayload: {
+        x402Version: 2,
+        accepted: { scheme: "batch-settlement", network: NETWORK },
+        payload: {
+          type: "voucher",
+          channelConfig: config,
+          voucher: { channelId, maxClaimableAmount: "1000", signature: "0xdeadbeef" },
+          pendingId: "0xclient",
+        },
+      } as PaymentPayload,
+      requirements: {
+        scheme: "batch-settlement",
+        network: NETWORK,
+        amount: "1000",
+        asset: TOKEN,
+        payTo: RECEIVER,
+        maxTimeoutSeconds: 3600,
+        extra: { voucherStore: true },
+      },
+    } as never);
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrUnexpectedPendingId,
+    });
+  });
+
   it("aborts managed verify when an enforced deposit is below minDeposit", async () => {
     const server = buildManagedServer(new InMemoryChannelStorage(), { enforceMinDeposit: true });
     const config = buildConfig();

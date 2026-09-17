@@ -1,12 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
+  admissionOwner,
   channelStateExtra,
   commitVoucherCharge,
+  defaultOnchainStateTtlMs,
   isFacilitatorManaged,
   paymentResponseExtra,
   pendingTtlMs,
   voucherStoreMode,
 } from "../../../src/batch-settlement/voucherStore";
+import type { BatchSettlementVoucherFields } from "../../../src/batch-settlement/types";
 import {
   InMemoryChannelStorage,
   type Channel,
@@ -55,6 +58,44 @@ describe("voucherStore helpers — pendingTtlMs", () => {
 
   it("treats an undefined timeout like zero before clamping", () => {
     expect(pendingTtlMs(undefined)).toBe(5_000);
+  });
+});
+
+describe("voucherStore helpers — defaultOnchainStateTtlMs", () => {
+  it("clamps a short withdraw delay to 30 seconds", () => {
+    expect(defaultOnchainStateTtlMs(30)).toBe(30_000);
+  });
+
+  it("uses one third of a mid-range withdraw delay", () => {
+    expect(defaultOnchainStateTtlMs(180)).toBe(60_000);
+  });
+
+  it("clamps a long withdraw delay to five minutes", () => {
+    expect(defaultOnchainStateTtlMs(900)).toBe(300_000);
+  });
+});
+
+describe("voucherStore helpers — admissionOwner", () => {
+  const voucher: BatchSettlementVoucherFields = {
+    channelId: "0xabc1230000000000000000000000000000000000000000000000000000000001",
+    maxClaimableAmount: "1000",
+    signature: "0xfeedface",
+  };
+
+  it("is stable for the same pendingId and voucher", () => {
+    expect(admissionOwner("0xpending", voucher)).toBe(admissionOwner("0xpending", voucher));
+  });
+
+  it("changes when the voucher signature or cap changes", () => {
+    const owner = admissionOwner("0xpending", voucher);
+    expect(admissionOwner("0xpending", { ...voucher, signature: "0xdeadbeef" })).not.toBe(owner);
+    expect(admissionOwner("0xpending", { ...voucher, maxClaimableAmount: "2000" })).not.toBe(owner);
+  });
+
+  it("normalizes pendingId and voucher fields to lowercase", () => {
+    expect(admissionOwner("0xPENDING", { ...voucher, signature: "0xFEEDFACE" })).toBe(
+      admissionOwner("0xpending", voucher),
+    );
   });
 });
 

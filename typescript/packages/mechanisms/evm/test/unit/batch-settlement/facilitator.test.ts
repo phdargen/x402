@@ -48,6 +48,7 @@ import {
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
 import { PERMIT2_ADDRESS } from "../../../src/constants";
 import * as Errors from "../../../src/batch-settlement/errors";
+import { admissionOwner } from "../../../src/batch-settlement/voucherStore";
 import { ErrErc20ApprovalFromMismatch } from "../../../src/exact/facilitator/errors";
 import type {
   ChannelConfig,
@@ -3371,7 +3372,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     });
     const { payload, config, channelId } = buildManagedVoucher("3000");
     await seedStoredChannel(storage, config, { chargedCumulativeAmount: "2500" });
-    await storage.acquire(channelId, "0xpending", 60_000);
+    const voucher = (payload.payload as BatchSettlementVoucherPayload).voucher;
+    await storage.acquire(channelId, admissionOwner("0xpending", voucher), 60_000);
 
     const result = await scheme.settle(
       {
@@ -3391,7 +3393,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     });
     const { payload, config, channelId } = buildManagedVoucher("6000");
     await seedStoredChannel(storage, config);
-    await storage.acquire(channelId, "0xpending", 60_000);
+    const voucher = (payload.payload as BatchSettlementVoucherPayload).voucher;
+    await storage.acquire(channelId, admissionOwner("0xpending", voucher), 60_000);
 
     const result = await scheme.settle(
       {

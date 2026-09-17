@@ -690,6 +690,25 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     server = new BatchSettlementEvmScheme(RECEIVER, { storage });
   });
 
+  it("rejects a client-supplied pendingId before taking the admission lock", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "2000", config);
+    (paymentPayload.payload as { pendingId?: string }).pendingId = "0xclient";
+    const acquireSpy = vi.spyOn(server.getLockStorage(), "acquire");
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrUnexpectedPendingId,
+    });
+    expect(acquireSpy).not.toHaveBeenCalled();
+  });
+
   it("does nothing when payload is not a batch-settlement cumulative payload", async () => {
     const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload: {

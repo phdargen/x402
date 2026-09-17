@@ -26,26 +26,36 @@ import type {
 import { refundTypes } from "../constants";
 import * as Errors from "../errors";
 import {
-  channelIdBindingError,
+  evaluateVoucherAgainstCachedState,
   getBatchSettlementEip712Domain,
   unpackRefundAuthorizer,
+  validateChannelConfig,
+  verifyEoaVoucherSignature,
 } from "../utils";
 import { createNonce, getEvmChainId } from "../../utils";
 import {
+  admissionOwner,
   channelStateExtra,
   commitVoucherCharge,
+  defaultOnchainStateTtlMs,
   paymentResponseExtra,
   pendingTtlMs,
 } from "../voucherStore";
-import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
+import {
+  rethrowLockImplementationError,
+  type ChannelLockStorage,
+  type ChannelStorage,
+} from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { verifyDeposit, settleDeposit } from "./deposit";
+import { readChannelState } from "./utils";
 import { verifyVoucher } from "./voucher";
 import { encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitRefund } from "./refund";
-import { readChannelState } from "./utils";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
 import type { SubmitMode } from "./submit";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 export type ResolveCallerIdentity = (
   ctx: DelegatedSettleContext,
@@ -59,6 +69,8 @@ export type VoucherStoreDeps = {
   storage: ChannelStorage<FacilitatorChannel>;
   lockStorage: ChannelLockStorage;
   withdrawDelay: number;
+  /** Cached onchain accept window. `0` disables the cache. Omit to derive from `withdrawDelay`. */
+  onchainStateTtlMs?: number;
   resolveCallerIdentity?: ResolveCallerIdentity;
   delegatedAuthStore?: DelegatedAuthStore;
   eip6492AllowedFactories: string[];
@@ -66,36 +78,50 @@ export type VoucherStoreDeps = {
 };
 
 /**
- * Whether this settle still holds the verify admission lock.
+ * Lock-store owner for a settle that echoed `pendingId`.
+ *
+ * @param pendingId - Server-minted nonce from `/verify`, if the server attached one.
+ * @param voucher - Voucher presented on this `/settle`.
+ * @returns Bound owner, or undefined when `/settle` omitted `pendingId`.
+ */
+function boundAdmissionOwner(
+  pendingId: string | undefined,
+  voucher: BatchSettlementVoucherPayload["voucher"],
+): string | undefined {
+  return pendingId ? admissionOwner(pendingId, voucher) : undefined;
+}
+
+/**
+ * Whether this settle still holds the verify admission lock for this voucher.
  *
  * @param deps - Store dependencies.
  * @param channelId - Channel id.
- * @param pendingId - Echoed verify owner, if the server attached one.
- * @returns True only when `pendingId` is present and still holds.
+ * @param owner - Voucher-bound lock owner, if the server attached a `pendingId`.
+ * @returns True only when `owner` is present and still holds.
  */
 async function admissionHeld(
   deps: VoucherStoreDeps,
   channelId: string,
-  pendingId: string | undefined,
+  owner: string | undefined,
 ): Promise<boolean> {
-  return pendingId !== undefined && (await deps.lockStorage.isHeld(channelId, pendingId));
+  return owner !== undefined && (await deps.lockStorage.isHeld(channelId, owner));
 }
 
 /**
- * Releases the echoed verify owner. No-op when `/settle` omitted `pendingId`
- * (lock-lost path: TTL may already have dropped the hold).
+ * Releases the voucher-bound verify owner. No-op when `/settle` omitted
+ * `pendingId` (lock-lost path: TTL may already have dropped the hold).
  *
  * @param deps - Store dependencies.
  * @param channelId - Channel id.
- * @param pendingId - Echoed verify owner, if any.
+ * @param owner - Voucher-bound lock owner, if any.
  */
 async function releaseAdmission(
   deps: VoucherStoreDeps,
   channelId: string,
-  pendingId: string | undefined,
+  owner: string | undefined,
 ): Promise<void> {
-  if (pendingId) {
-    await releaseLock(deps, channelId, pendingId);
+  if (owner) {
+    await releaseLock(deps, channelId, owner);
   }
 }
 
@@ -124,8 +150,20 @@ export async function verifyManaged(
     return { isValid: false, invalidReason: managedErr, payer: raw.channelConfig.payer };
   }
 
+  if (isBatchSettlementVoucherPayload(raw) && raw.channelConfig.payerAuthorizer !== ZERO_ADDRESS) {
+    const signatureOk = await verifyEoaVoucherSignature(raw, requirements.network);
+    if (!signatureOk) {
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrInvalidVoucherSignature,
+        payer: raw.channelConfig.payer,
+      };
+    }
+  }
+
   const channelId = raw.voucher.channelId;
-  const owner = createNonce();
+  const pendingId = createNonce();
+  const owner = admissionOwner(pendingId, raw.voucher);
   let reserved = false;
   try {
     if (
@@ -143,6 +181,7 @@ export async function verifyManaged(
     }
     reserved = true;
 
+    const stored = await deps.storage.get(channelId);
     const verified = isBatchSettlementDepositPayload(raw)
       ? await verifyDeposit(
           deps.signer,
@@ -152,14 +191,20 @@ export async function verifyManaged(
           context,
           deps.eip6492AllowedFactories,
         )
-      : await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);
+      : isBatchSettlementVoucherPayload(raw)
+        ? (evaluateVoucherAgainstCachedState(
+            raw,
+            requirements,
+            stored,
+            Date.now(),
+            deps.onchainStateTtlMs ?? defaultOnchainStateTtlMs(deps.withdrawDelay),
+          ) ?? (await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig)))
+        : await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);
 
     if (!verified.isValid) {
       await releaseLock(deps, channelId, owner);
       return verified;
     }
-
-    const stored = await deps.storage.get(channelId);
     const onchainClaimed = readExtraTotalClaimed(verified.extra);
     const charged = stored?.chargedCumulativeAmount ?? onchainClaimed;
     const isRefund = isBatchSettlementRefundPayload(raw);
@@ -188,10 +233,11 @@ export async function verifyManaged(
       extra: {
         ...verified.extra,
         chargedCumulativeAmount: charged,
-        pendingId: owner,
+        pendingId,
       },
     };
-  } catch {
+  } catch (err) {
+    rethrowLockImplementationError(err);
     if (reserved) {
       await releaseLock(deps, channelId, owner);
     }
@@ -252,32 +298,27 @@ async function settleManagedVoucher(
   requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   const channelId = raw.voucher.channelId;
-  const owner = raw.pendingId;
+  const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
     const held = await admissionHeld(deps, channelId, owner);
-    if (!held) {
-      const verified = await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);
-      if (!verified.isValid) {
-        return {
-          success: false,
-          errorReason: verified.invalidReason ?? Errors.ErrInvalidVoucherSignature,
-          transaction: "",
-          network: requirements.network,
-        };
-      }
-    } else {
-      const bindErr = channelIdBindingError(
+    if (held) {
+      const configErr = validateChannelConfig(
         raw.channelConfig,
         raw.voucher.channelId,
-        requirements.network,
+        requirements,
       );
-      if (bindErr) {
-        return {
-          success: false,
-          errorReason: bindErr,
-          transaction: "",
-          network: requirements.network,
-        };
+      if (configErr) {
+        return failSettle(requirements, configErr);
+      }
+    } else if (raw.pendingId && (await deps.lockStorage.isHeld(channelId))) {
+      return failSettle(requirements, Errors.ErrPendingIdMismatch);
+    } else {
+      const verified = await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);
+      if (!verified.isValid) {
+        return failSettle(
+          requirements,
+          verified.invalidReason ?? Errors.ErrInvalidVoucherSignature,
+        );
       }
     }
 
@@ -338,7 +379,7 @@ async function settleManagedDeposit(
   dataSuffix: `0x${string}` | undefined,
 ): Promise<SettleResponse> {
   const channelId = raw.voucher.channelId;
-  const owner = raw.pendingId;
+  const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
     const settled = await settleDeposit(
       deps.signer,
@@ -424,7 +465,7 @@ async function settleManagedRefund(
   dataSuffix: `0x${string}` | undefined,
 ): Promise<SettleResponse> {
   const channelId = raw.voucher.channelId;
-  const owner = raw.pendingId;
+  const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
     const consentErr = await checkRefundConsent(deps, payment, raw, requirements, context);
     if (consentErr) {
@@ -678,8 +719,8 @@ async function releaseLock(
 ): Promise<void> {
   try {
     await deps.lockStorage.release(channelId, owner);
-  } catch {
-    // Lock-store loss is optimistic: the charge CAS still serializes commits.
+  } catch (err) {
+    rethrowLockImplementationError(err);
   }
 }
 

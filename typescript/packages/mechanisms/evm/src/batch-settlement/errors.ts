@@ -84,3 +84,5 @@ export const ErrRefundAuthorizerSignature =
 export const ErrVoucherStoreUnavailable = "invalid_batch_settlement_evm_voucher_store_unavailable";
 export const ErrVoucherStoreModeMismatch =
   "invalid_batch_settlement_evm_voucher_store_mode_mismatch";
+export const ErrUnexpectedPendingId = "invalid_batch_settlement_evm_unexpected_pending_id";
+export const ErrPendingIdMismatch = "invalid_batch_settlement_evm_pending_id_mismatch";

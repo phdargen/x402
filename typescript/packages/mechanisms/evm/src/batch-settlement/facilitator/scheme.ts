@@ -63,11 +63,14 @@ export interface BatchSettlementEvmSchemeConfig {
    * Facilitator voucher store. Requires {@link authorizerSigner}.
    * `withdrawDelay` defaults to {@link MIN_WITHDRAW_DELAY}. Lock storage is
    * inferred from `storage` only when that object implements {@link ChannelLockStorage}.
+   * `onchainStateTtlMs` defaults from `withdrawDelay` (30s–5min). `0` disables
+   * the cached-state accept and always re-reads onchain.
    */
   voucherStore?: {
     storage: ChannelStorage<FacilitatorChannel>;
     lockStorage?: ChannelLockStorage;
     withdrawDelay?: number;
+    onchainStateTtlMs?: number;
   };
   /**
    * Resolves a stable caller identity for a delegated settle. Presence of this
@@ -126,6 +129,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         storage: ChannelStorage<FacilitatorChannel>;
         lockStorage: ChannelLockStorage;
         withdrawDelay: number;
+        onchainStateTtlMs?: number;
       }
     | undefined;
   private readonly resolveCallerIdentity: BatchSettlementEvmSchemeConfig["resolveCallerIdentity"];
@@ -180,6 +184,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         storage,
         lockStorage,
         withdrawDelay: config.voucherStore.withdrawDelay ?? MIN_WITHDRAW_DELAY,
+        onchainStateTtlMs: config.voucherStore.onchainStateTtlMs,
       };
     }
   }
@@ -454,6 +459,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       storage: this.voucherStore.storage,
       lockStorage: this.voucherStore.lockStorage,
       withdrawDelay: this.voucherStore.withdrawDelay,
+      onchainStateTtlMs: this.voucherStore.onchainStateTtlMs,
       resolveCallerIdentity: this.resolveCallerIdentity,
       delegatedAuthStore: this.delegatedAuthStore,
       eip6492AllowedFactories: this.config.eip6492AllowedFactories,

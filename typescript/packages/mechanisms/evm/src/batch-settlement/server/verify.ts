@@ -6,7 +6,6 @@ import type {
 } from "@x402/core/server";
 import type { VerifyResponse } from "@x402/core/types";
 import type { SchemePaymentRequiredContext } from "@x402/core/types";
-import { getAddress, hashTypedData, isAddressEqual, recoverAddress } from "viem";
 import {
   type BatchSettlementChannelStateExtra,
   type BatchSettlementDepositPayload,
@@ -19,10 +18,14 @@ import {
   isBatchSettlementRefundPayload,
   isBatchSettlementVoucherPayload,
 } from "../types";
-import { BATCH_SETTLEMENT_SCHEME, voucherTypes } from "../constants";
-import { createNonce, getEvmChainId } from "../../utils";
-import { channelIdBindingError, computeChannelId, getBatchSettlementEip712Domain } from "../utils";
-import { validateChannelConfig } from "../facilitator/utils";
+import { BATCH_SETTLEMENT_SCHEME } from "../constants";
+import { createNonce } from "../../utils";
+import {
+  channelIdBindingError,
+  evaluateVoucherAgainstCachedState,
+  validateChannelConfig,
+  verifyEoaVoucherSignature,
+} from "../utils";
 import * as Errors from "../errors";
 import { pendingTtlMs } from "../voucherStore";
 import type { BatchSettlementEvmScheme } from "./scheme";
@@ -75,6 +78,12 @@ export async function handleBeforeVerify(
   if (!isBatchSettlementPayload(raw)) {
     return;
   }
+
+  const pendingIdAbort = abortIfUnexpectedPendingId(raw);
+  if (pendingIdAbort) {
+    return pendingIdAbort;
+  }
+
   const isRefund = isBatchSettlementRefundPayload(raw);
 
   const bindAbort = abortIfChannelUnbound(raw, requirements.network);
@@ -153,11 +162,7 @@ export async function handleBeforeVerify(
 
   const chargedCumulativeAmount =
     channelSnapshot?.chargedCumulativeAmount ??
-    inferMissingLocalChargedAmount(
-      raw.voucher.maxClaimableAmount,
-      requirements.amount,
-      !isRefund,
-    );
+    inferMissingLocalChargedAmount(raw.voucher.maxClaimableAmount, requirements.amount, !isRefund);
   const expectedMaxClaimable = isRefund
     ? BigInt(chargedCumulativeAmount)
     : BigInt(chargedCumulativeAmount) + BigInt(requirements.amount);
@@ -181,11 +186,11 @@ export async function handleBeforeVerify(
     let localResult: VerifyResponse | undefined;
     try {
       localResult = evaluateVoucherAgainstCachedState(
-        scheme,
         raw,
-        requirements,
+        requirements as Parameters<typeof evaluateVoucherAgainstCachedState>[1],
         channelSnapshot,
         now,
+        scheme.getOnchainStateTtlMs(),
       );
     } catch {
       await scheme.clearPendingRequest(paymentPayload);
@@ -289,6 +294,25 @@ export async function abortIfBelowMinDeposit(
     };
   }
   return undefined;
+}
+
+/**
+ * Aborts when the client supplied a `pendingId`. Reservations are server-authored.
+ *
+ * @param raw - Decoded client request payload.
+ * @returns An abort directive, or undefined when `pendingId` is absent.
+ */
+export function abortIfUnexpectedPendingId(
+  raw: BatchSettlementPayload,
+): { abort: true; reason: string; message: string } | undefined {
+  if (raw.pendingId === undefined) {
+    return undefined;
+  }
+  return {
+    abort: true,
+    reason: Errors.ErrUnexpectedPendingId,
+    message: "pendingId is server-authored and must not be supplied by the client",
+  };
 }
 
 /**
@@ -460,117 +484,6 @@ export async function handleVerifiedPaymentCanceled(
 }
 
 /**
- * Evaluates a voucher against locally cached channel state when that state is fresh.
- *
- * Signature is already checked in {@link handleBeforeVerify}. This only decides
- * facilitator skip vs cached-state accept/reject (freshness, balance, claimed).
- *
- * @param scheme - Batch settlement scheme (TTL for onchain sync freshness).
- * @param raw - Decoded batch-settlement voucher payload.
- * @param requirements - Payment requirements (network, etc.).
- * @param channel - Cached channel row, if any.
- * @param now - Current wall-clock time in milliseconds.
- * @returns A {@link VerifyResponse}, or `undefined` to fall back to facilitator verification.
- */
-function evaluateVoucherAgainstCachedState(
-  scheme: BatchSettlementEvmScheme,
-  raw: BatchSettlementVoucherPayload,
-  requirements: VerifyContext["requirements"],
-  channel: Channel | undefined,
-  now: number,
-): VerifyResponse | undefined {
-  if (!channel || !isOnchainStateFresh(channel, scheme.getOnchainStateTtlMs(), now)) {
-    return;
-  }
-
-  if (raw.channelConfig.payerAuthorizer === ZERO_ADDRESS) {
-    return;
-  }
-
-  const payer = raw.channelConfig.payer;
-  const configErr = validateChannelConfig(
-    raw.channelConfig,
-    raw.voucher.channelId,
-    requirements as Parameters<typeof validateChannelConfig>[2],
-  );
-  if (configErr) {
-    return invalidVerifyResponse(payer, configErr);
-  }
-
-  if (
-    computeChannelId(raw.channelConfig, requirements.network).toLowerCase() !==
-    channel.channelId.toLowerCase()
-  ) {
-    return invalidVerifyResponse(payer, Errors.ErrChannelIdMismatch);
-  }
-
-  const maxClaimableAmount = BigInt(raw.voucher.maxClaimableAmount);
-  if (maxClaimableAmount > BigInt(channel.balance)) {
-    return invalidVerifyResponse(payer, Errors.ErrCumulativeExceedsBalance);
-  }
-
-  if (maxClaimableAmount <= BigInt(channel.totalClaimed)) {
-    return invalidVerifyResponse(payer, Errors.ErrCumulativeAmountBelowClaimed);
-  }
-
-  return {
-    isValid: true,
-    payer,
-    extra: {
-      channelId: raw.voucher.channelId,
-      balance: channel.balance,
-      totalClaimed: channel.totalClaimed,
-      withdrawRequestedAt: channel.withdrawRequestedAt,
-      refundNonce: channel.refundNonce.toString(),
-    },
-  };
-}
-
-/**
- * Returns whether cached onchain fields for a channel are still within the freshness window.
- *
- * @param channel - Cached channel row.
- * @param ttlMs - Maximum age of `onchainSyncedAt` in milliseconds.
- * @param now - Current wall-clock time in milliseconds.
- * @returns `true` if onchain sync time is present and still within `ttlMs` of `now`.
- */
-function isOnchainStateFresh(channel: Channel, ttlMs: number, now: number): boolean {
-  return channel.onchainSyncedAt !== undefined && now - channel.onchainSyncedAt <= ttlMs;
-}
-
-/**
- * Verifies an EOA voucher via `ecrecover`, matching
- * `x402BatchSettlement._processVoucherClaim`. Does not need a channel row.
- *
- * @param raw - Decoded batch-settlement voucher payload.
- * @param network - EVM network identifier for chain ID / domain.
- * @returns Whether the recovered signer is `payerAuthorizer`.
- */
-async function verifyEoaVoucherSignature(
-  raw: BatchSettlementVoucherPayload,
-  network: string,
-): Promise<boolean> {
-  try {
-    const digest = hashTypedData({
-      domain: getBatchSettlementEip712Domain(getEvmChainId(network)),
-      types: voucherTypes,
-      primaryType: "Voucher",
-      message: {
-        channelId: raw.voucher.channelId,
-        maxClaimableAmount: BigInt(raw.voucher.maxClaimableAmount),
-      },
-    });
-    const recovered = await recoverAddress({
-      hash: digest,
-      signature: raw.voucher.signature,
-    });
-    return isAddressEqual(recovered, getAddress(raw.channelConfig.payerAuthorizer));
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Returns whether `value` is a non-negative integer decimal string.
  *
  * @param value - Candidate amount string.
@@ -578,17 +491,6 @@ async function verifyEoaVoucherSignature(
  */
 function isNonNegativeIntegerString(value: string): boolean {
   return /^\d+$/.test(value);
-}
-
-/**
- * Builds a failed verify response with the payer address preserved for reporting.
- *
- * @param payer - Payer address from the payload.
- * @param invalidReason - Machine-readable failure reason.
- * @returns Invalid {@link VerifyResponse} with `isValid: false`.
- */
-function invalidVerifyResponse(payer: `0x${string}`, invalidReason: string): VerifyResponse {
-  return { isValid: false, invalidReason, payer };
 }
 
 /**

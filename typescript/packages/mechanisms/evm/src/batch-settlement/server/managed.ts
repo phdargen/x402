@@ -13,6 +13,7 @@ import type { Channel } from "./storage";
 import {
   abortIfBelowMinDeposit,
   abortIfChannelUnbound,
+  abortIfUnexpectedPendingId,
   skipHandlerForRefund,
   writeCorrectiveAcceptExtra,
 } from "./verify";
@@ -35,6 +36,11 @@ export async function handleManagedBeforeVerify(
   const raw = paymentPayload.payload;
   if (!isBatchSettlementPayload(raw)) {
     return;
+  }
+
+  const pendingIdAbort = abortIfUnexpectedPendingId(raw);
+  if (pendingIdAbort) {
+    return pendingIdAbort;
   }
 
   const minDepositAbort = await abortIfBelowMinDeposit(scheme, raw, requirements);
