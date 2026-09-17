@@ -1,8 +1,41 @@
-import { concat, getAddress, hashTypedData, padHex, slice, toHex } from "viem";
-import { BATCH_SETTLEMENT_ADDRESS, BATCH_SETTLEMENT_DOMAIN, channelConfigTypes } from "./constants";
-import { ErrChannelIdMismatch, ErrInvalidChannelId } from "./errors";
-import type { ChannelConfig } from "./types";
+import {
+  concat,
+  getAddress,
+  hashTypedData,
+  isAddressEqual,
+  padHex,
+  recoverAddress,
+  slice,
+  toHex,
+} from "viem";
+import type { PaymentRequirements, VerifyResponse } from "@x402/core/types";
+import {
+  BATCH_SETTLEMENT_ADDRESS,
+  BATCH_SETTLEMENT_DOMAIN,
+  MAX_WITHDRAW_DELAY,
+  MIN_WITHDRAW_DELAY,
+  channelConfigTypes,
+  voucherTypes,
+} from "./constants";
+import * as Errors from "./errors";
+import type {
+  BatchSettlementPaymentRequirementsExtra,
+  BatchSettlementVoucherPayload,
+  ChannelConfig,
+} from "./types";
 import { getEvmChainId } from "../utils";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+/** Onchain fields needed to accept an EOA voucher from cache. Avoids importing storage. */
+type CachedChannelOnchain = {
+  channelId: string;
+  balance: string;
+  totalClaimed: string;
+  withdrawRequestedAt: number;
+  refundNonce: number;
+  onchainSyncedAt?: number;
+};
 
 /** Canonical `bytes32` channel id: `0x` followed by exactly 64 hex digits. */
 const CHANNEL_ID_RE = /^0x[0-9a-fA-F]{64}$/;
@@ -65,7 +98,7 @@ export function isCanonicalChannelId(value: unknown): value is `0x${string}` {
  */
 export function normalizeChannelId(channelId: string): `0x${string}` {
   if (!isCanonicalChannelId(channelId)) {
-    throw new Error(ErrInvalidChannelId);
+    throw new Error(Errors.ErrInvalidChannelId);
   }
   return channelId.toLowerCase() as `0x${string}`;
 }
@@ -83,9 +116,9 @@ export function channelIdBindingError(
   claimedChannelId: string,
   networkOrChainId: string | number,
 ): string | undefined {
-  if (!isCanonicalChannelId(claimedChannelId)) return ErrInvalidChannelId;
+  if (!isCanonicalChannelId(claimedChannelId)) return Errors.ErrInvalidChannelId;
   if (computeChannelId(config, networkOrChainId).toLowerCase() !== claimedChannelId.toLowerCase()) {
-    return ErrChannelIdMismatch;
+    return Errors.ErrChannelIdMismatch;
   }
   return undefined;
 }
@@ -165,4 +198,165 @@ export function packRefundAuthorizerSalt(
  */
 export function unpackRefundAuthorizer(salt: `0x${string}`): `0x${string}` {
   return getAddress(slice(salt, 12, 32));
+}
+
+/**
+ * Verifies an EOA voucher via `ecrecover`, matching
+ * `x402BatchSettlement._processVoucherClaim`. Does not need a channel row.
+ *
+ * @param raw - Decoded batch-settlement voucher payload.
+ * @param network - EVM network identifier for chain ID / domain.
+ * @returns Whether the recovered signer is `payerAuthorizer`.
+ */
+export async function verifyEoaVoucherSignature(
+  raw: BatchSettlementVoucherPayload,
+  network: string,
+): Promise<boolean> {
+  try {
+    const digest = hashTypedData({
+      domain: getBatchSettlementEip712Domain(getEvmChainId(network)),
+      types: voucherTypes,
+      primaryType: "Voucher",
+      message: {
+        channelId: raw.voucher.channelId,
+        maxClaimableAmount: BigInt(raw.voucher.maxClaimableAmount),
+      },
+    });
+    const recovered = await recoverAddress({
+      hash: digest,
+      signature: raw.voucher.signature,
+    });
+    return isAddressEqual(recovered, getAddress(raw.channelConfig.payerAuthorizer));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates that a {@link ChannelConfig} is consistent with the claimed `channelId` and
+ * the server's {@link PaymentRequirements}.
+ *
+ * @param config - The channel configuration from the payload.
+ * @param channelId - The `channelId` claimed in the payload.
+ * @param requirements - Server payment requirements to cross-check against.
+ * @returns An error code string if validation fails, otherwise `undefined`.
+ */
+export function validateChannelConfig(
+  config: ChannelConfig,
+  channelId: `0x${string}`,
+  requirements: PaymentRequirements,
+): string | undefined {
+  const computedId = computeChannelId(config, requirements.network);
+  if (computedId.toLowerCase() !== channelId.toLowerCase()) {
+    return Errors.ErrChannelIdMismatch;
+  }
+
+  if (getAddress(config.receiver) !== getAddress(requirements.payTo)) {
+    return Errors.ErrReceiverMismatch;
+  }
+
+  const extra = requirements.extra as Partial<BatchSettlementPaymentRequirementsExtra> | undefined;
+  const requiredReceiverAuthorizer = extra?.receiverAuthorizer;
+
+  if (
+    !requiredReceiverAuthorizer ||
+    getAddress(requiredReceiverAuthorizer) === ZERO_ADDRESS ||
+    getAddress(config.receiverAuthorizer) !== getAddress(requiredReceiverAuthorizer)
+  ) {
+    return Errors.ErrReceiverAuthorizerMismatch;
+  }
+
+  if (getAddress(config.token) !== getAddress(requirements.asset)) {
+    return Errors.ErrTokenMismatch;
+  }
+
+  if (extra?.withdrawDelay !== undefined && config.withdrawDelay !== Number(extra.withdrawDelay)) {
+    return Errors.ErrWithdrawDelayMismatch;
+  }
+
+  if (config.withdrawDelay < MIN_WITHDRAW_DELAY || config.withdrawDelay > MAX_WITHDRAW_DELAY) {
+    return Errors.ErrWithdrawDelayOutOfRange;
+  }
+
+  return undefined;
+}
+
+/**
+ * Accepts or rejects an EOA voucher against cached onchain fields when those
+ * fields are still fresh. Signature is the caller's responsibility.
+ *
+ * @param raw - Decoded batch-settlement voucher payload.
+ * @param requirements - Payment requirements (network, payTo, asset, extra).
+ * @param channel - Cached channel row, if any.
+ * @param now - Current wall-clock time in milliseconds.
+ * @param ttlMs - Maximum age of `onchainSyncedAt` in milliseconds.
+ * @returns A {@link VerifyResponse}, or `undefined` to fall back to full verify.
+ */
+export function evaluateVoucherAgainstCachedState(
+  raw: BatchSettlementVoucherPayload,
+  requirements: PaymentRequirements,
+  channel: CachedChannelOnchain | undefined,
+  now: number,
+  ttlMs: number,
+): VerifyResponse | undefined {
+  if (!channel || !isOnchainStateFresh(channel, ttlMs, now)) {
+    return;
+  }
+
+  if (raw.channelConfig.payerAuthorizer === ZERO_ADDRESS) {
+    return;
+  }
+
+  const payer = raw.channelConfig.payer;
+  const configErr = validateChannelConfig(raw.channelConfig, raw.voucher.channelId, requirements);
+  if (configErr) {
+    return { isValid: false, invalidReason: configErr, payer };
+  }
+
+  if (
+    computeChannelId(raw.channelConfig, requirements.network).toLowerCase() !==
+    channel.channelId.toLowerCase()
+  ) {
+    return { isValid: false, invalidReason: Errors.ErrChannelIdMismatch, payer };
+  }
+
+  const maxClaimableAmount = BigInt(raw.voucher.maxClaimableAmount);
+  if (maxClaimableAmount > BigInt(channel.balance)) {
+    return { isValid: false, invalidReason: Errors.ErrCumulativeExceedsBalance, payer };
+  }
+
+  if (maxClaimableAmount <= BigInt(channel.totalClaimed)) {
+    return { isValid: false, invalidReason: Errors.ErrCumulativeAmountBelowClaimed, payer };
+  }
+
+  return {
+    isValid: true,
+    payer,
+    extra: {
+      channelId: raw.voucher.channelId,
+      balance: channel.balance,
+      totalClaimed: channel.totalClaimed,
+      withdrawRequestedAt: channel.withdrawRequestedAt,
+      refundNonce: channel.refundNonce.toString(),
+    },
+  };
+}
+
+/**
+ * Returns whether cached onchain fields for a channel are still within the freshness window.
+ *
+ * @param channel - Cached channel row.
+ * @param ttlMs - Maximum age of `onchainSyncedAt` in milliseconds. `0` or negative disables the cache.
+ * @param now - Current wall-clock time in milliseconds.
+ * @returns `true` if onchain sync time is present and still within `ttlMs` of `now`.
+ */
+export function isOnchainStateFresh(
+  channel: Pick<CachedChannelOnchain, "onchainSyncedAt">,
+  ttlMs: number,
+  now: number,
+): boolean {
+  if (ttlMs <= 0) {
+    return false;
+  }
+  return channel.onchainSyncedAt !== undefined && now - channel.onchainSyncedAt <= ttlMs;
 }

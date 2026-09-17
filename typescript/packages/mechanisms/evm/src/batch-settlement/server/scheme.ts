@@ -24,7 +24,7 @@ import {
   MAX_WITHDRAW_DELAY,
   MIN_WITHDRAW_DELAY,
 } from "../constants";
-import { voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
+import { defaultOnchainStateTtlMs, voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
 import * as Errors from "../errors";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import {
@@ -817,17 +817,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     }
     return handlers;
   }
-}
-
-/**
- * Derives a reasonable onchain state freshness window from the channel withdraw delay.
- *
- * @param withdrawDelaySeconds - Onchain withdraw delay for the channel, in seconds.
- * @returns TTL in milliseconds, clamped between 30 seconds and 5 minutes.
- */
-function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
-  const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1000;
-  return Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(withdrawDelayMs / 3)));
 }
 
 /**
