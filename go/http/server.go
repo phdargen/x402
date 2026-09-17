@@ -1071,8 +1071,9 @@ func (s *x402HTTPResourceServer) CreateCompletedSettlementHeaders(
 }
 
 // CreateFailurePathSettlementHeaders returns PAYMENT-RESPONSE headers when the
-// resource handler fails after before-handler settle. Prefers cancel/refund
-// settle when present; otherwise echoes the upfront deposit receipt.
+// resource handler fails after a verified payment. Prefers cancel/refund settle
+// when a before-handler deposit exists; lock-only cancels are omitted. Otherwise
+// echoes the upfront deposit receipt.
 func (s *x402HTTPResourceServer) CreateFailurePathSettlementHeaders(
 	cancelSettlement *x402.SettleResponse,
 	beforeHandlerSettlement *x402.CompletedSettlement,

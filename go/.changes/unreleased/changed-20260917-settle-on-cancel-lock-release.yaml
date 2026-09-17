@@ -1,0 +1,3 @@
+kind: changed
+body: Run scheme SettleOnCancel even when no before-handler deposit completed, so after-handler schemes can release admission locks on handler failure. Omit lock-only cancel receipts from failure-path PAYMENT-RESPONSE and MCP payment-response meta.
+time: 2026-09-17T18:10:00Z
