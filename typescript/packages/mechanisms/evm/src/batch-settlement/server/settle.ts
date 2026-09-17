@@ -92,6 +92,8 @@ export async function handleBeforeSettle(
     increment,
     signedCap,
     voucher,
+    snapshot,
+    recoverFromSnapshot: false,
     now,
     localVerify,
   });
