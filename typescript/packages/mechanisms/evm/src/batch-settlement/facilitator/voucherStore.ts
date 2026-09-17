@@ -522,6 +522,10 @@ async function settleManagedRefund(
   const channelId = raw.voucher.channelId;
   const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
+    const amountError = refundAmountError(raw);
+    if (amountError) {
+      return failSettle(requirements, amountError);
+    }
     const consentErr = await checkRefundConsent(deps, payment, raw, requirements, context);
     if (consentErr) {
       return failSettle(requirements, consentErr);
@@ -658,6 +662,10 @@ async function checkRefundConsent(
   requirements: PaymentRequirements,
   context: FacilitatorContext | undefined,
 ): Promise<string | undefined> {
+  const amountError = refundAmountError(raw);
+  if (amountError) {
+    return amountError;
+  }
   const extra = requirements.extra ?? {};
   const refundAuthorizer = extra.refundAuthorizer;
   if (typeof refundAuthorizer === "string") {
@@ -941,7 +949,34 @@ function rebuildClaims(stored: FacilitatorChannel): BatchSettlementVoucherClaim[
 }
 
 /**
+ * Returns `invalid_batch_settlement_evm_refund_amount_invalid` when an explicit
+ * refund `amount` is present but not a positive integer. Omitted `amount`
+ * (full refund) is valid and resolves to the remainder downstream.
+ *
+ * @param raw - Refund payload that may carry an explicit amount.
+ * @returns Error code, or undefined when the amount is omitted or valid.
+ */
+function refundAmountError(raw: { amount?: unknown }): string | undefined {
+  if (raw.amount === undefined) {
+    return undefined;
+  }
+  if (typeof raw.amount !== "string" || !/^\d+$/.test(raw.amount)) {
+    return Errors.ErrRefundAmountInvalid;
+  }
+  try {
+    if (BigInt(raw.amount) <= 0n) {
+      return Errors.ErrRefundAmountInvalid;
+    }
+  } catch {
+    return Errors.ErrRefundAmountInvalid;
+  }
+  return undefined;
+}
+
+/**
  * Resolves the refund amount from the payload or the remaining unclaimed escrow.
+ * Callers must run {@link refundAmountError} first; this assumes an omitted or
+ * positive-integer amount.
  *
  * @param raw - Refund payload.
  * @param stored - Stored channel, if any.

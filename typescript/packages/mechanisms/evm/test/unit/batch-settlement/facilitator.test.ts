@@ -3448,6 +3448,82 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
   });
 
+  it("rejects managed refund settle with a malformed amount", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config);
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "not-a-number",
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAmountInvalid);
+  });
+
+  it("rejects managed refund settle with a zero amount", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage },
+    });
+    const salt = packRefundAuthorizerSalt(
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+      refundAuthorizer.address,
+    );
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address, salt });
+    const channelId = computeChannelId(config);
+    await seedStoredChannel(storage, config);
+    const payload = envelopeRefund({
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      amount: "0",
+    });
+
+    const result = await scheme.settle(
+      payload,
+      managedRequirements({
+        amount: "0",
+        extra: {
+          name: "USDC",
+          version: "2",
+          receiverAuthorizer: authorizer.address,
+          assetTransferMethod: "eip3009",
+          withdrawDelay: 900,
+          voucherStore: true,
+          refundAuthorizer: refundAuthorizer.address,
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAmountInvalid);
+  });
+
   it("settles a managed refund when refundAuthorizer EIP-712 consent matches the request", async () => {
     mockedMulticall
       .mockResolvedValueOnce([
@@ -3870,6 +3946,63 @@ describe("BatchSettlementEvmScheme (Facilitator) — self-managed refund identit
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
   });
+
+  it("rejects an unsigned self-managed refund when no deposit binding exists", async () => {
+    const authorizer = buildAuthorizerSigner();
+    const delegatedAuthStore = new InMemoryDelegatedAuthStore();
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      resolveCallerIdentity: async () => "some-service",
+      delegatedAuthStore,
+    });
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+      amount: "1000",
+      refundNonce: "0",
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+  });
+
+  it("rejects an unsigned self-managed refund with a malformed amount", async () => {
+    const authorizer = buildAuthorizerSigner();
+    const delegatedAuthStore = new InMemoryDelegatedAuthStore();
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await delegatedAuthStore.bind({
+      channelId,
+      network: NETWORK,
+      callerIdentity: "bound-service",
+    });
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      resolveCallerIdentity: async () => "bound-service",
+      delegatedAuthStore,
+    });
+    const rp: BatchSettlementEnrichedRefundPayload = {
+      type: "refund",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "0", signature: "0xdead" },
+      amount: "not-a-number",
+      refundNonce: "0",
+      claims: [],
+    };
+
+    const result = await scheme.settle(
+      envelopeSettle(rp as unknown as Record<string, unknown>),
+      makeRequirements(),
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAmountInvalid);
+  });
 });
 
 describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", () => {
@@ -4056,7 +4189,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", 
     expect(result.errorMessage).toContain("nonce too low");
   });
 
-  it("still broadcasts a refund whose requested amount is zero after claims are considered", async () => {
+  it("rejects a refund whose requested amount is zero", async () => {
     const signer = buildSigner();
     mockedMulticall.mockResolvedValue([
       { status: "success", result: [10000n, 0n] },
@@ -4080,10 +4213,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — no authorizer configured", 
       envelopeSettle(rp as unknown as Record<string, unknown>),
       makeRequirements(),
     );
-    // getRefundableAmount returns null for a zero request (not 0n), so the
-    // ErrRefundNoBalance short-circuit does not fire and the signed refund is submitted.
-    expect(result.success).toBe(true);
-    expect(signer.writeContract).toHaveBeenCalled();
+    // Zero is non-positive: refund_amount_invalid, no broadcast.
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAmountInvalid);
+    expect(signer.writeContract).not.toHaveBeenCalled();
   });
 
   it("ignores claims for a different channel when computing refundable amount", async () => {
