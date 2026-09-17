@@ -14,8 +14,8 @@ import type {
 } from "../types";
 import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
 import { computeChannelId } from "../utils";
-import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
-import { isChannelLockStorage } from "../storage/channel";
+import type { ChannelLockStorage, ChannelQuery, ChannelStorage } from "../storage/channel";
+import { isChannelLockStorage, queryChannels, querySettleTargets } from "../storage/channel";
 import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitClaim } from "./claim";
 import { submitRefund } from "./refund";
@@ -239,18 +239,19 @@ export class FacilitatorChannelManager {
    * @returns One result per submitted claim batch.
    */
   async claim(opts?: FacilitatorClaimOptions): Promise<FacilitatorClaimResult[]> {
-    const channels = await this.storage.list();
+    const filter: ChannelQuery = {
+      kind: "claimable",
+      ...(opts?.idleSecs !== undefined
+        ? { idleAtOrBefore: Date.now() - opts.idleSecs * 1000 }
+        : {}),
+    };
+    const { items: channels } = await queryChannels(this.storage, filter);
     const byNetwork = groupByNetwork(channels);
     const results: FacilitatorClaimResult[] = [];
     const maxClaimsPerBatch = opts?.maxClaimsPerBatch ?? 100;
 
     for (const [network, group] of byNetwork) {
-      const ordered = [...group].sort((a, b) => {
-        const aw = a.withdrawRequestedAt > 0 ? 0 : 1;
-        const bw = b.withdrawRequestedAt > 0 ? 0 : 1;
-        return aw - bw;
-      });
-      const claims = selectClaimableVouchers(ordered, {
+      const claims = selectClaimableVouchers(group, {
         now: Date.now(),
         ...(opts?.idleSecs !== undefined ? { idleSecs: opts.idleSecs } : {}),
       });
@@ -274,48 +275,27 @@ export class FacilitatorChannelManager {
   }
 
   /**
-   * Settles claimed-but-unsettled funds for each distinct (receiver, token) pair
+   * Settles claimed-but-unsettled funds for each distinct `(network, receiver, token)`
    * among stored claimed channels.
    *
    * @returns One result per settle transaction.
    */
   async settle(): Promise<FacilitatorSettleResult[]> {
-    const channels = await this.storage.list();
-    const pairs = new Map<
-      string,
-      { network: Network; receiver: `0x${string}`; token: `0x${string}` }
-    >();
-    for (const channel of channels) {
-      if (BigInt(channel.totalClaimed) === 0n) {
-        continue;
-      }
-      const receiver = channel.channelConfig.receiver;
-      const token = channel.channelConfig.token;
-      const key = `${channel.network}:${receiver.toLowerCase()}:${token.toLowerCase()}`;
-      if (!pairs.has(key)) {
-        pairs.set(key, { network: channel.network, receiver, token });
-      }
-    }
-
-    if (pairs.size === 0) {
+    const { items: targets } = await querySettleTargets(this.storage, {});
+    if (targets.length === 0) {
       this.pendingSettle = false;
       return [];
     }
 
     const results: FacilitatorSettleResult[] = [];
-    for (const pair of pairs.values()) {
+    for (const [network, receiver, token] of targets) {
       const payload: BatchSettlementSettlePayload = {
         type: "settle",
-        receiver: pair.receiver,
-        token: pair.token,
+        receiver,
+        token,
       };
-      const dataSuffix = await this.resolveBuilderSuffix(
-        pair.network,
-        payload,
-        pair.token,
-        pair.receiver,
-      );
-      const response = await executeSettle(this.signer, payload, pair.network, dataSuffix);
+      const dataSuffix = await this.resolveBuilderSuffix(network, payload, token, receiver);
+      const response = await executeSettle(this.signer, payload, network, dataSuffix);
       if (!response.success) {
         if (response.errorReason === Errors.ErrNothingToSettle) {
           continue;
@@ -323,9 +303,9 @@ export class FacilitatorChannelManager {
         throw new Error(formatFailure("Settle", response));
       }
       results.push({
-        network: pair.network,
-        receiver: pair.receiver,
-        token: pair.token,
+        network,
+        receiver,
+        token,
         transaction: response.transaction,
       });
     }
@@ -348,22 +328,16 @@ export class FacilitatorChannelManager {
   }
 
   /**
-   * Cooperatively refunds one or more stored channels.
+   * Cooperatively refunds stored channels with remaining escrow.
    *
    * Skips channels with a live admission lock. Claims outstanding vouchers first,
    * then refunds `balance - chargedCumulativeAmount`.
    *
-   * @param channelIds - Specific channels to refund; defaults to all stored channels.
    * @returns One result per successfully refunded or claim-only channel.
    */
-  async refund(channelIds?: string[]): Promise<FacilitatorRefundResult[]> {
-    const channels = await this.storage.list();
-    const selected = channelIds
-      ? channels.filter(channel =>
-          channelIds.some(id => id.toLowerCase() === channel.channelId.toLowerCase()),
-        )
-      : channels;
-    return this.refundChannels(selected);
+  async refund(): Promise<FacilitatorRefundResult[]> {
+    const { items: channels } = await queryChannels(this.storage, { kind: "idleRefundable" });
+    return this.refundChannels(channels);
   }
 
   /**
@@ -639,22 +613,16 @@ export class FacilitatorChannelManager {
    * @returns Idle refundable channels.
    */
   private async getIdleChannelsForRefund(idleSecs: number): Promise<FacilitatorChannel[]> {
-    const now = Date.now();
-    const idleMs = idleSecs * 1000;
-    const channels = await this.storage.list();
-    const idle: FacilitatorChannel[] = [];
-    for (const channel of channels) {
-      if (BigInt(channel.balance) === 0n) {
-        continue;
-      }
-      if (this.lockStorage && (await channelIsHeld(this.lockStorage, channel.channelId))) {
-        continue;
-      }
-      if (now - channel.lastRequestTimestamp >= idleMs) {
-        idle.push(channel);
-      }
+    const { items: channels } = await queryChannels(this.storage, {
+      kind: "idleRefundable",
+      idleAtOrBefore: Date.now() - idleSecs * 1000,
+    });
+    if (!this.lockStorage) {
+      return channels;
     }
-    return idle;
+    const lock = this.lockStorage;
+    const held = await Promise.all(channels.map(channel => channelIsHeld(lock, channel.channelId)));
+    return channels.filter((_, index) => !held[index]);
   }
 
   /**

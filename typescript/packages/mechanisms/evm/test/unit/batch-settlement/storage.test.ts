@@ -8,7 +8,13 @@ import {
   resolveWithinDir,
   writeJsonAtomic,
 } from "../../../src/batch-settlement/storage-utils";
-import { InMemoryChannelStorage, type Channel } from "../../../src/batch-settlement/server/storage";
+import {
+  InMemoryChannelStorage,
+  matchesChannelQuery,
+  queryChannels,
+  sortChannels,
+  type Channel,
+} from "../../../src/batch-settlement/server/storage";
 import {
   FileChannelStorage,
   acquireExclusiveFile,
@@ -900,5 +906,75 @@ describe("storage-utils", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("matchesChannelQuery / sortChannels", () => {
+  it("compares uint256 amounts as BigInt, not lexicographic strings", () => {
+    expect(
+      matchesChannelQuery(buildSession({ chargedCumulativeAmount: "10", totalClaimed: "9" }), {
+        kind: "claimable",
+      }),
+    ).toBe(true);
+    expect(
+      matchesChannelQuery(buildSession({ chargedCumulativeAmount: "9", totalClaimed: "10" }), {
+        kind: "claimable",
+      }),
+    ).toBe(false);
+  });
+
+  it("treats lastRequestTimestamp equal to idleAtOrBefore as idle", () => {
+    const channel = buildSession({ lastRequestTimestamp: 1000, balance: "1" });
+    expect(matchesChannelQuery(channel, { kind: "idleRefundable", idleAtOrBefore: 1000 })).toBe(
+      true,
+    );
+    expect(matchesChannelQuery(channel, { kind: "idleRefundable", idleAtOrBefore: 999 })).toBe(
+      false,
+    );
+  });
+
+  it("does not match a network filter when the row has no network field", () => {
+    expect(
+      matchesChannelQuery(buildSession({ chargedCumulativeAmount: "10" }), {
+        kind: "claimable",
+        network: "eip155:84532",
+      }),
+    ).toBe(false);
+  });
+
+  it("sorts claimable rows withdraw-pending first without mutating the input", () => {
+    const pending = buildSession({
+      channelId: "0x2222222222222222222222222222222222222222222222222222222222222222",
+      withdrawRequestedAt: 1,
+    });
+    const fresh = buildSession({
+      channelId: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      withdrawRequestedAt: 0,
+    });
+    const input = [fresh, pending];
+    expect(sortChannels(input, { kind: "claimable" }).map(channel => channel.channelId)).toEqual([
+      pending.channelId,
+      fresh.channelId,
+    ]);
+    expect(input).toEqual([fresh, pending]);
+  });
+});
+
+describe("queryChannels", () => {
+  it("prefers a native query implementation over the scan shim", async () => {
+    const inner = new InMemoryChannelStorage();
+    await inner.updateChannel(CHANNEL_ID, () =>
+      buildSession({ chargedCumulativeAmount: "10", totalClaimed: "0" }),
+    );
+    const queried = buildSession({
+      channelId: "0x9999999999999999999999999999999999999999999999999999999999999999",
+      chargedCumulativeAmount: "1",
+    });
+    const query = async () => ({ items: [queried] });
+    const storage = Object.assign(inner, { query });
+
+    await expect(queryChannels(storage, { kind: "claimable" })).resolves.toEqual({
+      items: [queried],
+    });
   });
 });

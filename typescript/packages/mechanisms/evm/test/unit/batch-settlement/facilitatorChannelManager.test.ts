@@ -268,6 +268,38 @@ describe("FacilitatorChannelManager — claim()", () => {
     expect(results).toEqual([]);
   });
 
+  it("uses storage.query when implemented instead of listing every row", async () => {
+    const inner = new InMemoryChannelStorage<FacilitatorChannel>();
+    const authorizer = buildAuthorizerSigner();
+    const skippedConfig = buildChannelConfig("01");
+    skippedConfig.receiverAuthorizer = authorizer.address;
+    const selectedConfig = buildChannelConfig("02");
+    selectedConfig.receiverAuthorizer = authorizer.address;
+    const skipped = buildChannel({
+      channelConfig: skippedConfig,
+      channelId: computeChannelId(skippedConfig),
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+    });
+    const selected = buildChannel({
+      channelConfig: selectedConfig,
+      channelId: computeChannelId(selectedConfig),
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+    });
+    await storeChannel(inner, skipped);
+    await storeChannel(inner, selected);
+    const query = vi.fn(async () => ({ items: [selected] }));
+    const storage = Object.assign(inner, { query });
+    const { manager, signer } = buildManager({ storage, authorizerSigner: authorizer });
+
+    const results = await manager.claim();
+
+    expect(query).toHaveBeenCalledWith({ kind: "claimable" }, undefined);
+    expect(results).toHaveLength(1);
+    expect(signer.writeContract).toHaveBeenCalledTimes(1);
+  });
+
   it("does not update the store when claim simulation fails", async () => {
     const signer = buildSigner({
       readContract: vi.fn().mockRejectedValue(new Error("execution reverted: NothingToClaim")),
@@ -406,6 +438,18 @@ describe("FacilitatorChannelManager — settle()", () => {
       expect.objectContaining({ functionName: "settle", dataSuffix: builderSuffix }),
     );
   });
+
+  it("uses storage.settleQuery when implemented instead of scanning claimed rows", async () => {
+    const inner = new InMemoryChannelStorage<FacilitatorChannel>();
+    await storeChannel(inner, buildChannel({ totalClaimed: "5000" }));
+    const settleQuery = vi.fn(async () => ({ items: [] }));
+    const storage = Object.assign(inner, { settleQuery });
+    const { manager, signer } = buildManager({ storage });
+
+    await expect(manager.settle()).resolves.toEqual([]);
+    expect(settleQuery).toHaveBeenCalledWith({}, undefined);
+    expect(signer.writeContract).not.toHaveBeenCalled();
+  });
 });
 
 describe("FacilitatorChannelManager — refund()", () => {
@@ -418,7 +462,7 @@ describe("FacilitatorChannelManager — refund()", () => {
     ]);
   });
 
-  it("refunds only the requested channel ids", async () => {
+  it("refunds remaining-escrow channels", async () => {
     const { manager, storage, authorizer } = buildManager();
     const configA = buildChannelConfig("01");
     const configB = buildChannelConfig("02");
@@ -435,9 +479,10 @@ describe("FacilitatorChannelManager — refund()", () => {
     await storeChannel(storage, channelA);
     await storeChannel(storage, channelB);
 
-    const results = await manager.refund([channelA.channelId]);
-    expect(results).toHaveLength(1);
-    expect(results[0].channel).toBe(channelA.channelId);
+    const results = await manager.refund();
+    expect(results.map(result => result.channel).sort()).toEqual(
+      [channelA.channelId, channelB.channelId].sort(),
+    );
   });
 
   it("skips channels with a live admission lock", async () => {
@@ -665,7 +710,7 @@ describe("FacilitatorChannelManager — refund()", () => {
     });
     await storeChannel(storage, channel);
 
-    await manager.refund([channel.channelId]);
+    await manager.refund();
 
     expect(await storage.get(channel.channelId)).toBeDefined();
   });
