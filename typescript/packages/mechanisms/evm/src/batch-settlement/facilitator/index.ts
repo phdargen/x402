@@ -28,8 +28,21 @@ export { InMemoryChannelStorage } from "../storage/channel";
 export type {
   Channel,
   ChannelLockStorage,
+  ChannelQuery,
   ChannelStorage,
+  ChannelStoreOptions,
   ChannelUpdateResult,
+  QueryPage,
+  SettleQuery,
+  SettleTarget,
+} from "../storage/channel";
+export {
+  matchesChannelQuery,
+  queryByScan,
+  queryChannels,
+  querySettleTargets,
+  settleQueryByScan,
+  sortChannels,
 } from "../storage/channel";
 export {
   InMemoryDelegatedAuthStore,

@@ -11,8 +11,8 @@ import { BATCH_SETTLEMENT_SCHEME } from "../constants";
 import * as Errors from "../errors";
 import { signClaimBatch, signRefund } from "../authorizerSigner";
 import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
-import type { Channel, ChannelLockStorage } from "./storage";
-import { rethrowLockImplementationError } from "./storage";
+import type { Channel, ChannelLockStorage, ChannelQuery } from "./storage";
+import { queryChannels, rethrowLockImplementationError } from "./storage";
 
 export interface ChannelManagerConfig {
   scheme: BatchSettlementEvmScheme;
@@ -199,23 +199,18 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Initiates cooperative refunds for one or more channels.
+   * Initiates cooperative refunds for stored channels with remaining escrow.
    *
-   * @param channelIds - Specific channels to refund; defaults to all sessions.
    * @returns One result per successfully refunded channel.
    */
-  async refund(channelIds?: string[]): Promise<RefundResult[]> {
+  async refund(): Promise<RefundResult[]> {
     this.assertRefundAllowed();
     const storage = this.scheme.getStorage();
+    const { items: channels } = await queryChannels(storage, { kind: "idleRefundable" });
+
     const lock = this.scheme.getLockStorage();
-    const channels = await storage.list();
-
-    const selected = channelIds
-      ? channels.filter(s => channelIds.some(id => id.toLowerCase() === s.channelId.toLowerCase()))
-      : channels;
-
     const targets: Channel[] = [];
-    for (const channel of selected) {
+    for (const channel of channels) {
       if (!(await channelIsHeld(lock, channel.channelId))) {
         targets.push(channel);
       }
@@ -253,7 +248,13 @@ export class BatchSettlementChannelManager {
    * @returns Array of {@link BatchSettlementVoucherClaim} entries for batch submission.
    */
   async getClaimableVouchers(opts?: { idleSecs?: number }): Promise<BatchSettlementVoucherClaim[]> {
-    const channels = await this.scheme.getStorage().list();
+    const filter: ChannelQuery = {
+      kind: "claimable",
+      ...(opts?.idleSecs !== undefined
+        ? { idleAtOrBefore: Date.now() - opts.idleSecs * 1000 }
+        : {}),
+    };
+    const { items: channels } = await queryChannels(this.scheme.getStorage(), filter);
     return this.getClaimableVouchersFromChannels(channels, opts);
   }
 
@@ -263,8 +264,10 @@ export class BatchSettlementChannelManager {
    * @returns All stored channel records with `withdrawRequestedAt` set.
    */
   async getWithdrawalPendingSessions(): Promise<Channel[]> {
-    const channels = await this.scheme.getStorage().list();
-    return channels.filter(s => s.withdrawRequestedAt > 0);
+    const { items } = await queryChannels(this.scheme.getStorage(), {
+      kind: "withdrawPending",
+    });
+    return items;
   }
 
   /**
@@ -674,38 +677,19 @@ export class BatchSettlementChannelManager {
   }
 
   /**
-   * Filters idle channels that can be cooperatively refunded.
-   *
-   * @param channels - Channels to inspect.
-   * @param idleSecs - Minimum seconds since the last request.
-   * @returns Idle refundable channels.
-   */
-  private async getIdleChannelsForRefundFromChannels(
-    channels: Channel[],
-    idleSecs: number,
-  ): Promise<Channel[]> {
-    const now = Date.now();
-    const idleMs = idleSecs * 1000;
-    const lock = this.scheme.getLockStorage();
-    const idle: Channel[] = [];
-    for (const c of channels) {
-      if (BigInt(c.balance) === 0n) continue;
-      if (await channelIsHeld(lock, c.channelId)) continue;
-      if (now - c.lastRequestTimestamp >= idleMs) idle.push(c);
-    }
-    return idle;
-  }
-
-  /**
-   * Returns channels that have been idle longer than `idleSecs` and still have
-   * a non-zero balance (candidates for cooperative refund).
+   * Returns idle channels that still have escrow, skipping live admission locks.
    *
    * @param idleSecs - Minimum seconds since last request for a session to count as idle.
    * @returns Channels meeting the idle and balance criteria.
    */
   private async getIdleChannelsForRefund(idleSecs: number): Promise<Channel[]> {
-    const channels = await this.scheme.getStorage().list();
-    return this.getIdleChannelsForRefundFromChannels(channels, idleSecs);
+    const { items: channels } = await queryChannels(this.scheme.getStorage(), {
+      kind: "idleRefundable",
+      idleAtOrBefore: Date.now() - idleSecs * 1000,
+    });
+    const lock = this.scheme.getLockStorage();
+    const held = await Promise.all(channels.map(channel => channelIsHeld(lock, channel.channelId)));
+    return channels.filter((_, index) => !held[index]);
   }
 
   /**

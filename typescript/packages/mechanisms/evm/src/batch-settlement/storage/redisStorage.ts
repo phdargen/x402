@@ -319,6 +319,12 @@ function parseRedisUpdateResult(value: unknown): ParsedRedisUpdateResult {
   return { applied: applied === 1 };
 }
 
+/**
+ * Waits for the given duration before resolving.
+ *
+ * @param ms - Delay in milliseconds.
+ * @returns A promise that resolves after the delay.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

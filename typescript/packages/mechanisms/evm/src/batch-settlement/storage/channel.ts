@@ -1,5 +1,28 @@
 import type { ChannelConfig } from "../types";
 import { normalizeChannelId } from "../utils";
+import type {
+  ChannelQuery,
+  ChannelStoreOptions,
+  QueryPage,
+  SettleQuery,
+  SettleTarget,
+} from "./query";
+
+export type {
+  ChannelQuery,
+  ChannelStoreOptions,
+  QueryPage,
+  SettleQuery,
+  SettleTarget,
+} from "./query";
+export {
+  matchesChannelQuery,
+  queryByScan,
+  queryChannels,
+  querySettleTargets,
+  settleQueryByScan,
+  sortChannels,
+} from "./query";
 
 export interface Channel {
   channelId: string;
@@ -47,6 +70,27 @@ export interface ChannelStorage<T extends Channel = Channel> {
     channelId: string,
     update: (current: T | undefined) => T | undefined,
   ): Promise<ChannelUpdateResult<T>>;
+  /**
+   * Optional indexed worker query. Omit it and {@link queryChannels} falls back
+   * to {@link queryByScan}, which dumps `list()` then filters.
+   *
+   * Native adapters should honour `limit` / `cursor` as read bounds. The scan
+   * shim only pages after loading every row.
+   *
+   * @param filter - Closed named query the managers actually run.
+   * @param opts - Optional per-call store options.
+   * @returns One page of matching channels.
+   */
+  query?(filter: ChannelQuery, opts?: ChannelStoreOptions): Promise<QueryPage<T>>;
+  /**
+   * Optional indexed settle-target query. Omit it and {@link querySettleTargets}
+   * falls back to {@link settleQueryByScan}.
+   *
+   * @param filter - Settle query.
+   * @param opts - Optional per-call store options.
+   * @returns One page of distinct claimed `(network, receiver, token)` tuples.
+   */
+  settleQuery?(filter: SettleQuery, opts?: ChannelStoreOptions): Promise<QueryPage<SettleTarget>>;
 }
 
 /**
