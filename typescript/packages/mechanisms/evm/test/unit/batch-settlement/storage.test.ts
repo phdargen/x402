@@ -422,7 +422,7 @@ describe("RedisChannelStorage", () => {
     });
   });
 
-  it("throws when Redis compare conflicts exceed maxUpdateWaitMs", async () => {
+  it("returns conflict when Redis compare conflicts exceed maxUpdateWaitMs", async () => {
     await storage.updateChannel(CHANNEL_ID, () => buildSession({ chargedCumulativeAmount: "0" }));
     const contended = new RedisChannelStorage({
       client,
@@ -436,7 +436,10 @@ describe("RedisChannelStorage", () => {
       contended.updateChannel(CHANNEL_ID, current =>
         current ? { ...current, chargedCumulativeAmount: "1" } : current,
       ),
-    ).rejects.toThrow(/contended/);
+    ).resolves.toEqual({
+      channel: buildSession({ chargedCumulativeAmount: "0" }),
+      status: "conflict",
+    });
     expect(client.updateConflicts).toBeGreaterThan(0);
   });
 

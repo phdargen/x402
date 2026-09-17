@@ -17,7 +17,7 @@ export interface Channel {
 
 export interface ChannelUpdateResult<T extends Channel = Channel> {
   channel: T | undefined;
-  status: "updated" | "unchanged" | "deleted";
+  status: "updated" | "unchanged" | "deleted" | "conflict";
 }
 
 export interface ChannelStorage<T extends Channel = Channel> {
@@ -34,7 +34,14 @@ export interface ChannelStorage<T extends Channel = Channel> {
    *
    * @param channelId - The channel identifier.
    * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
-   * @returns The final stored channel and whether storage updated, stayed unchanged, or deleted.
+   * @returns The final stored channel and whether storage updated, stayed unchanged, deleted, or lost a CAS race.
+   *
+   * Implementations may retry compare-and-write internally. When a mutation still cannot be applied,
+   * return `{ status: "conflict" }` rather than throwing. The update callback must be synchronous
+   * and deterministic so retries can safely re-run on a fresher `current`.
+   *
+   * The compare predicate is adapter-defined: a document revision, an `expectedCharged` field check,
+   * or a full-document compare are all valid; this interface does not mandate one shape.
    */
   updateChannel(
     channelId: string,

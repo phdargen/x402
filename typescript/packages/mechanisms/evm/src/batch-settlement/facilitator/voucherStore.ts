@@ -954,6 +954,7 @@ function rebuildClaims(stored: FacilitatorChannel): BatchSettlementVoucherClaim[
  * (full refund) is valid and resolves to the remainder downstream.
  *
  * @param raw - Refund payload that may carry an explicit amount.
+ * @param raw.amount
  * @returns Error code, or undefined when the amount is omitted or valid.
  */
 function refundAmountError(raw: { amount?: unknown }): string | undefined {

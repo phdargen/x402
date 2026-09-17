@@ -68,10 +68,10 @@ export type RedisChannelStorageClient = {
 export type RedisChannelStorageOptions = {
   client: RedisChannelStorageClient;
   keyPrefix?: string;
-  lockTtlMs?: number;
-  lockRetryIntervalMs?: number;
-  lockRenewalIntervalMs?: number;
+  /** Wall-clock budget for internal compare-and-write retries before returning `conflict`. */
   maxUpdateWaitMs?: number;
+  /** Delay between Redis compare retries. */
+  lockRetryIntervalMs?: number;
   scanCount?: number;
 };
 
@@ -220,12 +220,12 @@ export class RedisChannelStorage<T extends Channel = Channel>
   /**
    * Atomically inspects and mutates a channel record with Redis compare-and-write retries.
    *
-   * Retries contested compare-and-write until `maxUpdateWaitMs` elapses, then throws.
-   * A successful delete also drops the admission lock key.
+   * Retries contested compare-and-write until `maxUpdateWaitMs` elapses, then returns
+   * `{ status: "conflict" }`. A successful delete also drops the admission lock key.
    *
    * @param channelId - The channel identifier.
    * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
-   * @returns The final stored channel and whether storage updated, stayed unchanged, or deleted.
+   * @returns The final stored channel and whether storage updated, stayed unchanged, deleted, or conflicted.
    */
   async updateChannel(
     channelId: string,
@@ -233,12 +233,6 @@ export class RedisChannelStorage<T extends Channel = Channel>
   ): Promise<ChannelUpdateResult<T>> {
     const key = this.channelKey(channelId);
     const deadline = Date.now() + this.maxUpdateWaitMs;
-    const waitForRetry = async () => {
-      if (Date.now() >= deadline) {
-        throw new Error("channel update contended");
-      }
-      await sleep(this.lockRetryIntervalMs);
-    };
 
     while (true) {
       const currentRaw = await this.client.get(key);
@@ -248,23 +242,21 @@ export class RedisChannelStorage<T extends Channel = Channel>
       if (next === current) {
         const result = await this.commitUpdate(channelId, currentRaw, "keep");
         if (result.applied) return { channel: current, status: "unchanged" };
-        await waitForRetry();
-        continue;
-      }
-
-      if (!next) {
+      } else if (!next) {
         const result = await this.commitUpdate(channelId, currentRaw, "delete");
         if (result.applied) {
           return { channel: undefined, status: current ? "deleted" : "unchanged" };
         }
-        await waitForRetry();
-        continue;
+      } else {
+        const nextRaw = JSON.stringify(next);
+        const result = await this.commitUpdate(channelId, currentRaw, "set", nextRaw);
+        if (result.applied) return { channel: next, status: "updated" };
       }
 
-      const nextRaw = JSON.stringify(next);
-      const result = await this.commitUpdate(channelId, currentRaw, "set", nextRaw);
-      if (result.applied) return { channel: next, status: "updated" };
-      await waitForRetry();
+      if (Date.now() >= deadline) {
+        return { channel: current, status: "conflict" };
+      }
+      await sleep(this.lockRetryIntervalMs);
     }
   }
 
@@ -327,12 +319,6 @@ function parseRedisUpdateResult(value: unknown): ParsedRedisUpdateResult {
   return { applied: applied === 1 };
 }
 
-/**
- * Resolves after the requested delay.
- *
- * @param ms - Delay in milliseconds.
- * @returns Promise resolved after the delay.
- */
-function sleep(ms: number) {
+function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

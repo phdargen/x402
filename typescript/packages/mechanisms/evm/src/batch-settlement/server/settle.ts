@@ -354,8 +354,17 @@ export async function handleAfterSettle(
           lastRequestTimestamp: now,
         };
       });
-      if (updateResult.status === "unchanged") {
-        throw new Error(Errors.ErrChannelBusy);
+      switch (updateResult.status) {
+        case "updated":
+        case "deleted":
+          break;
+        case "unchanged":
+        case "conflict":
+          throw new Error(Errors.ErrChannelBusy);
+        default: {
+          const exhaustive: never = updateResult.status;
+          throw exhaustive;
+        }
       }
     } finally {
       if (hold === "self") {
@@ -410,11 +419,22 @@ export async function handleAfterSettle(
           lastRequestTimestamp: now,
         };
       });
-      if (updateResult.status === "updated" && updateResult.channel) {
-        scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
-        return;
+      switch (updateResult.status) {
+        case "updated":
+          if (updateResult.channel) {
+            scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
+            return;
+          }
+          throw new Error(Errors.ErrChannelBusy);
+        case "unchanged":
+        case "conflict":
+        case "deleted":
+          throw new Error(Errors.ErrChannelBusy);
+        default: {
+          const exhaustive: never = updateResult.status;
+          throw exhaustive;
+        }
       }
-      throw new Error(Errors.ErrChannelBusy);
     } finally {
       if (hold === "self") {
         await scheme.releasePendingRequest(paymentPayload);
