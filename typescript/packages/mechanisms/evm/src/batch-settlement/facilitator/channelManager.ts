@@ -114,6 +114,10 @@ async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promi
  *
  * Call only after a successful onchain claim. A simulation miss must leave the store alone.
  *
+ * One update per claim carries both the subtraction and the closed-row delete,
+ * so a concurrent charge cannot land between them. The delete predicate reads
+ * the `totalClaimed` {@link applyClaimedTotals} just wrote.
+ *
  * @param storage - Facilitator voucher store.
  * @param lockStorage - Optional admission lock store used for closed-row deletion.
  * @param claims - Submitted claims.
@@ -134,30 +138,19 @@ export async function afterClaim(
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
     const snapshot = attested.get(channelId.toLowerCase()) ?? 0;
+    const deletable = retention !== "forever";
+    const held = deletable && lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
     await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
       }
       const chargeCount = Math.max(0, current.chargeCount - snapshot);
-      return { ...current, chargeCount };
-    });
-
-    if (retention === "forever") {
-      continue;
-    }
-    const held = lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
-    await storage.updateChannel(channelId, current => {
-      if (!current) {
-        return current;
-      }
-      if (
+      const closed =
+        deletable &&
         !held &&
-        current.chargeCount === 0 &&
-        BigInt(current.balance) <= BigInt(current.totalClaimed)
-      ) {
-        return undefined;
-      }
-      return current;
+        chargeCount === 0 &&
+        BigInt(current.balance) <= BigInt(current.totalClaimed);
+      return closed ? undefined : { ...current, chargeCount };
     });
   }
 }
@@ -167,24 +160,36 @@ export async function afterClaim(
  *
  * Encode this snapshot on the claim, then pass the same map to {@link afterClaim}.
  *
+ * Pass `known` when the caller already holds the rows the claims were selected
+ * from: the attested count then agrees with the `totalClaimed` those same rows
+ * produced, instead of a fresh read a concurrent charge may already have moved.
+ * A claim whose row is absent from `known`, such as a replica's HTTP
+ * `type: "claim"`, still falls back to a store read.
+ *
  * @param storage - Facilitator voucher store.
  * @param claims - Claims about to be submitted.
  * @param network - Network for channel-id recomputation.
+ * @param known - Rows the claims were selected from, when the caller has them.
  * @returns Counts for the calldata suffix and the map used to subtract after confirm.
  */
 export async function snapshotClaimChargeCounts(
   storage: ChannelStorage<FacilitatorChannel>,
   claims: BatchSettlementVoucherClaim[],
   network: Network,
+  known?: readonly FacilitatorChannel[],
 ): Promise<{ counts: bigint[]; attested: Map<string, number> }> {
   const counts: bigint[] = [];
   const attested = new Map<string, number>();
+  const rows = new Map<string, FacilitatorChannel>(
+    known?.map(row => [row.channelId.toLowerCase(), row]),
+  );
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
-    const stored = await storage.get(channelId);
+    const key = channelId.toLowerCase();
+    const stored = rows.get(key) ?? (await storage.get(channelId));
     const count = stored?.chargeCount ?? 0;
     counts.push(BigInt(count));
-    attested.set(channelId.toLowerCase(), count);
+    attested.set(key, count);
   }
   return { counts, attested };
 }
@@ -261,7 +266,7 @@ export class FacilitatorChannelManager {
 
       for (let i = 0; i < claims.length; i += maxClaimsPerBatch) {
         const batch = claims.slice(i, i + maxClaimsPerBatch);
-        const { result, attested } = await this.submitClaimBatch(network, batch);
+        const { result, attested } = await this.submitClaimBatch(network, batch, group);
         results.push(result);
         await afterClaim(this.storage, this.lockStorage, batch, network, attested, this.retention);
       }
@@ -393,13 +398,20 @@ export class FacilitatorChannelManager {
    *
    * @param network - Network for this batch.
    * @param claims - Voucher claims.
+   * @param rows - Rows these claims were selected from.
    * @returns Per-batch claim summary.
    */
   private async submitClaimBatch(
     network: Network,
     claims: BatchSettlementVoucherClaim[],
+    rows: readonly FacilitatorChannel[],
   ): Promise<{ result: FacilitatorClaimResult; attested: Map<string, number> }> {
-    const { counts, attested } = await snapshotClaimChargeCounts(this.storage, claims, network);
+    const { counts, attested } = await snapshotClaimChargeCounts(
+      this.storage,
+      claims,
+      network,
+      rows,
+    );
     const builderSuffix = await this.resolveBuilderSuffix(
       network,
       { type: "claim", claims },
@@ -456,7 +468,7 @@ export class FacilitatorChannelManager {
     }
 
     if (refundAmount <= 0n) {
-      const { result, attested } = await this.submitClaimBatch(target.network, claims);
+      const { result, attested } = await this.submitClaimBatch(target.network, claims, [target]);
       await afterClaim(
         this.storage,
         this.lockStorage,

@@ -53,6 +53,10 @@ export function selectClaimableVouchers(
  * Updates session records after a successful claim so claim selection no longer
  * returns already-claimed vouchers.
  *
+ * The callback is authoritative: it re-checks row presence and the claimed
+ * watermark, so a claim that did not advance `totalClaimed` costs one no-op
+ * update rather than a pre-read on every claim.
+ *
  * @param storage - Durable channel store.
  * @param claims - Voucher claims included in the submitted settlement transaction.
  * @param network - CAIP-2 network used to recompute channel ids.
@@ -64,14 +68,7 @@ export async function applyClaimedTotals<T extends Channel = Channel>(
 ): Promise<void> {
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
-    const channel = await storage.get(channelId);
-    if (!channel) {
-      continue;
-    }
     const claimedAmount = BigInt(claim.totalClaimed);
-    if (claimedAmount <= BigInt(channel.totalClaimed)) {
-      continue;
-    }
     await storage.updateChannel(channelId, current => {
       if (!current || claimedAmount <= BigInt(current.totalClaimed)) {
         return current;
