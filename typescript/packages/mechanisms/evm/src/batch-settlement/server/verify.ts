@@ -79,9 +79,9 @@ export async function handleBeforeVerify(
     return;
   }
 
-  const pendingIdAbort = abortIfUnexpectedPendingId(raw);
-  if (pendingIdAbort) {
-    return pendingIdAbort;
+  const serverFieldAbort = abortIfUnexpectedServerAuthoredSettleFields(raw);
+  if (serverFieldAbort) {
+    return serverFieldAbort;
   }
 
   const isRefund = isBatchSettlementRefundPayload(raw);
@@ -305,7 +305,7 @@ export async function abortIfBelowMinDeposit(
 export function abortIfUnexpectedPendingId(
   raw: BatchSettlementPayload,
 ): { abort: true; reason: string; message: string } | undefined {
-  if (raw.pendingId === undefined) {
+  if (!("pendingId" in raw) || raw.pendingId === undefined) {
     return undefined;
   }
   return {
@@ -313,6 +313,37 @@ export function abortIfUnexpectedPendingId(
     reason: Errors.ErrUnexpectedPendingId,
     message: "pendingId is server-authored and must not be supplied by the client",
   };
+}
+
+/**
+ * Aborts when the client supplied `cancel`. Cancel settle is server-authored.
+ *
+ * @param raw - Decoded client request payload.
+ * @returns An abort directive, or undefined when `cancel` is absent.
+ */
+export function abortIfUnexpectedCancel(
+  raw: BatchSettlementPayload,
+): { abort: true; reason: string; message: string } | undefined {
+  if (!("cancel" in raw) || raw.cancel === undefined) {
+    return undefined;
+  }
+  return {
+    abort: true,
+    reason: Errors.ErrUnexpectedCancel,
+    message: "cancel is server-authored and must not be supplied by the client",
+  };
+}
+
+/**
+ * Aborts when the client supplied server-authored settle fields.
+ *
+ * @param raw - Decoded client request payload.
+ * @returns An abort directive, or undefined when those fields are absent.
+ */
+export function abortIfUnexpectedServerAuthoredSettleFields(
+  raw: BatchSettlementPayload,
+): { abort: true; reason: string; message: string } | undefined {
+  return abortIfUnexpectedPendingId(raw) ?? abortIfUnexpectedCancel(raw);
 }
 
 /**

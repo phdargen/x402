@@ -274,6 +274,164 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(await storage.acquire(channelId, "0xnext", 60_000)).toBe(true);
   });
 
+  it("releases the lock on a zero-amount cancel settle without charging or incrementing chargeCount", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const signature = "0xfeedface" as `0x${string}`;
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "2000",
+      signature,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 2,
+    }));
+    const verifySpy = vi.spyOn(facilitatorVoucher, "verifyVoucher").mockResolvedValue({
+      isValid: true,
+      payer: config.payer,
+      extra: { totalClaimed: "0", balance: "10000" },
+    });
+    const deps = buildDeps(storage, authorizer);
+    const verified = await verifyManaged(
+      deps,
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "2000", signature },
+      }),
+      { ...managedRequirements(authorizer), amount: "1000" },
+    );
+    const pendingId = verified.extra?.pendingId;
+    expect(verified.isValid).toBe(true);
+    expect(typeof pendingId).toBe("string");
+    expect(await storage.isHeld(channelId)).toBe(true);
+
+    const settled = await settleManaged(
+      deps,
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "2000", signature },
+        pendingId,
+      }),
+      { ...managedRequirements(authorizer), amount: "0" },
+    );
+    verifySpy.mockRestore();
+
+    expect(settled.success).toBe(true);
+    expect(settled.extra?.chargeCount).toBe(2);
+    expect(settled.extra?.chargedAmount).toBe("0");
+    expect(await storage.isHeld(channelId)).toBe(false);
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "1000",
+      chargeCount: 2,
+    });
+  });
+
+  it("rejects verify when the client supplies cancel", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const result = await verifyManaged(
+      buildDeps(storage, authorizer),
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "1000", signature: "0xfeedface" },
+        cancel: true,
+      }),
+      managedRequirements(authorizer),
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrUnexpectedCancel);
+    expect(await storage.isHeld(channelId)).toBe(false);
+  });
+
+  it.each(["voucher", "deposit", "refund"] as const)(
+    "releases the lock on a %s cancel settle without executing the payload type",
+    async type => {
+      const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+      const config = buildConfig({ receiverAuthorizer: authorizer.address });
+      const channelId = computeChannelId(config, NETWORK);
+      const signature = "0xfeedface" as `0x${string}`;
+      const lastRequestTimestamp = Date.now();
+      const voucher = {
+        channelId,
+        maxClaimableAmount: type === "refund" ? "1000" : "2000",
+        signature,
+      };
+      await storage.updateChannel(channelId, () => ({
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "1000",
+        signedMaxClaimable: voucher.maxClaimableAmount,
+        signature,
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp,
+        network: NETWORK,
+        chargeCount: 2,
+      }));
+      const pendingId = "0xpending";
+      await acquireBound(storage, pendingId, voucher);
+      const depositSpy = vi.spyOn(facilitatorDeposit, "settleDeposit");
+      const refundSpy = vi.spyOn(facilitatorRefund, "submitRefund");
+      const voucherSpy = vi.spyOn(facilitatorVoucher, "verifyVoucher");
+
+      const settled = await settleManaged(
+        buildDeps(storage, authorizer),
+        envelope({
+          type,
+          channelConfig: config,
+          voucher,
+          pendingId,
+          cancel: true,
+          ...(type === "deposit"
+            ? {
+                deposit: {
+                  amount: "10000",
+                  authorization: {
+                    erc3009Authorization: {
+                      validAfter: "0",
+                      validBefore: "9999999999",
+                      salt: "0x01",
+                      signature: "0xfeedface",
+                    },
+                  },
+                },
+              }
+            : {}),
+        }),
+        { ...managedRequirements(authorizer), amount: "0" },
+      );
+      depositSpy.mockRestore();
+      refundSpy.mockRestore();
+      voucherSpy.mockRestore();
+
+      expect(settled.success).toBe(true);
+      expect(settled.transaction).toBe("");
+      expect(settled.extra).toBeUndefined();
+      expect(depositSpy).not.toHaveBeenCalled();
+      expect(refundSpy).not.toHaveBeenCalled();
+      expect(voucherSpy).not.toHaveBeenCalled();
+      expect(await storage.isHeld(channelId)).toBe(false);
+      expect(await storage.get(channelId)).toMatchObject({
+        chargedCumulativeAmount: "1000",
+        chargeCount: 2,
+        lastRequestTimestamp,
+      });
+    },
+  );
+
   it("rejects verify when requirements advertise the wrong withdrawDelay", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });

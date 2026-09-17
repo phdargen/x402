@@ -69,14 +69,12 @@ export type BatchSettlementDepositPayload = {
     amount: string;
     authorization: BatchSettlementDepositAuthorization;
   };
-  pendingId?: string;
 };
 
 export type BatchSettlementVoucherPayload = {
   type: "voucher";
   channelConfig: ChannelConfig;
   voucher: BatchSettlementVoucherFields;
-  pendingId?: string;
 };
 
 export type BatchSettlementRefundPayload = {
@@ -84,7 +82,6 @@ export type BatchSettlementRefundPayload = {
   channelConfig: ChannelConfig;
   voucher: BatchSettlementVoucherFields;
   amount?: string;
-  pendingId?: string;
 };
 
 export type BatchSettlementVoucherFields = {
@@ -152,12 +149,24 @@ export type BatchSettlementSettlePayload = {
   token: `0x${string}`;
 };
 
+export type BatchSettlementEnrichedDepositPayload = BatchSettlementDepositPayload & {
+  pendingId?: string;
+  cancel?: boolean;
+};
+
+export type BatchSettlementEnrichedVoucherPayload = BatchSettlementVoucherPayload & {
+  pendingId?: string;
+  cancel?: boolean;
+};
+
 export type BatchSettlementEnrichedRefundPayload = BatchSettlementRefundPayload & {
   amount: string;
   refundNonce: string;
   claims: BatchSettlementVoucherClaim[];
   refundAuthorizerSignature?: `0x${string}`;
   claimAuthorizerSignature?: `0x${string}`;
+  pendingId?: string;
+  cancel?: boolean;
 };
 
 export type BatchSettlementPayload =
@@ -166,7 +175,7 @@ export type BatchSettlementPayload =
   | BatchSettlementRefundPayload;
 
 export type BatchSettlementFacilitatorSettlePayload =
-  | BatchSettlementDepositPayload
+  | BatchSettlementEnrichedDepositPayload
   | BatchSettlementClaimPayload
   | BatchSettlementSettlePayload
   | BatchSettlementEnrichedRefundPayload;

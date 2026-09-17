@@ -1393,31 +1393,42 @@ describe("x402ResourceServer", () => {
         expect(settleClient.settleCalls).toHaveLength(0);
       });
 
-      it("skips settleOnCancel when before-handler deposit did not complete", async () => {
+      it("settles via settleOnCancel for an after-handler scheme when no before-handler settle ran", async () => {
         const settleClient = new MockFacilitatorClient(
           buildSupportedResponse({
-            kinds: [{ x402Version: 2, scheme: "upto", network: "eip155:8453" as Network }],
+            kinds: [{ x402Version: 2, scheme: "exact", network: "eip155:8453" as Network }],
           }),
           undefined,
-          buildSettleResponse({ success: true, amount: "0" }),
+          buildSettleResponse({ success: true, amount: "0", transaction: "0xcancel" }),
         );
         const server = new x402ResourceServer(settleClient);
-        const scheme = new MockSchemeNetworkServer("upto");
+        const scheme = new MockSchemeNetworkServer("exact");
         scheme.settleOnCancel = async context => ({ ...context.requirements, amount: "0" });
         server.register("eip155:*" as Network, scheme);
 
         const cancellation = server.createPaymentCancellationDispatcher(
           buildPaymentPayload({
             accepted: buildPaymentRequirements({
-              scheme: "upto",
+              scheme: "exact",
               network: "eip155:8453" as Network,
             }),
           }),
-          buildPaymentRequirements({ scheme: "upto", network: "eip155:8453" as Network }),
+          buildPaymentRequirements({ scheme: "exact", network: "eip155:8453" as Network }),
         );
 
-        await cancellation.cancel({ reason: "handler_failed", responseStatus: 500 });
-        expect(settleClient.settleCalls).toHaveLength(0);
+        const cancelResult = await cancellation.cancel({
+          reason: "handler_failed",
+          responseStatus: 500,
+        });
+        expect(cancelResult).toEqual(
+          expect.objectContaining({
+            success: true,
+            amount: "0",
+            transaction: "0xcancel",
+          }),
+        );
+        expect(settleClient.settleCalls).toHaveLength(1);
+        expect(settleClient.settleCalls[0].requirements.amount).toBe("0");
       });
 
       it("warns and preserves cancel when settleOnCancel settlement fails", async () => {

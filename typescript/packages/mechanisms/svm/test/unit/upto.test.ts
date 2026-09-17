@@ -357,6 +357,22 @@ describe("upto SVM scheme", () => {
         expect(requirements).toEqual({ ...baseRequirements, amount: "0" });
       },
     );
+
+    it("returns void when no before-handler settle ran", () => {
+      const requirements = server.settleOnCancel({
+        paymentPayload: {
+          x402Version: 2,
+          accepted: baseRequirements,
+          payload: {},
+        },
+        requirements: baseRequirements,
+        declaredExtensions: {},
+        phase: "cancel",
+        reason: "handler_failed",
+        settledPhases: [],
+      });
+      expect(requirements).toBeUndefined();
+    });
   });
 
   describe("server.enrichSettlementPayload", () => {

@@ -1,10 +1,11 @@
 import type {
   SettleContext,
   SettleResultContext,
+  VerifiedPaymentCanceledContext,
   VerifyContext,
   VerifyResultContext,
 } from "@x402/core/server";
-import type { SchemePaymentRequiredContext } from "@x402/core/types";
+import type { PaymentRequirements, SchemePaymentRequiredContext } from "@x402/core/types";
 import { isBatchSettlementPayload, isBatchSettlementRefundPayload } from "../types";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import { BATCH_SETTLEMENT_SCHEME } from "../constants";
@@ -13,7 +14,7 @@ import type { Channel } from "./storage";
 import {
   abortIfBelowMinDeposit,
   abortIfChannelUnbound,
-  abortIfUnexpectedPendingId,
+  abortIfUnexpectedServerAuthoredSettleFields,
   skipHandlerForRefund,
   writeCorrectiveAcceptExtra,
 } from "./verify";
@@ -38,9 +39,9 @@ export async function handleManagedBeforeVerify(
     return;
   }
 
-  const pendingIdAbort = abortIfUnexpectedPendingId(raw);
-  if (pendingIdAbort) {
-    return pendingIdAbort;
+  const serverFieldAbort = abortIfUnexpectedServerAuthoredSettleFields(raw);
+  if (serverFieldAbort) {
+    return serverFieldAbort;
   }
 
   const minDepositAbort = await abortIfBelowMinDeposit(scheme, raw, requirements);
@@ -159,7 +160,32 @@ export const handleManagedSettleFailure = noopManagedHook;
 export const handleManagedVerifiedPaymentCanceled = noopManagedHook;
 
 /**
+ * Settles a cancel so the facilitator can drop the admission lock.
+ * Enrichment stamps `cancel: true`; the facilitator must not charge, deposit,
+ * or refund.
+ *
+ * @param ctx - Cancellation context from the resource server.
+ * @returns Zero-amount requirements for batch-settlement payloads; void otherwise.
+ */
+export function handleManagedSettleOnCancel(
+  ctx: VerifiedPaymentCanceledContext,
+): PaymentRequirements | void {
+  if (
+    ctx.reason !== "handler_failed" &&
+    ctx.reason !== "handler_threw" &&
+    ctx.reason !== "after_verify_aborted"
+  ) {
+    return;
+  }
+  if (!isBatchSettlementPayload(ctx.paymentPayload.payload)) {
+    return;
+  }
+  return { ...ctx.requirements, amount: "0" };
+}
+
+/**
  * Echoes verify `pendingId` onto `/settle` and completes a managed refund.
+ * Cancel stamps `cancel: true` so the facilitator only releases the lock.
  * Never sets `claimAuthorizerSignature`.
  *
  * @param scheme - Owning scheme.
@@ -178,6 +204,10 @@ export async function handleManagedEnrichSettlementPayload(
 
   const pendingId = scheme.readRequestContext(paymentPayload)?.pendingId;
   const pendingFields = pendingId ? { pendingId } : {};
+
+  if (ctx.phase === "cancel") {
+    return { ...pendingFields, cancel: true };
+  }
 
   if (isBatchSettlementRefundPayload(raw)) {
     const snapshot = scheme.readRequestContext(paymentPayload)?.channelSnapshot;
@@ -203,6 +233,7 @@ export async function handleManagedEnrichSettlementPayload(
 
 /**
  * Replica upsert after a successful managed settle. Not read on the hot path.
+ * Cancel settles leave the replica watermark unchanged, so this is a no-op.
  *
  * @param scheme - Owning scheme.
  * @param ctx - Post-settle context.
@@ -212,7 +243,7 @@ export async function handleManagedAfterSettle(
   ctx: SettleResultContext,
 ): Promise<void> {
   const { paymentPayload, result } = ctx;
-  if (!result.success) {
+  if (!result.success || ctx.phase === "cancel") {
     return;
   }
 

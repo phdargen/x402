@@ -83,6 +83,9 @@ export class UptoSvmScheme implements SchemeNetworkServer {
    * @returns Zero-amount requirements for prompt refund paths
    */
   settleOnCancel(ctx: VerifiedPaymentCanceledContext): PaymentRequirements | void {
+    if (!ctx.settledPhases.includes("before-handler")) {
+      return;
+    }
     if (
       ctx.reason === "handler_failed" ||
       ctx.reason === "handler_threw" ||

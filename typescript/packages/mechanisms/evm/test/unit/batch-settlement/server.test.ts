@@ -709,6 +709,25 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     expect(acquireSpy).not.toHaveBeenCalled();
   });
 
+  it("rejects a client-supplied cancel flag before taking the admission lock", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = buildVoucherPayload(channelId, "2000", config);
+    (paymentPayload.payload as { cancel?: boolean }).cancel = true;
+    const acquireSpy = vi.spyOn(server.getLockStorage(), "acquire");
+
+    const result = await server.schemeHooks.onBeforeVerify!({
+      paymentPayload,
+      requirements: makeRequirements({ amount: "1000" }),
+    } as never);
+
+    expect(result).toMatchObject({
+      abort: true,
+      reason: Errors.ErrUnexpectedCancel,
+    });
+    expect(acquireSpy).not.toHaveBeenCalled();
+  });
+
   it("does nothing when payload is not a batch-settlement cumulative payload", async () => {
     const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload: {
@@ -3131,6 +3150,43 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     ).rejects.toThrow(Errors.ErrChannelBusy);
   });
 
+  it("releases a self-held lock when deposit afterSettle throws ChannelBusy", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const payload = buildDepositPayload(channelId, config, "10000", "1000");
+    const pendingId = "pending-self-deposit";
+    await storage.acquire(channelId, pendingId, 600_000);
+    server.mergeRequestContext(payload, {
+      channelId,
+      pendingId,
+      reservationCommitted: true,
+    });
+    expect(await storage.isHeld(channelId)).toBe(true);
+
+    await expect(
+      server.schemeHooks.onAfterSettle!({
+        paymentPayload: payload,
+        requirements: makeRequirements({ amount: "1000" }),
+        result: {
+          success: true,
+          transaction: "0xtx",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "10000",
+              totalClaimed: "0",
+              withdrawRequestedAt: 0,
+              refundNonce: "0",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow(Errors.ErrChannelBusy);
+    expect(await storage.isHeld(channelId)).toBe(false);
+  });
+
   it("throws ChannelBusy when a successful deposit settle is held by another request", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
@@ -3269,6 +3325,59 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
         } as SettleResponse,
       } as never),
     ).rejects.toThrow(Errors.ErrChannelBusy);
+  });
+
+  it("releases a self-held lock when refund afterSettle throws ChannelBusy", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    const refundPayload = {
+      x402Version: 2,
+      scheme: "batch-settlement",
+      network: NETWORK,
+      payload: {
+        type: "refund",
+        channelConfig: config,
+        voucher: {
+          channelId: channelId as `0x${string}`,
+          maxClaimableAmount: "1000",
+          signature: "0xabcd",
+        },
+        amount: "2000",
+        refundNonce: "0",
+        claims: [],
+      } as unknown as Record<string, unknown>,
+    } as unknown as PaymentPayload;
+    const pendingId = "pending-self-refund";
+    await storage.acquire(channelId, pendingId, 600_000);
+    server.mergeRequestContext(refundPayload, {
+      channelId,
+      pendingId,
+      reservationCommitted: true,
+    });
+    expect(await storage.isHeld(channelId)).toBe(true);
+
+    await expect(
+      server.schemeHooks.onAfterSettle!({
+        paymentPayload: refundPayload,
+        requirements: makeRequirements(),
+        result: {
+          success: true,
+          transaction: "0xref",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "8000",
+              totalClaimed: "1000",
+              withdrawRequestedAt: 0,
+              refundNonce: "1",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow(Errors.ErrChannelBusy);
+    expect(await storage.isHeld(channelId)).toBe(false);
   });
 
   it("returns no enrichment for a voucher payload", async () => {

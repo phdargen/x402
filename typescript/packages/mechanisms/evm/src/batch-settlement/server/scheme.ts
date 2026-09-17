@@ -11,7 +11,11 @@ import {
   SupportedKind,
 } from "@x402/core/types";
 import type { DeepReadonly } from "@x402/core/types";
-import type { SettleContext, SettleResultContext } from "@x402/core/server";
+import type {
+  SettleContext,
+  SettleResultContext,
+  VerifiedPaymentCanceledContext,
+} from "@x402/core/server";
 import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
 import { getAddress } from "viem";
@@ -58,6 +62,7 @@ import {
   handleManagedEnrichSettlementPayload,
   handleManagedEnrichSettlementResponse,
   handleManagedSettleFailure,
+  handleManagedSettleOnCancel,
   handleManagedVerifiedPaymentCanceled,
   handleManagedVerifyFailure,
 } from "./managed";
@@ -230,6 +235,27 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    */
   enrichSettlementPayload = (ctx: SettleContext): Promise<Record<string, unknown> | void> =>
     this.requireHandlers(ctx.requirements).enrichSettlementPayload(this, ctx);
+
+  /**
+   * Managed cancel: settle so the facilitator can drop the admission lock.
+   * Enrichment stamps `cancel: true`; the facilitator must not charge, deposit,
+   * or refund. Self-managed cleanup stays on `onVerifiedPaymentCanceled`.
+   *
+   * @param ctx - Cancellation context from the resource server.
+   * @returns Zero-amount requirements for managed cancels; void otherwise.
+   */
+  settleOnCancel(ctx: VerifiedPaymentCanceledContext): PaymentRequirements | void {
+    switch (this.configuredMode) {
+      case "facilitator":
+        return handleManagedSettleOnCancel(ctx);
+      case "self":
+        return;
+      default: {
+        const _exhaustive: never = this.configuredMode;
+        return _exhaustive;
+      }
+    }
+  }
 
   /**
    * Adds corrective channel state to payment-required responses when available.
