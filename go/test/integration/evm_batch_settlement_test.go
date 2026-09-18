@@ -248,7 +248,7 @@ type batchedPipeline struct {
 	clientSigner      evmmech.ClientEvmSigner
 	clientAddress     string
 	receiverAddress   string
-	channelSalt       batchsettlement.ChannelSalt
+	channelSalt       string
 }
 
 // buildBatchedPipeline wires up a complete batched pipeline for the given keys
@@ -323,13 +323,13 @@ func buildBatchedPipeline(t *testing.T, keys *batchedTestKeys) *batchedPipeline 
 }
 
 // randomChannelSalt generates a fresh 32-byte salt so each test owns an isolated channel.
-func randomChannelSalt(t *testing.T) batchsettlement.ChannelSalt {
+func randomChannelSalt(t *testing.T) string {
 	t.Helper()
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		t.Fatalf("random salt: %v", err)
 	}
-	return batchsettlement.ChannelSaltHex("0x" + hex.EncodeToString(b))
+	return "0x" + hex.EncodeToString(b)
 }
 
 // batchedRequirements builds payment requirements for a batched payment.

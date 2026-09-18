@@ -56,7 +56,7 @@ func main() {
 
 	if evmPrivateKey != "" {
 		rpcURL := envOr("EVM_RPC_URL", "https://sepolia.base.org")
-		channelSalt := parseChannelSalt(envOr("CHANNEL_SALT", batchedclient.DefaultSalt))
+		channelSalt := envOr("CHANNEL_SALT", batchedclient.DefaultSalt)
 
 		ethClient, err := ethclient.Dial(rpcURL)
 		if err != nil {
@@ -286,20 +286,6 @@ func parseOperatorList(raw string) []string {
 		}
 	}
 	return out
-}
-
-func parseChannelSalt(raw string) batchsettlement.ChannelSalt {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == batchedclient.DefaultSalt {
-		return batchsettlement.ChannelSalt{}
-	}
-	if strings.HasPrefix(strings.ToLower(raw), "0x") {
-		return batchsettlement.ChannelSaltHex(raw)
-	}
-	if n, err := strconv.ParseUint(raw, 10, 64); err == nil {
-		return batchsettlement.ChannelSaltIndex(n)
-	}
-	return batchsettlement.ChannelSaltHex(raw)
 }
 
 func envOr(key, def string) string {

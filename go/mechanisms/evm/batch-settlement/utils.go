@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -235,6 +236,32 @@ func (s ChannelSalt) Normalize() (string, error) {
 		_ = never
 		return "", fmt.Errorf("invalid channel salt")
 	}
+}
+
+// ParseChannelSalt normalizes a caller-supplied channel salt string to bytes32.
+//
+// Accepted forms (whitespace is trimmed):
+//   - "" (or the zero bytes32) selects the default zero salt.
+//   - "0x…" / "0X…" hex (short or full bytes32).
+//   - Decimal channel index ("0", "1", "42", …), must be a non-negative safe integer.
+//
+// Decimal strings exist so env vars like CHANNEL_SALT=1 pass straight through
+// without caller-side parsing.
+func ParseChannelSalt(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return padBigToBytes32(big.NewInt(0)), nil
+	}
+	if strings.HasPrefix(strings.ToLower(s), "0x") {
+		return normalizeChannelSaltHex(s)
+	}
+	if n, err := strconv.ParseUint(s, 10, 64); err == nil {
+		if n > uint64(maxSafeInt) {
+			return "", fmt.Errorf("salt must be a non-negative safe integer")
+		}
+		return padBigToBytes32(new(big.Int).SetUint64(n)), nil
+	}
+	return "", fmt.Errorf("salt must be a 0x-prefixed hex value or decimal channel index")
 }
 
 // NormalizeChannelSalt left-pads a channel salt to bytes32. Accepts a

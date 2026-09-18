@@ -21,7 +21,6 @@ Register `BatchSettlementEvmScheme` with an `x402Client`. The client handles dep
 ```go
 import (
     x402 "github.com/x402-foundation/x402/go/v2"
-    batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
     "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/client"
     evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 )
@@ -30,7 +29,7 @@ signer, _ := evmsigners.NewClientSignerFromPrivateKey(os.Getenv("EVM_PRIVATE_KEY
 
 scheme := client.NewBatchSettlementEvmScheme(signer, &client.BatchSettlementEvmSchemeOptions{
     DepositMultiplier: 5,
-    Salt:              batchsettlement.ChannelSaltIndex(0), // use 1, 2, … for additional channels
+    Salt:              "0", // channel index as string; use "1", "2", … for additional channels, or 0x hex
 })
 
 c := x402.Newx402Client()
@@ -102,7 +101,7 @@ _, err = scheme.Refund(ctx, url, &client.RefundOptions{Amount: "1000000"})
 
 The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or the requested `amount` to the payer.
 
-When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `Salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `CreatePaymentPayload`, `RecoverSession`, and `Refund` all derive config through `BuildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
+When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `Salt` as a channel index string (`"0"`, `"1"`, `"2"`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `CreatePaymentPayload`, `RecoverSession`, and `Refund` all derive config through `BuildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
 
 ### Persistence
 
