@@ -174,10 +174,12 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
   /**
    * Lists shallow copies of all stored channel records.
    *
-   * @returns All channel records in storage.
+   * @returns All channel records in storage, sorted by channelId.
    */
   async list(): Promise<T[]> {
-    return [...this.channels.values()].map(cloneChannel);
+    return [...this.channels.values()]
+      .map(cloneChannel)
+      .sort((a, b) => a.channelId.localeCompare(b.channelId));
   }
 
   /**

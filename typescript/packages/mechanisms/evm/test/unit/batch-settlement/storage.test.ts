@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -144,14 +144,13 @@ describe("InMemoryChannelStorage", () => {
       expect(await storage.list()).toEqual([]);
     });
 
-    it("returns all stored sessions", async () => {
+    it("returns all stored sessions sorted by channelId", async () => {
       const id1 = "0x1111111111111111111111111111111111111111111111111111111111111111";
       const id2 = "0x2222222222222222222222222222222222222222222222222222222222222222";
-      await storage.updateChannel(id1, () => buildSession({ channelId: id1 }));
       await storage.updateChannel(id2, () => buildSession({ channelId: id2 }));
+      await storage.updateChannel(id1, () => buildSession({ channelId: id1 }));
       const all = await storage.list();
-      expect(all).toHaveLength(2);
-      expect(all.map(s => s.channelId).sort()).toEqual([id1, id2].sort());
+      expect(all.map(s => s.channelId)).toEqual([id1, id2]);
     });
   });
 
@@ -795,11 +794,43 @@ describe("FileChannelStorage", () => {
     await mkdir(serverDir, { recursive: true });
     const lockPath = join(serverDir, `${CHANNEL_ID}.hold.lock`);
     await writeFile(lockPath, "");
-    const stale = new Date(Date.now() - 3_000);
+    const stale = new Date(Date.now() - 60_000);
     await utimes(lockPath, stale, stale);
 
     expect(await storage.acquire(CHANNEL_ID, "next", 60_000)).toBe(true);
     expect(await storage.isHeld(CHANNEL_ID, "next")).toBe(true);
+  });
+
+  it("does not steal a live owner's lock marker even when it is old", async () => {
+    const serverDir = join(root, "server");
+    await mkdir(serverDir, { recursive: true });
+    const lockPath = join(serverDir, "live.lock");
+    const handle = await acquireExclusiveFile(lockPath);
+    try {
+      const stale = new Date(Date.now() - 60_000);
+      await utimes(lockPath, stale, stale);
+
+      await expect(
+        acquireExclusiveFile(lockPath, { maxAttempts: 2, retryIntervalMs: 1 }),
+      ).rejects.toThrow(/contended/);
+    } finally {
+      await handle.close();
+      await unlink(lockPath).catch(() => {});
+    }
+  });
+
+  it("steals a lock marker whose owner is provably gone", async () => {
+    const serverDir = join(root, "server");
+    await mkdir(serverDir, { recursive: true });
+    const lockPath = join(serverDir, "dead.lock");
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: 2147483647, token: "dead-owner", createdAt: Date.now() }),
+    );
+
+    const handle = await acquireExclusiveFile(lockPath, { maxAttempts: 5, retryIntervalMs: 1 });
+    await handle.close();
+    await unlink(lockPath).catch(() => {});
   });
 
   it("rejects live lock-file contention after bounded attempts", async () => {

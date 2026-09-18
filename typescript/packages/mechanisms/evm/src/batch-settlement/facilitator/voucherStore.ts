@@ -396,7 +396,7 @@ async function settleManagedVoucher(
       if (configErr) {
         return failSettle(requirements, configErr);
       }
-    } else if (raw.pendingId && (await anyAdmissionHeld(deps, channelId))) {
+    } else if (await anyAdmissionHeld(deps, channelId)) {
       return failSettle(requirements, Errors.ErrPendingIdMismatch);
     } else {
       const verified = await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);

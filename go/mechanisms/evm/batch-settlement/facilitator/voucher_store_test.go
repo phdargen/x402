@@ -497,6 +497,34 @@ func TestSettleManaged_SubstitutedVoucherPendingIdMismatch(t *testing.T) {
 	}
 }
 
+func TestSettleManaged_OmittedPendingIdWhileReservationLive(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	voucher := voucherFields(channelId, "2000", dummySig)
+	acquireBound(t, store, "0xother", voucher)
+	rpcSigner := newManagedSigner(t, &managedRPC{})
+	deps := managedDeps(t, store, store, auth, rpcSigner)
+
+	result, err := SettleManaged(context.Background(), deps,
+		voucherEnvelope(cfg, voucher, ""),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success || result.ErrorReason != ErrPendingIdMismatch {
+		t.Fatalf("got %+v", result)
+	}
+	if rpcSigner.verifyCalls != 0 {
+		t.Fatalf("verifyCalls=%d, want 0", rpcSigner.verifyCalls)
+	}
+	held, _ := store.IsHeld(channelId, "")
+	if !held {
+		t.Fatal("reservation should remain live")
+	}
+}
+
 func TestSettleManaged_HeldPathRequirementMismatches(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
