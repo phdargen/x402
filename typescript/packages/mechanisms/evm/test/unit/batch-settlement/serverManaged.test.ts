@@ -999,6 +999,94 @@ describe("facilitator-managed server hooks", () => {
     });
   });
 
+  it("skips the replica write when the incoming watermark is lower than stored", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xstored",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId, "1000"),
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        transaction: "0xvoucher",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "9999",
+            totalClaimed: "0",
+            chargedCumulativeAmount: "1000",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "5000",
+      balance: "10000",
+    });
+  });
+
+  it("propagates a cleared withdrawRequestedAt on an equal watermark", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xstored",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 456,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId, "1000"),
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        transaction: "0xvoucher",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            chargedCumulativeAmount: "1000",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "1000",
+      withdrawRequestedAt: 0,
+    });
+  });
+
   it("does not stash corrective extras when mismatch facilitator extras are not objects", async () => {
     const server = buildManagedServer();
     const config = buildConfig();

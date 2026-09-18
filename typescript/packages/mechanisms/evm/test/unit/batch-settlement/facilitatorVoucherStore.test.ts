@@ -1405,6 +1405,30 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.errorReason).toBe(Errors.ErrInvalidVoucherSignature);
   });
 
+  it("rejects an omitted pendingId while another reservation is live without calling verifyVoucher", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const voucher = { channelId, maxClaimableAmount: "2000", signature: "0xfeedface" };
+    await acquireBound(storage, "0xother", voucher);
+    const verifySpy = vi.spyOn(facilitatorVoucher, "verifyVoucher");
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher,
+      }),
+      managedRequirements(authorizer),
+    );
+    verifySpy.mockRestore();
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrPendingIdMismatch);
+    expect(verifySpy).not.toHaveBeenCalled();
+    expect(await storage.isHeld(channelId)).toBe(true);
+  });
+
   it("skips verifyVoucher when an EOA voucher matches fresh cached onchain state", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({

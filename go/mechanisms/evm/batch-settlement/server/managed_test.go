@@ -666,6 +666,70 @@ func TestManagedAfterSettle_FallsBackToSnapshotCharged(t *testing.T) {
 	}
 }
 
+func TestManagedAfterSettle_SkipsWriteWhenIncomingWatermarkLower(t *testing.T) {
+	store := NewInMemoryChannelStorage()
+	s := buildManagedServer(t, store, false)
+	id := testChannelId(t)
+	seedStore(t, store, id, &ChannelSession{
+		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "5000",
+		SignedMaxClaimable: "5000", Signature: "0xstored", Balance: "10000",
+		TotalClaimed: "0", RefundNonce: 0,
+	})
+	if err := handleManagedAfterSettle(s, x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      managedPayload(voucherPayload(id, "1000", "0xnew")),
+			Requirements: managedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true, Transaction: "0xvoucher",
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId": id, "balance": "9999", "totalClaimed": "0",
+					"chargedCumulativeAmount": "1000", "withdrawRequestedAt": 0.0, "refundNonce": "0",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	got, _ := store.Get(id)
+	if got == nil || got.ChargedCumulativeAmount != "5000" || got.Balance != "10000" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestManagedAfterSettle_PropagatesClearedWithdrawOnEqualWatermark(t *testing.T) {
+	store := NewInMemoryChannelStorage()
+	s := buildManagedServer(t, store, false)
+	id := testChannelId(t)
+	seedStore(t, store, id, &ChannelSession{
+		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable: "1000", Signature: "0xstored", Balance: "10000",
+		TotalClaimed: "0", WithdrawRequestedAt: 456, RefundNonce: 0,
+	})
+	if err := handleManagedAfterSettle(s, x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      managedPayload(voucherPayload(id, "1000", "0xnew")),
+			Requirements: managedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true, Transaction: "0xvoucher",
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId": id, "balance": "10000", "totalClaimed": "0",
+					"chargedCumulativeAmount": "1000", "withdrawRequestedAt": 0.0, "refundNonce": "0",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	got, _ := store.Get(id)
+	if got == nil || got.ChargedCumulativeAmount != "1000" || got.WithdrawRequestedAt != 0 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
 func TestManagedAfterVerify_NonObjectCorrectiveExtrasIgnored(t *testing.T) {
 	s := buildManagedServer(t, nil, false)
 	id := testChannelId(t)

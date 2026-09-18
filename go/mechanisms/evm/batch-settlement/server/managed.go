@@ -289,6 +289,13 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 	}
 
 	_, err := s.GetStorage().UpdateChannel(channelId, func(current *ChannelSession) *ChannelSession {
+		if current != nil && !batchsettlement.IsRefundPayload(raw) {
+			incoming, okIncoming := new(big.Int).SetString(charged, 10)
+			stored, okStored := new(big.Int).SetString(current.ChargedCumulativeAmount, 10)
+			if okIncoming && okStored && incoming.Cmp(stored) < 0 {
+				return current
+			}
+		}
 		var base *ChannelSession
 		if current != nil {
 			base = current
@@ -324,9 +331,7 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 			if channelState.TotalClaimed != "" {
 				next.TotalClaimed = channelState.TotalClaimed
 			}
-			if channelState.WithdrawRequestedAt != 0 {
-				next.WithdrawRequestedAt = channelState.WithdrawRequestedAt
-			}
+			next.WithdrawRequestedAt = channelState.WithdrawRequestedAt
 			if channelState.RefundNonce != "" {
 				if n, ok := new(big.Int).SetString(channelState.RefundNonce, 10); ok {
 					next.RefundNonce = int(n.Int64())

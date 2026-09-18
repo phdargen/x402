@@ -287,6 +287,15 @@ export async function handleManagedAfterSettle(
   }
 
   await storage.updateChannel(channelId, current => {
+    if (current && !isBatchSettlementRefundPayload(raw)) {
+      try {
+        if (BigInt(charged) < BigInt(current.chargedCumulativeAmount)) {
+          return current;
+        }
+      } catch {
+        // Non-numeric watermarks fall through to the normal upsert below.
+      }
+    }
     const base = current ?? scheme.readRequestContext(paymentPayload)?.channelSnapshot;
     return {
       channelId,
