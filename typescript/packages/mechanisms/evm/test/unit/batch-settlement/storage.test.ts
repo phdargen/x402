@@ -204,6 +204,12 @@ describe("InMemoryChannelStorage", () => {
     expect(await storage.acquire(CHANNEL_ID, "new", 60_000)).toBe(true);
     expect(await storage.isHeld(CHANNEL_ID, "new")).toBe(true);
   });
+
+  it("does not re-enter when the same pendingId still holds the lock", async () => {
+    expect(await storage.acquire(CHANNEL_ID, "same", 60_000)).toBe(true);
+    expect(await storage.acquire(CHANNEL_ID, "same", 120_000)).toBe(false);
+    expect(await storage.isHeld(CHANNEL_ID, "same")).toBe(true);
+  });
 });
 
 type RedisValue = {
@@ -498,14 +504,12 @@ describe("RedisChannelStorage", () => {
     expect((await storage.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("2");
   });
 
-  it("refreshes the lock TTL when the same pendingId re-acquires", async () => {
+  it("does not re-enter when the same pendingId still holds the lock", async () => {
     expect(await storage.acquire(CHANNEL_ID, "same", 60_000)).toBe(true);
     const firstExpiry = client.store.get(`test:x402:server:lock:${CHANNEL_ID}`)?.expiresAt;
-    expect(await storage.acquire(CHANNEL_ID, "same", 120_000)).toBe(true);
+    expect(await storage.acquire(CHANNEL_ID, "same", 120_000)).toBe(false);
     const secondExpiry = client.store.get(`test:x402:server:lock:${CHANNEL_ID}`)?.expiresAt;
-    expect(secondExpiry).toBeDefined();
-    expect(firstExpiry).toBeDefined();
-    expect(secondExpiry!).toBeGreaterThanOrEqual(firstExpiry!);
+    expect(secondExpiry).toBe(firstExpiry);
     expect(await storage.isHeld(CHANNEL_ID, "same")).toBe(true);
   });
 
@@ -743,14 +747,14 @@ describe("FileChannelStorage", () => {
     await expect(storage.list()).rejects.toThrow();
   });
 
-  it("refreshes the hold TTL when the same pendingId re-enters", async () => {
+  it("does not re-enter when the same pendingId still holds the lock", async () => {
     expect(await storage.acquire(CHANNEL_ID, "same-owner", 60_000)).toBe(true);
     const holdPath = join(root, "server", `${CHANNEL_ID}.hold`);
     const first = JSON.parse(await readFile(holdPath, "utf8")) as { expiresAt: number };
     await new Promise(resolve => setTimeout(resolve, 5));
-    expect(await storage.acquire(CHANNEL_ID, "same-owner", 60_000)).toBe(true);
+    expect(await storage.acquire(CHANNEL_ID, "same-owner", 60_000)).toBe(false);
     const second = JSON.parse(await readFile(holdPath, "utf8")) as { expiresAt: number };
-    expect(second.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
+    expect(second.expiresAt).toBe(first.expiresAt);
     expect(await storage.isHeld(CHANNEL_ID, "same-owner")).toBe(true);
   });
 

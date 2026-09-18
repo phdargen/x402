@@ -99,8 +99,10 @@ export class RedisChannelLockStorage implements ChannelLockStorage {
   }
 
   /**
-   * Acquires a per-channel admission lock with `SET NX PX`. The same
-   * `pendingId` re-enters and refreshes the TTL.
+   * Acquires a per-channel admission lock with a single atomic `SET NX PX`.
+   *
+   * Intentionally not re-entrant: do not add a GET-then-SET PX refresh for the same
+   * `pendingId`; that pattern races and can extend another holder's lock.
    *
    * @param channelId - The channel identifier.
    * @param pendingId - Request-scoped lock owner stored as the key value.
@@ -108,13 +110,7 @@ export class RedisChannelLockStorage implements ChannelLockStorage {
    * @returns Whether this request now holds the lock.
    */
   async acquire(channelId: string, pendingId: string, ttlMs: number): Promise<boolean> {
-    const key = this.lockKey(channelId);
-    const current = await this.client.get(key);
-    if (current === pendingId) {
-      await this.client.set(key, pendingId, { PX: ttlMs });
-      return true;
-    }
-    const result = await this.client.set(key, pendingId, {
+    const result = await this.client.set(this.lockKey(channelId), pendingId, {
       NX: true,
       PX: ttlMs,
     });
