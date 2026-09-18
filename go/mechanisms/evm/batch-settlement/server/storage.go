@@ -1,6 +1,7 @@
 package server
 
 import (
+	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 )
 
@@ -18,13 +19,20 @@ type (
 	DelegatedAuthBinding       = storage.DelegatedAuthBinding
 	DelegatedAuthStore         = storage.DelegatedAuthStore
 	InMemoryDelegatedAuthStore = storage.InMemoryDelegatedAuthStore
+	VoucherStoreMode           = storage.VoucherStoreMode
+	SelectClaimableOptions     = storage.SelectClaimableOptions
 )
 
 const (
-	ChannelUpdated   = storage.ChannelUpdated
-	ChannelUnchanged = storage.ChannelUnchanged
-	ChannelDeleted   = storage.ChannelDeleted
-	ChannelConflict  = storage.ChannelConflict
+	ChannelUpdated              = storage.ChannelUpdated
+	ChannelUnchanged            = storage.ChannelUnchanged
+	ChannelDeleted              = storage.ChannelDeleted
+	ChannelConflict             = storage.ChannelConflict
+	VoucherStoreModeSelf        = storage.VoucherStoreModeSelf
+	VoucherStoreModeFacilitator = storage.VoucherStoreModeFacilitator
+	QueryKindClaimable          = storage.QueryKindClaimable
+	QueryKindIdleRefundable     = storage.QueryKindIdleRefundable
+	QueryKindWithdrawPending    = storage.QueryKindWithdrawPending
 )
 
 // NewInMemoryChannelStorage creates a new in-memory server session storage.
@@ -77,4 +85,15 @@ func SettleQueryByScan(store SessionStorage, filter SettleQuery) (*storage.Query
 // NewInMemoryDelegatedAuthStore creates an empty in-memory binding store.
 func NewInMemoryDelegatedAuthStore() *InMemoryDelegatedAuthStore {
 	return storage.NewInMemoryDelegatedAuthStore()
+}
+
+// SelectClaimableVouchers collects vouchers whose charged watermark exceeds
+// onchain totalClaimed, optionally applying an idle window.
+func SelectClaimableVouchers(channels []*ChannelSession, opts *SelectClaimableOptions) []batchsettlement.BatchSettlementVoucherClaim {
+	return storage.SelectClaimableVouchers(channels, opts)
+}
+
+// ApplyClaimedTotals advances stored totalClaimed after a successful claim.
+func ApplyClaimedTotals(store SessionStorage, claims []batchsettlement.BatchSettlementVoucherClaim, network string) error {
+	return storage.ApplyClaimedTotals(store, claims, network)
 }
