@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -36,7 +37,7 @@ func main() {
 	url := baseURL + endpointPath
 
 	rpcURL := envOr("EVM_RPC_URL", "https://sepolia.base.org")
-	channelSalt := envOr("CHANNEL_SALT", batchedclient.DefaultSalt)
+	channelSalt := parseChannelSalt(envOr("CHANNEL_SALT", batchedclient.DefaultSalt))
 	storageDir := os.Getenv("STORAGE_DIR")
 	numberOfRequests := atoiOr("NUMBER_OF_REQUESTS", 3)
 	depositMultiplier := atoiOr("DEPOSIT_MULTIPLIER", batchedclient.DefaultDepositMultiplier)
@@ -150,6 +151,20 @@ func main() {
 		}
 		fmt.Println(indent(settle))
 	}
+}
+
+func parseChannelSalt(raw string) batchsettlement.ChannelSalt {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == batchedclient.DefaultSalt {
+		return batchsettlement.ChannelSalt{}
+	}
+	if strings.HasPrefix(strings.ToLower(raw), "0x") {
+		return batchsettlement.ChannelSaltHex(raw)
+	}
+	if n, err := strconv.ParseUint(raw, 10, 64); err == nil {
+		return batchsettlement.ChannelSaltIndex(n)
+	}
+	return batchsettlement.ChannelSaltHex(raw)
 }
 
 func envOr(key, def string) string {

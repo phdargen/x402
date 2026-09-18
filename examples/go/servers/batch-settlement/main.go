@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,36 +43,54 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Default channel withdraw delay is 1 day when the env var is unset.
-	withdrawDelay := 86400
-	if v := os.Getenv("DEFERRED_WITHDRAW_DELAY_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			withdrawDelay = n
-		}
+	voucherStoreMode := batchedserver.VoucherStoreModeSelf
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("VOUCHER_STORE_MODE")), "facilitator") {
+		voucherStoreMode = batchedserver.VoucherStoreModeFacilitator
 	}
 
-	receiverAuthKey := os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
+	receiverAuthKey := strings.TrimSpace(os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"))
+	refundAuthKey := strings.TrimSpace(os.Getenv("EVM_REFUND_AUTHORIZER_PRIVATE_KEY"))
 	storageDir := os.Getenv("STORAGE_DIR")
 
-	cfg := &batchedserver.BatchSettlementEvmSchemeServerConfig{
-		WithdrawDelay:     withdrawDelay,
-		EnforceMinDeposit: false,
+	if voucherStoreMode == batchedserver.VoucherStoreModeFacilitator && receiverAuthKey != "" {
+		fmt.Println("VOUCHER_STORE_MODE=facilitator cannot be combined with EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
+		os.Exit(1)
 	}
-	if receiverAuthKey != "" {
-		signer, err := newReceiverAuthorizerSigner(receiverAuthKey)
+
+	cfg := &batchedserver.BatchSettlementEvmSchemeServerConfig{
+		EnforceMinDeposit: false,
+		VoucherStoreMode:  voucherStoreMode,
+	}
+	if voucherStoreMode == batchedserver.VoucherStoreModeSelf {
+		withdrawDelay := 86400
+		if v := os.Getenv("DEFERRED_WITHDRAW_DELAY_SECONDS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				withdrawDelay = n
+			}
+		}
+		cfg.WithdrawDelay = withdrawDelay
+		if receiverAuthKey != "" {
+			signer, err := newReceiverAuthorizerSigner(receiverAuthKey)
+			if err != nil {
+				fmt.Printf("Invalid EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+				os.Exit(1)
+			}
+			cfg.ReceiverAuthorizerSigner = signer
+		}
+	} else if refundAuthKey != "" {
+		signer, err := newReceiverAuthorizerSigner(refundAuthKey)
 		if err != nil {
-			fmt.Printf("Invalid EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+			fmt.Printf("Invalid EVM_REFUND_AUTHORIZER_PRIVATE_KEY: %v\n", err)
 			os.Exit(1)
 		}
-		cfg.ReceiverAuthorizerSigner = signer
+		cfg.RefundAuthorizerSigner = signer
 	}
 	if storageDir != "" {
 		cfg.Storage = batchedserver.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
 			Directory: storageDir,
 		})
-		// LockStorage is inferred from FileChannelStorage. Hosts that do not
-		// share STORAGE_DIR need an explicit LockStorage; otherwise each host
-		// admits independently and only the charge CAS protects revenue.
+		// LockStorage is inferred from FileChannelStorage in self-managed mode.
+		// Facilitator-managed Storage is a post-settle replica only.
 	}
 
 	scheme := batchedserver.NewBatchSettlementEvmScheme(evmAddress, cfg)
@@ -80,41 +99,43 @@ func main() {
 		URL: facilitatorURL,
 	})
 
-	manager := scheme.CreateChannelManager(facilitator, network)
-	manager.Start(batchedserver.AutoSettlementConfig{
-		ClaimIntervalSecs:  60,
-		SettleIntervalSecs: 120,
-		RefundIntervalSecs: 180,
-		MaxClaimsPerBatch:  100,
-		// Refund channels after 3 minutes of inactivity.
-		SelectRefundChannels: func(channels []*batchedserver.ChannelSession, ctx batchedserver.AutoSettlementContext) ([]*batchedserver.ChannelSession, error) {
-			out := make([]*batchedserver.ChannelSession, 0, len(channels))
-			for _, c := range channels {
-				if c.Balance == "" || c.Balance == "0" {
-					continue
+	var manager *batchedserver.BatchSettlementChannelManager
+	if voucherStoreMode == batchedserver.VoucherStoreModeSelf {
+		manager = scheme.CreateChannelManager(facilitator, network)
+		manager.Start(batchedserver.AutoSettlementConfig{
+			ClaimIntervalSecs:  60,
+			SettleIntervalSecs: 120,
+			RefundIntervalSecs: 180,
+			MaxClaimsPerBatch:  100,
+			// Refund channels after 3 minutes of inactivity.
+			SelectRefundChannels: func(channels []*batchedserver.ChannelSession, ctx batchedserver.AutoSettlementContext) ([]*batchedserver.ChannelSession, error) {
+				out := make([]*batchedserver.ChannelSession, 0, len(channels))
+				for _, c := range channels {
+					if c.Balance == "" || c.Balance == "0" {
+						continue
+					}
+					if ctx.Now-c.LastRequestTimestamp < 180_000 {
+						continue
+					}
+					out = append(out, c)
 				}
-				if ctx.Now-c.LastRequestTimestamp < 180_000 {
-					continue
-				}
-				out = append(out, c)
-			}
-			return out, nil
-		},
-		OnClaim: func(r batchedserver.ClaimResult) {
-			fmt.Printf("Claimed %d vouchers (tx: %s)\n", r.Vouchers, r.Transaction)
-		},
-		OnSettle: func(r batchedserver.SettleResult) {
-			fmt.Printf("Settled to %s (tx: %s)\n", evmAddress, r.Transaction)
-		},
-		OnRefund: func(r batchedserver.RefundResult) {
-			fmt.Printf("Refunded channel %s (tx: %s)\n", r.Channel, r.Transaction)
-		},
-		OnError: func(err error) {
-			fmt.Printf("Settlement error: %v\n", err)
-		},
-	})
+				return out, nil
+			},
+			OnClaim: func(r batchedserver.ClaimResult) {
+				fmt.Printf("Claimed %d vouchers (tx: %s)\n", r.Vouchers, r.Transaction)
+			},
+			OnSettle: func(r batchedserver.SettleResult) {
+				fmt.Printf("Settled to %s (tx: %s)\n", evmAddress, r.Transaction)
+			},
+			OnRefund: func(r batchedserver.RefundResult) {
+				fmt.Printf("Refunded channel %s (tx: %s)\n", r.Channel, r.Transaction)
+			},
+			OnError: func(err error) {
+				fmt.Printf("Settlement error: %v\n", err)
+			},
+		})
+	}
 
-	// Flush pending channel work during interactive shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT)
 
@@ -171,7 +192,14 @@ func main() {
 
 	fmt.Printf("Batch-settlement server listening at http://localhost:%s\n", defaultPort)
 	fmt.Printf("  GET /weather\n")
-	if cfg.ReceiverAuthorizerSigner != nil {
+	if voucherStoreMode == batchedserver.VoucherStoreModeFacilitator {
+		fmt.Println("  Voucher custody: facilitator-managed (pass-through verify/settle)")
+		if cfg.RefundAuthorizerSigner != nil {
+			fmt.Printf("  Refund authorizer: local signer %s\n", cfg.RefundAuthorizerSigner.Address())
+		} else {
+			fmt.Println("  Refund authorizer: facilitator refundAuth (requires resolveCallerIdentity)")
+		}
+	} else if cfg.ReceiverAuthorizerSigner != nil {
 		fmt.Printf("  Receiver authorizer: local signer %s\n", cfg.ReceiverAuthorizerSigner.Address())
 	} else {
 		fmt.Println("  Receiver authorizer: facilitator")
@@ -179,9 +207,11 @@ func main() {
 
 	<-sigCh
 
-	fmt.Println("Shutting down — flushing pending claims…")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_ = manager.Stop(ctx, &batchedserver.StopOptions{Flush: true})
+	if manager != nil {
+		fmt.Println("Shutting down — flushing pending claims…")
+		_ = manager.Stop(ctx, &batchedserver.StopOptions{Flush: true})
+	}
 	_ = server.Shutdown(ctx)
 }
