@@ -214,6 +214,41 @@ func TestNormalizeChannelSalt_RejectsNegativeNonIntegerAndOversized(t *testing.T
 	}
 }
 
+func TestParseChannelSalt_AcceptsEmptyDecimalAndHex(t *testing.T) {
+	const zero = "0x0000000000000000000000000000000000000000000000000000000000000000"
+	const one = "0x0000000000000000000000000000000000000000000000000000000000000001"
+	cases := map[string]string{
+		"":       zero,
+		"   ":    zero,
+		"0":      zero,
+		"1":      one,
+		"42":     "0x000000000000000000000000000000000000000000000000000000000000002a",
+		" 1 ":    one,
+		"0x1":    one,
+		"0X1":    one,
+		"0xfeed": "0x000000000000000000000000000000000000000000000000000000000000feed",
+		zero:     zero,
+		one:      one,
+	}
+	for in, want := range cases {
+		got, err := ParseChannelSalt(in)
+		if err != nil {
+			t.Fatalf("ParseChannelSalt(%q): %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("ParseChannelSalt(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseChannelSalt_RejectsInvalid(t *testing.T) {
+	for _, in := range []string{"0xzz", "abc", "-1", "1.5", "0x" + strings.Repeat("ff", 33)} {
+		if _, err := ParseChannelSalt(in); err == nil {
+			t.Fatalf("ParseChannelSalt(%q): expected error", in)
+		}
+	}
+}
+
 func TestPackRefundAuthorizerSalt_IncrementStyleUsesLow96(t *testing.T) {
 	refundAuthorizer := "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
 	a, err := PackRefundAuthorizerSalt(
