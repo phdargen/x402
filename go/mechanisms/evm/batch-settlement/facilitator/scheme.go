@@ -7,6 +7,7 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -18,56 +19,106 @@ type BatchSettlementEvmSchemeConfig struct {
 	// counterfactual deposit support; an empty list (the default) denies all factory
 	// deployment, so counterfactual deposits are rejected with ErrFactoryNotAllowed.
 	EIP6492AllowedFactories []string
+	PendingSettlementStore  x402.PendingSettlementStore
+	VoucherStore            *VoucherStoreConfig
+	ResolveCallerIdentity   ResolveCallerIdentity
+	DelegatedAuthStore      storage.DelegatedAuthStore
+	SubmitMode              SubmitMode
+	AuthorizerSubmitter     evm.FacilitatorEvmSigner
+}
+
+type voucherStoreRuntime struct {
+	storage           storage.ChannelStorage[*FacilitatorChannel]
+	lockStorage       storage.ChannelLockStorage
+	withdrawDelay     int
+	onchainStateTtlMs *int64
 }
 
 // BatchSettlementEvmScheme implements SchemeNetworkFacilitator for batch settlement on EVM.
 type BatchSettlementEvmScheme struct {
-	signer           evm.FacilitatorEvmSigner
-	authorizerSigner batchsettlement.AuthorizerSigner
-	config           BatchSettlementEvmSchemeConfig
-	pendingStore     x402.PendingSettlementStore
+	signer                evm.FacilitatorEvmSigner
+	authorizerSigner      batchsettlement.AuthorizerSigner
+	config                BatchSettlementEvmSchemeConfig
+	submitMode            SubmitMode
+	authorizerSubmitter   evm.FacilitatorEvmSigner
+	pendingStore          x402.PendingSettlementStore
+	voucherStore          *voucherStoreRuntime
+	resolveCallerIdentity ResolveCallerIdentity
+	delegatedAuthStore    storage.DelegatedAuthStore
 }
 
 // NewBatchSettlementEvmScheme creates a new batch settlement facilitator scheme.
-// The authorizerSigner is an optional dedicated key that provides EIP-712 signatures
-// for claimWithSignature / refundWithSignature. When provided, the facilitator
-// advertises its address as receiverAuthorizer in /supported and auto-signs when the
-// server omits signatures from the payload. When nil, no receiverAuthorizer is
-// advertised and servers must supply their own authorizer signatures.
 func NewBatchSettlementEvmScheme(signer evm.FacilitatorEvmSigner, authorizerSigner batchsettlement.AuthorizerSigner) *BatchSettlementEvmScheme {
-	return &BatchSettlementEvmScheme{
-		signer:           signer,
-		authorizerSigner: authorizerSigner,
-		pendingStore:     x402.NewInMemoryPendingSettlementStore(),
-	}
-}
-
-// NewBatchSettlementEvmSchemeWithConfig creates a batch settlement facilitator scheme with
-// optional configuration (e.g. the ERC-6492 factory allowlist for counterfactual deposits).
-// A nil config behaves identically to NewBatchSettlementEvmScheme. The authorizerSigner is
-// optional; see NewBatchSettlementEvmScheme for its semantics.
-func NewBatchSettlementEvmSchemeWithConfig(
-	signer evm.FacilitatorEvmSigner,
-	authorizerSigner batchsettlement.AuthorizerSigner,
-	config *BatchSettlementEvmSchemeConfig,
-) *BatchSettlementEvmScheme {
-	s := &BatchSettlementEvmScheme{
-		signer:           signer,
-		authorizerSigner: authorizerSigner,
-		pendingStore:     x402.NewInMemoryPendingSettlementStore(),
-	}
-	if config != nil {
-		s.config = *config
+	s, err := NewBatchSettlementEvmSchemeWithConfig(signer, authorizerSigner, nil)
+	if err != nil {
+		panic(err)
 	}
 	return s
 }
 
-// SetPendingSettlementStore overrides the default in-memory PendingSettlementStore
-// used to reconcile deposit transactions that broadcast successfully but returned
-// settlement_pending (e.g. a receipt-wait timeout). Only the deposit settle path
-// consults this store; claim/settle/refund are single-signature onchain calls with
-// no equivalent broadcast-then-reconcile flow. A nil store is a no-op, preserving
-// the default in-memory instance.
+// NewBatchSettlementEvmSchemeWithConfig creates a batch settlement facilitator scheme with
+// optional configuration (e.g. the ERC-6492 factory allowlist for counterfactual deposits).
+// A nil config behaves identically to NewBatchSettlementEvmScheme.
+func NewBatchSettlementEvmSchemeWithConfig(
+	signer evm.FacilitatorEvmSigner,
+	authorizerSigner batchsettlement.AuthorizerSigner,
+	config *BatchSettlementEvmSchemeConfig,
+) (*BatchSettlementEvmScheme, error) {
+	s := &BatchSettlementEvmScheme{
+		signer:           signer,
+		authorizerSigner: authorizerSigner,
+		pendingStore:     x402.NewInMemoryPendingSettlementStore(),
+		submitMode:       SubmitModeRelay,
+	}
+	if config != nil {
+		s.config = *config
+		if err := AssertDirectAuthorizerSubmitter(config.SubmitMode, authorizerSigner, config.AuthorizerSubmitter); err != nil {
+			return nil, err
+		}
+		if config.VoucherStore != nil && authorizerSigner == nil {
+			return nil, fmt.Errorf("voucherStore requires authorizerSigner")
+		}
+		if config.SubmitMode != "" {
+			s.submitMode = config.SubmitMode
+		}
+		s.authorizerSubmitter = config.AuthorizerSubmitter
+		if config.PendingSettlementStore != nil {
+			s.pendingStore = config.PendingSettlementStore
+		}
+		s.resolveCallerIdentity = config.ResolveCallerIdentity
+		if s.resolveCallerIdentity != nil {
+			if config.DelegatedAuthStore != nil {
+				s.delegatedAuthStore = config.DelegatedAuthStore
+			} else {
+				s.delegatedAuthStore = storage.NewInMemoryDelegatedAuthStore()
+			}
+		} else {
+			s.delegatedAuthStore = config.DelegatedAuthStore
+		}
+		if config.VoucherStore != nil {
+			lockStorage := config.VoucherStore.LockStorage
+			if lockStorage == nil && storage.IsChannelLockStorage(config.VoucherStore.Storage) {
+				lockStorage = config.VoucherStore.Storage.(storage.ChannelLockStorage)
+			}
+			if lockStorage == nil {
+				return nil, fmt.Errorf("voucherStore.lockStorage is required when storage does not implement ChannelLockStorage")
+			}
+			withdrawDelay := config.VoucherStore.WithdrawDelay
+			if withdrawDelay == 0 {
+				withdrawDelay = batchsettlement.MinWithdrawDelay
+			}
+			s.voucherStore = &voucherStoreRuntime{
+				storage:           config.VoucherStore.Storage,
+				lockStorage:       lockStorage,
+				withdrawDelay:     withdrawDelay,
+				onchainStateTtlMs: config.VoucherStore.OnchainStateTtlMs,
+			}
+		}
+	}
+	return s, nil
+}
+
+// SetPendingSettlementStore overrides the default in-memory PendingSettlementStore.
 func (f *BatchSettlementEvmScheme) SetPendingSettlementStore(store x402.PendingSettlementStore) {
 	if store != nil {
 		f.pendingStore = store
@@ -85,15 +136,21 @@ func (f *BatchSettlementEvmScheme) CaipFamily() string {
 }
 
 // GetExtra returns mechanism-specific extra data for the supported kinds endpoint.
-// Exposes the receiverAuthorizer address so server and client can embed it in ChannelConfig.
-// Returns nil when no authorizer signer is configured, so no receiverAuthorizer is advertised.
 func (f *BatchSettlementEvmScheme) GetExtra(_ x402.Network) map[string]interface{} {
 	if f.authorizerSigner == nil {
 		return nil
 	}
-	return map[string]interface{}{
+	extra := map[string]interface{}{
 		"receiverAuthorizer": f.authorizerSigner.Address(),
 	}
+	if f.voucherStore != nil {
+		extra["withdrawDelay"] = f.voucherStore.withdrawDelay
+		extra["voucherStore"] = true
+	}
+	if f.resolveCallerIdentity != nil {
+		extra["refundAuth"] = true
+	}
+	return extra
 }
 
 // GetSigners returns signer addresses used by this facilitator.
@@ -102,19 +159,24 @@ func (f *BatchSettlementEvmScheme) GetSigners(_ x402.Network) []string {
 }
 
 // Verify verifies a batched payment payload.
-// Routes to deposit or voucher verification based on payload type.
 func (f *BatchSettlementEvmScheme) Verify(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	fctx *x402.FacilitatorContext,
 ) (*x402.VerifyResponse, error) {
-	// Defensive scheme and network validation.
 	if payload.Accepted.Scheme != batchsettlement.SchemeBatched || requirements.Scheme != batchsettlement.SchemeBatched {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidScheme}, nil
 	}
 	if payload.Accepted.Network != requirements.Network {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrNetworkMismatch}, nil
+	}
+
+	if storage.IsFacilitatorManaged(requirements.Extra) {
+		if f.voucherStore == nil || f.authorizerSigner == nil {
+			return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrVoucherStoreUnavailable}, nil
+		}
+		return VerifyManaged(ctx, f.voucherStoreDeps(), payload, requirements, fctx)
 	}
 
 	data := payload.Payload
@@ -137,9 +199,6 @@ func (f *BatchSettlementEvmScheme) Verify(
 		return VerifyVoucher(ctx, f.signer, voucherPayload, requirements, voucherPayload.ChannelConfig)
 	}
 
-	// Cooperative refund: client sends a zero-charge voucher with type="refund".
-	// Refund and voucher payloads share the same voucher-verification path with
-	// a refund-aware cumulative check.
 	if batchsettlement.IsRefundPayload(data) {
 		refundPayload, err := batchsettlement.RefundPayloadFromMap(data)
 		if err != nil {
@@ -153,7 +212,6 @@ func (f *BatchSettlementEvmScheme) Verify(
 }
 
 // Settle settles a batched payment onchain.
-// Routes based on payload type or settleAction field.
 func (f *BatchSettlementEvmScheme) Settle(
 	ctx context.Context,
 	payload types.PaymentPayload,
@@ -168,25 +226,37 @@ func (f *BatchSettlementEvmScheme) Settle(
 		return nil, x402.NewSettleError(ErrInvalidPayload, "", network, "", err.Error())
 	}
 
-	// Check for deposit payload (type="deposit")
+	managed := storage.IsFacilitatorManaged(requirements.Extra)
+	if managed {
+		if f.voucherStore == nil || f.authorizerSigner == nil {
+			return &x402.SettleResponse{
+				Success:     false,
+				ErrorReason: ErrVoucherStoreUnavailable,
+				Transaction: "",
+				Network:     network,
+			}, nil
+		}
+		if !batchsettlement.IsClaimPayload(data) && !batchsettlement.IsSettlePayload(data) {
+			return SettleManaged(ctx, f.voucherStoreDeps(), payload, requirements, fctx, dataSuffix)
+		}
+	}
+
 	if batchsettlement.IsDepositPayload(data) {
 		depositPayload, err := batchsettlement.DepositPayloadFromMap(data)
 		if err != nil {
 			return nil, x402.NewSettleError(ErrInvalidDepositPayload, "", network, "",
 				fmt.Sprintf("failed to parse deposit payload: %s", err))
 		}
-		return SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore)
-	}
-
-	// Enriched refund settle-action (must be checked BEFORE plain claim, since both
-	// have type="refund" but enriched also has claims+amount+refundNonce).
-	if batchsettlement.IsEnrichedRefundPayload(data) {
-		refundPayload, err := batchsettlement.EnrichedRefundPayloadFromMap(data)
+		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore)
 		if err != nil {
-			return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", network, "",
-				fmt.Sprintf("failed to parse refund payload: %s", err))
+			return nil, err
 		}
-		return ExecuteRefundWithSignature(ctx, f.signer, refundPayload, requirements, f.authorizerSigner, dataSuffix)
+		if settled.Success {
+			if bindErr := f.bindSelfManagedCaller(payload, depositPayload.Voucher.ChannelId, requirements, fctx); bindErr != nil {
+				return nil, bindErr
+			}
+		}
+		return settled, nil
 	}
 
 	if batchsettlement.IsClaimPayload(data) {
@@ -195,7 +265,56 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidClaimPayload, "", network, "",
 				fmt.Sprintf("failed to parse claim payload: %s", err))
 		}
-		return ExecuteClaimWithSignature(ctx, f.signer, claimPayload, requirements, f.authorizerSigner, dataSuffix)
+		claimSuffix := dataSuffix
+		var attested map[string]int
+		if managed && f.voucherStore != nil {
+			counts, snapshot, snapErr := SnapshotClaimChargeCounts(f.voucherStore.storage, claimPayload.Claims, requirements.Network, nil)
+			if snapErr != nil {
+				return nil, snapErr
+			}
+			attested = snapshot
+			composed, composeErr := batchsettlement.ComposeClaimDataSuffix(counts, dataSuffix)
+			if composeErr != nil {
+				return nil, composeErr
+			}
+			claimSuffix = composed
+		}
+		settled, err := SubmitClaim(ctx, SubmitClaimInput{
+			Network:    requirements.Network,
+			Claims:     claimPayload.Claims,
+			Signature:  claimPayload.ClaimAuthorizerSignature,
+			DataSuffix: claimSuffix,
+		}, f.submitContext())
+		if err != nil {
+			return nil, err
+		}
+		if settled.Success && attested != nil && f.voucherStore != nil {
+			if afterErr := AfterClaim(f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, RetentionUntilClosed); afterErr != nil {
+				return nil, afterErr
+			}
+		}
+		return settled, nil
+	}
+
+	if batchsettlement.IsEnrichedRefundPayload(data) {
+		refundPayload, err := batchsettlement.EnrichedRefundPayloadFromMap(data)
+		if err != nil {
+			return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", network, "",
+				fmt.Sprintf("failed to parse refund payload: %s", err))
+		}
+		if consentErr := f.checkSelfManagedRefundCaller(payload, refundPayload, requirements, fctx); consentErr != "" {
+			return &x402.SettleResponse{
+				Success:     false,
+				ErrorReason: consentErr,
+				Transaction: "",
+				Network:     network,
+			}, nil
+		}
+		return SubmitRefund(ctx, SubmitRefundInput{
+			Network:    requirements.Network,
+			Payload:    refundPayload,
+			DataSuffix: dataSuffix,
+		}, f.submitContext())
 	}
 
 	if batchsettlement.IsSettlePayload(data) {
@@ -209,4 +328,122 @@ func (f *BatchSettlementEvmScheme) Settle(
 
 	return nil, x402.NewSettleError(ErrUnknownSettleAction, "", network, "",
 		"unrecognized batch-settlement settle action or payload type")
+}
+
+// CreateChannelManager creates a FacilitatorChannelManager wired to this scheme's voucher store.
+func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorContext) (*FacilitatorChannelManager, error) {
+	if f.voucherStore == nil || f.authorizerSigner == nil {
+		return nil, fmt.Errorf("createChannelManager requires voucherStore and authorizerSigner")
+	}
+	return NewFacilitatorChannelManager(FacilitatorChannelManagerConfig{
+		Storage:             f.voucherStore.storage,
+		LockStorage:         f.voucherStore.lockStorage,
+		Signer:              f.signer,
+		AuthorizerSigner:    f.authorizerSigner,
+		AuthorizerSubmitter: f.authorizerSubmitter,
+		SubmitMode:          f.submitMode,
+		Context:             fctx,
+	})
+}
+
+func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
+	return VoucherStoreDeps{
+		Signer:                  f.signer,
+		AuthorizerSigner:        f.authorizerSigner,
+		AuthorizerSubmitter:     f.authorizerSubmitter,
+		SubmitMode:              f.submitMode,
+		Storage:                 f.voucherStore.storage,
+		LockStorage:             f.voucherStore.lockStorage,
+		WithdrawDelay:           f.voucherStore.withdrawDelay,
+		OnchainStateTtlMs:       f.voucherStore.onchainStateTtlMs,
+		ResolveCallerIdentity:   f.resolveCallerIdentity,
+		DelegatedAuthStore:      f.delegatedAuthStore,
+		EIP6492AllowedFactories: f.config.EIP6492AllowedFactories,
+		PendingStore:            f.pendingStore,
+	}
+}
+
+func (f *BatchSettlementEvmScheme) submitContext() SubmitContext {
+	return SubmitContext{
+		SubmitMode:          f.submitMode,
+		Signer:              f.signer,
+		AuthorizerSigner:    f.authorizerSigner,
+		AuthorizerSubmitter: f.authorizerSubmitter,
+	}
+}
+
+func (f *BatchSettlementEvmScheme) bindSelfManagedCaller(
+	payload types.PaymentPayload,
+	channelId string,
+	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
+) error {
+	if f.resolveCallerIdentity == nil || f.delegatedAuthStore == nil {
+		return nil
+	}
+	raw := payload.Payload
+	payer := ""
+	amount := ""
+	if batchsettlement.IsDepositPayload(raw) {
+		if dp, err := batchsettlement.DepositPayloadFromMap(raw); err == nil {
+			payer = dp.ChannelConfig.Payer
+			amount = dp.Deposit.Amount
+		}
+	}
+	identity, err := f.resolveCallerIdentity(DelegatedSettleContext{
+		Step:               DelegatedSettleStepDeposit,
+		ChannelId:          channelId,
+		Network:            requirements.Network,
+		Payer:              payer,
+		Amount:             amount,
+		Payload:            payload,
+		Requirements:       requirements,
+		FacilitatorContext: fctx,
+	})
+	if err != nil || identity == "" {
+		return err
+	}
+	return f.delegatedAuthStore.Bind(storage.DelegatedAuthBinding{
+		ChannelId:      channelId,
+		Network:        requirements.Network,
+		CallerIdentity: identity,
+	})
+}
+
+func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
+	payload types.PaymentPayload,
+	raw *batchsettlement.BatchSettlementEnrichedRefundPayload,
+	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
+) string {
+	if amountErr := refundAmountError(raw.Amount); amountErr != "" {
+		return amountErr
+	}
+	if raw.RefundAuthorizerSignature != "" || f.resolveCallerIdentity == nil {
+		return ""
+	}
+	if f.delegatedAuthStore == nil {
+		return ErrRefundAuthorizerSignature
+	}
+	identity, err := f.resolveCallerIdentity(DelegatedSettleContext{
+		Step:               DelegatedSettleStepRefund,
+		ChannelId:          raw.Voucher.ChannelId,
+		Network:            requirements.Network,
+		Payer:              raw.ChannelConfig.Payer,
+		Amount:             raw.Amount,
+		Payload:            payload,
+		Requirements:       requirements,
+		FacilitatorContext: fctx,
+	})
+	if err != nil || identity == "" {
+		return ErrRefundAuthorizerSignature
+	}
+	binding, err := f.delegatedAuthStore.Get(raw.Voucher.ChannelId, requirements.Network)
+	if err != nil || binding == nil {
+		return ErrRefundAuthorizerSignature
+	}
+	if binding.CallerIdentity != identity {
+		return ErrRefundAuthorizerSignature
+	}
+	return ""
 }

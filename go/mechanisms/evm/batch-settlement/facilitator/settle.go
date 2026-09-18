@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -12,6 +14,9 @@ import (
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
+
+// SettleGasLimit is the gas limit for settle submissions.
+const SettleGasLimit uint64 = 120_000
 
 // ExecuteSettle executes a settle action, transferring claimed funds to the receiver.
 // Calls settle(receiver, token) on the BatchSettlement contract.
@@ -46,7 +51,6 @@ func ExecuteSettle(
 		}, nil
 	}
 
-	// Simulate before submitting
 	_, simErr := signer.ReadContract(
 		ctx,
 		batchsettlement.BatchSettlementAddress,
@@ -57,10 +61,11 @@ func ExecuteSettle(
 	)
 	if simErr != nil {
 		return &x402.SettleResponse{ //nolint:nilerr // simulation failure → error encoded in response
-			Success:     false,
-			ErrorReason: ErrSettleSimulationFailed,
-			Transaction: "",
-			Network:     network,
+			Success:      false,
+			ErrorReason:  ErrSettleSimulationFailed,
+			ErrorMessage: simErr.Error(),
+			Transaction:  "",
+			Network:      network,
 		}, nil
 	}
 
@@ -75,10 +80,11 @@ func ExecuteSettle(
 	)
 	if err != nil {
 		return nil, x402.NewSettleError(ErrSettleTransactionFailed, "", network, "",
-			fmt.Sprintf("settle transaction failed: %s", err))
+			fmt.Sprintf("settle transaction failed: %s", evm.TruncateErrorMessage(err.Error())))
 	}
-	if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", network,
-		ErrSettleTransactionFailed, ErrTransactionReverted); err != nil {
+	receipt, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", network,
+		ErrSettleTransactionFailed, ErrTransactionReverted)
+	if err != nil {
 		return nil, err
 	}
 
@@ -86,7 +92,46 @@ func ExecuteSettle(
 		Success:     true,
 		Transaction: txHash,
 		Network:     network,
+		Amount:      settledAmountFromReceipt(receipt, receiver, token),
 	}, nil
+}
+
+func settledAmountFromReceipt(receipt *evm.TransactionReceipt, receiver, token common.Address) string {
+	if receipt == nil || receipt.Logs == nil {
+		return ""
+	}
+	parsed, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementSettledEventABI)))
+	if err != nil {
+		return "0"
+	}
+	event, ok := parsed.Events["Settled"]
+	if !ok {
+		return "0"
+	}
+	contractAddr := common.HexToAddress(batchsettlement.BatchSettlementAddress)
+	for _, log := range receipt.Logs {
+		if log == nil || log.Address != contractAddr {
+			continue
+		}
+		if len(log.Topics) < 4 || log.Topics[0] != event.ID {
+			continue
+		}
+		logReceiver := common.BytesToAddress(log.Topics[1].Bytes())
+		logToken := common.BytesToAddress(log.Topics[2].Bytes())
+		if logReceiver != receiver || logToken != token {
+			continue
+		}
+		unpacked, err := event.Inputs.NonIndexed().Unpack(log.Data)
+		if err != nil || len(unpacked) == 0 {
+			continue
+		}
+		amount, ok := unpacked[0].(*big.Int)
+		if !ok {
+			continue
+		}
+		return amount.String()
+	}
+	return "0"
 }
 
 func readReceiverSettlementTotals(

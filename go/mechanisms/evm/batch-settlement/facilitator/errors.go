@@ -119,4 +119,17 @@ const (
 	ErrUnknownSettleAction = "invalid_batch_settlement_evm_unknown_settle_action"
 	ErrNothingToSettle     = "invalid_batch_settlement_evm_nothing_to_settle"
 	ErrRefundNoBalance     = batchsettlement.ErrRefundNoBalance
+
+	// Managed voucher-store / refund-authorizer reasons. Aliased from the root
+	// package so facilitator callers share a single wire value.
+	ErrUnexpectedCancel              = batchsettlement.ErrUnexpectedCancel
+	ErrChannelBusy                   = batchsettlement.ErrChannelBusy
+	ErrCumulativeAmountMismatch      = batchsettlement.ErrCumulativeAmountMismatch
+	ErrPendingIdMismatch             = batchsettlement.ErrPendingIdMismatch
+	ErrVoucherStoreUnavailable       = batchsettlement.ErrVoucherStoreUnavailable
+	ErrRefundAuthorizerMismatch      = batchsettlement.ErrRefundAuthorizerMismatch
+	ErrRefundAuthorizerSignature     = batchsettlement.ErrRefundAuthorizerSignature
+	ErrRefundAmountInvalid           = batchsettlement.ErrRefundAmountInvalid
+	ErrMissingChannel                = batchsettlement.ErrMissingChannel
+	ErrChargeExceedsSignedCumulative = batchsettlement.ErrChargeExceedsSignedCumulative
 )

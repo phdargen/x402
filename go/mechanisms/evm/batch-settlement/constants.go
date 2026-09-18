@@ -369,6 +369,21 @@ var BatchSettlementFinalizeWithdrawABI = []byte(`[
 	}
 ]`)
 
+// BatchSettlementSettledEventABI is Settled(address indexed receiver, address indexed token, address indexed sender, uint128 amount).
+var BatchSettlementSettledEventABI = []byte(`[
+	{
+		"anonymous": false,
+		"inputs": [
+			{"indexed": true, "name": "receiver", "type": "address"},
+			{"indexed": true, "name": "token", "type": "address"},
+			{"indexed": true, "name": "sender", "type": "address"},
+			{"indexed": false, "name": "amount", "type": "uint128"}
+		],
+		"name": "Settled",
+		"type": "event"
+	}
+]`)
+
 // BatchSettlementClaimedEventABI is Claimed(bytes32 indexed channelId, address indexed sender, uint128 claimAmount, uint128 newTotalClaimed).
 var BatchSettlementClaimedEventABI = []byte(`[
 	{

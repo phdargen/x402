@@ -141,6 +141,8 @@ type BatchSettlementRefundPayload struct {
 	ChannelConfig ChannelConfig                `json:"channelConfig"`
 	Voucher       BatchSettlementVoucherFields `json:"voucher"`
 	Amount        string                       `json:"amount,omitempty"`
+	PendingId     string                       `json:"pendingId,omitempty"`
+	Cancel        bool                         `json:"cancel,omitempty"`
 }
 
 // BatchSettlementVoucherClaim is used in claim operations onchain.
@@ -469,6 +471,7 @@ func RefundPayloadFromMap(data map[string]interface{}) (*BatchSettlementRefundPa
 	}
 	payload.Voucher = voucherFieldsFromMap(voucherMap)
 	payload.Amount, _ = data["amount"].(string)
+	payload.PendingId, payload.Cancel = pendingFieldsFromMap(data)
 	return payload, nil
 }
 
@@ -664,6 +667,7 @@ func (p *BatchSettlementRefundPayload) ToMap() map[string]interface{} {
 	if p.Amount != "" {
 		result["amount"] = p.Amount
 	}
+	writePendingFields(result, p.PendingId, p.Cancel)
 	return result
 }
 
