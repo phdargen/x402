@@ -53,6 +53,20 @@ export async function handleManagedBeforeVerify(
 }
 
 /**
+ * True when a verify rejection carries a resyncable cumulative baseline.
+ * The facilitator emits `ErrCumulativeAmountMismatch` for managed
+ * voucher-store drift, while the shared client handshake also accepts
+ * `ErrCumulativeAmountBelowClaimed`; the server must propagate corrective
+ * extras for both or the client falls back to stale onchain recovery.
+ */
+function isCorrectiveMismatch(reason: string | undefined): boolean {
+  return (
+    reason === Errors.ErrCumulativeAmountMismatch ||
+    reason === Errors.ErrCumulativeAmountBelowClaimed
+  );
+}
+
+/**
  * After facilitator verify: stash a channel view for refund enrichment / replica,
  * or stash corrective extras. Refunds skip the resource handler.
  *
@@ -75,7 +89,7 @@ export async function handleManagedAfterVerify(
   }
 
   if (!result.isValid) {
-    if (result.invalidReason === Errors.ErrCumulativeAmountMismatch) {
+    if (isCorrectiveMismatch(result.invalidReason)) {
       const ex = result.extra ?? {};
       const channelState = readCorrectiveChannelState(ex);
       const voucherState = readCorrectiveVoucherState(ex);
@@ -127,7 +141,7 @@ export async function handleManagedEnrichPaymentRequiredResponse(
   scheme: BatchSettlementEvmScheme,
   ctx: SchemePaymentRequiredContext,
 ): Promise<void> {
-  if (ctx.error !== Errors.ErrCumulativeAmountMismatch || !ctx.paymentPayload) {
+  if (!isCorrectiveMismatch(ctx.error) || !ctx.paymentPayload) {
     return;
   }
 

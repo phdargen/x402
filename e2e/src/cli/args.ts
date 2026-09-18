@@ -41,6 +41,9 @@ export function parseArgs(): ParsedArgs {
   const hasFilterArgs = args.some(arg =>
     arg.startsWith('--transport=') ||
     arg.startsWith('--facilitators=') ||
+    arg === '--include-external-facilitators' ||
+    arg.startsWith('--include-external-facilitators=') ||
+    arg.startsWith('--includeExternalFacilitators=') ||
     arg.startsWith('--servers=') ||
     arg.startsWith('--clients=') ||
     arg.startsWith('--extensions=') ||
@@ -100,6 +103,11 @@ export function parseArgs(): ParsedArgs {
   // Parse filters (comma-separated lists)
   const transports = parseListArg(args, '--transport');
   const facilitators = parseListArg(args, '--facilitators');
+  // External facilitator proxies are opt-in (excluded by default).
+  const includeExternalFacilitators =
+    args.includes('--include-external-facilitators') ||
+    args.some(a => a.startsWith('--include-external-facilitators=')) ||
+    args.some(a => a.startsWith('--includeExternalFacilitators='));
   const servers = parseListArg(args, '--servers');
   const clients = parseListArg(args, '--clients');
   const extensions = parseListArg(args, '--extensions');
@@ -138,6 +146,7 @@ export function parseArgs(): ParsedArgs {
     filters: {
       transports,
       facilitators,
+      includeExternalFacilitators: includeExternalFacilitators || undefined,
       servers,
       clients,
       extensions,
@@ -182,6 +191,7 @@ export function printHelp(): void {
   console.log('Programmatic Mode (for CI/workflows):');
   console.log('  --transport=<list>         Comma-separated transports (e.g., http,mcp)');
   console.log('  --facilitators=<list>      Comma-separated facilitator names');
+  console.log('  --include-external-facilitators  Opt in to external proxies; excluded by default');
   console.log('  --servers=<list>           Comma-separated server names');
   console.log('  --clients=<list>           Comma-separated client names');
   console.log('  --extensions=<list>        Comma-separated extensions (e.g., bazaar)');

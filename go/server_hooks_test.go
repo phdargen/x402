@@ -680,3 +680,35 @@ func TestHooks_FunctionalOptions(t *testing.T) {
 }
 
 // Note: mockFacilitatorClient is defined in service_test.go
+
+func TestAfterVerifyHook_RunsOnFacilitatorRejection(t *testing.T) {
+	afterCalled := false
+	server := Newx402ResourceServer()
+	registerExactEvmScheme(server)
+	server.OnAfterVerify(func(ctx VerifyResultContext) (*AfterVerifyResult, error) {
+		afterCalled = true
+		if ctx.Result == nil || ctx.Result.IsValid {
+			t.Fatalf("expected invalid result, got %+v", ctx.Result)
+		}
+		return nil, nil
+	})
+	server.facilitatorClients[Network("eip155:8453")] = map[string]FacilitatorClient{
+		"exact": &mockFacilitatorClient{
+			verify: func(ctx context.Context, payload []byte, reqs []byte) (*VerifyResponse, error) {
+				return &VerifyResponse{IsValid: false, InvalidReason: "mismatch"}, nil
+			},
+		},
+	}
+
+	_, err := server.VerifyPayment(
+		context.Background(),
+		types.PaymentPayload{X402Version: 2, Payload: map[string]interface{}{}},
+		types.PaymentRequirements{Scheme: "exact", Network: "eip155:8453"},
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid facilitator response")
+	}
+	if !afterCalled {
+		t.Fatal("expected afterVerify to run on facilitator rejection")
+	}
+}

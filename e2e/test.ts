@@ -690,7 +690,11 @@ function validateBatchPaymentStep(
   }
 
   if (!stepResult.success) {
-    const reason = stepResult.payment_response?.errorReason || stepResult.error || 'unknown error';
+    const reason =
+      stepResult.payment_response?.errorReason ||
+      stepResult.error ||
+      (stepResult.data as { error?: unknown })?.error ||
+      `unknown error (status_code=${stepResult.status_code ?? "n/a"}, data=${JSON.stringify(stepResult.data ?? null)})`;
     return `Batch-settlement ${label} failed: ${reason}`;
   }
 
@@ -1507,6 +1511,18 @@ async function runTest() {
           cLog.verboseLog(`  🔍 Error details: ${JSON.stringify(initialResult, null, 2)}`);
           return detailedResult;
         }
+
+        // Let the initial deposit propagate across load-balanced RPCs before
+        // the fresh recovery process reads onchain state for cold-start
+        // recovery. Without this, the recovery voucher can rebuild against a
+        // stale balance/totalClaimed and fail as a cumulative mismatch that
+        // corrective recovery cannot resync (notably on facilitator-managed
+        // channels where the watermark lives offchain). Managed channels get
+        // a longer settle so the facilitator voucher-store write + RPC
+        // propagation both land before the recovery probe.
+        // See: go/http/nethttp+go managed-batch recovery 402s with a 2s gap.
+        const recoverySettleMs = endpointUsesFacilitatorManagedBatch(scenario.endpoint) ? 5000 : 2000;
+        await new Promise(resolve => setTimeout(resolve, recoverySettleMs));
 
         const recoveryResult = await runClientTest(scenario.client.proxy, {
           ...baseClientConfig,
