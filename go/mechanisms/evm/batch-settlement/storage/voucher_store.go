@@ -180,8 +180,11 @@ func CommitVoucherCharge[T ChannelRecord[T]](store ChannelStorage[T], channelId 
 		}
 
 		charged, ok := new(big.Int).SetString(base.Base().ChargedCumulativeAmount, 10)
-		if !ok {
-			charged = new(big.Int)
+		if !ok || charged.Sign() < 0 {
+			// Fail closed on a corrupt watermark: leave the row unchanged.
+			// The CAS no-op maps to CommitConflict below.
+			outcome = &CommitVoucherChargeResult[T]{Status: CommitConflict}
+			return current
 		}
 		increment := input.Increment
 		if increment == nil {

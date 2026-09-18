@@ -18,6 +18,13 @@ func newServerFileStore(t *testing.T) (*FileChannelStorage[*Channel], string) {
 	return NewFileChannelStorage[*Channel](batchsettlement.FileChannelStorageOptions{Directory: dir}), dir
 }
 
+func mustSeedFileChannel(t *testing.T, s *FileChannelStorage[*Channel], sess *Channel) {
+	t.Helper()
+	if _, err := s.UpdateChannel(sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
 func TestServerFileStorage_GetMissing(t *testing.T) {
 	s, _ := newServerFileStore(t)
 	_, err := s.Get("missing")
@@ -37,11 +44,11 @@ func TestServerFileStorage_GetMissingCanonical(t *testing.T) {
 	}
 }
 
-func TestServerFileStorage_SetGetRoundTrip(t *testing.T) {
+func TestServerFileStorage_UpsertGetRoundTrip(t *testing.T) {
 	s, _ := newServerFileStore(t)
 	in := sampleSession(testChA, "5")
-	if err := s.Set(testChA, in); err != nil {
-		t.Fatalf("Set: %v", err)
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
 	}
 	got, err := s.Get(testChA)
 	if err != nil {
@@ -55,22 +62,22 @@ func TestServerFileStorage_SetGetRoundTrip(t *testing.T) {
 func TestServerFileStorage_PathLowercased(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
-	_ = s.Set(upper, sampleSession(upper, "1"))
+	mustSeedFileChannel(t, s, sampleSession(upper, "1"))
 	expected := filepath.Join(dir, "server", testChA+".json")
 	if _, err := os.Stat(expected); err != nil {
 		t.Fatalf("expected file at %s: %v", expected, err)
 	}
 }
 
-func TestServerFileStorage_Delete(t *testing.T) {
+func TestServerFileStorage_UpdateChannelDelete(t *testing.T) {
 	s, dir := newServerFileStore(t)
-	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
 	ok, err := s.Acquire(testChA, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
-	if err := s.Delete(testChA); err != nil {
-		t.Fatalf("Delete: %v", err)
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+		t.Fatalf("UpdateChannel delete: %v", err)
 	}
 	if got, _ := s.Get(testChA); got != nil {
 		t.Fatalf("expected nil after delete")
@@ -82,8 +89,8 @@ func TestServerFileStorage_Delete(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "server", testChA+".hold")); !os.IsNotExist(err) {
 		t.Fatalf("hold file should be gone: %v", err)
 	}
-	if err := s.Delete(testChA); err != nil {
-		t.Fatalf("Delete-missing should not error: %v", err)
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+		t.Fatalf("UpdateChannel delete-missing should not error: %v", err)
 	}
 }
 
@@ -100,8 +107,8 @@ func TestServerFileStorage_List_Empty(t *testing.T) {
 
 func TestServerFileStorage_List_Populated(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	_ = s.Set(testChB, sampleSession(testChB, "2"))
-	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	mustSeedFileChannel(t, s, sampleSession(testChB, "2"))
+	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
 	got, err := s.List()
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -116,7 +123,7 @@ func TestServerFileStorage_List_Populated(t *testing.T) {
 
 func TestServerFileStorage_List_SkipsNonJSON(t *testing.T) {
 	s, dir := newServerFileStore(t)
-	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
 	// Drop a non-JSON file in the same directory
 	_ = os.WriteFile(filepath.Join(dir, "server", "junk.txt"), []byte("noise"), 0o644)
 	got, err := s.List()
@@ -152,8 +159,10 @@ func TestServerFileStorage_UpdateChannelCreatesDirectoryFromCold(t *testing.T) {
 func TestServerFileStorage_RejectsPathEscapeMalformedIds(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	malformed := "../../../etc/passwd"
-	if err := s.Set(malformed, sampleSession(testChA, "1")); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
-		t.Fatalf("Set: expected ErrInvalidChannelId, got %v", err)
+	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
+		return sampleSession(testChA, "1")
+	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
+		t.Fatalf("UpdateChannel: expected ErrInvalidChannelId, got %v", err)
 	}
 	if _, err := s.Get(malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Get: expected ErrInvalidChannelId, got %v", err)
@@ -171,8 +180,10 @@ func TestServerFileStorage_RejectsPathEscapeMalformedIds(t *testing.T) {
 func TestServerFileStorage_RejectsPrefixedValidId(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	malformed := "../server/" + testChA
-	if err := s.Set(malformed, sampleSession(testChA, "1")); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
-		t.Fatalf("Set: expected ErrInvalidChannelId, got %v", err)
+	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
+		return sampleSession(testChA, "1")
+	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
+		t.Fatalf("UpdateChannel: expected ErrInvalidChannelId, got %v", err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {

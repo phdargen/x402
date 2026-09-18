@@ -71,27 +71,6 @@ func (s *FileChannelStorage[T]) Get(channelId string) (T, error) {
 	return out, nil
 }
 
-// Set writes session as JSON under the canonical channel id.
-func (s *FileChannelStorage[T]) Set(channelId string, session T) error {
-	path, err := s.filePath(channelId)
-	if err != nil {
-		return err
-	}
-	return batchsettlement.WriteJSONAtomic(path, session)
-}
-
-// Delete removes the channel file and its admission hold sidecar.
-func (s *FileChannelStorage[T]) Delete(channelId string) error {
-	path, err := s.filePath(channelId)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !batchsettlement.IsNotExist(err) {
-		return err
-	}
-	return s.dropHold(channelId)
-}
-
 // List returns stored records sorted by channelId.
 func (s *FileChannelStorage[T]) List() ([]T, error) {
 	dir := filepath.Join(s.root, "server")

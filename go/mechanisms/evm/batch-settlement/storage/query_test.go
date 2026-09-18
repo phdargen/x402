@@ -237,6 +237,46 @@ func TestMatchesChannelQuery_NetworkFilterRequiresRowNetwork(t *testing.T) {
 	}
 }
 
+func TestMatchesChannelQuery_SkipsCorruptWatermarks(t *testing.T) {
+	corruptCharged := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "not-a-number", TotalClaimed: "0"})
+	if MatchesChannelQuery(corruptCharged, ChannelQuery{Kind: QueryKindClaimable}) {
+		t.Fatal("corrupt charged amount must not match claimable")
+	}
+	corruptClaimed := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10", TotalClaimed: "not-a-number"})
+	if MatchesChannelQuery(corruptClaimed, ChannelQuery{Kind: QueryKindClaimable}) {
+		t.Fatal("corrupt claimed amount must not match claimable")
+	}
+	corruptBalance := queryChannel(paddedId(1), queryChannelExtra{Balance: "not-a-number"})
+	if MatchesChannelQuery(corruptBalance, ChannelQuery{Kind: QueryKindIdleRefundable}) {
+		t.Fatal("corrupt balance must not match idle-refundable")
+	}
+	// A corrupt balance must not read as zero either: it is skipped, not selected.
+	zeroBalance := queryChannel(paddedId(1), queryChannelExtra{Balance: "0"})
+	if MatchesChannelQuery(zeroBalance, ChannelQuery{Kind: QueryKindIdleRefundable}) {
+		t.Fatal("zero balance must not match idle-refundable")
+	}
+}
+
+func TestSettleQueryByScan_SkipsCorruptTotalClaimed(t *testing.T) {
+	store := NewInMemoryChannelStorage[*Channel]()
+	valid := queryChannel(paddedId(1), queryChannelExtra{TotalClaimed: "10", ChargedCumulativeAmount: "10"})
+	// Distinct tuple so the corrupt row is only excluded by the parse guard,
+	// not by target dedup.
+	corrupt := queryChannel(paddedId(2), queryChannelExtra{TotalClaimed: "not-a-number", ChargedCumulativeAmount: "10", Receiver: queryReceiverB})
+	for _, ch := range []*Channel{valid, corrupt} {
+		if _, err := store.UpdateChannel(ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
+			t.Fatalf("seed %s: %v", ch.ChannelId, err)
+		}
+	}
+	page, err := SettleQueryByScan[*Channel](store, SettleQuery{})
+	if err != nil {
+		t.Fatalf("SettleQueryByScan: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Receiver != queryReceiverA || page.Items[0].Token != queryTokenA {
+		t.Fatalf("settle targets = %+v, want only the valid row", page.Items)
+	}
+}
+
 func TestSortChannels_ClaimablePutsWithdrawPendingFirst(t *testing.T) {
 	pending := queryChannel("0x2222222222222222222222222222222222222222222222222222222222222222", queryChannelExtra{WithdrawRequestedAt: 1})
 	fresh := queryChannel("0x1111111111111111111111111111111111111111111111111111111111111111", queryChannelExtra{WithdrawRequestedAt: 0})

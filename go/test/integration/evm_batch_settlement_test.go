@@ -1121,7 +1121,9 @@ func TestBatchSettlementIntegration_WithdrawalPendingRefund(t *testing.T) {
 		t.Fatalf("expected session for channel %s: %v", channelId, err)
 	}
 	session.WithdrawRequestedAt = int(time.Now().Unix())
-	if err := storage.Set(channelId, session); err != nil {
+	if _, err := storage.UpdateChannel(channelId, func(*batchedserver.ChannelSession) *batchedserver.ChannelSession {
+		return session.Clone()
+	}); err != nil {
 		t.Fatalf("update session: %v", err)
 	}
 

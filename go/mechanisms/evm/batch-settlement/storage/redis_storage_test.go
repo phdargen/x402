@@ -202,6 +202,13 @@ func newRedisStore(t *testing.T) (*RedisChannelStorage[*Channel], *mockRedisClie
 	}), client
 }
 
+func mustSeedRedisChannel(t *testing.T, s *RedisChannelStorage[*Channel], sess *Channel) {
+	t.Helper()
+	if _, err := s.UpdateChannel(sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+}
+
 func TestRedisChannelStorage_GetMissing(t *testing.T) {
 	s, _ := newRedisStore(t)
 	_, err := s.Get("missing")
@@ -221,11 +228,11 @@ func TestRedisChannelStorage_GetMissingCanonical(t *testing.T) {
 	}
 }
 
-func TestRedisChannelStorage_SetGet(t *testing.T) {
+func TestRedisChannelStorage_UpsertGet(t *testing.T) {
 	s, _ := newRedisStore(t)
 	in := sampleSession(testChA, "10")
-	if err := s.Set(testChA, in); err != nil {
-		t.Fatalf("Set: %v", err)
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
+		t.Fatalf("UpdateChannel: %v", err)
 	}
 	got, err := s.Get(testChA)
 	if err != nil {
@@ -239,9 +246,7 @@ func TestRedisChannelStorage_SetGet(t *testing.T) {
 func TestRedisChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
 	s, _ := newRedisStore(t)
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
-	if err := s.Set(upper, sampleSession(upper, "7")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
+	mustSeedRedisChannel(t, s, sampleSession(upper, "7"))
 	got, err := s.Get(testChA)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -251,24 +256,24 @@ func TestRedisChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
 	}
 }
 
-func TestRedisChannelStorage_Delete(t *testing.T) {
+func TestRedisChannelStorage_UpdateChannelDelete(t *testing.T) {
 	s, _ := newRedisStore(t)
-	_ = s.Set(testChA, sampleSession(testChA, "10"))
-	if err := s.Delete(testChA); err != nil {
-		t.Fatalf("Delete: %v", err)
+	mustSeedRedisChannel(t, s, sampleSession(testChA, "10"))
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+		t.Fatalf("UpdateChannel delete: %v", err)
 	}
 	if got, _ := s.Get(testChA); got != nil {
 		t.Fatalf("expected nil after delete")
 	}
-	if err := s.Delete(testChA); err != nil {
-		t.Fatalf("Delete-missing should not error: %v", err)
+	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+		t.Fatalf("UpdateChannel delete-missing should not error: %v", err)
 	}
 }
 
 func TestRedisChannelStorage_ListSorted(t *testing.T) {
 	s, _ := newRedisStore(t)
-	_ = s.Set(testChB, sampleSession(testChB, "2"))
-	_ = s.Set(testChA, sampleSession(testChA, "1"))
+	mustSeedRedisChannel(t, s, sampleSession(testChB, "2"))
+	mustSeedRedisChannel(t, s, sampleSession(testChA, "1"))
 
 	got, err := s.List()
 	if err != nil {
@@ -335,9 +340,6 @@ func TestRedisChannelStorage_RejectsMalformedIds(t *testing.T) {
 	if _, err := s.Get(malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Get: expected ErrInvalidChannelId, got %v", err)
 	}
-	if err := s.Set(malformed, sampleSession(testChA, "1")); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
-		t.Fatalf("Set: expected ErrInvalidChannelId, got %v", err)
-	}
 	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
 		return sampleSession(testChA, "1")
 	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
@@ -348,7 +350,7 @@ func TestRedisChannelStorage_RejectsMalformedIds(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	if len(list) != 0 {
-		t.Fatalf("storage mutated by malformed Set, got %d sessions", len(list))
+		t.Fatalf("storage mutated by malformed UpdateChannel, got %d sessions", len(list))
 	}
 }
 
@@ -487,22 +489,6 @@ func TestRedisChannelStorage_UpdateChannelContendedAfterMaxWait(t *testing.T) {
 	}
 	if client.conflictCount() == 0 {
 		t.Fatal("expected compare conflicts")
-	}
-}
-
-func TestRedisChannelStorage_DeleteDropsLockKey(t *testing.T) {
-	s, client := newRedisStore(t)
-	lockKey := redisTestPrefix + ":server:lock:" + testChA
-	_ = s.Set(testChA, sampleSession(testChA, "1"))
-	ok, err := s.Acquire(testChA, "pending", 60_000)
-	if err != nil || !ok {
-		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
-	}
-	if err := s.Delete(testChA); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if client.hasKey(redisTestPrefix+":server:channel:"+testChA) || client.hasKey(lockKey) {
-		t.Fatal("Delete should drop channel and lock keys")
 	}
 }
 

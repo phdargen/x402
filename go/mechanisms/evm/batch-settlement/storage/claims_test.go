@@ -98,6 +98,46 @@ func TestSelectClaimableVouchers_SkipsInsideIdleWindow(t *testing.T) {
 	}
 }
 
+func TestSelectClaimableVouchers_SkipsCorruptWatermarks(t *testing.T) {
+	corruptCharged := claimsBaseChannel(&Channel{ChargedCumulativeAmount: "not-a-number", TotalClaimed: "0"})
+	if got := SelectClaimableVouchers([]*Channel{corruptCharged}, nil); len(got) != 0 {
+		t.Fatalf("corrupt charged: got %d claims, want 0", len(got))
+	}
+	corruptClaimed := claimsBaseChannel(&Channel{ChargedCumulativeAmount: "5000", TotalClaimed: "not-a-number"})
+	if got := SelectClaimableVouchers([]*Channel{corruptClaimed}, nil); len(got) != 0 {
+		t.Fatalf("corrupt claimed: got %d claims, want 0", len(got))
+	}
+}
+
+func TestApplyClaimedTotals_SkipsCorruptClaimAndCorruptRow(t *testing.T) {
+	store := NewInMemoryChannelStorage[*Channel]()
+	channel := claimsBaseChannel(&Channel{TotalClaimed: "1000"})
+	if _, err := store.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "not-a-number")}, claimsNetwork); err != nil {
+		t.Fatalf("ApplyClaimedTotals: %v", err)
+	}
+	got, err := store.Get(channel.ChannelId)
+	if err != nil || got.TotalClaimed != "1000" {
+		t.Fatalf("corrupt claim must not write: totalClaimed = %+v err=%v", got, err)
+	}
+
+	corruptCfg := claimsBaseChannel(nil).ChannelConfig
+	corruptCfg.Salt = "0x0000000000000000000000000000000000000000000000000000000000000002"
+	corruptRow := claimsBaseChannel(&Channel{ChannelConfig: corruptCfg, TotalClaimed: "not-a-number"})
+	if _, err := store.UpdateChannel(corruptRow.ChannelId, func(*Channel) *Channel { return corruptRow }); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(corruptRow, "5000")}, claimsNetwork); err != nil {
+		t.Fatalf("ApplyClaimedTotals: %v", err)
+	}
+	gotCorrupt, err := store.Get(corruptRow.ChannelId)
+	if err != nil || gotCorrupt.TotalClaimed != "not-a-number" {
+		t.Fatalf("corrupt row must stay unchanged: totalClaimed = %+v err=%v", gotCorrupt, err)
+	}
+}
+
 func voucherClaim(channel *Channel, totalClaimed string) batchsettlement.BatchSettlementVoucherClaim {
 	claim := batchsettlement.BatchSettlementVoucherClaim{
 		Signature:    "0xdeadbeef",
