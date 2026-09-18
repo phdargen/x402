@@ -90,11 +90,17 @@ function formatFacilitatorFailure(operation: string, response: SettleResponse): 
  * Returns whether a live admission lock is held. Lock-store I/O failures are optimistic
  * (treat as not held). Implementation/parse errors fail closed and propagate.
  *
- * @param lock - Admission lock store.
+ * @param lock - Admission lock store. Missing store is treated as not held.
  * @param channelId - Channel to inspect.
  * @returns Whether a live lock is present.
  */
-async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promise<boolean> {
+async function channelIsHeld(
+  lock: ChannelLockStorage | undefined,
+  channelId: string,
+): Promise<boolean> {
+  if (!lock) {
+    return false;
+  }
   try {
     return await lock.isHeld(channelId);
   } catch (err) {

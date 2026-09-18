@@ -43,6 +43,9 @@ async function inspectAdmission(
 ): Promise<AdmissionHold> {
   try {
     const locks = scheme.getLockStorage();
+    if (!locks) {
+      return "none";
+    }
     if (pendingId && (await locks.isHeld(channelId, pendingId))) {
       return "self";
     }

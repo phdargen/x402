@@ -67,6 +67,14 @@ function inferCharged(signedMaxClaimable: string, amount: string, isPaid: boolea
   return signed < amt ? "0" : (signed - amt).toString();
 }
 
+function lockStorage(server: BatchSettlementEvmScheme): ChannelLockStorage {
+  const locks = server.getLockStorage();
+  if (!locks) {
+    throw new Error("expected self-managed lock storage");
+  }
+  return locks;
+}
+
 /**
  * Simulates the post-verify reserved state for settle/cleanup tests: acquires an
  * admission lock and records the matching request context.
@@ -103,7 +111,7 @@ async function reservePending(
     lastRequestTimestamp: now,
   };
 
-  await server.getLockStorage().acquire(channelId, pendingId, 600_000);
+  await lockStorage(server).acquire(channelId, pendingId, 600_000);
   server.mergeRequestContext(paymentPayload, {
     channelId,
     pendingId,
@@ -310,6 +318,16 @@ describe("BatchSettlementEvmScheme — construction", () => {
     expect(server.getStorage()).toBe(storage);
     expect(server.getLockStorage()).not.toBe(storage);
     expect(server.getLockStorage()).toBeInstanceOf(InMemoryChannelStorage);
+  });
+
+  it("does not construct a local lock store in facilitator-managed mode", () => {
+    const storage = new InMemoryChannelStorage();
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      storage,
+    });
+    expect(server.getStorage()).toBe(storage);
+    expect(server.getLockStorage()).toBeUndefined();
   });
 });
 
@@ -695,7 +713,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     const channelId = computeChannelId(config);
     const paymentPayload = buildVoucherPayload(channelId, "2000", config);
     (paymentPayload.payload as { pendingId?: string }).pendingId = "0xclient";
-    const acquireSpy = vi.spyOn(server.getLockStorage(), "acquire");
+    const acquireSpy = vi.spyOn(lockStorage(server), "acquire");
 
     const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload,
@@ -714,7 +732,7 @@ describe("BatchSettlementEvmScheme — onBeforeVerify", () => {
     const channelId = computeChannelId(config);
     const paymentPayload = buildVoucherPayload(channelId, "2000", config);
     (paymentPayload.payload as { cancel?: boolean }).cancel = true;
-    const acquireSpy = vi.spyOn(server.getLockStorage(), "acquire");
+    const acquireSpy = vi.spyOn(lockStorage(server), "acquire");
 
     const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload,
