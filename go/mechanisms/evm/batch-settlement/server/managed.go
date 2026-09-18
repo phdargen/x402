@@ -16,6 +16,18 @@ func isBatchSettlementPayload(raw map[string]interface{}) bool {
 		batchsettlement.IsRefundPayload(raw)
 }
 
+// isCorrectiveMismatch reports whether a verify rejection carries a
+// resyncable cumulative baseline. The facilitator emits
+// ErrCumulativeAmountMismatch for managed voucher-store drift, while the
+// shared client handshake also accepts ErrCumulativeBelowClaimed (canonical
+// facilitator form); the server must propagate corrective extras for both or
+// the client's ProcessCorrectivePaymentRequired sees a 402 without
+// channelState/voucherState and falls back to stale onchain recovery.
+func isCorrectiveMismatch(reason string) bool {
+	return reason == batchsettlement.ErrCumulativeAmountMismatch ||
+		reason == batchsettlement.ErrCumulativeBelowClaimed
+}
+
 // handleManagedBeforeVerify is a pass-through verify: min-deposit and
 // channel-id binding only. Admission stays with the facilitator.
 func handleManagedBeforeVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyContext) (*x402.BeforeHookResult, error) {
@@ -47,7 +59,7 @@ func handleManagedAfterVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyResult
 		return nil, nil
 	}
 	if !ctx.Result.IsValid {
-		if ctx.Result.InvalidReason == batchsettlement.ErrCumulativeAmountMismatch {
+		if isCorrectiveMismatch(ctx.Result.InvalidReason) {
 			ex := ctx.Result.Extra
 			channelState := readCorrectiveChannelState(ex)
 			voucherState := readCorrectiveVoucherState(ex)
@@ -101,7 +113,7 @@ func handleManagedAfterVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyResult
 // handleManagedEnrichPaymentRequiredResponse copies facilitator-supplied
 // corrective extras onto the matching 402 accept.
 func handleManagedEnrichPaymentRequiredResponse(s *BatchSettlementEvmScheme, ctx x402.PaymentRequiredContext) {
-	if ctx.Error != batchsettlement.ErrCumulativeAmountMismatch || ctx.PaymentPayload == nil {
+	if !isCorrectiveMismatch(ctx.Error) || ctx.PaymentPayload == nil {
 		return
 	}
 	requestContext := s.TakeRequestContext(ctx.PaymentPayload)
