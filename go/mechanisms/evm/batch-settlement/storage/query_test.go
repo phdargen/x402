@@ -1,0 +1,360 @@
+package storage
+
+import (
+	"reflect"
+	"testing"
+
+	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+)
+
+const (
+	queryNetworkA  = "eip155:84532"
+	queryNetworkB  = "eip155:1"
+	queryReceiverA = "0x1111111111111111111111111111111111111111"
+	queryReceiverB = "0x2222222222222222222222222222222222222222"
+	queryTokenA    = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	queryTokenB    = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	queryNow       = int64(1_700_000_000_000)
+)
+
+func queryIdleAt() int64 { return queryNow - 60_000 }
+
+func paddedId(n int) string {
+	return "0x" + padHex(n, 64)
+}
+
+func padHex(n, width int) string {
+	hex := ""
+	for n > 0 {
+		d := n % 16
+		if d < 10 {
+			hex = string(rune('0'+d)) + hex
+		} else {
+			hex = string(rune('a'+d-10)) + hex
+		}
+		n /= 16
+	}
+	for len(hex) < width {
+		hex = "0" + hex
+	}
+	return hex
+}
+
+type queryingStore struct {
+	*InMemoryChannelStorage[*Channel]
+	queryFn  func(ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error)
+	settleFn func(SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
+}
+
+func (s queryingStore) Query(filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+	return s.queryFn(filter, opts)
+}
+
+func (s queryingStore) SettleQuery(filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+	return s.settleFn(filter, opts)
+}
+
+func TestQueryChannels_SelectsClaimableAsBigInt(t *testing.T) {
+	got := queryIds(t, ChannelQuery{Kind: QueryKindClaimable})
+	want := []string{paddedId(3), paddedId(1), paddedId(2), paddedId(5)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestQueryChannels_AppliesIdleAtOrBeforeToClaimable(t *testing.T) {
+	idle := queryIdleAt()
+	got := queryIds(t, ChannelQuery{Kind: QueryKindClaimable, IdleAtOrBefore: &idle})
+	want := []string{paddedId(3), paddedId(2), paddedId(5)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestQueryChannels_FiltersClaimableByNetwork(t *testing.T) {
+	got := queryIds(t, ChannelQuery{Kind: QueryKindClaimable, Network: queryNetworkB})
+	if len(got) != 0 {
+		t.Fatalf("ids = %v, want empty", got)
+	}
+}
+
+func TestQueryChannels_SelectsIdleRefundableWithEscrow(t *testing.T) {
+	idle := queryIdleAt()
+	got := queryIds(t, ChannelQuery{Kind: QueryKindIdleRefundable, IdleAtOrBefore: &idle})
+	want := []string{paddedId(2), paddedId(3), paddedId(4), paddedId(5), paddedId(6)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestQueryChannels_SelectsWithdrawPending(t *testing.T) {
+	got := queryIds(t, ChannelQuery{Kind: QueryKindWithdrawPending})
+	want := []string{paddedId(3), paddedId(8)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestQueryChannels_PagesClaimableWithLimitAndCursor(t *testing.T) {
+	store := seededQueryStore(t)
+	limit1 := 1
+	first, err := QueryChannels(store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit1}, nil)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if got := channelIds(first.Items); !reflect.DeepEqual(got, []string{paddedId(3)}) {
+		t.Fatalf("first ids = %v", got)
+	}
+	if first.Cursor == "" {
+		t.Fatal("expected cursor")
+	}
+	limit10 := 10
+	rest, err := QueryChannels(store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit10, Cursor: first.Cursor}, nil)
+	if err != nil {
+		t.Fatalf("rest page: %v", err)
+	}
+	if got := channelIds(rest.Items); !reflect.DeepEqual(got, []string{paddedId(1), paddedId(2), paddedId(5)}) {
+		t.Fatalf("rest ids = %v", got)
+	}
+	if rest.Cursor != "" {
+		t.Fatalf("unexpected cursor %q", rest.Cursor)
+	}
+}
+
+func TestQuerySettleTargets_DedupesClaimedTuples(t *testing.T) {
+	store := seededQueryStore(t)
+	got, err := QuerySettleTargets(store, SettleQuery{}, nil)
+	if err != nil {
+		t.Fatalf("QuerySettleTargets: %v", err)
+	}
+	want := []SettleTarget{
+		{Network: queryNetworkA, Receiver: queryReceiverA, Token: queryTokenA},
+		{Network: queryNetworkB, Receiver: queryReceiverB, Token: queryTokenB},
+		{Network: queryNetworkB, Receiver: queryReceiverA, Token: queryTokenA},
+	}
+	if !reflect.DeepEqual(got.Items, want) {
+		t.Fatalf("items = %+v, want %+v", got.Items, want)
+	}
+}
+
+func TestQuerySettleTargets_FiltersByNetwork(t *testing.T) {
+	store := seededQueryStore(t)
+	got, err := QuerySettleTargets(store, SettleQuery{Network: queryNetworkB}, nil)
+	if err != nil {
+		t.Fatalf("QuerySettleTargets: %v", err)
+	}
+	want := []SettleTarget{
+		{Network: queryNetworkB, Receiver: queryReceiverB, Token: queryTokenB},
+		{Network: queryNetworkB, Receiver: queryReceiverA, Token: queryTokenA},
+	}
+	if !reflect.DeepEqual(got.Items, want) {
+		t.Fatalf("items = %+v, want %+v", got.Items, want)
+	}
+}
+
+func TestQueryChannels_PrefersNativeQuery(t *testing.T) {
+	inner := NewInMemoryChannelStorage[*Channel]()
+	queried := queryChannel(paddedId(0x99), queryChannelExtra{ChargedCumulativeAmount: "1"})
+	store := queryingStore{
+		InMemoryChannelStorage: inner,
+		queryFn: func(ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+			return &QueryPage[*Channel]{Items: []*Channel{queried}}, nil
+		},
+		settleFn: func(SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+			return SettleQueryByScan[*Channel](inner, SettleQuery{})
+		},
+	}
+	got, err := QueryChannels[*Channel](store, ChannelQuery{Kind: QueryKindClaimable}, nil)
+	if err != nil {
+		t.Fatalf("QueryChannels: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].ChannelId != queried.ChannelId {
+		t.Fatalf("native query not used: %+v", got.Items)
+	}
+}
+
+func TestQueryChannels_NativeMatchesScanShim(t *testing.T) {
+	inner := seededQueryStore(t)
+	store := queryingStore{
+		InMemoryChannelStorage: inner,
+		queryFn: func(filter ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+			return QueryByScan[*Channel](inner, filter)
+		},
+		settleFn: func(filter SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+			return SettleQueryByScan[*Channel](inner, filter)
+		},
+	}
+	native, err := QueryChannels[*Channel](store, ChannelQuery{Kind: QueryKindClaimable}, nil)
+	if err != nil {
+		t.Fatalf("native: %v", err)
+	}
+	scan, err := QueryByScan[*Channel](inner, ChannelQuery{Kind: QueryKindClaimable})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !reflect.DeepEqual(channelIds(native.Items), channelIds(scan.Items)) {
+		t.Fatalf("native %v scan %v", channelIds(native.Items), channelIds(scan.Items))
+	}
+	nativeSettle, err := QuerySettleTargets[*Channel](store, SettleQuery{}, nil)
+	if err != nil {
+		t.Fatalf("native settle: %v", err)
+	}
+	scanSettle, err := SettleQueryByScan[*Channel](inner, SettleQuery{})
+	if err != nil {
+		t.Fatalf("scan settle: %v", err)
+	}
+	if !reflect.DeepEqual(nativeSettle.Items, scanSettle.Items) {
+		t.Fatalf("settle native %+v scan %+v", nativeSettle.Items, scanSettle.Items)
+	}
+}
+
+func TestMatchesChannelQuery_ComparesUint256NotLexicographic(t *testing.T) {
+	if !MatchesChannelQuery(queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10", TotalClaimed: "9"}), ChannelQuery{Kind: QueryKindClaimable}) {
+		t.Fatal("10 > 9 should be claimable")
+	}
+	if MatchesChannelQuery(queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "9", TotalClaimed: "10"}), ChannelQuery{Kind: QueryKindClaimable}) {
+		t.Fatal("9 <= 10 should not be claimable")
+	}
+}
+
+func TestMatchesChannelQuery_IdleBoundaryIsInclusive(t *testing.T) {
+	channel := queryChannel(paddedId(1), queryChannelExtra{LastRequestTimestamp: 1000, Balance: "1"})
+	idle := int64(1000)
+	if !MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindIdleRefundable, IdleAtOrBefore: &idle}) {
+		t.Fatal("equal timestamp should be idle")
+	}
+	below := int64(999)
+	if MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindIdleRefundable, IdleAtOrBefore: &below}) {
+		t.Fatal("later timestamp should not be idle")
+	}
+}
+
+func TestMatchesChannelQuery_NetworkFilterRequiresRowNetwork(t *testing.T) {
+	channel := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10"})
+	channel.Network = ""
+	if MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindClaimable, Network: queryNetworkA}) {
+		t.Fatal("row without network should not match a network filter")
+	}
+}
+
+func TestSortChannels_ClaimablePutsWithdrawPendingFirst(t *testing.T) {
+	pending := queryChannel("0x2222222222222222222222222222222222222222222222222222222222222222", queryChannelExtra{WithdrawRequestedAt: 1})
+	fresh := queryChannel("0x1111111111111111111111111111111111111111111111111111111111111111", queryChannelExtra{WithdrawRequestedAt: 0})
+	input := []*Channel{fresh, pending}
+	got := SortChannels(append([]*Channel{}, input...), ChannelQuery{Kind: QueryKindClaimable})
+	if channelIds(got)[0] != pending.ChannelId || channelIds(got)[1] != fresh.ChannelId {
+		t.Fatalf("sorted = %v", channelIds(got))
+	}
+	if input[0] != fresh || input[1] != pending {
+		t.Fatal("input mutated")
+	}
+}
+
+func queryIds(t *testing.T, filter ChannelQuery) []string {
+	t.Helper()
+	page, err := QueryChannels(seededQueryStore(t), filter, nil)
+	if err != nil {
+		t.Fatalf("QueryChannels: %v", err)
+	}
+	return channelIds(page.Items)
+}
+
+func channelIds(channels []*Channel) []string {
+	ids := make([]string, len(channels))
+	for i, c := range channels {
+		ids[i] = c.ChannelId
+	}
+	return ids
+}
+
+func seededQueryStore(t *testing.T) *InMemoryChannelStorage[*Channel] {
+	t.Helper()
+	store := NewInMemoryChannelStorage[*Channel]()
+	for _, channel := range querySeed() {
+		ch := channel
+		if _, err := store.UpdateChannel(ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
+			t.Fatalf("seed %s: %v", ch.ChannelId, err)
+		}
+	}
+	return store
+}
+
+type queryChannelExtra struct {
+	ChargedCumulativeAmount string
+	TotalClaimed            string
+	LastRequestTimestamp    int64
+	WithdrawRequestedAt     int
+	Balance                 string
+	Network                 string
+	Receiver                string
+	Token                   string
+}
+
+func querySeed() []*Channel {
+	return []*Channel{
+		queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "100", LastRequestTimestamp: queryNow}),
+		queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "100", LastRequestTimestamp: queryNow - 120_000}),
+		queryChannel(paddedId(3), queryChannelExtra{ChargedCumulativeAmount: "100", LastRequestTimestamp: queryNow - 120_000, WithdrawRequestedAt: 1}),
+		queryChannel(paddedId(4), queryChannelExtra{ChargedCumulativeAmount: "9", TotalClaimed: "10", LastRequestTimestamp: queryNow - 120_000}),
+		queryChannel(paddedId(5), queryChannelExtra{ChargedCumulativeAmount: "10", TotalClaimed: "9", LastRequestTimestamp: queryNow - 120_000}),
+		queryChannel(paddedId(6), queryChannelExtra{LastRequestTimestamp: queryNow - 120_000, Balance: "500"}),
+		queryChannel(paddedId(7), queryChannelExtra{LastRequestTimestamp: queryNow - 120_000, Balance: "0"}),
+		queryChannel(paddedId(8), queryChannelExtra{WithdrawRequestedAt: 99}),
+		queryChannel(paddedId(9), queryChannelExtra{TotalClaimed: "10", ChargedCumulativeAmount: "10", Receiver: queryReceiverA, Token: queryTokenA}),
+		queryChannel(paddedId(10), queryChannelExtra{TotalClaimed: "20", ChargedCumulativeAmount: "20", Receiver: queryReceiverA, Token: queryTokenA}),
+		queryChannel(paddedId(11), queryChannelExtra{TotalClaimed: "5", ChargedCumulativeAmount: "5", Receiver: queryReceiverB, Token: queryTokenB, Network: queryNetworkB}),
+		queryChannel(paddedId(12), queryChannelExtra{TotalClaimed: "7", ChargedCumulativeAmount: "7", Receiver: queryReceiverA, Token: queryTokenA, Network: queryNetworkB}),
+	}
+}
+
+func queryChannel(channelId string, extra queryChannelExtra) *Channel {
+	network := extra.Network
+	if network == "" {
+		network = queryNetworkA
+	}
+	receiver := extra.Receiver
+	if receiver == "" {
+		receiver = queryReceiverA
+	}
+	token := extra.Token
+	if token == "" {
+		token = queryTokenA
+	}
+	charged := extra.ChargedCumulativeAmount
+	if charged == "" {
+		charged = "0"
+	}
+	totalClaimed := extra.TotalClaimed
+	if totalClaimed == "" {
+		totalClaimed = "0"
+	}
+	balance := extra.Balance
+	if balance == "" {
+		balance = "1000"
+	}
+	lastReq := extra.LastRequestTimestamp
+	if lastReq == 0 {
+		lastReq = queryNow
+	}
+	return &Channel{
+		ChannelId: channelId,
+		ChannelConfig: batchsettlement.ChannelConfig{
+			Payer:              "0x3333333333333333333333333333333333333333",
+			PayerAuthorizer:    "0x0000000000000000000000000000000000000000",
+			Receiver:           receiver,
+			ReceiverAuthorizer: "0x0000000000000000000000000000000000000000",
+			Token:              token,
+			WithdrawDelay:      900,
+			Salt:               channelId,
+		},
+		ChargedCumulativeAmount: charged,
+		SignedMaxClaimable:      "0",
+		Signature:               "0x",
+		Balance:                 balance,
+		TotalClaimed:            totalClaimed,
+		WithdrawRequestedAt:     extra.WithdrawRequestedAt,
+		RefundNonce:             0,
+		LastRequestTimestamp:    lastReq,
+		Network:                 network,
+	}
+}

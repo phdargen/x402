@@ -1,4 +1,4 @@
-package server
+package storage
 
 import (
 	"encoding/json"
@@ -20,8 +20,8 @@ const (
 	testChC = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 )
 
-func sampleSession(id, charged string) *ChannelSession {
-	return &ChannelSession{
+func sampleSession(id, charged string) *Channel {
+	return &Channel{
 		ChannelId:               id,
 		ChannelConfig:           batchsettlement.ChannelConfig{Payer: "0x1", Receiver: "0x2"},
 		ChargedCumulativeAmount: charged,
@@ -36,7 +36,7 @@ func sampleSession(id, charged string) *ChannelSession {
 }
 
 func TestInMemoryChannelStorage_GetMissing(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	_, err := s.Get("missing")
 	if err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("expected ErrInvalidChannelId, got %v", err)
@@ -44,7 +44,7 @@ func TestInMemoryChannelStorage_GetMissing(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_GetMissingCanonical(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	got, err := s.Get(testChA)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -55,7 +55,7 @@ func TestInMemoryChannelStorage_GetMissingCanonical(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_SetGet(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	in := sampleSession(testChA, "10")
 	if err := s.Set(testChA, in); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -70,7 +70,7 @@ func TestInMemoryChannelStorage_SetGet(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_ReturnsCopy(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	in := sampleSession(testChA, "10")
 	_ = s.Set(testChA, in)
 	in.Balance = "999"
@@ -86,7 +86,7 @@ func TestInMemoryChannelStorage_ReturnsCopy(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_Delete(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	_ = s.Set(testChA, sampleSession(testChA, "10"))
 	ok, err := s.Acquire(testChA, "pending", 60_000)
 	if err != nil || !ok {
@@ -108,13 +108,13 @@ func TestInMemoryChannelStorage_Delete(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_UpdateChannelDeleteClearsAdmissionLock(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	_ = s.Set(testChA, sampleSession(testChA, "10"))
 	ok, err := s.Acquire(testChA, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
-	res, err := s.UpdateChannel(testChA, func(*ChannelSession) *ChannelSession { return nil })
+	res, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil })
 	if err != nil || res.Status != ChannelDeleted {
 		t.Fatalf("UpdateChannel delete: res=%+v err=%v", res, err)
 	}
@@ -125,7 +125,7 @@ func TestInMemoryChannelStorage_UpdateChannelDeleteClearsAdmissionLock(t *testin
 }
 
 func TestInMemoryChannelStorage_List(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	_ = s.Set(testChA, sampleSession(testChA, "1"))
 	_ = s.Set(testChB, sampleSession(testChB, "2"))
 	got, err := s.List()
@@ -141,49 +141,8 @@ func TestInMemoryChannelStorage_List(t *testing.T) {
 	}
 }
 
-func TestInMemoryChannelStorage_CompareAndSet_FirstWriteWins(t *testing.T) {
-	s := NewInMemoryChannelStorage()
-	ok, err := s.CompareAndSet(testChA, "0", sampleSession(testChA, "10"))
-	if err != nil || !ok {
-		t.Fatalf("CAS on missing should succeed: ok=%v err=%v", ok, err)
-	}
-	got, _ := s.Get(testChA)
-	if got.ChargedCumulativeAmount != "10" {
-		t.Fatalf("not stored")
-	}
-}
-
-func TestInMemoryChannelStorage_CompareAndSet_StaleFails(t *testing.T) {
-	s := NewInMemoryChannelStorage()
-	_ = s.Set(testChA, sampleSession(testChA, "10"))
-	ok, err := s.CompareAndSet(testChA, "0", sampleSession(testChA, "20"))
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-	if ok {
-		t.Fatal("stale CAS should fail")
-	}
-	got, _ := s.Get(testChA)
-	if got.ChargedCumulativeAmount != "10" {
-		t.Fatalf("storage mutated by failed CAS: %s", got.ChargedCumulativeAmount)
-	}
-}
-
-func TestInMemoryChannelStorage_CompareAndSet_FreshSucceeds(t *testing.T) {
-	s := NewInMemoryChannelStorage()
-	_ = s.Set(testChA, sampleSession(testChA, "10"))
-	ok, err := s.CompareAndSet(testChA, "10", sampleSession(testChA, "20"))
-	if err != nil || !ok {
-		t.Fatalf("CAS with matching expected should succeed: ok=%v err=%v", ok, err)
-	}
-	got, _ := s.Get(testChA)
-	if got.ChargedCumulativeAmount != "20" {
-		t.Fatalf("CAS did not update: %s", got.ChargedCumulativeAmount)
-	}
-}
-
 func TestInMemoryChannelStorage_RejectsMalformedIds(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	malformed := "../../../etc/passwd"
 	if _, err := s.Get(malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Get: expected ErrInvalidChannelId, got %v", err)
@@ -201,7 +160,7 @@ func TestInMemoryChannelStorage_RejectsMalformedIds(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
 	if err := s.Set(upper, sampleSession(upper, "7")); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -216,7 +175,7 @@ func TestInMemoryChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_ExpiredAdmissionLockIsFree(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	ok, err := s.Acquire(testChA, "old", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire old: ok=%v err=%v", ok, err)
@@ -237,7 +196,7 @@ func TestInMemoryChannelStorage_ExpiredAdmissionLockIsFree(t *testing.T) {
 }
 
 func TestInMemoryChannelStorage_Concurrent(t *testing.T) {
-	s := NewInMemoryChannelStorage()
+	s := NewInMemoryChannelStorage[*Channel]()
 	var wg sync.WaitGroup
 	for i := range 50 {
 		wg.Add(2)
@@ -272,5 +231,31 @@ func TestRethrowLockImplementationError(t *testing.T) {
 	wrapped := fmt.Errorf("hold: %w", syntax)
 	if got := RethrowLockImplementationError(wrapped); !errors.Is(got, wrapped) {
 		t.Fatalf("wrapped: %v", got)
+	}
+}
+
+func TestInMemoryChannelStorage_AcquireIsNotReentrant(t *testing.T) {
+	s := NewInMemoryChannelStorage[*Channel]()
+	ok, err := s.Acquire(testChA, "same", 60_000)
+	if err != nil || !ok {
+		t.Fatalf("first Acquire: ok=%v err=%v", ok, err)
+	}
+	ok, err = s.Acquire(testChA, "same", 120_000)
+	if err != nil || ok {
+		t.Fatalf("re-entrant Acquire should miss: ok=%v err=%v", ok, err)
+	}
+	held, err := s.IsHeld(testChA, "same")
+	if err != nil || !held {
+		t.Fatalf("original holder should remain: held=%v err=%v", held, err)
+	}
+}
+
+func TestIsChannelLockStorage(t *testing.T) {
+	s := NewInMemoryChannelStorage[*Channel]()
+	if !IsChannelLockStorage(s) {
+		t.Fatal("in-memory store should implement ChannelLockStorage")
+	}
+	if IsChannelLockStorage(struct{}{}) {
+		t.Fatal("empty struct should not implement ChannelLockStorage")
 	}
 }

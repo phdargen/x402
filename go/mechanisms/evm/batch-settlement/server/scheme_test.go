@@ -103,9 +103,6 @@ func (s storageOnly) Delete(channelId string) error {
 func (s storageOnly) List() ([]*ChannelSession, error) {
 	return s.inner.List()
 }
-func (s storageOnly) CompareAndSet(channelId string, expectedCharged string, session *ChannelSession) (bool, error) {
-	return s.inner.CompareAndSet(channelId, expectedCharged, session)
-}
 func (s storageOnly) UpdateChannel(channelId string, update func(current *ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
 	return s.inner.UpdateChannel(channelId, update)
 }
