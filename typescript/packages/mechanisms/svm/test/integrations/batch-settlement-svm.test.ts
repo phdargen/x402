@@ -555,9 +555,8 @@ describe("batch-settlement SVM onchain", () => {
 
         const first = await pay("400");
         const firstPayload = first.payload.payload as {
-          authorization: { channelId: string; signature: string };
+          authorization: { channelId: string; requestId: string; signature: string };
           channelConfig: { payerAuthorizer: string; voucherSigner?: string };
-          idempotencyKey: string;
           type: string;
           voucher?: unknown;
         };
@@ -570,58 +569,31 @@ describe("batch-settlement SVM onchain", () => {
         });
         expect(firstPayload.voucher).toBeUndefined();
 
-        // Reserve two ceilings before either handler settles. Complete them in
-        // one order and deliver their responses in the reverse order.
-        const secondPayment = await client.createPaymentPayload(required);
-        const thirdPayment = await client.createPaymentPayload(required);
-        const matched = server.findMatchingRequirements(required.accepts, secondPayment)!;
-        const [secondVerified, thirdVerified] = await Promise.all([
-          server.verifyPayment(secondPayment, matched),
-          server.verifyPayment(thirdPayment, matched),
-        ]);
-        expect(secondVerified.isValid, JSON.stringify(secondVerified)).toBe(true);
-        expect(thirdVerified.isValid, JSON.stringify(thirdVerified)).toBe(true);
-
-        const thirdSettled = await server.settlePayment(
-          thirdPayment,
-          matched,
-          undefined,
-          undefined,
-          { amount: "300" },
-        );
-        const secondSettled = await server.settlePayment(
-          secondPayment,
-          matched,
-          undefined,
-          undefined,
-          { amount: "200" },
-        );
-        expect(thirdSettled.success, JSON.stringify(thirdSettled)).toBe(true);
-        expect(secondSettled.success, JSON.stringify(secondSettled)).toBe(true);
-        await clientScheme.schemeHooks.onPaymentResponse!({
-          paymentPayload: secondPayment,
-          requirements: matched,
-          settleResponse: secondSettled,
-        } as never);
-        await clientScheme.schemeHooks.onPaymentResponse!({
-          paymentPayload: thirdPayment,
-          requirements: matched,
-          settleResponse: thirdSettled,
-        } as never);
+        // Server vouchers are cumulative, so the client keeps one request in
+        // flight per channel and advances from an exact confirmed watermark.
+        const second = await pay("200");
+        const third = await pay("300");
+        const secondPayment = second.payload;
+        const thirdPayment = third.payload;
 
         const secondPayload = secondPayment.payload as {
-          authorization: { signature: string };
-          idempotencyKey: string;
+          authorization: { expiresAt: number; requestId: string; signature: string };
           type: string;
         };
         expect(secondPayload.type).toBe("authorization");
-        expect(secondPayload.authorization.signature).toBe(firstPayload.authorization.signature);
+        expect(secondPayload.authorization.expiresAt).toBeGreaterThan(
+          Math.floor(Date.now() / 1000),
+        );
         const thirdPayload = thirdPayment.payload as {
-          idempotencyKey: string;
+          authorization: { requestId: string };
           type: string;
         };
-        expect(secondPayload.idempotencyKey).not.toBe(firstPayload.idempotencyKey);
-        expect(thirdPayload.idempotencyKey).not.toBe(secondPayload.idempotencyKey);
+        expect(secondPayload.authorization.requestId).not.toBe(
+          firstPayload.authorization.requestId,
+        );
+        expect(thirdPayload.authorization.requestId).not.toBe(
+          secondPayload.authorization.requestId,
+        );
 
         const channelId = firstPayload.authorization.channelId;
         const state = await store.get(channelId);

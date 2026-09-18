@@ -57,6 +57,7 @@ beforeAll(async () => {
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       voucherSigner: "server",
       withdrawDelay: 900,
+      authorizationExpiresAt: Math.floor(Date.now() / 1000) + 3_600,
     })
   ).payload;
 });
@@ -77,6 +78,17 @@ function requirements(): PaymentRequirements {
     payTo: USDC_MAINNET_ADDRESS,
     scheme: "batch-settlement",
   };
+}
+
+async function authorizationFor(requestId: string, authorizedAmount = 1_000n) {
+  return signBatchAuthorization(
+    payer,
+    serverDeposit.authorization!.channelId,
+    operator.address,
+    requestId,
+    authorizedAmount,
+    Math.floor(Date.now() / 1000) + 3_600,
+  );
 }
 
 describe("batch server voucher signer boundaries", () => {
@@ -115,11 +127,12 @@ describe("batch server voucher signer boundaries", () => {
       { ...serverDeposit, authorization: { ...serverDeposit.authorization, type: "other" } },
       { ...serverDeposit, authorization: { ...serverDeposit.authorization, channelId: 1 } },
       { ...serverDeposit, authorization: { ...serverDeposit.authorization, payer: 1 } },
+      { ...serverDeposit, authorization: { ...serverDeposit.authorization, expiresAt: 0 } },
       { ...serverDeposit, authorization: { ...serverDeposit.authorization, signature: 1 } },
-      { ...serverDeposit, idempotencyKey: "" },
+      { ...serverDeposit, requestId: "" },
       { ...serverDeposit, maxClaimableAmount: 1 },
       { ...clientDeposit, authorization: serverDeposit.authorization },
-      { ...clientDeposit, idempotencyKey: "key" },
+      { ...clientDeposit, requestId: "key" },
       { ...clientDeposit, maxClaimableAmount: "1000" },
       {
         channelConfig: serverDeposit.channelConfig,
@@ -129,28 +142,28 @@ describe("batch server voucher signer boundaries", () => {
       {
         authorization: serverDeposit.authorization,
         channelConfig: clientDeposit.channelConfig,
-        idempotencyKey: "key",
+        requestId: "key",
         maxClaimableAmount: "1000",
         type: "authorization",
       },
       {
         authorization: null,
         channelConfig: serverDeposit.channelConfig,
-        idempotencyKey: "key",
+        requestId: "key",
         maxClaimableAmount: "1000",
         type: "authorization",
       },
       {
         authorization: serverDeposit.authorization,
         channelConfig: serverDeposit.channelConfig,
-        idempotencyKey: "",
+        requestId: "",
         maxClaimableAmount: "1000",
         type: "authorization",
       },
       {
         authorization: serverDeposit.authorization,
         channelConfig: serverDeposit.channelConfig,
-        idempotencyKey: "key",
+        requestId: "key",
         maxClaimableAmount: 1,
         type: "authorization",
       },
@@ -183,7 +196,9 @@ describe("batch server voucher signer boundaries", () => {
       clientConfig,
       payer,
     );
-    await expect(clientTracker.authorization()).rejects.toThrow(/do not use server authorization/);
+    await expect(
+      clientTracker.authorization("request", 1n, Math.floor(Date.now() / 1000) + 60),
+    ).rejects.toThrow(/do not use server authorization/);
     await expect(
       buildDepositPayload({
         blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
@@ -254,6 +269,9 @@ describe("batch server voucher signer boundaries", () => {
     expect(() =>
       encodeBatchAuthorizationMessage({
         channelId: shortKey,
+        requestId: "request",
+        authorizedAmount: 1_000n,
+        expiresAt: Math.floor(Date.now() / 1000) + 60,
         operator: operator.address,
         payer: payer.address,
       }),
@@ -263,6 +281,9 @@ describe("batch server voucher signer boundaries", () => {
         { address: payer.address, signMessages: async () => [{}] } as never,
         serverDeposit.authorization!.channelId,
         operator.address,
+        "request",
+        1_000n,
+        Math.floor(Date.now() / 1000) + 60,
       ),
     ).rejects.toThrow(/did not return/);
   });
@@ -271,6 +292,9 @@ describe("batch server voucher signer boundaries", () => {
     const authorization = serverDeposit.authorization!;
     await expect(verifyBatchAuthorization(authorization, operator.address)).resolves.toBe(true);
     await expect(verifyBatchAuthorization(authorization, feePayer.address)).resolves.toBe(false);
+    await expect(
+      verifyBatchAuthorization({ ...authorization, expiresAt: 1 }, operator.address),
+    ).resolves.toBe(false);
     await expect(
       verifyBatchAuthorization({ ...authorization, channelId: feePayer.address }, operator.address),
     ).resolves.toBe(false);
@@ -284,6 +308,7 @@ describe("batch server voucher signer boundaries", () => {
         raw: BatchDepositPayload,
         channelId: string,
         mode: "client" | "server",
+        authorizedAmount: string,
       ): Promise<void>;
     };
     const api = new BatchServerScheme({ operator }) as unknown as Internals;
@@ -324,6 +349,7 @@ describe("batch server voucher signer boundaries", () => {
         { ...serverDeposit, authorization: undefined } as never,
         channelId,
         "server",
+        "1000",
       ),
     ).rejects.toThrow(BatchError.VOUCHER_SIGNATURE);
     await expect(
@@ -331,18 +357,25 @@ describe("batch server voucher signer boundaries", () => {
         { ...serverDeposit, voucher: undefined } as never,
         channelId,
         "client",
+        "1000",
       ),
     ).rejects.toThrow(BatchError.VOUCHER_SIGNATURE);
 
     const authorizationCases = [
       { authorization: { ...serverDeposit.authorization!, channelId: feePayer.address } },
       { authorization: { ...serverDeposit.authorization!, payer: feePayer.address } },
-      { idempotencyKey: "" },
+      { authorization: { ...serverDeposit.authorization!, requestId: "" } },
+      { authorization: { ...serverDeposit.authorization!, authorizedAmount: "999" } },
       { authorization: { ...serverDeposit.authorization!, signature: "bad" } },
     ];
     for (const overrides of authorizationCases) {
       await expect(
-        api.validateRequestProof({ ...serverDeposit, ...overrides } as never, channelId, "server"),
+        api.validateRequestProof(
+          { ...serverDeposit, ...overrides } as never,
+          channelId,
+          "server",
+          "1000",
+        ),
       ).rejects.toThrow(BatchError.VOUCHER_SIGNATURE);
     }
 
@@ -390,7 +423,6 @@ describe("batch server voucher signer boundaries", () => {
     });
     const channelId = serverDeposit.authorization!.channelId;
     expect(await store.get(channelId)).toMatchObject({
-      authorizationSignature: serverDeposit.authorization!.signature,
       chargedCumulativeAmount: 1_000n,
       signedMaxClaimable: 1_000n,
     });
@@ -398,9 +430,8 @@ describe("batch server voucher signer boundaries", () => {
     const authorizationPayment: PaymentPayload = {
       accepted: requirements(),
       payload: {
-        authorization: serverDeposit.authorization!,
+        authorization: await authorizationFor("request-2"),
         channelConfig: serverDeposit.channelConfig,
-        idempotencyKey: "request-2",
         type: "authorization",
       },
       x402Version: 2,
@@ -424,7 +455,7 @@ describe("batch server voucher signer boundaries", () => {
     expect(actualSettlement).toMatchObject({
       skip: true,
       result: {
-        extra: { chargedAmount: "400", commitmentId: `${channelId}:1400` },
+        extra: { commitmentId: `${channelId}:1400` },
         success: true,
       },
     });
@@ -453,7 +484,10 @@ describe("batch server voucher signer boundaries", () => {
 
     const zeroPayment = {
       ...authorizationPayment,
-      payload: { ...authorizationPayment.payload, idempotencyKey: "request-3" },
+      payload: {
+        ...authorizationPayment.payload,
+        authorization: await authorizationFor("request-3"),
+      },
     } as PaymentPayload;
     const zeroContext = { ...authorizationContext, paymentPayload: zeroPayment };
     const zeroVerified = await server.schemeHooks.onBeforeVerify!(zeroContext);
@@ -469,7 +503,7 @@ describe("batch server voucher signer boundaries", () => {
       }),
     ).resolves.toMatchObject({
       result: {
-        extra: { chargedAmount: "0", commitmentId: `${channelId}:1400` },
+        extra: { commitmentId: `${channelId}:1400` },
         success: true,
       },
     });
@@ -492,19 +526,10 @@ describe("batch server voucher signer boundaries", () => {
       ...replayContext,
       result: { isValid: true, payer: payer.address },
     });
-    expect(replayVerified).toMatchObject({
-      skipHandler: true,
-      response: { body: { replayed: true } },
-    });
-    await expect(
-      server.schemeHooks.onBeforeSettle!({ ...replayContext, phase: "after-handler" }),
-    ).resolves.toMatchObject({
-      skip: true,
-      result: { extra: { chargedAmount: "400", commitmentId: `${channelId}:1400` } },
-    });
+    expect(replayVerified).toMatchObject({ abort: true, reason: "duplicate_settlement" });
   });
 
-  it("reserves concurrent ceilings, completes out of order, and replays receipts", async () => {
+  it("reserves concurrent ceilings, completes out of order, and rejects reused ids", async () => {
     const store = new MemoryChannelStore();
     const operationStore = new MemoryBatchOperationStore();
     const server = new BatchServerScheme({ operator, operationStore, store });
@@ -536,12 +561,11 @@ describe("batch server voucher signer boundaries", () => {
     });
     const channelId = serverDeposit.authorization!.channelId;
     const ceiling = { ...requirements(), amount: "4000" };
-    const payment = (idempotencyKey: string, accepted = ceiling): PaymentPayload => ({
+    const payment = async (requestId: string, accepted = ceiling): Promise<PaymentPayload> => ({
       accepted,
       payload: {
-        authorization: serverDeposit.authorization!,
+        authorization: await authorizationFor(requestId, BigInt(accepted.amount)),
         channelConfig: serverDeposit.channelConfig,
-        idempotencyKey,
         type: "authorization",
       },
       x402Version: 2,
@@ -557,12 +581,12 @@ describe("batch server voucher signer boundaries", () => {
       return { context, result };
     };
 
-    const first = await reserve(payment("concurrent-1"));
-    const second = await reserve(payment("concurrent-2"));
+    const first = await reserve(await payment("concurrent-1"));
+    const second = await reserve(await payment("concurrent-2"));
     expect(Object.values((await store.get(channelId))?.reservations ?? {})).toHaveLength(2);
 
     const exhaustedRequirements = { ...requirements(), amount: "2000" };
-    const exhaustedPayment = payment("concurrent-3", exhaustedRequirements);
+    const exhaustedPayment = await payment("concurrent-3", exhaustedRequirements);
     const exhausted = await reserve(exhaustedPayment, exhaustedRequirements);
     expect(exhausted.result).toMatchObject({
       abort: true,
@@ -610,7 +634,8 @@ describe("batch server voucher signer boundaries", () => {
       reason: "handler_error",
       settledPhases: [],
     });
-    const third = await reserve(exhaustedPayment, exhaustedRequirements);
+    const replacementPayment = await payment("concurrent-4", exhaustedRequirements);
+    const third = await reserve(replacementPayment, exhaustedRequirements);
     expect(third.result).toBeUndefined();
 
     const thirdSettled = await server.schemeHooks.onBeforeSettle!({
@@ -621,12 +646,7 @@ describe("batch server voucher signer boundaries", () => {
     expect(thirdSettled).toMatchObject({
       result: {
         extra: {
-          receipt: {
-            authorizedAmount: "2000",
-            chargedAmount: "500",
-            priorCumulativeAmount: "1000",
-            cumulativeAmount: "1500",
-          },
+          voucher: { maxClaimableAmount: "1500" },
         },
       },
     });
@@ -638,12 +658,7 @@ describe("batch server voucher signer boundaries", () => {
     expect(secondSettled).toMatchObject({
       result: {
         extra: {
-          receipt: {
-            authorizedAmount: "4000",
-            chargedAmount: "250",
-            priorCumulativeAmount: "1500",
-            cumulativeAmount: "1750",
-          },
+          voucher: { maxClaimableAmount: "1750" },
         },
       },
     });
@@ -652,13 +667,7 @@ describe("batch server voucher signer boundaries", () => {
       reservations: {},
     });
 
-    const replay = await reserve(exhaustedPayment, exhaustedRequirements);
-    expect(replay.result).toMatchObject({
-      skipHandler: true,
-      response: { body: { replayed: true } },
-    });
-    await expect(
-      server.schemeHooks.onBeforeSettle!({ ...replay.context, phase: "after-handler" }),
-    ).resolves.toEqual(thirdSettled);
+    const replay = await reserve(replacementPayment, exhaustedRequirements);
+    expect(replay.result).toMatchObject({ abort: true, reason: "duplicate_settlement" });
   });
 });

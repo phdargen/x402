@@ -17,8 +17,3 @@ export {
 export * from "./types";
 export { BatchError } from "./errors";
 export type { BatchErrorReason } from "./errors";
-export {
-  encodeBatchSettlementReceiptMessage,
-  signBatchSettlementReceipt,
-  verifyBatchSettlementReceipt,
-} from "./receipt";

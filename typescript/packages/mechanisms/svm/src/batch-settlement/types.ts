@@ -25,6 +25,9 @@ export type BatchAuthorization = {
   type: "proof";
   channelId: string;
   payer: string;
+  requestId: string;
+  authorizedAmount: string;
+  expiresAt: number;
   signature: string;
 };
 
@@ -64,19 +67,6 @@ export type BatchVoucher = {
   signature: string;
 };
 
-/** Operator-signed itemization for one completed server-mode request. */
-export type BatchSettlementReceipt = {
-  type: "receipt";
-  channelId: string;
-  idempotencyKey: string;
-  authorizedAmount: string;
-  chargedAmount: string;
-  priorCumulativeAmount: string;
-  cumulativeAmount: string;
-  voucher: BatchVoucher;
-  signature: string;
-};
-
 export type CloseAuthorization = {
   validBefore: number;
   signature: string;
@@ -87,7 +77,6 @@ export type BatchDepositPayload = {
   channelConfig: BatchChannelConfig;
   voucher?: BatchVoucher | undefined;
   authorization?: BatchAuthorization | undefined;
-  idempotencyKey?: string | undefined;
   deposit: {
     amount: string;
     transaction: string;
@@ -104,7 +93,6 @@ export type BatchAuthorizationPayload = {
   type: "authorization";
   channelConfig: BatchChannelConfig;
   authorization: BatchAuthorization;
-  idempotencyKey: string;
 };
 
 export type BatchRefundPayload = {
@@ -161,21 +149,6 @@ export function isBatchVoucher(value: unknown): value is BatchVoucher {
   );
 }
 
-export function isBatchSettlementReceipt(value: unknown): value is BatchSettlementReceipt {
-  if (!isRecord(value)) return false;
-  return (
-    value.type === "receipt" &&
-    typeof value.channelId === "string" &&
-    typeof value.idempotencyKey === "string" &&
-    typeof value.authorizedAmount === "string" &&
-    typeof value.chargedAmount === "string" &&
-    typeof value.priorCumulativeAmount === "string" &&
-    typeof value.cumulativeAmount === "string" &&
-    isBatchVoucher(value.voucher) &&
-    typeof value.signature === "string"
-  );
-}
-
 export function isBatchChannelConfig(value: unknown): value is BatchChannelConfig {
   if (!isRecord(value)) return false;
   return (
@@ -207,12 +180,11 @@ export function isBatchPayload(value: unknown): value is BatchPayload {
       return value.channelConfig.voucherSigner === "server"
         ? value.voucher === undefined &&
             isBatchAuthorization(value.authorization) &&
-            typeof value.idempotencyKey === "string" &&
-            value.idempotencyKey.length > 0 &&
+            value.requestId === undefined &&
             value.maxClaimableAmount === undefined
         : isBatchVoucher(value.voucher) &&
             value.authorization === undefined &&
-            value.idempotencyKey === undefined &&
+            value.requestId === undefined &&
             value.maxClaimableAmount === undefined;
     case "voucher":
       return value.channelConfig.voucherSigner !== "server" && isBatchVoucher(value.voucher);
@@ -220,8 +192,7 @@ export function isBatchPayload(value: unknown): value is BatchPayload {
       return (
         value.channelConfig.voucherSigner === "server" &&
         isBatchAuthorization(value.authorization) &&
-        typeof value.idempotencyKey === "string" &&
-        value.idempotencyKey.length > 0 &&
+        value.requestId === undefined &&
         value.maxClaimableAmount === undefined
       );
     case "refund":
@@ -241,6 +212,13 @@ function isBatchAuthorization(value: unknown): value is BatchAuthorization {
     value.type === "proof" &&
     typeof value.channelId === "string" &&
     typeof value.payer === "string" &&
+    typeof value.requestId === "string" &&
+    value.requestId.length > 0 &&
+    typeof value.authorizedAmount === "string" &&
+    /^\d+$/.test(value.authorizedAmount) &&
+    typeof value.expiresAt === "number" &&
+    Number.isSafeInteger(value.expiresAt) &&
+    value.expiresAt > 0 &&
     typeof value.signature === "string"
   );
 }

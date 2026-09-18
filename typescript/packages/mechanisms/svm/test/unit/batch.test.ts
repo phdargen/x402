@@ -932,7 +932,7 @@ describe("batch-settlement SVM", () => {
           channelState: { balance: "10000", chargedCumulativeAmount: "1000" },
           commitmentId: `${channelId}:1000`,
         }),
-      ).rejects.toThrow(/charged more than the advertised price/);
+      ).rejects.toThrow(/unexpected amount/);
 
       // A cumulative the client cannot derive leaves local state alone rather
       // than adopting the server's accounting.
@@ -1065,7 +1065,9 @@ describe("batch-settlement SVM", () => {
 
     it("builds an operator channel with a reusable payer proof", async () => {
       const operator = await generateKeyPairSigner();
+      const authorizationExpiresAt = Math.floor(Date.now() / 1000) + 3_600;
       const built = await buildDepositPayload({
+        authorizationExpiresAt,
         blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
         depositAmount: 10_000n,
         feePayer: feePayer.address,
@@ -1087,7 +1089,7 @@ describe("batch-settlement SVM", () => {
       });
       expect("maxClaimableAmount" in built.payload).toBe(false);
       expect(built.payload.voucher).toBeUndefined();
-      expect(built.payload.idempotencyKey).toBeTruthy();
+      expect(built.payload.authorization!.requestId).toBeTruthy();
       expect(await verifyBatchAuthorization(built.payload.authorization!, operator.address)).toBe(
         true,
       );
@@ -1098,13 +1100,23 @@ describe("batch-settlement SVM", () => {
       expect(
         encodeBatchAuthorizationMessage({
           channelId: built.channelId,
+          requestId: built.payload.authorization!.requestId,
+          authorizedAmount: 1_000n,
+          expiresAt: authorizationExpiresAt,
           operator: operator.address,
           payer: payer.address,
         }),
-      ).toHaveLength(123);
-      expect(await signBatchAuthorization(payer, built.channelId, operator.address)).toEqual(
-        built.payload.authorization,
-      );
+      ).toHaveLength(177);
+      expect(
+        await signBatchAuthorization(
+          payer,
+          built.channelId,
+          operator.address,
+          built.payload.authorization!.requestId,
+          1_000n,
+          authorizationExpiresAt,
+        ),
+      ).toEqual(built.payload.authorization);
     });
 
     it("builds and verifies the payer-signed forced-close transaction", async () => {

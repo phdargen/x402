@@ -29,7 +29,6 @@ export interface ChannelState {
   /** Voucher signer = the client (base58). */
   payerAuthorizer: string;
   /** Reusable payer proof bound at open for server-signed channels. */
-  authorizationSignature?: string | undefined;
   /** Optional server close authorizer from the challenge. */
   receiverAuthorizer?: string | undefined;
   /** Forced-close grace period. */
@@ -57,7 +56,7 @@ export interface ChannelState {
   highestVoucherSignature?: string | undefined;
   /** The highest accepted voucher's expiry (Unix seconds). */
   highestVoucherExpiresAt?: number | undefined;
-  /** Canonical wire configuration retained for response/replay binding. */
+  /** Canonical wire configuration retained for response and channel binding. */
   channelConfig: BatchChannelConfig;
   /** The broadcast `open` signature, returned in the deposit settlement response. */
   openSignature?: string | undefined;
@@ -70,7 +69,7 @@ export interface ChannelState {
         {
           ceiling: bigint;
           expiresAt: number;
-          idempotencyKey?: string | undefined;
+          requestId?: string | undefined;
           kind: "client" | "server" | "close";
         }
       >

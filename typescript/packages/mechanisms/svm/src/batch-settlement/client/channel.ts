@@ -77,15 +77,29 @@ export class BatchChannelTracker {
   }
 
   /**
-   * Create the reusable payer proof for an server-signed channel.
+   * Create an expiring payer proof for a server-signed channel.
    *
-   * @returns Reusable bearer proof
+   * @param requestId - Single-use request identifier
+   * @param authorizedAmount - Maximum charge in atomic units
+   * @param expiresAt - Unix timestamp after which the proof is invalid
+   * @returns Expiring bearer proof
    */
-  async authorization(): Promise<BatchAuthorization> {
+  async authorization(
+    requestId: string,
+    authorizedAmount: bigint,
+    expiresAt: number,
+  ): Promise<BatchAuthorization> {
     if (this.channelConfig.voucherSigner !== "server") {
       throw new Error("client-signed channels do not use server authorization");
     }
-    return signBatchAuthorization(this.signer, this.channelId, this.channelConfig.payerAuthorizer);
+    return signBatchAuthorization(
+      this.signer,
+      this.channelId,
+      this.channelConfig.payerAuthorizer,
+      requestId,
+      authorizedAmount,
+      expiresAt,
+    );
   }
 
   /**
@@ -124,6 +138,7 @@ export interface BuildDepositArgs {
   salt?: bigint | undefined;
   voucherSigner?: "client" | "server" | undefined;
   operator?: string | undefined;
+  authorizationExpiresAt?: number | undefined;
 }
 
 export interface BuiltDeposit {
@@ -142,6 +157,12 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   const voucherSigner = args.voucherSigner ?? "client";
   const authorizedSigner = voucherSigner === "server" ? args.operator : args.payer.address;
   if (!authorizedSigner) throw new Error("operator is required for operator voucher signing");
+  if (
+    voucherSigner === "server" &&
+    (!Number.isSafeInteger(args.authorizationExpiresAt) || args.authorizationExpiresAt! <= 0)
+  ) {
+    throw new Error("authorizationExpiresAt is required for operator voucher signing");
+  }
   const open = await buildOpenPaymentChannelTransaction({
     authorizedSigner,
     blockhash: args.blockhash,
@@ -171,11 +192,15 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   const tracker = new BatchChannelTracker(open.channelId, channelConfig, args.payer);
   // A payment payload is only an authorization.  Do not advance local state
   // until the resource server confirms it in PAYMENT-RESPONSE.
+  const requestId = crypto.randomUUID();
   const credential =
     voucherSigner === "server"
       ? {
-          authorization: await tracker.authorization(),
-          idempotencyKey: crypto.randomUUID(),
+          authorization: await tracker.authorization(
+            requestId,
+            args.firstCharge,
+            args.authorizationExpiresAt!,
+          ),
         }
       : { voucher: await tracker.previewVoucher(args.firstCharge) };
   return {

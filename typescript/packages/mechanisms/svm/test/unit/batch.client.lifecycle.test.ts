@@ -13,7 +13,6 @@ import type { BatchChannelConfig } from "../../src/batch-settlement/types";
 import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 import { signVoucher } from "../../src/payment-channels/voucher";
-import { signBatchSettlementReceipt } from "../../src/batch-settlement/receipt";
 import { createRpcClient, resolveBlockhash, resolveOpenSlot } from "../../src/utils";
 
 vi.mock("@solana-program/token-2022", async importOriginal => ({
@@ -97,7 +96,7 @@ function internals(client: BatchSvmScheme): ClientInternals {
 
 describe("batch client lifecycle", () => {
   it.each([false, true])(
-    "commits a signed server receipt without allocating again (restart=%s)",
+    "commits a signed server voucher without allocating again (restart=%s)",
     async restart => {
       const operator = await generateKeyPairSigner();
       const { records, storage } = memoryStorage();
@@ -123,16 +122,6 @@ describe("batch client lifecycle", () => {
         expiresAt: 0n,
       });
       const voucher = { channelId, expiresAt: 0, maxClaimableAmount: "400", signature };
-      const receipt = await signBatchSettlementReceipt(operator, {
-        channelId,
-        idempotencyKey: opened.payload.idempotencyKey!,
-        authorizedAmount: 1_000n,
-        chargedAmount: 400n,
-        priorCumulativeAmount: 0n,
-        cumulativeAmount: 400n,
-        voucher,
-      });
-
       if (restart) {
         client = new BatchSvmScheme(payer, { channelStorage: storage, discoverChannels: false });
       }
@@ -141,10 +130,8 @@ describe("batch client lifecycle", () => {
         requirements: serverRequirements,
         settleResponse: {
           extra: {
-            chargedAmount: "400",
             channelState: { chargedCumulativeAmount: "400" },
             commitmentId: `${channelId}:400`,
-            receipt,
             voucher,
           },
           success: true,
@@ -157,20 +144,15 @@ describe("batch client lifecycle", () => {
       });
 
       const first = await client.createPaymentPayload(2, serverRequirements);
-      const second = await client.createPaymentPayload(2, serverRequirements);
+      await expect(client.createPaymentPayload(2, serverRequirements)).rejects.toThrow(
+        /pending request/,
+      );
       expect(first.payload).toMatchObject({ type: "authorization" });
-      expect(second.payload).toMatchObject({ type: "authorization" });
-      if (first.payload.type !== "authorization" || second.payload.type !== "authorization") {
-        throw new Error("expected server-mode authorization payloads");
+      if (first.payload.type !== "authorization") {
+        throw new Error("expected server-mode authorization payload");
       }
-      expect(first.payload.idempotencyKey).not.toBe(second.payload.idempotencyKey);
 
-      const response = async (
-        payment: typeof first,
-        prior: bigint,
-        actual: bigint,
-        cumulative: bigint,
-      ) => {
+      const response = async (prior: bigint, actual: bigint, cumulative: bigint) => {
         const voucherSignature = await signVoucher(operator, {
           channelId,
           cumulativeAmount: cumulative,
@@ -182,40 +164,34 @@ describe("batch client lifecycle", () => {
           maxClaimableAmount: cumulative.toString(),
           signature: voucherSignature,
         };
-        const completedReceipt = await signBatchSettlementReceipt(operator, {
-          channelId,
-          idempotencyKey: payment.payload.idempotencyKey!,
-          authorizedAmount: 1_000n,
-          chargedAmount: actual,
-          priorCumulativeAmount: prior,
-          cumulativeAmount: cumulative,
-          voucher: completedVoucher,
-        });
+        expect(cumulative).toBe(prior + actual);
         return {
           extra: {
-            chargedAmount: actual.toString(),
             channelState: { chargedCumulativeAmount: cumulative.toString() },
             commitmentId: `${channelId}:${cumulative}`,
-            receipt: completedReceipt,
             voucher: completedVoucher,
           },
           success: true,
         };
       };
 
-      // Request two completed second, then its response arrived after request
-      // one's newer cumulative receipt. The client must not roll state back.
       await client.schemeHooks.onPaymentResponse!({
         paymentPayload: { accepted: serverRequirements, ...first },
         requirements: serverRequirements,
-        settleResponse: await response(first, 700n, 200n, 900n),
+        settleResponse: await response(400n, 500n, 900n),
       } as never);
+      const third = await client.createPaymentPayload(2, serverRequirements);
+      expect(third.payload).toMatchObject({ type: "authorization" });
+      if (third.payload.type !== "authorization") {
+        throw new Error("expected server-mode authorization payload");
+      }
+      expect(third.payload.authorization.requestId).not.toBe(first.payload.authorization.requestId);
       await client.schemeHooks.onPaymentResponse!({
-        paymentPayload: { accepted: serverRequirements, ...second },
+        paymentPayload: { accepted: serverRequirements, ...third },
         requirements: serverRequirements,
-        settleResponse: await response(second, 400n, 300n, 700n),
+        settleResponse: await response(900n, 300n, 1_200n),
       } as never);
-      expect([...records.values()][0]).toMatchObject({ chargedCumulativeAmount: "900" });
+      expect([...records.values()][0]).toMatchObject({ chargedCumulativeAmount: "1200" });
     },
   );
 
@@ -283,7 +259,7 @@ describe("batch client lifecycle", () => {
         requirements: requirements(),
         settleResponse: { extra: { chargedAmount: "bad" }, success: true },
       } as never),
-    ).rejects.toThrow(/charged more than/);
+    ).rejects.toThrow(/unexpected amount/);
   });
 
   it("tops up an exhausted channel and commits only the signed deposit", async () => {
