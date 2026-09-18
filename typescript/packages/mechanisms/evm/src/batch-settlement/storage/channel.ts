@@ -140,6 +140,17 @@ export function isChannelLockStorage(value: object): value is ChannelLockStorage
 }
 
 /**
+ * Shallow-copies a channel record. Matches Go `Channel.Clone`: in-place mutation
+ * of the copy does not persist unless the caller writes the copy back.
+ *
+ * @param record - Stored channel record.
+ * @returns A new object with the same enumerable fields.
+ */
+function cloneChannel<T extends Channel>(record: T): T {
+  return { ...record };
+}
+
+/**
  * In-memory {@link ChannelStorage} backed by a Map keyed by `channelId`.
  */
 export class InMemoryChannelStorage<T extends Channel = Channel>
@@ -150,26 +161,30 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
   private readonly admissionLocks = new Map<string, { pendingId: string; expiresAt: number }>();
 
   /**
-   * Returns the channel record for a channel, if present.
+   * Returns a shallow copy of the channel record, if present.
    *
    * @param channelId - The channel identifier.
-   * @returns The channel record or undefined when not found.
+   * @returns A copy of the channel record or undefined when not found.
    */
   async get(channelId: string): Promise<T | undefined> {
-    return this.channels.get(normalizeChannelId(channelId));
+    const stored = this.channels.get(normalizeChannelId(channelId));
+    return stored ? cloneChannel(stored) : undefined;
   }
 
   /**
-   * Lists all stored channel records.
+   * Lists shallow copies of all stored channel records.
    *
    * @returns All channel records in storage.
    */
   async list(): Promise<T[]> {
-    return [...this.channels.values()];
+    return [...this.channels.values()].map(cloneChannel);
   }
 
   /**
    * Atomically inspects and mutates a channel record while holding a per-channel lock.
+   *
+   * `current` is a shallow copy. In-place mutation that returns `current` is a
+   * no-op; persist by returning a new object.
    *
    * @param channelId - The channel identifier.
    * @param update - Mutation callback. Return `undefined` to delete, or `current` to leave unchanged.
@@ -181,7 +196,8 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
   ): Promise<ChannelUpdateResult<T>> {
     const key = normalizeChannelId(channelId);
     return this.withChannelLock(key, async () => {
-      const current = this.channels.get(key);
+      const stored = this.channels.get(key);
+      const current = stored ? cloneChannel(stored) : undefined;
       const next = update(current);
 
       if (next === current) {
@@ -191,7 +207,7 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
       if (!next) {
         this.channels.delete(key);
         this.admissionLocks.delete(key);
-        return { channel: undefined, status: current ? "deleted" : "unchanged" };
+        return { channel: undefined, status: stored ? "deleted" : "unchanged" };
       }
 
       this.channels.set(key, next);

@@ -524,6 +524,8 @@ describe("server extra parsers", () => {
 
     expect(readExtraNumber({ refundNonce: 3 }, "refundNonce", 0)).toBe(3);
     expect(readExtraNumber({ refundNonce: "8" }, "refundNonce", 0)).toBe(8);
+    expect(readExtraNumber({ refundNonce: "0" }, "refundNonce", 0)).toBe(0);
+    expect(readExtraNumber({ refundNonce: "0" }, "refundNonce", 4)).toBe(0);
     expect(readExtraNumber({ refundNonce: "nope" }, "refundNonce", 4)).toBe(4);
     expect(readExtraNumber({ refundNonce: true }, "refundNonce", 1)).toBe(1);
   });

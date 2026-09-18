@@ -58,6 +58,9 @@ export async function handleManagedBeforeVerify(
  * voucher-store drift, while the shared client handshake also accepts
  * `ErrCumulativeAmountBelowClaimed`; the server must propagate corrective
  * extras for both or the client falls back to stale onchain recovery.
+ *
+ * @param reason - Facilitator verify rejection reason, when present.
+ * @returns Whether the server should attach corrective cumulative baseline extras.
  */
 function isCorrectiveMismatch(reason: string | undefined): boolean {
   return (

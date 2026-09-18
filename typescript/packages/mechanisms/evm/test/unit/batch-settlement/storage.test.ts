@@ -113,6 +113,16 @@ describe("InMemoryChannelStorage", () => {
       expect(got?.chargedCumulativeAmount).toBe("2");
     });
 
+    it("returns a copy from get so in-place mutation does not persist", async () => {
+      await storage.updateChannel(CHANNEL_ID, () =>
+        buildSession({ chargedCumulativeAmount: "500", balance: "900" }),
+      );
+      const got = await storage.get(CHANNEL_ID);
+      expect(got).toBeDefined();
+      got!.balance = "1";
+      expect((await storage.get(CHANNEL_ID))?.balance).toBe("900");
+    });
+
     it("deletes a session", async () => {
       await storage.updateChannel(CHANNEL_ID, () => buildSession());
       expect(await storage.acquire(CHANNEL_ID, "pending", 60_000)).toBe(true);
@@ -175,6 +185,20 @@ describe("InMemoryChannelStorage", () => {
       );
       expect(result.status).toBe("unchanged");
       expect((await storage.get(CHANNEL_ID))?.chargedCumulativeAmount).toBe("500");
+    });
+
+    it("discards in-place mutation of current when the callback returns current", async () => {
+      await storage.updateChannel(CHANNEL_ID, () =>
+        buildSession({ chargedCumulativeAmount: "500", balance: "900" }),
+      );
+      const result = await storage.updateChannel(CHANNEL_ID, current => {
+        if (current) {
+          current.balance = "1";
+        }
+        return current;
+      });
+      expect(result.status).toBe("unchanged");
+      expect((await storage.get(CHANNEL_ID))?.balance).toBe("900");
     });
 
     it("serializes concurrent updateChannel mutations", async () => {

@@ -957,6 +957,83 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1500");
   });
 
+  it("still commits a voucher charge when isHeld throws a store I/O error", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const signature = "0xfeedface" as `0x${string}`;
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "5000",
+      signature,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 0,
+    }));
+    await acquireBound(storage, "0xpending", { channelId, maxClaimableAmount: "5000", signature });
+    vi.spyOn(storage, "isHeld").mockRejectedValue(new Error("lock store unavailable"));
+    const verifySpy = vi.spyOn(facilitatorVoucher, "verifyVoucher").mockResolvedValue({
+      isValid: true,
+      payer: config.payer,
+      extra: { totalClaimed: "0", balance: "10000" },
+    });
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "5000", signature },
+        pendingId: "0xpending",
+      }),
+      { ...managedRequirements(authorizer), amount: "500" },
+    );
+    verifySpy.mockRestore();
+    expect(result.success).toBe(true);
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1500");
+  });
+
+  it("rethrows lock-store implementation errors from settle isHeld", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const signature = "0xfeedface" as `0x${string}`;
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "5000",
+      signature,
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 0,
+    }));
+    vi.spyOn(storage, "isHeld").mockRejectedValueOnce(new TypeError("corrupt hold"));
+
+    await expect(
+      settleManaged(
+        buildDeps(storage, authorizer),
+        envelope({
+          type: "voucher",
+          channelConfig: config,
+          voucher: { channelId, maxClaimableAmount: "5000", signature },
+          pendingId: "0xpending",
+        }),
+        { ...managedRequirements(authorizer), amount: "500" },
+      ),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
   it("accepts verify when onchain totalClaimed is numeric and storage is empty", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
@@ -2098,6 +2175,59 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.success).toBe(true);
     expect((await storage.get(channelId))?.balance).toBe("119200");
     expect((await storage.get(channelId))?.refundNonce).toBe(3);
+  });
+
+  it("persists a deposit charge when resolveCallerIdentity throws after onchain settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafe" },
+      deposit: {
+        amount: "1000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const settleSpy = vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValueOnce({
+      success: true,
+      transaction: "0xdep",
+      network: NETWORK,
+      extra: {
+        channelState: {
+          balance: "10000",
+          totalClaimed: "0",
+          withdrawRequestedAt: 0,
+          refundNonce: 0,
+        },
+      },
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const deps = buildDeps(storage, authorizer);
+    deps.resolveCallerIdentity = async () => {
+      throw new Error("auth middleware unavailable");
+    };
+
+    const result = await settleManaged(
+      deps,
+      envelope(deposit as unknown as Record<string, unknown>),
+      { ...managedRequirements(authorizer), amount: "1000" },
+    );
+    settleSpy.mockRestore();
+    warnSpy.mockRestore();
+    expect(result.success).toBe(true);
+    const stored = await storage.get(channelId);
+    expect(stored?.chargedCumulativeAmount).toBe("1000");
+    expect(stored?.callerIdentity).toBeUndefined();
   });
 
   it("coerces string channelState numeric fields after a managed deposit charge", async () => {

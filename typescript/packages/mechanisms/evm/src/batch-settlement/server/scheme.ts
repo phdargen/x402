@@ -165,7 +165,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   >();
   private moneyParsers: MoneyParser[] = [];
   private readonly storage: ChannelStorage;
-  private readonly lockStorage: ChannelLockStorage;
+  private readonly lockStorage: ChannelLockStorage | undefined;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly refundAuthorizerSigner: AuthorizerSigner | undefined;
   private readonly receiverAddress: `0x${string}`;
@@ -190,9 +190,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       this.configuredMode = "facilitator";
       this.receiverAuthorizerSigner = undefined;
       this.refundAuthorizerSigner = config.refundAuthorizerSigner;
-      this.lockStorage = isChannelLockStorage(this.storage)
-        ? this.storage
-        : new InMemoryChannelStorage();
+      this.lockStorage = undefined;
       this.withdrawDelay = MIN_WITHDRAW_DELAY;
       this.onchainStateTtlMs =
         config.onchainStateTtlMs ?? defaultOnchainStateTtlMs(this.withdrawDelay);
@@ -361,11 +359,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
       return;
     }
 
-    try {
-      await this.lockStorage.release(context.channelId, context.pendingId);
-    } catch (err) {
-      rethrowLockImplementationError(err);
-      // Lock-store I/O loss is optimistic: the charge CAS still serializes commits.
+    if (this.lockStorage) {
+      try {
+        await this.lockStorage.release(context.channelId, context.pendingId);
+      } catch (err) {
+        rethrowLockImplementationError(err);
+        // Lock-store I/O loss is optimistic: the charge CAS still serializes commits.
+      }
     }
     this.mergeRequestContext(payload, { reservationCommitted: false });
   }
@@ -387,7 +387,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
    * @param parser - A parser function to try before the default USD→token conversion.
    * @returns `this` for chaining.
    */
-  registerMoneyParser(parser: MoneyParser): BatchSettlementEvmScheme {
+  registerMoneyParser(parser: MoneyParser): this {
     this.moneyParsers.push(parser);
     return this;
   }
@@ -598,9 +598,12 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Returns the admission lock store.
    *
-   * @returns The configured {@link ChannelLockStorage} backend.
+   * Present in self-managed mode. Facilitator-managed schemes have no local
+   * lock — the facilitator owns the hold — and return `undefined`.
+   *
+   * @returns The configured {@link ChannelLockStorage} backend, if any.
    */
-  getLockStorage(): ChannelLockStorage {
+  getLockStorage(): ChannelLockStorage | undefined {
     return this.lockStorage;
   }
 

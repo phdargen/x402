@@ -109,6 +109,9 @@ function boundAdmissionOwner(
 /**
  * Whether this settle still holds the verify admission lock for this voucher.
  *
+ * Lock-store I/O failures degrade to not-held (optimistic). Implementation
+ * errors fail closed and propagate.
+ *
  * @param deps - Store dependencies.
  * @param channelId - Channel id.
  * @param owner - Voucher-bound lock owner, if the server attached a `pendingId`.
@@ -119,7 +122,34 @@ async function admissionHeld(
   channelId: string,
   owner: string | undefined,
 ): Promise<boolean> {
-  return owner !== undefined && (await deps.lockStorage.isHeld(channelId, owner));
+  if (owner === undefined) {
+    return false;
+  }
+  try {
+    return await deps.lockStorage.isHeld(channelId, owner);
+  } catch (err) {
+    rethrowLockImplementationError(err);
+    return false;
+  }
+}
+
+/**
+ * Whether any live admission lock exists on this channel.
+ *
+ * Lock-store I/O failures degrade to not-held (optimistic). Implementation
+ * errors fail closed and propagate.
+ *
+ * @param deps - Store dependencies.
+ * @param channelId - Channel id.
+ * @returns True when a live lock is present.
+ */
+async function anyAdmissionHeld(deps: VoucherStoreDeps, channelId: string): Promise<boolean> {
+  try {
+    return await deps.lockStorage.isHeld(channelId);
+  } catch (err) {
+    rethrowLockImplementationError(err);
+    return false;
+  }
 }
 
 /**
@@ -366,7 +396,7 @@ async function settleManagedVoucher(
       if (configErr) {
         return failSettle(requirements, configErr);
       }
-    } else if (raw.pendingId && (await deps.lockStorage.isHeld(channelId))) {
+    } else if (raw.pendingId && (await anyAdmissionHeld(deps, channelId))) {
       return failSettle(requirements, Errors.ErrPendingIdMismatch);
     } else {
       const verified = await verifyVoucher(deps.signer, raw, requirements, raw.channelConfig);
@@ -464,16 +494,24 @@ async function settleManagedDeposit(
       return settled;
     }
 
-    const identity = await resolveIdentity(deps, {
-      step: "deposit",
-      channelId,
-      network: requirements.network,
-      payer: raw.channelConfig.payer,
-      amount: raw.deposit.amount,
-      payload: payment,
-      requirements,
-      facilitatorContext: context,
-    });
+    let identity: string | undefined;
+    try {
+      identity = await resolveIdentity(deps, {
+        step: "deposit",
+        channelId,
+        network: requirements.network,
+        payer: raw.channelConfig.payer,
+        amount: raw.deposit.amount,
+        payload: payment,
+        requirements,
+        facilitatorContext: context,
+      });
+    } catch (err) {
+      console.warn(
+        "batch-settlement: resolveCallerIdentity failed after deposit settle; continuing without identity",
+        err,
+      );
+    }
 
     const stored = await deps.storage.get(channelId);
     const snapshot = depositChargeSnapshot(raw, requirements, settled.extra, stored);

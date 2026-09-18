@@ -134,19 +134,20 @@ export async function handleBeforeVerify(
   scheme.mergeRequestContext(paymentPayload, { channelId, pendingId });
 
   try {
-    if (
-      !(await scheme
-        .getLockStorage()
-        .acquire(channelId, pendingId, pendingTtlMs(requirements.maxTimeoutSeconds)))
-    ) {
-      scheme.takeRequestContext(paymentPayload);
-      return {
-        abort: true,
-        reason: Errors.ErrChannelBusy,
-        message: "Channel is already processing a request",
-      };
+    const locks = scheme.getLockStorage();
+    if (locks) {
+      if (
+        !(await locks.acquire(channelId, pendingId, pendingTtlMs(requirements.maxTimeoutSeconds)))
+      ) {
+        scheme.takeRequestContext(paymentPayload);
+        return {
+          abort: true,
+          reason: Errors.ErrChannelBusy,
+          message: "Channel is already processing a request",
+        };
+      }
+      scheme.mergeRequestContext(paymentPayload, { reservationCommitted: true });
     }
-    scheme.mergeRequestContext(paymentPayload, { reservationCommitted: true });
   } catch (err) {
     rethrowLockImplementationError(err);
     // Lock-store I/O: continue without a reservation; settle CAS serializes.
