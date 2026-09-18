@@ -94,12 +94,6 @@ type storageOnly struct {
 func (s storageOnly) Get(channelId string) (*ChannelSession, error) {
 	return s.inner.Get(channelId)
 }
-func (s storageOnly) Set(channelId string, session *ChannelSession) error {
-	return s.inner.Set(channelId, session)
-}
-func (s storageOnly) Delete(channelId string) error {
-	return s.inner.Delete(channelId)
-}
 func (s storageOnly) List() ([]*ChannelSession, error) {
 	return s.inner.List()
 }
@@ -530,7 +524,7 @@ func TestSession_RoundTrip_CaseInsensitive(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
 	in := sampleSession(upper, "10")
-	if err := s.UpdateSession(upper, in); err != nil {
+	if _, err := s.GetStorage().UpdateChannel(upper, func(*ChannelSession) *ChannelSession { return in.Clone() }); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got, err := s.GetSession(testChA)
@@ -540,7 +534,7 @@ func TestSession_RoundTrip_CaseInsensitive(t *testing.T) {
 	if got == nil || got.ChannelId != upper {
 		t.Fatalf("got %+v", got)
 	}
-	if err := s.DeleteSession(upper); err != nil {
+	if _, err := s.GetStorage().UpdateChannel(upper, func(*ChannelSession) *ChannelSession { return nil }); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if got2, _ := s.GetSession(testChA); got2 != nil {
@@ -728,7 +722,7 @@ func TestEnrichPaymentRequiredResponse_FallsBackToStorage(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id := testChannelId(t)
 	pp := makeBatchedPayload(id)
-	_ = s.UpdateSession(id, sampleSession(id, "77"))
+	seedSession(t, s, id, sampleSession(id, "77"))
 
 	reqs := enrich(s, pp, batchsettlement.ErrCumulativeAmountMismatch,
 		[]types.PaymentRequirements{{Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453"}})

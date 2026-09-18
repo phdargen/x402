@@ -20,6 +20,10 @@ import (
 
 var decimalUintRe = regexp.MustCompile(`^\d+$`)
 
+// createNonce generates the verify admission pendingId. It is a variable so
+// unit tests can force the crypto/rand failure path without stubbing.
+var createNonce = evm.CreateNonce
+
 // VoucherStoreDeps is the store, lock, and signer bag for managed verify/settle.
 type VoucherStoreDeps struct {
 	Signer                  evm.FacilitatorEvmSigner
@@ -90,9 +94,9 @@ func VerifyManaged(
 	}
 
 	channelId := voucher.ChannelId
-	pendingId, nonceErr := evm.CreateNonce()
+	pendingId, nonceErr := createNonce()
 	if nonceErr != nil {
-		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrRpcReadFailed, Payer: payer}, nil
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrVoucherStoreUnavailable, Payer: payer}, nil
 	}
 	owner := storage.AdmissionOwner(pendingId, voucher)
 	reserved := false
@@ -139,22 +143,32 @@ func VerifyManaged(
 		charged = stored.ChargedCumulativeAmount
 	}
 	isRefund := batchsettlement.IsRefundPayload(raw)
-	expected := new(big.Int)
-	chargedInt, _ := new(big.Int).SetString(charged, 10)
-	if chargedInt == nil {
-		chargedInt = new(big.Int)
+	chargedInt, chargedOk := parseManagedUint(charged)
+	if !chargedOk {
+		return &x402.VerifyResponse{
+			IsValid:       false,
+			InvalidReason: ErrCumulativeAmountMismatch,
+			Payer:         payer,
+			Extra:         mismatchVerifyExtra(channelId, verified.Extra, stored, charged),
+		}, nil
 	}
+	expected := new(big.Int)
 	if isRefund {
 		expected.Set(chargedInt)
 	} else {
-		amt, _ := new(big.Int).SetString(requirements.Amount, 10)
-		if amt == nil {
-			amt = new(big.Int)
+		amt, amtOk := parseManagedUint(requirements.Amount)
+		if !amtOk {
+			return &x402.VerifyResponse{
+				IsValid:       false,
+				InvalidReason: ErrCumulativeAmountMismatch,
+				Payer:         payer,
+				Extra:         mismatchVerifyExtra(channelId, verified.Extra, stored, charged),
+			}, nil
 		}
 		expected.Add(chargedInt, amt)
 	}
-	maxClaimable, _ := new(big.Int).SetString(voucher.MaxClaimableAmount, 10)
-	if maxClaimable == nil || maxClaimable.Cmp(expected) != 0 {
+	maxClaimable, maxOk := parseManagedUint(voucher.MaxClaimableAmount)
+	if !maxOk || maxClaimable.Cmp(expected) != 0 {
 		return &x402.VerifyResponse{
 			IsValid:       false,
 			InvalidReason: ErrCumulativeAmountMismatch,
@@ -367,7 +381,7 @@ func settleManagedDeposit(
 		return settled, nil
 	}
 
-	identity, _ := resolveIdentity(deps, DelegatedSettleContext{
+	identity, identErr := resolveIdentity(deps, DelegatedSettleContext{
 		Step:               DelegatedSettleStepDeposit,
 		ChannelId:          channelId,
 		Network:            requirements.Network,
@@ -377,6 +391,12 @@ func settleManagedDeposit(
 		Requirements:       requirements,
 		FacilitatorContext: fctx,
 	})
+	if identErr != nil {
+		// Continue on error: the onchain deposit and watermark persist still
+		// succeed. The failure is surfaced as a boolean Extra flag (no error
+		// string, no PII) on every successful onchain return below.
+		identity = ""
+	}
 
 	stored, _ := deps.Storage.Get(channelId)
 	snapshot := depositChargeSnapshot(raw, requirements, settled.Extra, stored)
@@ -410,6 +430,9 @@ func settleManagedDeposit(
 			}
 			extra["chargeCount"] = count
 		}
+		if identErr != nil {
+			extra["identityResolutionFailed"] = true
+		}
 		settled.Extra = extra
 		return settled, nil
 	}
@@ -425,6 +448,9 @@ func settleManagedDeposit(
 		cs := channelStateFromMap(merged)
 		extra := storage.PaymentResponseExtra(cs, &chargedAmt, &chargeCount)
 		settled.Extra = extra.ToMap()
+		if identErr != nil {
+			settled.Extra["identityResolutionFailed"] = true
+		}
 		return settled, nil
 	}
 	chargedAmt := requirements.Amount
@@ -433,6 +459,9 @@ func settleManagedDeposit(
 	merged := copyExtra(settled.Extra)
 	for k, v := range extra.ToMap() {
 		merged[k] = v
+	}
+	if identErr != nil {
+		merged["identityResolutionFailed"] = true
 	}
 	settled.Extra = merged
 	return settled, nil
@@ -920,6 +949,15 @@ func provisionalFromOnchain(
 }
 
 func rebuildClaims(stored *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
+	if stored == nil {
+		return nil
+	}
+	if _, ok := parseManagedUint(stored.ChargedCumulativeAmount); !ok {
+		return nil
+	}
+	if _, ok := parseManagedUint(stored.TotalClaimed); !ok {
+		return nil
+	}
 	if uintCmp(stored.ChargedCumulativeAmount, stored.TotalClaimed) <= 0 {
 		return nil
 	}
@@ -1132,27 +1170,40 @@ func extraUintString(v interface{}) (string, bool) {
 }
 
 func sameUint(a, b string) bool {
-	ai, okA := new(big.Int).SetString(a, 10)
-	bi, okB := new(big.Int).SetString(b, 10)
+	ai, okA := parseManagedUint(a)
 	if !okA {
-		ai = new(big.Int)
+		return false
 	}
+	bi, okB := parseManagedUint(b)
 	if !okB {
-		bi = new(big.Int)
+		return false
 	}
 	return ai.Cmp(bi) == 0
 }
 
+// uintCmp compares decimal uint strings. Unparsable operands fail closed as
+// greater (1) so closed-channel checks never delete a corrupt row; claim
+// builders guard with parseManagedUint first and skip corrupt rows.
 func uintCmp(a, b string) int {
-	ai, okA := new(big.Int).SetString(a, 10)
-	bi, okB := new(big.Int).SetString(b, 10)
+	ai, okA := parseManagedUint(a)
 	if !okA {
-		ai = new(big.Int)
+		return 1
 	}
+	bi, okB := parseManagedUint(b)
 	if !okB {
-		bi = new(big.Int)
+		return 1
 	}
 	return ai.Cmp(bi)
+}
+
+// parseManagedUint parses a non-negative decimal uint. ok=false means the
+// caller must fail closed (mismatch/skip), never treat the value as zero.
+func parseManagedUint(s string) (*big.Int, bool) {
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok || v.Sign() < 0 {
+		return nil, false
+	}
+	return v, true
 }
 
 func channelStateFromMap(m map[string]interface{}) batchsettlement.BatchSettlementChannelStateExtra {
