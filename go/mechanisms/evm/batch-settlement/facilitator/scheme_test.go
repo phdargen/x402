@@ -29,6 +29,8 @@ type fakeFacilitatorSigner struct {
 	verifyCalls     int
 	verifyAddrs     []string
 	writeCalls      int
+	writeFns        []string
+	lastDataSuffix  []byte
 	sendCalls       int
 }
 
@@ -47,8 +49,10 @@ func (f *fakeFacilitatorSigner) VerifyTypedData(_ context.Context, address strin
 	}
 	return false, errors.New("no rpc")
 }
-func (f *fakeFacilitatorSigner) WriteContract(_ context.Context, _ string, _ []byte, functionName string, _ []byte, args ...interface{}) (string, error) {
+func (f *fakeFacilitatorSigner) WriteContract(_ context.Context, _ string, _ []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
 	f.writeCalls++
+	f.writeFns = append(f.writeFns, functionName)
+	f.lastDataSuffix = append([]byte(nil), dataSuffix...)
 	if f.writeContract != nil {
 		return f.writeContract(functionName, args...)
 	}

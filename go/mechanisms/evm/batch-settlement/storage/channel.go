@@ -22,8 +22,8 @@ type Channel struct {
 	WithdrawRequestedAt     int                           `json:"withdrawRequestedAt"`
 	RefundNonce             int                           `json:"refundNonce"`
 	LastRequestTimestamp    int64                         `json:"lastRequestTimestamp"`
-	OnchainSyncedAt int64 `json:"onchainSyncedAt,omitempty"`
-	Network string `json:"network,omitempty"`
+	OnchainSyncedAt         int64                         `json:"onchainSyncedAt,omitempty"`
+	Network                 string                        `json:"network,omitempty"`
 }
 
 // Base returns the channel itself so generic stores can read shared fields.
