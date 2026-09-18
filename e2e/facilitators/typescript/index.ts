@@ -34,7 +34,11 @@ import {
   VerifyResponse,
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
-import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
+import {
+  BatchSettlementEvmScheme,
+  InMemoryChannelStorage,
+  type FacilitatorChannelManager,
+} from "@x402/evm/batch-settlement/facilitator";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { ExactEvmSchemeV1 } from "@x402/evm/exact/v1/facilitator";
@@ -585,16 +589,48 @@ async function waitForBatchSettlementDepositConfirmed(
 
 const facilitator = new x402Facilitator();
 
+// E2E_FACILITATOR_VOUCHER_STORE=true enables facilitator-managed batch custody
+// (in-memory voucher store + channel manager). Unset keeps the minimal
+// self-managed registration.
+const facilitatorVoucherStoreEnabled = ['1', 'true', 'yes'].includes(
+  process.env.E2E_FACILITATOR_VOUCHER_STORE?.trim().toLowerCase() ?? '',
+);
+let batchChannelManager: FacilitatorChannelManager | undefined;
+
 // Register each configured family (exact CAIP-2 from catalog / env)
 if (evmSigner && authorizerSigner) {
+  const batchScheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+    ...(facilitatorVoucherStoreEnabled
+      ? {
+          voucherStore: {
+            storage: new InMemoryChannelStorage(),
+            withdrawDelay: 900,
+          },
+        }
+      : {}),
+  });
   facilitator
     .register(EVM_NETWORK as Network, new ExactEvmScheme(evmSigner))
     .register(EVM_NETWORK as Network, new UptoEvmScheme(evmSigner))
-    .register(
-      EVM_NETWORK as Network,
-      new BatchSettlementEvmScheme(evmSigner, authorizerSigner),
-    )
+    .register(EVM_NETWORK as Network, batchScheme)
     .registerV1(EVM_V1_NETWORKS as Network[], new ExactEvmSchemeV1(evmSigner));
+  if (facilitatorVoucherStoreEnabled) {
+    batchChannelManager = batchScheme.createChannelManager({
+      getExtension: (key: string) => facilitator.getExtension(key),
+    });
+    batchChannelManager.start({
+      claimIntervalSecs: 60,
+      settleIntervalSecs: 120,
+      refundIntervalSecs: 180,
+      refundIdleSecs: 180,
+      maxClaimsPerBatch: 100,
+      onClaim: r => console.log(`[voucher store] Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+      onSettle: r => console.log(`[voucher store] Settled ${r.receiver} (tx: ${r.transaction})`),
+      onRefund: r => console.log(`[voucher store] Refunded channel ${r.channel} (tx: ${r.transaction})`),
+      onError: e => console.error('[voucher store] Settlement error:', e),
+    });
+    console.info('Facilitator voucher store: enabled (in-memory, withdrawDelay 900s)');
+  }
 }
 if (svmSigner) {
   facilitator
@@ -1033,6 +1069,12 @@ app.post("/close", (req, res) => {
 
   // Give time for response to be sent
   setTimeout(async () => {
+    if (batchChannelManager) {
+      console.log("Shutting down — flushing voucher-store claims…");
+      await batchChannelManager.stop({ flush: true }).catch(err => {
+        console.error("Channel manager stop:", err);
+      });
+    }
     await keetaSigner?.destroy();
     process.exit(0);
   }, 100);

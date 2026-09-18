@@ -18,6 +18,7 @@ export interface ParsedArgs {
   parallel: boolean;
   concurrency: number;
   endpoints?: string[];
+  batchVoucherStore?: 'self' | 'facilitator';
 }
 
 export function parseArgs(): ParsedArgs {
@@ -52,6 +53,7 @@ export function parseArgs(): ParsedArgs {
     arg.startsWith('--paymentFlow=') ||
     arg.startsWith('--assetTransferMethod=') ||
     arg.startsWith('--asset-transfer-method=') ||
+    arg.startsWith('--batchVoucherStore=') ||
     arg.startsWith('--endpoints=')
   );
 
@@ -112,6 +114,21 @@ export function parseArgs(): ParsedArgs {
     '--asset-transfer-method',
   );
   const endpoints = parseListArg(args, '--endpoints');
+  const batchVoucherStoreRaw = args
+    .find(a => a.startsWith('--batchVoucherStore='))
+    ?.split('=')
+    .slice(1)
+    .join('=')
+    ?.trim()
+    .toLowerCase();
+  let batchVoucherStore: 'self' | 'facilitator' | undefined;
+  if (batchVoucherStoreRaw) {
+    if (batchVoucherStoreRaw !== 'self' && batchVoucherStoreRaw !== 'facilitator') {
+      console.error('--batchVoucherStore must be "self" or "facilitator"');
+      process.exit(1);
+    }
+    batchVoucherStore = batchVoucherStoreRaw;
+  }
 
   return {
     mode,
@@ -139,6 +156,7 @@ export function parseArgs(): ParsedArgs {
     parallel,
     concurrency,
     endpoints,
+    batchVoucherStore,
   };
 }
 
@@ -173,6 +191,7 @@ export function printHelp(): void {
   console.log('  --sdk=<list>               SDK languages: ts, go, python (aliases: typescript, py)');
   console.log('  --paymentflow=<list>       Payment flows: authorization, upfront, escrow');
   console.log('  --assetTransferMethod=<list>  Asset transfer methods: eip3009, permit2, sequence, ticketSequence');
+  console.log('  --batchVoucherStore=<mode> Custody side: self or facilitator (skips the other batch server role)');
   console.log('  --endpoints=<list>         Comma-separated endpoint paths or regex patterns (auto-anchored)');
   console.log('');
   console.log('Options:');

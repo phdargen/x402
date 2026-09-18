@@ -126,16 +126,45 @@ func SchemeBindings(cfg Config) []SchemeBinding {
 			case SchemeBatched:
 				if batched == nil {
 					batchedCfg := &batchedserver.BatchSettlementEvmSchemeServerConfig{}
-					if authKey := os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"); authKey != "" {
-						auth, err := NewBatchedAuthorizerSigner(authKey)
-						if err != nil {
-							fmt.Printf("Failed to parse SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+					voucherStoreMode := strings.TrimSpace(strings.ToLower(os.Getenv("EVM_BATCH_SETTLEMENT_VOUCHER_STORE_MODE")))
+					if voucherStoreMode == "" {
+						// Fall back to the harness-assigned server role.
+						if strings.TrimSpace(strings.ToLower(os.Getenv("E2E_BATCH_SERVER_ROLE"))) == "managed-batch" {
+							voucherStoreMode = "facilitator"
+						} else {
+							voucherStoreMode = "self"
+						}
+					}
+					if voucherStoreMode == "facilitator" {
+						if authKey := strings.TrimSpace(os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")); authKey != "" {
+							fmt.Println("EVM_BATCH_SETTLEMENT_VOUCHER_STORE_MODE=facilitator cannot be combined with SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
 							os.Exit(1)
 						}
-						batchedCfg.ReceiverAuthorizerSigner = auth
-						fmt.Printf("Batch-settlement receiver authorizer (self-managed): %s\n", auth.Address())
+						batchedCfg.VoucherStoreMode = batchedserver.VoucherStoreModeFacilitator
+						if refundKey := strings.TrimSpace(os.Getenv("SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY")); refundKey != "" {
+							refundAuth, err := NewBatchedAuthorizerSigner(refundKey)
+							if err != nil {
+								fmt.Printf("Failed to parse SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+								os.Exit(1)
+							}
+							batchedCfg.RefundAuthorizerSigner = refundAuth
+							fmt.Printf("Batch-settlement refund authorizer (facilitator-managed): %s\n", refundAuth.Address())
+						} else {
+							fmt.Println("Batch-settlement refund authorizer: facilitator refundAuth (no local signer)")
+						}
+						fmt.Println("Batch-settlement voucher custody: facilitator-managed (pass-through verify/settle)")
 					} else {
-						fmt.Println("Batch-settlement receiver authorizer: facilitator-delegated")
+						if authKey := os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"); authKey != "" {
+							auth, err := NewBatchedAuthorizerSigner(authKey)
+							if err != nil {
+								fmt.Printf("Failed to parse SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+								os.Exit(1)
+							}
+							batchedCfg.ReceiverAuthorizerSigner = auth
+							fmt.Printf("Batch-settlement receiver authorizer (self-managed): %s\n", auth.Address())
+						} else {
+							fmt.Println("Batch-settlement receiver authorizer: facilitator-delegated")
+						}
 					}
 					batched = batchedserver.NewBatchSettlementEvmScheme(cfg.Payee("evm"), batchedCfg)
 				}
