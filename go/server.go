@@ -1263,7 +1263,15 @@ func (s *x402ResourceServer) VerifyPaymentWithExtensions(
 	// Handle IsValid: false — facilitator reachable but explicitly rejected the payment.
 	// Conflating "no network error" with "payment valid" is a security bug: an HTTP-200
 	// response carrying {"isValid":false} must be treated as a hard gate failure.
+	// Run afterVerify hooks so schemes can stash corrective state for 402 enrichment.
 	if verifyResult == nil || !verifyResult.IsValid {
+		if verifyResult != nil {
+			if afterRes, afterErr := s.runAfterVerifyHooks(payload, requirements, declaredExtensions, hookCtx, afterVerifyHooks, verifyResult); afterErr != nil {
+				return afterRes, afterErr
+			} else if afterRes != nil {
+				verifyResult = afterRes
+			}
+		}
 		reason := ErrCodeInvalidPayment
 		var payer, message string
 		if verifyResult != nil {
@@ -1274,13 +1282,6 @@ func (s *x402ResourceServer) VerifyPaymentWithExtensions(
 			message = verifyResult.InvalidMessage
 		}
 		ve := NewVerifyError(reason, payer, message)
-		failureCtx := VerifyFailureContext{VerifyContext: hookCtx, Error: ve}
-		for _, lh := range verifyFailureHooks {
-			result, _ := lh.Hook(failureCtx)
-			if result != nil && result.Recovered {
-				return s.runAfterVerifyHooks(payload, requirements, declaredExtensions, hookCtx, afterVerifyHooks, result.Result)
-			}
-		}
 		return verifyResult, ve
 	}
 
