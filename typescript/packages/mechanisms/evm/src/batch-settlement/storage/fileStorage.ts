@@ -131,7 +131,6 @@ export class FileChannelStorage<T extends Channel = Channel>
    *
    * Serialized with {@link FileChannelStorage.release} and {@link FileChannelStorage.isHeld}
    * on `{id}.hold.lock` so an expired hold cannot be unlinked out from under a new holder.
-   * The same `pendingId` re-enters and refreshes the TTL.
    *
    * @param channelId - The channel identifier.
    * @param pendingId - Request-scoped lock owner.
@@ -147,7 +146,7 @@ export class FileChannelStorage<T extends Channel = Channel>
           pendingId: string;
           expiresAt: number;
         };
-        if (existing.expiresAt > Date.now() && existing.pendingId !== pendingId) {
+        if (existing.expiresAt > Date.now()) {
           return false;
         }
       } catch (err: unknown) {
