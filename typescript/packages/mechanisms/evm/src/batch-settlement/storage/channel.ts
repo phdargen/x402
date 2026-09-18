@@ -98,7 +98,7 @@ export interface ChannelStorage<T extends Channel = Channel> {
  * optimistic mode: the durable charge CAS still serializes commits.
  */
 export interface ChannelLockStorage {
-  /** SET NX + TTL. Value is `pendingId`. Expired keys are free. Same owner re-enters. */
+  /** SET NX + TTL. Value is `pendingId`. Expired keys are free. */
   acquire(channelId: string, pendingId: string, ttlMs: number): Promise<boolean>;
   /** Compare-and-delete: releases only when `pendingId` still holds. */
   release(channelId: string, pendingId: string): Promise<void>;
@@ -200,8 +200,7 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
   }
 
   /**
-   * Acquires a per-channel admission lock if none is live, or re-enters when
-   * `pendingId` already holds it (refreshing the TTL).
+   * Acquires a per-channel admission lock if none is live.
    *
    * @param channelId - The channel identifier.
    * @param pendingId - Request-scoped lock owner.
@@ -212,7 +211,7 @@ export class InMemoryChannelStorage<T extends Channel = Channel>
     const key = normalizeChannelId(channelId);
     const current = this.admissionLocks.get(key);
     const now = Date.now();
-    if (current && current.expiresAt > now && current.pendingId !== pendingId) {
+    if (current && current.expiresAt > now) {
       return false;
     }
     this.admissionLocks.set(key, { pendingId, expiresAt: now + ttlMs });
