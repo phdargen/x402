@@ -70,9 +70,10 @@ type BatchSettlementEvmSchemeOptions struct {
 	DepositStrategy DepositStrategy
 	// Storage is the session persistence backend. Defaults to in-memory.
 	Storage ClientChannelStorage
-	// Salt differentiates otherwise identical channel configs. Prefer
-	// batchsettlement.ChannelSaltIndex; batchsettlement.ChannelSaltHex is also accepted.
-	Salt batchsettlement.ChannelSalt
+	// Salt differentiates otherwise identical channel configs. Accepts a
+	// decimal channel index ("0", "1", "2", …) or a 0x-prefixed hex value;
+	// "" selects the default zero salt. Parsed internally to bytes32.
+	Salt string
 	// PayerAuthorizer is the EOA address used for voucher signing (separate from payer).
 	// Zero address means the payer signs vouchers directly (ERC-1271).
 	PayerAuthorizer string
@@ -301,7 +302,7 @@ func (c *BatchSettlementEvmScheme) resolveDepositAmount(
 }
 
 func (c *BatchSettlementEvmScheme) normalizedConfigSalt() (string, error) {
-	return c.config.Salt.Normalize()
+	return batchsettlement.ParseChannelSalt(c.config.Salt)
 }
 
 // BuildChannelConfig constructs a ChannelConfig from payment requirements and scheme config.
