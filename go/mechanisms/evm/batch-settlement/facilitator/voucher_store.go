@@ -272,14 +272,12 @@ func settleManagedVoucher(
 			return failSettle(requirements, configErr), nil
 		}
 	} else {
-		if raw.PendingId != "" {
-			anyHeld, anyErr := deps.LockStorage.IsHeld(channelId, "")
-			if impl := storage.RethrowLockImplementationError(anyErr); impl != nil {
-				return nil, impl
-			}
-			if anyErr == nil && anyHeld {
-				return failSettle(requirements, ErrPendingIdMismatch), nil
-			}
+		anyHeld, anyErr := deps.LockStorage.IsHeld(channelId, "")
+		if impl := storage.RethrowLockImplementationError(anyErr); impl != nil {
+			return nil, impl
+		}
+		if anyErr == nil && anyHeld {
+			return failSettle(requirements, ErrPendingIdMismatch), nil
 		}
 		verified, err := VerifyVoucher(ctx, deps.Signer, raw, requirements, raw.ChannelConfig)
 		if err != nil {

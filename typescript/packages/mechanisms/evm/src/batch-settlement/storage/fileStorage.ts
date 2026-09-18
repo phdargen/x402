@@ -1,6 +1,7 @@
 import { mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { isNodeEnoent, readJsonFile, resolveWithinDir, writeJsonAtomic } from "../storage-utils";
 import { normalizeChannelId } from "../utils";
@@ -11,7 +12,21 @@ export type { FileChannelStorageOptions };
 
 const FILE_LOCK_MAX_ATTEMPTS = 50;
 const FILE_LOCK_RETRY_INTERVAL_MS = 10;
-const FILE_LOCK_STALE_MS = 2_000;
+const FILE_LOCK_STALE_MS = 30_000;
+
+/**
+ * Owner record written into every exclusive lock marker.
+ *
+ * The on-disk protocol is shared with the Go SDK: a lock file contains JSON
+ * `{ pid, token, createdAt }`. Stealing is only allowed when the owner is
+ * provably gone (dead PID) or when an unreadable legacy marker is older than
+ * `staleMs`. A live owner is never stolen, no matter how old the marker is.
+ */
+export type FileLockOwner = {
+  pid: number;
+  token: string;
+  createdAt: number;
+};
 
 export type AcquireExclusiveFileOptions = {
   maxAttempts?: number;
@@ -258,7 +273,13 @@ export class FileChannelStorage<T extends Channel = Channel>
 }
 
 /**
- * Creates an exclusive lock file, stealing markers whose mtime is older than `staleMs`.
+ * Creates an exclusive lock file with an owner marker.
+ *
+ * The marker holds JSON `{ pid, token, createdAt }` under the same on-disk
+ * protocol as the Go SDK. A contended marker is unlinked only when its owner
+ * is provably gone (dead PID) or when a legacy/unreadable marker is older
+ * than `staleMs`. A live owner is never stolen: slow writers keep the lock
+ * and contenders fail with `contended` after `maxAttempts`.
  *
  * @param lockPath - Absolute path for the lock file (created with `O_EXCL`).
  * @param options - Attempt, retry, and stale-mtime bounds.
@@ -275,7 +296,20 @@ export async function acquireExclusiveFile(
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      return await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      const handle = await open(
+        lockPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      );
+      try {
+        await handle.writeFile(
+          JSON.stringify({ pid: process.pid, token: randomUUID(), createdAt: Date.now() }),
+        );
+        await handle.sync();
+      } catch {
+        // Best effort: the O_EXCL marker already serializes writers even if the
+        // owner payload cannot be persisted; steal decisions fall back to mtime.
+      }
+      return handle;
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
         throw err;
@@ -291,18 +325,71 @@ export async function acquireExclusiveFile(
 }
 
 /**
- * Returns whether `lockPath` is missing or older than `staleMs`.
+ * Returns whether `lockPath` may be unlinked and retried.
+ *
+ * A marker with a readable owner is stale only when its PID is provably gone.
+ * Legacy or unreadable markers (empty file from an older SDK, partial write
+ * after a crash) fall back to mtime age so crash debris cannot pin the channel
+ * forever.
  *
  * @param lockPath - Absolute path for the lock file.
- * @param staleMs - Age after which a leftover marker is treated as crash debris.
+ * @param staleMs - Age after which a legacy marker is treated as crash debris.
  * @returns Whether the caller may unlink and retry exclusive create.
  */
 async function isStaleLock(lockPath: string, staleMs: number): Promise<boolean> {
+  let mtimeMs = 0;
   try {
-    const info = await stat(lockPath);
-    return Date.now() - info.mtimeMs >= staleMs;
+    mtimeMs = (await stat(lockPath)).mtimeMs;
   } catch (err: unknown) {
     if (isNodeEnoent(err)) return true;
     throw err;
+  }
+  let raw = "";
+  try {
+    raw = await readFile(lockPath, "utf8");
+  } catch (err: unknown) {
+    if (isNodeEnoent(err)) return true;
+    throw err;
+  }
+  if (!raw.trim()) {
+    return Date.now() - mtimeMs >= staleMs;
+  }
+  try {
+    const owner = JSON.parse(raw) as Partial<FileLockOwner>;
+    if (typeof owner.pid !== "number") {
+      return Date.now() - mtimeMs >= staleMs;
+    }
+    return !isOwnerAlive(owner.pid);
+  } catch {
+    return Date.now() - mtimeMs >= staleMs;
+  }
+}
+
+/**
+ * Reports whether a lock-owner PID is still alive.
+ *
+ * Uses signal `0`: `ESRCH` means provably gone, `EPERM` means alive but
+ * un-signallable, and any other failure fails closed to alive so a live writer
+ * is never stolen.
+ *
+ * @param pid - PID recorded in the lock marker.
+ * @returns Whether the owner process may still be running.
+ */
+function isOwnerAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  if (pid === process.pid) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === "ESRCH") {
+      return false;
+    }
+    return true;
   }
 }

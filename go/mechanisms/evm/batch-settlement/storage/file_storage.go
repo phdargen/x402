@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
@@ -16,8 +19,20 @@ import (
 const (
 	fileLockMaxAttempts     = 50
 	fileLockRetryIntervalMs = 10
-	fileLockStaleMs         = 2_000
+	fileLockStaleMs         = 30_000
 )
+
+// FileLockOwner is the owner record written into every exclusive lock marker.
+//
+// The on-disk protocol is shared with the TypeScript SDK: a lock file contains
+// JSON `{ pid, token, createdAt }`. Stealing is only allowed when the owner is
+// provably gone (dead PID) or when an unreadable legacy marker is older than
+// StaleMs. A live owner is never stolen, no matter how old the marker is.
+type FileLockOwner struct {
+	Pid       int    `json:"pid"`
+	Token     string `json:"token"`
+	CreatedAt int64  `json:"createdAt"`
+}
 
 // FileChannelStorage is a file-backed ChannelStorage. Each record is stored as
 // {root}/server/{channelId}.json. UpdateChannel is serialised through an
@@ -320,9 +335,12 @@ func (o *ExclusiveFileOptions) withDefaults() ExclusiveFileOptions {
 	return out
 }
 
-// AcquireExclusiveFile creates lockPath with O_EXCL, polling until the marker
-// is free or stale (mtime older than StaleMs). Stale markers are unlinked so a
-// crash cannot pin the channel forever.
+// AcquireExclusiveFile creates lockPath with O_EXCL, writing an owner marker
+// ({ pid, token, createdAt }) under the same on-disk protocol as the
+// TypeScript SDK. A contended marker is unlinked only when its owner is
+// provably gone (dead PID) or when a legacy/unreadable marker is older than
+// StaleMs. A live owner is never stolen: slow writers keep the lock and
+// contenders fail with `contended` after MaxAttempts.
 func AcquireExclusiveFile(lockPath string, opts *ExclusiveFileOptions) (*os.File, error) {
 	cfg := opts.withDefaults()
 	staleAfter := time.Duration(cfg.StaleMs) * time.Millisecond
@@ -330,23 +348,125 @@ func AcquireExclusiveFile(lockPath string, opts *ExclusiveFileOptions) (*os.File
 	for attempt := 0; attempt < cfg.MaxAttempts; attempt++ {
 		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
+			// Best effort: the O_EXCL marker already serializes writers even if
+			// the owner payload cannot be persisted; steal decisions fall back
+			// to mtime.
+			if raw, marshalErr := json.Marshal(FileLockOwner{
+				Pid:       os.Getpid(),
+				Token:     newFileLockToken(),
+				CreatedAt: time.Now().UnixMilli(),
+			}); marshalErr == nil {
+				_, _ = f.Write(raw)
+				_ = f.Sync()
+			}
 			return f, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, err)
 		}
-		info, statErr := os.Stat(lockPath)
+		stale, statErr := isStaleLock(lockPath, staleAfter)
 		if statErr != nil {
-			if batchsettlement.IsNotExist(statErr) {
-				continue
-			}
-			return nil, fmt.Errorf("acquire lock %s: %w", lockPath, statErr)
+			return nil, statErr
 		}
-		if time.Since(info.ModTime()) >= staleAfter {
+		if stale {
 			_ = os.Remove(lockPath)
 			continue
 		}
 		time.Sleep(retryInterval)
 	}
 	return nil, fmt.Errorf("acquire lock %s: contended", lockPath)
+}
+
+// isStaleLock reports whether lockPath may be unlinked and retried.
+//
+// A marker with a readable owner is stale only when its PID is provably gone.
+// Legacy or unreadable markers (empty file from an older SDK, partial write
+// after a crash) fall back to mtime age so crash debris cannot pin the channel
+// forever.
+func isStaleLock(lockPath string, staleAfter time.Duration) (bool, error) {
+	info, statErr := os.Stat(lockPath)
+	if statErr != nil {
+		if batchsettlement.IsNotExist(statErr) {
+			return true, nil
+		}
+		return false, fmt.Errorf("acquire lock %s: %w", lockPath, statErr)
+	}
+	mtime := info.ModTime()
+	raw, readErr := os.ReadFile(lockPath)
+	if readErr != nil {
+		if batchsettlement.IsNotExist(readErr) {
+			return true, nil
+		}
+		return false, fmt.Errorf("acquire lock %s: %w", lockPath, readErr)
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return time.Since(mtime) >= staleAfter, nil
+	}
+	if pid, ok := parseLockOwnerPid(raw); ok {
+		return !isOwnerAlive(pid), nil
+	}
+	return time.Since(mtime) >= staleAfter, nil
+}
+
+// parseLockOwnerPid extracts the owner PID from a lock marker.
+// ok=false means the marker is legacy or corrupt, and the caller falls back
+// to mtime age so crash debris cannot pin the channel forever.
+func parseLockOwnerPid(raw []byte) (int, bool) {
+	var fields map[string]interface{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return 0, false
+	}
+	pidVal, ok := fields["pid"]
+	if !ok {
+		return 0, false
+	}
+	return lockOwnerPid(pidVal)
+}
+
+func lockOwnerPid(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n != float64(int(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// isOwnerAlive reports whether a lock-owner PID may still be running.
+//
+// Signal 0: ESRCH means provably gone, EPERM means alive but un-signallable,
+// and any other failure fails closed to alive so a live writer is never stolen.
+func isOwnerAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if pid == os.Getpid() {
+		return true
+	}
+	err := syscall.Kill(pid, 0)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, syscall.ESRCH):
+		return false
+	default:
+		// EPERM means alive but un-signallable; any other failure fails
+		// closed to alive so a live writer is never stolen.
+		return true
+	}
+}
+
+func newFileLockToken() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
 }

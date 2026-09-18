@@ -349,7 +349,7 @@ func TestServerFileStorage_StealsStaleHoldLock(t *testing.T) {
 	if err := os.WriteFile(holdLock, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	stale := time.Now().Add(-3 * time.Second)
+	stale := time.Now().Add(-60 * time.Second)
 	if err := os.Chtimes(holdLock, stale, stale); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
@@ -373,6 +373,45 @@ func TestAcquireExclusiveFile_ContendedWhenLockFresh(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "contended") {
 		t.Fatalf("expected contended, got %v", err)
 	}
+}
+
+func TestAcquireExclusiveFile_DoesNotStealLiveOwnerEvenWhenOld(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "live.lock")
+	handle, err := AcquireExclusiveFile(lockPath, nil)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer func() {
+		_ = handle.Close()
+		_ = os.Remove(lockPath)
+	}()
+	stale := time.Now().Add(-60 * time.Second)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	_, err = AcquireExclusiveFile(lockPath, &ExclusiveFileOptions{MaxAttempts: 2, RetryIntervalMs: 1})
+	if err == nil || !strings.Contains(err.Error(), "contended") {
+		t.Fatalf("expected contended, got %v", err)
+	}
+}
+
+func TestAcquireExclusiveFile_StealsDeadOwner(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "dead.lock")
+	raw, err := json.Marshal(FileLockOwner{Pid: 2147483647, Token: "dead-owner", CreatedAt: time.Now().UnixMilli()})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(lockPath, raw, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	handle, err := AcquireExclusiveFile(lockPath, &ExclusiveFileOptions{MaxAttempts: 5, RetryIntervalMs: 1})
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	_ = handle.Close()
+	_ = os.Remove(lockPath)
 }
 
 func TestFileChannelStorage_AcquireIsNotReentrant(t *testing.T) {
