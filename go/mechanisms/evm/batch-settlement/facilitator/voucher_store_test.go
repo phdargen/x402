@@ -3,14 +3,17 @@ package facilitator
 import (
 	"context"
 	"errors"
+	"math/big"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
+	"github.com/x402-foundation/x402/go/v2/types"
 )
 
 func TestVerifyManaged_RejectsWhenAdmissionLockHeld(t *testing.T) {
@@ -257,7 +260,9 @@ func TestSettleManaged_RefundWatermarkMismatch(t *testing.T) {
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
 	seed, _ := store.Get(channelId)
 	seed.CallerIdentity = "svc"
-	_ = store.Set(channelId, seed)
+	if _, err := store.UpdateChannel(channelId, func(*FacilitatorChannel) *FacilitatorChannel { return seed.Clone() }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "1000", "", ""),
@@ -330,6 +335,118 @@ func TestVerifyManaged_MismatchWithoutRowOmitsVoucherState(t *testing.T) {
 	vs, _ := resp.Extra["voucherState"].(map[string]interface{})
 	if len(vs) != 0 {
 		t.Fatalf("voucherState = %+v", vs)
+	}
+}
+
+func TestVerifyManaged_CorruptStoredWatermarkIsMismatch(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargedCumulativeAmount: "not-a-number"}))
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "1000"
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+		voucherEnvelope(cfg, voucherFields(channelId, "2000", dummySig), ""), reqs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrCumulativeAmountMismatch {
+		t.Fatalf("corrupt watermark must fail closed, got %+v", resp)
+	}
+}
+
+func TestVerifyManaged_NonceFailureIsVoucherStoreUnavailable(t *testing.T) {
+	oldCreateNonce := createNonce
+	createNonce = func() (string, error) { return "", errors.New("rand down") }
+	defer func() { createNonce = oldCreateNonce }()
+
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+		voucherEnvelope(cfg, voucherFields(channelId, "2000", dummySig), ""),
+		managedRequirements(auth.addr), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrVoucherStoreUnavailable {
+		t.Fatalf("nonce failure is not RPC, got %+v", resp)
+	}
+}
+
+func managedDepositEnvelope(cfg batchsettlement.ChannelConfig, channelId string) types.PaymentPayload {
+	p := &batchsettlement.BatchSettlementDepositPayload{
+		Type:          "deposit",
+		ChannelConfig: cfg,
+		Voucher:       voucherFields(channelId, "1000", dummySig),
+		Deposit: batchsettlement.BatchSettlementDepositData{
+			Amount: "1000",
+			Authorization: batchsettlement.BatchSettlementDepositAuthorization{
+				Erc3009Authorization: goodErc3009Auth(),
+			},
+		},
+	}
+	return managedEnvelope(p.ToMap())
+}
+
+func managedDepositSigner(t *testing.T) *fakeFacilitatorSigner {
+	t.Helper()
+	var writeSeen bool
+	return &fakeFacilitatorSigner{
+		addresses: []string{managedFacilitator},
+		chainId:   big.NewInt(84532),
+		writeContract: func(functionName string, _ ...interface{}) (string, error) {
+			if functionName != "deposit" {
+				return "", errors.New("unexpected write " + functionName)
+			}
+			writeSeen = true
+			return successTxHash, nil
+		},
+		waitForReceipt: func(txHash string) (*evm.TransactionReceipt, error) {
+			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash}, nil
+		},
+		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+			if functionName != evm.FunctionTryAggregate {
+				return nil, errors.New("unexpected rpc")
+			}
+			if !writeSeen {
+				return multicallChannelStateResult(t, big.NewInt(0), big.NewInt(0), 0, big.NewInt(0)), nil
+			}
+			return multicallChannelStateResult(t, big.NewInt(1000), big.NewInt(0), 0, big.NewInt(0)), nil
+		},
+	}
+}
+
+func TestSettleManagedDeposit_IdentityErrorSurfacesExtraFlag(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "02")
+	channelId := mustChannelId(t, cfg)
+	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "", errors.New("idp down") }
+
+	resp, err := SettleManaged(context.Background(), deps,
+		managedDepositEnvelope(cfg, channelId),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success {
+		t.Fatalf("identity failure must not fail the deposit, got %+v", resp)
+	}
+	if resp.Extra["identityResolutionFailed"] != true {
+		t.Fatalf("missing identityResolutionFailed flag, extra = %+v", resp.Extra)
+	}
+	got, _ := store.Get(channelId)
+	if got == nil {
+		t.Fatal("expected stored channel")
+	}
+	if got.CallerIdentity != "" {
+		t.Fatalf("CallerIdentity = %q, want empty", got.CallerIdentity)
 	}
 }
 

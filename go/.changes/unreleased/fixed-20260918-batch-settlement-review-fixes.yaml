@@ -1,0 +1,3 @@
+kind: fixed
+body: Guard SVM upto SettleOnCancel on settled before-handler phases so cancels before escrow deposit settle nothing; fail closed on corrupt uint256 watermarks in voucher commit, claim selection, claimed totals, and managed verify; surface managed deposit identity resolution failures via extra.identityResolutionFailed; serialize in-memory channel Set/Delete with the per-channel lock and make Redis Delete an unconditional Lua delete of channel plus lock; map managed verify nonce failures to voucher-store-unavailable.
+time: 2026-09-18T12:00:00Z

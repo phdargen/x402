@@ -78,12 +78,15 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 
 	switch filter.Kind {
 	case QueryKindClaimable:
-		if uint256Cmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) <= 0 {
+		charged, chargedOk := parseUint256(channel.ChargedCumulativeAmount)
+		claimed, claimedOk := parseUint256(channel.TotalClaimed)
+		if !chargedOk || !claimedOk || charged.Cmp(claimed) <= 0 {
 			return false
 		}
 		return matchesIdle(channel, filter.IdleAtOrBefore)
 	case QueryKindIdleRefundable:
-		if uint256Cmp(channel.Balance, "0") == 0 {
+		balance, ok := parseUint256(channel.Balance)
+		if !ok || balance.Sign() == 0 {
 			return false
 		}
 		return matchesIdle(channel, filter.IdleAtOrBefore)
@@ -146,7 +149,7 @@ func SettleQueryByScan[T ChannelRecord[T]](store ChannelStorage[T], filter Settl
 	seen := make(map[string]struct{})
 	for _, record := range all {
 		channel := record.Base()
-		if uint256Cmp(channel.TotalClaimed, "0") == 0 {
+		if claimed, ok := parseUint256(channel.TotalClaimed); !ok || claimed.Sign() == 0 {
 			continue
 		}
 		network := channelNetwork(channel)
@@ -248,16 +251,28 @@ func parseQueryCursor(cursor string) int {
 	return parsed
 }
 
-func uint256Cmp(a, b string) int {
-	ai, okA := new(big.Int).SetString(a, 10)
-	bi, okB := new(big.Int).SetString(b, 10)
+// parseUint256 parses a decimal uint256. ok=false means the caller must skip
+// (query/claim scans) or fail closed (writes, verify) — never treat as zero.
+func parseUint256(s string) (*big.Int, bool) {
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok || v.Sign() < 0 {
+		return nil, false
+	}
+	return v, true
+}
+
+// uint256Cmp compares decimal uint256 strings. ok=false means either operand
+// failed to parse, and the caller must skip the row, not treat it as zero.
+func uint256Cmp(a, b string) (int, bool) {
+	ai, okA := parseUint256(a)
 	if !okA {
-		ai = new(big.Int)
+		return 0, false
 	}
+	bi, okB := parseUint256(b)
 	if !okB {
-		bi = new(big.Int)
+		return 0, false
 	}
-	return ai.Cmp(bi)
+	return ai.Cmp(bi), true
 }
 
 func stableSortChannels[T ChannelRecord[T]](channels []T, less func(a, b T) bool) {

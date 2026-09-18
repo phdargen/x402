@@ -29,7 +29,7 @@ func SelectClaimableVouchers(channels []*Channel, opts *SelectClaimableOptions) 
 		if c == nil {
 			continue
 		}
-		if uint256Cmp(c.ChargedCumulativeAmount, c.TotalClaimed) <= 0 {
+		if cmp, ok := uint256Cmp(c.ChargedCumulativeAmount, c.TotalClaimed); !ok || cmp <= 0 {
 			continue
 		}
 		if opts != nil && opts.IdleSecs != nil {
@@ -62,16 +62,16 @@ func ApplyClaimedTotals[T ChannelRecord[T]](store ChannelStorage[T], claims []ba
 			return err
 		}
 		claimedAmount, ok := new(big.Int).SetString(claim.TotalClaimed, 10)
-		if !ok {
-			claimedAmount = new(big.Int)
+		if !ok || claimedAmount.Sign() < 0 {
+			continue
 		}
 		if _, err := store.UpdateChannel(channelId, func(current T) T {
 			if isZeroRecord(current) {
 				return current
 			}
 			currentClaimed, ok := new(big.Int).SetString(current.Base().TotalClaimed, 10)
-			if !ok {
-				currentClaimed = new(big.Int)
+			if !ok || currentClaimed.Sign() < 0 {
+				return current
 			}
 			if claimedAmount.Cmp(currentClaimed) <= 0 {
 				return current

@@ -314,7 +314,7 @@ func TestManagedAfterSettle_IgnoresFailedResult(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "1000",
 		SignedMaxClaimable: "1000", Signature: "0xdeadbeef", Balance: "10000",
 	})
@@ -422,7 +422,7 @@ func TestManagedAfterSettle_CancelDoesNotUpsertReplica(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "1000",
 		SignedMaxClaimable: "1000", Signature: "0xdeadbeef", Balance: "10000",
 	})
@@ -591,7 +591,7 @@ func TestManagedAfterSettle_IgnoresClaimPayload(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "1000", Balance: "10000",
 	})
 	if err := handleManagedAfterSettle(s, x402.SettleResultContext{
@@ -757,7 +757,7 @@ func TestManagedAfterSettle_PartialRefundUpdatesReplica(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "3000",
 		SignedMaxClaimable: "5000", Signature: "0xdeadbeef", Balance: "10000", TotalClaimed: "2000",
 	})
@@ -788,7 +788,7 @@ func TestManagedAfterSettle_FullRefundDeletesReplica(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "5000",
 		SignedMaxClaimable: "5000", Signature: "0xdeadbeef", Balance: "10000", TotalClaimed: "5000",
 	})
@@ -980,7 +980,7 @@ func TestManagedAfterSettle_FailedSchemeHookLeavesReplica(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{ChannelId: id, ChargedCumulativeAmount: "1000", Balance: "10000"})
+	seedStore(t, store, id, &ChannelSession{ChannelId: id, ChargedCumulativeAmount: "1000", Balance: "10000"})
 	if err := s.AfterSettleHook()(x402.SettleResultContext{
 		SettleContext: x402.SettleContext{
 			Payload:      managedPayload(voucherPayload(id, "1000", "0xdeadbeef")),
@@ -1000,7 +1000,7 @@ func TestManagedAfterSettle_PartialRefundViaSchemeHook(t *testing.T) {
 	store := NewInMemoryChannelStorage()
 	s := buildManagedServer(t, store, false)
 	id := testChannelId(t)
-	_ = store.Set(id, &ChannelSession{
+	seedStore(t, store, id, &ChannelSession{
 		ChannelId: id, ChannelConfig: testConfig(), ChargedCumulativeAmount: "5000", Balance: "10000",
 	})
 	if err := s.AfterSettleHook()(x402.SettleResultContext{

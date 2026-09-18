@@ -65,8 +65,6 @@ type ChannelUpdateResult[T ChannelRecord[T]] struct {
 // (nil for pointer records) when the row is missing.
 type ChannelStorage[T ChannelRecord[T]] interface {
 	Get(channelId string) (T, error)
-	Set(channelId string, session T) error
-	Delete(channelId string) error
 	List() ([]T, error)
 	UpdateChannel(channelId string, update func(current T) T) (*ChannelUpdateResult[T], error)
 }
@@ -117,10 +115,12 @@ type admissionLock struct {
 
 // InMemoryChannelStorage is a volatile ChannelStorage backed by a map.
 //
-// The per-channel lock map is allocated lazily and dropped when Delete is
-// called for that channel. Long-lived servers that see an unbounded set of
-// distinct channelIds without Delete will grow this map; production
-// deployments should prefer Delete-on-drain.
+// The per-channel lock map is allocated lazily and retained for the lifetime
+// of the store so a caller holding the old *sync.Mutex cannot race a fresh
+// lockFor allocation for the same id. The admission-lock map is dropped when
+// UpdateChannel deletes the row. Long-lived servers that see an unbounded set
+// of distinct channelIds will grow the lock map; production deployments
+// should prefer Delete-on-drain via UpdateChannel returning the zero T.
 type InMemoryChannelStorage[T ChannelRecord[T]] struct {
 	mu             sync.Mutex
 	sessions       map[string]T
@@ -167,33 +167,6 @@ func (s *InMemoryChannelStorage[T]) Get(channelId string) (T, error) {
 		return zero, nil
 	}
 	return session.Clone(), nil
-}
-
-// Set stores a clone of session under the canonical channel id.
-func (s *InMemoryChannelStorage[T]) Set(channelId string, session T) error {
-	key, err := batchsettlement.NormalizeChannelId(channelId)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[key] = session.Clone()
-	return nil
-}
-
-// Delete removes the channel row and its admission lock.
-func (s *InMemoryChannelStorage[T]) Delete(channelId string) error {
-	key, err := batchsettlement.NormalizeChannelId(channelId)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, key)
-	delete(s.admissionLocks, key)
-	// The per-channel mutex is retained so a caller already holding the old
-	// *sync.Mutex cannot race a fresh lockFor allocation for the same id.
-	return nil
 }
 
 // List returns clones of every stored record, sorted by channelId so scan-backed

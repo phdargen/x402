@@ -24,8 +24,9 @@ const (
 )
 
 // updateChannelScript applies a compare-and-write mutation. ARGV:
-// expectedExists ("0"|"1"), expected raw value, operation ("delete"|"keep"|"set"),
-// nextValue (set only). Returns {applied, currentOrNext} where applied is 0|1.
+// expectedExists ("0"|"1"), expected raw value, operation
+// ("delete"|"keep"|"set"), nextValue (set only). Returns {applied,
+// currentOrNext} where applied is 0|1.
 const updateChannelScript = `
 local current = redis.call("GET", KEYS[1])
 local expectedExists = ARGV[1]
@@ -218,37 +219,6 @@ func (s *RedisChannelStorage[T]) Get(channelId string) (T, error) {
 	}
 	_, session, err := s.readChannelRaw(key)
 	return session, err
-}
-
-// Set writes session as JSON under the canonical channel id.
-func (s *RedisChannelStorage[T]) Set(channelId string, session T) error {
-	key, err := s.channelKey(channelId)
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(session)
-	if err != nil {
-		return err
-	}
-	_, err = s.client.Set(key, string(raw), nil)
-	return err
-}
-
-// Delete removes the channel JSON and the admission lock key.
-func (s *RedisChannelStorage[T]) Delete(channelId string) error {
-	key, err := s.channelKey(channelId)
-	if err != nil {
-		return err
-	}
-	lockKey, err := s.lockKey(channelId)
-	if err != nil {
-		return err
-	}
-	if _, err := s.client.Del(key); err != nil {
-		return err
-	}
-	_, err = s.client.Del(lockKey)
-	return err
 }
 
 // List returns stored records sorted by channelId.

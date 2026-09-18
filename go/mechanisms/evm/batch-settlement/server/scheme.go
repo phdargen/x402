@@ -955,19 +955,9 @@ func (s *BatchSettlementEvmScheme) CreateChannelManager(facilitator x402.Facilit
 	})
 }
 
-// UpdateSession updates or creates a session for a channel.
-func (s *BatchSettlementEvmScheme) UpdateSession(channelId string, session *ChannelSession) error {
-	return s.storage.Set(channelId, session)
-}
-
 // GetSession retrieves a session for a channel.
 func (s *BatchSettlementEvmScheme) GetSession(channelId string) (*ChannelSession, error) {
 	return s.storage.Get(channelId)
-}
-
-// DeleteSession removes a session for a channel.
-func (s *BatchSettlementEvmScheme) DeleteSession(channelId string) error {
-	return s.storage.Delete(channelId)
 }
 
 // ResolveMinDepositHint resolves the extra.minDeposit hint written on every 402.

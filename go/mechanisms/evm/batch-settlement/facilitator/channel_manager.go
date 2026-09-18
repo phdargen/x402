@@ -626,6 +626,15 @@ func (m *FacilitatorChannelManager) afterRefund(
 }
 
 func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
+	if channel == nil {
+		return nil
+	}
+	if _, ok := parseManagedUint(channel.ChargedCumulativeAmount); !ok {
+		return nil
+	}
+	if _, ok := parseManagedUint(channel.TotalClaimed); !ok {
+		return nil
+	}
 	if uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) <= 0 {
 		return nil
 	}

@@ -188,6 +188,30 @@ func TestCommitVoucherCharge_CapExceededDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestCommitVoucherCharge_CorruptWatermarkIsConflictWithoutWrite(t *testing.T) {
+	store := NewInMemoryChannelStorage[*Channel]()
+	seed := voucherBaseChannel(nil)
+	seed.ChargedCumulativeAmount = "not-a-number"
+	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel { return seed }); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+		Increment: big.NewInt(100),
+		SignedCap: big.NewInt(100),
+		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "100", Signature: "0xbbb"},
+	})
+	if err != nil {
+		t.Fatalf("CommitVoucherCharge: %v", err)
+	}
+	if result.Status != CommitConflict {
+		t.Fatalf("status = %q, want conflict", result.Status)
+	}
+	got, _ := store.Get(voucherChannelId)
+	if got.ChargedCumulativeAmount != "not-a-number" {
+		t.Fatalf("corrupt watermark was overwritten: %q", got.ChargedCumulativeAmount)
+	}
+}
+
 func TestCommitVoucherCharge_AppliesMapAfterCommit(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {

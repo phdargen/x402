@@ -456,10 +456,6 @@ func (s *hookStore) Get(channelId string) (*FacilitatorChannel, error) {
 	}
 	return s.inner.Get(channelId)
 }
-func (s *hookStore) Set(channelId string, session *FacilitatorChannel) error {
-	return s.inner.Set(channelId, session)
-}
-func (s *hookStore) Delete(channelId string) error { return s.inner.Delete(channelId) }
 func (s *hookStore) List() ([]*FacilitatorChannel, error) {
 	return s.inner.List()
 }

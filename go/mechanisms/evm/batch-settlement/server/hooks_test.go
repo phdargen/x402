@@ -402,7 +402,7 @@ func TestBeforeVerifyHook_EnforcesDefault10xMinDepositWhenOmitted(t *testing.T) 
 func TestBeforeVerifyHook_StaleCumulativeAborts(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	res := runBeforeVerify(t, s, &stubPayload{data: fx.payload(t, "999")})
 	if res == nil || !res.Abort || res.Reason != batchsettlement.ErrCumulativeAmountMismatch {
 		t.Fatalf("got %+v", res)
@@ -419,7 +419,7 @@ func TestBeforeVerifyHook_StaleCumulativeCapturesSnapshot(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
 	sess := sampleSession(fx.channelId, "10")
-	_ = s.UpdateSession(fx.channelId, sess)
+	seedSession(t, s, fx.channelId, sess)
 
 	pp := &types.PaymentPayload{
 		X402Version: 2,
@@ -442,7 +442,7 @@ func TestBeforeVerifyHook_StaleCumulativeCapturesSnapshot(t *testing.T) {
 func TestBeforeVerifyHook_FreshCumulativePasses(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	// expected = 10 + 10 (req amount) = 20
 	res := runBeforeVerify(t, s, &stubPayload{data: fx.payload(t, "20")})
 	if res != nil {
@@ -488,7 +488,7 @@ func TestBeforeVerifyHook_LocalVerifyRejectsOverEscrow(t *testing.T) {
 	sess.Balance = "100"
 	sess.TotalClaimed = "0"
 	sess.OnchainSyncedAt = time.Now().UnixMilli()
-	_ = s.UpdateSession(channelId, sess)
+	seedSession(t, s, channelId, sess)
 
 	reqs := stubRequirements{
 		scheme:  batchsettlement.SchemeBatched,
@@ -535,7 +535,7 @@ func TestBeforeVerifyHook_RefundFreshCumulativePasses(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id := testChannelId(t)
 	sess := sampleSession(id, "10")
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	// Refund: expected = prevCharged (10), no req amount added.
 	res := runBeforeVerify(t, s, &stubPayload{data: refundPayload(id, "10", "0xsig")})
 	if res != nil {
@@ -549,7 +549,7 @@ func TestBeforeVerifyHook_RefundFreshCumulativePasses(t *testing.T) {
 func TestBeforeVerifyHook_LivePendingRejectsBusy(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	mustAcquire(t, s, fx.channelId, "p-live")
 
 	res := runBeforeVerify(t, s, &stubPayload{data: fx.payload(t, "20")})
@@ -561,7 +561,7 @@ func TestBeforeVerifyHook_LivePendingRejectsBusy(t *testing.T) {
 func TestBeforeVerifyHook_ReplacesExpiredAdmissionLock(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	ok, err := s.GetLockStorage().Acquire(fx.channelId, "expired", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
@@ -797,7 +797,7 @@ func TestOnVerifyFailureHook_ClearsPendingRequest(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id := testChannelId(t)
 	sess := sampleSession(id, "10")
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	mustAcquire(t, s, id, "p-verify")
 	stub := &stubPayload{data: voucherPayload(id, "20", "0xsig")}
 	s.MergeRequestContext(stub, BatchSettlementRequestContext{
@@ -863,7 +863,7 @@ func TestOnVerifiedPaymentCanceled_AfterVerifyAbortedClearsPending(t *testing.T)
 func TestBeforeSettleHook_DepositPassThrough(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id := testChannelId(t)
-	_ = s.UpdateSession(id, sampleSession(id, "5"))
+	seedSession(t, s, id, sampleSession(id, "5"))
 	payload := depositPayloadFor(id, "100", "0xsig")
 	res, err := s.BeforeSettleHook()(x402.SettleContext{
 		Payload:      &stubPayload{data: payload},
@@ -895,7 +895,7 @@ func TestBeforeSettleHook_VoucherWithoutSessionAborts(t *testing.T) {
 func TestBeforeSettleHook_VoucherSkipsAndUpdates(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	stub := &stubPayload{data: fx.payload(t, "20")}
 	if res := runBeforeVerify(t, s, stub); res != nil {
 		t.Fatalf("BeforeVerify: %+v", res)
@@ -926,7 +926,7 @@ func TestBeforeSettleHook_VoucherExceedsSignedCapAborts(t *testing.T) {
 	// Simulate chargedCumulativeAmount changing after reservation.
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "10"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
 	stub := &stubPayload{data: fx.payload(t, "20")}
 	if res := runBeforeVerify(t, s, stub); res != nil {
 		t.Fatalf("BeforeVerify: %+v", res)
@@ -939,7 +939,7 @@ func TestBeforeSettleHook_VoucherExceedsSignedCapAborts(t *testing.T) {
 		t.Fatal("expected session after store")
 	}
 	cur.ChargedCumulativeAmount = "15"
-	_ = s.UpdateSession(fx.channelId, cur)
+	seedSession(t, s, fx.channelId, cur)
 	res, err := s.BeforeSettleHook()(x402.SettleContext{
 		Payload:      stub,
 		Requirements: batchedReqs(),
@@ -1026,7 +1026,7 @@ func TestBeforeSettleHook_OptimisticLockStoreOneChargeWins(t *testing.T) {
 		LockStorage: throwingLockStorage{},
 	})
 	fx := newSignedVoucherFixture(t)
-	_ = s.UpdateSession(fx.channelId, sampleSession(fx.channelId, "0"))
+	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "0"))
 
 	first := &stubPayload{data: fx.payload(t, "10")}
 	second := &stubPayload{data: fx.payload(t, "10")}
@@ -1151,7 +1151,7 @@ func reserveRefundPending(t *testing.T, s *BatchSettlementEvmScheme, id, pending
 	}
 	sess.SignedMaxClaimable = signedMax
 	sess.Signature = sig
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	mustAcquire(t, s, id, pendingId)
 }
 
@@ -1165,7 +1165,7 @@ func TestEnrichSettlementPayload_RefundReturnsAdditiveFields(t *testing.T) {
 	sess := sampleSession(id, "10")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveRefundPending(t, s, id, "p-refund", "10", "0xsig")
 	payload := refundPayload(id, "10", "0xsig")
 	stub := &stubPayload{data: payload}
@@ -1193,7 +1193,7 @@ func TestEnrichSettlementPayload_RefundNoBalanceErrors(t *testing.T) {
 	sess := sampleSession(id, "1000")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveRefundPending(t, s, id, "p-refund", "1000", "0xsig")
 	stub := &stubPayload{data: refundPayload(id, "1000", "0xsig")}
 	s.MergeRequestContext(stub, BatchSettlementRequestContext{ChannelId: id, PendingId: "p-refund"})
@@ -1210,7 +1210,7 @@ func TestEnrichSettlementPayload_RefundAmountInvalidErrors(t *testing.T) {
 	sess := sampleSession(id, "10")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveRefundPending(t, s, id, "p-refund", "10", "0xsig")
 	payload := refundPayload(id, "10", "0xsig")
 	payload["amount"] = "not-a-number"
@@ -1229,7 +1229,7 @@ func TestEnrichSettlementPayload_RefundAmountExceedsRemainderErrors(t *testing.T
 	sess := sampleSession(id, "10")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveRefundPending(t, s, id, "p-refund", "10", "0xsig")
 	payload := refundPayload(id, "10", "0xsig")
 	payload["amount"] = "9999"
@@ -1246,7 +1246,7 @@ func TestOnSettleFailureHook_ClearsPendingRequest(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id := testChannelId(t)
 	sess := sampleSession(id, "10")
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	mustAcquire(t, s, id, "p-settle")
 	stub := &stubPayload{data: voucherPayload(id, "20", "0xsig")}
 	s.MergeRequestContext(stub, BatchSettlementRequestContext{
@@ -1309,7 +1309,7 @@ func reserveDepositPending(t *testing.T, s *BatchSettlementEvmScheme, id, pendin
 func TestAfterSettleHook_DepositUpdatesBalance(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	reserveDepositPending(t, s, id, "p-deposit")
 	payload := depositPayloadFor(id, "100", "0xsig")
 	stub := &stubPayload{data: payload}
@@ -1350,7 +1350,7 @@ func TestAfterSettleHook_DepositUpdatesBalance(t *testing.T) {
 func TestAfterSettleHook_DepositClearsPendingRequest(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	reserveDepositPending(t, s, id, "p-deposit")
 	payload := depositPayloadFor(id, "100", "0xsig")
 	stub := &stubPayload{data: payload}
@@ -1393,7 +1393,7 @@ func TestAfterSettleHook_RefundFullDeletes(t *testing.T) {
 	sess := sampleSession(id, "100")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveDepositPending(t, s, id, "p-refund")
 	// Refund the full remainder: post-refund balance == chargedCumulative → delete.
 	rp := map[string]interface{}{
@@ -1441,7 +1441,7 @@ func TestAfterSettleHook_RefundFullDeletesAfterPayloadEnrichment(t *testing.T) {
 	sess := sampleSession(id, "100")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	pp := &types.PaymentPayload{
 		X402Version: 2,
 		Payload:     refundPayload(id, "100", "0xsig"),
@@ -1492,7 +1492,7 @@ func TestAfterSettleHook_RefundPartialUpdates(t *testing.T) {
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
 	sess.RefundNonce = 0
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveDepositPending(t, s, id, "p-refund")
 	rp := map[string]interface{}{
 		"type":          "refund",
@@ -1553,7 +1553,7 @@ func TestAfterSettleHook_RefundPendingMismatchReturnsBusy(t *testing.T) {
 	sess := sampleSession(id, "100")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "1000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	reserveDepositPending(t, s, id, "p-current")
 	rp := map[string]interface{}{
 		"type":          "refund",
@@ -1595,7 +1595,7 @@ func TestAfterSettleHook_RefundPendingMismatchReturnsBusy(t *testing.T) {
 func TestAfterSettleHook_DepositChargesWithoutLock(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	err := s.AfterSettleHook()(x402.SettleResultContext{
 		SettleContext: x402.SettleContext{
 			Payload:      &stubPayload{data: depositPayloadFor(id, "100", "0xsig")},
@@ -1651,7 +1651,7 @@ func TestAfterSettleHook_DepositNoRowNoSnapshotBusy(t *testing.T) {
 func TestAfterSettleHook_DepositHeldByOtherBusy(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	mustAcquire(t, s, id, "other")
 	err := s.AfterSettleHook()(x402.SettleResultContext{
 		SettleContext: x402.SettleContext{
@@ -1680,7 +1680,7 @@ func TestAfterSettleHook_DepositIsHeldSyntaxErrorFailsClosed(t *testing.T) {
 		LockStorage: errLockStorage{isHeldErr: corruptHoldError()},
 	})
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	err := s.AfterSettleHook()(x402.SettleResultContext{
 		SettleContext: x402.SettleContext{
 			Payload:      &stubPayload{data: depositPayloadFor(id, "100", "0xsig")},
@@ -1708,7 +1708,7 @@ func TestAfterSettleHook_DepositIsHeldLockDownStillCharges(t *testing.T) {
 		LockStorage: throwingLockStorage{},
 	})
 	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
-	_ = s.UpdateSession(id, sampleSession(id, "0"))
+	seedSession(t, s, id, sampleSession(id, "0"))
 	err := s.AfterSettleHook()(x402.SettleResultContext{
 		SettleContext: x402.SettleContext{
 			Payload:      &stubPayload{data: depositPayloadFor(id, "100", "0xsig")},
@@ -1741,7 +1741,7 @@ func TestEnrichSettlementPayload_HeldByOtherBusy(t *testing.T) {
 	sess := sampleSession(id, "500")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "10000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	mustAcquire(t, s, id, "other")
 	_, err := s.EnrichSettlementPayload(x402.SettleContext{
 		Payload:      &stubPayload{data: refundPayload(id, "500", "0xsig")},
@@ -1760,7 +1760,7 @@ func TestEnrichSettlementPayload_IsHeldSyntaxErrorFailsClosed(t *testing.T) {
 	sess := sampleSession(id, "500")
 	sess.ChannelConfig = testConfig()
 	sess.Balance = "10000"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	_, err := s.EnrichSettlementPayload(x402.SettleContext{
 		Payload:      &stubPayload{data: refundPayload(id, "500", "0xsig")},
 		Requirements: batchedReqs(),
@@ -1780,7 +1780,7 @@ func TestEnrichSettlementPayload_IsHeldLockDownStillProceeds(t *testing.T) {
 	sess.Balance = "1000"
 	sess.SignedMaxClaimable = "10"
 	sess.Signature = "0xsig"
-	_ = s.UpdateSession(id, sess)
+	seedSession(t, s, id, sess)
 	payload := refundPayload(id, "10", "0xsig")
 	stub := &stubPayload{data: payload}
 	s.MergeRequestContext(stub, BatchSettlementRequestContext{ChannelId: id, PendingId: "p-refund"})
