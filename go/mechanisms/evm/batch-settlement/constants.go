@@ -368,3 +368,18 @@ var BatchSettlementFinalizeWithdrawABI = []byte(`[
 		"stateMutability": "nonpayable"
 	}
 ]`)
+
+// BatchSettlementClaimedEventABI is Claimed(bytes32 indexed channelId, address indexed sender, uint128 claimAmount, uint128 newTotalClaimed).
+var BatchSettlementClaimedEventABI = []byte(`[
+	{
+		"anonymous": false,
+		"inputs": [
+			{"indexed": true, "name": "channelId", "type": "bytes32"},
+			{"indexed": true, "name": "sender", "type": "address"},
+			{"indexed": false, "name": "claimAmount", "type": "uint128"},
+			{"indexed": false, "name": "newTotalClaimed", "type": "uint128"}
+		],
+		"name": "Claimed",
+		"type": "event"
+	}
+]`)
