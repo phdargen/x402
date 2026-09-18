@@ -767,3 +767,62 @@ func TestGetWithdrawalPendingSessions(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func buildManagedManager(t *testing.T) (*BatchSettlementChannelManager, *fakeFacilitator, SessionStorage) {
+	t.Helper()
+	store := NewInMemoryChannelStorage()
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode: VoucherStoreModeFacilitator,
+		Storage:          store,
+	})
+	f := &fakeFacilitator{}
+	return newManager(s, f), f, store
+}
+
+func TestChannelManager_ManagedClaimFromReplica(t *testing.T) {
+	m, f, store := buildManagedManager(t)
+	sess := sampleSession(testChA, "100")
+	sess.ChargedCumulativeAmount = "5000"
+	sess.TotalClaimed = "0"
+	if err := store.Set(testChA, sess); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	results, err := m.Claim(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(results) != 1 || f.settleCalls != 1 {
+		t.Fatalf("results=%+v settleCalls=%d", results, f.settleCalls)
+	}
+	if f.settlePayloads[0]["type"] != "claim" {
+		t.Fatalf("payload = %+v", f.settlePayloads[0])
+	}
+}
+
+func TestChannelManager_ManagedRefundRejected(t *testing.T) {
+	m, _, _ := buildManagedManager(t)
+	_, err := m.Refund(context.Background(), nil)
+	if err == nil || err.Error() != "cooperative refunds are client-initiated in facilitator-managed mode" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestChannelManager_ManagedRefundIdleRejected(t *testing.T) {
+	m, _, _ := buildManagedManager(t)
+	_, err := m.RefundIdleChannels(context.Background(), 60)
+	if err == nil || err.Error() != "cooperative refunds are client-initiated in facilitator-managed mode" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestChannelManager_ManagedDoesNotStartRefundTimer(t *testing.T) {
+	m, _, _ := buildManagedManager(t)
+	m.Start(AutoSettlementConfig{ClaimIntervalSecs: 3600, SettleIntervalSecs: 3600, RefundIntervalSecs: 3600})
+	defer func() { _ = m.Stop(context.Background(), nil) }()
+	m.mu.Lock()
+	_, hasRefund := m.timers[autoJobRefund]
+	m.mu.Unlock()
+	if hasRefund {
+		t.Fatal("managed mode must not start a refund timer")
+	}
+}

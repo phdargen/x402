@@ -811,3 +811,93 @@ func TestExtractChannelIdFromPayload(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func managedSupportedKind(extra map[string]interface{}) types.SupportedKind {
+	out := map[string]interface{}{
+		"receiverAuthorizer": "0x1111111111111111111111111111111111111111",
+		"withdrawDelay":      900,
+		"voucherStore":       true,
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return types.SupportedKind{
+		X402Version: 2,
+		Scheme:      batchsettlement.SchemeBatched,
+		Network:     "eip155:8453",
+		Extra:       out,
+	}
+}
+
+func TestEnhancePaymentRequirements_ManagedRequiresAdvertisedVoucherStore(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode:       VoucherStoreModeFacilitator,
+		RefundAuthorizerSigner: &mockAuthorizerSigner{address: "0xrefund"},
+	})
+	req := types.PaymentRequirements{
+		Network: "eip155:8453",
+		Asset:   "0x1234567890abcdef1234567890abcdef12345678",
+		Amount:  "1000",
+	}
+	_, err := s.EnhancePaymentRequirements(context.Background(), req, managedSupportedKind(map[string]interface{}{"voucherStore": false}), nil)
+	if err == nil || !strings.Contains(err.Error(), "advertised extra.voucherStore") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestEnhancePaymentRequirements_ManagedCopiesWithdrawDelayAndVoucherStore(t *testing.T) {
+	refund := &mockAuthorizerSigner{address: "0x2222222222222222222222222222222222222222"}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode:       VoucherStoreModeFacilitator,
+		RefundAuthorizerSigner: refund,
+	})
+	req := types.PaymentRequirements{
+		Network: "eip155:8453",
+		Asset:   "0x1234567890abcdef1234567890abcdef12345678",
+		Amount:  "1000",
+	}
+	out, err := s.EnhancePaymentRequirements(context.Background(), req, managedSupportedKind(map[string]interface{}{"withdrawDelay": 1200}), nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if out.Extra["voucherStore"] != true {
+		t.Fatalf("voucherStore = %v", out.Extra["voucherStore"])
+	}
+	if out.Extra["withdrawDelay"] != 1200 {
+		t.Fatalf("withdrawDelay = %v", out.Extra["withdrawDelay"])
+	}
+	if out.Extra["refundAuthorizer"] == nil {
+		t.Fatal("expected refundAuthorizer")
+	}
+}
+
+func TestValidateFacilitatorSupport_ManagedRequiresRefundConsent(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode: VoucherStoreModeFacilitator,
+	})
+	err := s.ValidateFacilitatorSupport("eip155:8453", managedSupportedKind(nil), nil)
+	if err == nil || !strings.Contains(err.Error(), "refundAuth") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestValidateFacilitatorSupport_ManagedAcceptsRefundAuthAdvertisement(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode: VoucherStoreModeFacilitator,
+	})
+	err := s.ValidateFacilitatorSupport("eip155:8453", managedSupportedKind(map[string]interface{}{"refundAuth": true}), nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestValidateFacilitatorSupport_ManagedRequiresVoucherStore(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		VoucherStoreMode:       VoucherStoreModeFacilitator,
+		RefundAuthorizerSigner: &mockAuthorizerSigner{address: "0xrefund"},
+	})
+	err := s.ValidateFacilitatorSupport("eip155:8453", managedSupportedKind(map[string]interface{}{"voucherStore": false}), nil)
+	if err == nil || !strings.Contains(err.Error(), "advertise voucherStore") {
+		t.Fatalf("got %v", err)
+	}
+}

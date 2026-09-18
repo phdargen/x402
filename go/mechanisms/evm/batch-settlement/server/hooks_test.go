@@ -653,6 +653,44 @@ func TestBeforeVerifyHook_ChannelIdMismatchAborts(t *testing.T) {
 	}
 }
 
+func TestBeforeVerifyHook_RejectsClientPendingIdBeforeLock(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	rec := &recordingLockStorage{inner: inner}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		Storage:     inner,
+		LockStorage: rec,
+	})
+	fx := newSignedVoucherFixture(t)
+	raw := fx.payload(t, "10")
+	raw["pendingId"] = "0xclient"
+	res := runBeforeVerify(t, s, &stubPayload{data: raw})
+	if res == nil || !res.Abort || res.Reason != batchsettlement.ErrUnexpectedPendingId {
+		t.Fatalf("got %+v", res)
+	}
+	if rec.acquires != 0 {
+		t.Fatalf("pendingId reject must not acquire, got %d", rec.acquires)
+	}
+}
+
+func TestBeforeVerifyHook_RejectsClientCancelBeforeLock(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	rec := &recordingLockStorage{inner: inner}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{
+		Storage:     inner,
+		LockStorage: rec,
+	})
+	fx := newSignedVoucherFixture(t)
+	raw := fx.payload(t, "10")
+	raw["cancel"] = true
+	res := runBeforeVerify(t, s, &stubPayload{data: raw})
+	if res == nil || !res.Abort || res.Reason != batchsettlement.ErrUnexpectedCancel {
+		t.Fatalf("got %+v", res)
+	}
+	if rec.acquires != 0 {
+		t.Fatalf("cancel reject must not acquire, got %d", rec.acquires)
+	}
+}
+
 // ----- AfterVerifyHook -----
 
 func TestAfterVerifyHook_NonBatchedIgnored(t *testing.T) {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -183,31 +184,30 @@ type GetClaimableVouchersOpts struct {
 // GetClaimableVouchers returns voucher claims ready for onchain settlement.
 // Skips entries whose `chargedCumulativeAmount` does not exceed `totalClaimed`.
 func (m *BatchSettlementChannelManager) GetClaimableVouchers(opts *GetClaimableVouchersOpts) ([]batchsettlement.BatchSettlementVoucherClaim, error) {
-	channels, err := m.scheme.storage.List()
-	if err != nil {
-		return nil, err
-	}
+	filter := ChannelQuery{Kind: QueryKindClaimable}
 	idleSecs := 0
 	if opts != nil {
 		idleSecs = opts.IdleSecs
 	}
-	return m.collectClaimsFromChannels(channels, idleSecs), nil
+	if idleSecs > 0 {
+		idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
+		filter.IdleAtOrBefore = &idleAt
+	}
+	page, err := QueryChannels(m.scheme.GetStorage(), filter, nil)
+	if err != nil {
+		return nil, err
+	}
+	return m.collectClaimsFromChannels(page.Items, idleSecs), nil
 }
 
 // GetWithdrawalPendingSessions returns sessions that have a pending payer-initiated
 // withdrawal (withdrawRequestedAt > 0).
 func (m *BatchSettlementChannelManager) GetWithdrawalPendingSessions() ([]*ChannelSession, error) {
-	channels, err := m.scheme.storage.List()
+	page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindWithdrawPending}, nil)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*ChannelSession, 0, len(channels))
-	for _, c := range channels {
-		if c.WithdrawRequestedAt > 0 {
-			out = append(out, c)
-		}
-	}
-	return out, nil
+	return page.Items, nil
 }
 
 // Claim collects claimable vouchers and submits them in batches.
@@ -255,14 +255,21 @@ func (m *BatchSettlementChannelManager) ClaimAndSettle(ctx context.Context, opts
 // Refund refunds the listed channels. Channels with a live admission lock
 // are skipped. Pass an empty slice to refund every stored channel.
 func (m *BatchSettlementChannelManager) Refund(ctx context.Context, channelIds []string) ([]RefundResult, error) {
-	channels, err := m.scheme.storage.List()
-	if err != nil {
+	if err := m.assertRefundAllowed(); err != nil {
 		return nil, err
 	}
 	var targets []*ChannelSession
 	if len(channelIds) == 0 {
-		targets = channels
+		page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindIdleRefundable}, nil)
+		if err != nil {
+			return nil, err
+		}
+		targets = page.Items
 	} else {
+		channels, err := m.scheme.GetStorage().List()
+		if err != nil {
+			return nil, err
+		}
 		want := make(map[string]struct{}, len(channelIds))
 		for _, id := range channelIds {
 			want[strings.ToLower(id)] = struct{}{}
@@ -293,11 +300,10 @@ func (m *BatchSettlementChannelManager) Refund(ctx context.Context, channelIds [
 // RefundIdleChannels cooperatively refunds channels that have been idle for at
 // least `idleSecs` seconds and still hold a non-zero balance.
 func (m *BatchSettlementChannelManager) RefundIdleChannels(ctx context.Context, idleSecs int) ([]RefundResult, error) {
-	channels, err := m.scheme.storage.List()
-	if err != nil {
+	if err := m.assertRefundAllowed(); err != nil {
 		return nil, err
 	}
-	idle, idleErr := m.getIdleChannelsForRefund(channels, idleSecs)
+	idle, idleErr := m.getIdleChannelsForRefund(idleSecs)
 	if idleErr != nil {
 		return nil, idleErr
 	}
@@ -331,7 +337,9 @@ func (m *BatchSettlementChannelManager) Start(config AutoSettlementConfig) {
 
 	m.startAutoTimer(autoJobClaim, config.ClaimIntervalSecs)
 	m.startAutoTimer(autoJobSettle, config.SettleIntervalSecs)
-	m.startAutoTimer(autoJobRefund, config.RefundIntervalSecs)
+	if !m.scheme.IsFacilitatorManagedVoucherStore(m.network) {
+		m.startAutoTimer(autoJobRefund, config.RefundIntervalSecs)
+	}
 
 	m.wg.Add(1)
 	go m.drainLoop()
@@ -513,6 +521,9 @@ func (m *BatchSettlementChannelManager) runSettleJob(ctx context.Context) {
 }
 
 func (m *BatchSettlementChannelManager) runRefundJob(ctx context.Context) {
+	if m.scheme.IsFacilitatorManagedVoucherStore(m.network) {
+		return
+	}
 	cfg := m.snapshotAutoSettlementConfig()
 	if cfg.SelectRefundChannels == nil {
 		return
@@ -600,33 +611,11 @@ func (m *BatchSettlementChannelManager) selectClaimTargets(selector ClaimChannel
 }
 
 func (m *BatchSettlementChannelManager) collectClaimsFromChannels(channels []*ChannelSession, idleSecs int) []batchsettlement.BatchSettlementVoucherClaim {
-	now := time.Now().UnixMilli()
-	out := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(channels))
-	for _, c := range channels {
-		charged, _ := new(big.Int).SetString(c.ChargedCumulativeAmount, 10)
-		claimed, _ := new(big.Int).SetString(c.TotalClaimed, 10)
-		if charged == nil || claimed == nil || charged.Cmp(claimed) <= 0 {
-			continue
-		}
-		if idleSecs > 0 {
-			idleMs := now - c.LastRequestTimestamp
-			if idleMs < int64(idleSecs)*1000 {
-				continue
-			}
-		}
-		out = append(out, batchsettlement.BatchSettlementVoucherClaim{
-			Voucher: struct {
-				Channel            batchsettlement.ChannelConfig `json:"channel"`
-				MaxClaimableAmount string                        `json:"maxClaimableAmount"`
-			}{
-				Channel:            c.ChannelConfig,
-				MaxClaimableAmount: c.SignedMaxClaimable,
-			},
-			Signature:    c.Signature,
-			TotalClaimed: c.ChargedCumulativeAmount,
-		})
+	opts := &SelectClaimableOptions{Now: time.Now().UnixMilli()}
+	if idleSecs > 0 {
+		opts.IdleSecs = &idleSecs
 	}
-	return out
+	return SelectClaimableVouchers(channels, opts)
 }
 
 func (m *BatchSettlementChannelManager) claimFromChannels(
@@ -801,34 +790,12 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 // cumulative amount so GetClaimableVouchers stops returning the same channel
 // until a fresh voucher pushes ChargedCumulativeAmount higher.
 func (m *BatchSettlementChannelManager) updateClaimedSessions(claims []batchsettlement.BatchSettlementVoucherClaim) error {
-	for _, claim := range claims {
-		channelId, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, string(m.network))
-		if err != nil {
-			return fmt.Errorf("compute channel id: %w", err)
-		}
-		normalizedId, err := batchsettlement.NormalizeChannelId(channelId)
-		if err != nil {
-			return err
-		}
-		claimedAmount, ok := new(big.Int).SetString(claim.TotalClaimed, 10)
-		if !ok || claimedAmount == nil {
-			continue
-		}
-		_, err = m.scheme.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
-			if current == nil {
-				return current
-			}
-			curClaimed, _ := new(big.Int).SetString(current.TotalClaimed, 10)
-			if curClaimed != nil && claimedAmount.Cmp(curClaimed) <= 0 {
-				return current
-			}
-			next := *current
-			next.TotalClaimed = claimedAmount.String()
-			return &next
-		})
-		if err != nil {
-			return fmt.Errorf("update session %s: %w", normalizedId, err)
-		}
+	return ApplyClaimedTotals(m.scheme.GetStorage(), claims, string(m.network))
+}
+
+func (m *BatchSettlementChannelManager) assertRefundAllowed() error {
+	if m.scheme.IsFacilitatorManagedVoucherStore(m.network) {
+		return errors.New("cooperative refunds are client-initiated in facilitator-managed mode")
 	}
 	return nil
 }
@@ -840,27 +807,26 @@ func (m *BatchSettlementChannelManager) updateClaimedSessions(claims []batchsett
 //
 // Callers wanting "refund all idle channels" should inline this predicate
 // inside their SelectRefundChannels callback.
-func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(channels []*ChannelSession, idleSecs int) ([]*ChannelSession, error) {
+func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(idleSecs int) ([]*ChannelSession, error) {
 	if idleSecs <= 0 {
 		return nil, nil
 	}
-	now := time.Now().UnixMilli()
-	idleMs := int64(idleSecs) * 1000
+	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
+	page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{
+		Kind:           QueryKindIdleRefundable,
+		IdleAtOrBefore: &idleAt,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
 	lock := m.scheme.GetLockStorage()
-	out := make([]*ChannelSession, 0, len(channels))
-	for _, c := range channels {
-		balance, _ := new(big.Int).SetString(c.Balance, 10)
-		if balance == nil || balance.Sign() == 0 {
-			continue
-		}
+	out := make([]*ChannelSession, 0, len(page.Items))
+	for _, c := range page.Items {
 		held, holdErr := channelIsHeld(lock, c.ChannelId)
 		if holdErr != nil {
 			return nil, holdErr
 		}
 		if held {
-			continue
-		}
-		if now-c.LastRequestTimestamp < idleMs {
 			continue
 		}
 		out = append(out, c)

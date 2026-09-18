@@ -9,20 +9,24 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ethereum/go-ethereum/common"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
 // BatchSettlementRequestContext carries per-request state across the verify->settle
 // lifecycle for a single payment.
 type BatchSettlementRequestContext struct {
-	ChannelId            string
-	PendingId            string
-	ChannelSnapshot      *ChannelSession
-	LocalVerify          bool
-	ReservationCommitted *bool
+	ChannelId              string
+	PendingId              string
+	ChannelSnapshot        *ChannelSession
+	LocalVerify            bool
+	ReservationCommitted   *bool
+	CorrectiveChannelState *batchsettlement.BatchSettlementChannelStateExtra
+	CorrectiveVoucherState *batchsettlement.BatchSettlementVoucherStateExtra
 }
 
 func reservationFlag(committed bool) *bool {
@@ -69,6 +73,11 @@ type BatchSettlementEvmSchemeServerConfig struct {
 	// EnforceMinDeposit rejects deposits below the announced extra.minDeposit
 	// hint. Default false (hint only). The facilitator never enforces this.
 	EnforceMinDeposit bool
+	// VoucherStoreMode selects self-managed (default) or facilitator-managed
+	// voucher custody. Facilitator-managed treats Storage as a post-settle replica.
+	VoucherStoreMode VoucherStoreMode
+	// RefundAuthorizerSigner signs managed refund consent. Ignored in self-managed mode.
+	RefundAuthorizerSigner AuthorizerSigner
 }
 
 // BatchSettlementEvmScheme implements SchemeNetworkServer for batched settlement.
@@ -77,9 +86,11 @@ type BatchSettlementEvmScheme struct {
 	storage                  SessionStorage
 	lockStorage              ChannelLockStorage
 	receiverAuthorizerSigner AuthorizerSigner
+	refundAuthorizerSigner   AuthorizerSigner
 	withdrawDelay            int
 	onchainStateTtlMs        int64
 	enforceMinDeposit        bool
+	configuredMode           VoucherStoreMode
 	moneyParsers             []x402.MoneyParser
 
 	// requestContexts maps a per-payment key to state carried across verify and
@@ -149,78 +160,72 @@ func formatChannelConfigKey(cfg batchsettlement.ChannelConfig) string {
 
 // NewBatchSettlementEvmScheme creates a new batched server scheme.
 func NewBatchSettlementEvmScheme(receiverAddress string, config *BatchSettlementEvmSchemeServerConfig) *BatchSettlementEvmScheme {
-	storage := SessionStorage(nil)
-	var authSigner AuthorizerSigner
-	withdrawDelay := batchsettlement.MinWithdrawDelay
-	var onchainStateTtlMs int64
+	store := SessionStorage(nil)
 	var enforceMinDeposit bool
-
+	var onchainStateTtlMs int64
 	if config != nil {
-		storage = config.Storage
-		authSigner = config.ReceiverAuthorizerSigner
-		if config.WithdrawDelay > 0 {
-			withdrawDelay = config.WithdrawDelay
-		}
+		store = config.Storage
 		onchainStateTtlMs = config.OnchainStateTtlMs
 		enforceMinDeposit = config.EnforceMinDeposit
 	}
+	if store == nil {
+		store = NewInMemoryChannelStorage()
+	}
+
+	scheme := &BatchSettlementEvmScheme{
+		receiverAddress:   receiverAddress,
+		storage:           store,
+		enforceMinDeposit: enforceMinDeposit,
+		moneyParsers:      []x402.MoneyParser{},
+		requestContexts:   make(map[string]*BatchSettlementRequestContext),
+	}
+
+	if config != nil && config.VoucherStoreMode == VoucherStoreModeFacilitator {
+		scheme.configuredMode = VoucherStoreModeFacilitator
+		scheme.refundAuthorizerSigner = config.RefundAuthorizerSigner
+		scheme.withdrawDelay = batchsettlement.MinWithdrawDelay
+		if ls, ok := store.(ChannelLockStorage); ok {
+			scheme.lockStorage = ls
+		} else {
+			scheme.lockStorage = NewInMemoryChannelStorage()
+		}
+	} else {
+		scheme.configuredMode = VoucherStoreModeSelf
+		var authSigner AuthorizerSigner
+		withdrawDelay := batchsettlement.MinWithdrawDelay
+		if config != nil {
+			authSigner = config.ReceiverAuthorizerSigner
+			if config.WithdrawDelay > 0 {
+				withdrawDelay = config.WithdrawDelay
+			}
+		}
+		scheme.receiverAuthorizerSigner = authSigner
+		scheme.withdrawDelay = withdrawDelay
+		lockStorage := ChannelLockStorage(nil)
+		if config != nil {
+			lockStorage = config.LockStorage
+		}
+		if lockStorage == nil {
+			if ls, ok := store.(ChannelLockStorage); ok {
+				lockStorage = ls
+			} else {
+				lockStorage = NewInMemoryChannelStorage()
+			}
+		}
+		scheme.lockStorage = lockStorage
+	}
 
 	if onchainStateTtlMs <= 0 {
-		onchainStateTtlMs = defaultOnchainStateTtlMs(withdrawDelay)
+		onchainStateTtlMs = storage.DefaultOnchainStateTtlMs(scheme.withdrawDelay)
 	}
-
-	if storage == nil {
-		storage = NewInMemoryChannelStorage()
-	}
-
-	lockStorage := ChannelLockStorage(nil)
-	if config != nil {
-		lockStorage = config.LockStorage
-	}
-	if lockStorage == nil {
-		if ls, ok := storage.(ChannelLockStorage); ok {
-			lockStorage = ls
-		} else {
-			lockStorage = NewInMemoryChannelStorage()
-		}
-	}
-
-	return &BatchSettlementEvmScheme{
-		receiverAddress:          receiverAddress,
-		storage:                  storage,
-		lockStorage:              lockStorage,
-		receiverAuthorizerSigner: authSigner,
-		withdrawDelay:            withdrawDelay,
-		onchainStateTtlMs:        onchainStateTtlMs,
-		enforceMinDeposit:        enforceMinDeposit,
-		moneyParsers:             []x402.MoneyParser{},
-		requestContexts:          make(map[string]*BatchSettlementRequestContext),
-	}
+	scheme.onchainStateTtlMs = onchainStateTtlMs
+	return scheme
 }
 
 // GetOnchainStateTtlMs returns the configured TTL (in ms) for trusting cached
 // onchain channel state for local voucher verification.
 func (s *BatchSettlementEvmScheme) GetOnchainStateTtlMs() int64 {
 	return s.onchainStateTtlMs
-}
-
-// defaultOnchainStateTtlMs derives a reasonable TTL from the channel withdraw
-// delay: WithdrawDelay/3, clamped to [30s, 5min].
-func defaultOnchainStateTtlMs(withdrawDelaySeconds int) int64 {
-	if withdrawDelaySeconds < 0 {
-		withdrawDelaySeconds = 0
-	}
-	withdrawDelayMs := int64(withdrawDelaySeconds) * 1000
-	ttl := withdrawDelayMs / 3
-	const minTtl = int64(30 * 1000)
-	const maxTtl = int64(5 * 60 * 1000)
-	if ttl < minTtl {
-		ttl = minTtl
-	}
-	if ttl > maxTtl {
-		ttl = maxTtl
-	}
-	return ttl
 }
 
 // MergeRequestContext merges fields into the per-payload request context,
@@ -250,6 +255,12 @@ func (s *BatchSettlementEvmScheme) MergeRequestContext(payload any, partial Batc
 	}
 	if partial.ReservationCommitted != nil {
 		merged.ReservationCommitted = partial.ReservationCommitted
+	}
+	if partial.CorrectiveChannelState != nil {
+		merged.CorrectiveChannelState = partial.CorrectiveChannelState
+	}
+	if partial.CorrectiveVoucherState != nil {
+		merged.CorrectiveVoucherState = partial.CorrectiveVoucherState
 	}
 	s.requestContexts[key] = &merged
 }
@@ -330,10 +341,26 @@ func (s *BatchSettlementEvmScheme) ClearPendingRequest(payload any) error {
 }
 
 // EnrichPaymentRequiredResponse implements x402.PaymentRequiredEnricher.
-// On a cumulative-amount-mismatch verify failure it adds corrective ChannelState
-// (sourced first from a BeforeVerifyHook snapshot, then from storage) to each
-// matching batch-settlement requirement so the client can resync.
 func (s *BatchSettlementEvmScheme) EnrichPaymentRequiredResponse(ctx x402.PaymentRequiredContext) {
+	if ctx.PaymentPayload != nil && !s.handlersMatch(ctx.PaymentPayload.Accepted) {
+		return
+	}
+	switch s.configuredMode {
+	case VoucherStoreModeFacilitator:
+		handleManagedEnrichPaymentRequiredResponse(s, ctx)
+		return
+	case VoucherStoreModeSelf:
+		handleEnrichPaymentRequiredResponse(s, ctx)
+		return
+	default:
+		_ = s.configuredMode
+	}
+}
+
+// handleEnrichPaymentRequiredResponse adds corrective ChannelState on a
+// cumulative-amount-mismatch verify failure, sourced first from a BeforeVerify
+// snapshot, then from storage.
+func handleEnrichPaymentRequiredResponse(s *BatchSettlementEvmScheme, ctx x402.PaymentRequiredContext) {
 	if ctx.Error != batchsettlement.ErrCumulativeAmountMismatch || ctx.PaymentPayload == nil {
 		return
 	}
@@ -365,20 +392,17 @@ func (s *BatchSettlementEvmScheme) EnrichPaymentRequiredResponse(ctx x402.Paymen
 		session = stored
 	}
 
-	channelStateMap := map[string]interface{}{
-		"channelId":               session.ChannelId,
-		"balance":                 session.Balance,
-		"totalClaimed":            session.TotalClaimed,
-		"withdrawRequestedAt":     session.WithdrawRequestedAt,
-		"refundNonce":             fmt.Sprintf("%d", session.RefundNonce),
-		"chargedCumulativeAmount": session.ChargedCumulativeAmount,
+	channelState := batchsettlement.BatchSettlementChannelStateExtra{
+		ChannelId:               session.ChannelId,
+		Balance:                 session.Balance,
+		TotalClaimed:            session.TotalClaimed,
+		WithdrawRequestedAt:     session.WithdrawRequestedAt,
+		RefundNonce:             fmt.Sprintf("%d", session.RefundNonce),
+		ChargedCumulativeAmount: session.ChargedCumulativeAmount,
 	}
-	voucherStateMap := map[string]interface{}{}
-	if session.SignedMaxClaimable != "" {
-		voucherStateMap["signedMaxClaimable"] = session.SignedMaxClaimable
-	}
-	if session.Signature != "" {
-		voucherStateMap["signature"] = session.Signature
+	voucherState := batchsettlement.BatchSettlementVoucherStateExtra{
+		SignedMaxClaimable: session.SignedMaxClaimable,
+		Signature:          session.Signature,
 	}
 
 	network := ctx.PaymentPayload.Accepted.Network
@@ -389,27 +413,48 @@ func (s *BatchSettlementEvmScheme) EnrichPaymentRequiredResponse(ctx x402.Paymen
 		if ctx.Requirements[i].Network != network {
 			continue
 		}
-		if ctx.Requirements[i].Extra == nil {
-			ctx.Requirements[i].Extra = make(map[string]interface{})
-		}
-		ctx.Requirements[i].Extra["channelState"] = channelStateMap
-		if len(voucherStateMap) > 0 {
-			ctx.Requirements[i].Extra["voucherState"] = voucherStateMap
-		}
+		WriteCorrectiveAcceptExtra(&ctx.Requirements[i], channelState, voucherState)
 	}
 }
 
 // OnVerifiedPaymentCanceledHook returns a hook that releases this request's
 // pending reservation when the resource handler errors or returns a non-2xx
-// response.
+// response. Facilitator-managed mode is a no-op: the facilitator owns admission.
 func (s *BatchSettlementEvmScheme) OnVerifiedPaymentCanceledHook() x402.OnVerifiedPaymentCanceledHook {
 	return func(ctx x402.VerifiedPaymentCanceledContext) error {
-		if ctx.Reason != x402.CancellationReasonHandlerThrew &&
-			ctx.Reason != x402.CancellationReasonHandlerFailed &&
-			ctx.Reason != x402.CancellationReasonAfterVerifyAborted {
+		if !s.handlersMatch(ctx.Requirements) {
 			return nil
 		}
-		return s.ClearPendingRequest(ctx.Payload)
+		switch s.configuredMode {
+		case VoucherStoreModeFacilitator:
+			return handleManagedVerifiedPaymentCanceled(s, ctx)
+		case VoucherStoreModeSelf:
+			return handleVerifiedPaymentCanceled(s, ctx)
+		default:
+			return nil
+		}
+	}
+}
+
+func handleVerifiedPaymentCanceled(s *BatchSettlementEvmScheme, ctx x402.VerifiedPaymentCanceledContext) error {
+	if ctx.Reason != x402.CancellationReasonHandlerThrew &&
+		ctx.Reason != x402.CancellationReasonHandlerFailed &&
+		ctx.Reason != x402.CancellationReasonAfterVerifyAborted {
+		return nil
+	}
+	return s.ClearPendingRequest(ctx.Payload)
+}
+
+// SettleOnCancel settles a cancel so the facilitator can drop the admission lock.
+// Self-managed cleanup stays on OnVerifiedPaymentCanceled.
+func (s *BatchSettlementEvmScheme) SettleOnCancel(ctx x402.VerifiedPaymentCanceledContext) (*types.PaymentRequirements, error) {
+	switch s.configuredMode {
+	case VoucherStoreModeFacilitator:
+		return handleManagedSettleOnCancel(ctx)
+	case VoucherStoreModeSelf:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unhandled voucher store mode: %s", s.configuredMode)
 	}
 }
 
@@ -496,6 +541,73 @@ func (s *BatchSettlementEvmScheme) GetReceiverAuthorizerAddress() string {
 	return ""
 }
 
+// GetReceiverAuthorizerSigner returns the receiver-authorizer signer, if configured.
+func (s *BatchSettlementEvmScheme) GetReceiverAuthorizerSigner() AuthorizerSigner {
+	return s.receiverAuthorizerSigner
+}
+
+// GetRefundAuthorizerSigner returns the signer used for refund consent.
+// Self-managed uses the receiver authorizer; facilitator-managed uses RefundAuthorizerSigner.
+func (s *BatchSettlementEvmScheme) GetRefundAuthorizerSigner() AuthorizerSigner {
+	switch s.configuredMode {
+	case VoucherStoreModeSelf:
+		return s.receiverAuthorizerSigner
+	case VoucherStoreModeFacilitator:
+		return s.refundAuthorizerSigner
+	default:
+		return nil
+	}
+}
+
+// IsFacilitatorManagedVoucherStore reports whether this scheme was constructed
+// for facilitator voucher custody.
+func (s *BatchSettlementEvmScheme) IsFacilitatorManagedVoucherStore(_ x402.Network) bool {
+	return s.configuredMode == VoucherStoreModeFacilitator
+}
+
+func (s *BatchSettlementEvmScheme) handlersMatch(requirements x402.PaymentRequirementsView) bool {
+	return storage.VoucherStoreModeOf(types.PaymentRequirements{Extra: requirements.GetExtra()}) == s.configuredMode
+}
+
+func (s *BatchSettlementEvmScheme) requireHandlers(requirements x402.PaymentRequirementsView) error {
+	if !s.handlersMatch(requirements) {
+		return errors.New(batchsettlement.ErrVoucherStoreModeMismatch)
+	}
+	return nil
+}
+
+func voucherStoreModeMismatchAbort() *x402.BeforeHookResult {
+	return &x402.BeforeHookResult{
+		Abort:   true,
+		Reason:  batchsettlement.ErrVoucherStoreModeMismatch,
+		Message: "Payment requirements voucherStore does not match the server voucherStoreMode",
+	}
+}
+
+func extraBool(extra map[string]interface{}, key string) bool {
+	if extra == nil {
+		return false
+	}
+	v, ok := extra[key].(bool)
+	return ok && v
+}
+
+func extraInt(extra map[string]interface{}, key string) (int, bool) {
+	if extra == nil {
+		return 0, false
+	}
+	switch v := extra[key].(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
 // ValidateFacilitatorSupport rejects startup when this scheme delegates the
 // receiver-authorizer role but the facilitator does not advertise a usable
 // receiverAuthorizer.
@@ -504,21 +616,48 @@ func (s *BatchSettlementEvmScheme) ValidateFacilitatorSupport(
 	supportedKind types.SupportedKind,
 	_ []string,
 ) error {
-	if s.receiverAuthorizerSigner != nil {
-		return nil
-	}
-
 	advertised, _ := supportedKind.Extra["receiverAuthorizer"].(string)
-	if advertised != "" && !strings.EqualFold(advertised, zeroAddress) {
-		return nil
-	}
+	hasValidAuthorizer := advertised != "" && !strings.EqualFold(common.HexToAddress(advertised).Hex(), zeroAddress)
 
-	return fmt.Errorf(
-		"no receiver authorizer signer is configured and the facilitator does not advertise "+
-			"a receiverAuthorizer on %s. Configure a ReceiverAuthorizerSigner or use a "+
-			"facilitator that advertises one",
-		network,
-	)
+	switch s.configuredMode {
+	case VoucherStoreModeFacilitator:
+		if !extraBool(supportedKind.Extra, "voucherStore") {
+			return fmt.Errorf(
+				`voucherStoreMode "facilitator" is configured but the facilitator does not advertise voucherStore on %s`,
+				network,
+			)
+		}
+		if !hasValidAuthorizer {
+			return fmt.Errorf("voucherStore mode requires a non-zero advertised receiverAuthorizer on %s", network)
+		}
+		delay, ok := extraInt(supportedKind.Extra, "withdrawDelay")
+		if !ok || delay < batchsettlement.MinWithdrawDelay || delay > batchsettlement.MaxWithdrawDelay {
+			return fmt.Errorf("voucherStore mode requires an in-range advertised withdrawDelay on %s", network)
+		}
+		if s.refundAuthorizerSigner == nil && !extraBool(supportedKind.Extra, "refundAuth") {
+			return fmt.Errorf(
+				"no refundAuthorizerSigner is configured and the facilitator does not advertise refundAuth on %s. "+
+					"Configure a refundAuthorizerSigner or use a facilitator that advertises refundAuth",
+				network,
+			)
+		}
+		return nil
+	case VoucherStoreModeSelf:
+		if s.receiverAuthorizerSigner != nil {
+			return nil
+		}
+		if hasValidAuthorizer {
+			return nil
+		}
+		return fmt.Errorf(
+			"no receiver authorizer signer is configured and the facilitator does not advertise "+
+				"a receiverAuthorizer on %s. Configure a ReceiverAuthorizerSigner or use a "+
+				"facilitator that advertises one",
+			network,
+		)
+	default:
+		return fmt.Errorf("unhandled voucher store mode: %s", s.configuredMode)
+	}
 }
 
 // ParsePrice parses a price and converts it to an asset amount.
@@ -621,37 +760,56 @@ func (s *BatchSettlementEvmScheme) EnhancePaymentRequirements(
 		requirements.Extra["version"] = assetInfo.Version
 	}
 
-	// Add batched-specific fields. Receiver authorizer resolution order:
-	//   1. Pre-existing requirements.Extra["receiverAuthorizer"] (caller override).
-	//   2. Locally-configured ReceiverAuthorizerSigner address.
-	//   3. Facilitator-advertised authorizer from supportedKind.Extra (delegated mode).
-	//
-	// Hard-fails if all three sources are empty/zero — clients would otherwise
-	// derive the wrong channelId, and the onchain deposit transaction would
-	// revert at the contract boundary.
-	if existing, ok := requirements.Extra["receiverAuthorizer"].(string); !ok || existing == "" || strings.EqualFold(existing, zeroAddress) {
-		receiverAuth := s.GetReceiverAuthorizerAddress()
-		if (receiverAuth == "" || strings.EqualFold(receiverAuth, zeroAddress)) && supportedKind.Extra != nil {
-			if facilitatorAuth, ok := supportedKind.Extra["receiverAuthorizer"].(string); ok {
-				receiverAuth = facilitatorAuth
-			}
-		}
-		if receiverAuth == "" || strings.EqualFold(receiverAuth, zeroAddress) {
-			return requirements, fmt.Errorf("payment requirements must include a non-zero extra.receiverAuthorizer")
-		}
-		requirements.Extra["receiverAuthorizer"] = receiverAuth
-	}
-	if _, ok := requirements.Extra["withdrawDelay"]; !ok {
-		requirements.Extra["withdrawDelay"] = s.withdrawDelay
-	}
-
 	minDeposit, hintErr := s.ResolveMinDepositHint(requirements)
 	if hintErr != nil {
 		return requirements, hintErr
 	}
-	requirements.Extra["minDeposit"] = minDeposit
 
-	// Copy extensions from supportedKind
+	switch s.configuredMode {
+	case VoucherStoreModeFacilitator:
+		if !extraBool(supportedKind.Extra, "voucherStore") {
+			return requirements, fmt.Errorf("facilitator-managed mode requires advertised extra.voucherStore")
+		}
+		advertisedAuthorizer, _ := supportedKind.Extra["receiverAuthorizer"].(string)
+		if advertisedAuthorizer == "" || strings.EqualFold(common.HexToAddress(advertisedAuthorizer).Hex(), zeroAddress) {
+			return requirements, fmt.Errorf("payment requirements must include a non-zero extra.receiverAuthorizer")
+		}
+		advertisedDelay, ok := extraInt(supportedKind.Extra, "withdrawDelay")
+		if !ok {
+			return requirements, fmt.Errorf("facilitator-managed mode requires advertised extra.withdrawDelay")
+		}
+		requirements.Extra["receiverAuthorizer"] = common.HexToAddress(advertisedAuthorizer).Hex()
+		requirements.Extra["withdrawDelay"] = advertisedDelay
+		requirements.Extra["voucherStore"] = true
+		if s.refundAuthorizerSigner != nil {
+			requirements.Extra["refundAuthorizer"] = common.HexToAddress(s.refundAuthorizerSigner.Address()).Hex()
+		}
+		requirements.Extra["minDeposit"] = minDeposit
+	case VoucherStoreModeSelf:
+		// Receiver authorizer resolution order:
+		//   1. Pre-existing requirements.Extra["receiverAuthorizer"] (caller override).
+		//   2. Locally-configured ReceiverAuthorizerSigner address.
+		//   3. Facilitator-advertised authorizer from supportedKind.Extra (delegated mode).
+		if existing, ok := requirements.Extra["receiverAuthorizer"].(string); !ok || existing == "" || strings.EqualFold(existing, zeroAddress) {
+			receiverAuth := s.GetReceiverAuthorizerAddress()
+			if (receiverAuth == "" || strings.EqualFold(receiverAuth, zeroAddress)) && supportedKind.Extra != nil {
+				if facilitatorAuth, ok := supportedKind.Extra["receiverAuthorizer"].(string); ok {
+					receiverAuth = facilitatorAuth
+				}
+			}
+			if receiverAuth == "" || strings.EqualFold(receiverAuth, zeroAddress) {
+				return requirements, fmt.Errorf("payment requirements must include a non-zero extra.receiverAuthorizer")
+			}
+			requirements.Extra["receiverAuthorizer"] = receiverAuth
+		}
+		if _, ok := requirements.Extra["withdrawDelay"]; !ok {
+			requirements.Extra["withdrawDelay"] = s.withdrawDelay
+		}
+		requirements.Extra["minDeposit"] = minDeposit
+	default:
+		return requirements, fmt.Errorf("unhandled voucher store mode: %s", s.configuredMode)
+	}
+
 	if supportedKind.Extra != nil {
 		for _, key := range extensionKeys {
 			if val, ok := supportedKind.Extra[key]; ok {
@@ -666,6 +824,13 @@ func (s *BatchSettlementEvmScheme) EnhancePaymentRequirements(
 // SignRefund signs a cooperative refund EIP-712 message.
 func (s *BatchSettlementEvmScheme) SignRefund(ctx context.Context, channelId string, amount string, nonce string, network string) ([]byte, error) {
 	if s.receiverAuthorizerSigner == nil {
+		return nil, fmt.Errorf("no receiver authorizer signer configured")
+	}
+	return signRefundWith(ctx, s.receiverAuthorizerSigner, channelId, amount, nonce, network)
+}
+
+func signRefundWith(ctx context.Context, signer AuthorizerSigner, channelId string, amount string, nonce string, network string) ([]byte, error) {
+	if signer == nil {
 		return nil, fmt.Errorf("no receiver authorizer signer configured")
 	}
 
@@ -711,12 +876,19 @@ func (s *BatchSettlementEvmScheme) SignRefund(ctx context.Context, channelId str
 		"amount":    refundAmount,
 	}
 
-	return s.receiverAuthorizerSigner.SignTypedData(ctx, domain, allTypes, "Refund", message)
+	return signer.SignTypedData(ctx, domain, allTypes, "Refund", message)
 }
 
 // SignClaimBatch signs a ClaimBatch EIP-712 message.
 func (s *BatchSettlementEvmScheme) SignClaimBatch(ctx context.Context, claims []batchsettlement.BatchSettlementVoucherClaim, network string) ([]byte, error) {
 	if s.receiverAuthorizerSigner == nil {
+		return nil, fmt.Errorf("no receiver authorizer signer configured")
+	}
+	return signClaimBatchWith(ctx, s.receiverAuthorizerSigner, claims, network)
+}
+
+func signClaimBatchWith(ctx context.Context, signer AuthorizerSigner, claims []batchsettlement.BatchSettlementVoucherClaim, network string) ([]byte, error) {
+	if signer == nil {
 		return nil, fmt.Errorf("no receiver authorizer signer configured")
 	}
 
@@ -761,7 +933,7 @@ func (s *BatchSettlementEvmScheme) SignClaimBatch(ctx context.Context, claims []
 		"claims": entries,
 	}
 
-	return s.receiverAuthorizerSigner.SignTypedData(ctx, domain, allTypes, "ClaimBatch", message)
+	return signer.SignTypedData(ctx, domain, allTypes, "ClaimBatch", message)
 }
 
 // CreateChannelManager creates a new channel manager for auto-settlement
