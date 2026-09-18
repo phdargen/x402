@@ -70,8 +70,9 @@ type BatchSettlementEvmSchemeOptions struct {
 	DepositStrategy DepositStrategy
 	// Storage is the session persistence backend. Defaults to in-memory.
 	Storage ClientChannelStorage
-	// Salt is the channel salt for differentiating identical configs. Defaults to zero.
-	Salt string
+	// Salt differentiates otherwise identical channel configs. Prefer
+	// batchsettlement.ChannelSaltIndex; batchsettlement.ChannelSaltHex is also accepted.
+	Salt batchsettlement.ChannelSalt
 	// PayerAuthorizer is the EOA address used for voucher signing (separate from payer).
 	// Zero address means the payer signs vouchers directly (ERC-1271).
 	PayerAuthorizer string
@@ -90,7 +91,6 @@ type BatchSettlementEvmScheme struct {
 func NewBatchSettlementEvmScheme(signer evm.ClientEvmSigner, config *BatchSettlementEvmSchemeOptions) *BatchSettlementEvmScheme {
 	cfg := BatchSettlementEvmSchemeOptions{
 		DepositMultiplier: DefaultDepositMultiplier,
-		Salt:              DefaultSalt,
 	}
 	if config != nil {
 		if config.DepositMultiplier > 0 {
@@ -99,9 +99,7 @@ func NewBatchSettlementEvmScheme(signer evm.ClientEvmSigner, config *BatchSettle
 		if config.Storage != nil {
 			cfg.Storage = config.Storage
 		}
-		if config.Salt != "" {
-			cfg.Salt = config.Salt
-		}
+		cfg.Salt = config.Salt
 		cfg.DepositStrategy = config.DepositStrategy
 		cfg.PayerAuthorizer = config.PayerAuthorizer
 		cfg.VoucherSigner = config.VoucherSigner
@@ -302,11 +300,19 @@ func (c *BatchSettlementEvmScheme) resolveDepositAmount(
 	return resolveDepositAmountResult{amount: clamped}, nil
 }
 
+func (c *BatchSettlementEvmScheme) normalizedConfigSalt() (string, error) {
+	return c.config.Salt.Normalize()
+}
+
 // BuildChannelConfig constructs a ChannelConfig from payment requirements and scheme config.
 //
 // Returns an error when `requirements.Extra["receiverAuthorizer"]` is missing
 // or zero — without it the derived channelId would not match the onchain
 // channel and the deposit transaction would revert.
+//
+// When requirements advertise extra.refundAuthorizer, the config salt becomes
+// bytes12(entropy) || bytes20(refundAuthorizer) so channelId matches server
+// and facilitator expectations.
 func (c *BatchSettlementEvmScheme) BuildChannelConfig(requirements types.PaymentRequirements) (batchsettlement.ChannelConfig, error) {
 	var receiverAuthorizer string
 	if requirements.Extra != nil {
@@ -316,6 +322,22 @@ func (c *BatchSettlementEvmScheme) BuildChannelConfig(requirements types.Payment
 	}
 	if receiverAuthorizer == "" || strings.EqualFold(receiverAuthorizer, "0x0000000000000000000000000000000000000000") {
 		return batchsettlement.ChannelConfig{}, fmt.Errorf("payment requirements must include a non-zero extra.receiverAuthorizer")
+	}
+
+	baseSalt, err := c.normalizedConfigSalt()
+	if err != nil {
+		return batchsettlement.ChannelConfig{}, fmt.Errorf("invalid salt: %w", err)
+	}
+	channelSalt := baseSalt
+	if requirements.Extra != nil {
+		if refundAuthorizer, ok := requirements.Extra["refundAuthorizer"].(string); ok &&
+			refundAuthorizer != "" &&
+			!strings.EqualFold(refundAuthorizer, "0x0000000000000000000000000000000000000000") {
+			channelSalt, err = batchsettlement.PackRefundAuthorizerSalt(baseSalt, refundAuthorizer)
+			if err != nil {
+				return batchsettlement.ChannelConfig{}, fmt.Errorf("pack refund authorizer salt: %w", err)
+			}
+		}
 	}
 
 	withdrawDelay := DefaultWithdrawDelay
@@ -349,7 +371,7 @@ func (c *BatchSettlementEvmScheme) BuildChannelConfig(requirements types.Payment
 		ReceiverAuthorizer: receiverAuthorizer,
 		Token:              requirements.Asset,
 		WithdrawDelay:      withdrawDelay,
-		Salt:               c.config.Salt,
+		Salt:               channelSalt,
 	}, nil
 }
 

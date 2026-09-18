@@ -154,6 +154,89 @@ func hexToBytes32(value string) ([32]byte, error) {
 	return result, nil
 }
 
+type channelSaltKind int
+
+const (
+	channelSaltDefault channelSaltKind = iota
+	channelSaltIndex
+	channelSaltHex
+	channelSaltBigInt
+)
+
+// ChannelSalt is a channel discriminator. Prefer a small index; bytes32 hex is
+// also supported. The zero value selects the default zero salt.
+type ChannelSalt struct {
+	kind  channelSaltKind
+	index uint64
+	hex   string
+	big   *big.Int
+}
+
+// ChannelSaltIndex returns a salt from a non-negative channel index.
+func ChannelSaltIndex(index uint64) ChannelSalt {
+	return ChannelSalt{kind: channelSaltIndex, index: index}
+}
+
+// ChannelSaltHex returns a salt from a 0x-prefixed hex value (short or bytes32).
+func ChannelSaltHex(hex string) ChannelSalt {
+	return ChannelSalt{kind: channelSaltHex, hex: hex}
+}
+
+// ChannelSaltBigInt returns a salt from a non-negative integer that fits in 32 bytes.
+func ChannelSaltBigInt(n *big.Int) ChannelSalt {
+	return ChannelSalt{kind: channelSaltBigInt, big: n}
+}
+
+// IsDefault reports whether the salt was omitted (default zero bytes32).
+func (s ChannelSalt) IsDefault() bool {
+	return s.kind == channelSaltDefault
+}
+
+// Equal reports whether two salts specify the same discriminator.
+func (s ChannelSalt) Equal(o ChannelSalt) bool {
+	if s.kind != o.kind {
+		return false
+	}
+	switch s.kind {
+	case channelSaltDefault:
+		return true
+	case channelSaltIndex:
+		return s.index == o.index
+	case channelSaltHex:
+		return s.hex == o.hex
+	case channelSaltBigInt:
+		if s.big == nil || o.big == nil {
+			return s.big == o.big
+		}
+		return s.big.Cmp(o.big) == 0
+	default:
+		var never = s.kind
+		_ = never
+		return false
+	}
+}
+
+// Normalize left-pads the salt to bytes32.
+func (s ChannelSalt) Normalize() (string, error) {
+	switch s.kind {
+	case channelSaltDefault:
+		return padBigToBytes32(big.NewInt(0)), nil
+	case channelSaltIndex:
+		if s.index > uint64(maxSafeInt) {
+			return "", fmt.Errorf("salt must be a non-negative safe integer")
+		}
+		return padBigToBytes32(new(big.Int).SetUint64(s.index)), nil
+	case channelSaltHex:
+		return normalizeChannelSaltHex(s.hex)
+	case channelSaltBigInt:
+		return normalizeChannelSaltBigInt(s.big)
+	default:
+		var never = s.kind
+		_ = never
+		return "", fmt.Errorf("invalid channel salt")
+	}
+}
+
 // NormalizeChannelSalt left-pads a channel salt to bytes32. Accepts a
 // non-negative safe integer, a *big.Int that fits in 32 bytes, or 0x-hex.
 func NormalizeChannelSalt(salt interface{}) (string, error) {
@@ -176,25 +259,35 @@ func NormalizeChannelSalt(salt interface{}) (string, error) {
 	case float64:
 		return "", fmt.Errorf("salt must be a non-negative safe integer")
 	case *big.Int:
-		if v == nil || v.Sign() < 0 || v.Cmp(maxUint256) >= 0 {
-			return "", fmt.Errorf("salt must be a non-negative integer that fits in 32 bytes")
-		}
-		return padBigToBytes32(v), nil
+		return normalizeChannelSaltBigInt(v)
 	case string:
-		if !channelSaltHexRe.MatchString(v) && !strings.HasPrefix(v, "0X") {
-			return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
-		}
-		if strings.HasPrefix(v, "0X") && !channelSaltHexRe.MatchString("0x"+v[2:]) {
-			return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
-		}
-		n, ok := new(big.Int).SetString(strings.TrimPrefix(strings.TrimPrefix(v, "0x"), "0X"), 16)
-		if !ok || n.Cmp(maxUint256) >= 0 {
-			return "", fmt.Errorf("salt must fit in 32 bytes")
-		}
-		return padBigToBytes32(n), nil
+		return normalizeChannelSaltHex(v)
+	case ChannelSalt:
+		return v.Normalize()
 	default:
 		return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
 	}
+}
+
+func normalizeChannelSaltHex(v string) (string, error) {
+	if !channelSaltHexRe.MatchString(v) && !strings.HasPrefix(v, "0X") {
+		return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
+	}
+	if strings.HasPrefix(v, "0X") && !channelSaltHexRe.MatchString("0x"+v[2:]) {
+		return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
+	}
+	n, ok := new(big.Int).SetString(strings.TrimPrefix(strings.TrimPrefix(v, "0x"), "0X"), 16)
+	if !ok || n.Cmp(maxUint256) >= 0 {
+		return "", fmt.Errorf("salt must fit in 32 bytes")
+	}
+	return padBigToBytes32(n), nil
+}
+
+func normalizeChannelSaltBigInt(v *big.Int) (string, error) {
+	if v == nil || v.Sign() < 0 || v.Cmp(maxUint256) >= 0 {
+		return "", fmt.Errorf("salt must be a non-negative integer that fits in 32 bytes")
+	}
+	return padBigToBytes32(v), nil
 }
 
 func padBigToBytes32(n *big.Int) string {

@@ -21,6 +21,7 @@ Register `BatchSettlementEvmScheme` with an `x402Client`. The client handles dep
 ```go
 import (
     x402 "github.com/x402-foundation/x402/go/v2"
+    batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
     "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/client"
     evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 )
@@ -29,6 +30,7 @@ signer, _ := evmsigners.NewClientSignerFromPrivateKey(os.Getenv("EVM_PRIVATE_KEY
 
 scheme := client.NewBatchSettlementEvmScheme(signer, &client.BatchSettlementEvmSchemeOptions{
     DepositMultiplier: 5,
+    Salt:              batchsettlement.ChannelSaltIndex(0), // use 1, 2, … for additional channels
 })
 
 c := x402.Newx402Client()
@@ -88,13 +90,19 @@ scheme := client.NewBatchSettlementEvmScheme(signer, &client.BatchSettlementEvmS
 
 ### Cooperative Refund
 
-Request the server to refund the unclaimed balance on the next request:
+Request a cooperative refund on the next paid request:
 
 ```go
-scheme.RequestRefund(channelId)
+// Full refund: remaining channel balance.
+settle, err := scheme.Refund(ctx, "https://api.example.com/any-protected-route", nil)
+
+// Partial refund:
+_, err = scheme.Refund(ctx, url, &client.RefundOptions{Amount: "1000000"})
 ```
 
-The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` to the payer.
+The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or the requested `amount` to the payer.
+
+When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `Salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `CreatePaymentPayload`, `RecoverSession`, and `Refund` all derive config through `BuildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
 
 ### Persistence
 
@@ -114,7 +122,7 @@ If state is lost, the client recovers from onchain `channels(channelId)` plus co
 
 ## Server Usage
 
-Register the scheme with an `x402ResourceServer` and pair it with a `ChannelManager` to handle batched claims, settlements, and refunds.
+Register the scheme with an `x402ResourceServer` and pair it with a `ChannelManager` to handle batched claims, settlements, and refunds. Omit `VoucherStoreMode` (or pass `"self"`) for self-managed custody — the default, and the mode the rest of this section describes.
 
 ```go
 import (
@@ -124,14 +132,13 @@ import (
 )
 
 scheme := server.NewBatchSettlementEvmScheme(receiverAddress, &server.BatchSettlementEvmSchemeServerConfig{
-    ReceiverAuthorizerSigner: receiverAuthorizerSigner, // optional: self-managed authorizer (recommended)
-    WithdrawDelay:            900,                       // 15 min – 30 days
-    EnforceMinDeposit:        false,                     // hint only; set true to reject smaller deposits
+    VoucherStoreMode:         server.VoucherStoreModeSelf, // default; omit for the same effect
+    ReceiverAuthorizerSigner: receiverAuthorizerSigner,    // optional: self-managed authorizer (recommended)
+    WithdrawDelay:            900,                          // 15 min – 30 days
+    EnforceMinDeposit:        false,                        // hint only; set true to reject smaller deposits
     Storage: server.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
         Directory: "./sessions",
     }),
-    // LockStorage: defaults to Storage when it implements ChannelLockStorage.
-    // Pass a separate lock store when hosts do not share that directory.
 })
 
 srv := x402.Newx402ResourceServer().Register("eip155:84532", scheme)
@@ -141,10 +148,6 @@ manager.Start(server.AutoSettlementConfig{
     ClaimIntervalSecs:  60,
     SettleIntervalSecs: 300,
     RefundIntervalSecs: 3600,
-    // Refund channels with non-zero balance and idle for at least 1 hour.
-    // Admission locks live on ChannelLockStorage, not the ChannelSession.
-    // Inline the predicate so callers can swap in their own logic (e.g. balance
-    // thresholds, pending-withdrawal flushing).
     SelectRefundChannels: func(channels []*server.ChannelSession, ctx server.AutoSettlementContext) ([]*server.ChannelSession, error) {
         out := make([]*server.ChannelSession, 0, len(channels))
         for _, c := range channels {
@@ -159,12 +162,9 @@ manager.Start(server.AutoSettlementConfig{
         return out, nil
     },
 })
-
-// On shutdown, drain pending claims:
-defer manager.Stop(ctx, &server.StopOptions{Flush: true})
 ```
 
-For serverless or multi-instance servers, use `RedisChannelStorage` so sessions survive cold starts and update atomically across processes. Wrap your Redis/Valkey client as `RedisChannelStorageClient`. The SDK does not import a Redis library. Pass one object as `Storage` when the backend implements both roles (`InMemoryChannelStorage`, `FileChannelStorage`, `RedisChannelStorage`); admission locks are inferred. File locks are shared only by processes that use the same directory. Hosts that do not share that directory need an explicit `LockStorage` (Redis); otherwise each host admits independently and only the charge CAS protects revenue:
+Omit `Storage` and `LockStorage` for in-memory durable state and locks. Pass one object as `Storage` when the backend implements both roles (`InMemoryChannelStorage`, `FileChannelStorage`, `RedisChannelStorage`); admission locks are inferred. File locks are shared only by processes that use the same directory. Hosts that do not share that directory need an explicit `LockStorage` (Redis); otherwise each host admits independently and only the charge CAS protects revenue:
 
 ```go
 // Redis for durable state and locks (one object, lock inferred)
@@ -185,12 +185,33 @@ scheme = server.NewBatchSettlementEvmScheme(receiverAddress, &server.BatchSettle
 })
 ```
 
+Use the same `SelectClaimChannels` policy with one-shot jobs when you need to claim a specific channel subset:
+
+```go
+selected := map[string]struct{}{"0x...": {}}
+
+_, err := manager.ClaimAndSettle(ctx, &server.ClaimOptions{
+    MaxClaimsPerBatch: 100,
+    SelectClaimChannels: func(channels []*server.ChannelSession) ([]*server.ChannelSession, error) {
+        out := make([]*server.ChannelSession, 0, len(channels))
+        for _, ch := range channels {
+            if _, ok := selected[strings.ToLower(ch.ChannelId)]; ok {
+                out = append(out, ch)
+            }
+        }
+        return out, nil
+    },
+})
+```
+
 ### Receiver Authorizer
 
 The `receiverAuthorizer` signs `ClaimBatch` and `Refund` EIP-712 messages and is committed into the channel's identity at deposit time:
 
 - **Self-managed** (recommended): pass a `ReceiverAuthorizerSigner` (an EOA you control). Channels survive facilitator changes — any facilitator can relay your signed claims and refunds.
-- **Facilitator-delegated**: omit `ReceiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so existing channels should be drained first via `ClaimAll()` and `RefundAll()`.
+- **Facilitator-delegated**: omit `ReceiverAuthorizerSigner`. The scheme picks up `extra.receiverAuthorizer` advertised by the facilitator's `/supported`. Switching facilitators requires opening **new channels**, so claim and refund existing channels first.
+
+These two options are self-managed custody (`VoucherStoreMode: "self"`). Facilitator-managed custody is a separate constructor mode — see [Facilitator-managed custody](#facilitator-managed-custody).
 
 ### Pricing
 
@@ -249,7 +270,94 @@ f.Register(
 )
 ```
 
-The `authorizerSigner` produces the EIP-712 signatures advertised in `/supported.kinds[].extra.receiverAuthorizer`. Servers may delegate to it (see above) or supply their own. The `evmSigner` (the wallet account) submits transactions for `deposit`, `claimWithSignature`, `settle`, and `refundWithSignature` — anyone can submit a valid claim/refund tx, but only the configured signer here will be used by this facilitator.
+The optional `authorizerSigner` is a **dedicated, unrotated** `receiverAuthorizer` advertised in `/supported.kinds[].extra.receiverAuthorizer`. Do not add it to the regular `evmSigner` gas pool. Servers may delegate to it (see above) or supply their own.
+
+`SubmitMode` selects how facilitator-owned `claim` / `refund` transactions are submitted (`relay` by default):
+
+| Mode | Tx sender | Onchain |
+|------|-----------|---------|
+| **Relay** (default) | Any regular `evmSigner` address | `claimWithSignature` / `refundWithSignature` (authorizer EIP-712) |
+| **Direct** | `AuthorizerSubmitter` (must be exactly `authorizerSigner.Address()`) | `claim` / `refund` (no signature) |
+
+A payload that already carries `claimAuthorizerSignature` / `refundAuthorizerSignature` always relays (server-owned key or pre-signed). `settle` is permissionless and always uses the regular signer pool.
+
+A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). Wire that via `ResolveCallerIdentity` (and a shared `DelegatedAuthStore` on multi-replica hosts); `/supported` then includes `extra.refundAuth: true`. If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
+
+```go
+scheme := facilitator.NewBatchSettlementEvmScheme(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
+    ResolveCallerIdentity: resolveCallerIdentity, // DelegatedSettleContext -> caller id
+    // Optional: shared DelegatedAuthStore for multi-replica facilitators. Default is in-memory.
+})
+```
+
+The default identity store is in-memory. A multi-replica facilitator must inject a shared `DelegatedAuthStore`; a lost binding fails closed.
+
+## Facilitator-managed custody
+
+Spec v1.1 lets the facilitator own the durable voucher store, per-channel lock, watermark, and claim/settle schedule. The resource server becomes a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. A single facilitator instance can serve both modes; the per-request discriminant is `extra.voucherStore: true` on payment requirements.
+
+### Facilitator
+
+Configure a `VoucherStore` (requires `authorizerSigner`). `/supported` then advertises `receiverAuthorizer`, `withdrawDelay`, and `voucherStore: true`. Add `ResolveCallerIdentity` to also advertise `refundAuth: true` and accept unsigned cooperative refunds.
+
+```go
+import (
+    "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/facilitator"
+)
+
+scheme := facilitator.NewBatchSettlementEvmScheme(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
+    VoucherStore: &facilitator.VoucherStoreConfig{
+        Storage: facilitator.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
+            Directory: "./voucher-store",
+        }),
+        // LockStorage is inferred when storage implements ChannelLockStorage
+        // WithdrawDelay defaults to 900 (15 min)
+    },
+    ResolveCallerIdentity: resolveCallerIdentity,
+})
+
+manager, err := scheme.CreateChannelManager(fctx)
+if err != nil {
+    log.Fatal(err)
+}
+claimSecs, settleSecs, refundSecs, refundIdle := 60, 300, 3600, 3600
+manager.Start(facilitator.FacilitatorAutoConfig{
+    ClaimIntervalSecs:  &claimSecs,
+    SettleIntervalSecs: &settleSecs,
+    RefundIntervalSecs: &refundSecs,
+    RefundIdleSecs:     &refundIdle,
+    MaxClaimsPerBatch:  100,
+})
+```
+
+`CreateChannelManager` returns an error if `VoucherStore` or `authorizerSigner` is missing. The facilitator manager groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels. Managed claims attest each row's unattested `chargeCount` onchain (`x402ChargeCounts` calldata suffix). After a claim confirms — including a managed HTTP `type: "claim"` from a replica — `AfterClaim` subtracts the attested snapshot (it does not zero the field). Rows are deleted when closed (`chargeCount` is zero, no admission lock, `balance <= totalClaimed`).
+
+Facilitator-initiated refunds claim the store voucher first, then return `balance - chargedCumulativeAmount`. Client `type: "refund"` through `/verify` + `/settle` stays on the voucher-store path. The managed server replica must not refund.
+
+Construction fails when `VoucherStore` is set without `authorizerSigner`, or when `Storage` does not implement `ChannelLockStorage` and no `LockStorage` is passed.
+
+### Server
+
+Opt in with `VoucherStoreMode: "facilitator"`. Mode is constructor-wide — it is not inferred from `/supported`. `ValidateFacilitatorSupport` fails if the facilitator does not advertise `voucherStore`, a non-zero `receiverAuthorizer`, and an in-range `withdrawDelay`. The 402 copies those three fields from `/supported` (the server must not override `withdrawDelay`) and sets `voucherStore: true`.
+
+Refund consent is one of:
+
+- `RefundAuthorizerSigner` — the 402 includes `extra.refundAuthorizer`; the client packs it into salt; `/settle` attaches `refundAuthorizerSignature`. Changing this key opens new channels.
+- facilitator `refundAuth` — omit `RefundAuthorizerSigner`; `ValidateFacilitatorSupport` fails unless `/supported` advertises `refundAuth: true`
+
+```go
+scheme := server.NewBatchSettlementEvmScheme(receiverAddress, &server.BatchSettlementEvmSchemeServerConfig{
+    VoucherStoreMode: server.VoucherStoreModeFacilitator,
+    RefundAuthorizerSigner: refundAuthorizerSigner, // omit when relying on facilitator refundAuth
+    Storage: server.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
+        Directory: "./channels", // replica only
+    }),
+})
+```
+
+`Storage` is a replica written after successful `/settle`. It is never read on the verify/settle hot path (no local watermark, lock, or corrective 402). `CreateChannelManager` can still `Claim` / `Settle` from the replica (claims go unsigned; the facilitator signs as `receiverAuthorizer` and runs `AfterClaim` on success). `Refund`, `RefundIdleChannels`, and `RefundIntervalSecs` stay blocked — a replica voucher is not the watermark, so a replica refund can return already-earned escrow. Cooperative refunds are facilitator-scheduled idle refunds or client-initiated `/settle` in this mode.
+
+A configured `ReceiverAuthorizerSigner` is self-managed only and cannot be combined with `VoucherStoreMode: "facilitator"`.
 
 ## Supported Networks
 
@@ -279,4 +387,6 @@ Deposits are sponsored by the facilitator (gasless for the client).
 
 ## See Also
 
+- [Exact EVM Scheme](../exact/README.md) — fixed-price, no escrow
+- [Upto EVM Scheme](../upto/README.md) — usage-based, single-shot
 - [Batch-Settlement EVM Scheme Specification](https://github.com/x402-foundation/x402/blob/main/specs/schemes/batch-settlement/scheme_batch_settlement_evm.md)

@@ -1,0 +1,3 @@
+kind: changed
+body: Batch-settlement client accepts channel salt as a non-negative index or bytes32 hex and packs extra.refundAuthorizer into ChannelConfig.salt so channelId matches managed refund requirements. README documents facilitator-managed custody, submit modes, and client salt behavior.
+time: 2026-09-18T07:45:00Z
