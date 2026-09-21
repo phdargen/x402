@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodeFunctionData } from "viem";
+import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, type Log } from "viem";
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
 import { decodeClaimAttestation } from "../../../src/batch-settlement/attestation";
 import {
@@ -24,7 +24,7 @@ const CHANNEL: ChannelConfig = {
   salt: `0x${"00".repeat(32)}`,
 };
 
-function claimCalldata(): `0x${string}` {
+function claimCalldata(functionName: "claim" | "claimWithSignature" = "claim"): `0x${string}` {
   const claims = [
     {
       voucher: {
@@ -35,7 +35,43 @@ function claimCalldata(): `0x${string}` {
       totalClaimed: 1000n,
     },
   ];
-  return encodeFunctionData({ abi: batchSettlementABI, functionName: "claim", args: [claims] });
+  return functionName === "claim"
+    ? encodeFunctionData({ abi: batchSettlementABI, functionName, args: [claims] })
+    : encodeFunctionData({
+        abi: batchSettlementABI,
+        functionName,
+        args: [claims, "0xdead"],
+      });
+}
+
+const BATCH_SETTLEMENT_ADDRESS = "0x0000000000000000000000000000000000000001" as const;
+
+function buildClaimedLog(
+  channelId: `0x${string}`,
+  claimAmount: bigint,
+  newTotalClaimed: bigint,
+): Log {
+  return {
+    address: BATCH_SETTLEMENT_ADDRESS,
+    topics: encodeEventTopics({
+      abi: batchSettlementABI,
+      eventName: "Claimed",
+      args: {
+        channelId,
+        sender: CHANNEL.receiver,
+      },
+    }),
+    data: encodeAbiParameters(
+      [{ type: "uint128" }, { type: "uint128" }],
+      [claimAmount, newTotalClaimed],
+    ),
+    blockHash: null,
+    blockNumber: null,
+    logIndex: null,
+    transactionHash: null,
+    transactionIndex: null,
+    removed: false,
+  } as Log;
 }
 
 describe("decodeClaimAttestation", () => {
@@ -95,5 +131,44 @@ describe("decodeClaimAttestation", () => {
     const attestation = decodeClaimAttestation("0xabcd", [], NETWORK);
     expect(attestation.functionName).toBe("unknown");
     expect(attestation.channels).toBeNull();
+  });
+
+  it("omits claim amounts when receipt logs cannot be parsed", () => {
+    const calldata = appendDataSuffix(claimCalldata(), encodeChargeCountsSuffix([1]));
+    const attestation = decodeClaimAttestation(calldata, [{ not: "a log" }], NETWORK);
+    expect(attestation.channels?.[0].claimAmount).toBeUndefined();
+    expect(attestation.channels?.[0].newTotalClaimed).toBeUndefined();
+  });
+
+  it("returns null channels when multicall inner calldata is not a claim", () => {
+    const outer = encodeFunctionData({
+      abi: batchSettlementABI,
+      functionName: "multicall",
+      args: [["0xdeadbeef"]],
+    });
+    const attestation = decodeClaimAttestation(outer, [], NETWORK);
+    expect(attestation.functionName).toBe("multicall");
+    expect(attestation.channels).toBeNull();
+  });
+
+  it("decodes claimWithSignature and joins Claimed receipt logs", () => {
+    const calldata = appendDataSuffix(
+      claimCalldata("claimWithSignature"),
+      encodeChargeCountsSuffix([2]),
+    );
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const logs = [buildClaimedLog(channelId, 500n, 1500n)];
+    const attestation = decodeClaimAttestation(calldata, logs, NETWORK);
+    expect(attestation.functionName).toBe("claimWithSignature");
+    expect(attestation.claimFunctionName).toBe("claimWithSignature");
+    expect(attestation.channels?.[0].claimAmount).toBe("500");
+    expect(attestation.channels?.[0].newTotalClaimed).toBe("1500");
+  });
+
+  it("decodes claim rows without a charge-count suffix", () => {
+    const calldata = claimCalldata();
+    const attestation = decodeClaimAttestation(calldata, [], NETWORK);
+    expect(attestation.chargeCounts).toBeUndefined();
+    expect(attestation.channels?.[0].chargeCount).toBeUndefined();
   });
 });

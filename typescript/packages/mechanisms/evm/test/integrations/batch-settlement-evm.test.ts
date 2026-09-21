@@ -4,6 +4,7 @@ import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { x402Facilitator } from "@x402/core/facilitator";
 import {
   HTTPAdapter,
+  HTTPProcessResult,
   HTTPResponseInstructions,
   x402HTTPResourceServer,
   x402ResourceServer,
@@ -20,10 +21,12 @@ import {
 import { toClientEvmSigner, toFacilitatorEvmSigner } from "../../src";
 import { BatchSettlementEvmScheme as BatchSettlementEvmClient } from "../../src/batch-settlement/client/scheme";
 import { updateChannelFromSettle } from "../../src/batch-settlement/client/channel";
+import { signVoucher } from "../../src/batch-settlement/client/voucher";
 import { InMemoryClientChannelStorage } from "../../src/batch-settlement/client/storage";
 import { BatchSettlementEvmScheme as BatchSettlementEvmServer } from "../../src/batch-settlement/server/scheme";
 import { BatchSettlementEvmScheme as BatchSettlementEvmFacilitator } from "../../src/batch-settlement/facilitator/scheme";
 import { InMemoryChannelStorage as FacilitatorChannelStorage } from "../../src/batch-settlement/storage/channel";
+import { InMemoryChannelStorage as ServerReplicaStorage } from "../../src/batch-settlement/server/storage";
 import type { AuthorizerSigner } from "../../src/batch-settlement/types";
 import { privateKeyToAccount } from "viem/accounts";
 import { createWalletClient, createPublicClient, http, getAddress } from "viem";
@@ -48,6 +51,8 @@ if (!HAS_KEYS) {
 
 const NETWORK: Network = "eip155:84532";
 const ASSET_USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const MANAGED_RESOURCE_URL = "https://example.com/api/managed";
+const MANAGED_HTTP_PATH = "/api/managed";
 
 /**
  * Waits until an RPC read sees non-zero channel balance (some providers lag after receipt).
@@ -73,6 +78,174 @@ async function waitForChannelBalanceOnChain(
     await new Promise<void>(resolve => setTimeout(resolve, intervalMs));
   }
   throw new Error(`Timed out waiting for channel ${channelId} balance > 0`);
+}
+
+type ManagedPipeline = ReturnType<typeof buildManagedPipeline>;
+
+/**
+ * Builds managed-mode payment requirements through the resource server enhancer.
+ *
+ * @param server - Initialized resource server advertising facilitator-managed custody.
+ * @param payTo - Receiver address for the route.
+ */
+async function managedAccepts(
+  server: x402ResourceServer,
+  payTo: `0x${string}`,
+): Promise<PaymentRequirements[]> {
+  return server.buildPaymentRequirements({
+    scheme: "batch-settlement",
+    network: NETWORK,
+    payTo,
+    price: "$0.001",
+    maxTimeoutSeconds: 3600,
+  });
+}
+
+/**
+ * Runs a managed deposit and follow-up voucher charge through the direct API.
+ *
+ * @param pipeline - Managed integration pipeline.
+ */
+async function runManagedDepositAndVoucher(pipeline: ManagedPipeline): Promise<{
+  channelId: `0x${string}`;
+  accepts: PaymentRequirements[];
+  resource: { url: string; description: string; mimeType: string };
+  depositSettle: SettleResponse;
+  voucherVerify: VerifyResponse;
+  voucherSettle: SettleResponse;
+}> {
+  const accepts = await managedAccepts(pipeline.server, pipeline.receiverAddress);
+  const resource = {
+    url: MANAGED_RESOURCE_URL,
+    description: "Managed custody resource",
+    mimeType: "application/json",
+  };
+
+  const paymentRequired = await pipeline.server.createPaymentRequiredResponse(accepts, resource);
+  const depositPayload = await pipeline.client.createPaymentPayload(paymentRequired);
+  const depositAccepted = pipeline.server.findMatchingRequirements(accepts, depositPayload);
+  expect(depositAccepted).toBeDefined();
+
+  expect(await pipeline.server.verifyPayment(depositPayload, depositAccepted!)).toMatchObject({
+    isValid: true,
+  });
+
+  const depositSettle = await pipeline.server.settlePayment(depositPayload, depositAccepted!);
+  expect(depositSettle.success, JSON.stringify(depositSettle)).toBe(true);
+
+  const channelId = (depositPayload.payload as { voucher: { channelId: `0x${string}` } }).voucher
+    .channelId;
+  await waitForChannelBalanceOnChain(pipeline.publicClient, channelId);
+
+  const depositAmount = (depositPayload.payload as { deposit: { amount: string } }).deposit.amount;
+  await updateChannelFromSettle(pipeline.batchSettlementStorage, {
+    server: { chargedAmount: depositSettle.extra?.chargedAmount },
+    local: {
+      channelId,
+      requestAmount: depositAccepted!.amount,
+      depositAmount,
+    },
+  });
+
+  const followupRequired = await pipeline.server.createPaymentRequiredResponse(accepts, resource);
+  const voucherPayload = await pipeline.client.createPaymentPayload(followupRequired);
+  const voucherAccepted = pipeline.server.findMatchingRequirements(accepts, voucherPayload);
+  expect(voucherAccepted).toBeDefined();
+
+  const voucherVerify = await pipeline.server.verifyPayment(voucherPayload, voucherAccepted!);
+  expect(voucherVerify.isValid).toBe(true);
+
+  const voucherSettle = await pipeline.server.settlePayment(voucherPayload, voucherAccepted!);
+  expect(voucherSettle.success, JSON.stringify(voucherSettle)).toBe(true);
+
+  await updateChannelFromSettle(pipeline.batchSettlementStorage, {
+    server: { chargedAmount: voucherSettle.extra?.chargedAmount },
+    local: { channelId, requestAmount: voucherAccepted!.amount },
+  });
+
+  return {
+    channelId,
+    accepts,
+    resource,
+    depositSettle,
+    voucherVerify,
+    voucherSettle,
+  };
+}
+
+/**
+ * Reads a case-insensitive header from fetch init headers.
+ *
+ * @param headers - Fetch headers init.
+ * @param name - Header name to read.
+ */
+function readFetchHeader(headers: HeadersInit | undefined, name: string): string | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  const target = name.toLowerCase();
+  if (headers instanceof Headers) {
+    return headers.get(name) ?? undefined;
+  }
+  if (Array.isArray(headers)) {
+    const match = headers.find(([key]) => key.toLowerCase() === target);
+    return match?.[1];
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === target) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Converts {@link HTTPProcessResult} into a Fetch API `Response` for client refund probes.
+ *
+ * @param result - HTTP middleware process outcome.
+ */
+function httpProcessResultToResponse(result: HTTPProcessResult): Response {
+  switch (result.type) {
+    case "payment-error": {
+      const { status, headers, body } = result.response;
+      const payload =
+        body === undefined || body === null
+          ? null
+          : typeof body === "string"
+            ? body
+            : JSON.stringify(body);
+      return new Response(payload, { status, headers: new Headers(headers) });
+    }
+    case "payment-verified":
+      return new Response(JSON.stringify({ type: "payment-verified" }), { status: 200 });
+    case "no-payment-required":
+      return new Response(null, { status: 200 });
+    default: {
+      const exhaustive: never = result;
+      throw new Error(`unexpected HTTP process result: ${(exhaustive as { type: string }).type}`);
+    }
+  }
+}
+
+/**
+ * Bridges the in-process HTTP resource server to `fetch` for refund integration tests.
+ *
+ * @param httpServer - Managed HTTP resource server under test.
+ * @param adapter - Mutable HTTP adapter receiving per-request headers.
+ * @param path - Protected route path.
+ */
+function createManagedHttpFetch(
+  httpServer: x402HTTPResourceServer,
+  adapter: HTTPAdapter,
+  path: string,
+): typeof fetch {
+  return async (_url: string, init?: RequestInit) => {
+    const paymentSignature = readFetchHeader(init?.headers, "PAYMENT-SIGNATURE");
+    adapter.getHeader = (name: string) =>
+      name === "PAYMENT-SIGNATURE" ? paymentSignature : undefined;
+    const result = await httpServer.processHTTPRequest({ adapter, path, method: "GET" });
+    return httpProcessResultToResponse(result);
+  };
 }
 
 /**
@@ -237,6 +410,8 @@ function buildPipeline(): {
  */
 function buildManagedPipeline(): ReturnType<typeof buildPipeline> & {
   facilitatorStorage: FacilitatorChannelStorage;
+  serverReplicaStorage: ServerReplicaStorage;
+  batchSettlementServer: BatchSettlementEvmServer;
 } {
   const clientAccount = privateKeyToAccount(CLIENT_PRIVATE_KEY!);
   const facilitatorAccount = privateKeyToAccount(FACILITATOR_PRIVATE_KEY!);
@@ -288,6 +463,7 @@ function buildManagedPipeline(): ReturnType<typeof buildPipeline> & {
   };
 
   const facilitatorStorage = new FacilitatorChannelStorage();
+  const serverReplicaStorage = new ServerReplicaStorage();
   const facilitator = new x402Facilitator().register(
     NETWORK,
     new BatchSettlementEvmFacilitator(facilitatorSigner, authorizerSigner, {
@@ -307,13 +483,12 @@ function buildManagedPipeline(): ReturnType<typeof buildPipeline> & {
   const client = new x402Client().register(NETWORK, batchSettlementClient);
 
   const server = new x402ResourceServer(facilitatorClient);
-  server.register(
-    NETWORK,
-    new BatchSettlementEvmServer(facilitatorAccount.address, {
-      voucherStoreMode: "facilitator",
-      refundAuthorizerSigner,
-    }),
-  );
+  const batchSettlementServer = new BatchSettlementEvmServer(facilitatorAccount.address, {
+    voucherStoreMode: "facilitator",
+    refundAuthorizerSigner,
+    storage: serverReplicaStorage,
+  });
+  server.register(NETWORK, batchSettlementServer);
 
   return {
     client,
@@ -325,6 +500,8 @@ function buildManagedPipeline(): ReturnType<typeof buildPipeline> & {
     batchSettlementClient,
     batchSettlementStorage,
     facilitatorStorage,
+    serverReplicaStorage,
+    batchSettlementServer,
   };
 }
 
@@ -423,68 +600,73 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         const pipeline = buildManagedPipeline();
         await pipeline.server.initialize();
 
-        const accepts = await pipeline.server.buildPaymentRequirements({
-          scheme: "batch-settlement",
-          network: NETWORK,
-          payTo: pipeline.receiverAddress,
-          price: "$0.001",
-          maxTimeoutSeconds: 3600,
-        });
-        const resource = {
-          url: "https://example.com/api/managed",
-          description: "Managed custody resource",
-          mimeType: "application/json",
-        };
+        const accepts = await managedAccepts(pipeline.server, pipeline.receiverAddress);
+        expect(accepts[0].extra?.voucherStore).toBe(true);
+        expect(typeof accepts[0].extra?.withdrawDelay).toBe("number");
+        expect(typeof accepts[0].extra?.refundAuthorizer).toBe("string");
 
-        const paymentRequired = await pipeline.server.createPaymentRequiredResponse(
-          accepts,
-          resource,
-        );
-        expect(paymentRequired.accepts[0].extra?.voucherStore).toBe(true);
+        const { channelId, voucherVerify, voucherSettle } =
+          await runManagedDepositAndVoucher(pipeline);
 
-        const firstPayload = await pipeline.client.createPaymentPayload(paymentRequired);
-        const accepted = pipeline.server.findMatchingRequirements(accepts, firstPayload);
-        expect(await pipeline.server.verifyPayment(firstPayload, accepted!)).toMatchObject({
-          isValid: true,
-        });
-
-        const depositSettle = await pipeline.server.settlePayment(firstPayload, accepted!);
-        expect(depositSettle.success, JSON.stringify(depositSettle)).toBe(true);
-        expect(typeof depositSettle.extra?.chargeCount).toBe("number");
-
-        const depositChannelId = (firstPayload.payload as { voucher: { channelId: `0x${string}` } })
-          .voucher.channelId;
-        await waitForChannelBalanceOnChain(pipeline.publicClient, depositChannelId);
-
-        const depositAmount = (firstPayload.payload as { deposit: { amount: string } }).deposit
-          .amount;
-        await updateChannelFromSettle(pipeline.batchSettlementStorage, {
-          server: { chargedAmount: depositSettle.extra?.chargedAmount },
-          local: {
-            channelId: depositChannelId,
-            requestAmount: accepted!.amount,
-            depositAmount,
-          },
-        });
-
-        const followupRequired = await pipeline.server.createPaymentRequiredResponse(
-          accepts,
-          resource,
-        );
-        const voucherPayload = await pipeline.client.createPaymentPayload(followupRequired);
-        const accepted2 = pipeline.server.findMatchingRequirements(accepts, voucherPayload);
-        expect(await pipeline.server.verifyPayment(voucherPayload, accepted2!)).toMatchObject({
-          isValid: true,
-        });
-
-        const voucherSettle = await pipeline.server.settlePayment(voucherPayload, accepted2!);
-        expect(voucherSettle.success, JSON.stringify(voucherSettle)).toBe(true);
+        expect(typeof voucherVerify.extra?.pendingId).toBe("string");
+        expect(voucherVerify.extra?.pendingId).toMatch(/^0x[0-9a-fA-F]+$/);
         expect(voucherSettle.transaction).toBe("");
         expect(voucherSettle.extra?.chargeCount).toBeGreaterThan(0);
 
-        const facilitatorRow = await pipeline.facilitatorStorage.get(depositChannelId);
+        const facilitatorRow = await pipeline.facilitatorStorage.get(channelId);
         expect(facilitatorRow?.chargedCumulativeAmount).toBeDefined();
         expect(BigInt(facilitatorRow!.chargedCumulativeAmount)).toBeGreaterThan(0n);
+
+        const replicaRow = await pipeline.serverReplicaStorage.get(channelId);
+        expect(replicaRow?.chargedCumulativeAmount).toBe(facilitatorRow?.chargedCumulativeAmount);
+      },
+    );
+
+    it(
+      "facilitator-managed full refund settles on-chain and clears facilitator custody",
+      { timeout: 120000 },
+      async () => {
+        const pipeline = buildManagedPipeline();
+        await pipeline.server.initialize();
+
+        const { channelId, accepts } = await runManagedDepositAndVoucher(pipeline);
+        const refundRequirements: PaymentRequirements = { ...accepts[0], amount: "0" };
+        const config = await pipeline.batchSettlementClient.buildChannelConfig(refundRequirements);
+        const localChannel = await pipeline.batchSettlementStorage.get(channelId.toLowerCase());
+        expect(localChannel?.chargedCumulativeAmount).toBeDefined();
+
+        const clientSigner = toClientEvmSigner(
+          privateKeyToAccount(CLIENT_PRIVATE_KEY!),
+          pipeline.publicClient,
+        );
+        const voucher = await signVoucher(
+          clientSigner,
+          channelId,
+          localChannel!.chargedCumulativeAmount!,
+          NETWORK,
+        );
+
+        const refundPayload: PaymentPayload = {
+          x402Version: 2,
+          accepted: refundRequirements,
+          payload: {
+            type: "refund",
+            channelConfig: config,
+            voucher,
+          },
+        };
+
+        const refundVerify = await pipeline.server.verifyPayment(refundPayload, refundRequirements);
+        expect(refundVerify.isValid).toBe(true);
+        expect(refundVerify.skipHandler).toBeDefined();
+        expect(refundVerify.extra?.pendingId).toMatch(/^0x[0-9a-fA-F]+$/);
+
+        const refundSettle = await pipeline.server.settlePayment(refundPayload, refundRequirements);
+        expect(refundSettle.success, JSON.stringify(refundSettle)).toBe(true);
+        expect(refundSettle.transaction).toMatch(/^0x/);
+
+        expect(await pipeline.facilitatorStorage.get(channelId)).toBeUndefined();
+        expect(await pipeline.serverReplicaStorage.get(channelId)).toBeUndefined();
       },
     );
   });
@@ -610,6 +792,96 @@ describe("Batch-Settlement EVM Integration Tests", () => {
           expect(settlement.headers["PAYMENT-RESPONSE"]).toBeDefined();
         }
         expect(clientAddress).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      },
+    );
+  });
+
+  describeOnChain("facilitator-managed HTTP integration", () => {
+    const managedAdapter: HTTPAdapter = {
+      getHeader: () => undefined,
+      getMethod: () => "GET",
+      getPath: () => MANAGED_HTTP_PATH,
+      getUrl: () => MANAGED_RESOURCE_URL,
+      getAcceptHeader: () => "application/json",
+      getUserAgent: () => "TestClient/1.0",
+    };
+
+    const managedRoutes = {
+      [MANAGED_HTTP_PATH]: {
+        accepts: {
+          scheme: "batch-settlement",
+          payTo: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+          price: "$0.001",
+          network: NETWORK,
+        },
+        description: "Managed custody resource",
+        mimeType: "application/json",
+      },
+    };
+
+    it(
+      "negotiates a managed deposit via HTTP middleware end-to-end",
+      { timeout: 90000 },
+      async () => {
+        const pipeline = buildManagedPipeline();
+        await pipeline.server.initialize();
+        managedRoutes[MANAGED_HTTP_PATH].accepts.payTo = pipeline.receiverAddress;
+
+        const httpServer = new x402HTTPResourceServer(pipeline.server, managedRoutes);
+        const httpClient = new x402HTTPClient(pipeline.client);
+        const context = { adapter: managedAdapter, path: MANAGED_HTTP_PATH, method: "GET" };
+
+        const initial = (await httpServer.processHTTPRequest(context))!;
+        expect(initial.type).toBe("payment-error");
+        const response402 = (
+          initial as { type: "payment-error"; response: HTTPResponseInstructions }
+        ).response;
+        expect(response402.status).toBe(402);
+
+        const paymentRequired = httpClient.getPaymentRequiredResponse(
+          name => response402.headers[name],
+        );
+        expect(paymentRequired.accepts[0].extra?.voucherStore).toBe(true);
+
+        const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
+        const requestHeaders = await httpClient.encodePaymentSignatureHeader(paymentPayload);
+        managedAdapter.getHeader = (name: string) =>
+          name === "PAYMENT-SIGNATURE" ? requestHeaders["PAYMENT-SIGNATURE"] : undefined;
+
+        const verified = await httpServer.processHTTPRequest(context);
+        expect(verified.type).toBe("payment-verified");
+
+        const { paymentPayload: verifiedPayload, paymentRequirements: verifiedReqs } = verified as {
+          type: "payment-verified";
+          paymentPayload: PaymentPayload;
+          paymentRequirements: PaymentRequirements;
+        };
+
+        const settlement = await httpServer.processSettlement(verifiedPayload, verifiedReqs, 200);
+        expect(settlement.success).toBe(true);
+        if (settlement.success) {
+          expect(settlement.headers["PAYMENT-RESPONSE"]).toBeDefined();
+        }
+      },
+    );
+
+    it(
+      "refunds a managed channel via client.refund over HTTP after deposit and voucher",
+      { timeout: 120000 },
+      async () => {
+        const pipeline = buildManagedPipeline();
+        await pipeline.server.initialize();
+        managedRoutes[MANAGED_HTTP_PATH].accepts.payTo = pipeline.receiverAddress;
+
+        const httpServer = new x402HTTPResourceServer(pipeline.server, managedRoutes);
+        const { channelId } = await runManagedDepositAndVoucher(pipeline);
+
+        const refundSettle = await pipeline.batchSettlementClient.refund(MANAGED_RESOURCE_URL, {
+          fetch: createManagedHttpFetch(httpServer, managedAdapter, MANAGED_HTTP_PATH),
+        });
+        expect(refundSettle.success, JSON.stringify(refundSettle)).toBe(true);
+        expect(refundSettle.transaction).toMatch(/^0x/);
+        expect(await pipeline.facilitatorStorage.get(channelId)).toBeUndefined();
       },
     );
   });

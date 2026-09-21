@@ -441,6 +441,7 @@ type hookStore struct {
 	acquireErr       error
 	releaseErr       error
 	isHeldErr        error
+	updateErr        error
 	updateConflict   bool
 	queryItems       []*FacilitatorChannel
 	queryCalls       int
@@ -460,6 +461,9 @@ func (s *hookStore) List() ([]*FacilitatorChannel, error) {
 	return s.inner.List()
 }
 func (s *hookStore) UpdateChannel(channelId string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
 	if s.updateConflict {
 		return &storage.ChannelUpdateResult[*FacilitatorChannel]{Status: storage.ChannelConflict}, nil
 	}

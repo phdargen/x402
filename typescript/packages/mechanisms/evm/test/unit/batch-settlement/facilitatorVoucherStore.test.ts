@@ -481,6 +481,55 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.invalidReason).toBe(Errors.ErrRpcReadFailed);
   });
 
+  it("maps store read failures during deposit verify to RpcReadFailed", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    vi.spyOn(storage, "get").mockRejectedValueOnce(new Error("store unavailable"));
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafe" },
+      deposit: {
+        amount: "1000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    const result = await verifyManaged(
+      buildDeps(storage, authorizer),
+      envelope(deposit as unknown as Record<string, unknown>),
+      { ...managedRequirements(authorizer), amount: "1000" },
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrRpcReadFailed);
+  });
+
+  it("maps store read failures during refund verify to RpcReadFailed", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    vi.spyOn(storage, "get").mockRejectedValueOnce(new Error("store unavailable"));
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const result = await verifyManaged(
+      buildDeps(storage, authorizer),
+      envelope({
+        type: "refund",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+      }),
+      { ...managedRequirements(authorizer), amount: "0" },
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrRpcReadFailed);
+  });
+
   it("rejects settle for unsupported managed payload types", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const result = await settleManaged(
@@ -1649,6 +1698,28 @@ describe("facilitator verifyManaged / settleManaged", () => {
     commitSpy.mockRestore();
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(Errors.ErrChannelBusy);
+  });
+
+  it("propagates when commitVoucherCharge throws during voucher settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const commitSpy = vi
+      .spyOn(sharedVoucherStore, "commitVoucherCharge")
+      .mockRejectedValueOnce(new Error("storage write failed"));
+
+    await expect(
+      settleManaged(
+        buildDeps(storage, authorizer),
+        envelope({
+          type: "voucher",
+          channelConfig: config,
+          voucher: { channelId, maxClaimableAmount: "1000", signature: "0xfeedface" },
+        }),
+        managedRequirements(authorizer),
+      ),
+    ).rejects.toThrow("storage write failed");
+    commitSpy.mockRestore();
   });
 
   it("returns the onchain deposit failure without attempting a managed charge commit", async () => {

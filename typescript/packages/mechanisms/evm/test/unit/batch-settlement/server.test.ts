@@ -2057,24 +2057,24 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
     });
 
     const depositAbort = await scheme.schemeHooks.onAfterSettle!({
-        paymentPayload: payload,
-        requirements: makeRequirements({ amount: "1000" }),
-        result: {
-          success: true,
-          transaction: "0xtx",
-          network: NETWORK,
-          payer: PAYER,
-          extra: {
-            channelState: {
-              channelId,
-              balance: "10000",
-              totalClaimed: "0",
-              withdrawRequestedAt: 0,
-              refundNonce: "0",
-            },
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
           },
-        } as SettleResponse,
-      } as never);
+        },
+      } as SettleResponse,
+    } as never);
     expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
     expect(await storage.get(channelId)).toBeUndefined();
   });
@@ -3145,24 +3145,24 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const depositAbort = await server.schemeHooks.onAfterSettle!({
-        paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
-        requirements: makeRequirements({ amount: "1000" }),
-        result: {
-          success: true,
-          transaction: "0xtx",
-          network: NETWORK,
-          payer: PAYER,
-          extra: {
-            channelState: {
-              channelId,
-              balance: "10000",
-              totalClaimed: "0",
-              withdrawRequestedAt: 0,
-              refundNonce: "0",
-            },
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
           },
-        } as SettleResponse,
-      } as never);
+        },
+      } as SettleResponse,
+    } as never);
     expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
   });
 
@@ -3180,24 +3180,24 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect(await storage.isHeld(channelId)).toBe(true);
 
     const depositAbort = await server.schemeHooks.onAfterSettle!({
-        paymentPayload: payload,
-        requirements: makeRequirements({ amount: "1000" }),
-        result: {
-          success: true,
-          transaction: "0xtx",
-          network: NETWORK,
-          payer: PAYER,
-          extra: {
-            channelState: {
-              channelId,
-              balance: "10000",
-              totalClaimed: "0",
-              withdrawRequestedAt: 0,
-              refundNonce: "0",
-            },
+      paymentPayload: payload,
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
           },
-        } as SettleResponse,
-      } as never);
+        },
+      } as SettleResponse,
+    } as never);
     expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
     expect(await storage.isHeld(channelId)).toBe(false);
   });
@@ -3219,6 +3219,216 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     });
     await storage.acquire(channelId, "other", 60_000);
     const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
+  });
+
+  it("aborts VoucherStoreUnavailable when deposit persist throws after onchain success", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new Error("storage write failed"));
+
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        amount: "1000",
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrVoucherStoreUnavailable });
+  });
+
+  it("aborts ChannelBusy when deposit afterSettle update returns deleted", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockResolvedValueOnce({
+      status: "deleted",
+      channel: undefined,
+    });
+
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
+  });
+
+  it("aborts ChannelBusy when deposit afterSettle update returns conflict", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockResolvedValueOnce({
+      status: "conflict",
+      channel: undefined,
+    });
+
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
+  });
+
+  it("aborts ChannelBusy when deposit afterSettle update returns unchanged", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockResolvedValueOnce({
+      status: "unchanged",
+      channel: undefined,
+    });
+
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
+  });
+
+  it("rethrows lock implementation errors from deposit afterSettle persist", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new TypeError("corrupt hold"));
+
+    await expect(
+      server.schemeHooks.onAfterSettle!({
         paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
         requirements: makeRequirements({ amount: "1000" }),
         result: {
@@ -3236,7 +3446,50 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
             },
           },
         } as SettleResponse,
-      } as never);
+      } as never),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it("aborts ChannelBusy when deposit afterSettle update returns no channel row", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "0",
+      signedMaxClaimable: "0",
+      signature: "0x",
+      balance: "0",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockResolvedValueOnce({
+      status: "updated",
+      channel: undefined,
+    });
+
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
+      paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
+      requirements: makeRequirements({ amount: "1000" }),
+      result: {
+        success: true,
+        transaction: "0xtx",
+        network: NETWORK,
+        payer: PAYER,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      } as SettleResponse,
+    } as never);
+
     expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
   });
 
@@ -3339,6 +3592,63 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
         } as SettleResponse,
       } as never),
     ).rejects.toThrow(Errors.ErrChannelBusy);
+  });
+
+  it("propagates storage write failures after a successful refund settle", async () => {
+    const config = buildChannelConfig();
+    const channelId = computeChannelId(config);
+    await storeChannel(storage, channelId, {
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xabcd",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: 0,
+    });
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new Error("storage write failed"));
+    const refundPayload = {
+      x402Version: 2,
+      scheme: "batch-settlement",
+      network: NETWORK,
+      payload: {
+        type: "refund",
+        channelConfig: config,
+        voucher: {
+          channelId: channelId as `0x${string}`,
+          maxClaimableAmount: "1000",
+          signature: "0xabcd",
+        },
+        amount: "2000",
+        refundNonce: "0",
+        claims: [],
+      } as unknown as Record<string, unknown>,
+    } as unknown as PaymentPayload;
+
+    await expect(
+      server.schemeHooks.onAfterSettle!({
+        paymentPayload: refundPayload,
+        requirements: makeRequirements(),
+        result: {
+          success: true,
+          transaction: "0xref",
+          network: NETWORK,
+          payer: PAYER,
+          extra: {
+            channelState: {
+              channelId,
+              balance: "8000",
+              totalClaimed: "1000",
+              withdrawRequestedAt: 0,
+              refundNonce: "1",
+            },
+          },
+        } as SettleResponse,
+      } as never),
+    ).rejects.toThrow("storage write failed");
   });
 
   it("releases a self-held lock when refund afterSettle throws ChannelBusy", async () => {

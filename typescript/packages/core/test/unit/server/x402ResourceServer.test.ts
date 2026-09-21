@@ -1227,6 +1227,65 @@ describe("x402ResourceServer", () => {
         expect(hookExecuted).toBe(true);
         expect(hookResult).toBe(result);
       });
+
+      it("flips success to false when afterSettle aborts but keeps onchain proof", async () => {
+        mockClient.setSettleResponse(
+          buildSettleResponse({
+            success: true,
+            transaction: "0xdep",
+            payer: "0xPayer",
+            amount: "1000",
+          }),
+        );
+
+        server.onAfterSettle(async () => ({
+          abort: true,
+          reason: "invalid_batch_settlement_evm_voucher_store_unavailable",
+          message: "persist failed",
+        }));
+
+        const result = await server.settlePayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorReason).toBe("invalid_batch_settlement_evm_voucher_store_unavailable");
+        expect(result.errorMessage).toBe("persist failed");
+        expect(result.transaction).toBe("0xdep");
+        expect(result.payer).toBe("0xPayer");
+        expect(result.amount).toBe("1000");
+      });
+
+      it("flips success when a scheme afterSettle hook aborts", async () => {
+        const localClient = new MockFacilitatorClient(
+          buildSupportedResponse(),
+          buildVerifyResponse({ isValid: true }),
+          buildSettleResponse({
+            success: true,
+            transaction: "0xdep",
+          }),
+        );
+        const localServer = new x402ResourceServer(localClient);
+        localServer.register(
+          "test:network" as Network,
+          new MockSchemeNetworkServer("test-scheme", undefined, {
+            onAfterSettle: async () => ({
+              abort: true,
+              reason: "deposit_persist_failed",
+            }),
+          }),
+        );
+
+        const result = await localServer.settlePayment(
+          buildPaymentPayload(),
+          buildPaymentRequirements(),
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorReason).toBe("deposit_persist_failed");
+        expect(result.transaction).toBe("0xdep");
+      });
     });
 
     describe("onSettleFailure", () => {

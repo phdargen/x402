@@ -270,6 +270,58 @@ func requireSyntaxError(t *testing.T, err error) {
 	}
 }
 
+func requireAfterSettleAbort(t *testing.T, err error, reason string) {
+	t.Helper()
+	var abort *x402.AfterSettleAbortError
+	if !errors.As(err, &abort) || abort.Reason != reason {
+		t.Fatalf("got %v want AfterSettleAbort reason %s", err, reason)
+	}
+}
+
+type sessionHookStorage struct {
+	inner       *InMemoryChannelStorage
+	updateErr   error
+	forceResult *ChannelUpdateResult
+}
+
+func (s *sessionHookStorage) Get(channelId string) (*ChannelSession, error) {
+	return s.inner.Get(channelId)
+}
+func (s *sessionHookStorage) List() ([]*ChannelSession, error) {
+	return s.inner.List()
+}
+func (s *sessionHookStorage) UpdateChannel(channelId string, update func(*ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	if s.forceResult != nil {
+		return s.forceResult, nil
+	}
+	return s.inner.UpdateChannel(channelId, update)
+}
+
+func depositAfterSettleCtx(id string) (x402.SettleResultContext, *stubPayload) {
+	payload := depositPayloadFor(id, "100", "0xsig")
+	stub := &stubPayload{data: payload}
+	return x402.SettleResultContext{
+		SettleContext: x402.SettleContext{
+			Payload:      stub,
+			Requirements: batchedReqs(),
+		},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "10000",
+					"totalClaimed": "0",
+					"refundNonce":  "0",
+				},
+			},
+		},
+	}, stub
+}
+
 // ----- BeforeVerifyHook -----
 
 func TestBeforeVerifyHook_NonBatchedSchemeIgnored(t *testing.T) {
@@ -1869,6 +1921,149 @@ func TestAfterSettleHook_DepositSnapshotOnlyLockDownBusy(t *testing.T) {
 	}
 	if got, _ := s.GetSession(id); got != nil {
 		t.Fatalf("storage must stay empty: %+v", got)
+	}
+}
+
+func TestAfterSettleHook_DepositPersistErrorAbortsVoucherStoreUnavailable(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, updateErr: errors.New("storage write failed")}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireAfterSettleAbort(t, s.AfterSettleHook()(ctx), batchsettlement.ErrVoucherStoreUnavailable)
+}
+
+func TestAfterSettleHook_DepositPersistDeletedStatusBusy(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, forceResult: &ChannelUpdateResult{Status: ChannelDeleted}}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireAfterSettleAbort(t, s.AfterSettleHook()(ctx), batchsettlement.ErrChannelBusy)
+}
+
+func TestAfterSettleHook_DepositPersistConflictStatusBusy(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, forceResult: &ChannelUpdateResult{Status: ChannelConflict}}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireAfterSettleAbort(t, s.AfterSettleHook()(ctx), batchsettlement.ErrChannelBusy)
+}
+
+func TestAfterSettleHook_DepositPersistUnchangedStatusBusy(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, forceResult: &ChannelUpdateResult{Status: ChannelUnchanged}}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireAfterSettleAbort(t, s.AfterSettleHook()(ctx), batchsettlement.ErrChannelBusy)
+}
+
+func TestAfterSettleHook_DepositPersistUpdatedWithoutRowBusy(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, forceResult: &ChannelUpdateResult{Status: ChannelUpdated}}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireAfterSettleAbort(t, s.AfterSettleHook()(ctx), batchsettlement.ErrChannelBusy)
+}
+
+func TestAfterSettleHook_DepositPersistLockImplementationErrorRethrown(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	seedStore(t, inner, id, sampleSession(id, "0"))
+	store := &sessionHookStorage{inner: inner, updateErr: corruptHoldError()}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-deposit")
+	ctx, stub := depositAfterSettleCtx(id)
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-deposit",
+		ReservationCommitted: reservationFlag(true),
+	})
+	requireSyntaxError(t, s.AfterSettleHook()(ctx))
+}
+
+func TestAfterSettleHook_RefundPersistErrorPropagates(t *testing.T) {
+	inner := NewInMemoryChannelStorage()
+	id, _ := batchsettlement.ComputeChannelId(testConfig(), "eip155:8453")
+	sess := sampleSession(id, "1000")
+	sess.ChannelConfig = testConfig()
+	sess.Balance = "10000"
+	seedStore(t, inner, id, sess)
+	store := &sessionHookStorage{inner: inner, updateErr: errors.New("storage write failed")}
+	s := NewBatchSettlementEvmScheme("0xreceiver", &BatchSettlementEvmSchemeServerConfig{Storage: store})
+	reserveDepositPending(t, s, id, "p-refund")
+	rp := map[string]interface{}{
+		"type":          "refund",
+		"channelConfig": batchsettlement.ChannelConfigToMap(testConfig()),
+		"voucher": map[string]interface{}{
+			"channelId":          id,
+			"maxClaimableAmount": "1000",
+			"signature":          "0xabcd",
+		},
+		"amount":      "1000",
+		"refundNonce": "0",
+		"claims":      []interface{}{},
+	}
+	stub := &stubPayload{data: rp}
+	s.MergeRequestContext(stub, BatchSettlementRequestContext{
+		ChannelId:            id,
+		PendingId:            "p-refund",
+		ReservationCommitted: reservationFlag(true),
+	})
+	err := s.AfterSettleHook()(x402.SettleResultContext{
+		SettleContext: x402.SettleContext{Payload: stub, Requirements: batchedReqs()},
+		Result: &x402.SettleResponse{
+			Success: true,
+			Extra: map[string]interface{}{
+				"channelState": map[string]interface{}{
+					"channelId":    id,
+					"balance":      "8000",
+					"totalClaimed": "1000",
+					"refundNonce":  "1",
+				},
+			},
+		},
+	})
+	if err == nil || err.Error() != "storage write failed" {
+		t.Fatalf("got %v", err)
 	}
 }
 

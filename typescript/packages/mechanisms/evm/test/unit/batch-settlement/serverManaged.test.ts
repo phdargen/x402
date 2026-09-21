@@ -415,6 +415,21 @@ describe("facilitator-managed server hooks", () => {
     });
   });
 
+  it("does not stash corrective extras when mismatch verify omits resync payloads", async () => {
+    const server = buildManagedServer();
+    const paymentPayload = voucherPayload(computeChannelId(buildConfig()));
+    await handleManagedAfterVerify(server, {
+      paymentPayload,
+      requirements: { network: NETWORK } as never,
+      result: {
+        isValid: false,
+        invalidReason: Errors.ErrCumulativeAmountMismatch,
+        extra: {},
+      } as VerifyResponse,
+    } as never);
+    expect(server.readRequestContext(paymentPayload)?.correctiveChannelState).toBeUndefined();
+  });
+
   it("stashes corrective voucher proof when channelState is absent on mismatch", async () => {
     const server = buildManagedServer();
     const config = buildConfig();
@@ -858,6 +873,50 @@ describe("facilitator-managed server hooks", () => {
     });
   });
 
+  it("copies corrective extras when verify fails with cumulative below claimed", async () => {
+    const server = buildManagedServer();
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    const requirements = {
+      scheme: "batch-settlement",
+      network: NETWORK,
+      amount: "1000",
+      asset: TOKEN,
+      payTo: RECEIVER,
+      maxTimeoutSeconds: 3600,
+      extra: { voucherStore: true },
+    };
+    const paymentPayload = voucherPayload(channelId);
+    server.mergeRequestContext(paymentPayload, {
+      correctiveChannelState: {
+        channelId,
+        balance: "10000",
+        totalClaimed: "1000",
+        withdrawRequestedAt: 0,
+        refundNonce: "0",
+        chargedCumulativeAmount: "5000",
+      },
+      correctiveVoucherState: { signedMaxClaimable: "5000", signature: "0xstored" },
+    });
+
+    await handleManagedEnrichPaymentRequiredResponse(server, {
+      requirements: [requirements],
+      paymentPayload,
+      resourceInfo: { url: "https://example.com" },
+      error: Errors.ErrCumulativeAmountBelowClaimed,
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: [requirements],
+      },
+    } as never);
+
+    expect(requirements.extra?.voucherState).toEqual({
+      signedMaxClaimable: "5000",
+      signature: "0xstored",
+    });
+  });
+
   it("returns nothing when enriching settlement payload for a non-refund payload", async () => {
     const server = buildManagedServer();
     const config = buildConfig();
@@ -1132,6 +1191,31 @@ describe("facilitator-managed server hooks", () => {
     expect(requirements.extra?.voucherState).toBeUndefined();
   });
 
+  it("skips payment-required enrichment for unrelated verify errors", async () => {
+    const server = buildManagedServer();
+    const requirements = {
+      scheme: "batch-settlement",
+      network: NETWORK,
+      amount: "1000",
+      asset: TOKEN,
+      payTo: RECEIVER,
+      maxTimeoutSeconds: 3600,
+      extra: { voucherStore: true },
+    };
+    await handleManagedEnrichPaymentRequiredResponse(server, {
+      requirements: [requirements],
+      paymentPayload: voucherPayload(computeChannelId(buildConfig())),
+      resourceInfo: { url: "https://example.com" },
+      error: Errors.ErrChannelBusy,
+      paymentRequiredResponse: {
+        x402Version: 2,
+        resource: { url: "https://example.com" },
+        accepts: [requirements],
+      },
+    } as never);
+    expect(requirements.extra?.channelState).toBeUndefined();
+  });
+
   it("skips payment-required enrichment when the error is not a cumulative mismatch", async () => {
     const server = buildManagedServer();
     const config = buildConfig();
@@ -1336,6 +1420,218 @@ describe("facilitator-managed server hooks", () => {
             balance: "5000",
             totalClaimed: "5000",
             chargedCumulativeAmount: "5000",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toBeUndefined();
+  });
+
+  it("falls back to verify snapshot charged cumulative for managed replica upsert", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    const paymentPayload = voucherPayload(channelId, "3000");
+    server.mergeRequestContext(paymentPayload, {
+      channelSnapshot: {
+        channelId,
+        channelConfig: config,
+        chargedCumulativeAmount: "2500",
+        signedMaxClaimable: "3000",
+        signature: "0xdeadbeef",
+        balance: "10000",
+        totalClaimed: "0",
+        withdrawRequestedAt: 0,
+        refundNonce: 0,
+        lastRequestTimestamp: 0,
+      },
+    });
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload,
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({ chargedCumulativeAmount: "2500" });
+  });
+
+  it("skips managed replica upsert when settle reports a regressed charged watermark", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId, "5000"),
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "10000",
+            totalClaimed: "0",
+            chargedCumulativeAmount: "1000",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      },
+    } as never);
+
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("5000");
+  });
+
+  it("upserts managed replica when stored watermark is non-numeric", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "not-numeric",
+      signedMaxClaimable: "5000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId, "5000"),
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "9000",
+            totalClaimed: "1000",
+            chargedCumulativeAmount: "2000",
+            withdrawRequestedAt: 0,
+            refundNonce: "0",
+          },
+        },
+      },
+    } as never);
+
+    expect(await storage.get(channelId)).toMatchObject({
+      chargedCumulativeAmount: "2000",
+      balance: "9000",
+    });
+  });
+
+  it("ignores managed afterSettle for cancel-phase settlements", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId),
+      requirements: { network: NETWORK } as never,
+      phase: "cancel",
+      result: {
+        success: true,
+        transaction: "",
+        network: NETWORK,
+        extra: { channelState: { channelId, balance: "0", totalClaimed: "0" } },
+      },
+    } as never);
+
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("ignores managed afterSettle when facilitator settlement failed", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "1000",
+      signedMaxClaimable: "1000",
+      signature: "0xdeadbeef",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+    }));
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: voucherPayload(channelId),
+      requirements: { network: NETWORK } as never,
+      result: { success: false, transaction: "", network: NETWORK },
+    } as never);
+
+    expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
+  });
+
+  it("no-ops managed refund replica delete when no replica row exists", async () => {
+    const storage = new InMemoryChannelStorage();
+    const server = buildManagedServer(storage);
+    const config = buildConfig();
+    const channelId = computeChannelId(config);
+
+    await handleManagedAfterSettle(server, {
+      paymentPayload: refundPayload(channelId),
+      requirements: { network: NETWORK } as never,
+      result: {
+        success: true,
+        transaction: "0xrefund",
+        network: NETWORK,
+        extra: {
+          channelState: {
+            channelId,
+            balance: "1000",
+            totalClaimed: "1000",
+            chargedCumulativeAmount: "1000",
           },
         },
       },

@@ -1369,26 +1369,17 @@ export class x402ResourceServer {
       // response as settled. Route it through onSettleFailure like a thrown
       // error so hooks get a chance to recover.
       if (!settleResult.success) {
-        const failureContext: SettleFailureContext = {
-          ...context,
-          error: settleResponseToError(settleResult),
-        };
-
-        for (const { label, hook } of this.getLabeledHooks(
-          "onSettleFailure",
+        const recovered = await this.tryOnSettleFailureRecovery(
+          {
+            ...context,
+            error: settleResponseToError(settleResult),
+          },
           extensionKeysInUse,
           matchedScheme,
-        )) {
-          try {
-            const result = await hook(failureContext);
-            if (result && "recovered" in result && result.recovered) {
-              return result.result;
-            }
-          } catch (error) {
-            this.warnResourceServerHookFailure("onSettleFailure", label, error);
-          }
+        );
+        if (recovered) {
+          return recovered;
         }
-
         return settleResult;
       }
 
@@ -1423,26 +1414,14 @@ export class x402ResourceServer {
 
       return settleResult;
     } catch (error) {
-      const failureContext: SettleFailureContext = {
-        ...context,
-        error: error as Error,
-      };
-
-      for (const { label, hook } of this.getLabeledHooks(
-        "onSettleFailure",
+      const recovered = await this.tryOnSettleFailureRecovery(
+        { ...context, error: error as Error },
         extensionKeysInUse,
         matchedScheme,
-      )) {
-        try {
-          const result = await hook(failureContext);
-          if (result && "recovered" in result && result.recovered) {
-            return result.result;
-          }
-        } catch (error) {
-          this.warnResourceServerHookFailure("onSettleFailure", label, error);
-        }
+      );
+      if (recovered) {
+        return recovered;
       }
-
       throw error;
     }
   }
@@ -1564,6 +1543,38 @@ export class x402ResourceServer {
           `Unsupported x402 version: ${(paymentPayload as PaymentPayload).x402Version}`,
         );
     }
+  }
+
+  /**
+   * Invokes on-settle-failure hooks and returns a recovered result when one is offered.
+   *
+   * @param failureContext - Failure context including the settle error
+   * @param extensionKeysInUse - Declared extension keys for this request
+   * @param matchedScheme - Scheme/network selected for this settlement
+   * @param matchedScheme.network - Matched payment network
+   * @param matchedScheme.scheme - Matched payment scheme
+   * @returns Recovered settle response, or undefined when no hook recovers
+   */
+  private async tryOnSettleFailureRecovery(
+    failureContext: SettleFailureContext,
+    extensionKeysInUse: readonly string[],
+    matchedScheme: { network: Network; scheme: string },
+  ): Promise<SettleResponse | undefined> {
+    for (const { label, hook } of this.getLabeledHooks(
+      "onSettleFailure",
+      extensionKeysInUse,
+      matchedScheme,
+    )) {
+      try {
+        const result = await hook(failureContext);
+        if (result && "recovered" in result && result.recovered) {
+          return result.result;
+        }
+      } catch (error) {
+        this.warnResourceServerHookFailure("onSettleFailure", label, error);
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -2104,11 +2115,7 @@ function settleResponseToError(result: SettleResponse): SettleError {
  * @param reason - Abort error reason.
  * @param message - Optional abort message.
  */
-function applyAfterSettleAbort(
-  result: SettleResponse,
-  reason: string,
-  message?: string,
-): void {
+function applyAfterSettleAbort(result: SettleResponse, reason: string, message?: string): void {
   result.success = false;
   result.errorReason = reason;
   if (message !== undefined) {

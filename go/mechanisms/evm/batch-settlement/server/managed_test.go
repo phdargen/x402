@@ -147,6 +147,26 @@ func TestManagedBeforeVerify_IgnoresClaimPayload(t *testing.T) {
 	}
 }
 
+func TestManagedAfterVerify_MismatchWithoutResyncOmitsCorrective(t *testing.T) {
+	s := buildManagedServer(t, nil, false)
+	id := testChannelId(t)
+	pp := managedPayload(voucherPayload(id, "1000", "0xdeadbeef"))
+	_, err := handleManagedAfterVerify(s, x402.VerifyResultContext{
+		VerifyContext: x402.VerifyContext{Payload: pp, Requirements: managedReqs()},
+		Result: &x402.VerifyResponse{
+			IsValid:       false,
+			InvalidReason: batchsettlement.ErrCumulativeAmountMismatch,
+			Extra:         map[string]interface{}{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if rc := s.ReadRequestContext(pp); rc != nil && rc.CorrectiveChannelState != nil {
+		t.Fatalf("unexpected corrective: %+v", rc)
+	}
+}
+
 func TestManagedAfterVerify_NonMismatchFailureDoesNotStashCorrective(t *testing.T) {
 	s := buildManagedServer(t, nil, false)
 	id := testChannelId(t)
@@ -571,6 +591,32 @@ func TestManagedEnrichPaymentRequired_CopiesCorrectiveExtras(t *testing.T) {
 	})
 	vs, _ := reqs[0].Extra["voucherState"].(map[string]interface{})
 	if vs == nil || vs["signature"] != "0xstored" {
+		t.Fatalf("voucherState = %+v", reqs[0].Extra)
+	}
+}
+
+func TestManagedEnrichPaymentRequired_CopiesCorrectiveExtrasBelowClaimed(t *testing.T) {
+	s := buildManagedServer(t, nil, false)
+	id := testChannelId(t)
+	pp := managedPayload(voucherPayload(id, "1000", "0xdeadbeef"))
+	s.MergeRequestContext(pp, BatchSettlementRequestContext{
+		CorrectiveChannelState: &batchsettlement.BatchSettlementChannelStateExtra{
+			ChannelId: id, Balance: "10000", TotalClaimed: "1000", ChargedCumulativeAmount: "5000",
+		},
+		CorrectiveVoucherState: &batchsettlement.BatchSettlementVoucherStateExtra{
+			SignedMaxClaimable: "5000", Signature: "0xstored",
+		},
+	})
+	reqs := []types.PaymentRequirements{{
+		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherStore": true},
+	}}
+	handleManagedEnrichPaymentRequiredResponse(s, x402.PaymentRequiredContext{
+		Requirements:   reqs,
+		PaymentPayload: pp,
+		Error:          batchsettlement.ErrCumulativeBelowClaimed,
+	})
+	vs, _ := reqs[0].Extra["voucherState"].(map[string]interface{})
+	if vs == nil || vs["signedMaxClaimable"] != "5000" || vs["signature"] != "0xstored" {
 		t.Fatalf("voucherState = %+v", reqs[0].Extra)
 	}
 }
