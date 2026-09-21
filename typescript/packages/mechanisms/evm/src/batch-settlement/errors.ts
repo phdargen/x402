@@ -87,3 +87,5 @@ export const ErrVoucherStoreModeMismatch =
 export const ErrUnexpectedPendingId = "invalid_batch_settlement_evm_unexpected_pending_id";
 export const ErrUnexpectedCancel = "invalid_batch_settlement_evm_unexpected_cancel";
 export const ErrPendingIdMismatch = "invalid_batch_settlement_evm_pending_id_mismatch";
+export const ErrDelegatedSettleUnauthenticated =
+  "invalid_batch_settlement_evm_delegated_settle_unauthenticated";

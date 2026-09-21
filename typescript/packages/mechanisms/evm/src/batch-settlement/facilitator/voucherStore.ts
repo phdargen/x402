@@ -50,7 +50,7 @@ import {
   type ChannelStorage,
 } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
-import { verifyDeposit, settleDeposit } from "./deposit";
+import { resolveDepositDelegatedCaller, settleDeposit, verifyDeposit } from "./deposit";
 import { readChannelState } from "./utils";
 import { verifyVoucher } from "./voucher";
 import { encodeChargeCountsSuffix } from "../chargeCounts";
@@ -489,6 +489,19 @@ async function settleManagedDeposit(
   const channelId = raw.voucher.channelId;
   const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
+    const resolved = await resolveDepositDelegatedCaller(
+      deps.resolveCallerIdentity,
+      deps.delegatedAuthStore,
+      payment,
+      raw,
+      requirements,
+      context,
+    );
+    if ("errorReason" in resolved) {
+      return failSettle(requirements, resolved.errorReason);
+    }
+    const identity = resolved.identity;
+
     const settled = await settleDeposit(
       deps.signer,
       payment,
@@ -498,28 +511,11 @@ async function settleManagedDeposit(
       dataSuffix,
       deps.eip6492AllowedFactories,
       deps.pendingStore,
+      deps.delegatedAuthStore,
+      identity,
     );
     if (!settled.success) {
       return settled;
-    }
-
-    let identity: string | undefined;
-    try {
-      identity = await resolveIdentity(deps, {
-        step: "deposit",
-        channelId,
-        network: requirements.network,
-        payer: raw.channelConfig.payer,
-        amount: raw.deposit.amount,
-        payload: payment,
-        requirements,
-        facilitatorContext: context,
-      });
-    } catch (err) {
-      console.warn(
-        "batch-settlement: resolveCallerIdentity failed after deposit settle; continuing without identity",
-        err,
-      );
     }
 
     try {
@@ -528,10 +524,7 @@ async function settleManagedDeposit(
         signedCap: BigInt(raw.voucher.maxClaimableAmount),
         voucher: raw.voucher,
         snapshot: current => depositChargeSnapshot(raw, requirements, settled.extra, current),
-        map: channel => ({
-          ...incrementChargeCount(channel, requirements.network),
-          callerIdentity: channel.callerIdentity ?? identity,
-        }),
+        map: channel => incrementChargeCount(channel, requirements.network),
       });
 
       if (outcome.status === "missing") {
@@ -663,6 +656,10 @@ async function settleManagedRefund(
         const closed = BigInt(balance) <= BigInt(totalClaimed) && chargeCount === 0;
         return closed ? undefined : next;
       });
+
+      if (updated.status === "deleted" && deps.delegatedAuthStore) {
+        await deps.delegatedAuthStore.delete(channelId, requirements.network);
+      }
 
       return {
         ...settled,
@@ -810,18 +807,17 @@ async function checkRefundConsent(
     return Errors.ErrRefundAuthorizerSignature;
   }
 
-  const bound = stored?.callerIdentity;
+  if (!deps.delegatedAuthStore) {
+    return Errors.ErrRefundAuthorizerSignature;
+  }
   let storeIdentity: string | undefined;
   try {
-    storeIdentity = (
-      await deps.delegatedAuthStore?.get(raw.voucher.channelId, requirements.network)
-    )?.callerIdentity;
+    storeIdentity = (await deps.delegatedAuthStore.get(raw.voucher.channelId, requirements.network))
+      ?.callerIdentity;
   } catch {
     return Errors.ErrRefundAuthorizerSignature;
   }
-
-  const expected = bound ?? storeIdentity;
-  if (!expected || expected !== identity) {
+  if (!storeIdentity || storeIdentity !== identity) {
     return Errors.ErrRefundAuthorizerSignature;
   }
   return undefined;
@@ -916,7 +912,6 @@ function depositChargeSnapshot(
     lastRequestTimestamp: stored?.lastRequestTimestamp ?? Date.now(),
     network: stored?.network ?? requirements.network,
     chargeCount: stored?.chargeCount ?? 0,
-    callerIdentity: stored?.callerIdentity,
   };
 }
 

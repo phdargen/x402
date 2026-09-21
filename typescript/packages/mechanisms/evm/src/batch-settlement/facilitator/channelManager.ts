@@ -15,6 +15,7 @@ import type {
 import { applyClaimedTotals, selectClaimableVouchers } from "../claims";
 import { computeChannelId } from "../utils";
 import type { ChannelLockStorage, ChannelQuery, ChannelStorage } from "../storage/channel";
+import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { isChannelLockStorage, queryChannels, querySettleTargets } from "../storage/channel";
 import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitClaim } from "./claim";
@@ -41,6 +42,7 @@ export interface FacilitatorChannelManagerConfig {
    * refund txs can append builder-code (`w` / `serviceCode` only).
    */
   context?: FacilitatorContext;
+  delegatedAuthStore?: DelegatedAuthStore;
 }
 
 export interface FacilitatorClaimOptions {
@@ -123,6 +125,7 @@ async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promi
  * @param claims - Submitted claims.
  * @param network - Network for channel-id recomputation.
  * @param attested - Charge-count snapshot encoded on the claim (do not re-read the store).
+ * @param delegatedAuthStore - Optional store; bindings are removed when a closed row is deleted.
  * @param retention - Row retention policy.
  */
 export async function afterClaim(
@@ -131,6 +134,7 @@ export async function afterClaim(
   claims: BatchSettlementVoucherClaim[],
   network: Network,
   attested: ReadonlyMap<string, number>,
+  delegatedAuthStore: DelegatedAuthStore | undefined,
   retention: FacilitatorRetention = "until-closed",
 ): Promise<void> {
   await applyClaimedTotals(storage, claims, network);
@@ -140,7 +144,7 @@ export async function afterClaim(
     const snapshot = attested.get(channelId.toLowerCase()) ?? 0;
     const deletable = retention !== "forever";
     const held = deletable && lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
-    await storage.updateChannel(channelId, current => {
+    const result = await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
       }
@@ -152,6 +156,9 @@ export async function afterClaim(
         BigInt(current.balance) <= BigInt(current.totalClaimed);
       return closed ? undefined : { ...current, chargeCount };
     });
+    if (result.status === "deleted" && delegatedAuthStore) {
+      await delegatedAuthStore.delete(channelId, network);
+    }
   }
 }
 
@@ -206,6 +213,7 @@ export class FacilitatorChannelManager {
   private readonly submitMode: SubmitMode;
   private readonly retention: FacilitatorRetention;
   private readonly context: FacilitatorContext | undefined;
+  private readonly delegatedAuthStore: DelegatedAuthStore | undefined;
 
   private timers: Partial<Record<AutoJob, ReturnType<typeof setInterval>>> = {};
   private running = false;
@@ -235,6 +243,7 @@ export class FacilitatorChannelManager {
     this.submitMode = config.submitMode ?? "relay";
     this.retention = config.retention ?? "until-closed";
     this.context = config.context;
+    this.delegatedAuthStore = config.delegatedAuthStore;
   }
 
   /**
@@ -268,7 +277,15 @@ export class FacilitatorChannelManager {
         const batch = claims.slice(i, i + maxClaimsPerBatch);
         const { result, attested } = await this.submitClaimBatch(network, batch, group);
         results.push(result);
-        await afterClaim(this.storage, this.lockStorage, batch, network, attested, this.retention);
+        await afterClaim(
+          this.storage,
+          this.lockStorage,
+          batch,
+          network,
+          attested,
+          this.delegatedAuthStore,
+          this.retention,
+        );
       }
     }
 
@@ -341,7 +358,9 @@ export class FacilitatorChannelManager {
    * @returns One result per successfully refunded or claim-only channel.
    */
   async refund(): Promise<FacilitatorRefundResult[]> {
-    const { items: channels } = await queryChannels(this.storage, { kind: "idleRefundable" });
+    const { items: channels } = await queryChannels(this.storage, {
+      kind: "idleRefundable",
+    });
     return this.refundChannels(channels);
   }
 
@@ -475,6 +494,7 @@ export class FacilitatorChannelManager {
         claims,
         target.network,
         attested,
+        this.delegatedAuthStore,
         this.retention,
       );
       return {
@@ -581,7 +601,7 @@ export class FacilitatorChannelManager {
       return;
     }
     const held = this.lockStorage ? await channelIsHeld(this.lockStorage, target.channelId) : false;
-    await this.storage.updateChannel(target.channelId, current => {
+    const result = await this.storage.updateChannel(target.channelId, current => {
       if (!current) {
         return current;
       }
@@ -594,6 +614,9 @@ export class FacilitatorChannelManager {
       }
       return current;
     });
+    if (result.status === "deleted" && this.delegatedAuthStore) {
+      await this.delegatedAuthStore.delete(target.channelId, target.network);
+    }
   }
 
   /**

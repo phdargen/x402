@@ -19,6 +19,8 @@ import {
 import { finalHashFromTwoRequestSend, getEvmChainId, truncateErrorMessage } from "../../utils";
 import { multicall } from "../../multicall";
 import * as Errors from "../errors";
+import type { DelegatedAuthStore } from "../storage/delegatedAuth";
+import type { DelegatedSettleContext } from "./types";
 import { ErrSettlementPending } from "../../exact/facilitator/errors";
 import {
   waitAndReturnSettleResponse,
@@ -44,6 +46,82 @@ import {
 } from "./deposit-permit2";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
+/**
+ * Resolves the delegated deposit caller. When `resolveCallerIdentity` is omitted,
+ * returns `{ identity: "" }`. Otherwise empty identity or resolution failure fails closed;
+ * a missing `delegatedAuthStore` fails closed as misconfiguration.
+ *
+ * @param resolve - Optional callback that resolves the delegated caller identity for deposit.
+ * @param authStore - Delegated auth store; required when `resolve` returns a non-empty identity.
+ * @param payment - Full payment envelope passed to `resolve`.
+ * @param deposit - Deposit payload supplying channel and amount context for `resolve`.
+ * @param requirements - Server payment requirements (network, asset, etc.).
+ * @param context - Optional facilitator extension context for `resolve`.
+ * @returns Resolved `{ identity }` or `{ errorReason }` when resolution or configuration fails.
+ */
+export async function resolveDepositDelegatedCaller(
+  resolve:
+    | ((ctx: DelegatedSettleContext) => Promise<string | undefined> | string | undefined)
+    | undefined,
+  authStore: DelegatedAuthStore | undefined,
+  payment: PaymentPayload,
+  deposit: BatchSettlementDepositPayload,
+  requirements: PaymentRequirements,
+  context: FacilitatorContext | undefined,
+): Promise<{ identity: string } | { errorReason: string }> {
+  if (!resolve) {
+    return { identity: "" };
+  }
+  const payer = deposit.channelConfig.payer;
+  let identity: string | undefined;
+  try {
+    identity = await resolve({
+      abortSignal: undefined,
+      step: "deposit",
+      channelId: deposit.voucher.channelId,
+      network: requirements.network,
+      payer,
+      amount: deposit.deposit.amount,
+      payload: payment,
+      requirements,
+      facilitatorContext: context,
+    });
+  } catch {
+    return { errorReason: Errors.ErrDelegatedSettleUnauthenticated };
+  }
+  if (!identity) {
+    return { errorReason: Errors.ErrDelegatedSettleUnauthenticated };
+  }
+  if (!authStore) {
+    return { errorReason: Errors.ErrVoucherStoreUnavailable };
+  }
+  return { identity };
+}
+
+/**
+ * Best-effort bind after a deposit tx is broadcast; errors are ignored.
+ *
+ * @param authStore - Delegated auth store used to bind caller identity to the channel.
+ * @param channelId - Channel identifier for the deposit.
+ * @param network - Network on which the channel exists.
+ * @param callerIdentity - Resolved delegated caller identity to persist.
+ */
+function bindDelegatedAuthAfterBroadcast(
+  authStore: DelegatedAuthStore | undefined,
+  channelId: string,
+  network: PaymentRequirements["network"],
+  callerIdentity: string,
+): void {
+  if (!authStore || !callerIdentity) {
+    return;
+  }
+  void authStore.bind({
+    channelId,
+    network,
+    callerIdentity,
+  });
+}
 
 /**
  * Verifies a deposit payload (authorization + voucher) without executing any
@@ -470,6 +548,8 @@ async function reconcilePendingDeposit(
  * @param allowedFactories - Allowlisted ERC-6492 factory addresses for counterfactual deposits.
  * @param store - Pending-settlement store. Defaults to a fresh in-memory store when
  *   omitted (no cross-call sharing).
+ * @param delegatedAuth - Optional store to bind delegated caller identity after broadcast.
+ * @param delegatedCallerIdentity - Pre-resolved identity from {@link resolveDepositDelegatedCaller}.
  * @returns A {@link SettleResponse} with the transaction hash and updated channel state in `extra`.
  */
 export async function settleDeposit(
@@ -481,6 +561,8 @@ export async function settleDeposit(
   dataSuffix?: `0x${string}`,
   allowedFactories: string[] = [],
   store: PendingSettlementStore = new InMemoryPendingSettlementStore(),
+  delegatedAuth?: DelegatedAuthStore,
+  delegatedCallerIdentity = "",
 ): Promise<SettleResponse> {
   const { deposit, voucher } = payload;
   const config = payload.channelConfig;
@@ -500,6 +582,12 @@ export async function settleDeposit(
       // falls through to the normal broadcast path, which independently
       // rejects it as an on-chain replay (nonce already consumed).
       await store.delete(cacheKey);
+      bindDelegatedAuthAfterBroadcast(
+        delegatedAuth,
+        payload.voucher.channelId,
+        requirements.network,
+        delegatedCallerIdentity,
+      );
       return reconcilePendingDeposit(
         signer,
         payment,
@@ -607,6 +695,16 @@ export async function settleDeposit(
       receiptSigner = signer;
     }
 
+    const deferDelegatedBind = unconfirmedBundleHash;
+    if (!deferDelegatedBind) {
+      bindDelegatedAuthAfterBroadcast(
+        delegatedAuth,
+        voucher.channelId,
+        requirements.network,
+        delegatedCallerIdentity,
+      );
+    }
+
     return await withPendingSettlementStore(store, cacheKey, () =>
       waitAndReturnSettleResponse(receiptSigner, tx, requirements.network, payer, {
         failedStatusReason: Errors.ErrDepositTransactionFailed,
@@ -677,6 +775,15 @@ export async function settleDeposit(
                   network: requirements.network,
                   payer,
                 };
+          }
+
+          if (deferDelegatedBind) {
+            bindDelegatedAuthAfterBroadcast(
+              delegatedAuth,
+              voucher.channelId,
+              requirements.network,
+              delegatedCallerIdentity,
+            );
           }
 
           return {

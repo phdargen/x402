@@ -22,7 +22,7 @@ import { isFacilitatorManaged } from "../voucherStore";
 import { InMemoryDelegatedAuthStore, type DelegatedAuthStore } from "../storage/delegatedAuth";
 import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
 import { isChannelLockStorage } from "../storage/channel";
-import { verifyDeposit, settleDeposit } from "./deposit";
+import { resolveDepositDelegatedCaller, settleDeposit, verifyDeposit } from "./deposit";
 import { verifyVoucher } from "./voucher";
 import { submitClaim } from "./claim";
 import { executeSettle } from "./settle";
@@ -329,7 +329,23 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     }
 
     if (isBatchSettlementDepositPayload(rawPayload)) {
-      const settled = await settleDeposit(
+      const resolved = await resolveDepositDelegatedCaller(
+        this.resolveCallerIdentity,
+        this.delegatedAuthStore,
+        payload,
+        rawPayload,
+        requirements,
+        context,
+      );
+      if ("errorReason" in resolved) {
+        return {
+          success: false,
+          errorReason: resolved.errorReason,
+          transaction: "",
+          network: requirements.network,
+        };
+      }
+      return settleDeposit(
         this.signer,
         payload,
         rawPayload,
@@ -338,16 +354,9 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         dataSuffix,
         this.config.eip6492AllowedFactories,
         this.pendingStore,
+        this.delegatedAuthStore,
+        resolved.identity,
       );
-      if (settled.success) {
-        await this.bindSelfManagedCaller(
-          payload,
-          rawPayload.voucher.channelId,
-          requirements,
-          context,
-        );
-      }
-      return settled;
     }
 
     if (isBatchSettlementClaimPayload(rawPayload)) {
@@ -378,6 +387,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           rawPayload.claims,
           requirements.network,
           attested,
+          this.delegatedAuthStore,
         );
       }
       return settled;
@@ -439,6 +449,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       authorizerSubmitter: this.authorizerSubmitter,
       submitMode: this.submitMode,
       context,
+      delegatedAuthStore: this.delegatedAuthStore,
     });
   }
 
@@ -482,45 +493,6 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Binds caller identity after a successful self-managed deposit.
-   *
-   * @param payload - Payment envelope.
-   * @param channelId - Deposited channel id.
-   * @param requirements - Payment requirements.
-   * @param context - Facilitator extension context.
-   */
-  private async bindSelfManagedCaller(
-    payload: PaymentPayload,
-    channelId: string,
-    requirements: PaymentRequirements,
-    context?: FacilitatorContext,
-  ): Promise<void> {
-    if (!this.resolveCallerIdentity || !this.delegatedAuthStore) {
-      return;
-    }
-    const raw = payload.payload;
-    const payer = isBatchSettlementDepositPayload(raw) ? raw.channelConfig.payer : undefined;
-    const identity = await this.resolveCallerIdentity({
-      step: "deposit",
-      channelId,
-      network: requirements.network,
-      payer: payer ?? "",
-      amount: isBatchSettlementDepositPayload(raw) ? raw.deposit.amount : undefined,
-      payload,
-      requirements,
-      facilitatorContext: context,
-    });
-    if (!identity) {
-      return;
-    }
-    await this.delegatedAuthStore.bind({
-      channelId,
-      network: requirements.network,
-      callerIdentity: identity,
-    });
-  }
-
-  /**
    * Checks unsigned self-managed refunds against the deposit-time identity.
    * Missing bindings fail closed. Store errors fail closed.
    *
@@ -555,6 +527,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     let identity: string | undefined;
     try {
       identity = await this.resolveCallerIdentity({
+        abortSignal: undefined,
         step: "refund",
         channelId: raw.voucher.channelId,
         network: requirements.network,

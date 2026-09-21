@@ -3603,6 +3603,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
         { status: "success", result: 1n },
       ]);
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const delegatedAuthStore = new InMemoryDelegatedAuthStore();
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config);
     await seedStoredChannel(storage, config, {
@@ -3611,12 +3612,17 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       balance: "10000",
       totalClaimed: "0",
       chargeCount: 0,
-      callerIdentity: "tenant-42",
       signature: "0xdead",
+    });
+    await delegatedAuthStore.bind({
+      channelId,
+      network: NETWORK,
+      callerIdentity: "tenant-42",
     });
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
       voucherStore: { storage },
       resolveCallerIdentity: async () => "tenant-42",
+      delegatedAuthStore,
     });
     const payload = envelopeRefund({
       type: "refund",
@@ -3790,17 +3796,23 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
 
   it("rejects managed refund settle when caller identity does not match the stored binding", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const delegatedAuthStore = new InMemoryDelegatedAuthStore();
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config);
     await seedStoredChannel(storage, config, {
       chargedCumulativeAmount: "5000",
       signedMaxClaimable: "5000",
-      callerIdentity: "tenant-a",
       signature: "0xdead",
+    });
+    await delegatedAuthStore.bind({
+      channelId,
+      network: NETWORK,
+      callerIdentity: "tenant-a",
     });
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
       voucherStore: { storage },
       resolveCallerIdentity: async () => "tenant-b",
+      delegatedAuthStore,
     });
     const payload = envelopeRefund({
       type: "refund",
