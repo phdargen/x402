@@ -278,7 +278,7 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 			chg = big.NewInt(0)
 		}
 		if bal.Cmp(chg) <= 0 {
-			_, err := s.GetStorage().UpdateChannel(channelId, func(current *ChannelSession) *ChannelSession {
+			_, err := s.GetStorage().UpdateChannel(ctx.Ctx, channelId, func(current *ChannelSession) *ChannelSession {
 				if current == nil {
 					return current
 				}
@@ -288,7 +288,7 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 		}
 	}
 
-	_, err := s.GetStorage().UpdateChannel(channelId, func(current *ChannelSession) *ChannelSession {
+	_, err := s.GetStorage().UpdateChannel(ctx.Ctx, channelId, func(current *ChannelSession) *ChannelSession {
 		if current != nil && !batchsettlement.IsRefundPayload(raw) {
 			incoming, okIncoming := new(big.Int).SetString(charged, 10)
 			stored, okStored := new(big.Int).SetString(current.ChargedCumulativeAmount, 10)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
@@ -30,7 +31,7 @@ func sampleSession(id, charged string) *ChannelSession {
 // seedSession upserts sess via UpdateChannel CAS so tests never use blind writes.
 func seedSession(t *testing.T, s *BatchSettlementEvmScheme, channelId string, sess *ChannelSession) {
 	t.Helper()
-	if _, err := s.GetStorage().UpdateChannel(channelId, func(*ChannelSession) *ChannelSession {
+	if _, err := s.GetStorage().UpdateChannel(context.Background(), channelId, func(*ChannelSession) *ChannelSession {
 		return sess.Clone()
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -40,7 +41,7 @@ func seedSession(t *testing.T, s *BatchSettlementEvmScheme, channelId string, se
 // seedStore upserts sess directly on a SessionStorage via UpdateChannel CAS.
 func seedStore(t *testing.T, store SessionStorage, channelId string, sess *ChannelSession) {
 	t.Helper()
-	if _, err := store.UpdateChannel(channelId, func(*ChannelSession) *ChannelSession {
+	if _, err := store.UpdateChannel(context.Background(), channelId, func(*ChannelSession) *ChannelSession {
 		return sess.Clone()
 	}); err != nil {
 		t.Fatalf("seed: %v", err)

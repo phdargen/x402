@@ -91,14 +91,14 @@ type storageOnly struct {
 	inner SessionStorage
 }
 
-func (s storageOnly) Get(channelId string) (*ChannelSession, error) {
-	return s.inner.Get(channelId)
+func (s storageOnly) Get(ctx context.Context, channelId string) (*ChannelSession, error) {
+	return s.inner.Get(ctx, channelId)
 }
-func (s storageOnly) List() ([]*ChannelSession, error) {
-	return s.inner.List()
+func (s storageOnly) List(ctx context.Context) ([]*ChannelSession, error) {
+	return s.inner.List(ctx)
 }
-func (s storageOnly) UpdateChannel(channelId string, update func(current *ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
-	return s.inner.UpdateChannel(channelId, update)
+func (s storageOnly) UpdateChannel(ctx context.Context, channelId string, update func(current *ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
+	return s.inner.UpdateChannel(ctx, channelId, update)
 }
 
 func TestNewBatchSettlementEvmScheme_EnforceMinDepositEnabled(t *testing.T) {
@@ -524,7 +524,7 @@ func TestSession_RoundTrip_CaseInsensitive(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
 	in := sampleSession(upper, "10")
-	if _, err := s.GetStorage().UpdateChannel(upper, func(*ChannelSession) *ChannelSession { return in.Clone() }); err != nil {
+	if _, err := s.GetStorage().UpdateChannel(context.Background(), upper, func(*ChannelSession) *ChannelSession { return in.Clone() }); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got, err := s.GetSession(testChA)
@@ -534,7 +534,7 @@ func TestSession_RoundTrip_CaseInsensitive(t *testing.T) {
 	if got == nil || got.ChannelId != upper {
 		t.Fatalf("got %+v", got)
 	}
-	if _, err := s.GetStorage().UpdateChannel(upper, func(*ChannelSession) *ChannelSession { return nil }); err != nil {
+	if _, err := s.GetStorage().UpdateChannel(context.Background(), upper, func(*ChannelSession) *ChannelSession { return nil }); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if got2, _ := s.GetSession(testChA); got2 != nil {

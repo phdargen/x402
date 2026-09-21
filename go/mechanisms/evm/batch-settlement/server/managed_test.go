@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -231,7 +232,7 @@ func TestManagedAfterSettle_DepositUsesVerifySnapshotFallback(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, err := store.Get(id)
+	got, err := store.Get(context.Background(), id)
 	if err != nil || got == nil {
 		t.Fatalf("get: %v %+v", err, got)
 	}
@@ -347,7 +348,7 @@ func TestManagedAfterSettle_IgnoresFailedResult(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -461,7 +462,7 @@ func TestManagedAfterSettle_CancelDoesNotUpsertReplica(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1000" || got.Balance != "10000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -652,7 +653,7 @@ func TestManagedAfterSettle_IgnoresClaimPayload(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got.Balance != "10000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -676,7 +677,7 @@ func TestManagedAfterSettle_UsesSnapshotWhenChannelStateMissing(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1800" || got.Balance != "8000" || got.TotalClaimed != "500" {
 		t.Fatalf("got %+v", got)
 	}
@@ -706,7 +707,7 @@ func TestManagedAfterSettle_FallsBackToSnapshotCharged(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "2500" || got.Balance != "7500" || got.RefundNonce != 2 {
 		t.Fatalf("got %+v", got)
 	}
@@ -738,7 +739,7 @@ func TestManagedAfterSettle_SkipsWriteWhenIncomingWatermarkLower(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "5000" || got.Balance != "10000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -770,7 +771,7 @@ func TestManagedAfterSettle_PropagatesClearedWithdrawOnEqualWatermark(t *testing
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1000" || got.WithdrawRequestedAt != 0 {
 		t.Fatalf("got %+v", got)
 	}
@@ -888,7 +889,7 @@ func TestManagedAfterSettle_PartialRefundUpdatesReplica(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.Balance != "9000" || got.ChargedCumulativeAmount != "2000" || got.RefundNonce != 1 {
 		t.Fatalf("got %+v", got)
 	}
@@ -918,7 +919,7 @@ func TestManagedAfterSettle_FullRefundDeletesReplica(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got != nil {
 		t.Fatalf("expected deleted, got %+v", got)
 	}
@@ -1005,7 +1006,7 @@ func TestManagedSchemeHooks_AfterSettleUpsertsReplica(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1000" || got.SignedMaxClaimable != "1000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -1100,7 +1101,7 @@ func TestManagedAfterSettle_FailedSchemeHookLeavesReplica(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.ChargedCumulativeAmount != "1000" {
 		t.Fatalf("got %+v", got)
 	}
@@ -1129,7 +1130,7 @@ func TestManagedAfterSettle_PartialRefundViaSchemeHook(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	got, _ := store.Get(id)
+	got, _ := store.Get(context.Background(), id)
 	if got == nil || got.Balance != "6000" || got.RefundNonce != 1 {
 		t.Fatalf("got %+v", got)
 	}

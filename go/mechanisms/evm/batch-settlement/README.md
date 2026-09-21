@@ -283,9 +283,10 @@ A payload that already carries `claimAuthorizerSignature` / `refundAuthorizerSig
 A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). Wire that via `ResolveCallerIdentity` (and a shared `DelegatedAuthStore` on multi-replica hosts); `/supported` then includes `extra.refundAuth: true`. If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
 
 ```go
-scheme := facilitator.NewBatchSettlementEvmScheme(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
+scheme, err := facilitator.NewBatchSettlementEvmSchemeWithConfig(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
     ResolveCallerIdentity: resolveCallerIdentity, // DelegatedSettleContext -> caller id
     // Optional: shared DelegatedAuthStore for multi-replica facilitators. Default is in-memory.
+    // Bind/Get/Delete all take ctx first; a lost binding fails closed.
 })
 ```
 
@@ -304,7 +305,7 @@ import (
     "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/facilitator"
 )
 
-scheme := facilitator.NewBatchSettlementEvmScheme(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
+scheme, err := facilitator.NewBatchSettlementEvmSchemeWithConfig(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
     VoucherStore: &facilitator.VoucherStoreConfig{
         Storage: facilitator.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
             Directory: "./voucher-store",
@@ -314,6 +315,9 @@ scheme := facilitator.NewBatchSettlementEvmScheme(evmSigner, authorizerSigner, &
     },
     ResolveCallerIdentity: resolveCallerIdentity,
 })
+if err != nil {
+    log.Fatal(err)
+}
 
 manager, err := scheme.CreateChannelManager(fctx)
 if err != nil {
@@ -329,7 +333,9 @@ manager.Start(facilitator.FacilitatorAutoConfig{
 })
 ```
 
-`CreateChannelManager` returns an error if `VoucherStore` or `authorizerSigner` is missing. The facilitator manager groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels. Managed claims attest each row's unattested `chargeCount` onchain (`x402ChargeCounts` calldata suffix). After a claim confirms — including a managed HTTP `type: "claim"` from a replica — `AfterClaim` subtracts the attested snapshot (it does not zero the field). Rows are deleted when closed (`chargeCount` is zero, no admission lock, `balance <= totalClaimed`).
+`CreateChannelManager` returns an error if `VoucherStore` or `authorizerSigner` is missing. The facilitator manager groups stored channels by network, claims withdraw-pending channels first, settles each distinct `(receiver, token)` pair, and refunds idle channels. Managed claims attest each row's unattested `chargeCount` onchain (`x402ChargeCounts` calldata suffix). After a claim confirms, the attested snapshot is subtracted (the field is not zeroed). Rows are deleted when closed (`chargeCount` is zero, no admission lock, `balance <= totalClaimed`); the delete also drops the durable caller binding so a later top-up can rebind.
+
+A managed deposit resolves the caller identity and records it in the durable store before the onchain deposit is submitted. Resolution failures, store errors, and binding conflicts fail the deposit closed — nothing has mined yet, so there is no mined-but-unbound channel to unwind. Bindings are first-writer-wins: a top-up resolving to a different identity is rejected rather than rebinding. Refund consent prefers the durable binding over the voucher row's cached identity.
 
 Facilitator-initiated refunds claim the store voucher first, then return `balance - chargedCumulativeAmount`. Client `type: "refund"` through `/verify` + `/settle` stays on the voucher-store path. The managed server replica must not refund.
 

@@ -1,6 +1,7 @@
 package facilitator
 
 import (
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -134,7 +135,7 @@ func cancelEnvelope(cfg batchsettlement.ChannelConfig, voucher batchsettlement.B
 
 func seedManagedChannel(t *testing.T, store *storage.InMemoryChannelStorage[*FacilitatorChannel], channel *FacilitatorChannel) {
 	t.Helper()
-	if _, err := store.UpdateChannel(channel.ChannelId, func(*FacilitatorChannel) *FacilitatorChannel {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(*FacilitatorChannel) *FacilitatorChannel {
 		return channel.Clone()
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -215,7 +216,7 @@ func storedManagedChannel(cfg batchsettlement.ChannelConfig, channelId string, o
 
 func acquireBound(t *testing.T, store *storage.InMemoryChannelStorage[*FacilitatorChannel], pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) {
 	t.Helper()
-	ok, err := store.Acquire(voucher.ChannelId, storage.AdmissionOwner(pendingId, voucher), 60_000)
+	ok, err := store.Acquire(context.Background(), voucher.ChannelId, storage.AdmissionOwner(pendingId, voucher), 60_000)
 	if err != nil || !ok {
 		t.Fatalf("acquire bound: ok=%v err=%v", ok, err)
 	}
@@ -451,43 +452,43 @@ type hookStore struct {
 	useSettleQuery   bool
 }
 
-func (s *hookStore) Get(channelId string) (*FacilitatorChannel, error) {
+func (s *hookStore) Get(ctx context.Context, channelId string) (*FacilitatorChannel, error) {
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
-	return s.inner.Get(channelId)
+	return s.inner.Get(ctx, channelId)
 }
-func (s *hookStore) List() ([]*FacilitatorChannel, error) {
-	return s.inner.List()
+func (s *hookStore) List(ctx context.Context) ([]*FacilitatorChannel, error) {
+	return s.inner.List(ctx)
 }
-func (s *hookStore) UpdateChannel(channelId string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+func (s *hookStore) UpdateChannel(ctx context.Context, channelId string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
 	if s.updateErr != nil {
 		return nil, s.updateErr
 	}
 	if s.updateConflict {
 		return &storage.ChannelUpdateResult[*FacilitatorChannel]{Status: storage.ChannelConflict}, nil
 	}
-	return s.inner.UpdateChannel(channelId, update)
+	return s.inner.UpdateChannel(ctx, channelId, update)
 }
-func (s *hookStore) Acquire(channelId, pendingId string, ttlMs int64) (bool, error) {
+func (s *hookStore) Acquire(ctx context.Context, channelId, pendingId string, ttlMs int64) (bool, error) {
 	if s.acquireErr != nil {
 		return false, s.acquireErr
 	}
-	return s.inner.Acquire(channelId, pendingId, ttlMs)
+	return s.inner.Acquire(ctx, channelId, pendingId, ttlMs)
 }
-func (s *hookStore) Release(channelId, pendingId string) error {
+func (s *hookStore) Release(ctx context.Context, channelId, pendingId string) error {
 	if s.releaseErr != nil {
 		return s.releaseErr
 	}
-	return s.inner.Release(channelId, pendingId)
+	return s.inner.Release(ctx, channelId, pendingId)
 }
-func (s *hookStore) IsHeld(channelId, pendingId string) (bool, error) {
+func (s *hookStore) IsHeld(ctx context.Context, channelId, pendingId string) (bool, error) {
 	if s.isHeldErr != nil {
 		return false, s.isHeldErr
 	}
-	return s.inner.IsHeld(channelId, pendingId)
+	return s.inner.IsHeld(ctx, channelId, pendingId)
 }
-func (s *hookStore) Query(filter storage.ChannelQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[*FacilitatorChannel], error) {
+func (s *hookStore) Query(ctx context.Context, filter storage.ChannelQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[*FacilitatorChannel], error) {
 	s.queryCalls++
 	if !s.useQuery {
 		return nil, nil
@@ -496,7 +497,7 @@ func (s *hookStore) Query(filter storage.ChannelQuery, opts *storage.ChannelStor
 	_ = opts
 	return &storage.QueryPage[*FacilitatorChannel]{Items: s.queryItems}, nil
 }
-func (s *hookStore) SettleQuery(filter storage.SettleQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[storage.SettleTarget], error) {
+func (s *hookStore) SettleQuery(ctx context.Context, filter storage.SettleQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[storage.SettleTarget], error) {
 	s.settleQueryCalls++
 	if !s.useSettleQuery {
 		return nil, nil

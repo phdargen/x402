@@ -47,18 +47,18 @@ func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettleme
 	return storage.AdmissionOwner(pendingId, voucher)
 }
 
-func admissionHeld(deps VoucherStoreDeps, channelId, owner string) (bool, error) {
+func admissionHeld(ctx context.Context, deps VoucherStoreDeps, channelId, owner string) (bool, error) {
 	if owner == "" {
 		return false, nil
 	}
-	return deps.LockStorage.IsHeld(channelId, owner)
+	return deps.LockStorage.IsHeld(ctx, channelId, owner)
 }
 
-func releaseAdmission(deps VoucherStoreDeps, channelId, owner string) error {
+func releaseAdmission(ctx context.Context, deps VoucherStoreDeps, channelId, owner string) error {
 	if owner == "" {
 		return nil
 	}
-	return releaseLock(deps, channelId, owner)
+	return releaseLock(ctx, deps, channelId, owner)
 }
 
 // VerifyManaged is facilitator-managed /verify.
@@ -102,11 +102,11 @@ func VerifyManaged(
 	reserved := false
 	defer func() {
 		if reserved {
-			_ = releaseLock(deps, channelId, owner)
+			_ = releaseLock(ctx, deps, channelId, owner)
 		}
 	}()
 
-	acquired, acqErr := deps.LockStorage.Acquire(channelId, owner, storage.PendingTtlMs(requirements.MaxTimeoutSeconds))
+	acquired, acqErr := deps.LockStorage.Acquire(ctx, channelId, owner, storage.PendingTtlMs(requirements.MaxTimeoutSeconds))
 	if impl := storage.RethrowLockImplementationError(acqErr); impl != nil {
 		return nil, impl
 	}
@@ -118,7 +118,7 @@ func VerifyManaged(
 	}
 	reserved = true
 
-	stored, getErr := deps.Storage.Get(channelId)
+	stored, getErr := deps.Storage.Get(ctx, channelId)
 	if impl := storage.RethrowLockImplementationError(getErr); impl != nil {
 		return nil, impl
 	}
@@ -199,7 +199,7 @@ func SettleManaged(
 		return failSettle(requirements, ErrInvalidPayload), nil
 	}
 	if isCancelSettlePayload(raw) {
-		return settleManagedCancel(deps, raw, requirements)
+		return settleManagedCancel(ctx, deps, raw, requirements)
 	}
 	if batchsettlement.IsVoucherPayload(raw) {
 		vp, err := batchsettlement.VoucherPayloadFromMap(raw)
@@ -226,6 +226,7 @@ func SettleManaged(
 }
 
 func settleManagedCancel(
+	ctx context.Context,
 	deps VoucherStoreDeps,
 	raw map[string]interface{},
 	requirements types.PaymentRequirements,
@@ -236,7 +237,7 @@ func settleManagedCancel(
 	}
 	pendingId, _ := raw["pendingId"].(string)
 	owner := boundAdmissionOwner(pendingId, voucher)
-	if impl := storage.RethrowLockImplementationError(releaseAdmission(deps, voucher.ChannelId, owner)); impl != nil {
+	if impl := storage.RethrowLockImplementationError(releaseAdmission(ctx, deps, voucher.ChannelId, owner)); impl != nil {
 		return nil, impl
 	}
 	return &x402.SettleResponse{
@@ -257,14 +258,14 @@ func settleManagedVoucher(
 	channelId := raw.Voucher.ChannelId
 	owner := boundAdmissionOwner(raw.PendingId, raw.Voucher)
 	defer func() {
-		_ = releaseAdmission(deps, channelId, owner)
+		_ = releaseAdmission(ctx, deps, channelId, owner)
 	}()
 
 	if managedErr := managedRequirementError(deps, raw.ChannelConfig.Salt, requirements); managedErr != "" {
 		return failSettle(requirements, managedErr), nil
 	}
 
-	held, heldErr := admissionHeld(deps, channelId, owner)
+	held, heldErr := admissionHeld(ctx, deps, channelId, owner)
 	if impl := storage.RethrowLockImplementationError(heldErr); impl != nil {
 		return nil, impl
 	}
@@ -276,7 +277,7 @@ func settleManagedVoucher(
 			return failSettle(requirements, configErr), nil
 		}
 	} else {
-		anyHeld, anyErr := deps.LockStorage.IsHeld(channelId, "")
+		anyHeld, anyErr := deps.LockStorage.IsHeld(ctx, channelId, "")
 		if impl := storage.RethrowLockImplementationError(anyErr); impl != nil {
 			return nil, impl
 		}
@@ -311,7 +312,7 @@ func settleManagedVoucher(
 			return incrementChargeCount(channel, network)
 		}
 	}
-	outcome, err := storage.CommitVoucherCharge(deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
+	outcome, err := storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
 		Increment: increment,
 		SignedCap: signedCap,
 		Voucher:   raw.Voucher,
@@ -325,7 +326,7 @@ func settleManagedVoucher(
 		if snapErr != nil {
 			return failSettle(requirements, ErrRpcReadFailed), nil
 		}
-		outcome, err = storage.CommitVoucherCharge(deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
+		outcome, err = storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
 			Increment: increment,
 			SignedCap: signedCap,
 			Voucher:   raw.Voucher,
@@ -372,32 +373,25 @@ func settleManagedDeposit(
 	channelId := raw.Voucher.ChannelId
 	owner := boundAdmissionOwner(raw.PendingId, raw.Voucher)
 	defer func() {
-		_ = releaseAdmission(deps, channelId, owner)
+		_ = releaseAdmission(ctx, deps, channelId, owner)
 	}()
 
-	settled, err := SettleDeposit(ctx, deps.Signer, raw, requirements, payment.Extensions, fctx, dataSuffix, deps.EIP6492AllowedFactories, deps.PendingStore)
+	identity, bindErr := ResolveDepositDelegatedCaller(ctx, deps.ResolveCallerIdentity, deps.DelegatedAuthStore,
+		payment, raw, requirements, fctx)
+	if bindErr != nil {
+		var se *x402.SettleError
+		if errors.As(bindErr, &se) {
+			return failSettle(requirements, se.ErrorReason), nil
+		}
+		return failSettle(requirements, ErrVoucherStoreUnavailable), nil
+	}
+
+	settled, err := SettleDeposit(ctx, deps.Signer, raw, requirements, payment.Extensions, fctx, dataSuffix, deps.EIP6492AllowedFactories, deps.PendingStore, deps.DelegatedAuthStore, identity)
 	if err != nil {
 		return nil, err
 	}
 	if !settled.Success {
 		return settled, nil
-	}
-
-	identity, identErr := resolveIdentity(deps, DelegatedSettleContext{
-		Step:               DelegatedSettleStepDeposit,
-		ChannelId:          channelId,
-		Network:            requirements.Network,
-		Payer:              raw.ChannelConfig.Payer,
-		Amount:             raw.Deposit.Amount,
-		Payload:            payment,
-		Requirements:       requirements,
-		FacilitatorContext: fctx,
-	})
-	if identErr != nil {
-		// Continue on error: the onchain deposit and watermark persist still
-		// succeed. The failure is surfaced as a boolean Extra flag (no error
-		// string, no PII) on every successful onchain return below.
-		identity = ""
 	}
 
 	increment, _ := new(big.Int).SetString(requirements.Amount, 10)
@@ -408,7 +402,7 @@ func settleManagedDeposit(
 	if signedCap == nil {
 		signedCap = new(big.Int)
 	}
-	outcome, commitErr := storage.CommitVoucherCharge(deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
+	outcome, commitErr := storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
 		Increment: increment,
 		SignedCap: signedCap,
 		Voucher:   raw.Voucher,
@@ -424,10 +418,10 @@ func settleManagedDeposit(
 		},
 	})
 	if commitErr != nil {
-		return failDepositPersist(settled, ErrVoucherStoreUnavailable, identErr != nil), nil
+		return failDepositPersist(settled, ErrVoucherStoreUnavailable), nil
 	}
 	if outcome == nil || outcome.Status != storage.CommitCommitted {
-		return failDepositPersist(settled, depositPersistReason(outcome), identErr != nil), nil
+		return failDepositPersist(settled, depositPersistReason(outcome)), nil
 	}
 
 	channelState := storage.ChannelStateExtra(outcome.Current.Base(), &outcome.Current.ChargedCumulativeAmount)
@@ -441,9 +435,6 @@ func settleManagedDeposit(
 		cs := channelStateFromMap(merged)
 		extra := storage.PaymentResponseExtra(cs, &chargedAmt, &chargeCount)
 		settled.Extra = extra.ToMap()
-		if identErr != nil {
-			settled.Extra["identityResolutionFailed"] = true
-		}
 		return settled, nil
 	}
 	chargedAmt := requirements.Amount
@@ -452,9 +443,6 @@ func settleManagedDeposit(
 	merged := copyExtra(settled.Extra)
 	for k, v := range extra.ToMap() {
 		merged[k] = v
-	}
-	if identErr != nil {
-		merged["identityResolutionFailed"] = true
 	}
 	settled.Extra = merged
 	return settled, nil
@@ -472,13 +460,13 @@ func settleManagedRefund(
 	channelId := raw.Voucher.ChannelId
 	owner := boundAdmissionOwner(raw.PendingId, raw.Voucher)
 	defer func() {
-		_ = releaseAdmission(deps, channelId, owner)
+		_ = releaseAdmission(ctx, deps, channelId, owner)
 	}()
 
 	if amountError := refundAmountError(raw.Amount); amountError != "" {
 		return failSettle(requirements, amountError), nil
 	}
-	stored, err := deps.Storage.Get(channelId)
+	stored, err := deps.Storage.Get(ctx, channelId)
 	if err != nil {
 		return failSettle(requirements, ErrRpcReadFailed), nil
 	}
@@ -543,7 +531,7 @@ func settleManagedRefund(
 		}
 	}
 
-	updated, err := deps.Storage.UpdateChannel(channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+	updated, err := deps.Storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
 		}
@@ -580,6 +568,9 @@ func settleManagedRefund(
 	})
 	if err != nil {
 		return settled, nil
+	}
+	if updated != nil && updated.Status == storage.ChannelDeleted && deps.DelegatedAuthStore != nil {
+		_ = deps.DelegatedAuthStore.Delete(ctx, channelId, requirements.Network)
 	}
 
 	chargeCount := 0
@@ -707,6 +698,7 @@ func checkRefundConsent(
 		return ErrRefundAuthorizerSignature
 	}
 	identity, err := resolveIdentity(deps, DelegatedSettleContext{
+		Ctx:                ctx,
 		Step:               DelegatedSettleStepRefund,
 		ChannelId:          raw.Voucher.ChannelId,
 		Network:            requirements.Network,
@@ -725,7 +717,7 @@ func checkRefundConsent(
 	}
 	var storeIdentity string
 	if deps.DelegatedAuthStore != nil {
-		binding, getErr := deps.DelegatedAuthStore.Get(raw.Voucher.ChannelId, requirements.Network)
+		binding, getErr := deps.DelegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
 		if getErr != nil {
 			return ErrRefundAuthorizerSignature
 		}
@@ -733,14 +725,14 @@ func checkRefundConsent(
 			storeIdentity = binding.CallerIdentity
 		}
 	}
-	expected := bound
+	// The durable store is authoritative; the row is a cache.
+	expected := storeIdentity
 	if expected == "" {
-		expected = storeIdentity
+		expected = bound
 	}
 	if expected == "" || expected != identity {
 		return ErrRefundAuthorizerSignature
 	}
-	_ = ctx
 	return ""
 }
 
@@ -781,8 +773,8 @@ func resolveIdentity(deps VoucherStoreDeps, settleCtx DelegatedSettleContext) (s
 	return deps.ResolveCallerIdentity(settleCtx)
 }
 
-func releaseLock(deps VoucherStoreDeps, channelId, owner string) error {
-	err := deps.LockStorage.Release(channelId, owner)
+func releaseLock(ctx context.Context, deps VoucherStoreDeps, channelId, owner string) error {
+	err := deps.LockStorage.Release(ctx, channelId, owner)
 	if impl := storage.RethrowLockImplementationError(err); impl != nil {
 		return impl
 	}
@@ -1078,12 +1070,7 @@ func depositPersistReason(outcome *storage.CommitVoucherChargeResult[*Facilitato
 // landed but the voucher was not committed. It keeps proof funds moved (tx
 // hash, amount, payer, on-chain channelState) so the server does not release
 // the resource.
-func failDepositPersist(settled *x402.SettleResponse, errorReason string, identityFailed bool) *x402.SettleResponse {
-	extra := settled.Extra
-	if identityFailed {
-		extra = copyExtra(extra)
-		extra["identityResolutionFailed"] = true
-	}
+func failDepositPersist(settled *x402.SettleResponse, errorReason string) *x402.SettleResponse {
 	return &x402.SettleResponse{
 		Success:     false,
 		ErrorReason: errorReason,
@@ -1091,7 +1078,7 @@ func failDepositPersist(settled *x402.SettleResponse, errorReason string, identi
 		Network:     settled.Network,
 		Payer:       settled.Payer,
 		Amount:      settled.Amount,
-		Extra:       extra,
+		Extra:       settled.Extra,
 	}
 }
 

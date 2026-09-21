@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -73,13 +74,13 @@ type RedisSetOptions struct {
 // and RedisChannelLockStorage. Inject an adapter around a client such as go-redis;
 // the SDK does not depend on a specific Redis library.
 type RedisChannelStorageClient interface {
-	Get(key string) (value string, ok bool, err error)
-	Set(key, value string, opts *RedisSetOptions) (ok bool, err error)
-	Del(key string) (deleted int64, err error)
-	Eval(script string, keys []string, args []string) (any, error)
+	Get(ctx context.Context, key string) (value string, ok bool, err error)
+	Set(ctx context.Context, key, value string, opts *RedisSetOptions) (ok bool, err error)
+	Del(ctx context.Context, key string) (deleted int64, err error)
+	Eval(ctx context.Context, script string, keys []string, args []string) (any, error)
 	// Scan returns every key matching pattern. count is a SCAN COUNT hint;
 	// implementations should iterate the cursor to completion.
-	Scan(match string, count int) (keys []string, err error)
+	Scan(ctx context.Context, match string, count int) (keys []string, err error)
 }
 
 // RedisChannelStorageOptions configures Redis-backed channel storage.
@@ -126,31 +127,31 @@ func (s *RedisChannelLockStorage) lockKey(channelId string) (string, error) {
 //
 // Intentionally not re-entrant: do not add a GET-then-SET PX refresh for the
 // same pendingId; that pattern races and can extend another holder's lock.
-func (s *RedisChannelLockStorage) Acquire(channelId string, pendingId string, ttlMs int64) (bool, error) {
+func (s *RedisChannelLockStorage) Acquire(ctx context.Context, channelId string, pendingId string, ttlMs int64) (bool, error) {
 	key, err := s.lockKey(channelId)
 	if err != nil {
 		return false, err
 	}
-	return s.client.Set(key, pendingId, &RedisSetOptions{NX: true, PX: ttlMs})
+	return s.client.Set(ctx, key, pendingId, &RedisSetOptions{NX: true, PX: ttlMs})
 }
 
 // Release compares-and-deletes the admission lock only when pendingId still holds it.
-func (s *RedisChannelLockStorage) Release(channelId string, pendingId string) error {
+func (s *RedisChannelLockStorage) Release(ctx context.Context, channelId string, pendingId string) error {
 	key, err := s.lockKey(channelId)
 	if err != nil {
 		return err
 	}
-	_, err = s.client.Eval(compareAndDelScript, []string{key}, []string{pendingId})
+	_, err = s.client.Eval(ctx, compareAndDelScript, []string{key}, []string{pendingId})
 	return err
 }
 
 // IsHeld reports whether a live admission lock exists, optionally matching pendingId.
-func (s *RedisChannelLockStorage) IsHeld(channelId string, pendingId string) (bool, error) {
+func (s *RedisChannelLockStorage) IsHeld(ctx context.Context, channelId string, pendingId string) (bool, error) {
 	key, err := s.lockKey(channelId)
 	if err != nil {
 		return false, err
 	}
-	current, ok, err := s.client.Get(key)
+	current, ok, err := s.client.Get(ctx, key)
 	if err != nil {
 		return false, err
 	}
@@ -212,18 +213,18 @@ func (s *RedisChannelStorage[T]) channelKey(channelId string) (string, error) {
 }
 
 // Get loads a persisted channel record, or the zero T when the key is missing.
-func (s *RedisChannelStorage[T]) Get(channelId string) (T, error) {
+func (s *RedisChannelStorage[T]) Get(ctx context.Context, channelId string) (T, error) {
 	key, err := s.channelKey(channelId)
 	if err != nil {
 		return zeroRecord[T](), err
 	}
-	_, session, err := s.readChannelRaw(key)
+	_, session, err := s.readChannelRaw(ctx, key)
 	return session, err
 }
 
 // List returns stored records sorted by channelId.
-func (s *RedisChannelStorage[T]) List() ([]T, error) {
-	keys, err := s.client.Scan(s.channelKeyPrefix+":*", s.scanCount)
+func (s *RedisChannelStorage[T]) List(ctx context.Context) ([]T, error) {
+	keys, err := s.client.Scan(ctx, s.channelKeyPrefix+":*", s.scanCount)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +233,7 @@ func (s *RedisChannelStorage[T]) List() ([]T, error) {
 		if strings.HasSuffix(key, ":lock") {
 			continue
 		}
-		session, err := s.loadChannel(key)
+		session, err := s.loadChannel(ctx, key)
 		if err != nil {
 			return nil, fmt.Errorf("unmarshal %s: %w", key, err)
 		}
@@ -249,14 +250,14 @@ func (s *RedisChannelStorage[T]) List() ([]T, error) {
 // compare-and-write retries. Contested writes that still cannot be applied
 // after maxUpdateWait return status "conflict". A successful delete also
 // drops the admission lock key.
-func (s *RedisChannelStorage[T]) UpdateChannel(channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
+func (s *RedisChannelStorage[T]) UpdateChannel(ctx context.Context, channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
 	key, err := s.channelKey(channelId)
 	if err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(s.maxUpdateWait)
 	for {
-		currentRaw, current, err := s.readChannelRaw(key)
+		currentRaw, current, err := s.readChannelRaw(ctx, key)
 		if err != nil {
 			return nil, err
 		}
@@ -264,7 +265,7 @@ func (s *RedisChannelStorage[T]) UpdateChannel(channelId string, update func(cur
 		var applied bool
 		switch {
 		case sameRecord(next, current):
-			applied, err = s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationKeep, "")
+			applied, err = s.commitUpdate(ctx, channelId, key, currentRaw, redisUpdateOperationKeep, "")
 			if err != nil {
 				return nil, err
 			}
@@ -272,7 +273,7 @@ func (s *RedisChannelStorage[T]) UpdateChannel(channelId string, update func(cur
 				return &ChannelUpdateResult[T]{Channel: current, Status: ChannelUnchanged}, nil
 			}
 		case isZeroRecord(next):
-			applied, err = s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationDelete, "")
+			applied, err = s.commitUpdate(ctx, channelId, key, currentRaw, redisUpdateOperationDelete, "")
 			if err != nil {
 				return nil, err
 			}
@@ -288,7 +289,7 @@ func (s *RedisChannelStorage[T]) UpdateChannel(channelId string, update func(cur
 			if err != nil {
 				return nil, err
 			}
-			applied, err = s.commitUpdate(channelId, key, currentRaw, redisUpdateOperationSet, string(nextRaw))
+			applied, err = s.commitUpdate(ctx, channelId, key, currentRaw, redisUpdateOperationSet, string(nextRaw))
 			if err != nil {
 				return nil, err
 			}
@@ -304,14 +305,14 @@ func (s *RedisChannelStorage[T]) UpdateChannel(channelId string, update func(cur
 	}
 }
 
-func (s *RedisChannelStorage[T]) loadChannel(key string) (T, error) {
-	_, session, err := s.readChannelRaw(key)
+func (s *RedisChannelStorage[T]) loadChannel(ctx context.Context, key string) (T, error) {
+	_, session, err := s.readChannelRaw(ctx, key)
 	return session, err
 }
 
-func (s *RedisChannelStorage[T]) readChannelRaw(key string) (*string, T, error) {
+func (s *RedisChannelStorage[T]) readChannelRaw(ctx context.Context, key string) (*string, T, error) {
 	var zero T
-	raw, ok, err := s.client.Get(key)
+	raw, ok, err := s.client.Get(ctx, key)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -325,7 +326,7 @@ func (s *RedisChannelStorage[T]) readChannelRaw(key string) (*string, T, error) 
 	return &raw, session, nil
 }
 
-func (s *RedisChannelStorage[T]) commitUpdate(channelId, key string, expectedRaw *string, operation, nextRaw string) (bool, error) {
+func (s *RedisChannelStorage[T]) commitUpdate(ctx context.Context, channelId, key string, expectedRaw *string, operation, nextRaw string) (bool, error) {
 	lockKey, err := s.lockKey(channelId)
 	if err != nil {
 		return false, err
@@ -336,7 +337,7 @@ func (s *RedisChannelStorage[T]) commitUpdate(channelId, key string, expectedRaw
 		expectedExists = redisUpdateExpectedPresent
 		expected = *expectedRaw
 	}
-	value, err := s.client.Eval(updateChannelScript, []string{key, lockKey}, []string{expectedExists, expected, operation, nextRaw})
+	value, err := s.client.Eval(ctx, updateChannelScript, []string{key, lockKey}, []string{expectedExists, expected, operation, nextRaw})
 	if err != nil {
 		return false, err
 	}

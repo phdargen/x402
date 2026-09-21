@@ -1,6 +1,8 @@
 package facilitator
 
 import (
+	"context"
+
 	x402 "github.com/x402-foundation/x402/go/v2"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
@@ -44,6 +46,7 @@ const (
 
 // DelegatedSettleContext is passed to ResolveCallerIdentity.
 type DelegatedSettleContext struct {
+	Ctx                context.Context
 	Step               DelegatedSettleStep
 	ChannelId          string
 	Network            string
