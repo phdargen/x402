@@ -17,7 +17,12 @@ export type ChannelQuery =
   | {
       kind: "claimable";
       network?: Network;
+      /** Optional idle cutoff; absent means no idle filter. */
       idleAtOrBefore?: number;
+      /** Optional decimal uint256 threshold; absent means any positive unclaimed. */
+      minUnclaimed?: string;
+      /** Sort claimable rows highest-unclaimed first. Default is input order. */
+      unclaimedDesc?: boolean;
       limit?: number;
       cursor?: string;
     }
@@ -63,11 +68,20 @@ export function matchesChannelQuery(channel: Channel, filter: ChannelQuery): boo
   }
 
   switch (filter.kind) {
-    case "claimable":
+    case "claimable": {
       if (BigInt(channel.chargedCumulativeAmount) <= BigInt(channel.totalClaimed)) {
         return false;
       }
-      return matchesIdle(channel, filter.idleAtOrBefore);
+      const threshold = filter.minUnclaimed;
+      const idle = filter.idleAtOrBefore;
+      if (threshold !== undefined && idle !== undefined) {
+        return matchesUnclaimedThreshold(channel, threshold) || matchesIdle(channel, idle);
+      }
+      if (threshold !== undefined) {
+        return matchesUnclaimedThreshold(channel, threshold);
+      }
+      return matchesIdle(channel, idle);
+    }
     case "idleRefundable":
       if (BigInt(channel.balance) === 0n) {
         return false;
@@ -83,8 +97,8 @@ export function matchesChannelQuery(channel: Channel, filter: ChannelQuery): boo
 }
 
 /**
- * Orders query matches. Claimable rows put withdraw-pending channels first;
- * other kinds preserve input order.
+ * Orders query matches. Claimable rows put withdraw-pending first, then
+ * highest-unclaimed when `unclaimedDesc` is set.
  *
  * @param channels - Rows already accepted by {@link matchesChannelQuery}.
  * @param filter - Named worker query.
@@ -96,7 +110,18 @@ export function sortChannels<T extends Channel>(channels: T[], filter: ChannelQu
       return [...channels].sort((a, b) => {
         const pendingA = a.withdrawRequestedAt > 0 ? 0 : 1;
         const pendingB = b.withdrawRequestedAt > 0 ? 0 : 1;
-        return pendingA - pendingB;
+        if (pendingA !== pendingB) {
+          return pendingA - pendingB;
+        }
+        if (!filter.unclaimedDesc) {
+          return 0;
+        }
+        const unclaimedA = BigInt(a.chargedCumulativeAmount) - BigInt(a.totalClaimed);
+        const unclaimedB = BigInt(b.chargedCumulativeAmount) - BigInt(b.totalClaimed);
+        if (unclaimedA === unclaimedB) {
+          return 0;
+        }
+        return unclaimedA > unclaimedB ? -1 : 1;
       });
     case "idleRefundable":
     case "withdrawPending":
@@ -205,6 +230,27 @@ function matchesIdle(channel: Channel, idleAtOrBefore?: number): boolean {
     return true;
   }
   return channel.lastRequestTimestamp <= idleAtOrBefore;
+}
+
+/**
+ * Returns whether `charged - totalClaimed` meets the threshold. An
+ * unparseable threshold fails closed.
+ *
+ * @param channel - Stored channel record.
+ * @param minUnclaimed - Decimal uint256 threshold.
+ * @returns Whether the unclaimed amount meets the threshold.
+ */
+function matchesUnclaimedThreshold(channel: Channel, minUnclaimed: string): boolean {
+  let threshold: bigint;
+  try {
+    threshold = BigInt(minUnclaimed);
+  } catch {
+    return false;
+  }
+  if (threshold < 0n) {
+    return false;
+  }
+  return BigInt(channel.chargedCumulativeAmount) - BigInt(channel.totalClaimed) >= threshold;
 }
 
 /**

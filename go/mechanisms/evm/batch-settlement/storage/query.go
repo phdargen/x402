@@ -28,8 +28,13 @@ type ChannelQuery struct {
 	Kind           QueryKind
 	Network        string
 	IdleAtOrBefore *int64
-	Limit          *int
-	Cursor         string
+	// MinUnclaimed is an optional decimal uint256 threshold on unclaimed
+	// amounts. Absent means any positive unclaimed.
+	MinUnclaimed *string
+	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
+	UnclaimedDesc bool
+	Limit         *int
+	Cursor        string
 }
 
 // SettleQuery filters distinct claimed (network, receiver, token) tuples.
@@ -79,14 +84,21 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 
 	switch filter.Kind {
 	case QueryKindClaimable:
-		charged, chargedOk := parseUint256(channel.ChargedCumulativeAmount)
-		claimed, claimedOk := parseUint256(channel.TotalClaimed)
+		charged, chargedOk := ParseUint256(channel.ChargedCumulativeAmount)
+		claimed, claimedOk := ParseUint256(channel.TotalClaimed)
 		if !chargedOk || !claimedOk || charged.Cmp(claimed) <= 0 {
 			return false
 		}
+		if filter.MinUnclaimed != nil && filter.IdleAtOrBefore != nil {
+			return matchesUnclaimedThreshold(charged, claimed, *filter.MinUnclaimed) ||
+				matchesIdle(channel, filter.IdleAtOrBefore)
+		}
+		if filter.MinUnclaimed != nil {
+			return matchesUnclaimedThreshold(charged, claimed, *filter.MinUnclaimed)
+		}
 		return matchesIdle(channel, filter.IdleAtOrBefore)
 	case QueryKindIdleRefundable:
-		balance, ok := parseUint256(channel.Balance)
+		balance, ok := ParseUint256(channel.Balance)
 		if !ok || balance.Sign() == 0 {
 			return false
 		}
@@ -99,7 +111,7 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 }
 
 // SortChannels orders query matches. Claimable rows put withdraw-pending
-// channels first; other kinds preserve input order. The input slice is not mutated.
+// first, then highest-unclaimed when UnclaimedDesc is set.
 func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 	out := append([]T(nil), channels...)
 	switch filter.Kind {
@@ -113,7 +125,13 @@ func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 			if b.Base().WithdrawRequestedAt > 0 {
 				pendingB = 0
 			}
-			return pendingA < pendingB
+			if pendingA != pendingB {
+				return pendingA < pendingB
+			}
+			if !filter.UnclaimedDesc {
+				return false
+			}
+			return unclaimedValue(a.Base()).Cmp(unclaimedValue(b.Base())) > 0
 		})
 		return out
 	case QueryKindIdleRefundable, QueryKindWithdrawPending:
@@ -136,7 +154,7 @@ func QueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T
 			matched = append(matched, channel)
 		}
 	}
-	return pageItems(SortChannels(matched, filter), filter.Limit, filter.Cursor), nil
+	return PageItems(SortChannels(matched, filter), filter.Limit, filter.Cursor), nil
 }
 
 // SettleQueryByScan lists claimed rows (totalClaimed > 0) deduped per
@@ -150,7 +168,7 @@ func SettleQueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelSto
 	seen := make(map[string]struct{})
 	for _, record := range all {
 		channel := record.Base()
-		if claimed, ok := parseUint256(channel.TotalClaimed); !ok || claimed.Sign() == 0 {
+		if claimed, ok := ParseUint256(channel.TotalClaimed); !ok || claimed.Sign() == 0 {
 			continue
 		}
 		network := channelNetwork(channel)
@@ -169,7 +187,7 @@ func SettleQueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelSto
 		seen[key] = struct{}{}
 		targets = append(targets, SettleTarget{Network: network, Receiver: receiver, Token: token})
 	}
-	return pageItems(targets, filter.Limit, filter.Cursor), nil
+	return PageItems(targets, filter.Limit, filter.Cursor), nil
 }
 
 // QueryChannels runs a named worker query, using a native ChannelQuerier when
@@ -209,6 +227,31 @@ func matchesIdle(channel *Channel, idleAtOrBefore *int64) bool {
 	return channel.LastRequestTimestamp <= *idleAtOrBefore
 }
 
+// matchesUnclaimedThreshold reports whether charged-claimed meets threshold.
+// An unparseable threshold fails closed.
+func matchesUnclaimedThreshold(charged, claimed *big.Int, minUnclaimed string) bool {
+	threshold, ok := ParseUint256(minUnclaimed)
+	if !ok {
+		return false
+	}
+	return new(big.Int).Sub(charged, claimed).Cmp(threshold) >= 0
+}
+
+// unclaimedValue returns charged-claimed, or zero when corrupt. Ordering
+// helper for already-matched rows only.
+func unclaimedValue(channel *Channel) *big.Int {
+	charged, chargedOk := ParseUint256(channel.ChargedCumulativeAmount)
+	claimed, claimedOk := ParseUint256(channel.TotalClaimed)
+	if !chargedOk || !claimedOk {
+		return new(big.Int)
+	}
+	delta := new(big.Int).Sub(charged, claimed)
+	if delta.Sign() < 0 {
+		return new(big.Int)
+	}
+	return delta
+}
+
 func channelNetwork(channel *Channel) string {
 	if channel == nil {
 		return ""
@@ -216,8 +259,8 @@ func channelNetwork(channel *Channel) string {
 	return channel.Network
 }
 
-func pageItems[T any](items []T, limit *int, cursor string) *QueryPage[T] {
-	start := parseQueryCursor(cursor)
+func PageItems[T any](items []T, limit *int, cursor string) *QueryPage[T] {
+	start := ParseQueryCursor(cursor)
 	remaining := len(items) - start
 	if remaining <= 0 {
 		return &QueryPage[T]{Items: []T{}}
@@ -241,7 +284,7 @@ func pageItems[T any](items []T, limit *int, cursor string) *QueryPage[T] {
 	return out
 }
 
-func parseQueryCursor(cursor string) int {
+func ParseQueryCursor(cursor string) int {
 	if cursor == "" {
 		return 0
 	}
@@ -252,9 +295,9 @@ func parseQueryCursor(cursor string) int {
 	return parsed
 }
 
-// parseUint256 parses a decimal uint256. ok=false means the caller must skip
+// ParseUint256 parses a decimal uint256. ok=false means the caller must skip
 // (query/claim scans) or fail closed (writes, verify) — never treat as zero.
-func parseUint256(s string) (*big.Int, bool) {
+func ParseUint256(s string) (*big.Int, bool) {
 	v, ok := new(big.Int).SetString(s, 10)
 	if !ok || v.Sign() < 0 {
 		return nil, false
@@ -262,14 +305,14 @@ func parseUint256(s string) (*big.Int, bool) {
 	return v, true
 }
 
-// uint256Cmp compares decimal uint256 strings. ok=false means either operand
+// Uint256Cmp compares decimal uint256 strings. ok=false means either operand
 // failed to parse, and the caller must skip the row, not treat it as zero.
-func uint256Cmp(a, b string) (int, bool) {
-	ai, okA := parseUint256(a)
+func Uint256Cmp(a, b string) (int, bool) {
+	ai, okA := ParseUint256(a)
 	if !okA {
 		return 0, false
 	}
-	bi, okB := parseUint256(b)
+	bi, okB := ParseUint256(b)
 	if !okB {
 		return 0, false
 	}
