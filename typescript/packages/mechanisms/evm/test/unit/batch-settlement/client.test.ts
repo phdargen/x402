@@ -1820,6 +1820,17 @@ describe("BatchSettlementEvmScheme — refund()", () => {
     );
   });
 
+  it("throws when no fetch implementation is available", async () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const client = new BatchSettlementEvmScheme(signer);
+    const originalFetch = globalThis.fetch;
+    Object.defineProperty(globalThis, "fetch", { value: undefined, configurable: true });
+
+    await expect(client.refund(REFUND_URL)).rejects.toThrow(/fetch implementation/);
+
+    Object.defineProperty(globalThis, "fetch", { value: originalFetch, configurable: true });
+  });
+
   it("fails fast (no retry) when server returns 402 with refund no balance error", async () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const storage = new InMemoryClientChannelStorage();
