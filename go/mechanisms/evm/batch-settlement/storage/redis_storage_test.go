@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -32,7 +33,7 @@ func newMockRedisClient() *mockRedisClient {
 	return &mockRedisClient{store: make(map[string]mockRedisValue)}
 }
 
-func (c *mockRedisClient) Get(key string) (string, bool, error) {
+func (c *mockRedisClient) Get(_ context.Context, key string) (string, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expireKey(key)
@@ -43,7 +44,7 @@ func (c *mockRedisClient) Get(key string) (string, bool, error) {
 	return v.value, true, nil
 }
 
-func (c *mockRedisClient) Set(key, value string, opts *RedisSetOptions) (bool, error) {
+func (c *mockRedisClient) Set(_ context.Context, key, value string, opts *RedisSetOptions) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expireKey(key)
@@ -60,7 +61,7 @@ func (c *mockRedisClient) Set(key, value string, opts *RedisSetOptions) (bool, e
 	return true, nil
 }
 
-func (c *mockRedisClient) Del(key string) (int64, error) {
+func (c *mockRedisClient) Del(_ context.Context, key string) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expireKey(key)
@@ -71,7 +72,7 @@ func (c *mockRedisClient) Del(key string) (int64, error) {
 	return 1, nil
 }
 
-func (c *mockRedisClient) Eval(script string, keys []string, args []string) (any, error) {
+func (c *mockRedisClient) Eval(_ context.Context, script string, keys []string, args []string) (any, error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing Redis key")
 	}
@@ -144,7 +145,7 @@ func (c *mockRedisClient) Eval(script string, keys []string, args []string) (any
 	}
 }
 
-func (c *mockRedisClient) Scan(match string, _ int) ([]string, error) {
+func (c *mockRedisClient) Scan(_ context.Context, match string, _ int) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	prefix := strings.TrimSuffix(match, "*")
@@ -204,14 +205,14 @@ func newRedisStore(t *testing.T) (*RedisChannelStorage[*Channel], *mockRedisClie
 
 func mustSeedRedisChannel(t *testing.T, s *RedisChannelStorage[*Channel], sess *Channel) {
 	t.Helper()
-	if _, err := s.UpdateChannel(sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }
 
 func TestRedisChannelStorage_GetMissing(t *testing.T) {
 	s, _ := newRedisStore(t)
-	_, err := s.Get("missing")
+	_, err := s.Get(context.Background(), "missing")
 	if err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("expected ErrInvalidChannelId, got %v", err)
 	}
@@ -219,7 +220,7 @@ func TestRedisChannelStorage_GetMissing(t *testing.T) {
 
 func TestRedisChannelStorage_GetMissingCanonical(t *testing.T) {
 	s, _ := newRedisStore(t)
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -231,10 +232,10 @@ func TestRedisChannelStorage_GetMissingCanonical(t *testing.T) {
 func TestRedisChannelStorage_UpsertGet(t *testing.T) {
 	s, _ := newRedisStore(t)
 	in := sampleSession(testChA, "10")
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestRedisChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
 	s, _ := newRedisStore(t)
 	upper := "0x" + strings.ToUpper(strings.TrimPrefix(testChA, "0x"))
 	mustSeedRedisChannel(t, s, sampleSession(upper, "7"))
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -259,13 +260,13 @@ func TestRedisChannelStorage_MixedCaseCanonicalGet(t *testing.T) {
 func TestRedisChannelStorage_UpdateChannelDelete(t *testing.T) {
 	s, _ := newRedisStore(t)
 	mustSeedRedisChannel(t, s, sampleSession(testChA, "10"))
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil }); err != nil {
 		t.Fatalf("UpdateChannel delete: %v", err)
 	}
-	if got, _ := s.Get(testChA); got != nil {
+	if got, _ := s.Get(context.Background(), testChA); got != nil {
 		t.Fatalf("expected nil after delete")
 	}
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil }); err != nil {
 		t.Fatalf("UpdateChannel delete-missing should not error: %v", err)
 	}
 }
@@ -275,7 +276,7 @@ func TestRedisChannelStorage_ListSorted(t *testing.T) {
 	mustSeedRedisChannel(t, s, sampleSession(testChB, "2"))
 	mustSeedRedisChannel(t, s, sampleSession(testChA, "1"))
 
-	got, err := s.List()
+	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -289,8 +290,8 @@ func TestRedisChannelStorage_ListSorted(t *testing.T) {
 
 func TestRedisChannelStorage_List_Malformed(t *testing.T) {
 	s, client := newRedisStore(t)
-	_, _ = client.Set(redisTestPrefix+":server:channel:"+testChA, "{not-json", nil)
-	if _, err := s.List(); err == nil {
+	_, _ = client.Set(context.Background(), redisTestPrefix+":server:channel:"+testChA, "{not-json", nil)
+	if _, err := s.List(context.Background()); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
@@ -298,7 +299,7 @@ func TestRedisChannelStorage_List_Malformed(t *testing.T) {
 func TestRedisChannelStorage_UpdateChannelInsertUnchangedDelete(t *testing.T) {
 	s, _ := newRedisStore(t)
 	channel := sampleSession(testChA, "500")
-	result, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return channel })
+	result, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return channel })
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestRedisChannelStorage_UpdateChannelInsertUnchangedDelete(t *testing.T) {
 		t.Fatalf("insert result: %+v", result)
 	}
 
-	result, err = s.UpdateChannel(testChA, func(current *Channel) *Channel { return current })
+	result, err = s.UpdateChannel(context.Background(), testChA, func(current *Channel) *Channel { return current })
 	if err != nil {
 		t.Fatalf("unchanged: %v", err)
 	}
@@ -314,18 +315,18 @@ func TestRedisChannelStorage_UpdateChannelInsertUnchangedDelete(t *testing.T) {
 		t.Fatalf("unchanged result: %+v", result)
 	}
 
-	result, err = s.UpdateChannel(testChA, func(*Channel) *Channel { return nil })
+	result, err = s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil })
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if result.Status != ChannelDeleted || result.Channel != nil {
 		t.Fatalf("delete result: %+v", result)
 	}
-	if got, _ := s.Get(testChA); got != nil {
+	if got, _ := s.Get(context.Background(), testChA); got != nil {
 		t.Fatalf("expected nil after delete")
 	}
 
-	result, err = s.UpdateChannel(testChA, func(*Channel) *Channel { return nil })
+	result, err = s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil })
 	if err != nil {
 		t.Fatalf("delete-missing: %v", err)
 	}
@@ -337,15 +338,15 @@ func TestRedisChannelStorage_UpdateChannelInsertUnchangedDelete(t *testing.T) {
 func TestRedisChannelStorage_RejectsMalformedIds(t *testing.T) {
 	s, _ := newRedisStore(t)
 	malformed := "../../../etc/passwd"
-	if _, err := s.Get(malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
+	if _, err := s.Get(context.Background(), malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Get: expected ErrInvalidChannelId, got %v", err)
 	}
-	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), malformed, func(*Channel) *Channel {
 		return sampleSession(testChA, "1")
 	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("UpdateChannel: expected ErrInvalidChannelId, got %v", err)
 	}
-	list, err := s.List()
+	list, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestRedisChannelStorage_RejectsMalformedIds(t *testing.T) {
 
 func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 	s, client := newRedisStore(t)
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel {
 		return sampleSession(testChA, "0")
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -371,7 +372,7 @@ func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 
 	firstDone := make(chan *ChannelUpdateResult[*Channel], 1)
 	go func() {
-		result, err := s.UpdateChannel(testChA, func(current *Channel) *Channel {
+		result, err := s.UpdateChannel(context.Background(), testChA, func(current *Channel) *Channel {
 			next := sampleSession(testChA, "0")
 			charged := "0"
 			if current != nil {
@@ -392,7 +393,7 @@ func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 		t.Fatal("timed out waiting for first eval")
 	}
 
-	second, err := s.UpdateChannel(testChA, func(current *Channel) *Channel {
+	second, err := s.UpdateChannel(context.Background(), testChA, func(current *Channel) *Channel {
 		next := sampleSession(testChA, "0")
 		charged := "0"
 		if current != nil {
@@ -421,7 +422,7 @@ func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 	if client.conflictCount() != 1 {
 		t.Fatalf("conflicts = %d", client.conflictCount())
 	}
-	got, _ := s.Get(testChA)
+	got, _ := s.Get(context.Background(), testChA)
 	if got == nil || got.ChargedCumulativeAmount != "2" {
 		t.Fatalf("final charged = %+v", got)
 	}
@@ -430,19 +431,19 @@ func TestRedisChannelStorage_RetriesAfterCompareConflicts(t *testing.T) {
 func TestRedisChannelStorage_UpdateChannelDeleteDropsLockKey(t *testing.T) {
 	s, client := newRedisStore(t)
 	lockKey := redisTestPrefix + ":server:lock:" + testChA
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel {
 		return sampleSession(testChA, "5")
 	}); err != nil {
 		t.Fatalf("seed channel: %v", err)
 	}
-	ok, err := s.Acquire(testChA, "pending", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
 	if !client.hasKey(lockKey) {
 		t.Fatal("expected lock key after Acquire")
 	}
-	result, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil })
+	result, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil })
 	if err != nil {
 		t.Fatalf("UpdateChannel delete: %v", err)
 	}
@@ -462,7 +463,7 @@ func TestRedisChannelStorage_UpdateChannelContendedAfterMaxWait(t *testing.T) {
 		LockRetryIntervalMs: 1,
 		MaxUpdateWaitMs:     20,
 	})
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel {
 		return sampleSession(testChA, "0")
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -471,7 +472,7 @@ func TestRedisChannelStorage_UpdateChannelContendedAfterMaxWait(t *testing.T) {
 	client.forceUpdateConflict = true
 	client.mu.Unlock()
 
-	result, err := s.UpdateChannel(testChA, func(current *Channel) *Channel {
+	result, err := s.UpdateChannel(context.Background(), testChA, func(current *Channel) *Channel {
 		next := sampleSession(testChA, "0")
 		if current != nil {
 			next.ChargedCumulativeAmount = strconv.Itoa(atoiOrZero(current.ChargedCumulativeAmount) + 1)
@@ -495,26 +496,26 @@ func TestRedisChannelStorage_UpdateChannelContendedAfterMaxWait(t *testing.T) {
 func TestRedisChannelStorage_LockIsSeparateFromChannelJSON(t *testing.T) {
 	s, client := newRedisStore(t)
 	channel := sampleSession(testChA, "5")
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
-	ok, err := s.Acquire(testChA, "first", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "first", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire first: ok=%v err=%v", ok, err)
 	}
-	ok, err = s.Acquire(testChA, "second", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "second", 60_000)
 	if err != nil || ok {
 		t.Fatalf("second acquire should fail: ok=%v err=%v", ok, err)
 	}
-	held, err := s.IsHeld(testChA, "")
+	held, err := s.IsHeld(context.Background(), testChA, "")
 	if err != nil || !held {
 		t.Fatalf("any lock should be held: held=%v err=%v", held, err)
 	}
-	held, err = s.IsHeld(testChA, "first")
+	held, err = s.IsHeld(context.Background(), testChA, "first")
 	if err != nil || !held {
 		t.Fatalf("first should be held: held=%v err=%v", held, err)
 	}
-	held, err = s.IsHeld(testChA, "second")
+	held, err = s.IsHeld(context.Background(), testChA, "second")
 	if err != nil || held {
 		t.Fatalf("second should not be held: held=%v err=%v", held, err)
 	}
@@ -522,26 +523,26 @@ func TestRedisChannelStorage_LockIsSeparateFromChannelJSON(t *testing.T) {
 		t.Fatal("expected lock key under :server:lock:")
 	}
 
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil || !reflect.DeepEqual(got, channel) {
 		t.Fatalf("channel mutated: got=%+v err=%v", got, err)
 	}
-	listed, err := s.List()
+	listed, err := s.List(context.Background())
 	if err != nil || len(listed) != 1 || listed[0].ChannelId != testChA {
 		t.Fatalf("list = %+v err=%v", listed, err)
 	}
 
-	if err := s.Release(testChA, "second"); err != nil {
+	if err := s.Release(context.Background(), testChA, "second"); err != nil {
 		t.Fatalf("release second: %v", err)
 	}
-	held, err = s.IsHeld(testChA, "first")
+	held, err = s.IsHeld(context.Background(), testChA, "first")
 	if err != nil || !held {
 		t.Fatalf("first should still be held: held=%v err=%v", held, err)
 	}
-	if err := s.Release(testChA, "first"); err != nil {
+	if err := s.Release(context.Background(), testChA, "first"); err != nil {
 		t.Fatalf("release first: %v", err)
 	}
-	held, err = s.IsHeld(testChA, "")
+	held, err = s.IsHeld(context.Background(), testChA, "")
 	if err != nil || held {
 		t.Fatalf("lock should be free: held=%v err=%v", held, err)
 	}
@@ -552,20 +553,20 @@ func TestRedisChannelStorage_LockIsSeparateFromChannelJSON(t *testing.T) {
 
 func TestRedisChannelStorage_ExpiredLockIsFree(t *testing.T) {
 	s, _ := newRedisStore(t)
-	ok, err := s.Acquire(testChA, "expired", 1)
+	ok, err := s.Acquire(context.Background(), testChA, "expired", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire expired: ok=%v err=%v", ok, err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	ok, err = s.Acquire(testChA, "next", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "next", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire next: ok=%v err=%v", ok, err)
 	}
-	held, err := s.IsHeld(testChA, "expired")
+	held, err := s.IsHeld(context.Background(), testChA, "expired")
 	if err != nil || held {
 		t.Fatalf("expired should not be held: held=%v err=%v", held, err)
 	}
-	held, err = s.IsHeld(testChA, "next")
+	held, err = s.IsHeld(context.Background(), testChA, "next")
 	if err != nil || !held {
 		t.Fatalf("next should be held: held=%v err=%v", held, err)
 	}
@@ -573,11 +574,11 @@ func TestRedisChannelStorage_ExpiredLockIsFree(t *testing.T) {
 
 func TestRedisChannelStorage_MissingLockIsNotHeld(t *testing.T) {
 	s, _ := newRedisStore(t)
-	held, err := s.IsHeld(testChA, "")
+	held, err := s.IsHeld(context.Background(), testChA, "")
 	if err != nil || held {
 		t.Fatalf("missing hold: held=%v err=%v", held, err)
 	}
-	if err := s.Release(testChA, "missing"); err != nil {
+	if err := s.Release(context.Background(), testChA, "missing"); err != nil {
 		t.Fatalf("release missing: %v", err)
 	}
 }
@@ -588,7 +589,7 @@ func TestRedisChannelLockStorage_Standalone(t *testing.T) {
 		Client:    client,
 		KeyPrefix: redisTestPrefix,
 	})
-	ok, err := lock.Acquire(testChA, "pending", 60_000)
+	ok, err := lock.Acquire(context.Background(), testChA, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
@@ -602,20 +603,20 @@ func TestRedisChannelLockStorage_Standalone(t *testing.T) {
 
 func TestRedisChannelStorage_AcquireIsNotReentrant(t *testing.T) {
 	s, client := newRedisStore(t)
-	ok, err := s.Acquire(testChA, "same", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "same", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("first Acquire: ok=%v err=%v", ok, err)
 	}
 	lockKey := redisTestPrefix + ":server:lock:" + testChA
 	firstExpiry := client.store[lockKey].expiresAt
-	ok, err = s.Acquire(testChA, "same", 120_000)
+	ok, err = s.Acquire(context.Background(), testChA, "same", 120_000)
 	if err != nil || ok {
 		t.Fatalf("re-entrant Acquire should miss: ok=%v err=%v", ok, err)
 	}
 	if client.store[lockKey].expiresAt != firstExpiry {
 		t.Fatalf("TTL refreshed: first=%d second=%d", firstExpiry, client.store[lockKey].expiresAt)
 	}
-	held, err := s.IsHeld(testChA, "same")
+	held, err := s.IsHeld(context.Background(), testChA, "same")
 	if err != nil || !held {
 		t.Fatalf("original holder should remain: held=%v err=%v", held, err)
 	}

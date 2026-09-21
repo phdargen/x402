@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"math/big"
 	"testing"
 
@@ -153,7 +154,7 @@ func TestIsFacilitatorManaged_OnlyExplicitTrue(t *testing.T) {
 
 func TestCommitVoucherCharge_MissingWithoutSnapshot(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(1000),
 		SignedCap: big.NewInt(5000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
@@ -168,10 +169,10 @@ func TestCommitVoucherCharge_MissingWithoutSnapshot(t *testing.T) {
 
 func TestCommitVoucherCharge_CapExceededDoesNotMutate(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
-	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(2000),
 		SignedCap: big.NewInt(3000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "3000", Signature: "0xbbb"},
@@ -182,7 +183,7 @@ func TestCommitVoucherCharge_CapExceededDoesNotMutate(t *testing.T) {
 	if result.Status != CommitCapExceeded || result.Charged != "4000" {
 		t.Fatalf("result = %+v", result)
 	}
-	got, _ := store.Get(voucherChannelId)
+	got, _ := store.Get(context.Background(), voucherChannelId)
 	if got.ChargedCumulativeAmount != "2000" {
 		t.Fatalf("charged = %q", got.ChargedCumulativeAmount)
 	}
@@ -192,10 +193,10 @@ func TestCommitVoucherCharge_CorruptWatermarkIsConflictWithoutWrite(t *testing.T
 	store := NewInMemoryChannelStorage[*Channel]()
 	seed := voucherBaseChannel(nil)
 	seed.ChargedCumulativeAmount = "not-a-number"
-	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel { return seed }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return seed }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(100),
 		SignedCap: big.NewInt(100),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "100", Signature: "0xbbb"},
@@ -206,7 +207,7 @@ func TestCommitVoucherCharge_CorruptWatermarkIsConflictWithoutWrite(t *testing.T
 	if result.Status != CommitConflict {
 		t.Fatalf("status = %q, want conflict", result.Status)
 	}
-	got, _ := store.Get(voucherChannelId)
+	got, _ := store.Get(context.Background(), voucherChannelId)
 	if got.ChargedCumulativeAmount != "not-a-number" {
 		t.Fatalf("corrupt watermark was overwritten: %q", got.ChargedCumulativeAmount)
 	}
@@ -214,10 +215,10 @@ func TestCommitVoucherCharge_CorruptWatermarkIsConflictWithoutWrite(t *testing.T
 
 func TestCommitVoucherCharge_AppliesMapAfterCommit(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
-	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(500),
 		SignedCap: big.NewInt(3000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "2500", Signature: "0xccc"},
@@ -238,7 +239,7 @@ func TestCommitVoucherCharge_AppliesMapAfterCommit(t *testing.T) {
 func TestCommitVoucherCharge_CreatesFromSnapshot(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	snapshot := voucherBaseChannel(&Channel{ChargedCumulativeAmount: "1000", Balance: "9000"})
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(500),
 		SignedCap: big.NewInt(5000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
@@ -250,7 +251,7 @@ func TestCommitVoucherCharge_CreatesFromSnapshot(t *testing.T) {
 	if result.Status != CommitCommitted || result.Current.ChargedCumulativeAmount != "1500" || result.Current.Balance != "9000" {
 		t.Fatalf("result = %+v", result)
 	}
-	got, _ := store.Get(voucherChannelId)
+	got, _ := store.Get(context.Background(), voucherChannelId)
 	if got == nil {
 		t.Fatal("expected stored row")
 	}
@@ -260,13 +261,13 @@ type unchangedChargeStore struct {
 	*InMemoryChannelStorage[*Channel]
 }
 
-func (s unchangedChargeStore) UpdateChannel(string, func(*Channel) *Channel) (*ChannelUpdateResult[*Channel], error) {
+func (s unchangedChargeStore) UpdateChannel(context.Context, string, func(*Channel) *Channel) (*ChannelUpdateResult[*Channel], error) {
 	return &ChannelUpdateResult[*Channel]{Channel: voucherBaseChannel(nil), Status: ChannelUnchanged}, nil
 }
 
 func TestCommitVoucherCharge_ConflictWhenUpdateNotApplied(t *testing.T) {
 	store := unchangedChargeStore{InMemoryChannelStorage: NewInMemoryChannelStorage[*Channel]()}
-	result, err := CommitVoucherCharge[*Channel](store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge[*Channel](context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(500),
 		SignedCap: big.NewInt(5000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
@@ -282,12 +283,12 @@ func TestCommitVoucherCharge_ConflictWhenUpdateNotApplied(t *testing.T) {
 
 func TestCommitVoucherCharge_LocalVerifyKeepsStoredEscrow(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
-	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel {
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel {
 		return voucherBaseChannel(&Channel{Balance: "7777", TotalClaimed: "3"})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment:   big.NewInt(100),
 		SignedCap:   big.NewInt(5000),
 		Voucher:     batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
@@ -304,12 +305,12 @@ func TestCommitVoucherCharge_LocalVerifyKeepsStoredEscrow(t *testing.T) {
 
 func TestCommitVoucherCharge_RefreshesEscrowFromSnapshot(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
-	if _, err := store.UpdateChannel(voucherChannelId, func(*Channel) *Channel {
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel {
 		return voucherBaseChannel(&Channel{Balance: "1", TotalClaimed: "9", RefundNonce: 1, WithdrawRequestedAt: 2})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	result, err := CommitVoucherCharge(store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment: big.NewInt(1000),
 		SignedCap: big.NewInt(5000),
 		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},

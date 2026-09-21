@@ -247,14 +247,14 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidDepositPayload, "", network, "",
 				fmt.Sprintf("failed to parse deposit payload: %s", err))
 		}
-		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore)
+		delegatedCaller, bindErr := ResolveDepositDelegatedCaller(ctx, f.resolveCallerIdentity, f.delegatedAuthStore,
+			payload, depositPayload, requirements, fctx)
+		if bindErr != nil {
+			return nil, bindErr
+		}
+		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore, f.delegatedAuthStore, delegatedCaller)
 		if err != nil {
 			return nil, err
-		}
-		if settled.Success {
-			if bindErr := f.bindSelfManagedCaller(payload, depositPayload.Voucher.ChannelId, requirements, fctx); bindErr != nil {
-				return nil, bindErr
-			}
 		}
 		return settled, nil
 	}
@@ -268,7 +268,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 		claimSuffix := dataSuffix
 		var attested map[string]int
 		if managed && f.voucherStore != nil {
-			counts, snapshot, snapErr := SnapshotClaimChargeCounts(f.voucherStore.storage, claimPayload.Claims, requirements.Network, nil)
+			counts, snapshot, snapErr := SnapshotClaimChargeCounts(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, nil)
 			if snapErr != nil {
 				return nil, snapErr
 			}
@@ -289,7 +289,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, err
 		}
 		if settled.Success && attested != nil && f.voucherStore != nil {
-			if afterErr := AfterClaim(f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, RetentionUntilClosed); afterErr != nil {
+			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, RetentionUntilClosed); afterErr != nil {
 				return nil, afterErr
 			}
 		}
@@ -302,7 +302,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", network, "",
 				fmt.Sprintf("failed to parse refund payload: %s", err))
 		}
-		if consentErr := f.checkSelfManagedRefundCaller(payload, refundPayload, requirements, fctx); consentErr != "" {
+		if consentErr := f.checkSelfManagedRefundCaller(ctx, payload, refundPayload, requirements, fctx); consentErr != "" {
 			return &x402.SettleResponse{
 				Success:     false,
 				ErrorReason: consentErr,
@@ -343,6 +343,7 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		AuthorizerSubmitter: f.authorizerSubmitter,
 		SubmitMode:          f.submitMode,
 		Context:             fctx,
+		DelegatedAuthStore:  f.delegatedAuthStore,
 	})
 }
 
@@ -372,45 +373,8 @@ func (f *BatchSettlementEvmScheme) submitContext() SubmitContext {
 	}
 }
 
-func (f *BatchSettlementEvmScheme) bindSelfManagedCaller(
-	payload types.PaymentPayload,
-	channelId string,
-	requirements types.PaymentRequirements,
-	fctx *x402.FacilitatorContext,
-) error {
-	if f.resolveCallerIdentity == nil || f.delegatedAuthStore == nil {
-		return nil
-	}
-	raw := payload.Payload
-	payer := ""
-	amount := ""
-	if batchsettlement.IsDepositPayload(raw) {
-		if dp, err := batchsettlement.DepositPayloadFromMap(raw); err == nil {
-			payer = dp.ChannelConfig.Payer
-			amount = dp.Deposit.Amount
-		}
-	}
-	identity, err := f.resolveCallerIdentity(DelegatedSettleContext{
-		Step:               DelegatedSettleStepDeposit,
-		ChannelId:          channelId,
-		Network:            requirements.Network,
-		Payer:              payer,
-		Amount:             amount,
-		Payload:            payload,
-		Requirements:       requirements,
-		FacilitatorContext: fctx,
-	})
-	if err != nil || identity == "" {
-		return err
-	}
-	return f.delegatedAuthStore.Bind(storage.DelegatedAuthBinding{
-		ChannelId:      channelId,
-		Network:        requirements.Network,
-		CallerIdentity: identity,
-	})
-}
-
 func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
+	ctx context.Context,
 	payload types.PaymentPayload,
 	raw *batchsettlement.BatchSettlementEnrichedRefundPayload,
 	requirements types.PaymentRequirements,
@@ -426,6 +390,7 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 		return ErrRefundAuthorizerSignature
 	}
 	identity, err := f.resolveCallerIdentity(DelegatedSettleContext{
+		Ctx:                ctx,
 		Step:               DelegatedSettleStepRefund,
 		ChannelId:          raw.Voucher.ChannelId,
 		Network:            requirements.Network,
@@ -438,7 +403,7 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 	if err != nil || identity == "" {
 		return ErrRefundAuthorizerSignature
 	}
-	binding, err := f.delegatedAuthStore.Get(raw.Voucher.ChannelId, requirements.Network)
+	binding, err := f.delegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
 	if err != nil || binding == nil {
 		return ErrRefundAuthorizerSignature
 	}

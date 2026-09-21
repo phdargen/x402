@@ -34,10 +34,10 @@ const (
 // inspectAdmission classifies whether this request still holds the admission
 // lock, another request holds it, or no lock is present (lost/expired or lock
 // store I/O down). Implementation/parse errors fail closed.
-func inspectAdmission(scheme *BatchSettlementEvmScheme, channelId, pendingId string) (admissionHold, error) {
+func inspectAdmission(ctx context.Context, scheme *BatchSettlementEvmScheme, channelId, pendingId string) (admissionHold, error) {
 	locks := scheme.GetLockStorage()
 	if pendingId != "" {
-		held, err := locks.IsHeld(channelId, pendingId)
+		held, err := locks.IsHeld(ctx, channelId, pendingId)
 		if impl := RethrowLockImplementationError(err); impl != nil {
 			return admissionNone, impl
 		}
@@ -48,7 +48,7 @@ func inspectAdmission(scheme *BatchSettlementEvmScheme, channelId, pendingId str
 			return admissionSelf, nil
 		}
 	}
-	held, err := locks.IsHeld(channelId, "")
+	held, err := locks.IsHeld(ctx, channelId, "")
 	if impl := RethrowLockImplementationError(err); impl != nil {
 		return admissionNone, impl
 	}
@@ -320,7 +320,7 @@ func handleBeforeVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyContext) (*x
 		PendingId: pendingId,
 	})
 
-	acquired, acquireErr := s.lockStorage.Acquire(channelId, pendingId, storage.PendingTtlMs(ctx.Requirements.GetMaxTimeoutSeconds()))
+	acquired, acquireErr := s.lockStorage.Acquire(ctx.Ctx, channelId, pendingId, storage.PendingTtlMs(ctx.Requirements.GetMaxTimeoutSeconds()))
 	if impl := RethrowLockImplementationError(acquireErr); impl != nil {
 		s.TakeRequestContext(ctx.Payload)
 		return nil, impl
@@ -337,7 +337,7 @@ func handleBeforeVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyContext) (*x
 		s.MergeRequestContext(ctx.Payload, BatchSettlementRequestContext{ReservationCommitted: reservationFlag(true)})
 	}
 
-	channelSnapshot, getErr := s.storage.Get(channelId)
+	channelSnapshot, getErr := s.storage.Get(ctx.Ctx, channelId)
 	if getErr != nil {
 		_ = s.ClearPendingRequest(ctx.Payload)
 		return verificationStateUnavailable(), nil //nolint:nilerr // map storage failures to fail-closed abort
@@ -801,7 +801,7 @@ func handleBeforeSettle(s *BatchSettlementEvmScheme, ctx x402.SettleContext) (*x
 		Signature:          sig,
 	}
 
-	outcome, err := storage.CommitVoucherCharge(s.GetStorage(), channelId, storage.CommitVoucherChargeInput[*ChannelSession]{
+	outcome, err := storage.CommitVoucherCharge(ctx.Ctx, s.GetStorage(), channelId, storage.CommitVoucherChargeInput[*ChannelSession]{
 		Increment:           increment,
 		SignedCap:           signedCap,
 		Voucher:             voucher,
@@ -814,12 +814,12 @@ func handleBeforeSettle(s *BatchSettlementEvmScheme, ctx x402.SettleContext) (*x
 		return nil, err
 	}
 	if outcome.Status == storage.CommitMissing && snapshot != nil {
-		hold, holdErr := inspectAdmission(s, channelId, pendingId)
+		hold, holdErr := inspectAdmission(ctx.Ctx, s, channelId, pendingId)
 		if holdErr != nil {
 			return nil, holdErr
 		}
 		if hold == admissionSelf {
-			outcome, err = storage.CommitVoucherCharge(s.GetStorage(), channelId, storage.CommitVoucherChargeInput[*ChannelSession]{
+			outcome, err = storage.CommitVoucherCharge(ctx.Ctx, s.GetStorage(), channelId, storage.CommitVoucherChargeInput[*ChannelSession]{
 				Increment:   increment,
 				SignedCap:   signedCap,
 				Voucher:     voucher,
@@ -942,11 +942,11 @@ func handleEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.SettleC
 		snapshot = requestContext.ChannelSnapshot
 		pendingId = requestContext.PendingId
 	}
-	stored, storageErr := s.storage.Get(channelIdStr)
+	stored, storageErr := s.storage.Get(ctx.Ctx, channelIdStr)
 	if storageErr != nil {
 		return nil, storageErr
 	}
-	hold, holdErr := inspectAdmission(s, channelIdStr, pendingId)
+	hold, holdErr := inspectAdmission(ctx.Ctx, s, channelIdStr, pendingId)
 	if holdErr != nil {
 		return nil, holdErr
 	}
@@ -1161,7 +1161,7 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 			reqAmount = big.NewInt(0)
 		}
 
-		hold, holdErr := inspectAdmission(s, normalizedId, pendingId)
+		hold, holdErr := inspectAdmission(ctx.Ctx, s, normalizedId, pendingId)
 		if holdErr != nil {
 			return holdErr
 		}
@@ -1174,7 +1174,7 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 		}
 
 		missingRow := false
-		updateRes, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
+		updateRes, updateErr := s.storage.UpdateChannel(ctx.Ctx, normalizedId, func(current *ChannelSession) *ChannelSession {
 			existing := current
 			if existing == nil && hold == admissionSelf {
 				existing = recovered
@@ -1256,7 +1256,7 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 			return nil
 		}
 		now := time.Now().UnixMilli()
-		hold, holdErr := inspectAdmission(s, normalizedId, pendingId)
+		hold, holdErr := inspectAdmission(ctx.Ctx, s, normalizedId, pendingId)
 		if holdErr != nil {
 			return holdErr
 		}
@@ -1268,7 +1268,7 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 			recovered = rc.ChannelSnapshot
 		}
 
-		updateRes, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
+		updateRes, updateErr := s.storage.UpdateChannel(ctx.Ctx, normalizedId, func(current *ChannelSession) *ChannelSession {
 			existing := current
 			if existing == nil && hold == admissionSelf {
 				existing = recovered

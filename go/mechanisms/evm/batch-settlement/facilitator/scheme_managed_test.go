@@ -158,7 +158,7 @@ func TestScheme_ManagedClaimAfterClaim(t *testing.T) {
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got.TotalClaimed != "1000" || got.ChargeCount != 0 {
 		t.Fatalf("stored %+v", got)
 	}
@@ -232,7 +232,7 @@ func TestScheme_ManagedClaimSimulationLeavesStore(t *testing.T) {
 	if resp.Success {
 		t.Fatalf("expected failure %+v", resp)
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got.ChargeCount != 4 {
 		t.Fatalf("chargeCount = %d", got.ChargeCount)
 	}
@@ -269,7 +269,7 @@ func TestScheme_SelfManagedRefundIdentityMismatch(t *testing.T) {
 	delegated := storage.NewInMemoryDelegatedAuthStore()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	if err := delegated.Bind(storage.DelegatedAuthBinding{
+	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "bound-service",
 	}); err != nil {
 		t.Fatal(err)
@@ -343,7 +343,7 @@ func TestScheme_SelfManagedRefundMalformedAmount(t *testing.T) {
 	delegated := storage.NewInMemoryDelegatedAuthStore()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	_ = delegated.Bind(storage.DelegatedAuthBinding{ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc"})
+	_ = delegated.Bind(context.Background(), storage.DelegatedAuthBinding{ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc"})
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{
 		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
 		DelegatedAuthStore:    delegated,

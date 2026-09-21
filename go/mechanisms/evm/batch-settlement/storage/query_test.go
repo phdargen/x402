@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -42,16 +43,16 @@ func padHex(n, width int) string {
 
 type queryingStore struct {
 	*InMemoryChannelStorage[*Channel]
-	queryFn  func(ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error)
-	settleFn func(SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
+	queryFn  func(context.Context, ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error)
+	settleFn func(context.Context, SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
 }
 
-func (s queryingStore) Query(filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[*Channel], error) {
-	return s.queryFn(filter, opts)
+func (s queryingStore) Query(ctx context.Context, filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+	return s.queryFn(ctx, filter, opts)
 }
 
-func (s queryingStore) SettleQuery(filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-	return s.settleFn(filter, opts)
+func (s queryingStore) SettleQuery(ctx context.Context, filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+	return s.settleFn(ctx, filter, opts)
 }
 
 func TestQueryChannels_SelectsClaimableAsBigInt(t *testing.T) {
@@ -98,7 +99,7 @@ func TestQueryChannels_SelectsWithdrawPending(t *testing.T) {
 func TestQueryChannels_PagesClaimableWithLimitAndCursor(t *testing.T) {
 	store := seededQueryStore(t)
 	limit1 := 1
-	first, err := QueryChannels(store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit1}, nil)
+	first, err := QueryChannels(context.Background(), store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit1}, nil)
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestQueryChannels_PagesClaimableWithLimitAndCursor(t *testing.T) {
 		t.Fatal("expected cursor")
 	}
 	limit10 := 10
-	rest, err := QueryChannels(store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit10, Cursor: first.Cursor}, nil)
+	rest, err := QueryChannels(context.Background(), store, ChannelQuery{Kind: QueryKindClaimable, Limit: &limit10, Cursor: first.Cursor}, nil)
 	if err != nil {
 		t.Fatalf("rest page: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestQueryChannels_PagesClaimableWithLimitAndCursor(t *testing.T) {
 
 func TestQuerySettleTargets_DedupesClaimedTuples(t *testing.T) {
 	store := seededQueryStore(t)
-	got, err := QuerySettleTargets(store, SettleQuery{}, nil)
+	got, err := QuerySettleTargets(context.Background(), store, SettleQuery{}, nil)
 	if err != nil {
 		t.Fatalf("QuerySettleTargets: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestQuerySettleTargets_DedupesClaimedTuples(t *testing.T) {
 
 func TestQuerySettleTargets_FiltersByNetwork(t *testing.T) {
 	store := seededQueryStore(t)
-	got, err := QuerySettleTargets(store, SettleQuery{Network: queryNetworkB}, nil)
+	got, err := QuerySettleTargets(context.Background(), store, SettleQuery{Network: queryNetworkB}, nil)
 	if err != nil {
 		t.Fatalf("QuerySettleTargets: %v", err)
 	}
@@ -157,14 +158,14 @@ func TestQueryChannels_PrefersNativeQuery(t *testing.T) {
 	queried := queryChannel(paddedId(0x99), queryChannelExtra{ChargedCumulativeAmount: "1"})
 	store := queryingStore{
 		InMemoryChannelStorage: inner,
-		queryFn: func(ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+		queryFn: func(ctx context.Context, _ ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
 			return &QueryPage[*Channel]{Items: []*Channel{queried}}, nil
 		},
-		settleFn: func(SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-			return SettleQueryByScan[*Channel](inner, SettleQuery{})
+		settleFn: func(ctx context.Context, _ SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+			return SettleQueryByScan[*Channel](ctx, inner, SettleQuery{})
 		},
 	}
-	got, err := QueryChannels[*Channel](store, ChannelQuery{Kind: QueryKindClaimable}, nil)
+	got, err := QueryChannels[*Channel](context.Background(), store, ChannelQuery{Kind: QueryKindClaimable}, nil)
 	if err != nil {
 		t.Fatalf("QueryChannels: %v", err)
 	}
@@ -177,29 +178,29 @@ func TestQueryChannels_NativeMatchesScanShim(t *testing.T) {
 	inner := seededQueryStore(t)
 	store := queryingStore{
 		InMemoryChannelStorage: inner,
-		queryFn: func(filter ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
-			return QueryByScan[*Channel](inner, filter)
+		queryFn: func(ctx context.Context, filter ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
+			return QueryByScan[*Channel](ctx, inner, filter)
 		},
-		settleFn: func(filter SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-			return SettleQueryByScan[*Channel](inner, filter)
+		settleFn: func(ctx context.Context, filter SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+			return SettleQueryByScan[*Channel](ctx, inner, filter)
 		},
 	}
-	native, err := QueryChannels[*Channel](store, ChannelQuery{Kind: QueryKindClaimable}, nil)
+	native, err := QueryChannels[*Channel](context.Background(), store, ChannelQuery{Kind: QueryKindClaimable}, nil)
 	if err != nil {
 		t.Fatalf("native: %v", err)
 	}
-	scan, err := QueryByScan[*Channel](inner, ChannelQuery{Kind: QueryKindClaimable})
+	scan, err := QueryByScan[*Channel](context.Background(), inner, ChannelQuery{Kind: QueryKindClaimable})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if !reflect.DeepEqual(channelIds(native.Items), channelIds(scan.Items)) {
 		t.Fatalf("native %v scan %v", channelIds(native.Items), channelIds(scan.Items))
 	}
-	nativeSettle, err := QuerySettleTargets[*Channel](store, SettleQuery{}, nil)
+	nativeSettle, err := QuerySettleTargets[*Channel](context.Background(), store, SettleQuery{}, nil)
 	if err != nil {
 		t.Fatalf("native settle: %v", err)
 	}
-	scanSettle, err := SettleQueryByScan[*Channel](inner, SettleQuery{})
+	scanSettle, err := SettleQueryByScan[*Channel](context.Background(), inner, SettleQuery{})
 	if err != nil {
 		t.Fatalf("scan settle: %v", err)
 	}
@@ -264,11 +265,11 @@ func TestSettleQueryByScan_SkipsCorruptTotalClaimed(t *testing.T) {
 	// not by target dedup.
 	corrupt := queryChannel(paddedId(2), queryChannelExtra{TotalClaimed: "not-a-number", ChargedCumulativeAmount: "10", Receiver: queryReceiverB})
 	for _, ch := range []*Channel{valid, corrupt} {
-		if _, err := store.UpdateChannel(ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
+		if _, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
 			t.Fatalf("seed %s: %v", ch.ChannelId, err)
 		}
 	}
-	page, err := SettleQueryByScan[*Channel](store, SettleQuery{})
+	page, err := SettleQueryByScan[*Channel](context.Background(), store, SettleQuery{})
 	if err != nil {
 		t.Fatalf("SettleQueryByScan: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestSortChannels_ClaimablePutsWithdrawPendingFirst(t *testing.T) {
 
 func queryIds(t *testing.T, filter ChannelQuery) []string {
 	t.Helper()
-	page, err := QueryChannels(seededQueryStore(t), filter, nil)
+	page, err := QueryChannels(context.Background(), seededQueryStore(t), filter, nil)
 	if err != nil {
 		t.Fatalf("QueryChannels: %v", err)
 	}
@@ -312,7 +313,7 @@ func seededQueryStore(t *testing.T) *InMemoryChannelStorage[*Channel] {
 	store := NewInMemoryChannelStorage[*Channel]()
 	for _, channel := range querySeed() {
 		ch := channel
-		if _, err := store.UpdateChannel(ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
+		if _, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
 			t.Fatalf("seed %s: %v", ch.ChannelId, err)
 		}
 	}

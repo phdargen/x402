@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -64,9 +65,9 @@ type ChannelUpdateResult[T ChannelRecord[T]] struct {
 // ChannelStorage persists channel records of type T. Get returns the zero T
 // (nil for pointer records) when the row is missing.
 type ChannelStorage[T ChannelRecord[T]] interface {
-	Get(channelId string) (T, error)
-	List() ([]T, error)
-	UpdateChannel(channelId string, update func(current T) T) (*ChannelUpdateResult[T], error)
+	Get(ctx context.Context, channelId string) (T, error)
+	List(ctx context.Context) ([]T, error)
+	UpdateChannel(ctx context.Context, channelId string, update func(current T) T) (*ChannelUpdateResult[T], error)
 }
 
 // ChannelLockStorage is a best-effort per-channel admission lock. Loss or
@@ -75,12 +76,12 @@ type ChannelStorage[T ChannelRecord[T]] interface {
 // fail closed at the caller.
 type ChannelLockStorage interface {
 	// Acquire is SET NX + TTL. Value is pendingId. Expired keys are free.
-	Acquire(channelId string, pendingId string, ttlMs int64) (bool, error)
+	Acquire(ctx context.Context, channelId string, pendingId string, ttlMs int64) (bool, error)
 	// Release is compare-and-delete: releases only when pendingId still holds.
-	Release(channelId string, pendingId string) error
+	Release(ctx context.Context, channelId string, pendingId string) error
 	// IsHeld reports any live lock, or this pendingId when provided (empty
 	// pendingId means any live lock).
-	IsHeld(channelId string, pendingId string) (bool, error)
+	IsHeld(ctx context.Context, channelId string, pendingId string) (bool, error)
 }
 
 // RethrowLockImplementationError returns err when it is a lock-store
@@ -154,7 +155,7 @@ func (s *InMemoryChannelStorage[T]) lockFor(channelId string) *sync.Mutex {
 }
 
 // Get returns a clone of the stored record, or the zero T when missing.
-func (s *InMemoryChannelStorage[T]) Get(channelId string) (T, error) {
+func (s *InMemoryChannelStorage[T]) Get(_ context.Context, channelId string) (T, error) {
 	var zero T
 	key, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
@@ -171,7 +172,7 @@ func (s *InMemoryChannelStorage[T]) Get(channelId string) (T, error) {
 
 // List returns clones of every stored record, sorted by channelId so scan-backed
 // queries see a stable order.
-func (s *InMemoryChannelStorage[T]) List() ([]T, error) {
+func (s *InMemoryChannelStorage[T]) List(_ context.Context) ([]T, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]T, 0, len(s.sessions))
@@ -184,7 +185,7 @@ func (s *InMemoryChannelStorage[T]) List() ([]T, error) {
 
 // UpdateChannel applies update under a per-channel mutex. Returning the same
 // pointer is a no-op; returning the zero T deletes the row.
-func (s *InMemoryChannelStorage[T]) UpdateChannel(channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
+func (s *InMemoryChannelStorage[T]) UpdateChannel(_ context.Context, channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
 	key, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
 		return nil, err
@@ -224,7 +225,7 @@ func (s *InMemoryChannelStorage[T]) UpdateChannel(channelId string, update func(
 // Acquire takes a per-channel admission lock. It is not re-entrant: a live
 // hold, including one owned by the same pendingId, is a miss. Refreshing TTL
 // for a matching pendingId races and can extend another holder's lock.
-func (s *InMemoryChannelStorage[T]) Acquire(channelId string, pendingId string, ttlMs int64) (bool, error) {
+func (s *InMemoryChannelStorage[T]) Acquire(_ context.Context, channelId string, pendingId string, ttlMs int64) (bool, error) {
 	key, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
 		return false, err
@@ -240,7 +241,7 @@ func (s *InMemoryChannelStorage[T]) Acquire(channelId string, pendingId string, 
 }
 
 // Release drops the admission lock only when pendingId still holds it.
-func (s *InMemoryChannelStorage[T]) Release(channelId string, pendingId string) error {
+func (s *InMemoryChannelStorage[T]) Release(_ context.Context, channelId string, pendingId string) error {
 	key, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
 		return err
@@ -254,7 +255,7 @@ func (s *InMemoryChannelStorage[T]) Release(channelId string, pendingId string) 
 }
 
 // IsHeld reports whether a live admission lock exists, optionally matching pendingId.
-func (s *InMemoryChannelStorage[T]) IsHeld(channelId string, pendingId string) (bool, error) {
+func (s *InMemoryChannelStorage[T]) IsHeld(_ context.Context, channelId string, pendingId string) (bool, error) {
 	key, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
 		return false, err

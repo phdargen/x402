@@ -384,7 +384,7 @@ func TestRefund_SkipsChannelWithLiveAdmissionLock(t *testing.T) {
 	sess.Balance = "1000"
 	sess.ChargedCumulativeAmount = "100"
 	seedSession(t, s, testChA, sess)
-	if _, err := s.GetLockStorage().Acquire(testChA, "p1", 60_000); err != nil {
+	if _, err := s.GetLockStorage().Acquire(context.Background(), testChA, "p1", 60_000); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -445,7 +445,7 @@ func TestClaim_PreservesLiveAdmissionLock(t *testing.T) {
 	sess.TotalClaimed = "100"
 	sess.ChargedCumulativeAmount = "1000"
 	seedSession(t, s, testChA, sess)
-	if _, err := s.GetLockStorage().Acquire(testChA, "pending", 60_000); err != nil {
+	if _, err := s.GetLockStorage().Acquire(context.Background(), testChA, "pending", 60_000); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -458,7 +458,7 @@ func TestClaim_PreservesLiveAdmissionLock(t *testing.T) {
 	if len(results) != 1 || results[0].Transaction != "0xtx" {
 		t.Fatalf("got %+v", results)
 	}
-	held, err := s.GetLockStorage().IsHeld(testChA, "pending")
+	held, err := s.GetLockStorage().IsHeld(context.Background(), testChA, "pending")
 	if err != nil || !held {
 		t.Fatalf("expected lock held: held=%v err=%v", held, err)
 	}
