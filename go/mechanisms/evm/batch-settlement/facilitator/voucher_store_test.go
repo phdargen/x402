@@ -218,6 +218,62 @@ func TestVerifyManaged_StoreReadFailure(t *testing.T) {
 	}
 }
 
+func TestVerifyManaged_StoreReadFailureDeposit(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner, getErr: errors.New("store unavailable")}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "1000"
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+		managedDepositEnvelope(cfg, channelId), reqs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrRpcReadFailed {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestVerifyManaged_StoreReadFailureRefund(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner, getErr: errors.New("store unavailable")}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "0", "", ""),
+		managedRequirements(auth.addr), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrRpcReadFailed {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestSettleManaged_ChargeCommitStorageError(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, inner, storedManagedChannel(cfg, channelId, nil))
+	store := &hookStore{inner: inner, updateErr: errors.New("storage write failed")}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+		voucherEnvelope(cfg, voucherFields(channelId, "2000", dummySig), ""),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrChannelBusy {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
 func TestSettleManaged_UnsupportedPayloadType(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()

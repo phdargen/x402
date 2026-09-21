@@ -522,7 +522,6 @@ async function settleManagedDeposit(
       );
     }
 
-    let stored: FacilitatorChannel | undefined;
     try {
       const outcome = await commitVoucherCharge(deps.storage, channelId, {
         increment: BigInt(requirements.amount),
