@@ -399,3 +399,80 @@ func queryChannel(channelId string, extra queryChannelExtra) *Channel {
 		Network:                 network,
 	}
 }
+
+func TestMatchesChannelQuery_MinUnclaimedThreshold(t *testing.T) {
+	channel := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "100"})
+	threshold := "50"
+	if !MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &threshold}) {
+		t.Fatal("unclaimed 100 should meet threshold 50")
+	}
+	high := "150"
+	if MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &high}) {
+		t.Fatal("unclaimed 100 should not meet threshold 150")
+	}
+	invalid := "not-a-number"
+	if MatchesChannelQuery(channel, ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &invalid}) {
+		t.Fatal("unparseable threshold must fail closed")
+	}
+}
+
+func TestMatchesChannelQuery_ThresholdOrIdle(t *testing.T) {
+	idle := queryIdleAt()
+	high := "1000"
+	low := "50"
+	idleLow := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "100", LastRequestTimestamp: queryNow - 120_000})
+	freshLow := queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "100", LastRequestTimestamp: queryNow})
+	freshHigh := queryChannel(paddedId(3), queryChannelExtra{ChargedCumulativeAmount: "5000", LastRequestTimestamp: queryNow})
+
+	both := ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &high, IdleAtOrBefore: &idle}
+	if !MatchesChannelQuery(idleLow, both) {
+		t.Fatal("idle row below threshold should match the OR query")
+	}
+	if MatchesChannelQuery(freshLow, both) {
+		t.Fatal("fresh row below threshold should not match the OR query")
+	}
+	lowBoth := ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &low, IdleAtOrBefore: &idle}
+	if !MatchesChannelQuery(freshHigh, lowBoth) {
+		t.Fatal("fresh row above threshold should match the OR query")
+	}
+	// Either predicate alone keeps its current meaning.
+	if MatchesChannelQuery(freshLow, ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &high}) {
+		t.Fatal("threshold alone should not match a row below it")
+	}
+	if MatchesChannelQuery(freshLow, ChannelQuery{Kind: QueryKindClaimable, IdleAtOrBefore: &idle}) {
+		t.Fatal("idle alone should not match a fresh row")
+	}
+}
+
+func TestQueryChannels_AppliesMinUnclaimedToClaimable(t *testing.T) {
+	threshold := "50"
+	got := queryIds(t, ChannelQuery{Kind: QueryKindClaimable, MinUnclaimed: &threshold})
+	want := []string{paddedId(3), paddedId(1), paddedId(2)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ids = %v, want %v", got, want)
+	}
+}
+
+func TestSortChannels_ClaimableUnclaimedDesc(t *testing.T) {
+	low := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10"})
+	high := queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "100"})
+	pending := queryChannel(paddedId(3), queryChannelExtra{ChargedCumulativeAmount: "50", WithdrawRequestedAt: 1})
+	input := []*Channel{low, high, pending}
+	got := SortChannels(append([]*Channel{}, input...), ChannelQuery{Kind: QueryKindClaimable, UnclaimedDesc: true})
+	if want := []string{paddedId(3), paddedId(2), paddedId(1)}; !reflect.DeepEqual(channelIds(got), want) {
+		t.Fatalf("sorted = %v, want %v", channelIds(got), want)
+	}
+	if input[0] != low || input[1] != high || input[2] != pending {
+		t.Fatal("input mutated")
+	}
+}
+
+func TestSortChannels_ClaimableDefaultPreservesOrder(t *testing.T) {
+	low := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10"})
+	high := queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "100"})
+	input := []*Channel{low, high}
+	got := SortChannels(append([]*Channel{}, input...), ChannelQuery{Kind: QueryKindClaimable})
+	if want := []string{paddedId(1), paddedId(2)}; !reflect.DeepEqual(channelIds(got), want) {
+		t.Fatalf("sorted = %v, want %v", channelIds(got), want)
+	}
+}

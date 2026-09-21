@@ -5,10 +5,12 @@ import {
   type Channel,
 } from "../../../src/batch-settlement/storage/channel";
 import {
+  matchesChannelQuery,
   queryByScan,
   queryChannels,
   querySettleTargets,
   settleQueryByScan,
+  sortChannels,
 } from "../../../src/batch-settlement/storage/query";
 import type { ChannelConfig } from "../../../src/batch-settlement/types";
 
@@ -53,6 +55,52 @@ describe("queryChannels", () => {
       PENDING,
       IDLE_CLAIMABLE,
       LEX_LARGER,
+    ]);
+  });
+
+  it("applies minUnclaimed to claimable rows", async () => {
+    expect(await ids({ kind: "claimable", minUnclaimed: "50" })).toEqual([
+      PENDING,
+      FRESH,
+      IDLE_CLAIMABLE,
+    ]);
+  });
+
+  it("matches either threshold or idle when both are set on claimable", async () => {
+    expect(await ids({ kind: "claimable", minUnclaimed: "1000", idleAtOrBefore: IDLE_AT })).toEqual(
+      [PENDING, IDLE_CLAIMABLE, LEX_LARGER],
+    );
+  });
+
+  it("fails closed on an unparseable minUnclaimed", async () => {
+    expect(await ids({ kind: "claimable", minUnclaimed: "not-a-number" })).toEqual([]);
+    expect(
+      await ids({
+        kind: "claimable",
+        minUnclaimed: "not-a-number",
+        idleAtOrBefore: IDLE_AT,
+      }),
+    ).toEqual([PENDING, IDLE_CLAIMABLE, LEX_LARGER]);
+  });
+
+  it("compares unclaimed deltas as BigInt against minUnclaimed", () => {
+    const row = channel(id(20), { chargedCumulativeAmount: "100" });
+    expect(matchesChannelQuery(row, { kind: "claimable", minUnclaimed: "50" })).toBe(true);
+    expect(matchesChannelQuery(row, { kind: "claimable", minUnclaimed: "150" })).toBe(false);
+  });
+
+  it("sorts claimable rows withdraw-pending first then highest unclaimed", () => {
+    const low = channel(id(21), { chargedCumulativeAmount: "10" });
+    const high = channel(id(22), { chargedCumulativeAmount: "100" });
+    const pending = channel(id(23), { chargedCumulativeAmount: "50", withdrawRequestedAt: 1 });
+    const input = [low, high, pending];
+    expect(
+      sortChannels(input, { kind: "claimable", unclaimedDesc: true }).map(entry => entry.channelId),
+    ).toEqual([pending.channelId, high.channelId, low.channelId]);
+    expect(input.map(entry => entry.channelId)).toEqual([
+      low.channelId,
+      high.channelId,
+      pending.channelId,
     ]);
   });
 

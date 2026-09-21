@@ -40,6 +40,11 @@ type FacilitatorChannelManagerConfig struct {
 type FacilitatorClaimOptions struct {
 	MaxClaimsPerBatch int
 	IdleSecs          *int
+	// MinUnclaimed is an optional decimal uint256 threshold. Nil keeps the
+	// default any-positive-unclaimed behavior.
+	MinUnclaimed *string
+	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
+	UnclaimedDesc bool
 }
 
 // FacilitatorAutoConfig is interval, idle-refund, and callback configuration.
@@ -254,10 +259,18 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 
 // Claim claims eligible vouchers, grouped by network, withdraw-pending first.
 func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *FacilitatorClaimOptions) ([]FacilitatorClaimResult, error) {
-	filter := storage.ChannelQuery{Kind: storage.QueryKindClaimable}
-	if opts != nil && opts.IdleSecs != nil {
-		idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
-		filter.IdleAtOrBefore = &idleAt
+	maxClaimsPerBatch := 100
+	if opts != nil && opts.MaxClaimsPerBatch > 0 {
+		maxClaimsPerBatch = opts.MaxClaimsPerBatch
+	}
+	filter := storage.ChannelQuery{Kind: storage.QueryKindClaimable, Limit: &maxClaimsPerBatch}
+	if opts != nil {
+		if opts.IdleSecs != nil {
+			idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
+			filter.IdleAtOrBefore = &idleAt
+		}
+		filter.MinUnclaimed = opts.MinUnclaimed
+		filter.UnclaimedDesc = opts.UnclaimedDesc
 	}
 	page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
 	if err != nil {
@@ -265,10 +278,6 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 	}
 	byNetwork, order := groupByNetwork(page.Items)
 	results := make([]FacilitatorClaimResult, 0)
-	maxClaimsPerBatch := 100
-	if opts != nil && opts.MaxClaimsPerBatch > 0 {
-		maxClaimsPerBatch = opts.MaxClaimsPerBatch
-	}
 
 	for _, network := range order {
 		group := byNetwork[network]
@@ -306,7 +315,8 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 
 // Settle settles claimed-but-unsettled funds for each distinct (network, receiver, token).
 func (m *FacilitatorChannelManager) Settle(ctx context.Context) ([]FacilitatorSettleResult, error) {
-	page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{}, nil)
+	settleLimit := 100
+	page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &settleLimit}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +379,8 @@ func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *Fa
 
 // Refund cooperatively refunds stored channels with remaining escrow.
 func (m *FacilitatorChannelManager) Refund(ctx context.Context) ([]FacilitatorRefundResult, error) {
-	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{Kind: storage.QueryKindIdleRefundable}, nil)
+	refundLimit := 100
+	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{Kind: storage.QueryKindIdleRefundable, Limit: &refundLimit}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -666,9 +677,11 @@ func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChanne
 
 func (m *FacilitatorChannelManager) getIdleChannelsForRefund(ctx context.Context, idleSecs int) ([]*FacilitatorChannel, error) {
 	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
+	refundLimit := 100
 	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
 		Kind:           storage.QueryKindIdleRefundable,
 		IdleAtOrBefore: &idleAt,
+		Limit:          &refundLimit,
 	}, nil)
 	if err != nil {
 		return nil, err
