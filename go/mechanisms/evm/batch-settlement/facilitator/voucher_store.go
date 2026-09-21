@@ -260,6 +260,10 @@ func settleManagedVoucher(
 		_ = releaseAdmission(deps, channelId, owner)
 	}()
 
+	if managedErr := managedRequirementError(deps, raw.ChannelConfig.Salt, requirements); managedErr != "" {
+		return failSettle(requirements, managedErr), nil
+	}
+
 	held, heldErr := admissionHeld(deps, channelId, owner)
 	if impl := storage.RethrowLockImplementationError(heldErr); impl != nil {
 		return nil, impl
@@ -396,8 +400,6 @@ func settleManagedDeposit(
 		identity = ""
 	}
 
-	stored, _ := deps.Storage.Get(channelId)
-	snapshot := depositChargeSnapshot(raw, requirements, settled.Extra, stored)
 	increment, _ := new(big.Int).SetString(requirements.Amount, 10)
 	if increment == nil {
 		increment = new(big.Int)
@@ -410,7 +412,9 @@ func settleManagedDeposit(
 		Increment: increment,
 		SignedCap: signedCap,
 		Voucher:   raw.Voucher,
-		Snapshot:  snapshot,
+		ResolveSnapshot: func(current *FacilitatorChannel) *FacilitatorChannel {
+			return depositChargeSnapshot(raw, requirements, settled.Extra, current)
+		},
 		Map: func(channel *FacilitatorChannel) *FacilitatorChannel {
 			next := incrementChargeCount(channel, requirements.Network)
 			if next.CallerIdentity == "" {
@@ -419,20 +423,11 @@ func settleManagedDeposit(
 			return next
 		},
 	})
-	if commitErr != nil || outcome == nil || outcome.Status != storage.CommitCommitted {
-		extra := copyExtra(settled.Extra)
-		if outcome == nil || outcome.Status != storage.CommitCapExceeded {
-			count := 0
-			if stored != nil {
-				count = stored.ChargeCount
-			}
-			extra["chargeCount"] = count
-		}
-		if identErr != nil {
-			extra["identityResolutionFailed"] = true
-		}
-		settled.Extra = extra
-		return settled, nil
+	if commitErr != nil {
+		return failDepositPersist(settled, ErrVoucherStoreUnavailable, identErr != nil), nil
+	}
+	if outcome == nil || outcome.Status != storage.CommitCommitted {
+		return failDepositPersist(settled, depositPersistReason(outcome), identErr != nil), nil
 	}
 
 	channelState := storage.ChannelStateExtra(outcome.Current.Base(), &outcome.Current.ChargedCumulativeAmount)
@@ -1034,8 +1029,6 @@ func mismatchVerifyExtra(channelId string, extra map[string]interface{}, stored 
 		}
 		if n := optionalUintNumber(extra["refundNonce"]); n != nil {
 			refundNonce = *n
-		} else if s, ok := extra["refundNonce"].(string); ok {
-			_, _ = fmt.Sscanf(s, "%d", &refundNonce)
 		}
 	}
 	cs := storage.ChannelStateExtra(&storage.Channel{
@@ -1064,6 +1057,41 @@ func failSettle(requirements types.PaymentRequirements, errorReason string) *x40
 		ErrorReason: errorReason,
 		Transaction: "",
 		Network:     x402.Network(requirements.Network),
+	}
+}
+
+// depositPersistReason maps a non-committed deposit charge outcome to a
+// fail-closed error reason.
+func depositPersistReason(outcome *storage.CommitVoucherChargeResult[*FacilitatorChannel]) string {
+	if outcome != nil {
+		switch outcome.Status {
+		case storage.CommitCapExceeded:
+			return ErrChargeExceedsSignedCumulative
+		case storage.CommitMissing:
+			return ErrMissingChannel
+		}
+	}
+	return ErrChannelBusy
+}
+
+// failDepositPersist fails a managed deposit closed after the on-chain tx
+// landed but the voucher was not committed. It keeps proof funds moved (tx
+// hash, amount, payer, on-chain channelState) so the server does not release
+// the resource.
+func failDepositPersist(settled *x402.SettleResponse, errorReason string, identityFailed bool) *x402.SettleResponse {
+	extra := settled.Extra
+	if identityFailed {
+		extra = copyExtra(extra)
+		extra["identityResolutionFailed"] = true
+	}
+	return &x402.SettleResponse{
+		Success:     false,
+		ErrorReason: errorReason,
+		Transaction: settled.Transaction,
+		Network:     settled.Network,
+		Payer:       settled.Payer,
+		Amount:      settled.Amount,
+		Extra:       extra,
 	}
 }
 

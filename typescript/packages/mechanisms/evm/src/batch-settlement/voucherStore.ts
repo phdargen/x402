@@ -13,7 +13,7 @@ export type CommitVoucherChargeInput<T extends Channel = Channel> = {
   increment: bigint;
   signedCap: bigint;
   voucher: { maxClaimableAmount: string; signature: string };
-  snapshot?: Channel;
+  snapshot?: T | ((current: T | undefined) => T | undefined);
   recoverFromSnapshot?: boolean;
   now?: number;
   localVerify?: boolean;
@@ -161,7 +161,9 @@ export async function commitVoucherCharge<T extends Channel = Channel>(
 
   const updateResult = await storage.updateChannel(channelId, current => {
     const recover = input.recoverFromSnapshot !== false;
-    const base = (current ?? (recover ? input.snapshot : undefined)) as T | undefined;
+    const resolvedSnapshot =
+      typeof input.snapshot === "function" ? input.snapshot(current) : input.snapshot;
+    const base = (current ?? (recover ? resolvedSnapshot : undefined)) as T | undefined;
     if (!base) {
       outcome = { status: "missing" };
       return current;
@@ -175,13 +177,13 @@ export async function commitVoucherCharge<T extends Channel = Channel>(
 
     let updatedChannel = {
       ...base,
-      ...(input.localVerify || !input.snapshot
+      ...(input.localVerify || !resolvedSnapshot
         ? {}
         : {
-            balance: input.snapshot.balance,
-            totalClaimed: input.snapshot.totalClaimed,
-            withdrawRequestedAt: input.snapshot.withdrawRequestedAt,
-            refundNonce: input.snapshot.refundNonce,
+            balance: resolvedSnapshot.balance,
+            totalClaimed: resolvedSnapshot.totalClaimed,
+            withdrawRequestedAt: resolvedSnapshot.withdrawRequestedAt,
+            refundNonce: resolvedSnapshot.refundNonce,
             onchainSyncedAt: now,
           }),
       chargedCumulativeAmount: newCharged.toString(),

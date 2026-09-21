@@ -1731,7 +1731,7 @@ func TestAfterSettleHook_DepositNoRowNoSnapshotBusy(t *testing.T) {
 			},
 		},
 	})
-	if err == nil || err.Error() != batchsettlement.ErrChannelBusy {
+	if err == nil || err.Error() != batchsettlement.ErrMissingChannel {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -1952,7 +1952,7 @@ func TestAfterSettleHook_DepositSnapshotOnlyLockDownBusy(t *testing.T) {
 			},
 		},
 	})
-	if err == nil || err.Error() != batchsettlement.ErrChannelBusy {
+	if err == nil || err.Error() != batchsettlement.ErrMissingChannel {
 		t.Fatalf("got %v", err)
 	}
 	if got, _ := s.GetSession(id); got != nil {

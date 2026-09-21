@@ -292,8 +292,30 @@ type OnVerifyFailureHook func(VerifyFailureContext) (*VerifyFailureHookResult, e
 type BeforeSettleHook func(SettleContext) (*BeforeHookResult, error)
 
 // AfterSettleHook is called after successful payment settlement
-// Any error returned will be logged but will not affect the settlement result
+// Any error returned will be logged but will not affect the settlement result,
+// except *AfterSettleAbortError which fails the settle closed (success:false)
+// while keeping transaction/amount/payer/onchain extra.
 type AfterSettleHook func(SettleResultContext) error
+
+// AfterSettleAbortError fails a successful settle closed after onchain funds
+// moved but the voucher was not persisted.
+type AfterSettleAbortError struct {
+	Reason  string
+	Message string
+}
+
+func (e *AfterSettleAbortError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Reason
+}
+
+// NewAfterSettleAbort returns an abort error for AfterSettleHook deposit persist
+// failures.
+func NewAfterSettleAbort(reason, message string) *AfterSettleAbortError {
+	return &AfterSettleAbortError{Reason: reason, Message: message}
+}
 
 // OnSettleFailureHook is called when payment settlement fails
 // If it returns a result with Recovered=true, the provided SettleResponse
