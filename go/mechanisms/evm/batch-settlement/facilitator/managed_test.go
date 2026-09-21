@@ -451,6 +451,7 @@ type hookStore struct {
 	updateConflict   bool
 	queryItems       []*FacilitatorChannel
 	queryCalls       int
+	queryFilter      storage.ChannelQuery
 	settleQueryItems []storage.SettleTarget
 	settleQueryCalls int
 	useQuery         bool
@@ -495,6 +496,7 @@ func (s *hookStore) IsHeld(ctx context.Context, channelId, pendingId string) (bo
 }
 func (s *hookStore) Query(ctx context.Context, filter storage.ChannelQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[*FacilitatorChannel], error) {
 	s.queryCalls++
+	s.queryFilter = filter
 	if !s.useQuery {
 		return nil, nil
 	}

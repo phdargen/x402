@@ -30,7 +30,7 @@ func SelectClaimableVouchers(channels []*Channel, opts *SelectClaimableOptions) 
 		if c == nil {
 			continue
 		}
-		if cmp, ok := uint256Cmp(c.ChargedCumulativeAmount, c.TotalClaimed); !ok || cmp <= 0 {
+		if cmp, ok := Uint256Cmp(c.ChargedCumulativeAmount, c.TotalClaimed); !ok || cmp <= 0 {
 			continue
 		}
 		if opts != nil && opts.IdleSecs != nil {
