@@ -6,11 +6,10 @@ import type {
 } from "@x402/core/types";
 import type { Channel } from "../storage/channel";
 
-/** Facilitator-managed channel record. First writer wins on `callerIdentity`. */
+/** Facilitator-managed channel record. */
 export type FacilitatorChannel = Channel & {
   network: Network;
   chargeCount: number;
-  callerIdentity?: string;
 };
 
 /** Context passed to {@link resolveCallerIdentity}. */

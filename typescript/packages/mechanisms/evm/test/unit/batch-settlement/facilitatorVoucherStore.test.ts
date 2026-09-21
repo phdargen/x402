@@ -120,7 +120,20 @@ function buildDeps(
     withdrawDelay: 900,
     eip6492AllowedFactories: [],
     pendingStore: new InMemoryPendingSettlementStore(),
+    delegatedAuthStore: new InMemoryDelegatedAuthStore(),
   };
+}
+
+async function bindIdentity(
+  deps: VoucherStoreDeps,
+  channelId: string,
+  identity: string,
+): Promise<void> {
+  await deps.delegatedAuthStore!.bind({
+    channelId,
+    network: NETWORK,
+    callerIdentity: identity,
+  });
 }
 
 function acquireBound(
@@ -584,9 +597,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => "service-a";
-    await storage.updateChannel(channelId, current =>
-      current ? { ...current, callerIdentity: "service-a" } : current,
-    );
+    await bindIdentity(deps, channelId, "service-a");
     const result = await settleManaged(
       deps,
       envelope({
@@ -710,7 +721,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.extra?.chargedCumulativeAmount).toBe("19200");
   });
 
-  it("allows managed refund settle via delegated auth when the row has no callerIdentity", async () => {
+  it("allows managed refund settle via delegated auth binding", async () => {
     mockedMulticall
       .mockResolvedValueOnce([
         { status: "success", result: [10_000n, 5_000n] },
@@ -886,11 +897,11 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 1,
-      callerIdentity: "tenant-1",
     }));
     const signer = buildSigner();
     const deps = buildDeps(storage, authorizer, signer);
     deps.resolveCallerIdentity = async () => "tenant-1";
+    await bindIdentity(deps, channelId, "tenant-1");
 
     const result = await settleManaged(
       deps,
@@ -923,7 +934,6 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 0,
-      callerIdentity: "tenant-1",
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => {
@@ -1780,10 +1790,10 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 0,
-      callerIdentity: "svc",
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => "svc";
+    await bindIdentity(deps, channelId, "svc");
     const signer = deps.signer;
     vi.spyOn(signer, "writeContract").mockRejectedValueOnce(new Error("broadcast failed"));
 
@@ -1822,6 +1832,41 @@ describe("facilitator verifyManaged / settleManaged", () => {
 
     const result = await settleManaged(
       buildDeps(storage, authorizer),
+      envelope({
+        type: "refund",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+        amount: "1000",
+      }),
+      { ...managedRequirements(authorizer), amount: "0" },
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+  });
+
+  it("rejects managed refund settle when delegated auth has no binding", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdead",
+      balance: "10000",
+      totalClaimed: "0",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 0,
+    }));
+    const deps = buildDeps(storage, authorizer);
+    deps.resolveCallerIdentity = async () => "service-bound";
+
+    const result = await settleManaged(
+      deps,
       envelope({
         type: "refund",
         channelConfig: config,
@@ -1901,7 +1946,6 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 0,
-      callerIdentity: "tenant-a",
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => undefined;
@@ -2300,7 +2344,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect((await storage.get(channelId))?.refundNonce).toBe(3);
   });
 
-  it("persists a deposit charge when resolveCallerIdentity throws after onchain settle", async () => {
+  it("rejects managed deposit when resolveCallerIdentity throws before onchain settle", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config, NETWORK);
@@ -2321,21 +2365,9 @@ describe("facilitator verifyManaged / settleManaged", () => {
         },
       },
     };
-    const settleSpy = vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValueOnce({
-      success: true,
-      transaction: "0xdep",
-      network: NETWORK,
-      extra: {
-        channelState: {
-          balance: "10000",
-          totalClaimed: "0",
-          withdrawRequestedAt: 0,
-          refundNonce: 0,
-        },
-      },
-    });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const settleSpy = vi.spyOn(facilitatorDeposit, "settleDeposit");
     const deps = buildDeps(storage, authorizer);
+    deps.delegatedAuthStore = new InMemoryDelegatedAuthStore();
     deps.resolveCallerIdentity = async () => {
       throw new Error("auth middleware unavailable");
     };
@@ -2346,11 +2378,10 @@ describe("facilitator verifyManaged / settleManaged", () => {
       { ...managedRequirements(authorizer), amount: "1000" },
     );
     settleSpy.mockRestore();
-    warnSpy.mockRestore();
-    expect(result.success).toBe(true);
-    const stored = await storage.get(channelId);
-    expect(stored?.chargedCumulativeAmount).toBe("1000");
-    expect(stored?.callerIdentity).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrDelegatedSettleUnauthenticated);
+    expect(settleSpy).not.toHaveBeenCalled();
+    expect(await storage.get(channelId)).toBeUndefined();
   });
 
   it("coerces string channelState numeric fields after a managed deposit charge", async () => {
@@ -2591,10 +2622,10 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 0,
-      callerIdentity: "tenant-1",
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => "tenant-1";
+    await bindIdentity(deps, channelId, "tenant-1");
     vi.spyOn(facilitatorRefund, "submitRefund").mockResolvedValueOnce({
       success: true,
       transaction: "0xrefund",
@@ -2641,10 +2672,10 @@ describe("facilitator verifyManaged / settleManaged", () => {
       lastRequestTimestamp: Date.now(),
       network: NETWORK,
       chargeCount: 0,
-      callerIdentity: "tenant-1",
     }));
     const deps = buildDeps(storage, authorizer);
     deps.resolveCallerIdentity = async () => "tenant-1";
+    await bindIdentity(deps, channelId, "tenant-1");
     vi.spyOn(facilitatorRefund, "submitRefund").mockResolvedValueOnce({
       success: true,
       transaction: "0xrefund",

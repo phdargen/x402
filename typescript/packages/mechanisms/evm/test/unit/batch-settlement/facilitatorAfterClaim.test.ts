@@ -62,6 +62,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
     );
 
     expect((await storage.get(channel.channelId))?.totalClaimed).toBe("5000");
@@ -88,6 +89,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
     );
 
     expect((await storage.get(channel.channelId))?.chargeCount).toBe(2);
@@ -110,6 +112,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
       "until-closed",
     );
 
@@ -133,6 +136,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
       "forever",
     );
 
@@ -155,6 +159,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       new Map([[channel.channelId.toLowerCase(), 3]]),
+      undefined,
     );
 
     expect(await storage.get(channel.channelId)).toBeUndefined();
@@ -178,6 +183,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
     );
 
     expect(await storage.get(channel.channelId)).toBeDefined();
@@ -207,6 +213,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      undefined,
     );
 
     expect(await storage.get(channel.channelId)).toBeUndefined();
