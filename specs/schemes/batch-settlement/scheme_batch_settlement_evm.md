@@ -1106,7 +1106,7 @@ The `batch-settlement` scheme is implemented by the `x402BatchSettlement` contra
 | `Permit2DepositCollector` | `0x4020425FAf3B746C082C2f942b4E5159887B0005` |
 
 
-## The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
+The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 transient storage) and must only be deployed on chains where that opcode is supported.
 
 
 

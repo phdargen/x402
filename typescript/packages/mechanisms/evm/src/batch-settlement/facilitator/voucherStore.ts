@@ -386,6 +386,11 @@ async function settleManagedVoucher(
   const channelId = raw.voucher.channelId;
   const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
+    const managedErr = managedRequirementError(deps, raw.channelConfig.salt, requirements);
+    if (managedErr) {
+      return failSettle(requirements, managedErr);
+    }
+
     const held = await admissionHeld(deps, channelId, owner);
     if (held) {
       const configErr = validateChannelConfig(
@@ -454,7 +459,11 @@ async function settleManagedVoucher(
       }),
     };
   } finally {
-    await releaseAdmission(deps, channelId, owner);
+    try {
+      await releaseAdmission(deps, channelId, owner);
+    } catch {
+      // Release is best-effort. Never replace a settle result.
+    }
   }
 }
 
@@ -513,42 +522,53 @@ async function settleManagedDeposit(
       );
     }
 
-    const stored = await deps.storage.get(channelId);
-    const snapshot = depositChargeSnapshot(raw, requirements, settled.extra, stored);
-    const outcome = await commitVoucherCharge(deps.storage, channelId, {
-      increment: BigInt(requirements.amount),
-      signedCap: BigInt(raw.voucher.maxClaimableAmount),
-      voucher: raw.voucher,
-      snapshot,
-      map: channel => ({
-        ...incrementChargeCount(channel, requirements.network),
-        callerIdentity: channel.callerIdentity ?? identity,
-      }),
-    });
+    let stored: FacilitatorChannel | undefined;
+    try {
+      const outcome = await commitVoucherCharge(deps.storage, channelId, {
+        increment: BigInt(requirements.amount),
+        signedCap: BigInt(raw.voucher.maxClaimableAmount),
+        voucher: raw.voucher,
+        snapshot: current => depositChargeSnapshot(raw, requirements, settled.extra, current),
+        map: channel => ({
+          ...incrementChargeCount(channel, requirements.network),
+          callerIdentity: channel.callerIdentity ?? identity,
+        }),
+      });
 
-    if (outcome.status !== "committed") {
+      if (outcome.status === "missing") {
+        return failDepositPersist(settled, Errors.ErrMissingChannel);
+      }
+      if (outcome.status === "cap_exceeded") {
+        // On-chain deposit already succeeded; omit the managed charge when it
+        // would exceed the signed cap and leave the stored watermark unchanged.
+        return settled;
+      }
+      if (outcome.status !== "committed") {
+        return failDepositPersist(settled, Errors.ErrChannelBusy);
+      }
+
       return {
         ...settled,
-        extra: {
-          ...settled.extra,
-          ...(outcome.status === "cap_exceeded" ? {} : { chargeCount: stored?.chargeCount ?? 0 }),
-        },
+        extra: paymentResponseExtra({
+          channelState: {
+            ...(typeof settled.extra?.channelState === "object" ? settled.extra.channelState : {}),
+            ...channelStateExtra(outcome.current, outcome.current.chargedCumulativeAmount),
+          },
+          chargedAmount: requirements.amount,
+          chargeCount: outcome.current.chargeCount,
+        }),
       };
+    } catch {
+      // Deposit persist is the payment: onchain funds moved but no voucher is
+      // stored, so fail closed with the deposit tx hash and amount.
+      return failDepositPersist(settled, Errors.ErrVoucherStoreUnavailable);
     }
-
-    return {
-      ...settled,
-      extra: paymentResponseExtra({
-        channelState: {
-          ...(typeof settled.extra?.channelState === "object" ? settled.extra.channelState : {}),
-          ...channelStateExtra(outcome.current, outcome.current.chargedCumulativeAmount),
-        },
-        chargedAmount: requirements.amount,
-        chargeCount: outcome.current.chargeCount,
-      }),
-    };
   } finally {
-    await releaseAdmission(deps, channelId, owner);
+    try {
+      await releaseAdmission(deps, channelId, owner);
+    } catch {
+      // Release is best-effort. Never replace a settle result.
+    }
   }
 }
 
@@ -626,36 +646,44 @@ async function settleManagedRefund(
     const balance = String(extraState?.channelState?.balance ?? stored.balance);
     const totalClaimed = String(extraState?.channelState?.totalClaimed ?? stored.totalClaimed);
 
-    const updated = await deps.storage.updateChannel(channelId, current => {
-      if (!current) {
-        return current;
-      }
-      const chargeCount = Math.max(0, current.chargeCount - attested);
-      const next = {
-        ...current,
-        balance,
-        totalClaimed,
-        chargeCount,
-        withdrawRequestedAt: Number(extraState?.channelState?.withdrawRequestedAt ?? 0),
-        refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
-        lastRequestTimestamp: Date.now(),
-      };
-      const closed = BigInt(balance) <= BigInt(totalClaimed) && chargeCount === 0;
-      return closed ? undefined : next;
-    });
+    try {
+      const updated = await deps.storage.updateChannel(channelId, current => {
+        if (!current) {
+          return current;
+        }
+        const chargeCount = Math.max(0, current.chargeCount - attested);
+        const next = {
+          ...current,
+          balance,
+          totalClaimed,
+          chargeCount,
+          withdrawRequestedAt: Number(extraState?.channelState?.withdrawRequestedAt ?? 0),
+          refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
+          lastRequestTimestamp: Date.now(),
+        };
+        const closed = BigInt(balance) <= BigInt(totalClaimed) && chargeCount === 0;
+        return closed ? undefined : next;
+      });
 
-    return {
-      ...settled,
-      extra: paymentResponseExtra({
-        channelState: {
-          ...(typeof extraState?.channelState === "object" ? extraState.channelState : {}),
-          chargedCumulativeAmount: stored.chargedCumulativeAmount,
-        },
-        chargeCount: updated.channel?.chargeCount ?? 0,
-      }),
-    };
+      return {
+        ...settled,
+        extra: paymentResponseExtra({
+          channelState: {
+            ...(typeof extraState?.channelState === "object" ? extraState.channelState : {}),
+            chargedCumulativeAmount: stored.chargedCumulativeAmount,
+          },
+          chargeCount: updated.channel?.chargeCount ?? 0,
+        }),
+      };
+    } catch {
+      return settled;
+    }
   } finally {
-    await releaseAdmission(deps, channelId, owner);
+    try {
+      await releaseAdmission(deps, channelId, owner);
+    } catch {
+      // Release is best-effort. Never replace a settle result.
+    }
   }
 }
 
@@ -1099,5 +1127,26 @@ function failSettle(requirements: PaymentRequirements, errorReason: string): Set
     errorReason,
     transaction: "",
     network: requirements.network,
+  };
+}
+
+/**
+ * Fails a managed deposit closed after the onchain tx landed but the voucher
+ * was not committed. Keeps proof funds moved (tx hash, amount, payer, onchain
+ * channelState) so the server does not release the resource.
+ *
+ * @param settled - Successful onchain deposit settle response.
+ * @param errorReason - Persist failure reason.
+ * @returns Failed settle response carrying the deposit tx hash and amount.
+ */
+function failDepositPersist(settled: SettleResponse, errorReason: string): SettleResponse {
+  return {
+    success: false,
+    errorReason,
+    transaction: settled.transaction,
+    network: settled.network,
+    payer: settled.payer,
+    amount: settled.amount,
+    extra: settled.extra,
   };
 }
