@@ -438,7 +438,7 @@ export async function executeRefund(
     signer,
     payload,
     network,
-    buildRefundCall(payload, "direct", undefined, undefined, claimDataSuffix),
+    buildRefundCall(payload, "direct", undefined, claimDataSuffix),
     dataSuffix,
   );
 }
