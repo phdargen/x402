@@ -142,6 +142,15 @@ func seedManagedChannel(t *testing.T, store *storage.InMemoryChannelStorage[*Fac
 	}
 }
 
+func bindManagedIdentity(t *testing.T, store storage.DelegatedAuthStore, channelId, identity string) {
+	t.Helper()
+	if err := store.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: channelId, Network: managedNetwork, CallerIdentity: identity,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type channelFields struct {
 	ChargedCumulativeAmount string
 	SignedMaxClaimable      string
@@ -154,7 +163,6 @@ type channelFields struct {
 	OnchainSyncedAt         int64
 	Network                 string
 	ChargeCount             int
-	CallerIdentity          string
 }
 
 func storedManagedChannel(cfg batchsettlement.ChannelConfig, channelId string, overrides *channelFields) *FacilitatorChannel {
@@ -207,9 +215,6 @@ func storedManagedChannel(cfg batchsettlement.ChannelConfig, channelId string, o
 	}
 	if overrides.ChargeCount != 0 {
 		ch.ChargeCount = overrides.ChargeCount
-	}
-	if overrides.CallerIdentity != "" {
-		ch.CallerIdentity = overrides.CallerIdentity
 	}
 	return ch
 }
