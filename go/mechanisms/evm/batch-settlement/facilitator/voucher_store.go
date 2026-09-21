@@ -410,11 +410,7 @@ func settleManagedDeposit(
 			return depositChargeSnapshot(raw, requirements, settled.Extra, current)
 		},
 		Map: func(channel *FacilitatorChannel) *FacilitatorChannel {
-			next := incrementChargeCount(channel, requirements.Network)
-			if next.CallerIdentity == "" {
-				next.CallerIdentity = identity
-			}
-			return next
+			return incrementChargeCount(channel, requirements.Network)
 		},
 	})
 	if commitErr != nil {
@@ -711,26 +707,11 @@ func checkRefundConsent(
 		return ErrRefundAuthorizerSignature
 	}
 
-	bound := ""
-	if stored != nil {
-		bound = stored.CallerIdentity
+	if deps.DelegatedAuthStore == nil {
+		return ErrRefundAuthorizerSignature
 	}
-	var storeIdentity string
-	if deps.DelegatedAuthStore != nil {
-		binding, getErr := deps.DelegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
-		if getErr != nil {
-			return ErrRefundAuthorizerSignature
-		}
-		if binding != nil {
-			storeIdentity = binding.CallerIdentity
-		}
-	}
-	// The durable store is authoritative; the row is a cache.
-	expected := storeIdentity
-	if expected == "" {
-		expected = bound
-	}
-	if expected == "" || expected != identity {
+	binding, getErr := deps.DelegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
+	if getErr != nil || binding == nil || binding.CallerIdentity != identity {
 		return ErrRefundAuthorizerSignature
 	}
 	return ""
@@ -818,7 +799,6 @@ func depositChargeSnapshot(
 		snap.LastRequestTimestamp = stored.LastRequestTimestamp
 		snap.Network = stored.Network
 		snap.ChargeCount = stored.ChargeCount
-		snap.CallerIdentity = stored.CallerIdentity
 	}
 	if confirmed.TotalClaimed != nil {
 		if stored == nil {
