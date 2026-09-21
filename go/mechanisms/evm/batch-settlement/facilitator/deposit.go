@@ -13,8 +13,64 @@ import (
 	"github.com/x402-foundation/x402/go/v2/extensions/erc20approvalgassponsor"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
+
+// ResolveDepositDelegatedCaller resolves the delegated deposit caller. When
+// ResolveCallerIdentity is nil, returns ("", nil). Otherwise empty identity or
+// resolution failure fails closed; a nil DelegatedAuthStore fails closed as
+// misconfiguration.
+func ResolveDepositDelegatedCaller(
+	ctx context.Context,
+	resolve ResolveCallerIdentity,
+	authStore storage.DelegatedAuthStore,
+	payment types.PaymentPayload,
+	deposit *batchsettlement.BatchSettlementDepositPayload,
+	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
+) (string, error) {
+	if resolve == nil {
+		return "", nil
+	}
+	network := x402.Network(requirements.Network)
+	payer := deposit.ChannelConfig.Payer
+	identity, err := resolve(DelegatedSettleContext{
+		Ctx:                ctx,
+		Step:               DelegatedSettleStepDeposit,
+		ChannelId:          deposit.Voucher.ChannelId,
+		Network:            requirements.Network,
+		Payer:              payer,
+		Amount:             deposit.Deposit.Amount,
+		Payload:            payment,
+		Requirements:       requirements,
+		FacilitatorContext: fctx,
+	})
+	if err != nil || identity == "" {
+		return "", x402.NewSettleError(ErrDelegatedSettleUnauthenticated, payer, network, "",
+			"delegated deposit settle is unauthenticated")
+	}
+	if authStore == nil {
+		return "", x402.NewSettleError(ErrVoucherStoreUnavailable, payer, network, "",
+			"delegated auth store is not configured")
+	}
+	return identity, nil
+}
+
+func bindDelegatedAuthAfterBroadcast(
+	ctx context.Context,
+	authStore storage.DelegatedAuthStore,
+	channelId, network, callerIdentity string,
+) {
+	if authStore == nil || callerIdentity == "" {
+		return
+	}
+	_ = authStore.Bind(ctx, storage.DelegatedAuthBinding{
+		ChannelId:      channelId,
+		Network:        network,
+		CallerIdentity: callerIdentity,
+	})
+}
 
 // resolveDepositTransferMethod inspects the requirements + payload to pick the
 // deposit transport. The resource server's `accepts.extra.assetTransferMethod`
@@ -332,8 +388,12 @@ func SettleDeposit(
 	dataSuffix []byte,
 	allowedFactories []string,
 	store x402.PendingSettlementStore,
+	delegatedAuth storage.DelegatedAuthStore,
+	delegatedCallerIdentity string,
 ) (*x402.SettleResponse, error) {
 	config := payload.ChannelConfig
+	channelId := payload.Voucher.ChannelId
+	networkStr := requirements.Network
 	network := x402.Network(requirements.Network)
 
 	depositAmount, ok := new(big.Int).SetString(payload.Deposit.Amount, 10)
@@ -388,11 +448,12 @@ func SettleDeposit(
 			// falls through to the normal broadcast path, which independently
 			// rejects it as an on-chain replay (nonce already consumed).
 			_ = store.Delete(ctx, cacheKey)
+			bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, channelId, networkStr, delegatedCallerIdentity)
 			return reconcilePendingDeposit(ctx, depositSettleContext{
 				signer:            signer,
 				receiptWaitSigner: receiptWaitSigner,
 				config:            config,
-				channelId:         payload.Voucher.ChannelId,
+				channelId:         channelId,
 				network:           network,
 				txHash:            txHash,
 				amountStr:         payload.Deposit.Amount,
@@ -497,11 +558,16 @@ func SettleDeposit(
 		}
 	}
 
+	deferDelegatedBind := unconfirmedBundleHash
+	if !deferDelegatedBind {
+		bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, channelId, networkStr, delegatedCallerIdentity)
+	}
+
 	return finishDepositSettle(ctx, depositSettleContext{
 		signer:            signer,
 		receiptWaitSigner: receiptWaitSigner,
 		config:            config,
-		channelId:         payload.Voucher.ChannelId,
+		channelId:         channelId,
 		network:           network,
 		txHash:            txHash,
 		amountStr:         payload.Deposit.Amount,
@@ -512,7 +578,7 @@ func SettleDeposit(
 		totalClaimed:        priorTotalClaimed,
 		withdrawRequestedAt: priorWithdrawRequestedAt,
 		refundNonce:         priorRefundNonce,
-	})
+	}, delegatedAuth, delegatedCallerIdentity, networkStr, deferDelegatedBind)
 }
 
 // depositSettleContext holds the fields common to finishDepositSettle and
@@ -558,6 +624,9 @@ func finishDepositSettle(
 	depositAmount *big.Int,
 	unconfirmedBundleHash bool,
 	prior priorChannelState,
+	delegatedAuth storage.DelegatedAuthStore,
+	delegatedCallerIdentity, delegatedNetwork string,
+	deferDelegatedBind bool,
 ) (*x402.SettleResponse, error) {
 	if _, err := evm.WaitForSettleReceiptWithPendingStore(ctx, sc.store, sc.cacheKey, sc.receiptWaitSigner, sc.txHash, sc.config.Payer, sc.network,
 		ErrDepositTransactionFailed, ErrTransactionReverted); err != nil {
@@ -622,6 +691,10 @@ func finishDepositSettle(
 	}
 
 	extra := BuildSettleExtra(sc.channelId, finalState)
+
+	if deferDelegatedBind {
+		bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, sc.channelId, delegatedNetwork, delegatedCallerIdentity)
+	}
 
 	return &x402.SettleResponse{
 		Success:     true,

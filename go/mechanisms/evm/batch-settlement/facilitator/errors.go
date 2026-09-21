@@ -132,4 +132,8 @@ const (
 	ErrRefundAmountInvalid           = batchsettlement.ErrRefundAmountInvalid
 	ErrMissingChannel                = batchsettlement.ErrMissingChannel
 	ErrChargeExceedsSignedCumulative = batchsettlement.ErrChargeExceedsSignedCumulative
+	// ErrDelegatedSettleUnauthenticated rejects a delegated managed deposit
+	// whose caller identity cannot be resolved or conflicts with the durable
+	// channel binding. Returned before anything is submitted onchain.
+	ErrDelegatedSettleUnauthenticated = "invalid_batch_settlement_evm_delegated_settle_unauthenticated"
 )

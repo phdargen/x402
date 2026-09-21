@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -112,13 +113,13 @@ func TestSelectClaimableVouchers_SkipsCorruptWatermarks(t *testing.T) {
 func TestApplyClaimedTotals_SkipsCorruptClaimAndCorruptRow(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(&Channel{TotalClaimed: "1000"})
-	if _, err := store.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "not-a-number")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "not-a-number")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got.TotalClaimed != "1000" {
 		t.Fatalf("corrupt claim must not write: totalClaimed = %+v err=%v", got, err)
 	}
@@ -126,13 +127,13 @@ func TestApplyClaimedTotals_SkipsCorruptClaimAndCorruptRow(t *testing.T) {
 	corruptCfg := claimsBaseChannel(nil).ChannelConfig
 	corruptCfg.Salt = "0x0000000000000000000000000000000000000000000000000000000000000002"
 	corruptRow := claimsBaseChannel(&Channel{ChannelConfig: corruptCfg, TotalClaimed: "not-a-number"})
-	if _, err := store.UpdateChannel(corruptRow.ChannelId, func(*Channel) *Channel { return corruptRow }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), corruptRow.ChannelId, func(*Channel) *Channel { return corruptRow }); err != nil {
 		t.Fatalf("seed corrupt: %v", err)
 	}
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(corruptRow, "5000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(corruptRow, "5000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	gotCorrupt, err := store.Get(corruptRow.ChannelId)
+	gotCorrupt, err := store.Get(context.Background(), corruptRow.ChannelId)
 	if err != nil || gotCorrupt.TotalClaimed != "not-a-number" {
 		t.Fatalf("corrupt row must stay unchanged: totalClaimed = %+v err=%v", gotCorrupt, err)
 	}
@@ -151,10 +152,10 @@ func voucherClaim(channel *Channel, totalClaimed string) batchsettlement.BatchSe
 func TestApplyClaimedTotals_IgnoresMissingChannels(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(nil)
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got != nil {
 		t.Fatalf("Get: %+v err=%v", got, err)
 	}
@@ -163,13 +164,13 @@ func TestApplyClaimedTotals_IgnoresMissingChannels(t *testing.T) {
 func TestApplyClaimedTotals_IgnoresClaimsThatDoNotAdvance(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(&Channel{TotalClaimed: "5000", ChargedCumulativeAmount: "5000"})
-	if _, err := store.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got.TotalClaimed != "5000" {
 		t.Fatalf("totalClaimed = %+v err=%v", got, err)
 	}
@@ -178,13 +179,13 @@ func TestApplyClaimedTotals_IgnoresClaimsThatDoNotAdvance(t *testing.T) {
 func TestApplyClaimedTotals_DoesNotRegressStaleBatch(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(&Channel{TotalClaimed: "4000"})
-	if _, err := store.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "3000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "3000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got.TotalClaimed != "4000" {
 		t.Fatalf("totalClaimed = %+v err=%v", got, err)
 	}
@@ -193,13 +194,13 @@ func TestApplyClaimedTotals_DoesNotRegressStaleBatch(t *testing.T) {
 func TestApplyClaimedTotals_AdvancesWatermark(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(&Channel{TotalClaimed: "1000"})
-	if _, err := store.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if err := ApplyClaimedTotals(store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got.TotalClaimed != "5000" {
 		t.Fatalf("totalClaimed = %+v err=%v", got, err)
 	}
@@ -209,8 +210,8 @@ type advancingStore struct {
 	*InMemoryChannelStorage[*Channel]
 }
 
-func (s advancingStore) UpdateChannel(channelId string, update func(*Channel) *Channel) (*ChannelUpdateResult[*Channel], error) {
-	return s.InMemoryChannelStorage.UpdateChannel(channelId, func(current *Channel) *Channel {
+func (s advancingStore) UpdateChannel(ctx context.Context, channelId string, update func(*Channel) *Channel) (*ChannelUpdateResult[*Channel], error) {
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelId, func(current *Channel) *Channel {
 		if current == nil {
 			return update(current)
 		}
@@ -223,14 +224,14 @@ func (s advancingStore) UpdateChannel(channelId string, update func(*Channel) *C
 func TestApplyClaimedTotals_DoesNotLowerWhenStorageAdvanced(t *testing.T) {
 	base := NewInMemoryChannelStorage[*Channel]()
 	channel := claimsBaseChannel(&Channel{TotalClaimed: "1000"})
-	if _, err := base.UpdateChannel(channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := base.UpdateChannel(context.Background(), channel.ChannelId, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	store := advancingStore{InMemoryChannelStorage: base}
-	if err := ApplyClaimedTotals[*Channel](store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
+	if err := ApplyClaimedTotals[*Channel](context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{voucherClaim(channel, "5000")}, claimsNetwork); err != nil {
 		t.Fatalf("ApplyClaimedTotals: %v", err)
 	}
-	got, err := base.Get(channel.ChannelId)
+	got, err := base.Get(context.Background(), channel.ChannelId)
 	if err != nil || got.TotalClaimed != "6000" {
 		t.Fatalf("totalClaimed = %+v err=%v", got, err)
 	}

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"math/big"
 	"strconv"
 	"strings"
@@ -54,13 +55,13 @@ type QueryPage[T any] struct {
 // ChannelQuerier is an optional indexed worker query. QueryChannels type-asserts
 // this and falls back to QueryByScan when it is absent.
 type ChannelQuerier[T ChannelRecord[T]] interface {
-	Query(filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error)
+	Query(ctx context.Context, filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error)
 }
 
 // SettleQuerier is an optional indexed settle-target query. QuerySettleTargets
 // type-asserts this and falls back to SettleQueryByScan when it is absent.
 type SettleQuerier interface {
-	SettleQuery(filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
+	SettleQuery(ctx context.Context, filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
 }
 
 // MatchesChannelQuery reports whether channel satisfies filter.
@@ -124,8 +125,8 @@ func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 
 // QueryByScan dumps List(), filters, sorts, and slices. Limit/cursor only page
 // the already-loaded match list; a native adapter should apply them as read bounds.
-func QueryByScan[T ChannelRecord[T]](store ChannelStorage[T], filter ChannelQuery) (*QueryPage[T], error) {
-	all, err := store.List()
+func QueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter ChannelQuery) (*QueryPage[T], error) {
+	all, err := store.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +141,8 @@ func QueryByScan[T ChannelRecord[T]](store ChannelStorage[T], filter ChannelQuer
 
 // SettleQueryByScan lists claimed rows (totalClaimed > 0) deduped per
 // (network, receiver, token) in first-seen order.
-func SettleQueryByScan[T ChannelRecord[T]](store ChannelStorage[T], filter SettleQuery) (*QueryPage[SettleTarget], error) {
-	all, err := store.List()
+func SettleQueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter SettleQuery) (*QueryPage[SettleTarget], error) {
+	all, err := store.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -173,9 +174,9 @@ func SettleQueryByScan[T ChannelRecord[T]](store ChannelStorage[T], filter Settl
 
 // QueryChannels runs a named worker query, using a native ChannelQuerier when
 // present and QueryByScan otherwise.
-func QueryChannels[T ChannelRecord[T]](store ChannelStorage[T], filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error) {
+func QueryChannels[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error) {
 	if querier, ok := store.(ChannelQuerier[T]); ok {
-		page, err := querier.Query(filter, opts)
+		page, err := querier.Query(ctx, filter, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -183,14 +184,14 @@ func QueryChannels[T ChannelRecord[T]](store ChannelStorage[T], filter ChannelQu
 			return page, nil
 		}
 	}
-	return QueryByScan(store, filter)
+	return QueryByScan(ctx, store, filter)
 }
 
 // QuerySettleTargets lists distinct claimed settle targets, using a native
 // SettleQuerier when present and SettleQueryByScan otherwise.
-func QuerySettleTargets[T ChannelRecord[T]](store ChannelStorage[T], filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
+func QuerySettleTargets[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
 	if querier, ok := store.(SettleQuerier); ok {
-		page, err := querier.SettleQuery(filter, opts)
+		page, err := querier.SettleQuery(ctx, filter, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +199,7 @@ func QuerySettleTargets[T ChannelRecord[T]](store ChannelStorage[T], filter Sett
 			return page, nil
 		}
 	}
-	return SettleQueryByScan(store, filter)
+	return SettleQueryByScan(ctx, store, filter)
 }
 
 func matchesIdle(channel *Channel, idleAtOrBefore *int64) bool {

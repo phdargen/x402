@@ -33,6 +33,7 @@ type FacilitatorChannelManagerConfig struct {
 	SubmitMode          SubmitMode
 	Retention           FacilitatorRetention
 	Context             *x402.FacilitatorContext
+	DelegatedAuthStore  storage.DelegatedAuthStore
 }
 
 // FacilitatorClaimOptions is optional batching and idle filter for Claim.
@@ -98,8 +99,8 @@ func formatFailure(operation string, response *x402.SettleResponse) string {
 	return fmt.Sprintf("%s failed: %s — %s", operation, reason, msg)
 }
 
-func channelIsHeld(lock storage.ChannelLockStorage, channelId string) bool {
-	held, err := lock.IsHeld(channelId, "")
+func channelIsHeld(ctx context.Context, lock storage.ChannelLockStorage, channelId string) bool {
+	held, err := lock.IsHeld(ctx, channelId, "")
 	if err != nil {
 		return false
 	}
@@ -109,17 +110,19 @@ func channelIsHeld(lock storage.ChannelLockStorage, channelId string) bool {
 // AfterClaim applies claimed totals, subtracts attested chargeCount, and deletes closed rows.
 // Call only after a successful onchain claim.
 func AfterClaim(
+	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
 	lockStorage storage.ChannelLockStorage,
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	network string,
 	attested map[string]int,
+	authStore storage.DelegatedAuthStore,
 	retention FacilitatorRetention,
 ) error {
 	if retention == "" {
 		retention = RetentionUntilClosed
 	}
-	if err := storage.ApplyClaimedTotals(store, claims, network); err != nil {
+	if err := storage.ApplyClaimedTotals(ctx, store, claims, network); err != nil {
 		return err
 	}
 	for _, claim := range claims {
@@ -129,8 +132,8 @@ func AfterClaim(
 		}
 		snapshot := attested[strings.ToLower(channelId)]
 		deletable := retention != RetentionForever
-		held := deletable && lockStorage != nil && channelIsHeld(lockStorage, channelId)
-		if _, err := store.UpdateChannel(channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		held := deletable && lockStorage != nil && channelIsHeld(ctx, lockStorage, channelId)
+		result, err := store.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
@@ -145,8 +148,12 @@ func AfterClaim(
 			next := current.Clone()
 			next.ChargeCount = chargeCount
 			return next
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if result != nil && result.Status == storage.ChannelDeleted && authStore != nil {
+			_ = authStore.Delete(ctx, channelId, network)
 		}
 	}
 	return nil
@@ -154,6 +161,7 @@ func AfterClaim(
 
 // SnapshotClaimChargeCounts snapshots each claim row's unattested chargeCount in batch order.
 func SnapshotClaimChargeCounts(
+	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	network string,
@@ -174,7 +182,7 @@ func SnapshotClaimChargeCounts(
 		key := strings.ToLower(channelId)
 		stored := rows[key]
 		if stored == nil {
-			stored, err = store.Get(channelId)
+			stored, err = store.Get(ctx, channelId)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -199,6 +207,7 @@ type FacilitatorChannelManager struct {
 	submitMode          SubmitMode
 	retention           FacilitatorRetention
 	context             *x402.FacilitatorContext
+	delegatedAuthStore  storage.DelegatedAuthStore
 
 	mu            sync.Mutex
 	timers        map[autoJob]*time.Ticker
@@ -236,6 +245,7 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 		submitMode:          submitMode,
 		retention:           retention,
 		context:             config.Context,
+		delegatedAuthStore:  config.DelegatedAuthStore,
 		timers:              make(map[autoJob]*time.Ticker),
 		stopChans:           make(map[autoJob]chan struct{}),
 		pendingJobs:         make(map[autoJob]struct{}),
@@ -249,7 +259,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 		idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
 		filter.IdleAtOrBefore = &idleAt
 	}
-	page, err := storage.QueryChannels(m.storage, filter, nil)
+	page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +291,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 				return nil, err
 			}
 			results = append(results, result)
-			if err := AfterClaim(m.storage, m.lockStorage, batch, network, attested, m.retention); err != nil {
+			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention); err != nil {
 				return nil, err
 			}
 		}
@@ -296,7 +306,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 
 // Settle settles claimed-but-unsettled funds for each distinct (network, receiver, token).
 func (m *FacilitatorChannelManager) Settle(ctx context.Context) ([]FacilitatorSettleResult, error) {
-	page, err := storage.QuerySettleTargets[*FacilitatorChannel](m.storage, storage.SettleQuery{}, nil)
+	page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +369,7 @@ func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *Fa
 
 // Refund cooperatively refunds stored channels with remaining escrow.
 func (m *FacilitatorChannelManager) Refund(ctx context.Context) ([]FacilitatorRefundResult, error) {
-	page, err := storage.QueryChannels(m.storage, storage.ChannelQuery{Kind: storage.QueryKindIdleRefundable}, nil)
+	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{Kind: storage.QueryKindIdleRefundable}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +378,7 @@ func (m *FacilitatorChannelManager) Refund(ctx context.Context) ([]FacilitatorRe
 
 // RefundIdleChannels refunds idle channels with a remaining escrow balance.
 func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, idleSecs int) ([]FacilitatorRefundResult, error) {
-	channels, err := m.getIdleChannelsForRefund(idleSecs)
+	channels, err := m.getIdleChannelsForRefund(ctx, idleSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +431,7 @@ func (m *FacilitatorChannelManager) submitClaimBatch(
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	rows []*FacilitatorChannel,
 ) (FacilitatorClaimResult, map[string]int, error) {
-	counts, attested, err := SnapshotClaimChargeCounts(m.storage, claims, network, rows)
+	counts, attested, err := SnapshotClaimChargeCounts(ctx, m.storage, claims, network, rows)
 	if err != nil {
 		return FacilitatorClaimResult{}, nil, err
 	}
@@ -461,7 +471,7 @@ func (m *FacilitatorChannelManager) submitClaimBatch(
 func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels []*FacilitatorChannel) ([]FacilitatorRefundResult, error) {
 	results := make([]FacilitatorRefundResult, 0)
 	for _, channel := range channels {
-		if m.lockStorage != nil && channelIsHeld(m.lockStorage, channel.ChannelId) {
+		if m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channel.ChannelId) {
 			continue
 		}
 		result, err := m.refundChannel(ctx, channel)
@@ -495,7 +505,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 		if err != nil {
 			return nil, err
 		}
-		if err := AfterClaim(m.storage, m.lockStorage, claims, target.Network, attested, m.retention); err != nil {
+		if err := AfterClaim(ctx, m.storage, m.lockStorage, claims, target.Network, attested, m.delegatedAuthStore, m.retention); err != nil {
 			return nil, err
 		}
 		return &FacilitatorRefundResult{
@@ -540,7 +550,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 	if !response.Success {
 		return nil, fmt.Errorf("%s", formatFailure("Refund", response))
 	}
-	if err := m.afterRefund(target, claims, response); err != nil {
+	if err := m.afterRefund(ctx, target, claims, response); err != nil {
 		return nil, err
 	}
 	return &FacilitatorRefundResult{
@@ -551,16 +561,17 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 }
 
 func (m *FacilitatorChannelManager) afterRefund(
+	ctx context.Context,
 	target *FacilitatorChannel,
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	response *x402.SettleResponse,
 ) error {
 	if len(claims) > 0 {
 		attested := target.ChargeCount
-		if err := storage.ApplyClaimedTotals(m.storage, claims, target.Network); err != nil {
+		if err := storage.ApplyClaimedTotals(ctx, m.storage, claims, target.Network); err != nil {
 			return err
 		}
-		if _, err := m.storage.UpdateChannel(target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		if _, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
@@ -579,7 +590,7 @@ func (m *FacilitatorChannelManager) afterRefund(
 	if response.Extra != nil {
 		refunded, _ = response.Extra["channelState"].(map[string]interface{})
 	}
-	if _, err := m.storage.UpdateChannel(target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+	if _, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
 		}
@@ -612,8 +623,8 @@ func (m *FacilitatorChannelManager) afterRefund(
 	if m.retention == RetentionForever {
 		return nil
 	}
-	held := m.lockStorage != nil && channelIsHeld(m.lockStorage, target.ChannelId)
-	_, err := m.storage.UpdateChannel(target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+	held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, target.ChannelId)
+	result, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
 		}
@@ -622,7 +633,13 @@ func (m *FacilitatorChannelManager) afterRefund(
 		}
 		return current
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if result != nil && result.Status == storage.ChannelDeleted && m.delegatedAuthStore != nil {
+		_ = m.delegatedAuthStore.Delete(ctx, target.ChannelId, target.Network)
+	}
+	return nil
 }
 
 func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
@@ -647,9 +664,9 @@ func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChanne
 	return []batchsettlement.BatchSettlementVoucherClaim{claim}
 }
 
-func (m *FacilitatorChannelManager) getIdleChannelsForRefund(idleSecs int) ([]*FacilitatorChannel, error) {
+func (m *FacilitatorChannelManager) getIdleChannelsForRefund(ctx context.Context, idleSecs int) ([]*FacilitatorChannel, error) {
 	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
-	page, err := storage.QueryChannels(m.storage, storage.ChannelQuery{
+	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
 		Kind:           storage.QueryKindIdleRefundable,
 		IdleAtOrBefore: &idleAt,
 	}, nil)
@@ -661,7 +678,7 @@ func (m *FacilitatorChannelManager) getIdleChannelsForRefund(idleSecs int) ([]*F
 	}
 	out := make([]*FacilitatorChannel, 0, len(page.Items))
 	for _, channel := range page.Items {
-		if !channelIsHeld(m.lockStorage, channel.ChannelId) {
+		if !channelIsHeld(ctx, m.lockStorage, channel.ChannelId) {
 			out = append(out, channel)
 		}
 	}

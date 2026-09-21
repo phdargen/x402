@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"math/big"
 	"time"
 
@@ -55,7 +56,7 @@ func SelectClaimableVouchers(channels []*Channel, opts *SelectClaimableOptions) 
 // The callback is authoritative: it re-checks row presence and the claimed
 // watermark, so a claim that did not advance totalClaimed costs one no-op
 // update rather than a pre-read on every claim.
-func ApplyClaimedTotals[T ChannelRecord[T]](store ChannelStorage[T], claims []batchsettlement.BatchSettlementVoucherClaim, network string) error {
+func ApplyClaimedTotals[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], claims []batchsettlement.BatchSettlementVoucherClaim, network string) error {
 	for _, claim := range claims {
 		channelId, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
 		if err != nil {
@@ -65,7 +66,7 @@ func ApplyClaimedTotals[T ChannelRecord[T]](store ChannelStorage[T], claims []ba
 		if !ok || claimedAmount.Sign() < 0 {
 			continue
 		}
-		if _, err := store.UpdateChannel(channelId, func(current T) T {
+		if _, err := store.UpdateChannel(ctx, channelId, func(current T) T {
 			if isZeroRecord(current) {
 				return current
 			}

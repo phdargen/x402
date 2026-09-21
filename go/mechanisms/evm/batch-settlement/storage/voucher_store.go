@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/hex"
 	"math/big"
 	"strconv"
@@ -159,14 +160,14 @@ func PaymentResponseExtra(
 // Any storage outcome other than status "updated" with a committed callback
 // result (including status "conflict" from a contended compare-and-write)
 // maps to status "conflict".
-func CommitVoucherCharge[T ChannelRecord[T]](store ChannelStorage[T], channelId string, input CommitVoucherChargeInput[T]) (*CommitVoucherChargeResult[T], error) {
+func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], channelId string, input CommitVoucherChargeInput[T]) (*CommitVoucherChargeResult[T], error) {
 	now := input.Now
 	if now == 0 {
 		now = time.Now().UnixMilli()
 	}
 	var outcome *CommitVoucherChargeResult[T]
 
-	updateResult, err := store.UpdateChannel(channelId, func(current T) T {
+	updateResult, err := store.UpdateChannel(ctx, channelId, func(current T) T {
 		recoverFromSnapshot := true
 		if input.RecoverFromSnapshot != nil {
 			recoverFromSnapshot = *input.RecoverFromSnapshot

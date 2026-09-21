@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 )
@@ -63,23 +65,23 @@ func SortChannels(channels []*ChannelSession, filter ChannelQuery) []*ChannelSes
 }
 
 // QueryByScan dumps List(), filters, sorts, and slices.
-func QueryByScan(store SessionStorage, filter ChannelQuery) (*storage.QueryPage[*storage.Channel], error) {
-	return storage.QueryByScan(store, filter)
+func QueryByScan(ctx context.Context, store SessionStorage, filter ChannelQuery) (*storage.QueryPage[*storage.Channel], error) {
+	return storage.QueryByScan(ctx, store, filter)
 }
 
 // QueryChannels runs a named worker query, using a native query when present.
-func QueryChannels(store SessionStorage, filter ChannelQuery, opts *ChannelStoreOptions) (*storage.QueryPage[*storage.Channel], error) {
-	return storage.QueryChannels(store, filter, opts)
+func QueryChannels(ctx context.Context, store SessionStorage, filter ChannelQuery, opts *ChannelStoreOptions) (*storage.QueryPage[*storage.Channel], error) {
+	return storage.QueryChannels(ctx, store, filter, opts)
 }
 
 // QuerySettleTargets lists distinct claimed settle targets.
-func QuerySettleTargets(store SessionStorage, filter SettleQuery, opts *ChannelStoreOptions) (*storage.QueryPage[SettleTarget], error) {
-	return storage.QuerySettleTargets(store, filter, opts)
+func QuerySettleTargets(ctx context.Context, store SessionStorage, filter SettleQuery, opts *ChannelStoreOptions) (*storage.QueryPage[SettleTarget], error) {
+	return storage.QuerySettleTargets(ctx, store, filter, opts)
 }
 
 // SettleQueryByScan lists claimed rows deduped per (network, receiver, token).
-func SettleQueryByScan(store SessionStorage, filter SettleQuery) (*storage.QueryPage[SettleTarget], error) {
-	return storage.SettleQueryByScan(store, filter)
+func SettleQueryByScan(ctx context.Context, store SessionStorage, filter SettleQuery) (*storage.QueryPage[SettleTarget], error) {
+	return storage.SettleQueryByScan(ctx, store, filter)
 }
 
 // NewInMemoryDelegatedAuthStore creates an empty in-memory binding store.
@@ -94,6 +96,6 @@ func SelectClaimableVouchers(channels []*ChannelSession, opts *SelectClaimableOp
 }
 
 // ApplyClaimedTotals advances stored totalClaimed after a successful claim.
-func ApplyClaimedTotals(store SessionStorage, claims []batchsettlement.BatchSettlementVoucherClaim, network string) error {
-	return storage.ApplyClaimedTotals(store, claims, network)
+func ApplyClaimedTotals(ctx context.Context, store SessionStorage, claims []batchsettlement.BatchSettlementVoucherClaim, network string) error {
+	return storage.ApplyClaimedTotals(ctx, store, claims, network)
 }

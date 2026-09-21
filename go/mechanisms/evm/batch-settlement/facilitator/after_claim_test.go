@@ -1,6 +1,7 @@
 package facilitator
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ type failingIsHeldStore struct {
 	storage.ChannelLockStorage
 }
 
-func (s failingIsHeldStore) IsHeld(string, string) (bool, error) {
+func (s failingIsHeldStore) IsHeld(_ context.Context, _ string, _ string) (bool, error) {
 	return false, errors.New("lock store unavailable")
 }
 
@@ -77,10 +78,10 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	channel := afterClaimChannel("10000", 3)
 	seedManagedChannel(t, store, channel)
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), ""); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +97,7 @@ func TestAfterClaim_PreservesInFlightIncrements(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	channel := afterClaimChannel("10000", 3)
 	seedManagedChannel(t, store, channel)
-	if _, err := store.UpdateChannel(channel.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+	if _, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		next := current.Clone()
 		next.ChargeCount = 5
 		return next
@@ -104,10 +105,10 @@ func TestAfterClaim_PreservesInFlightIncrements(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), ""); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +122,10 @@ func TestAfterClaim_DeletesClosedRowUntilClosed(t *testing.T) {
 	channel := afterClaimChannel("5000", 0)
 	seedManagedChannel(t, store, channel)
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), RetentionUntilClosed); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionUntilClosed); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,10 +139,10 @@ func TestAfterClaim_KeepsClosedRowWhenForever(t *testing.T) {
 	channel := afterClaimChannel("5000", 0)
 	seedManagedChannel(t, store, channel)
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), RetentionForever); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionForever); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,10 +156,10 @@ func TestAfterClaim_IgnoresMissingRows(t *testing.T) {
 	channel := afterClaimChannel("10000", 3)
 	attested := map[string]int{strings.ToLower(channel.ChannelId): 3}
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attested, ""); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attested, nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,15 +172,15 @@ func TestAfterClaim_DoesNotDeleteWhileAdmissionLockHeld(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	channel := afterClaimChannel("5000", 0)
 	seedManagedChannel(t, store, channel)
-	ok, err := store.Acquire(channel.ChannelId, "pending-settle", 60_000)
+	ok, err := store.Acquire(context.Background(), channel.ChannelId, "pending-settle", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("acquire: ok=%v err=%v", ok, err)
 	}
 
-	if err := AfterClaim(store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), ""); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,10 +194,10 @@ func TestAfterClaim_DeletesWhenLockInspectionFails(t *testing.T) {
 	channel := afterClaimChannel("5000", 0)
 	seedManagedChannel(t, store, channel)
 
-	if err := AfterClaim(store, failingIsHeldStore{store}, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), ""); err != nil {
+	if err := AfterClaim(context.Background(), store, failingIsHeldStore{store}, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Get(channel.ChannelId)
+	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil {
 		t.Fatal(err)
 	}

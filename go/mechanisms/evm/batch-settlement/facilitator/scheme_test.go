@@ -9,6 +9,7 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -307,5 +308,116 @@ func TestSettle_MalformedRefundPayload(t *testing.T) {
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidRefundPayload {
 		t.Fatalf("got err = %v", err)
+	}
+}
+
+func selfManagedDepositPayload(channelId string) *batchsettlement.BatchSettlementDepositPayload {
+	return &batchsettlement.BatchSettlementDepositPayload{
+		Type:          "deposit",
+		ChannelConfig: batchsettlement.ChannelConfig{Payer: "0xpayer"},
+		Voucher:       batchsettlement.BatchSettlementVoucherFields{ChannelId: channelId},
+		Deposit:       batchsettlement.BatchSettlementDepositData{Amount: "1000"},
+	}
+}
+
+func selfManagedDepositRequirements() types.PaymentRequirements {
+	return types.PaymentRequirements{
+		Scheme:  batchsettlement.SchemeBatched,
+		Network: "eip155:84532",
+	}
+}
+
+func TestResolveDepositDelegatedCaller_SkipsWithoutResolver(t *testing.T) {
+	got, err := ResolveDepositDelegatedCaller(context.Background(), nil, nil,
+		types.PaymentPayload{}, selfManagedDepositPayload("0xchan"),
+		selfManagedDepositRequirements(), nil)
+	if err != nil || got != "" {
+		t.Fatalf("got (%q, %v)", got, err)
+	}
+}
+
+func TestResolveDepositDelegatedCaller_ResolutionFailureIsUnauthenticated(t *testing.T) {
+	resolve := func(DelegatedSettleContext) (string, error) { return "", errors.New("idp down") }
+	_, err := ResolveDepositDelegatedCaller(context.Background(), resolve, storage.NewInMemoryDelegatedAuthStore(),
+		types.PaymentPayload{}, selfManagedDepositPayload("0xchan"),
+		selfManagedDepositRequirements(), nil)
+	var se *x402.SettleError
+	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("got err = %v", err)
+	}
+}
+
+func TestResolveDepositDelegatedCaller_EmptyIdentityIsUnauthenticated(t *testing.T) {
+	resolve := func(DelegatedSettleContext) (string, error) { return "", nil }
+	_, err := ResolveDepositDelegatedCaller(context.Background(), resolve, storage.NewInMemoryDelegatedAuthStore(),
+		types.PaymentPayload{}, selfManagedDepositPayload("0xchan"),
+		selfManagedDepositRequirements(), nil)
+	var se *x402.SettleError
+	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("got err = %v", err)
+	}
+}
+
+func TestBindDelegatedAuthAfterBroadcast_ConflictKeepsFirstWriter(t *testing.T) {
+	store := storage.NewInMemoryDelegatedAuthStore()
+	if err := store.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: "0xchan", Network: "eip155:84532", CallerIdentity: "owner-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bindDelegatedAuthAfterBroadcast(context.Background(), store, "0xchan", "eip155:84532", "owner-b")
+	got, _ := store.Get(context.Background(), "0xchan", "eip155:84532")
+	if got == nil || got.CallerIdentity != "owner-a" {
+		t.Fatalf("conflict must keep the first binding, got %+v", got)
+	}
+}
+
+func TestBindDelegatedAuthAfterBroadcast_BindsAndIsIdempotent(t *testing.T) {
+	store := storage.NewInMemoryDelegatedAuthStore()
+	for i := 0; i < 2; i++ {
+		bindDelegatedAuthAfterBroadcast(context.Background(), store, "0xchan", "eip155:84532", "svc")
+	}
+	got, _ := store.Get(context.Background(), "0xchan", "eip155:84532")
+	if got == nil || got.CallerIdentity != "svc" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestSettle_SelfManagedDepositBindingConflictDoesNotBlockSettle(t *testing.T) {
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "09")
+	channelId := mustChannelId(t, cfg)
+	delegated := storage.NewInMemoryDelegatedAuthStore()
+	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "owner-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{
+		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "owner-b", nil },
+		DelegatedAuthStore:    delegated,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = scheme.Settle(context.Background(),
+		managedDepositEnvelope(cfg, channelId), types.PaymentRequirements{
+			Scheme:  batchsettlement.SchemeBatched,
+			Network: managedNetwork,
+			Amount:  "1000",
+			Asset:   managedToken,
+			PayTo:   managedReceiver,
+			Extra: map[string]interface{}{
+				"receiverAuthorizer": auth.addr,
+			},
+		}, nil)
+	var se *x402.SettleError
+	if errors.As(err, &se) && se.ErrorReason == ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("binding conflict must not reject deposit at resolve time, got err = %v", err)
+	}
+	got, _ := delegated.Get(context.Background(), channelId, managedNetwork)
+	if got == nil || got.CallerIdentity != "owner-a" {
+		t.Fatalf("bind conflict must keep first writer, got %+v", got)
 	}
 }

@@ -324,7 +324,7 @@ func (s *BatchSettlementEvmScheme) ReleasePendingRequest(payload any) error {
 	if !reservationCommitted(rc) || rc.ChannelId == "" || rc.PendingId == "" {
 		return nil
 	}
-	if impl := RethrowLockImplementationError(s.lockStorage.Release(rc.ChannelId, rc.PendingId)); impl != nil {
+	if impl := RethrowLockImplementationError(s.lockStorage.Release(context.Background(), rc.ChannelId, rc.PendingId)); impl != nil {
 		return impl
 	}
 	s.MergeRequestContext(payload, BatchSettlementRequestContext{ReservationCommitted: reservationFlag(false)})
@@ -385,7 +385,7 @@ func handleEnrichPaymentRequiredResponse(s *BatchSettlementEvmScheme, ctx x402.P
 		session = s.TakeChannelSnapshot(ctx.PaymentPayload)
 	}
 	if session == nil {
-		stored, err := s.storage.Get(channelId)
+		stored, err := s.storage.Get(context.Background(), channelId)
 		if err != nil || stored == nil {
 			return
 		}
@@ -957,7 +957,7 @@ func (s *BatchSettlementEvmScheme) CreateChannelManager(facilitator x402.Facilit
 
 // GetSession retrieves a session for a channel.
 func (s *BatchSettlementEvmScheme) GetSession(channelId string) (*ChannelSession, error) {
-	return s.storage.Get(channelId)
+	return s.storage.Get(context.Background(), channelId)
 }
 
 // ResolveMinDepositHint resolves the extra.minDeposit hint written on every 402.

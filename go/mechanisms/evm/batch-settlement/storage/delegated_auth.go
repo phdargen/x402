@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"sync"
 )
@@ -24,6 +25,10 @@ func (e *DelegatedAuthIdentityConflictError) Error() string {
 // DelegatedAuthStore is a pluggable store of delegated deposit/refund
 // caller-identity bindings.
 //
+// After a deposit transaction is broadcast, the facilitator calls Bind on the
+// hot path; implementations may persist synchronously or enqueue work and return
+// nil immediately. Deposit settlement does not fail on Bind errors (best-effort).
+//
 // Bind is keyed by (channelId, network) and is first-writer-wins:
 //
 //   - no existing row → insert
@@ -33,9 +38,9 @@ func (e *DelegatedAuthIdentityConflictError) Error() string {
 // Get returns the zero binding for not-found and propagates store errors so a
 // host can map infra failures separately from unauthenticated.
 type DelegatedAuthStore interface {
-	Bind(binding DelegatedAuthBinding) error
-	Get(channelId string, network string) (*DelegatedAuthBinding, error)
-	Delete(channelId string, network string) error
+	Bind(ctx context.Context, binding DelegatedAuthBinding) error
+	Get(ctx context.Context, channelId string, network string) (*DelegatedAuthBinding, error)
+	Delete(ctx context.Context, channelId string, network string) error
 }
 
 // InMemoryDelegatedAuthStore is a volatile DelegatedAuthStore. A multi-replica
@@ -54,7 +59,7 @@ func NewInMemoryDelegatedAuthStore() *InMemoryDelegatedAuthStore {
 
 // Bind records the caller identity for a channel. First writer wins: a later
 // Bind with the same identity is a no-op; a different identity is an error.
-func (s *InMemoryDelegatedAuthStore) Bind(binding DelegatedAuthBinding) error {
+func (s *InMemoryDelegatedAuthStore) Bind(_ context.Context, binding DelegatedAuthBinding) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := bindingKey(binding.ChannelId, binding.Network)
@@ -71,7 +76,7 @@ func (s *InMemoryDelegatedAuthStore) Bind(binding DelegatedAuthBinding) error {
 
 // Get looks up a binding. The returned value is a copy so callers cannot
 // mutate the stored row.
-func (s *InMemoryDelegatedAuthStore) Get(channelId string, network string) (*DelegatedAuthBinding, error) {
+func (s *InMemoryDelegatedAuthStore) Get(_ context.Context, channelId string, network string) (*DelegatedAuthBinding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	binding, ok := s.bindings[bindingKey(channelId, network)]
@@ -83,7 +88,7 @@ func (s *InMemoryDelegatedAuthStore) Get(channelId string, network string) (*Del
 }
 
 // Delete removes a binding.
-func (s *InMemoryDelegatedAuthStore) Delete(channelId string, network string) error {
+func (s *InMemoryDelegatedAuthStore) Delete(_ context.Context, channelId string, network string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.bindings, bindingKey(channelId, network))

@@ -835,11 +835,11 @@ func TestBatchSettlementIntegration_ManagedDepositThenVoucher(t *testing.T) {
 		t.Fatalf("managed voucher settle should be off-chain, got tx=%s", voucherSettle.Transaction)
 	}
 
-	facRow, err := pipe.facilitatorStorage.Get(channelId)
+	facRow, err := pipe.facilitatorStorage.Get(ctx, channelId)
 	if err != nil || facRow == nil || facRow.ChargedCumulativeAmount == "" {
 		t.Fatalf("facilitator custody row missing: %v %+v", err, facRow)
 	}
-	replicaRow, err := pipe.serverReplica.Get(channelId)
+	replicaRow, err := pipe.serverReplica.Get(ctx, channelId)
 	if err != nil || replicaRow == nil || replicaRow.ChargedCumulativeAmount != facRow.ChargedCumulativeAmount {
 		t.Fatalf("replica drift: fac=%+v rep=%+v err=%v", facRow, replicaRow, err)
 	}
@@ -889,10 +889,10 @@ func TestBatchSettlementIntegration_ManagedFullRefundClearsCustody(t *testing.T)
 	if err != nil || !refundSettle.Success || refundSettle.Transaction == "" {
 		t.Fatalf("refund settle: %v / %+v", err, refundSettle)
 	}
-	if facRow, _ := pipe.facilitatorStorage.Get(channelId); facRow != nil {
+	if facRow, _ := pipe.facilitatorStorage.Get(ctx, channelId); facRow != nil {
 		t.Fatalf("facilitator custody should be cleared, got %+v", facRow)
 	}
-	if repRow, _ := pipe.serverReplica.Get(channelId); repRow != nil {
+	if repRow, _ := pipe.serverReplica.Get(ctx, channelId); repRow != nil {
 		t.Fatalf("server replica should be cleared, got %+v", repRow)
 	}
 }
@@ -936,7 +936,7 @@ func TestBatchSettlementIntegration_ManagedRefundOverHTTP(t *testing.T) {
 	if err != nil || !refundSettle.Success || refundSettle.Transaction == "" {
 		t.Fatalf("managed refund over HTTP: %v / %+v", err, refundSettle)
 	}
-	if facRow, _ := pipe.facilitatorStorage.Get(channelId); facRow != nil {
+	if facRow, _ := pipe.facilitatorStorage.Get(ctx, channelId); facRow != nil {
 		t.Fatalf("facilitator custody should be cleared after refund, got %+v", facRow)
 	}
 }
@@ -1417,12 +1417,12 @@ func TestBatchSettlementIntegration_WithdrawalPendingRefund(t *testing.T) {
 	// initiateWithdraw would also work, but it requires payer-side chain writes
 	// (out of scope for the helpers exposed in test/integration/).
 	storage := pipe.serverScheme.GetStorage()
-	session, err := storage.Get(channelId)
+	session, err := storage.Get(ctx, channelId)
 	if err != nil || session == nil {
 		t.Fatalf("expected session for channel %s: %v", channelId, err)
 	}
 	session.WithdrawRequestedAt = int(time.Now().Unix())
-	if _, err := storage.UpdateChannel(channelId, func(*batchedserver.ChannelSession) *batchedserver.ChannelSession {
+	if _, err := storage.UpdateChannel(ctx, channelId, func(*batchedserver.ChannelSession) *batchedserver.ChannelSession {
 		return session.Clone()
 	}); err != nil {
 		t.Fatalf("update session: %v", err)
@@ -1457,7 +1457,7 @@ func TestBatchSettlementIntegration_WithdrawalPendingRefund(t *testing.T) {
 	t.Logf("manager refund tx=%s channel=%s", results[0].Transaction, results[0].Channel)
 
 	// Session should be deleted post-refund.
-	post, _ := storage.Get(channelId)
+	post, _ := storage.Get(ctx, channelId)
 	if post != nil {
 		t.Fatalf("expected session deleted after refund, still present: %+v", post)
 	}

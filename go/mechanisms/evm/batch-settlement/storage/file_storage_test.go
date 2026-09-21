@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -20,14 +21,14 @@ func newServerFileStore(t *testing.T) (*FileChannelStorage[*Channel], string) {
 
 func mustSeedFileChannel(t *testing.T, s *FileChannelStorage[*Channel], sess *Channel) {
 	t.Helper()
-	if _, err := s.UpdateChannel(sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), sess.ChannelId, func(*Channel) *Channel { return sess.Clone() }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }
 
 func TestServerFileStorage_GetMissing(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	_, err := s.Get("missing")
+	_, err := s.Get(context.Background(), "missing")
 	if err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("expected ErrInvalidChannelId, got %v", err)
 	}
@@ -35,7 +36,7 @@ func TestServerFileStorage_GetMissing(t *testing.T) {
 
 func TestServerFileStorage_GetMissingCanonical(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -47,10 +48,10 @@ func TestServerFileStorage_GetMissingCanonical(t *testing.T) {
 func TestServerFileStorage_UpsertGetRoundTrip(t *testing.T) {
 	s, _ := newServerFileStore(t)
 	in := sampleSession(testChA, "5")
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return in.Clone() }); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
-	got, err := s.Get(testChA)
+	got, err := s.Get(context.Background(), testChA)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -72,31 +73,31 @@ func TestServerFileStorage_PathLowercased(t *testing.T) {
 func TestServerFileStorage_UpdateChannelDelete(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
-	ok, err := s.Acquire(testChA, "pending", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil }); err != nil {
 		t.Fatalf("UpdateChannel delete: %v", err)
 	}
-	if got, _ := s.Get(testChA); got != nil {
+	if got, _ := s.Get(context.Background(), testChA); got != nil {
 		t.Fatalf("expected nil after delete")
 	}
-	held, err := s.IsHeld(testChA, "")
+	held, err := s.IsHeld(context.Background(), testChA, "")
 	if err != nil || held {
 		t.Fatalf("Delete must drop hold: held=%v err=%v", held, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "server", testChA+".hold")); !os.IsNotExist(err) {
 		t.Fatalf("hold file should be gone: %v", err)
 	}
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return nil }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return nil }); err != nil {
 		t.Fatalf("UpdateChannel delete-missing should not error: %v", err)
 	}
 }
 
 func TestServerFileStorage_List_Empty(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	got, err := s.List()
+	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestServerFileStorage_List_Populated(t *testing.T) {
 	s, _ := newServerFileStore(t)
 	mustSeedFileChannel(t, s, sampleSession(testChB, "2"))
 	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
-	got, err := s.List()
+	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestServerFileStorage_List_SkipsNonJSON(t *testing.T) {
 	mustSeedFileChannel(t, s, sampleSession(testChA, "1"))
 	// Drop a non-JSON file in the same directory
 	_ = os.WriteFile(filepath.Join(dir, "server", "junk.txt"), []byte("noise"), 0o644)
-	got, err := s.List()
+	got, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestServerFileStorage_List_Malformed(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	_ = os.MkdirAll(filepath.Join(dir, "server"), 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "server", "bad.json"), []byte("not json{"), 0o644)
-	if _, err := s.List(); err == nil {
+	if _, err := s.List(context.Background()); err == nil {
 		t.Fatal("expected unmarshal error")
 	}
 }
@@ -147,7 +148,7 @@ func TestServerFileStorage_List_Malformed(t *testing.T) {
 func TestServerFileStorage_UpdateChannelCreatesDirectoryFromCold(t *testing.T) {
 	dir := t.TempDir()
 	s := NewFileChannelStorage[*Channel](batchsettlement.FileChannelStorageOptions{Directory: dir})
-	result, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return sampleSession(testChA, "1") })
+	result, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return sampleSession(testChA, "1") })
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -159,12 +160,12 @@ func TestServerFileStorage_UpdateChannelCreatesDirectoryFromCold(t *testing.T) {
 func TestServerFileStorage_RejectsPathEscapeMalformedIds(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	malformed := "../../../etc/passwd"
-	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), malformed, func(*Channel) *Channel {
 		return sampleSession(testChA, "1")
 	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("UpdateChannel: expected ErrInvalidChannelId, got %v", err)
 	}
-	if _, err := s.Get(malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
+	if _, err := s.Get(context.Background(), malformed); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("Get: expected ErrInvalidChannelId, got %v", err)
 	}
 	// No files should have been created under the storage root.
@@ -180,7 +181,7 @@ func TestServerFileStorage_RejectsPathEscapeMalformedIds(t *testing.T) {
 func TestServerFileStorage_RejectsPrefixedValidId(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	malformed := "../server/" + testChA
-	if _, err := s.UpdateChannel(malformed, func(*Channel) *Channel {
+	if _, err := s.UpdateChannel(context.Background(), malformed, func(*Channel) *Channel {
 		return sampleSession(testChA, "1")
 	}); err == nil || err.Error() != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("UpdateChannel: expected ErrInvalidChannelId, got %v", err)
@@ -197,18 +198,18 @@ func TestServerFileStorage_RejectsPrefixedValidId(t *testing.T) {
 func TestServerFileStorage_HoldSidecarDoesNotWritePendingOntoChannelJSON(t *testing.T) {
 	s, dir := newServerFileStore(t)
 	channel := sampleSession(testChA, "5")
-	if _, err := s.UpdateChannel(testChA, func(*Channel) *Channel { return channel }); err != nil {
+	if _, err := s.UpdateChannel(context.Background(), testChA, func(*Channel) *Channel { return channel }); err != nil {
 		t.Fatalf("UpdateChannel: %v", err)
 	}
-	ok, err := s.Acquire(testChA, "first", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "first", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire first: ok=%v err=%v", ok, err)
 	}
-	ok, err = s.Acquire(testChA, "second", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "second", 60_000)
 	if err != nil || ok {
 		t.Fatalf("second acquire should fail: ok=%v err=%v", ok, err)
 	}
-	held, err := s.IsHeld(testChA, "first")
+	held, err := s.IsHeld(context.Background(), testChA, "first")
 	if err != nil || !held {
 		t.Fatalf("first should be held: held=%v err=%v", held, err)
 	}
@@ -238,22 +239,22 @@ func TestServerFileStorage_HoldSidecarDoesNotWritePendingOntoChannelJSON(t *test
 	if !reflect.DeepEqual(&stored, channel) {
 		t.Fatalf("channel JSON mutated:\nwant %+v\ngot  %+v", channel, stored)
 	}
-	listed, err := s.List()
+	listed, err := s.List(context.Background())
 	if err != nil || len(listed) != 1 || listed[0].ChannelId != testChA {
 		t.Fatalf("list = %+v err=%v", listed, err)
 	}
 
-	if err := s.Release(testChA, "second"); err != nil {
+	if err := s.Release(context.Background(), testChA, "second"); err != nil {
 		t.Fatalf("release second: %v", err)
 	}
-	held, err = s.IsHeld(testChA, "first")
+	held, err = s.IsHeld(context.Background(), testChA, "first")
 	if err != nil || !held {
 		t.Fatalf("first should still be held: held=%v err=%v", held, err)
 	}
-	if err := s.Release(testChA, "first"); err != nil {
+	if err := s.Release(context.Background(), testChA, "first"); err != nil {
 		t.Fatalf("release first: %v", err)
 	}
-	held, err = s.IsHeld(testChA, "")
+	held, err = s.IsHeld(context.Background(), testChA, "")
 	if err != nil || held {
 		t.Fatalf("lock should be free: held=%v err=%v", held, err)
 	}
@@ -270,19 +271,19 @@ func TestServerFileStorage_HoldSidecarDoesNotWritePendingOntoChannelJSON(t *test
 
 func TestServerFileStorage_ReleaseExpiredPendingIdDoesNotDropNewerHolder(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	ok, err := s.Acquire(testChA, "expired", 1)
+	ok, err := s.Acquire(context.Background(), testChA, "expired", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire expired: ok=%v err=%v", ok, err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	ok, err = s.Acquire(testChA, "next", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "next", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire next: ok=%v err=%v", ok, err)
 	}
-	if err := s.Release(testChA, "expired"); err != nil {
+	if err := s.Release(context.Background(), testChA, "expired"); err != nil {
 		t.Fatalf("Release expired: %v", err)
 	}
-	held, err := s.IsHeld(testChA, "next")
+	held, err := s.IsHeld(context.Background(), testChA, "next")
 	if err != nil || !held {
 		t.Fatalf("newer holder must remain: held=%v err=%v", held, err)
 	}
@@ -290,20 +291,20 @@ func TestServerFileStorage_ReleaseExpiredPendingIdDoesNotDropNewerHolder(t *test
 
 func TestServerFileStorage_ExpiredHoldIsFree(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	ok, err := s.Acquire(testChA, "expired", 1)
+	ok, err := s.Acquire(context.Background(), testChA, "expired", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire expired: ok=%v err=%v", ok, err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	ok, err = s.Acquire(testChA, "next", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "next", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire next: ok=%v err=%v", ok, err)
 	}
-	held, err := s.IsHeld(testChA, "expired")
+	held, err := s.IsHeld(context.Background(), testChA, "expired")
 	if err != nil || held {
 		t.Fatalf("expired should not be held: held=%v err=%v", held, err)
 	}
-	held, err = s.IsHeld(testChA, "next")
+	held, err = s.IsHeld(context.Background(), testChA, "next")
 	if err != nil || !held {
 		t.Fatalf("next should be held: held=%v err=%v", held, err)
 	}
@@ -311,31 +312,31 @@ func TestServerFileStorage_ExpiredHoldIsFree(t *testing.T) {
 
 func TestServerFileStorage_MissingHoldIsNotHeld(t *testing.T) {
 	s, _ := newServerFileStore(t)
-	held, err := s.IsHeld(testChA, "")
+	held, err := s.IsHeld(context.Background(), testChA, "")
 	if err != nil || held {
 		t.Fatalf("missing hold: held=%v err=%v", held, err)
 	}
-	if err := s.Release(testChA, "missing"); err != nil {
+	if err := s.Release(context.Background(), testChA, "missing"); err != nil {
 		t.Fatalf("release missing: %v", err)
 	}
 }
 
 func TestServerFileStorage_CorruptHoldRethrows(t *testing.T) {
 	s, dir := newServerFileStore(t)
-	ok, err := s.Acquire(testChA, "ok", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "ok", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "server", testChA+".hold"), []byte("{nope"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, err := s.IsHeld(testChA, ""); err == nil {
+	if _, err := s.IsHeld(context.Background(), testChA, ""); err == nil {
 		t.Fatal("expected IsHeld error")
 	}
-	if err := s.Release(testChA, "ok"); err == nil {
+	if err := s.Release(context.Background(), testChA, "ok"); err == nil {
 		t.Fatal("expected Release error")
 	}
-	if _, err := s.Acquire(testChA, "next", 60_000); err == nil {
+	if _, err := s.Acquire(context.Background(), testChA, "next", 60_000); err == nil {
 		t.Fatal("expected Acquire error")
 	}
 }
@@ -353,7 +354,7 @@ func TestServerFileStorage_StealsStaleHoldLock(t *testing.T) {
 	if err := os.Chtimes(holdLock, stale, stale); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	ok, err := s.Acquire(testChA, "fresh", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "fresh", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire after stale steal: ok=%v err=%v", ok, err)
 	}
@@ -416,7 +417,7 @@ func TestAcquireExclusiveFile_StealsDeadOwner(t *testing.T) {
 
 func TestFileChannelStorage_AcquireIsNotReentrant(t *testing.T) {
 	s, dir := newServerFileStore(t)
-	ok, err := s.Acquire(testChA, "same-owner", 60_000)
+	ok, err := s.Acquire(context.Background(), testChA, "same-owner", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("first Acquire: ok=%v err=%v", ok, err)
 	}
@@ -430,7 +431,7 @@ func TestFileChannelStorage_AcquireIsNotReentrant(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	time.Sleep(5 * time.Millisecond)
-	ok, err = s.Acquire(testChA, "same-owner", 60_000)
+	ok, err = s.Acquire(context.Background(), testChA, "same-owner", 60_000)
 	if err != nil || ok {
 		t.Fatalf("re-entrant Acquire should miss: ok=%v err=%v", ok, err)
 	}
@@ -445,7 +446,7 @@ func TestFileChannelStorage_AcquireIsNotReentrant(t *testing.T) {
 	if second.ExpiresAt != first.ExpiresAt {
 		t.Fatalf("TTL refreshed: first=%d second=%d", first.ExpiresAt, second.ExpiresAt)
 	}
-	held, err := s.IsHeld(testChA, "same-owner")
+	held, err := s.IsHeld(context.Background(), testChA, "same-owner")
 	if err != nil || !held {
 		t.Fatalf("original holder should remain: held=%v err=%v", held, err)
 	}

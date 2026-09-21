@@ -77,7 +77,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheMissSuccessLeavesNoEntry(t *t
 		},
 	}
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store)
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store, nil, "")
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheMissReceiptFailurePopulatesSt
 		},
 	}
 
-	_, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store)
+	_, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store, nil, "")
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
 		t.Fatalf("got err = %v, want settlement_pending", err)
@@ -136,7 +136,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheHitReconcilesWithoutRebroadca
 		},
 	}
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store)
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store, nil, "")
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheHitStillPendingReturnsAgainWi
 		waitForReceipt: func(string) (*evm.TransactionReceipt, error) { return nil, errors.New("rpc: still pending") },
 	}
 
-	_, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store)
+	_, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, store, nil, "")
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
 		t.Fatalf("got err = %v, want settlement_pending", err)
@@ -198,7 +198,7 @@ func TestSettleDeposit_PendingSettlementStore_NilStoreDisablesFastPath(t *testin
 		},
 	}
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil)
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}

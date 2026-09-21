@@ -64,15 +64,15 @@ type recordingLockStorage struct {
 	acquires int
 }
 
-func (r *recordingLockStorage) Acquire(channelId, pendingId string, ttlMs int64) (bool, error) {
+func (r *recordingLockStorage) Acquire(ctx context.Context, channelId, pendingId string, ttlMs int64) (bool, error) {
 	r.acquires++
-	return r.inner.Acquire(channelId, pendingId, ttlMs)
+	return r.inner.Acquire(ctx, channelId, pendingId, ttlMs)
 }
-func (r *recordingLockStorage) Release(channelId, pendingId string) error {
-	return r.inner.Release(channelId, pendingId)
+func (r *recordingLockStorage) Release(ctx context.Context, channelId, pendingId string) error {
+	return r.inner.Release(ctx, channelId, pendingId)
 }
-func (r *recordingLockStorage) IsHeld(channelId, pendingId string) (bool, error) {
-	return r.inner.IsHeld(channelId, pendingId)
+func (r *recordingLockStorage) IsHeld(ctx context.Context, channelId, pendingId string) (bool, error) {
+	return r.inner.IsHeld(ctx, channelId, pendingId)
 }
 
 type signedVoucherFixture struct {
@@ -213,7 +213,7 @@ func runAfterVerify(t *testing.T, s *BatchSettlementEvmScheme, payload x402.Paym
 
 func mustAcquire(t *testing.T, s *BatchSettlementEvmScheme, id, pendingId string) {
 	t.Helper()
-	ok, err := s.GetLockStorage().Acquire(id, pendingId, 600_000)
+	ok, err := s.GetLockStorage().Acquire(context.Background(), id, pendingId, 600_000)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
@@ -221,7 +221,7 @@ func mustAcquire(t *testing.T, s *BatchSettlementEvmScheme, id, pendingId string
 
 func lockHeld(t *testing.T, s *BatchSettlementEvmScheme, id, pendingId string) bool {
 	t.Helper()
-	held, err := s.GetLockStorage().IsHeld(id, pendingId)
+	held, err := s.GetLockStorage().IsHeld(context.Background(), id, pendingId)
 	if err != nil {
 		t.Fatalf("IsHeld: %v", err)
 	}
@@ -230,13 +230,13 @@ func lockHeld(t *testing.T, s *BatchSettlementEvmScheme, id, pendingId string) b
 
 type throwingLockStorage struct{}
 
-func (throwingLockStorage) Acquire(string, string, int64) (bool, error) {
+func (throwingLockStorage) Acquire(_ context.Context, _, _ string, _ int64) (bool, error) {
 	return false, errors.New("lock down")
 }
-func (throwingLockStorage) Release(string, string) error {
+func (throwingLockStorage) Release(_ context.Context, _, _ string) error {
 	return errors.New("lock down")
 }
-func (throwingLockStorage) IsHeld(string, string) (bool, error) {
+func (throwingLockStorage) IsHeld(_ context.Context, _, _ string) (bool, error) {
 	return false, errors.New("lock down")
 }
 
@@ -246,14 +246,14 @@ type errLockStorage struct {
 	isHeldErr  error
 }
 
-func (s errLockStorage) Acquire(string, string, int64) (bool, error) {
+func (s errLockStorage) Acquire(_ context.Context, _, _ string, _ int64) (bool, error) {
 	if s.acquireErr != nil {
 		return false, s.acquireErr
 	}
 	return true, nil
 }
-func (s errLockStorage) Release(string, string) error { return s.releaseErr }
-func (s errLockStorage) IsHeld(string, string) (bool, error) {
+func (s errLockStorage) Release(_ context.Context, _, _ string) error { return s.releaseErr }
+func (s errLockStorage) IsHeld(_ context.Context, _, _ string) (bool, error) {
 	if s.isHeldErr != nil {
 		return false, s.isHeldErr
 	}
@@ -284,20 +284,20 @@ type sessionHookStorage struct {
 	forceResult *ChannelUpdateResult
 }
 
-func (s *sessionHookStorage) Get(channelId string) (*ChannelSession, error) {
-	return s.inner.Get(channelId)
+func (s *sessionHookStorage) Get(ctx context.Context, channelId string) (*ChannelSession, error) {
+	return s.inner.Get(ctx, channelId)
 }
-func (s *sessionHookStorage) List() ([]*ChannelSession, error) {
-	return s.inner.List()
+func (s *sessionHookStorage) List(ctx context.Context) ([]*ChannelSession, error) {
+	return s.inner.List(ctx)
 }
-func (s *sessionHookStorage) UpdateChannel(channelId string, update func(*ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
+func (s *sessionHookStorage) UpdateChannel(ctx context.Context, channelId string, update func(*ChannelSession) *ChannelSession) (*ChannelUpdateResult, error) {
 	if s.updateErr != nil {
 		return nil, s.updateErr
 	}
 	if s.forceResult != nil {
 		return s.forceResult, nil
 	}
-	return s.inner.UpdateChannel(channelId, update)
+	return s.inner.UpdateChannel(ctx, channelId, update)
 }
 
 func depositAfterSettleCtx(id string) (x402.SettleResultContext, *stubPayload) {
@@ -614,7 +614,7 @@ func TestBeforeVerifyHook_ReplacesExpiredAdmissionLock(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)
 	seedSession(t, s, fx.channelId, sampleSession(fx.channelId, "10"))
-	ok, err := s.GetLockStorage().Acquire(fx.channelId, "expired", 1)
+	ok, err := s.GetLockStorage().Acquire(context.Background(), fx.channelId, "expired", 1)
 	if err != nil || !ok {
 		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
 	}
@@ -688,7 +688,7 @@ func TestBeforeVerifyHook_NonCanonicalChannelIdAborts(t *testing.T) {
 	if res == nil || !res.Abort || res.Reason != batchsettlement.ErrInvalidChannelId {
 		t.Fatalf("got %+v", res)
 	}
-	list, err := s.storage.List()
+	list, err := s.storage.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -1124,7 +1124,7 @@ func TestBeforeSettleHook_OptimisticLockStoreOneChargeWins(t *testing.T) {
 	if skips != 1 || aborts != 1 {
 		t.Fatalf("expected 1 skip and 1 abort, got skips=%d aborts=%d a=%+v b=%+v", skips, aborts, a.res, b.res)
 	}
-	got, _ := storage.Get(fx.channelId)
+	got, _ := storage.Get(context.Background(), fx.channelId)
 	if got == nil || got.ChargedCumulativeAmount != "10" {
 		t.Fatalf("charged = %+v", got)
 	}

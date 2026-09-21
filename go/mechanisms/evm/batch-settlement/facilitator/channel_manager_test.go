@@ -84,7 +84,7 @@ func TestFacilitatorChannelManager_ClaimAppliesTotals(t *testing.T) {
 	if len(results) != 1 || results[0].Vouchers != 1 {
 		t.Fatalf("results = %+v", results)
 	}
-	got, _ := store.Get(ch.ChannelId)
+	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.TotalClaimed != "1000" {
 		t.Fatalf("totalClaimed = %s", got.TotalClaimed)
 	}
@@ -130,7 +130,7 @@ func TestFacilitatorChannelManager_ClaimPreservesInFlightChargeCount(t *testing.
 	signer := newManagedSigner(t, nil)
 	origWrite := signer.writeContract
 	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
-		if _, err := store.UpdateChannel(ch.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		if _, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
@@ -149,7 +149,7 @@ func TestFacilitatorChannelManager_ClaimPreservesInFlightChargeCount(t *testing.
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.Get(ch.ChannelId)
+	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 2 {
 		t.Fatalf("chargeCount = %d, want 2", got.ChargeCount)
 	}
@@ -250,7 +250,7 @@ func TestFacilitatorChannelManager_ClaimSimulationFailureLeavesStore(t *testing.
 	if err == nil {
 		t.Fatal("expected claim failure")
 	}
-	got, _ := store.Get(ch.ChannelId)
+	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 3 || got.TotalClaimed != "0" {
 		t.Fatalf("store mutated: %+v", got)
 	}
@@ -365,7 +365,7 @@ func TestFacilitatorChannelManager_RefundSkipsLiveLock(t *testing.T) {
 		ChargeCount:             0,
 	})
 	seedManagedChannel(t, store, ch)
-	ok, err := store.Acquire(ch.ChannelId, "pending", 60_000)
+	ok, err := store.Acquire(context.Background(), ch.ChannelId, "pending", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("acquire: %v %v", ok, err)
 	}
@@ -438,7 +438,7 @@ func TestFacilitatorChannelManager_RetentionForever(t *testing.T) {
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.Get(ch.ChannelId)
+	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got == nil {
 		t.Fatal("expected retained closed row")
 	}
@@ -568,7 +568,7 @@ func TestFacilitatorChannelManager_FlushOnStop(t *testing.T) {
 	if err := mgr.Stop(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.Get(ch.ChannelId)
+	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got != nil && got.TotalClaimed != "1000" {
 		t.Fatalf("expected claimed, got %+v", got)
 	}

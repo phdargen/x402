@@ -150,8 +150,8 @@ func NewBatchSettlementChannelManager(config ChannelManagerConfig) *BatchSettlem
 
 // channelIsHeld returns whether a live admission lock is held. Lock-store I/O
 // is treated as not held; implementation/parse errors fail closed.
-func channelIsHeld(lock ChannelLockStorage, channelId string) (bool, error) {
-	held, err := lock.IsHeld(channelId, "")
+func channelIsHeld(ctx context.Context, lock ChannelLockStorage, channelId string) (bool, error) {
+	held, err := lock.IsHeld(ctx, channelId, "")
 	if impl := RethrowLockImplementationError(err); impl != nil {
 		return false, impl
 	}
@@ -193,7 +193,7 @@ func (m *BatchSettlementChannelManager) GetClaimableVouchers(opts *GetClaimableV
 		idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
 		filter.IdleAtOrBefore = &idleAt
 	}
-	page, err := QueryChannels(m.scheme.GetStorage(), filter, nil)
+	page, err := QueryChannels(context.Background(), m.scheme.GetStorage(), filter, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func (m *BatchSettlementChannelManager) GetClaimableVouchers(opts *GetClaimableV
 // GetWithdrawalPendingSessions returns sessions that have a pending payer-initiated
 // withdrawal (withdrawRequestedAt > 0).
 func (m *BatchSettlementChannelManager) GetWithdrawalPendingSessions() ([]*ChannelSession, error) {
-	page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindWithdrawPending}, nil)
+	page, err := QueryChannels(context.Background(), m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindWithdrawPending}, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +213,7 @@ func (m *BatchSettlementChannelManager) GetWithdrawalPendingSessions() ([]*Chann
 // Claim collects claimable vouchers and submits them in batches.
 func (m *BatchSettlementChannelManager) Claim(ctx context.Context, opts *ClaimOptions) ([]ClaimResult, error) {
 	resolved := normalizeClaimOptions(opts)
-	channels, err := m.selectClaimTargets(resolved.SelectClaimChannels)
+	channels, err := m.selectClaimTargets(ctx, resolved.SelectClaimChannels)
 	if err != nil {
 		return nil, err
 	}
@@ -260,13 +260,13 @@ func (m *BatchSettlementChannelManager) Refund(ctx context.Context, channelIds [
 	}
 	var targets []*ChannelSession
 	if len(channelIds) == 0 {
-		page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindIdleRefundable}, nil)
+		page, err := QueryChannels(ctx, m.scheme.GetStorage(), ChannelQuery{Kind: QueryKindIdleRefundable}, nil)
 		if err != nil {
 			return nil, err
 		}
 		targets = page.Items
 	} else {
-		channels, err := m.scheme.GetStorage().List()
+		channels, err := m.scheme.GetStorage().List(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -283,7 +283,7 @@ func (m *BatchSettlementChannelManager) Refund(ctx context.Context, channelIds [
 	live := make([]*ChannelSession, 0, len(targets))
 	lock := m.scheme.GetLockStorage()
 	for _, c := range targets {
-		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		held, holdErr := channelIsHeld(ctx, lock, c.ChannelId)
 		if holdErr != nil {
 			return nil, holdErr
 		}
@@ -303,7 +303,7 @@ func (m *BatchSettlementChannelManager) RefundIdleChannels(ctx context.Context, 
 	if err := m.assertRefundAllowed(); err != nil {
 		return nil, err
 	}
-	idle, idleErr := m.getIdleChannelsForRefund(idleSecs)
+	idle, idleErr := m.getIdleChannelsForRefund(ctx, idleSecs)
 	if idleErr != nil {
 		return nil, idleErr
 	}
@@ -528,7 +528,7 @@ func (m *BatchSettlementChannelManager) runRefundJob(ctx context.Context) {
 	if cfg.SelectRefundChannels == nil {
 		return
 	}
-	channels, err := m.scheme.storage.List()
+	channels, err := m.scheme.storage.List(ctx)
 	if err != nil {
 		if cfg.OnError != nil {
 			cfg.OnError(fmt.Errorf("auto-refund list: %w", err))
@@ -594,8 +594,8 @@ func normalizeClaimOptions(opts *ClaimOptions) resolvedClaimOptions {
 	return out
 }
 
-func (m *BatchSettlementChannelManager) selectClaimTargets(selector ClaimChannelSelector) ([]*ChannelSession, error) {
-	channels, err := m.scheme.storage.List()
+func (m *BatchSettlementChannelManager) selectClaimTargets(ctx context.Context, selector ClaimChannelSelector) ([]*ChannelSession, error) {
+	channels, err := m.scheme.storage.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +640,7 @@ func (m *BatchSettlementChannelManager) claimFromChannels(
 			return results, err
 		}
 		results = append(results, *res)
-		if err := m.updateClaimedSessions(batch); err != nil {
+		if err := m.updateClaimedSessions(ctx, batch); err != nil {
 			log.Printf("[batched] post-claim storage update failed: %v", err)
 		}
 	}
@@ -678,7 +678,7 @@ func (m *BatchSettlementChannelManager) refundChannels(ctx context.Context, chan
 	results := make([]RefundResult, 0, len(channels))
 	lock := m.scheme.GetLockStorage()
 	for _, c := range channels {
-		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		held, holdErr := channelIsHeld(ctx, lock, c.ChannelId)
 		if holdErr != nil {
 			return results, holdErr
 		}
@@ -767,7 +767,7 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 		return nil, fmt.Errorf("%s", formatFacilitatorFailure("Refund", resp))
 	}
 
-	held, holdErr := channelIsHeld(m.scheme.GetLockStorage(), normalizedId)
+	held, holdErr := channelIsHeld(ctx, m.scheme.GetLockStorage(), normalizedId)
 	if holdErr != nil {
 		return nil, holdErr
 	}
@@ -776,7 +776,7 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 	}
 
 	// Drop the session so it doesn't churn through future refund cycles.
-	_, _ = m.scheme.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
+	_, _ = m.scheme.storage.UpdateChannel(ctx, normalizedId, func(current *ChannelSession) *ChannelSession {
 		if current == nil {
 			return current
 		}
@@ -789,8 +789,8 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 // updateClaimedSessions advances each session's TotalClaimed to the just-claimed
 // cumulative amount so GetClaimableVouchers stops returning the same channel
 // until a fresh voucher pushes ChargedCumulativeAmount higher.
-func (m *BatchSettlementChannelManager) updateClaimedSessions(claims []batchsettlement.BatchSettlementVoucherClaim) error {
-	return ApplyClaimedTotals(m.scheme.GetStorage(), claims, string(m.network))
+func (m *BatchSettlementChannelManager) updateClaimedSessions(ctx context.Context, claims []batchsettlement.BatchSettlementVoucherClaim) error {
+	return ApplyClaimedTotals(ctx, m.scheme.GetStorage(), claims, string(m.network))
 }
 
 func (m *BatchSettlementChannelManager) assertRefundAllowed() error {
@@ -807,12 +807,12 @@ func (m *BatchSettlementChannelManager) assertRefundAllowed() error {
 //
 // Callers wanting "refund all idle channels" should inline this predicate
 // inside their SelectRefundChannels callback.
-func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(idleSecs int) ([]*ChannelSession, error) {
+func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(ctx context.Context, idleSecs int) ([]*ChannelSession, error) {
 	if idleSecs <= 0 {
 		return nil, nil
 	}
 	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
-	page, err := QueryChannels(m.scheme.GetStorage(), ChannelQuery{
+	page, err := QueryChannels(ctx, m.scheme.GetStorage(), ChannelQuery{
 		Kind:           QueryKindIdleRefundable,
 		IdleAtOrBefore: &idleAt,
 	}, nil)
@@ -822,7 +822,7 @@ func (m *BatchSettlementChannelManager) getIdleChannelsForRefund(idleSecs int) (
 	lock := m.scheme.GetLockStorage()
 	out := make([]*ChannelSession, 0, len(page.Items))
 	for _, c := range page.Items {
-		held, holdErr := channelIsHeld(lock, c.ChannelId)
+		held, holdErr := channelIsHeld(ctx, lock, c.ChannelId)
 		if holdErr != nil {
 			return nil, holdErr
 		}

@@ -21,7 +21,7 @@ func TestVerifyManaged_RejectsWhenAdmissionLockHeld(t *testing.T) {
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	ok, err := store.Acquire(channelId, "0xother", 60_000)
+	ok, err := store.Acquire(context.Background(), channelId, "0xother", 60_000)
 	if err != nil || !ok {
 		t.Fatalf("acquire: %v %v", ok, err)
 	}
@@ -101,7 +101,7 @@ func TestSettleManaged_ReleasesLockWhenPendingIdEchoed(t *testing.T) {
 		t.Fatalf("verify: %+v %v", verified, err)
 	}
 	pendingId := pendingIdFrom(verified)
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if !held {
 		t.Fatal("expected held lock")
 	}
@@ -110,7 +110,7 @@ func TestSettleManaged_ReleasesLockWhenPendingIdEchoed(t *testing.T) {
 	if err != nil || !settled.Success {
 		t.Fatalf("settle: %+v %v", settled, err)
 	}
-	held, _ = store.IsHeld(channelId, "")
+	held, _ = store.IsHeld(context.Background(), channelId, "")
 	if held {
 		t.Fatal("expected lock released")
 	}
@@ -142,7 +142,7 @@ func TestSettleManaged_ZeroAmountDoesNotIncrementChargeCount(t *testing.T) {
 	if extraInt(settled, "chargeCount") != 2 {
 		t.Fatalf("chargeCount extra = %d", extraInt(settled, "chargeCount"))
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got.ChargedCumulativeAmount != "1000" || got.ChargeCount != 2 {
 		t.Fatalf("stored %+v", got)
 	}
@@ -162,7 +162,7 @@ func TestVerifyManaged_RejectsClientCancel(t *testing.T) {
 	if resp.IsValid || resp.InvalidReason != ErrUnexpectedCancel {
 		t.Fatalf("got %+v", resp)
 	}
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if held {
 		t.Fatal("lock should not be taken")
 	}
@@ -314,9 +314,9 @@ func TestSettleManaged_RefundWatermarkMismatch(t *testing.T) {
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargedCumulativeAmount: "1000"}))
 	deps := managedDeps(t, store, store, auth, nil)
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
-	seed, _ := store.Get(channelId)
+	seed, _ := store.Get(context.Background(), channelId)
 	seed.CallerIdentity = "svc"
-	if _, err := store.UpdateChannel(channelId, func(*FacilitatorChannel) *FacilitatorChannel { return seed.Clone() }); err != nil {
+	if _, err := store.UpdateChannel(context.Background(), channelId, func(*FacilitatorChannel) *FacilitatorChannel { return seed.Clone() }); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -366,7 +366,7 @@ func TestSettleManaged_EmptyStoreBootstrapsFromOnchain(t *testing.T) {
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got == nil || got.ChargedCumulativeAmount != "1000" {
 		t.Fatalf("stored %+v", got)
 	}
@@ -477,7 +477,7 @@ func managedDepositSigner(t *testing.T) *fakeFacilitatorSigner {
 	}
 }
 
-func TestSettleManagedDeposit_IdentityErrorSurfacesExtraFlag(t *testing.T) {
+func TestSettleManagedDeposit_IdentityErrorFailsClosed(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "02")
@@ -491,18 +491,73 @@ func TestSettleManagedDeposit_IdentityErrorSurfacesExtraFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.Success || resp.ErrorReason != ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("identity failure must fail the deposit closed, got %+v", resp)
+	}
+	if got, _ := store.Get(context.Background(), channelId); got != nil {
+		t.Fatal("failed deposit must not commit a channel row")
+	}
+	if binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork); binding != nil {
+		t.Fatal("failed deposit must not leave a binding")
+	}
+}
+
+func TestSettleManagedDeposit_BindingConflictDoesNotBlockDeposit(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "03")
+	channelId := mustChannelId(t, cfg)
+	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
+	if err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "owner-a",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "owner-b", nil }
+
+	resp, err := SettleManaged(context.Background(), deps,
+		managedDepositEnvelope(cfg, channelId),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !resp.Success {
-		t.Fatalf("identity failure must not fail the deposit, got %+v", resp)
+		t.Fatalf("binding conflict must not fail deposit at resolve time, got %+v", resp)
 	}
-	if resp.Extra["identityResolutionFailed"] != true {
-		t.Fatalf("missing identityResolutionFailed flag, extra = %+v", resp.Extra)
+	binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork)
+	if binding == nil || binding.CallerIdentity != "owner-a" {
+		t.Fatalf("async bind conflict must keep the first binding, got %+v", binding)
 	}
-	got, _ := store.Get(channelId)
+}
+
+func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "04")
+	channelId := mustChannelId(t, cfg)
+	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
+	if err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
+
+	resp, err := SettleManaged(context.Background(), deps,
+		managedDepositEnvelope(cfg, channelId),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Success {
+		t.Fatalf("same-identity rebind must succeed, got %+v", resp)
+	}
+	got, _ := store.Get(context.Background(), channelId)
 	if got == nil {
 		t.Fatal("expected stored channel")
 	}
-	if got.CallerIdentity != "" {
-		t.Fatalf("CallerIdentity = %q, want empty", got.CallerIdentity)
+	if got.CallerIdentity != "svc" {
+		t.Fatalf("CallerIdentity = %q, want svc", got.CallerIdentity)
 	}
 }
 
@@ -535,7 +590,7 @@ func TestSettleManaged_SubstitutedVoucherPendingIdMismatch(t *testing.T) {
 	if substituted.Success || substituted.ErrorReason != ErrPendingIdMismatch {
 		t.Fatalf("got %+v", substituted)
 	}
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if !held {
 		t.Fatal("reservation should remain live")
 	}
@@ -547,7 +602,7 @@ func TestSettleManaged_SubstitutedVoucherPendingIdMismatch(t *testing.T) {
 	if err != nil || !genuine.Success {
 		t.Fatalf("genuine: %+v %v", genuine, err)
 	}
-	held, _ = store.IsHeld(channelId, "")
+	held, _ = store.IsHeld(context.Background(), channelId, "")
 	if held {
 		t.Fatal("expected lock released")
 	}
@@ -575,7 +630,7 @@ func TestSettleManaged_OmittedPendingIdWhileReservationLive(t *testing.T) {
 	if rpcSigner.verifyCalls != 0 {
 		t.Fatalf("verifyCalls=%d, want 0", rpcSigner.verifyCalls)
 	}
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if !held {
 		t.Fatal("reservation should remain live")
 	}
@@ -776,7 +831,7 @@ func TestVerifyManaged_RejectsEOASignatureBeforeLock(t *testing.T) {
 	if resp.IsValid || resp.InvalidReason != ErrVoucherSignatureInvalid {
 		t.Fatalf("got %+v", resp)
 	}
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if held {
 		t.Fatal("lock should not be taken")
 	}
@@ -1036,7 +1091,7 @@ func TestSettleManaged_RefundFromDelegatedAuthWhenNoCallerIdentity(t *testing.T)
 		ChargeCount:             0,
 	}))
 	delegated := storage.NewInMemoryDelegatedAuthStore()
-	if err := delegated.Bind(storage.DelegatedAuthBinding{
+	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "service-bound",
 	}); err != nil {
 		t.Fatal(err)
@@ -1067,7 +1122,7 @@ func TestSettleManaged_CancelReleasesLock(t *testing.T) {
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	held, _ := store.IsHeld(channelId, "")
+	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if held {
 		t.Fatal("expected released")
 	}
@@ -1180,7 +1235,7 @@ func TestSettleManaged_PartialRefundKeepsRow(t *testing.T) {
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got == nil {
 		t.Fatal("expected retained row")
 	}
@@ -1213,7 +1268,7 @@ func TestSettleManaged_FullRefundDeletesRow(t *testing.T) {
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	got, _ := store.Get(channelId)
+	got, _ := store.Get(context.Background(), channelId)
 	if got != nil {
 		t.Fatalf("expected deleted row, got %+v", got)
 	}
@@ -1239,8 +1294,8 @@ func TestVerifyManaged_RefundMatchesWatermark(t *testing.T) {
 
 type failingDelegatedAuth struct{}
 
-func (failingDelegatedAuth) Bind(storage.DelegatedAuthBinding) error { return nil }
-func (failingDelegatedAuth) Get(string, string) (*storage.DelegatedAuthBinding, error) {
+func (failingDelegatedAuth) Bind(_ context.Context, _ storage.DelegatedAuthBinding) error { return nil }
+func (failingDelegatedAuth) Get(_ context.Context, _, _ string) (*storage.DelegatedAuthBinding, error) {
 	return nil, errors.New("auth store down")
 }
-func (failingDelegatedAuth) Delete(string, string) error { return nil }
+func (failingDelegatedAuth) Delete(_ context.Context, _, _ string) error { return nil }

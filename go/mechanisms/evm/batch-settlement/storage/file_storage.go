@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -69,7 +70,7 @@ func (s *FileChannelStorage[T]) holdPath(channelId string) (string, error) {
 }
 
 // Get loads a persisted channel record, or the zero T when the file is missing.
-func (s *FileChannelStorage[T]) Get(channelId string) (T, error) {
+func (s *FileChannelStorage[T]) Get(_ context.Context, channelId string) (T, error) {
 	var zero T
 	path, err := s.filePath(channelId)
 	if err != nil {
@@ -87,7 +88,7 @@ func (s *FileChannelStorage[T]) Get(channelId string) (T, error) {
 }
 
 // List returns stored records sorted by channelId.
-func (s *FileChannelStorage[T]) List() ([]T, error) {
+func (s *FileChannelStorage[T]) List(_ context.Context) ([]T, error) {
 	dir := filepath.Join(s.root, "server")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -123,7 +124,7 @@ func (s *FileChannelStorage[T]) List() ([]T, error) {
 // UpdateChannel atomically reads, mutates, and writes a channel record under an
 // exclusive lock file. Returning a different pointer commits the new session;
 // returning the zero T deletes the file; returning the same pointer is a no-op.
-func (s *FileChannelStorage[T]) UpdateChannel(channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
+func (s *FileChannelStorage[T]) UpdateChannel(_ context.Context, channelId string, update func(current T) T) (*ChannelUpdateResult[T], error) {
 	path, err := s.filePath(channelId)
 	if err != nil {
 		return nil, err
@@ -179,7 +180,7 @@ func (s *FileChannelStorage[T]) UpdateChannel(channelId string, update func(curr
 // Serialized with Release and IsHeld on {id}.hold.lock so an expired hold
 // cannot be unlinked out from under a new holder. Not re-entrant: a live hold,
 // including one owned by the same pendingId, is a miss.
-func (s *FileChannelStorage[T]) Acquire(channelId string, pendingId string, ttlMs int64) (bool, error) {
+func (s *FileChannelStorage[T]) Acquire(_ context.Context, channelId string, pendingId string, ttlMs int64) (bool, error) {
 	var acquired bool
 	err := s.withHoldLock(channelId, func() error {
 		path, err := s.holdPath(channelId)
@@ -217,7 +218,7 @@ func (s *FileChannelStorage[T]) Acquire(channelId string, pendingId string, ttlM
 }
 
 // Release drops the admission lock only when pendingId still holds it.
-func (s *FileChannelStorage[T]) Release(channelId string, pendingId string) error {
+func (s *FileChannelStorage[T]) Release(_ context.Context, channelId string, pendingId string) error {
 	return s.withHoldLock(channelId, func() error {
 		path, err := s.holdPath(channelId)
 		if err != nil {
@@ -245,7 +246,7 @@ func (s *FileChannelStorage[T]) Release(channelId string, pendingId string) erro
 }
 
 // IsHeld reports whether a live admission lock exists, optionally matching pendingId.
-func (s *FileChannelStorage[T]) IsHeld(channelId string, pendingId string) (bool, error) {
+func (s *FileChannelStorage[T]) IsHeld(_ context.Context, channelId string, pendingId string) (bool, error) {
 	var held bool
 	err := s.withHoldLock(channelId, func() error {
 		path, err := s.holdPath(channelId)
