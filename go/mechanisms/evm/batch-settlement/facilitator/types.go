@@ -9,12 +9,10 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-// FacilitatorChannel is the facilitator-managed channel record. First writer
-// wins on CallerIdentity.
+// FacilitatorChannel is the facilitator-managed channel record.
 type FacilitatorChannel struct {
 	storage.Channel
-	ChargeCount    int    `json:"chargeCount"`
-	CallerIdentity string `json:"callerIdentity,omitempty"`
+	ChargeCount int `json:"chargeCount"`
 }
 
 // Base returns the shared channel fields.

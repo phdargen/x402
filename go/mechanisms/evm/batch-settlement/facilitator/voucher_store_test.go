@@ -314,11 +314,7 @@ func TestSettleManaged_RefundWatermarkMismatch(t *testing.T) {
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargedCumulativeAmount: "1000"}))
 	deps := managedDeps(t, store, store, auth, nil)
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
-	seed, _ := store.Get(context.Background(), channelId)
-	seed.CallerIdentity = "svc"
-	if _, err := store.UpdateChannel(context.Background(), channelId, func(*FacilitatorChannel) *FacilitatorChannel { return seed.Clone() }); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	bindManagedIdentity(t, deps.DelegatedAuthStore, channelId, "svc")
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "1000", "", ""),
@@ -556,8 +552,9 @@ func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected stored channel")
 	}
-	if got.CallerIdentity != "svc" {
-		t.Fatalf("CallerIdentity = %q, want svc", got.CallerIdentity)
+	binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork)
+	if binding == nil || binding.CallerIdentity != "svc" {
+		t.Fatalf("delegated binding = %+v, want svc", binding)
 	}
 }
 
@@ -1005,9 +1002,9 @@ func TestSettleManaged_RefundCallerIdentity(t *testing.T) {
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
 		ChargedCumulativeAmount: "1000",
-		CallerIdentity:          "bound-service",
 	}))
 	deps := managedDeps(t, store, store, auth, nil)
+	bindManagedIdentity(t, deps.DelegatedAuthStore, channelId, "bound-service")
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "bound-service", nil }
 
 	resp, err := SettleManaged(context.Background(), deps,
@@ -1023,10 +1020,9 @@ func TestSettleManaged_RefundIdentityMismatch(t *testing.T) {
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
-		CallerIdentity: "bound-service",
-	}))
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, nil))
 	deps := managedDeps(t, store, store, auth, nil)
+	bindManagedIdentity(t, deps.DelegatedAuthStore, channelId, "bound-service")
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "other", nil }
 
 	resp, err := SettleManaged(context.Background(), deps,
@@ -1081,7 +1077,7 @@ func TestSettleManaged_RefundDelegatedAuthLookupFailure(t *testing.T) {
 	}
 }
 
-func TestSettleManaged_RefundFromDelegatedAuthWhenNoCallerIdentity(t *testing.T) {
+func TestSettleManaged_RefundMissingDelegatedAuthBinding(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "00")
@@ -1090,21 +1086,17 @@ func TestSettleManaged_RefundFromDelegatedAuthWhenNoCallerIdentity(t *testing.T)
 		ChargedCumulativeAmount: "5000",
 		ChargeCount:             0,
 	}))
-	delegated := storage.NewInMemoryDelegatedAuthStore()
-	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
-		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "service-bound",
-	}); err != nil {
-		t.Fatal(err)
-	}
 	deps := managedDeps(t, store, store, auth, nil)
-	deps.DelegatedAuthStore = delegated
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "service-bound", nil }
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "5000", "", ""),
 		managedRequirements(auth.addr), nil, nil)
-	if err != nil || !resp.Success {
-		t.Fatalf("got %+v %v", resp, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrRefundAuthorizerSignature {
+		t.Fatalf("got %+v", resp)
 	}
 }
 
