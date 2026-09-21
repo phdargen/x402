@@ -587,6 +587,42 @@ func TestSettleManaged_FallsThroughWhenPendingIdLockGone(t *testing.T) {
 	}
 }
 
+func TestSettleManaged_LockLostManagedRequirementMismatch(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	rpc := &managedRPC{}
+	signer := newManagedSigner(t, rpc)
+
+	authReqs := managedRequirements(auth.addr)
+	authReqs.Extra["receiverAuthorizer"] = "0x1111111111111111111111111111111111111111"
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, signer),
+		voucherEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "0xstale"),
+		authReqs, nil, nil)
+	if err != nil || resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if resp.ErrorReason != ErrReceiverAuthorizerMismatch {
+		t.Fatalf("authorizer: %+v", resp)
+	}
+	if rpc.tryAggregate != 0 {
+		t.Fatal("expected managedRequirement check before onchain verify")
+	}
+
+	delayReqs := managedRequirements(auth.addr)
+	delayReqs.Extra["withdrawDelay"] = 600
+	delay, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, signer),
+		voucherEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "0xstale"),
+		delayReqs, nil, nil)
+	if err != nil || delay.Success {
+		t.Fatalf("got %+v %v", delay, err)
+	}
+	if delay.ErrorReason != ErrWithdrawDelayMismatch {
+		t.Fatalf("withdrawDelay: %+v", delay)
+	}
+}
+
 func TestVerifyManaged_SkipsOnchainWhenCachedEOAFresh(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()

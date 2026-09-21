@@ -33,6 +33,7 @@ type CommitVoucherChargeInput[T ChannelRecord[T]] struct {
 	SignedCap           *big.Int
 	Voucher             batchsettlement.BatchSettlementVoucherFields
 	Snapshot            T
+	ResolveSnapshot     func(current T) T
 	RecoverFromSnapshot *bool
 	Now                 int64
 	LocalVerify         bool
@@ -170,9 +171,13 @@ func CommitVoucherCharge[T ChannelRecord[T]](store ChannelStorage[T], channelId 
 		if input.RecoverFromSnapshot != nil {
 			recoverFromSnapshot = *input.RecoverFromSnapshot
 		}
+		resolved := input.Snapshot
+		if input.ResolveSnapshot != nil {
+			resolved = input.ResolveSnapshot(current)
+		}
 		base := current
 		if isZeroRecord(base) && recoverFromSnapshot {
-			base = input.Snapshot
+			base = resolved
 		}
 		if isZeroRecord(base) {
 			outcome = &CommitVoucherChargeResult[T]{Status: CommitMissing}
@@ -202,8 +207,8 @@ func CommitVoucherCharge[T ChannelRecord[T]](store ChannelStorage[T], channelId 
 
 		updated := base.Clone()
 		ub := updated.Base()
-		if !input.LocalVerify && !isZeroRecord(input.Snapshot) {
-			snap := input.Snapshot.Base()
+		if !input.LocalVerify && !isZeroRecord(resolved) {
+			snap := resolved.Base()
 			ub.Balance = snap.Balance
 			ub.TotalClaimed = snap.TotalClaimed
 			ub.WithdrawRequestedAt = snap.WithdrawRequestedAt

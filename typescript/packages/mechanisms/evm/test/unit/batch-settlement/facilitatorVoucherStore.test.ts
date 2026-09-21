@@ -1405,6 +1405,34 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.errorReason).toBe(Errors.ErrInvalidVoucherSignature);
   });
 
+  it("rejects lock-lost voucher settle when managed requirements disagree without calling verifyVoucher", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const verifySpy = vi.spyOn(facilitatorVoucher, "verifyVoucher");
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope({
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "1000", signature: "0xfeedface" },
+        pendingId: "0xstale",
+      }),
+      {
+        ...managedRequirements(authorizer),
+        extra: {
+          ...managedRequirements(authorizer).extra,
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+        },
+      },
+    );
+    expect(verifySpy).not.toHaveBeenCalled();
+    verifySpy.mockRestore();
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrReceiverAuthorizerMismatch);
+  });
+
   it("rejects an omitted pendingId while another reservation is live without calling verifyVoucher", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
@@ -1917,7 +1945,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.extra?.channelState?.balance).toBe("119200");
   });
 
-  it("omits chargeCount on deposit settle when the managed charge hits the signed cap", async () => {
+  it("returns onchain deposit success when the managed charge hits the signed cap", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config, NETWORK);
@@ -1956,7 +1984,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     settleSpy.mockRestore();
     commitSpy.mockRestore();
     expect(result.success).toBe(true);
-    expect(result.extra?.chargeCount).toBeUndefined();
+    expect(result.transaction).toBe("0xdep");
   });
 
   it("continues settle when lock release fails after a successful voucher charge", async () => {
@@ -2302,7 +2330,7 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(stored?.refundNonce).toBe(2);
   });
 
-  it("preserves the prior chargeCount when a deposit charge commit conflicts", async () => {
+  it("fails deposit settle closed when a deposit charge commit conflicts", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildConfig({ receiverAuthorizer: authorizer.address });
     const channelId = computeChannelId(config, NETWORK);
@@ -2352,8 +2380,127 @@ describe("facilitator verifyManaged / settleManaged", () => {
       envelope(deposit as unknown as Record<string, unknown>),
       { ...managedRequirements(authorizer), amount: "10000" },
     );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrChannelBusy);
+    expect(result.transaction).toBe("0xdep");
+  });
+
+  it("fails deposit settle closed when post-deposit persist fails after onchain settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "20000", signature: "0xcafe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValueOnce({
+      success: true,
+      transaction: "0xdep",
+      network: NETWORK,
+      extra: { channelState: { balance: "15000", totalClaimed: "0" } },
+    });
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new Error("storage write failed"));
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope(deposit as unknown as Record<string, unknown>),
+      { ...managedRequirements(authorizer), amount: "10000" },
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrVoucherStoreUnavailable);
+    expect(result.transaction).toBe("0xdep");
+  });
+
+  it("fails deposit settle closed when commitVoucherCharge throws after onchain deposit settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "20000", signature: "0xcafe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValueOnce({
+      success: true,
+      transaction: "0xdep",
+      network: NETWORK,
+      extra: { channelState: { balance: "15000", totalClaimed: "0" } },
+    });
+    vi.spyOn(sharedVoucherStore, "commitVoucherCharge").mockRejectedValueOnce(
+      new Error("storage write failed"),
+    );
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope(deposit as unknown as Record<string, unknown>),
+      { ...managedRequirements(authorizer), amount: "10000" },
+    );
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrVoucherStoreUnavailable);
+    expect(result.transaction).toBe("0xdep");
+  });
+
+  it("continues deposit settle when lock release throws after onchain success", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    const now = Math.floor(Date.now() / 1000);
+    const deposit: BatchSettlementDepositPayload = {
+      type: "deposit",
+      channelConfig: config,
+      voucher: { channelId, maxClaimableAmount: "20000", signature: "0xcafe" },
+      deposit: {
+        amount: "10000",
+        authorization: {
+          erc3009Authorization: {
+            validAfter: String(now - 600),
+            validBefore: String(now + 3600),
+            salt: "0x01",
+            signature: "0xfeedface",
+          },
+        },
+      },
+    };
+    vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValueOnce({
+      success: true,
+      transaction: "0xdep",
+      network: NETWORK,
+      extra: { channelState: { balance: "15000", totalClaimed: "0" } },
+    });
+    vi.spyOn(storage, "release").mockRejectedValueOnce(new TypeError("corrupt hold marker"));
+
+    const result = await settleManaged(
+      buildDeps(storage, authorizer),
+      envelope(deposit as unknown as Record<string, unknown>),
+      { ...managedRequirements(authorizer), amount: "10000" },
+    );
     expect(result.success).toBe(true);
-    expect(result.extra?.chargeCount).toBe(4);
+    expect(result.transaction).toBe("0xdep");
   });
 
   it("deletes the store row after a full managed refund closes the channel", async () => {
@@ -2404,6 +2551,56 @@ describe("facilitator verifyManaged / settleManaged", () => {
     expect(result.success).toBe(true);
     expect(await storage.get(channelId)).toBeUndefined();
     expect(result.extra?.chargeCount).toBe(0);
+  });
+
+  it("returns success when updateChannel throws after onchain refund settle", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const config = buildConfig({ receiverAuthorizer: authorizer.address });
+    const channelId = computeChannelId(config, NETWORK);
+    await storage.updateChannel(channelId, () => ({
+      channelId,
+      channelConfig: config,
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      signature: "0xdead",
+      balance: "10000",
+      totalClaimed: "5000",
+      withdrawRequestedAt: 0,
+      refundNonce: 0,
+      lastRequestTimestamp: Date.now(),
+      network: NETWORK,
+      chargeCount: 0,
+      callerIdentity: "tenant-1",
+    }));
+    const deps = buildDeps(storage, authorizer);
+    deps.resolveCallerIdentity = async () => "tenant-1";
+    vi.spyOn(facilitatorRefund, "submitRefund").mockResolvedValueOnce({
+      success: true,
+      transaction: "0xrefund",
+      network: NETWORK,
+      extra: {
+        channelState: {
+          balance: "5000",
+          totalClaimed: "5000",
+          refundNonce: "1",
+          withdrawRequestedAt: 0,
+        },
+      },
+    });
+    vi.spyOn(storage, "updateChannel").mockRejectedValueOnce(new Error("storage write failed"));
+
+    const result = await settleManaged(
+      deps,
+      envelope({
+        type: "refund",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+        amount: "5000",
+      }),
+      { ...managedRequirements(authorizer), amount: "0" },
+    );
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("0xrefund");
   });
 
   it("returns stored voucher proof on verify mismatch when a replica row exists", async () => {

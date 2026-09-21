@@ -1148,19 +1148,23 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 			return holdErr
 		}
 		if hold == admissionOther {
-			return errors.New(batchsettlement.ErrChannelBusy)
+			return x402.NewAfterSettleAbort(batchsettlement.ErrChannelBusy, "")
 		}
 		var recovered *ChannelSession
 		if rc != nil {
 			recovered = rc.ChannelSnapshot
 		}
 
+		missingRow := false
 		updateRes, updateErr := s.storage.UpdateChannel(normalizedId, func(current *ChannelSession) *ChannelSession {
 			existing := current
 			if existing == nil && hold == admissionSelf {
 				existing = recovered
 			}
 			if existing == nil {
+				if current == nil {
+					missingRow = true
+				}
 				return current
 			}
 			curCharged, _ := new(big.Int).SetString(existing.ChargedCumulativeAmount, 10)
@@ -1194,14 +1198,20 @@ func handleAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext
 			return &next
 		})
 		if updateErr != nil {
-			return updateErr
+			if impl := RethrowLockImplementationError(updateErr); impl != nil {
+				return impl
+			}
+			return x402.NewAfterSettleAbort(batchsettlement.ErrVoucherStoreUnavailable, updateErr.Error())
 		}
 		if updateRes.Status == ChannelUpdated && updateRes.Channel != nil {
 			s.RememberChannelSnapshot(ctx.Payload, updateRes.Channel)
 			_ = s.ReleasePendingRequest(ctx.Payload)
 			return nil
 		}
-		return errors.New(batchsettlement.ErrChannelBusy)
+		if missingRow {
+			return x402.NewAfterSettleAbort(batchsettlement.ErrMissingChannel, "")
+		}
+		return x402.NewAfterSettleAbort(batchsettlement.ErrChannelBusy, "")
 	}
 
 	// --- Refund: storage update from facilitator post-refund snapshot ---

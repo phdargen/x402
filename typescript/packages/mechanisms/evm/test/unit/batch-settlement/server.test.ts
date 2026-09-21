@@ -2029,7 +2029,7 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
     expect(await storage.get(channelId)).toBeUndefined();
   });
 
-  it("does not resurrect a deposit row from snapshot when isHeld throws a store I/O error", async () => {
+  it("aborts MissingChannel without resurrecting a deposit row when isHeld throws a store I/O error", async () => {
     const storage = new InMemoryChannelStorage();
     const scheme = new BatchSettlementEvmScheme(RECEIVER, {
       storage,
@@ -2056,8 +2056,7 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
       },
     });
 
-    await expect(
-      scheme.schemeHooks.onAfterSettle!({
+    const depositAbort = await scheme.schemeHooks.onAfterSettle!({
         paymentPayload: payload,
         requirements: makeRequirements({ amount: "1000" }),
         result: {
@@ -2075,8 +2074,8 @@ describe("BatchSettlementEvmScheme — lock-store implementation errors", () => 
             },
           },
         } as SettleResponse,
-      } as never),
-    ).rejects.toThrow(Errors.ErrChannelBusy);
+      } as never);
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
     expect(await storage.get(channelId)).toBeUndefined();
   });
 
@@ -3142,11 +3141,10 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("1000");
   });
 
-  it("throws ChannelBusy when a deposit settle has no row and no verify snapshot", async () => {
+  it("aborts MissingChannel when a deposit settle has no row and no verify snapshot", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
-    await expect(
-      server.schemeHooks.onAfterSettle!({
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
         paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
         requirements: makeRequirements({ amount: "1000" }),
         result: {
@@ -3164,11 +3162,11 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
             },
           },
         } as SettleResponse,
-      } as never),
-    ).rejects.toThrow(Errors.ErrChannelBusy);
+      } as never);
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
   });
 
-  it("releases a self-held lock when deposit afterSettle throws ChannelBusy", async () => {
+  it("releases a self-held lock when deposit afterSettle aborts MissingChannel", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const payload = buildDepositPayload(channelId, config, "10000", "1000");
@@ -3181,8 +3179,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
     });
     expect(await storage.isHeld(channelId)).toBe(true);
 
-    await expect(
-      server.schemeHooks.onAfterSettle!({
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
         paymentPayload: payload,
         requirements: makeRequirements({ amount: "1000" }),
         result: {
@@ -3200,12 +3197,12 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
             },
           },
         } as SettleResponse,
-      } as never),
-    ).rejects.toThrow(Errors.ErrChannelBusy);
+      } as never);
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrMissingChannel });
     expect(await storage.isHeld(channelId)).toBe(false);
   });
 
-  it("throws ChannelBusy when a successful deposit settle is held by another request", async () => {
+  it("aborts ChannelBusy when a successful deposit settle is held by another request", async () => {
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     await storeChannel(storage, channelId, {
@@ -3221,8 +3218,7 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
       lastRequestTimestamp: 0,
     });
     await storage.acquire(channelId, "other", 60_000);
-    await expect(
-      server.schemeHooks.onAfterSettle!({
+    const depositAbort = await server.schemeHooks.onAfterSettle!({
         paymentPayload: buildDepositPayload(channelId, config, "10000", "1000"),
         requirements: makeRequirements({ amount: "1000" }),
         result: {
@@ -3240,8 +3236,8 @@ describe("BatchSettlementEvmScheme — onAfterSettle", () => {
             },
           },
         } as SettleResponse,
-      } as never),
-    ).rejects.toThrow(Errors.ErrChannelBusy);
+      } as never);
+    expect(depositAbort).toEqual({ abort: true, reason: Errors.ErrChannelBusy });
   });
 
   it("throws ChannelBusy when a refund settle is held by another request", async () => {

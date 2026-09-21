@@ -1389,6 +1389,15 @@ func settleResponseToError(result *SettleResponse) error {
 	return NewSettleError(reason, result.Payer, result.Network, result.Transaction, result.ErrorMessage)
 }
 
+// applyAfterSettleAbort flips an onchain successful settle to success:false
+// when an afterSettle hook aborts. Transaction/amount/payer/onchain extra are
+// kept so callers retain proof funds moved.
+func applyAfterSettleAbort(result *SettleResponse, reason, message string) {
+	result.Success = false
+	result.ErrorReason = reason
+	result.ErrorMessage = message
+}
+
 // SettlePayment settles a V2 payment with no declared extensions.
 // Equivalent to SettlePaymentWithExtensions(ctx, payload, requirements, overrides, nil, SettlePhaseAfterHandler).
 func (s *x402ResourceServer) SettlePayment(ctx context.Context, payload types.PaymentPayload, requirements types.PaymentRequirements, overrides *SettlementOverrides) (*SettleResponse, error) {
@@ -1500,7 +1509,13 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 				// Execute afterSettle hooks even when skipping
 				skipResultCtx := SettleResultContext{SettleContext: hookCtx, Result: result.SkipResult}
 				for _, ah := range afterSettleHooks {
-					_ = ah.Hook(skipResultCtx)
+					if hookErr := ah.Hook(skipResultCtx); hookErr != nil {
+						var abort *AfterSettleAbortError
+						if errors.As(hookErr, &abort) {
+							applyAfterSettleAbort(result.SkipResult, abort.Reason, abort.Message)
+							break
+						}
+					}
 				}
 				return result.SkipResult, nil
 			}
@@ -1584,7 +1599,13 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 	// Execute afterSettle hooks
 	resultCtx := SettleResultContext{SettleContext: hookCtx, Result: settleResult}
 	for _, lh := range afterSettleHooks {
-		_ = lh.Hook(resultCtx) // Log errors but don't fail
+		if hookErr := lh.Hook(resultCtx); hookErr != nil {
+			var abort *AfterSettleAbortError
+			if errors.As(hookErr, &abort) {
+				applyAfterSettleAbort(settleResult, abort.Reason, abort.Message)
+				break
+			}
+		}
 	}
 
 	// Scheme-level settlement-response enrichment. Mirrors TS

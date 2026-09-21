@@ -216,7 +216,9 @@ export type BeforeSettleHook = (
   void | { abort: true; reason: string; message?: string } | { skip: true; result: SettleResponse }
 >;
 
-export type AfterSettleHook = (context: SettleResultContext) => Promise<void>;
+export type AfterSettleHook = (
+  context: SettleResultContext,
+) => Promise<void | { abort: true; reason: string; message?: string }>;
 
 export type OnSettleFailureHook = (
   context: SettleFailureContext,
@@ -1269,7 +1271,11 @@ export class x402ResourceServer {
             matchedScheme,
           )) {
             try {
-              await hook(skipResultContext);
+              const afterResult = await hook(skipResultContext);
+              if (afterResult && "abort" in afterResult && afterResult.abort) {
+                applyAfterSettleAbort(settleResult, afterResult.reason, afterResult.message);
+                break;
+              }
             } catch (error) {
               this.warnResourceServerHookFailure("afterSettle", label, error);
             }
@@ -1398,7 +1404,11 @@ export class x402ResourceServer {
         matchedScheme,
       )) {
         try {
-          await hook(resultContext);
+          const afterResult = await hook(resultContext);
+          if (afterResult && "abort" in afterResult && afterResult.abort) {
+            applyAfterSettleAbort(settleResult, afterResult.reason, afterResult.message);
+            break;
+          }
         } catch (error) {
           this.warnResourceServerHookFailure("afterSettle", label, error);
         }
@@ -2083,6 +2093,27 @@ function isRetryableSettlementPendingError(error: unknown): boolean {
 function settleResponseToError(result: SettleResponse): SettleError {
   const reason = result.errorReason || "Settlement failed";
   return new SettleError(500, { ...result, errorReason: reason });
+}
+
+/**
+ * Flips an on-chain successful settle to `success: false` when an `afterSettle`
+ * hook aborts. Keeps `transaction` / `amount` / `payer` / on-chain `extra` so
+ * callers retain proof funds moved; only the success flag and reason change.
+ *
+ * @param result - Mutable settle response to flip.
+ * @param reason - Abort error reason.
+ * @param message - Optional abort message.
+ */
+function applyAfterSettleAbort(
+  result: SettleResponse,
+  reason: string,
+  message?: string,
+): void {
+  result.success = false;
+  result.errorReason = reason;
+  if (message !== undefined) {
+    result.errorMessage = message;
+  }
 }
 
 /**

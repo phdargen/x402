@@ -423,13 +423,13 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         const pipeline = buildManagedPipeline();
         await pipeline.server.initialize();
 
-        const accepts = [
-          buildBatchSettlementRequirements(
-            pipeline.receiverAddress,
-            "1000",
-            pipeline.authorizerSigner.address,
-          ),
-        ];
+        const accepts = await pipeline.server.buildPaymentRequirements({
+          scheme: "batch-settlement",
+          network: NETWORK,
+          payTo: pipeline.receiverAddress,
+          price: "$0.001",
+          maxTimeoutSeconds: 3600,
+        });
         const resource = {
           url: "https://example.com/api/managed",
           description: "Managed custody resource",

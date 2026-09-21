@@ -311,17 +311,21 @@ export async function buildRefundSettlementFields(opts: {
  * Updates channel state to reflect the settlement outcome — adjusting charged amounts,
  * balances, and handling cooperative-refund cleanup (channel record deletion).
  *
+ * Self-managed deposit persist failure returns an abort (not a throw) so core
+ * flips the onchain success to `success: false` without releasing the resource.
+ * Refund persist failures still throw (logged and ignored by core).
+ *
  * @param scheme - Owning `BatchSettlementEvmScheme` instance for storage access.
  * @param ctx - Post-settle lifecycle context.
  * @param ctx.paymentPayload - Payment payload that was settled (possibly rewritten).
  * @param ctx.requirements - Requirements used for settlement.
  * @param ctx.result - Facilitator settle response.
- * @returns Resolves when session updates are complete (no return value).
+ * @returns Abort when the deposit voucher was not persisted; otherwise resolves.
  */
 export async function handleAfterSettle(
   scheme: BatchSettlementEvmScheme,
   ctx: SettleResultContext,
-): Promise<void> {
+): Promise<void | { abort: true; reason: string; message?: string }> {
   const { paymentPayload, requirements, result } = ctx;
   if (!result.success) {
     return;
@@ -392,13 +396,15 @@ export async function handleAfterSettle(
 
     const hold = await inspectAdmission(scheme, channelId, pendingId);
     if (hold === "other") {
-      throw new Error(Errors.ErrChannelBusy);
+      return { abort: true, reason: Errors.ErrChannelBusy };
     }
     const recovered = scheme.readRequestContext(paymentPayload)?.channelSnapshot;
+    let missingRow = false;
     try {
       const updateResult = await storage.updateChannel(channelId, current => {
         const existing = current ?? (hold === "self" ? recovered : undefined);
         if (!existing) {
+          missingRow = missingRow || current === undefined;
           return current;
         }
         const chargedActual = (
@@ -428,16 +434,22 @@ export async function handleAfterSettle(
             scheme.rememberChannelSnapshot(paymentPayload, updateResult.channel);
             return;
           }
-          throw new Error(Errors.ErrChannelBusy);
+          return { abort: true, reason: Errors.ErrChannelBusy };
         case "unchanged":
         case "conflict":
         case "deleted":
-          throw new Error(Errors.ErrChannelBusy);
+          return {
+            abort: true,
+            reason: missingRow ? Errors.ErrMissingChannel : Errors.ErrChannelBusy,
+          };
         default: {
           const exhaustive: never = updateResult.status;
           throw exhaustive;
         }
       }
+    } catch (err) {
+      rethrowLockImplementationError(err);
+      return { abort: true, reason: Errors.ErrVoucherStoreUnavailable };
     } finally {
       if (hold === "self") {
         await scheme.releasePendingRequest(paymentPayload);
