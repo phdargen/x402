@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1041,6 +1042,35 @@ func zeros(n int) string {
 type testMulticallResult struct {
 	Success    bool
 	ReturnData []byte
+}
+
+func multicallTryAggregateStub(t *testing.T, rpc *managedRPC, args ...interface{}) []testMulticallResult {
+	t.Helper()
+	if len(args) < 2 {
+		return multicallChannelStateResult(t, rpc.balance, rpc.totalClaimed, rpc.withdrawAt, rpc.refundNonce)
+	}
+	calls := reflect.ValueOf(args[1])
+	if calls.Kind() != reflect.Slice || calls.Len() == 3 {
+		return multicallChannelStateResult(t, rpc.balance, rpc.totalClaimed, rpc.withdrawAt, rpc.refundNonce)
+	}
+	return multicallReceiversResults(t, rpc.receiverClaimed, rpc.receiverSettled, calls.Len())
+}
+
+func multicallReceiversResults(t *testing.T, claimed, settled *big.Int, count int) []testMulticallResult {
+	t.Helper()
+	receiversABI, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementReceiversABI)))
+	if err != nil {
+		t.Fatalf("receivers abi: %v", err)
+	}
+	data, err := receiversABI.Methods["receivers"].Outputs.Pack(claimed, settled)
+	if err != nil {
+		t.Fatalf("pack receivers: %v", err)
+	}
+	out := make([]testMulticallResult, count)
+	for i := range out {
+		out[i] = testMulticallResult{Success: true, ReturnData: data}
+	}
+	return out
 }
 
 func multicallChannelStateResult(

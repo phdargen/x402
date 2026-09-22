@@ -334,7 +334,7 @@ func TestFacilitatorChannelManager_SettleSimulationFailure(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	ch := managerChannel(t, auth, "00", &channelFields{TotalClaimed: "5000", ChargedCumulativeAmount: "5000"})
 	seedManagedChannel(t, store, ch)
-	signer := newManagedSigner(t, &managedRPC{simFail: "settle", receiverClaimed: bigInt(5000)})
+	signer := newManagedSigner(t, &managedRPC{simFail: "multicall", receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
 	_, err := mgr.Settle(context.Background(), nil)
 	if err == nil {

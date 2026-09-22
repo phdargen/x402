@@ -56,7 +56,7 @@ import { verifyVoucher } from "./voucher";
 import { encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitRefund } from "./refund";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
-import { shouldDeleteVoucherRow, type FacilitatorRetention } from "./channelManager";
+import { shouldDeleteNeverClaimedRefundRow, type FacilitatorRetention } from "./channelManager";
 import type { SubmitMode } from "./submit";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -655,7 +655,15 @@ async function settleManagedRefund(
           refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
           lastRequestTimestamp: Date.now(),
         };
-        if (shouldDeleteVoucherRow(deps.retention, false, next, chargeCount)) {
+        if (
+          shouldDeleteNeverClaimedRefundRow(
+            deps.retention,
+            false,
+            next,
+            chargeCount,
+            next.totalClaimed,
+          )
+        ) {
           return undefined;
         }
         return next;

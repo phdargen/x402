@@ -27,41 +27,55 @@ import * as Errors from "../errors";
 
 export type { FacilitatorChannel };
 
-export type FacilitatorRetention = "at-claim" | "until-closed" | "forever";
+export type FacilitatorRetention = "when-unused" | "forever";
 
-/**
- * Applies the default retention policy when retention is unset.
- *
- * @param retention - Optional configured retention policy.
- * @returns Resolved retention policy, defaulting to `until-closed`.
- */
 function normalizeRetention(retention?: FacilitatorRetention): FacilitatorRetention {
-  return retention ?? "until-closed";
+  return retention ?? "when-unused";
 }
 
-/**
- * Reports whether a managed voucher row should be hard-deleted from storage.
- *
- * @param retention - Row retention policy.
- * @param held - Whether an admission lock is currently held on the channel.
- * @param channel - Current channel snapshot used for close predicates.
- * @param chargeCount - Attested or current unattested charge count after bookkeeping.
- * @returns Whether the row should be deleted.
- */
+export function isChannelFinished(
+  held: boolean,
+  channel: FacilitatorChannel,
+  chargeCount: number,
+): boolean {
+  if (held || chargeCount !== 0) {
+    return false;
+  }
+  if (BigInt(channel.chargedCumulativeAmount) > BigInt(channel.totalClaimed)) {
+    return false;
+  }
+  return BigInt(channel.balance) <= BigInt(channel.totalClaimed);
+}
+
+/** Deletes a never-claimed row after idle refund bookkeeping. */
+export function shouldDeleteNeverClaimedRefundRow(
+  retention: FacilitatorRetention | undefined,
+  held: boolean,
+  channel: FacilitatorChannel,
+  chargeCount: number,
+  appliedTotalClaimed: string,
+): boolean {
+  if (normalizeRetention(retention) !== "when-unused" || held) {
+    return false;
+  }
+  if (!isChannelFinished(held, channel, chargeCount)) {
+    return false;
+  }
+  try {
+    return BigInt(appliedTotalClaimed) === 0n;
+  } catch {
+    return false;
+  }
+}
+
+/** @deprecated Use shouldDeleteNeverClaimedRefundRow or settle-worker cleanup. */
 export function shouldDeleteVoucherRow(
   retention: FacilitatorRetention | undefined,
   held: boolean,
   channel: FacilitatorChannel,
   chargeCount: number,
 ): boolean {
-  const policy = normalizeRetention(retention);
-  if (policy === "forever" || held || chargeCount !== 0) {
-    return false;
-  }
-  if (policy === "at-claim") {
-    return BigInt(channel.chargedCumulativeAmount) <= BigInt(channel.totalClaimed);
-  }
-  return BigInt(channel.balance) <= BigInt(channel.totalClaimed);
+  return shouldDeleteNeverClaimedRefundRow(retention, held, channel, chargeCount, channel.totalClaimed);
 }
 
 export interface FacilitatorChannelManagerConfig {
@@ -170,27 +184,21 @@ export async function afterClaim(
   network: Network,
   attested: ReadonlyMap<string, number>,
   delegatedAuthStore: DelegatedAuthStore | undefined,
-  retention: FacilitatorRetention = "until-closed",
+  retention: FacilitatorRetention = "when-unused",
 ): Promise<void> {
+  void retention;
   await applyClaimedTotals(storage, claims, network);
 
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
     const snapshot = attested.get(channelId.toLowerCase()) ?? 0;
-    const held = lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
-    const result = await storage.updateChannel(channelId, current => {
+    await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
       }
       const chargeCount = Math.max(0, current.chargeCount - snapshot);
-      if (shouldDeleteVoucherRow(retention, held, current, chargeCount)) {
-        return undefined;
-      }
       return { ...current, chargeCount };
     });
-    if (result.status === "deleted" && delegatedAuthStore) {
-      await delegatedAuthStore.delete(channelId, network);
-    }
   }
 }
 
@@ -273,7 +281,7 @@ export class FacilitatorChannelManager {
     this.authorizerSigner = config.authorizerSigner;
     this.authorizerSubmitter = config.authorizerSubmitter;
     this.submitMode = config.submitMode ?? "relay";
-    this.retention = config.retention ?? "until-closed";
+    this.retention = config.retention ?? "when-unused";
     this.context = config.context;
     this.delegatedAuthStore = config.delegatedAuthStore;
   }
@@ -630,11 +638,20 @@ export class FacilitatorChannelManager {
     });
 
     const held = this.lockStorage ? await channelIsHeld(this.lockStorage, target.channelId) : false;
+    const appliedTotalClaimed = refunded?.totalClaimed ?? target.totalClaimed;
     const result = await this.storage.updateChannel(target.channelId, current => {
       if (!current) {
         return current;
       }
-      if (shouldDeleteVoucherRow(this.retention, held, current, current.chargeCount)) {
+      if (
+        shouldDeleteNeverClaimedRefundRow(
+          this.retention,
+          held,
+          current,
+          current.chargeCount,
+          appliedTotalClaimed,
+        )
+      ) {
         return undefined;
       }
       return current;
