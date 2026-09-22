@@ -19,25 +19,23 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
+const (
+	defaultSettleQueryPageSize   = 100
+	defaultSettleMaxReadsPerCall = 25
+)
+
 // FacilitatorRetention controls when managed voucher rows are removed from storage.
 type FacilitatorRetention string
 
 const (
-	// RetentionAtClaim deletes after claim or refund bookkeeping when nothing
-	// remains claimable (chargedCumulativeAmount <= totalClaimed) and chargeCount
-	// is zero. Residual on-chain balance can be rediscovered from chain state.
-	RetentionAtClaim FacilitatorRetention = "at-claim"
-	// RetentionUntilClosed deletes when escrow is fully accounted for
-	// (balance <= totalClaimed) and chargeCount is zero.
-	RetentionUntilClosed FacilitatorRetention = "until-closed"
-	// RetentionForever keeps closed rows indefinitely.
-	RetentionForever FacilitatorRetention = "forever"
+	RetentionWhenUnused FacilitatorRetention = "when-unused"
+	RetentionForever    FacilitatorRetention = "forever"
 )
 
 // NormalizeRetention applies the default policy when retention is unset.
 func NormalizeRetention(retention FacilitatorRetention) FacilitatorRetention {
 	if retention == "" {
-		return RetentionUntilClosed
+		return RetentionWhenUnused
 	}
 	return retention
 }
@@ -45,32 +43,53 @@ func NormalizeRetention(retention FacilitatorRetention) FacilitatorRetention {
 // ParseFacilitatorRetention validates a configured retention string.
 func ParseFacilitatorRetention(raw string) (FacilitatorRetention, error) {
 	switch FacilitatorRetention(raw) {
-	case RetentionAtClaim, RetentionUntilClosed, RetentionForever, "":
+	case RetentionWhenUnused, RetentionForever, "":
 		return NormalizeRetention(FacilitatorRetention(raw)), nil
 	default:
-		return "", fmt.Errorf("invalid facilitator retention %q (want at-claim, until-closed, or forever)", raw)
+		return "", fmt.Errorf("invalid facilitator retention %q (want when-unused or forever)", raw)
 	}
 }
 
-// ShouldDeleteVoucherRow reports whether a managed row should be hard-deleted.
-func ShouldDeleteVoucherRow(
+// IsChannelFinished reports whether this channel has no remaining claim, refund, or withdraw work.
+func IsChannelFinished(held bool, channel *FacilitatorChannel, chargeCount int) bool {
+	if held || chargeCount != 0 || channel == nil {
+		return false
+	}
+	if uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) > 0 {
+		return false
+	}
+	return uintCmp(channel.Balance, channel.TotalClaimed) <= 0
+}
+
+// ShouldDeleteNeverClaimedRefundRow deletes a finished idle-refund row that never claimed on-chain.
+func ShouldDeleteNeverClaimedRefundRow(
+	retention FacilitatorRetention,
+	held bool,
+	channel *FacilitatorChannel,
+	chargeCount int,
+	appliedTotalClaimed string,
+) bool {
+	if NormalizeRetention(retention) != RetentionWhenUnused || held {
+		return false
+	}
+	if !IsChannelFinished(held, channel, chargeCount) {
+		return false
+	}
+	claimed, ok := storage.ParseUint256(appliedTotalClaimed)
+	return ok && claimed.Sign() == 0
+}
+
+// ShouldDeleteFinishedChannelAtSettle deletes a claimed finished row after receiver pending hits zero.
+func ShouldDeleteFinishedChannelAtSettle(
 	retention FacilitatorRetention,
 	held bool,
 	channel *FacilitatorChannel,
 	chargeCount int,
 ) bool {
-	retention = NormalizeRetention(retention)
-	if retention == RetentionForever || held || chargeCount != 0 || channel == nil {
+	if NormalizeRetention(retention) != RetentionWhenUnused || held {
 		return false
 	}
-	switch retention {
-	case RetentionAtClaim:
-		return uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) <= 0
-	case RetentionUntilClosed:
-		return uintCmp(channel.Balance, channel.TotalClaimed) <= 0
-	default:
-		return false
-	}
+	return IsChannelFinished(held, channel, chargeCount)
 }
 
 // FacilitatorChannelManagerConfig is storage, signers, submit mode, and retention.
@@ -82,6 +101,7 @@ type FacilitatorChannelManagerConfig struct {
 	AuthorizerSubmitter evm.FacilitatorEvmSigner
 	SubmitMode          SubmitMode
 	Retention           FacilitatorRetention
+	SettleMinPending    *string
 	Context             *x402.FacilitatorContext
 	DelegatedAuthStore  storage.DelegatedAuthStore
 }
@@ -106,9 +126,11 @@ type FacilitatorClaimOptions struct {
 type FacilitatorSettleOptions struct {
 	// MinPending skips receivers whose on-chain pending (totalClaimed-totalSettled)
 	// is at or below this decimal uint256 threshold.
-	MinPending      *string
-	MaxSettlesPerTx int
-	MaxTxsPerRun    int
+	MinPending            *string
+	MaxSettlesPerTx       int
+	MaxTxsPerRun          int
+	SettleQueryPageSize   int
+	SettleMaxReadsPerCall int
 }
 
 // FacilitatorAutoConfig is interval, idle-refund, and callback configuration.
@@ -176,7 +198,7 @@ func channelIsHeld(ctx context.Context, lock storage.ChannelLockStorage, channel
 	return held
 }
 
-// AfterClaim applies claimed totals, subtracts attested chargeCount, and deletes closed rows.
+// AfterClaim applies claimed totals, subtracts attested chargeCount, and upserts settle targets.
 // Call only after a successful onchain claim.
 func AfterClaim(
 	ctx context.Context,
@@ -187,10 +209,29 @@ func AfterClaim(
 	attested map[string]int,
 	authStore storage.DelegatedAuthStore,
 	retention FacilitatorRetention,
+	settleMinPending *string,
 ) error {
-	retention = NormalizeRetention(retention)
+	_ = NormalizeRetention(retention)
+	deltas, err := settleTargetClaimDeltas(ctx, store, claims, network)
+	if err != nil {
+		return err
+	}
 	if err := storage.ApplyClaimedTotals(ctx, store, claims, network); err != nil {
 		return err
+	}
+	var minPending *big.Int
+	if settleMinPending != nil {
+		parsed, ok := storage.ParseUint256(*settleMinPending)
+		if ok {
+			minPending = parsed
+		}
+	}
+	if targetStore, ok := store.(storage.SettleTargetStore); ok {
+		for _, delta := range deltas {
+			if err := targetStore.ApplySettleTargetClaimDelta(ctx, delta, minPending); err != nil {
+				return err
+			}
+		}
 	}
 	for _, claim := range claims {
 		channelId, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
@@ -198,17 +239,13 @@ func AfterClaim(
 			return err
 		}
 		snapshot := attested[strings.ToLower(channelId)]
-		held := lockStorage != nil && channelIsHeld(ctx, lockStorage, channelId)
-		result, err := store.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		_, err = store.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
 			chargeCount := current.ChargeCount - snapshot
 			if chargeCount < 0 {
 				chargeCount = 0
-			}
-			if ShouldDeleteVoucherRow(retention, held, current, chargeCount) {
-				return nil
 			}
 			next := current.Clone()
 			next.ChargeCount = chargeCount
@@ -217,11 +254,48 @@ func AfterClaim(
 		if err != nil {
 			return err
 		}
-		if result != nil && result.Status == storage.ChannelDeleted && authStore != nil {
-			_ = authStore.Delete(ctx, channelId, network)
-		}
 	}
 	return nil
+}
+
+func settleTargetClaimDeltas(
+	ctx context.Context,
+	store storage.ChannelStorage[*FacilitatorChannel],
+	claims []batchsettlement.BatchSettlementVoucherClaim,
+	network string,
+) ([]storage.SettleTargetClaimDelta, error) {
+	out := make([]storage.SettleTargetClaimDelta, 0, len(claims))
+	for _, claim := range claims {
+		channelId, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
+		if err != nil {
+			return nil, err
+		}
+		newClaimed, ok := storage.ParseUint256(claim.TotalClaimed)
+		if !ok || newClaimed.Sign() <= 0 {
+			continue
+		}
+		stored, err := store.Get(ctx, channelId)
+		if err != nil {
+			return nil, err
+		}
+		oldClaimed := new(big.Int)
+		if stored != nil {
+			if parsed, ok := storage.ParseUint256(stored.TotalClaimed); ok {
+				oldClaimed = parsed
+			}
+		}
+		if newClaimed.Cmp(oldClaimed) <= 0 {
+			continue
+		}
+		delta := new(big.Int).Sub(newClaimed, oldClaimed)
+		out = append(out, storage.SettleTargetClaimDelta{
+			Network:  network,
+			Receiver: claim.Voucher.Channel.Receiver,
+			Token:    claim.Voucher.Channel.Token,
+			Amount:   delta,
+		})
+	}
+	return out, nil
 }
 
 // SnapshotClaimChargeCounts snapshots each claim row's unattested chargeCount in batch order.
@@ -273,6 +347,7 @@ type FacilitatorChannelManager struct {
 	retention           FacilitatorRetention
 	context             *x402.FacilitatorContext
 	delegatedAuthStore  storage.DelegatedAuthStore
+	settleMinPending    *string
 
 	mu            sync.Mutex
 	timers        map[autoJob]*time.Ticker
@@ -306,6 +381,7 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 		authorizerSubmitter: config.AuthorizerSubmitter,
 		submitMode:          submitMode,
 		retention:           retention,
+		settleMinPending:    config.SettleMinPending,
 		context:             config.Context,
 		delegatedAuthStore:  config.DelegatedAuthStore,
 		timers:              make(map[autoJob]*time.Ticker),
@@ -373,7 +449,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 				continue
 			}
 			results = append(results, result)
-			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention); err != nil {
+			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention, m.settleMinPending); err != nil {
 				batchErrs = append(batchErrs, err)
 			}
 		}
@@ -389,56 +465,310 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 	return results, nil
 }
 
-// Settle settles claimed-but-unsettled funds for each distinct (network, receiver, token).
+// Settle settles eligible receiver pairs and cleans up when pending reaches zero.
 func (m *FacilitatorChannelManager) Settle(ctx context.Context, opts *FacilitatorSettleOptions) ([]FacilitatorSettleResult, error) {
-	if opts != nil && opts.MaxSettlesPerTx > 1 {
-		return m.settleMulticall(ctx, opts)
-	}
-	settleLimit := 100
-	page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &settleLimit}, nil)
+	return m.runSettlePass(ctx, opts)
+}
+
+type receiverPendingRead struct {
+	target  storage.SettleTarget
+	pending *big.Int
+}
+
+func (m *FacilitatorChannelManager) runSettlePass(
+	ctx context.Context,
+	opts *FacilitatorSettleOptions,
+) ([]FacilitatorSettleResult, error) {
+	maxSettlesPerTx, maxTxsPerRun, pageSize, readCap, minPending := settlePassLimits(opts)
+	receiverBudget := maxSettlesPerTx * maxTxsPerRun
+	targets, err := m.collectSettleTargetPages(ctx, pageSize, receiverBudget)
 	if err != nil {
 		return nil, err
 	}
-	if len(page.Items) == 0 {
-		m.mu.Lock()
-		m.pendingSettle = false
-		m.mu.Unlock()
+	if len(targets) == 0 {
+		m.clearPendingSettle()
 		return nil, nil
 	}
 
-	results := make([]FacilitatorSettleResult, 0)
-	for _, target := range page.Items {
-		payload := &batchsettlement.BatchSettlementSettlePayload{
-			Type:     "settle",
-			Receiver: target.Receiver,
-			Token:    target.Token,
-		}
-		dataSuffix, err := m.resolveBuilderSuffix(target.Network, payload.ToMap(), target.Token, target.Receiver)
-		if err != nil {
-			return nil, err
-		}
-		reqs := types.PaymentRequirements{Network: target.Network}
-		response, err := ExecuteSettle(ctx, m.signer, payload, reqs, dataSuffix)
-		if err != nil {
-			return nil, err
-		}
-		if !response.Success {
-			if response.ErrorReason == ErrNothingToSettle {
-				continue
+	reads, err := m.readReceiverPendingBatched(ctx, targets, readCap)
+	if err != nil {
+		return nil, err
+	}
+	toSettle := make([]storage.SettleTarget, 0, receiverBudget)
+	now := time.Now().UnixMilli()
+	stamp := make([]storage.SettleTarget, 0, len(reads))
+	for _, row := range reads {
+		stamp = append(stamp, row.target)
+		if row.pending.Sign() == 0 {
+			if err := m.cleanupSettledPair(ctx, row.target); err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("%s", formatFailure("Settle", response))
+			continue
 		}
-		results = append(results, FacilitatorSettleResult{
-			Network:     target.Network,
-			Receiver:    target.Receiver,
-			Token:       target.Token,
-			Transaction: response.Transaction,
+		if minPending != nil && row.pending.Cmp(minPending) <= 0 {
+			if store := m.settleTargetStore(); store != nil {
+				_ = store.SyncSettleTargetFromChain(ctx, row.target, row.pending, minPending)
+			}
+			continue
+		}
+		toSettle = append(toSettle, row.target)
+		if len(toSettle) >= receiverBudget {
+			break
+		}
+	}
+	if store := m.settleTargetStore(); store != nil && len(stamp) > 0 {
+		_ = store.StampSettleTargetAttempts(ctx, stamp, now)
+	}
+	if len(toSettle) == 0 {
+		m.clearPendingSettle()
+		return nil, nil
+	}
+
+	byNetwork := make(map[string][]storage.SettleTarget)
+	networkOrder := make([]string, 0)
+	for _, target := range toSettle {
+		if _, ok := byNetwork[target.Network]; !ok {
+			networkOrder = append(networkOrder, target.Network)
+		}
+		byNetwork[target.Network] = append(byNetwork[target.Network], target)
+	}
+
+	results := make([]FacilitatorSettleResult, 0)
+	settledTargets := make([]storage.SettleTarget, 0)
+	for _, network := range networkOrder {
+		group := byNetwork[network]
+		txCount := 0
+		for i := 0; i < len(group) && txCount < maxTxsPerRun; i += maxSettlesPerTx {
+			end := i + maxSettlesPerTx
+			if end > len(group) {
+				end = len(group)
+			}
+			batch := group[i:end]
+			payload := &batchsettlement.BatchSettlementSettlePayload{
+				Type:     "settle",
+				Receiver: batch[0].Receiver,
+				Token:    batch[0].Token,
+			}
+			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), batch[0].Token, batch[0].Receiver)
+			if err != nil {
+				return nil, err
+			}
+			batchResults, err := ExecuteSettleBatch(ctx, m.signer, x402.Network(network), batch, dataSuffix)
+			if err != nil {
+				return results, err
+			}
+			results = append(results, batchResults...)
+			settledTargets = append(settledTargets, batch...)
+			txCount++
+		}
+	}
+
+	confirm, err := m.readReceiverPendingBatched(ctx, settledTargets, readCap)
+	if err != nil {
+		return results, err
+	}
+	for _, row := range confirm {
+		if row.pending.Sign() != 0 {
+			if store := m.settleTargetStore(); store != nil {
+				_ = store.SyncSettleTargetFromChain(ctx, row.target, row.pending, minPending)
+			}
+			continue
+		}
+		if err := m.cleanupSettledPair(ctx, row.target); err != nil {
+			return results, err
+		}
+	}
+	m.clearPendingSettle()
+	return results, nil
+}
+
+func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPerRun, pageSize, readCap int, minPending *big.Int) {
+	maxSettlesPerTx = 100
+	maxTxsPerRun = 100
+	pageSize = defaultSettleQueryPageSize
+	readCap = defaultSettleMaxReadsPerCall
+	if opts != nil {
+		if opts.MaxSettlesPerTx > 0 {
+			maxSettlesPerTx = opts.MaxSettlesPerTx
+		}
+		if opts.MaxTxsPerRun > 0 {
+			maxTxsPerRun = opts.MaxTxsPerRun
+		}
+		if opts.SettleQueryPageSize > 0 {
+			pageSize = opts.SettleQueryPageSize
+		}
+		if opts.SettleMaxReadsPerCall > 0 {
+			readCap = opts.SettleMaxReadsPerCall
+		}
+		if opts.MinPending != nil {
+			parsed, ok := storage.ParseUint256(*opts.MinPending)
+			if ok {
+				minPending = parsed
+			}
+		}
+	}
+	return maxSettlesPerTx, maxTxsPerRun, pageSize, readCap, minPending
+}
+
+func (m *FacilitatorChannelManager) settleTargetStore() storage.SettleTargetStore {
+	store, ok := m.storage.(storage.SettleTargetStore)
+	if !ok {
+		return nil
+	}
+	return store
+}
+
+func (m *FacilitatorChannelManager) collectSettleTargetPages(
+	ctx context.Context,
+	pageSize int,
+	budget int,
+) ([]storage.SettleTarget, error) {
+	if budget <= 0 {
+		return nil, nil
+	}
+	out := make([]storage.SettleTarget, 0, budget)
+	cursor := ""
+	for len(out) < budget {
+		limit := pageSize
+		if budget-len(out) < limit {
+			limit = budget - len(out)
+		}
+		page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &limit, Cursor: cursor}, nil)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Items...)
+		if page.Cursor == "" || len(out) >= budget {
+			break
+		}
+		cursor = page.Cursor
+	}
+	return out, nil
+}
+
+func (m *FacilitatorChannelManager) readReceiverPendingBatched(
+	ctx context.Context,
+	targets []storage.SettleTarget,
+	readCap int,
+) ([]receiverPendingRead, error) {
+	if readCap <= 0 {
+		readCap = defaultSettleMaxReadsPerCall
+	}
+	out := make([]receiverPendingRead, 0, len(targets))
+	for i := 0; i < len(targets); i += readCap {
+		end := i + readCap
+		if end > len(targets) {
+			end = len(targets)
+		}
+		chunk, err := m.readReceiverPendingChunk(ctx, targets[i:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, chunk...)
+	}
+	return out, nil
+}
+
+func (m *FacilitatorChannelManager) readReceiverPendingChunk(
+	ctx context.Context,
+	targets []storage.SettleTarget,
+) ([]receiverPendingRead, error) {
+	calls := make([]evm.MulticallCall, 0, len(targets))
+	for _, target := range targets {
+		receiver := common.HexToAddress(target.Receiver)
+		token := common.HexToAddress(target.Token)
+		calls = append(calls, evm.MulticallCall{
+			Address:      batchsettlement.BatchSettlementAddress,
+			ABI:          batchsettlement.BatchSettlementReceiversABI,
+			FunctionName: "receivers",
+			Args:         []interface{}{receiver, token},
 		})
 	}
+	results, err := evm.Multicall(ctx, m.signer, calls)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]receiverPendingRead, 0, len(targets))
+	for i, target := range targets {
+		row := receiverPendingRead{target: target, pending: new(big.Int)}
+		if i >= len(results) || !results[i].Success() {
+			out = append(out, row)
+			continue
+		}
+		totalClaimed, totalSettled, parseErr := parseReceiversMulticallResult(results[i].Result)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		row.pending = new(big.Int).Sub(totalClaimed, totalSettled)
+		if row.pending.Sign() < 0 {
+			row.pending = new(big.Int)
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+func parseReceiversMulticallResult(raw interface{}) (*big.Int, *big.Int, error) {
+	outputs, ok := raw.([]interface{})
+	if !ok || len(outputs) < 2 {
+		return nil, nil, fmt.Errorf("receivers returned %T, want two uint128 values", raw)
+	}
+	totalClaimed, ok := outputs[0].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("receivers totalClaimed returned %T, want *big.Int", outputs[0])
+	}
+	totalSettled, ok := outputs[1].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("receivers totalSettled returned %T, want *big.Int", outputs[1])
+	}
+	return totalClaimed, totalSettled, nil
+}
+
+func (m *FacilitatorChannelManager) cleanupSettledPair(
+	ctx context.Context,
+	target storage.SettleTarget,
+) error {
+	if store := m.settleTargetStore(); store != nil {
+		if err := store.DeleteSettleTarget(ctx, target); err != nil {
+			return err
+		}
+	}
+	if NormalizeRetention(m.retention) != RetentionWhenUnused {
+		return nil
+	}
+	rows, err := storage.QueryChannelsByReceiverToken(ctx, m.storage, target.Network, target.Receiver, target.Token)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		channelId := row.ChannelId
+		held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channelId)
+		result, err := m.storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+			if current == nil {
+				return current
+			}
+			if !ShouldDeleteFinishedChannelAtSettle(m.retention, held, current, current.ChargeCount) {
+				return current
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if result != nil && result.Status == storage.ChannelDeleted && m.delegatedAuthStore != nil {
+			_ = m.delegatedAuthStore.Delete(ctx, channelId, target.Network)
+		}
+	}
+	return nil
+}
+
+func (m *FacilitatorChannelManager) clearPendingSettle() {
 	m.mu.Lock()
 	m.pendingSettle = false
 	m.mu.Unlock()
-	return results, nil
 }
 
 // ClaimAndSettle claims eligible vouchers then settles.
@@ -593,7 +923,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 		if err != nil {
 			return nil, err
 		}
-		if err := AfterClaim(ctx, m.storage, m.lockStorage, claims, target.Network, attested, m.delegatedAuthStore, m.retention); err != nil {
+		if err := AfterClaim(ctx, m.storage, m.lockStorage, claims, target.Network, attested, m.delegatedAuthStore, m.retention, m.settleMinPending); err != nil {
 			return nil, err
 		}
 		return &FacilitatorRefundResult{
@@ -713,7 +1043,13 @@ func (m *FacilitatorChannelManager) afterRefund(
 		if current == nil {
 			return current
 		}
-		if ShouldDeleteVoucherRow(m.retention, held, current, current.ChargeCount) {
+		appliedTotalClaimed := current.TotalClaimed
+		if refunded != nil {
+			if v, ok := refunded["totalClaimed"].(string); ok {
+				appliedTotalClaimed = v
+			}
+		}
+		if ShouldDeleteNeverClaimedRefundRow(m.retention, held, current, current.ChargeCount, appliedTotalClaimed) {
 			return nil
 		}
 		return current
@@ -927,137 +1263,6 @@ func buildClaimQuery(opts *FacilitatorClaimOptions, maxClaimsPerBatch int) (stor
 		}
 	}
 	return filter, capacity
-}
-
-func (m *FacilitatorChannelManager) settleMulticall(ctx context.Context, opts *FacilitatorSettleOptions) ([]FacilitatorSettleResult, error) {
-	maxSettlesPerTx := opts.MaxSettlesPerTx
-	maxTxsPerRun := opts.MaxTxsPerRun
-	if maxSettlesPerTx <= 0 {
-		maxSettlesPerTx = 100
-	}
-	if maxTxsPerRun <= 0 {
-		maxTxsPerRun = 100
-	}
-	receiverBudget := maxSettlesPerTx * maxTxsPerRun
-	targets, err := m.collectSettleTargets(ctx, opts, receiverBudget)
-	if err != nil {
-		return nil, err
-	}
-	if len(targets) == 0 {
-		m.mu.Lock()
-		m.pendingSettle = false
-		m.mu.Unlock()
-		return nil, nil
-	}
-
-	byNetwork := make(map[string][]storage.SettleTarget)
-	networkOrder := make([]string, 0)
-	for _, target := range targets {
-		if _, ok := byNetwork[target.Network]; !ok {
-			networkOrder = append(networkOrder, target.Network)
-		}
-		byNetwork[target.Network] = append(byNetwork[target.Network], target)
-	}
-
-	results := make([]FacilitatorSettleResult, 0)
-	for _, network := range networkOrder {
-		group := byNetwork[network]
-		txCount := 0
-		for i := 0; i < len(group) && txCount < maxTxsPerRun; i += maxSettlesPerTx {
-			end := i + maxSettlesPerTx
-			if end > len(group) {
-				end = len(group)
-			}
-			batch := group[i:end]
-			payload := &batchsettlement.BatchSettlementSettlePayload{
-				Type:     "settle",
-				Receiver: batch[0].Receiver,
-				Token:    batch[0].Token,
-			}
-			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), batch[0].Token, batch[0].Receiver)
-			if err != nil {
-				return nil, err
-			}
-			batchResults, err := ExecuteSettleBatch(ctx, m.signer, x402.Network(network), batch, dataSuffix)
-			if err != nil {
-				return results, err
-			}
-			results = append(results, batchResults...)
-			txCount++
-		}
-	}
-	m.mu.Lock()
-	m.pendingSettle = false
-	m.mu.Unlock()
-	return results, nil
-}
-
-func (m *FacilitatorChannelManager) collectSettleTargets(
-	ctx context.Context,
-	opts *FacilitatorSettleOptions,
-	budget int,
-) ([]storage.SettleTarget, error) {
-	if budget <= 0 {
-		return nil, nil
-	}
-	pageSize := 100
-	if budget < pageSize {
-		pageSize = budget
-	}
-	var minPending *big.Int
-	if opts != nil && opts.MinPending != nil {
-		parsed, ok := storage.ParseUint256(*opts.MinPending)
-		if !ok {
-			return nil, fmt.Errorf("invalid MinPending threshold")
-		}
-		minPending = parsed
-	}
-
-	eligible := make([]storage.SettleTarget, 0, budget)
-	cursor := ""
-	for len(eligible) < budget {
-		limit := pageSize
-		page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &limit, Cursor: cursor}, nil)
-		if err != nil {
-			return nil, err
-		}
-		for _, target := range page.Items {
-			ok, err := m.settleTargetEligible(ctx, target, minPending)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				continue
-			}
-			eligible = append(eligible, target)
-			if len(eligible) >= budget {
-				break
-			}
-		}
-		if page.Cursor == "" || len(eligible) >= budget {
-			break
-		}
-		cursor = page.Cursor
-	}
-	return eligible, nil
-}
-
-func (m *FacilitatorChannelManager) settleTargetEligible(
-	ctx context.Context,
-	target storage.SettleTarget,
-	minPending *big.Int,
-) (bool, error) {
-	if minPending == nil {
-		return true, nil
-	}
-	receiver := common.HexToAddress(target.Receiver)
-	token := common.HexToAddress(target.Token)
-	totalClaimed, totalSettled, err := readReceiverSettlementTotals(ctx, m.signer, receiver, token)
-	if err != nil {
-		return false, err
-	}
-	pending := new(big.Int).Sub(totalClaimed, totalSettled)
-	return pending.Cmp(minPending) > 0, nil
 }
 
 func (m *FacilitatorChannelManager) runRefundJob() {
