@@ -14,6 +14,12 @@ export {
   signBatchAuthorization,
   verifyBatchAuthorization,
 } from "./authorization";
+export {
+  encodeCloseAuthorizationDigest,
+  signCloseAuthorization,
+  verifyCloseAuthorization,
+  type CloseAuthorizationBinding,
+} from "./closeAuthorization";
 export * from "./types";
 export { BatchError } from "./errors";
 export type { BatchErrorReason } from "./errors";

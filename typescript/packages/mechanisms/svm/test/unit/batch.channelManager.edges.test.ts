@@ -1,6 +1,9 @@
+import { generateKeyPairSigner } from "@solana/kit";
 import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 
+import { verifyCloseAuthorization } from "../../src/batch-settlement/closeAuthorization";
+import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchChannelManager } from "../../src/batch-settlement/server/channelManager";
 import {
   type ChannelState,
@@ -132,7 +135,7 @@ describe("batch-settlement redemption worker edge cases", () => {
       settle,
       store,
     }).redeem();
-    expect(result).toEqual({ claimed: [], distributed: [] });
+    expect(result).toEqual({ claimed: [], distributed: [], sealed: [] });
     expect(errors).toEqual([
       "batch-settlement claim failed: unknown",
       "batch-settlement distribute failed: unknown",
@@ -141,14 +144,17 @@ describe("batch-settlement redemption worker edge cases", () => {
   });
 
   it("does not record a distribution whose response is unbound or malformed", async () => {
-    const answers: SettleResponse[] = [
-      { ...ok(), extra: { channels: ["chan-a"] }, network: "solana:other" },
-      { ...ok(), extra: { channels: "chan-a" } },
-      { ...ok(), extra: { channels: ["chan-a", "chan-a"] } },
-      { ...ok(), extra: { channels: ["chan-b"] } },
-      { ...ok() },
+    const mismatch = "batch-settlement distribute response channel mismatch";
+    const answers: [SettleResponse, string][] = [
+      [
+        { ...ok(), extra: { channels: ["chan-a"] }, network: "solana:other" },
+        "batch-settlement distribute response bound to another network",
+      ],
+      [{ ...ok(), extra: { channels: "chan-a" } }, mismatch],
+      [{ ...ok(), extra: { channels: ["chan-a", "chan-a"] } }, mismatch],
+      [{ ...ok(), extra: { channels: ["chan-b"] } }, mismatch],
     ];
-    for (const answer of answers) {
+    for (const [answer, expected] of answers) {
       const store = new MemoryChannelStore();
       await store.put(channel("chan-a", { settled: 3_000n, highestVoucherSignature: undefined }));
       const errors: string[] = [];
@@ -160,9 +166,164 @@ describe("batch-settlement redemption worker edge cases", () => {
         store,
       }).redeem();
       expect(result.distributed).toEqual([]);
-      expect(errors).toEqual(["batch-settlement distribute response channel mismatch"]);
+      expect(errors).toEqual([expected]);
       expect((await store.get("chan-a"))?.payoutWatermark).toBe(0n);
     }
+  });
+
+  it("reconciles from the chain when a facilitator answers with the spec's bare responses", async () => {
+    // Spec 4.5 defines only success/transaction/network/amount for claim and
+    // settle. The reference facilitator's `extra.accepts` / `extra.channels`
+    // are optional enrichment, never a requirement on the server.
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    const errors: unknown[] = [];
+    const result = await new BatchChannelManager({
+      onError: error => errors.push(error),
+      readPayoutWatermark: async () => 3_000n,
+      readSettledWatermark: async () => 3_000n,
+      requirements: requirements(),
+      settle: async () => ok(),
+      store,
+    }).redeem();
+    expect(errors).toEqual([]);
+    expect(result).toEqual({ claimed: ["chan-a"], distributed: ["chan-a"], sealed: [] });
+    const state = await store.get("chan-a");
+    expect(state?.settled).toBe(3_000n);
+    expect(state?.payoutWatermark).toBe(3_000n);
+  });
+
+  it("leaves a bare-response claim unrecorded until the chain shows the watermark", async () => {
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    const errors: string[] = [];
+    const result = await new BatchChannelManager({
+      onError: error => errors.push((error as Error).message),
+      readPayoutWatermark: async () => 0n,
+      readSettledWatermark: async () => 2_999n,
+      requirements: requirements(),
+      settle: async () => ok(),
+      store,
+    }).redeem();
+    expect(result.claimed).toEqual([]);
+    expect(errors).toEqual(["confirmed settled watermark unavailable or behind the claim"]);
+    expect((await store.get("chan-a"))?.settled).toBe(0n);
+  });
+
+  it("caps a configured batch size at the spec's four channels", async () => {
+    const store = new MemoryChannelStore();
+    for (const id of ["a", "b", "c", "d", "e"]) await store.put(channel(`chan-${id}`));
+    const { payloads, settle } = settler(boundDistribute);
+    await new BatchChannelManager({
+      maxChannelsPerBatch: 8,
+      readPayoutWatermark: async () => 3_000n,
+      requirements: requirements(),
+      settle,
+      store,
+    }).redeem();
+    const claims = payloads.filter(payload => payload.type === "claim");
+    expect(claims.map(payload => payload.claims?.length)).toEqual([4, 1]);
+  });
+
+  it("seals a closing channel with its latest voucher when a claim reports channel_closing", async () => {
+    const closeAuthorizer = await generateKeyPairSigner();
+    const store = new MemoryChannelStore();
+    // Real 32-byte keys: the close authorization binds the channel PDA.
+    const OPEN_ID = TOKEN_PROGRAM_ADDRESS;
+    const CLOSING_ID = USDC_DEVNET_ADDRESS;
+    await store.put(channel(OPEN_ID));
+    await store.put(channel(CLOSING_ID));
+    const seen: Payload[] = [];
+    const settle = async (request: { payload: unknown }): Promise<SettleResponse> => {
+      const raw = request.payload as Payload;
+      seen.push(raw);
+      if (raw.type === "claim") {
+        // chan-b's payer started a forced close; the facilitator refuses the
+        // whole batch, then the single chan-a claim lands.
+        return raw.claims?.some(claim => claim.voucher.channelId === CLOSING_ID)
+          ? {
+              network: SOLANA_DEVNET_CAIP2,
+              success: false,
+              errorReason: BatchError.CHANNEL_CLOSING,
+            }
+          : ok();
+      }
+      return raw.type === "seal" ? { ...ok(), amount: "3000" } : boundDistribute(raw);
+    };
+    const result = await new BatchChannelManager({
+      closeAuthorizer,
+      readPayoutWatermark: async () => 3_000n,
+      readSettledWatermark: async () => 3_000n,
+      requirements: requirements(),
+      settle,
+      store,
+    }).redeem();
+    expect(result.claimed).toEqual([OPEN_ID]);
+    expect(result.sealed).toEqual([CLOSING_ID]);
+    expect(seen.map(payload => payload.type)).toEqual([
+      "claim",
+      "claim",
+      "claim",
+      "seal",
+      "settle",
+    ]);
+    const seal = seen.find(payload => payload.type === "seal") as
+      | (Payload & {
+          channelId: string;
+          voucher: { maxClaimableAmount: string; signature: string; expiresAt: number };
+          closeAuthorization: { validBefore: number; signature: string };
+        })
+      | undefined;
+    expect(seal).toMatchObject({
+      channelId: CLOSING_ID,
+      voucher: { expiresAt: 0, maxClaimableAmount: "3000", signature: `sig-${CLOSING_ID}` },
+    });
+    // The authorization binds this channel, voucher and sponsor for the
+    // receiver authorizer the server advertises.
+    await expect(
+      verifyCloseAuthorization(
+        seal!.closeAuthorization,
+        {
+          channelId: CLOSING_ID,
+          feePayer: RECEIVER,
+          maxClaimableAmount: 3_000n,
+          network: SOLANA_DEVNET_CAIP2,
+          voucherExpiresAt: 0n,
+        },
+        closeAuthorizer.address,
+        300,
+      ),
+    ).resolves.toBe(true);
+    expect(await store.get(CLOSING_ID)).toMatchObject({
+      payoutWatermark: 3_000n,
+      settled: 3_000n,
+      status: "distributed",
+    });
+    expect((await store.get(OPEN_ID))?.status).toBe("open");
+  });
+
+  it("only marks a closing channel when no close authorizer is configured", async () => {
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    const errors: string[] = [];
+    const seen: string[] = [];
+    const result = await new BatchChannelManager({
+      onError: error => errors.push((error as Error).message),
+      requirements: requirements(),
+      settle: async (request: { payload: unknown }) => {
+        seen.push((request.payload as Payload).type);
+        return {
+          network: SOLANA_DEVNET_CAIP2,
+          success: false,
+          errorReason: BatchError.CHANNEL_CLOSING,
+        };
+      },
+      store,
+    }).redeem();
+    expect(result).toEqual({ claimed: [], distributed: [], sealed: [] });
+    expect(seen).toEqual(["claim"]);
+    expect(errors).toEqual([expect.stringMatching(/closing and no closeAuthorizer/)]);
+    expect((await store.get("chan-a"))?.status).toBe("closing");
   });
 
   it("never lowers watermarks the store already advanced past", async () => {

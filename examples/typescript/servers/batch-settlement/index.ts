@@ -28,6 +28,10 @@ const receiverAuthorizerPrivateKey = process.env.EVM_RECEIVER_AUTHORIZER_PRIVATE
   | `0x${string}`
   | undefined;
 const svmReceiverAuthorizerPrivateKey = process.env.SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY?.trim();
+// SVM: optional operator key. When set, the SVM route is offered server-signed
+// (the operator meters and signs the actual charge) alongside a client-signed
+// accept at the ceiling for clients that do not trust this operator.
+const svmOperatorPrivateKey = process.env.SVM_OPERATOR_PRIVATE_KEY?.trim();
 const storageDir = process.env.STORAGE_DIR;
 const withdrawDelay = Number(process.env.DEFERRED_WITHDRAW_DELAY_SECONDS ?? "86400");
 
@@ -96,12 +100,17 @@ async function main() {
     });
   }
 
+  const svmOperatorSigner = svmOperatorPrivateKey
+    ? await createKeyPairSignerFromBytes(base58.decode(svmOperatorPrivateKey))
+    : undefined;
+
   if (svmAddress) {
     const batchedSvmScheme = new BatchSvmScheme({
       withdrawDelay,
-      ...(svmReceiverAuthorizerSigner
-        ? { receiverAuthorizer: svmReceiverAuthorizerSigner.address }
-        : {}),
+      // Advertised as extra.receiverAuthorizer and used by the redemption
+      // worker to seal a channel the payer is closing with the latest voucher.
+      ...(svmReceiverAuthorizerSigner ? { closeAuthorizer: svmReceiverAuthorizerSigner } : {}),
+      ...(svmOperatorSigner ? { operator: svmOperatorSigner } : {}),
       store: new MemoryChannelStore(),
     });
     resourceServer = resourceServer.register(SVM_NETWORK, batchedSvmScheme);
@@ -167,12 +176,25 @@ async function main() {
     });
   }
   if (svmAddress) {
+    // With an operator configured this accept is server-signed: the client
+    // signs a per-request proof and the operator signs the metered charge.
     accepts.push({
       scheme: "batch-settlement",
       price: maxPrice,
       network: SVM_NETWORK,
       payTo: svmAddress,
     });
+    if (svmOperatorSigner) {
+      // Clients that have not trusted this operator drop the server-signed
+      // accept and pay the ceiling with their own vouchers instead.
+      accepts.push({
+        scheme: "batch-settlement",
+        price: maxPrice,
+        network: SVM_NETWORK,
+        payTo: svmAddress,
+        extra: { voucherSigner: "client" },
+      });
+    }
   }
 
   const httpServer = new x402HTTPResourceServer(resourceServer, {
@@ -193,10 +215,11 @@ async function main() {
     const paymentHeader = req.header("payment-signature") ?? req.header("x-payment");
     if (paymentHeader) {
       const { accepted } = decodePaymentSignatureHeader(paymentHeader);
-      // EVM batch-settlement supports charging less than the authorized max.
-      // SVM batch-settlement is fixed-price: the voucher increment must equal
-      // PaymentRequirements.amount.
-      if (accepted.network.startsWith("eip155:")) {
+      // EVM batch-settlement supports charging less than the authorized max,
+      // and so does an SVM server-signed channel (the operator signs the
+      // actual charge). A client-signed SVM channel is fixed-price: the
+      // voucher increment must equal PaymentRequirements.amount.
+      if (accepted.network.startsWith("eip155:") || accepted.extra?.voucherSigner === "server") {
         const chargedPercent = 1 + Math.floor(Math.random() * 100);
         setSettlementOverrides(res, { amount: `${chargedPercent}%` });
       }
@@ -229,6 +252,13 @@ async function main() {
     }
     if (svmAddress && svmReceiverAuthorizerSigner) {
       console.log(`  SVM receiver authorizer: ${svmReceiverAuthorizerSigner.address}`);
+    }
+    if (svmAddress) {
+      console.log(
+        svmOperatorSigner
+          ? `  SVM vouchers: server-signed by operator ${svmOperatorSigner.address} (client-signed accept offered alongside)`
+          : "  SVM vouchers: client-signed",
+      );
     }
   });
 }

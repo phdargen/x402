@@ -616,12 +616,10 @@ describe("batch server voucher signer boundaries", () => {
         ...refundContext,
         result: {
           extra: {
-            channelState: {
-              balance: "10000",
-              channelId,
-              totalClaimed: "0",
-              withdrawRequestedAt: 0,
-            },
+            balance: "10000",
+            channelId,
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
           },
           isValid: true,
           payer: payer.address,

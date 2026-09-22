@@ -75,6 +75,12 @@ export {
   verifyBatchAuthorization,
 } from "./batch-settlement/authorization";
 export {
+  encodeCloseAuthorizationDigest,
+  signCloseAuthorization,
+  verifyCloseAuthorization,
+  type CloseAuthorizationBinding,
+} from "./batch-settlement/closeAuthorization";
+export {
   BATCH_SETTLEMENT_SCHEME,
   isBatchChannelConfig,
   isBatchPayload,

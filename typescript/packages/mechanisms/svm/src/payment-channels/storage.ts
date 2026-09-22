@@ -29,6 +29,13 @@ export interface PaymentChannelRecord {
    */
   lastActivityAt: number;
   network: Network;
+  /**
+   * Server close-authorizer key bound to the channel at its first deposit
+   * (`extra.receiverAuthorizer`). A `seal` request must carry a
+   * `CloseAuthorization` that verifies against this key. Fixed for the
+   * channel lifetime: a later upsert never replaces a recorded key.
+   */
+  receiverAuthorizer?: string | undefined;
 }
 
 /** Pluggable storage of channels the facilitator sponsors rent for. */
@@ -44,9 +51,9 @@ export interface PaymentChannelStorage {
 }
 
 /**
- * In-memory {@link PaymentChannelStorage}. Preserves `firstSeenAt` and the
- * maximum `expiresAt` and `lastActivityAt` across upserts of the same
- * `channelId`.
+ * In-memory {@link PaymentChannelStorage}. Preserves `firstSeenAt`, the first
+ * recorded `receiverAuthorizer`, and the maximum `expiresAt` and
+ * `lastActivityAt` across upserts of the same `channelId`.
  */
 export class InMemoryPaymentChannelStorage implements PaymentChannelStorage {
   private readonly channels = new Map<string, PaymentChannelRecord>();
@@ -86,6 +93,9 @@ export class InMemoryPaymentChannelStorage implements PaymentChannelStorage {
       lastActivityAt: existing
         ? Math.max(existing.lastActivityAt, record.lastActivityAt)
         : record.lastActivityAt,
+      ...((existing?.receiverAuthorizer ?? record.receiverAuthorizer) !== undefined
+        ? { receiverAuthorizer: existing?.receiverAuthorizer ?? record.receiverAuthorizer }
+        : {}),
     });
   }
 

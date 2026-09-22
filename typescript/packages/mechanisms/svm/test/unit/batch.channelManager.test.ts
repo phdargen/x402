@@ -165,7 +165,7 @@ describe("batch-settlement redemption worker", () => {
     // The store now reflects what landed, so the next pass does nothing.
     expect((await store.get("chan-a"))?.settled).toBe(3_000n);
     expect((await store.get("chan-a"))?.payoutWatermark).toBe(3_000n);
-    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [] });
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [] });
   });
 
   it("packs no more than four channels into one claim", async () => {
@@ -248,7 +248,7 @@ describe("batch-settlement redemption worker", () => {
       settle: retry.settle,
       store,
     }).redeem();
-    expect(result).toEqual({ claimed: ["chan-a"], distributed: ["chan-a"] });
+    expect(result).toEqual({ claimed: ["chan-a"], distributed: ["chan-a"], sealed: [] });
     expect((await store.get("chan-a"))?.settled).toBe(3_000n);
     expect((await store.get("chan-a"))?.payoutWatermark).toBe(3_000n);
   });
@@ -266,7 +266,7 @@ describe("batch-settlement redemption worker", () => {
       store,
     }).redeem();
 
-    expect(result).toEqual({ claimed: [], distributed: [] });
+    expect(result).toEqual({ claimed: [], distributed: [], sealed: [] });
     expect((await store.get("chan-a"))?.settled).toBe(0n);
     expect(errors).toHaveLength(1);
   });
@@ -281,7 +281,7 @@ describe("batch-settlement redemption worker", () => {
       settle,
       store,
     });
-    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [] });
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [] });
     expect(submitted).toEqual([]);
   });
 });

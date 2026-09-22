@@ -153,12 +153,13 @@ async function claimPayload(amount = 1_000n): Promise<BatchClaimPayload> {
   return {
     claims: [
       {
-        signature: signed.signature,
+        channelConfig,
+        channelId,
         voucher: {
-          channelConfig,
           channelId,
           expiresAt: 0,
           maxClaimableAmount: amount.toString(),
+          signature: signed.signature,
         },
       },
     ],

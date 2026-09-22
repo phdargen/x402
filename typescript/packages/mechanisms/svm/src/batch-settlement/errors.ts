@@ -11,6 +11,7 @@ export const BatchError = {
   CLOSE_AUTHORIZATION: `${PREFIX}close_authorization`,
   CLOSE_AMOUNT_UNSUPPORTED: `${PREFIX}close_amount_unsupported`,
   CLOSE_STATE: `${PREFIX}close_state`,
+  CHANNEL_CLOSING: `${PREFIX}channel_closing`,
   WITHDRAW_DELAY_MISMATCH: `${PREFIX}withdraw_delay_mismatch`,
   WITHDRAW_DELAY_OUT_OF_RANGE: `${PREFIX}withdraw_delay_out_of_range`,
   CUMULATIVE_AMOUNT_MISMATCH: `${PREFIX}cumulative_amount_mismatch`,

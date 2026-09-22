@@ -57,7 +57,7 @@ Usage-based payments: authorize a ceiling, settle actual usage. See [Upto SVM Sc
 
 ### Batch Settlement (`@x402/svm/batch-settlement/*`)
 
-Long-lived channels support cumulative client vouchers or concurrent server-signed metering with receipts. See the [SVM batch-settlement specification](../../../../specs/schemes/batch-settlement/scheme_batch_settlement_svm.md).
+Long-lived channels support cumulative client vouchers or concurrent server-signed metering with receipts. Server-signed channels hand the operator the client's onchain voucher authority, so the client only enters them for operator keys listed in `serverSignedChannelsPolicy.allowedOperators`, with the escrow capped by `maxDeposit` (a USD amount for default assets, default `$1`) or per-asset atomic caps in `allowedAssets`, the same shape as the core spend controls. An untrusted server-signed accept is refused and the scheme falls back to the same route's client-signed accept through its creation-failure hook, on any transport; `scheme.paymentPolicy` can be registered on the `x402Client` to prefer trusted metered accepts. Servers should offer the same route client-signed as well. See the [SVM batch-settlement specification](../../../../specs/schemes/batch-settlement/scheme_batch_settlement_svm.md).
 
 | Role | Import |
 |------|--------|

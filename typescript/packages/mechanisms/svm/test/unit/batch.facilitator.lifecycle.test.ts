@@ -3,6 +3,7 @@ import { address, generateKeyPairSigner, type Signature } from "@solana/kit";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
+import { signBatchAuthorization } from "../../src/batch-settlement/authorization";
 import {
   buildDepositPayload,
   buildRefundPayload,
@@ -176,6 +177,11 @@ type FacilitatorInternals = {
   ): Promise<unknown>;
   assertExpiry(expiresAt: number): void;
   assertClaimChannel: ReturnType<typeof vi.fn>;
+  assertServerModeProof(
+    payload: unknown,
+    channelId: string,
+    requirements: PaymentRequirements,
+  ): Promise<void>;
   assertSettlementAccounts(
     requirements: PaymentRequirements,
     payer: string,
@@ -452,7 +458,7 @@ describe("batch facilitator lifecycle", () => {
         },
         requirements(),
       ),
-    ).resolves.toMatchObject({ isValid: true, extra: { channelState: { channelId } } });
+    ).resolves.toMatchObject({ isValid: true, extra: { channelId } });
 
     api.deriveChannelId = vi.fn().mockResolvedValue(payer.address);
     await expect(
@@ -488,6 +494,105 @@ describe("batch facilitator lifecycle", () => {
         requirements(),
       ),
     ).resolves.toMatchObject({ isValid: false, invalidReason: BatchError.PAYLOAD_TYPE });
+  });
+
+  it("verifies the payer proof behind server-mode payloads", async () => {
+    const operator = await generateKeyPairSigner();
+    const scheme = new BatchSvmScheme(signer() as never);
+    const api = internals(scheme);
+    const serverConfig: BatchChannelConfig = {
+      ...channelConfig,
+      payerAuthorizer: operator.address,
+      voucherSigner: "server",
+    };
+    const serverRequirements = requirements({
+      extra: {
+        ...requirements().extra,
+        operator: operator.address,
+        voucherSigner: "server",
+      },
+    });
+    api.resolveTerms = vi.fn().mockResolvedValue({
+      feePayer: feePayer.address,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      voucherSigner: "server",
+      withdrawDelay: 900,
+    });
+    api.deriveChannelId = vi.fn().mockResolvedValue(channelId);
+    api.fetchChannel = vi
+      .fn()
+      .mockResolvedValue(channel({ authorizedSigner: address(operator.address) }));
+    const expiresAt = Math.floor(Date.now() / 1000) + 600;
+    const proof = await signBatchAuthorization(
+      payer,
+      channelId,
+      operator.address,
+      "request-1",
+      1_000n,
+      expiresAt,
+    );
+    const verify = (authorization: unknown) =>
+      scheme.verify(
+        {
+          accepted: serverRequirements,
+          payload: { authorization, channelConfig: serverConfig, type: "authorization" },
+          x402Version: 2,
+        } as never,
+        serverRequirements,
+      );
+    await expect(verify(proof)).resolves.toMatchObject({
+      isValid: true,
+      extra: { channelId },
+    });
+    // Every binding the resource server relies on is re-checked here, so a
+    // facilitator used as a standalone verifier cannot be fed a forged,
+    // re-priced, re-targeted, or expired proof.
+    const forged = [
+      { ...proof, authorizedAmount: "2000" },
+      { ...proof, channelId: payer.address },
+      { ...proof, payer: feePayer.address },
+      { ...proof, requestId: "request-2" },
+      { ...proof, expiresAt: expiresAt - 1200 },
+      { ...proof, signature: proof.signature.replace(/^./, c => (c === "1" ? "2" : "1")) },
+      await signBatchAuthorization(
+        payer,
+        channelId,
+        feePayer.address,
+        "request-1",
+        1_000n,
+        expiresAt,
+      ),
+    ];
+    for (const authorization of forged) {
+      await expect(verify(authorization)).resolves.toMatchObject({
+        isValid: false,
+        invalidReason: BatchError.VOUCHER_SIGNATURE,
+      });
+    }
+    // Structurally invalid proofs never reach the signature check.
+    for (const authorization of [{ ...proof, requestId: "" }, undefined]) {
+      await expect(verify(authorization)).resolves.toMatchObject({
+        isValid: false,
+        invalidReason: BatchError.PAYLOAD_TYPE,
+      });
+    }
+    // Server-mode deposits carry the same proof and get the same check.
+    const deposit = {
+      authorization: proof,
+      channelConfig: serverConfig,
+      deposit: { amount: "10000", transaction: "setup" },
+      type: "deposit" as const,
+    };
+    await expect(
+      api.assertServerModeProof(deposit, channelId, serverRequirements),
+    ).resolves.toBeUndefined();
+    await expect(
+      api.assertServerModeProof(
+        { ...deposit, authorization: undefined },
+        channelId,
+        serverRequirements,
+      ),
+    ).rejects.toThrow(/payer proof missing/);
   });
 
   it("validates real open, voucher, and refund transactions", async () => {
@@ -566,12 +671,13 @@ describe("batch facilitator lifecycle", () => {
           ? {
               claims: [
                 {
-                  signature: "x",
+                  channelConfig,
+                  channelId,
                   voucher: {
-                    channelConfig,
                     channelId,
                     expiresAt: 0,
                     maxClaimableAmount: "1",
+                    signature: "x",
                   },
                 },
               ],
@@ -701,7 +807,7 @@ describe("batch facilitator lifecycle", () => {
         deposit,
         requirements(),
       ),
-    ).resolves.toMatchObject({ success: true, amount: "11000", transaction: SIGNATURE });
+    ).resolves.toMatchObject({ success: true, amount: "1000", transaction: SIGNATURE });
     expect(facilitatorSigner.simulateTransaction).toHaveBeenCalledWith("setup", NETWORK);
 
     api.validateDeposit = vi.fn().mockResolvedValue({
@@ -910,12 +1016,13 @@ describe("batch facilitator lifecycle", () => {
       type: "claim",
       claims: [
         {
-          signature: signed.signature,
+          channelConfig,
+          channelId,
           voucher: {
-            channelConfig,
             channelId,
             expiresAt: 0,
             maxClaimableAmount: "1000",
+            signature: signed.signature,
           },
         },
       ],
@@ -945,13 +1052,14 @@ describe("batch facilitator lifecycle", () => {
       type: "claim",
       claims: [
         {
-          signature: signed.signature,
+          channelConfig,
+          channelId,
           voucher: {
-            channelConfig,
             channelId,
             expiresAt: 0,
             maxClaimableAmount: "1000",
             ...overrides,
+            signature: signed.signature,
           },
         },
       ],
@@ -988,7 +1096,7 @@ describe("batch facilitator lifecycle", () => {
     for (const value of [0n, 10_001n]) {
       const bounds = configured();
       const boundedClaim = claim({ maxClaimableAmount: value.toString() });
-      boundedClaim.claims[0]!.signature = (
+      boundedClaim.claims[0]!.voucher.signature = (
         await signBatchVoucher(payer, {
           channelId,
           expiresAt: 0,
@@ -1065,6 +1173,7 @@ describe("batch facilitator lifecycle", () => {
       programAddress: address(USDC_MAINNET_ADDRESS),
     });
     privateApi.submitRedemption = vi.fn().mockResolvedValue({ ok: true, signature: SIGNATURE });
+    privateApi.trackChannel = vi.fn().mockResolvedValue(undefined);
     const payload: BatchSettlePayload = {
       type: "settle",
       channels: [{ channelConfig, channelId }],
@@ -1076,6 +1185,30 @@ describe("batch facilitator lifecycle", () => {
         requirements(),
       ),
     ).resolves.toMatchObject({ amount: "800", success: true, transaction: SIGNATURE });
+    // A confirmed distribution is facilitator-visible activity (spec Phase 4):
+    // it resets the idle clock for the channel it paid.
+    expect(privateApi.trackChannel).toHaveBeenCalledOnce();
+    expect(privateApi.trackChannel).toHaveBeenCalledWith({
+      channelId,
+      expiresAt: 0,
+      network: NETWORK,
+      payTo: RECEIVER,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    });
+
+    // Replaying the same confirmed result is not new activity.
+    privateApi.trackChannel.mockClear();
+    privateApi.readChannel = vi
+      .fn()
+      .mockResolvedValue(channel({ settlement: { payoutWatermark: 200n, settled: 1_000n } }));
+    await expect(
+      scheme.settleDistributions(
+        { accepted: requirements(), payload, x402Version: 2 } as never,
+        payload,
+        requirements(),
+      ),
+    ).resolves.toMatchObject({ amount: "800", success: true, transaction: SIGNATURE });
+    expect(privateApi.trackChannel).not.toHaveBeenCalled();
   });
 
   it("rejects invalid distribution batches at each lifecycle boundary", async () => {

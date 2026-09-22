@@ -130,7 +130,7 @@ describe("batch server lifecycle boundaries", () => {
     expect(isBatchPayload({ channelConfig, type: "unknown" })).toBe(false);
     expect(isBatchFacilitatorPayload({ claims: [null], type: "claim" })).toBe(false);
     expect(
-      isBatchFacilitatorPayload({ claims: [{ signature: 1, voucher: {} }], type: "claim" }),
+      isBatchFacilitatorPayload({ claims: [{ channelId: 1, voucher: {} }], type: "claim" }),
     ).toBe(false);
   });
 
@@ -433,12 +433,10 @@ describe("batch server lifecycle boundaries", () => {
         ...verifyContext,
         result: {
           extra: {
-            channelState: {
-              balance: "1",
-              channelId,
-              totalClaimed: "2",
-              withdrawRequestedAt: 0,
-            },
+            balance: "1",
+            channelId,
+            totalClaimed: "2",
+            withdrawRequestedAt: 0,
           },
           isValid: true,
           payer: payer.address,
@@ -455,12 +453,10 @@ describe("batch server lifecycle boundaries", () => {
         ...context2,
         result: {
           extra: {
-            channelState: {
-              balance: "10000",
-              channelId,
-              totalClaimed: "500",
-              withdrawRequestedAt: 0,
-            },
+            balance: "10000",
+            channelId,
+            totalClaimed: "500",
+            withdrawRequestedAt: 0,
           },
           isValid: true,
           payer: payer.address,
@@ -533,12 +529,10 @@ describe("batch server lifecycle boundaries", () => {
         ...staleContext,
         result: {
           extra: {
-            channelState: {
-              balance: "10000",
-              channelId,
-              totalClaimed: "0",
-              withdrawRequestedAt: 0,
-            },
+            balance: "10000",
+            channelId,
+            totalClaimed: "0",
+            withdrawRequestedAt: 0,
           },
           isValid: true,
           payer: payer.address,
@@ -650,7 +644,7 @@ describe("batch server lifecycle boundaries", () => {
       const result = await server.schemeHooks.onAfterVerify!({
         ...ctx,
         result: {
-          extra: channelState === undefined ? undefined : { channelState },
+          extra: channelState === undefined ? undefined : (channelState as Record<string, unknown>),
           isValid: true,
           payer: payer.address,
         },

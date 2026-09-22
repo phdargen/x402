@@ -100,10 +100,12 @@ describe("batch client lifecycle", () => {
     async restart => {
       const operator = await generateKeyPairSigner();
       const { records, storage } = memoryStorage();
+      const trust = { allowedOperators: [operator.address] };
       let client = new BatchSvmScheme(payer, {
         channelStorage: storage,
         depositAmount: 3_000n,
         discoverChannels: false,
+        serverSignedChannelsPolicy: trust,
       });
       const serverRequirements = requirements({
         extra: {
@@ -123,7 +125,11 @@ describe("batch client lifecycle", () => {
       });
       const voucher = { channelId, expiresAt: 0, maxClaimableAmount: "400", signature };
       if (restart) {
-        client = new BatchSvmScheme(payer, { channelStorage: storage, discoverChannels: false });
+        client = new BatchSvmScheme(payer, {
+          channelStorage: storage,
+          discoverChannels: false,
+          serverSignedChannelsPolicy: trust,
+        });
       }
       await client.schemeHooks.onPaymentResponse!({
         paymentPayload: { accepted: serverRequirements, ...opened },
@@ -260,6 +266,39 @@ describe("batch client lifecycle", () => {
         settleResponse: { extra: { chargedAmount: "bad" }, success: true },
       } as never),
     ).rejects.toThrow(/unexpected amount/);
+  });
+
+  it("treats the commitment identifier as opaque and requires only that it is non-empty", async () => {
+    // Spec 4.4: `extra.commitmentId` MUST be non-empty; `channelId:cumulative`
+    // is an example, not a format the client may insist on.
+    const { records, storage } = memoryStorage();
+    const client = new BatchSvmScheme(payer, {
+      channelStorage: storage,
+      depositAmount: 3_000n,
+      discoverChannels: false,
+    });
+    const opened = await client.createPaymentPayload(2, requirements());
+    await client.schemeHooks.onPaymentResponse!({
+      paymentPayload: { accepted: requirements(), ...opened },
+      requirements: requirements(),
+      settleResponse: {
+        extra: { chargedAmount: "1000", commitmentId: "receipt-7f3a" },
+        success: true,
+      },
+    } as never);
+    expect([...records.values()][0]).toMatchObject({
+      chargedCumulativeAmount: "1000",
+      deposit: "3000",
+    });
+
+    const next = await client.createPaymentPayload(2, requirements());
+    await client.schemeHooks.onPaymentResponse!({
+      paymentPayload: { accepted: requirements(), ...next },
+      requirements: requirements(),
+      settleResponse: { extra: { chargedAmount: "1000", commitmentId: "" }, success: true },
+    } as never);
+    // An empty identifier is not a confirmation: the watermark stays put.
+    expect([...records.values()][0]).toMatchObject({ chargedCumulativeAmount: "1000" });
   });
 
   it("tops up an exhausted channel and commits only the signed deposit", async () => {
@@ -592,17 +631,31 @@ describe("batch client lifecycle", () => {
         }),
       ),
     ).resolves.toMatchObject({ memo: "invoice", receiverAuthorizer: payer.address });
+    const serverMode = requirements({
+      extra: {
+        ...requirements().extra,
+        operator: feePayer.address,
+        voucherSigner: "server",
+      },
+    });
+    // Server mode is never implied by the 402: without a grant the terms are
+    // refused even though every field is well-formed.
+    await expect(resolve(serverMode)).rejects.toThrow(/Trust it explicitly/);
     await expect(
-      resolve(
-        requirements({
-          extra: {
-            ...requirements().extra,
-            operator: feePayer.address,
-            voucherSigner: "server",
+      internals(
+        new BatchSvmScheme(payer, {
+          // $0.005 in USDC (6 decimals) = 5000 atomic.
+          serverSignedChannelsPolicy: {
+            allowedOperators: [feePayer.address],
+            maxDeposit: "$0.005",
           },
         }),
-      ),
-    ).resolves.toMatchObject({ operator: feePayer.address, voucherSigner: "server" });
+      ).resolveTerms(serverMode),
+    ).resolves.toMatchObject({
+      operator: feePayer.address,
+      voucherSigner: "server",
+      trust: { operator: feePayer.address, maxDeposit: 5_000n },
+    });
     const invalid = [
       requirements({ extra: undefined }),
       requirements({ extra: { ...requirements().extra, paymentFlow: "upfront" } }),

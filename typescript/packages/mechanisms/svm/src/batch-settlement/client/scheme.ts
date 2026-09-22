@@ -34,6 +34,12 @@ import {
   buildRefundPayload,
 } from "./channel";
 import { type BatchRefundOptions, refundBatchChannel } from "./refund";
+import {
+  type BatchServerSignedChannelsPolicy,
+  type ResolvedServerSignedTrust,
+  ServerSignedTrustPolicy,
+  UntrustedOperatorError,
+} from "./trust";
 
 interface OpenChannel {
   tracker: BatchChannelTracker;
@@ -108,12 +114,24 @@ export interface BatchSvmClientConfig extends ClientSvmConfig {
    * wants to avoid the scan can turn it off.
    */
   discoverChannels?: boolean | undefined;
+  /**
+   * Which resource operators may hold this client's voucher-signing authority,
+   * and how much escrow to lock under them.
+   *
+   * A 402 advertising `extra.voucherSigner: "server"` asks the client to open
+   * a channel whose onchain `authorized_signer` is the operator. Unless that
+   * key is listed in `allowedOperators` the client refuses the accept and,
+   * through its creation-failure hook, pays the same resource's client-signed
+   * accept instead when one is offered. Omit to never enter server mode.
+   */
+  serverSignedChannelsPolicy?: BatchServerSignedChannelsPolicy | undefined;
 }
 
 export class BatchSvmScheme implements SchemeNetworkClient {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
   findDefaultAsset = findDefaultAsset;
   readonly schemeHooks: SchemeClientHooks = {
+    onPaymentCreationFailure: async ctx => this.fallBackToClientSigned(ctx),
     onPaymentResponse: async ctx => {
       const recovered = await this.handlePaymentResponse(ctx);
       return recovered ? { recovered: true } : undefined;
@@ -121,6 +139,9 @@ export class BatchSvmScheme implements SchemeNetworkClient {
   };
   private readonly channels = new Map<string, OpenChannel>();
   private readonly pending = new Map<string, PendingChannel>();
+  private readonly trust: ServerSignedTrustPolicy;
+  /** Spend-cap context core passed for an accept, reused when falling back to its client-signed twin. */
+  private readonly creationContexts = new WeakMap<PaymentRequirements, PaymentPayloadContext>();
 
   constructor(
     private readonly signer: BatchClientSigner,
@@ -130,13 +151,35 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (multiplier !== undefined && (!Number.isInteger(multiplier) || multiplier < 3)) {
       throw new Error("depositMultiplier must be an integer >= 3");
     }
+    this.trust = new ServerSignedTrustPolicy(config.serverSignedChannelsPolicy);
   }
+
+  /**
+   * Optional core `PaymentPolicy` (`x402Client.registerPolicy`) that drops
+   * untrusted server-signed accepts before selection and prefers trusted ones
+   * over the same route's client-signed accept, so a client that trusts an
+   * operator gets metered pricing even when the server lists the fixed-price
+   * accept first. Transport-agnostic: it reads only the accepts.
+   *
+   * Not required for safety. Without it the scheme still refuses untrusted
+   * accepts and falls back to the client-signed accept through its
+   * creation-failure hook.
+   *
+   * @param _x402Version - Protocol version (unused)
+   * @param accepts - Offered payment requirements
+   * @returns Filtered and reordered accepts
+   */
+  readonly paymentPolicy = (
+    _x402Version: number,
+    accepts: PaymentRequirements[],
+  ): PaymentRequirements[] => this.trust.filterAccepts(accepts);
 
   async createPaymentPayload(
     x402Version: number,
     requirements: PaymentRequirements,
     context?: PaymentPayloadContext,
   ): Promise<Pick<PaymentPayload, "x402Version" | "payload">> {
+    if (context) this.creationContexts.set(requirements, context);
     const terms = await this.resolveTerms(requirements);
     const charge = parseU64(requirements.amount, "amount");
     const authorizationExpiresAt =
@@ -207,6 +250,8 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         charge,
         cumulative - existing.deposit,
         context,
+        terms.trust,
+        existing.deposit,
       );
       const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
       const blockhash = await resolveBlockhash(rpc, requirements);
@@ -272,7 +317,14 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     ) {
       throw new Error("depositAmount must cover the current request");
     }
-    const deposit = this.resolveDepositAmount(requirements, charge, charge, context);
+    const deposit = this.resolveDepositAmount(
+      requirements,
+      charge,
+      charge,
+      context,
+      terms.trust,
+      0n,
+    );
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
     const [blockhash, openSlot] = await Promise.all([
       resolveBlockhash(rpc, requirements),
@@ -366,6 +418,52 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     };
   }
 
+  /**
+   * Pay the same resource client-signed when the selected accept needed an
+   * operator this client does not trust.
+   *
+   * The fallback is restricted to a client-signed batch-settlement accept on
+   * the same network and asset for no more than the refused accept's amount,
+   * so it can never widen what the client's spend controls already allowed
+   * for the selected accept; the spend-cap context core resolved for that
+   * accept is reused as-is.
+   *
+   * @param ctx - Core's creation-failure context
+   * @returns A recovered payload for the client-signed accept, or nothing
+   */
+  private async fallBackToClientSigned(
+    ctx: Parameters<NonNullable<SchemeClientHooks["onPaymentCreationFailure"]>>[0],
+  ): Promise<void | { recovered: true; payload: PaymentPayload }> {
+    if (!(ctx.error instanceof UntrustedOperatorError)) return undefined;
+    const refused = ctx.selectedRequirements;
+    if (!/^\d+$/.test(refused.amount)) return undefined;
+    const fallback = ctx.paymentRequired.accepts.find(
+      accept =>
+        accept !== refused &&
+        accept.scheme === BATCH_SETTLEMENT_SCHEME &&
+        accept.network === refused.network &&
+        accept.asset === refused.asset &&
+        (accept.extra?.voucherSigner ?? "client") === "client" &&
+        /^\d+$/.test(accept.amount) &&
+        BigInt(accept.amount) <= BigInt(refused.amount),
+    );
+    if (!fallback) return undefined;
+    const partial = await this.createPaymentPayload(
+      ctx.paymentRequired.x402Version,
+      fallback,
+      this.creationContexts.get(refused),
+    );
+    return {
+      recovered: true,
+      payload: {
+        ...partial,
+        accepted: fallback,
+        resource: ctx.paymentRequired.resource,
+        ...(ctx.paymentRequired.extensions ? { extensions: ctx.paymentRequired.extensions } : {}),
+      },
+    };
+  }
+
   private salt(): bigint {
     return this.config.salt === undefined ? 0n : parseU64(this.config.salt, "salt");
   }
@@ -375,6 +473,8 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     requestAmount: bigint,
     needed: bigint,
     context: PaymentPayloadContext | undefined,
+    trust: ResolvedServerSignedTrust | undefined,
+    existingDeposit: bigint,
   ): bigint {
     const multiplier = this.config.depositPolicy?.depositMultiplier ?? 5;
     const configured =
@@ -383,7 +483,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         : parseU64(this.config.depositAmount, "depositAmount");
     const announced = parseAnnouncedMinDeposit(requirements.extra?.minDeposit, requestAmount);
     const target = configured ?? announced ?? requestAmount * BigInt(multiplier);
-    const proposed = target > needed ? target : needed;
+    let proposed = target > needed ? target : needed;
     const maxDeposit = maxDepositFromSpendCap(context?.maxAmountPerPayment, multiplier);
     if (maxDeposit !== undefined && needed > maxDeposit) {
       throw new Error(
@@ -391,7 +491,22 @@ export class BatchSvmScheme implements SchemeNetworkClient {
           "Raise maxAmountPerPayment or depositMultiplier.",
       );
     }
-    return maxDeposit !== undefined && proposed > maxDeposit ? maxDeposit : proposed;
+    if (maxDeposit !== undefined && proposed > maxDeposit) proposed = maxDeposit;
+    // In server mode the escrow is what a dishonest operator could take, so
+    // the trust grant's cap wins over every hint, including the server's own
+    // `minDeposit`, and over this client's fixed `depositAmount`.
+    if (trust?.maxDeposit !== undefined) {
+      const room = trust.maxDeposit - existingDeposit;
+      if (needed > room) {
+        throw new Error(
+          `Required deposit ${needed} exceeds the remaining serverSignedChannelsPolicy maxDeposit ` +
+            `(${trust.maxDeposit} total, ${existingDeposit} already escrowed). ` +
+            "Raise maxDeposit for this operator or use a client-signed accept.",
+        );
+      }
+      if (proposed > room) proposed = room;
+    }
+    return proposed;
   }
 
   /**
@@ -653,7 +768,11 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     }
     const reported = extra?.channelState?.chargedCumulativeAmount;
     if (
-      extra?.commitmentId !== `${pending.tracker.channelId}:${confirmedCumulative}` ||
+      // The commitment identifier is opaque to the client: the spec only
+      // requires it to be non-empty (section 4.4). The server's own cumulative,
+      // when reported, must still agree with the one derived here.
+      typeof extra?.commitmentId !== "string" ||
+      extra.commitmentId === "" ||
       (typeof reported === "string" && reported !== confirmedCumulative.toString())
     ) {
       // The server confirmed something this client did not submit. Leave local
@@ -716,6 +835,21 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     // A server may never claim to have charged less than the chain has already
     // settled, nor more than the client signed for.
     if (charged < claimed) return false;
+    if (pending.tracker.channelConfig.voucherSigner === "server") {
+      // In server mode `voucherState` is signed by the operator, so its
+      // signature proves nothing about what this client authorized. The only
+      // bound the client can assert itself is what it agreed to: its confirmed
+      // watermark plus the ceilings of its own requests whose outcome it never
+      // saw. Anything above that is an operator claim it has no basis to adopt.
+      const unresolved = [...this.pending.values()]
+        .filter(candidate => candidate.key === pending.key)
+        .reduce((sum, candidate) => sum + parseU64(candidate.amount, "pending amount"), 0n);
+      const authorized =
+        (pending.confirmed?.tracker.cumulative ?? 0n) +
+        parseU64(pending.amount, "pending amount") +
+        unresolved;
+      if (charged > authorized) return false;
+    }
 
     const voucherState = accept?.extra?.voucherState as BatchVoucherState | undefined;
     if (voucherState) {
@@ -812,6 +946,8 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     memo?: string | undefined;
     voucherSigner: "client" | "server";
     operator?: string | undefined;
+    /** Grant under which server mode was allowed; absent in client mode. */
+    trust?: ResolvedServerSignedTrust | undefined;
   }> {
     const extra = requirements.extra;
     if (!extra) throw new Error("requirements.extra is required");
@@ -860,6 +996,11 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (voucherSigner === "client" && operator !== undefined) {
       throw new Error("extra.operator is only valid for operator voucher signing");
     }
+    // Server mode hands the operator this client's onchain signing authority.
+    // That is never implied by a 402; it has to be a key this client listed,
+    // and `grantFor` throws `UntrustedOperatorError` otherwise so the
+    // creation-failure hook can fall back to a client-signed accept.
+    const trust = voucherSigner === "server" ? this.trust.grantFor(requirements) : undefined;
     return {
       feePayer,
       ...(memo !== undefined ? { memo } : {}),
@@ -868,6 +1009,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       withdrawDelay,
       voucherSigner,
       ...(typeof operator === "string" ? { operator } : {}),
+      ...(trust ? { trust } : {}),
     };
   }
 }

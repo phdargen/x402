@@ -149,9 +149,10 @@ interoperability.
 
 If the client invokes `request_close`, the channel enters `Closing` and regular
 `settle` is no longer available. Only the `payee` can apply a final voucher with
-`settle_and_seal` during the grace period. After the grace period, anyone can
-call `seal`; the payer can recover unspent escrow through `withdraw_payer` or
-sealed `distribute`.
+`settle_and_seal` during the grace period; the server supplies that voucher
+through the `seal` settlement payload of section 4.5, authenticated by its
+receiver authorizer. After the grace period, anyone can call `seal`; the payer
+can recover unspent escrow through `withdraw_payer` or sealed `distribute`.
 
 ## 4. Wire Format
 
@@ -180,7 +181,7 @@ and `SettlementResponse` types are defined in
 | `paymentFlow` | string | no | When present, MUST be `"authorization"`. The scheme resolves to the protocol-default `authorization` flow: read-only verification runs before the resource handler, and `/settle` commits the voucher — and broadcasts any `deposit` transaction — after it. |
 | `feePayer` | string | yes | Base58 sponsor key set as channel `rent_payer` and zero-share `payee`. Co-signs setup/top-up transactions as transaction fee payer and signs channel lifecycle transactions. |
 | `receiverAuthorizer` | string | no | Base58 server-controlled Ed25519 key that authenticates an optional immediate cooperative close to the facilitator. It is not a payment-channel account field. |
-| `voucherSigner` | string | no | Voucher-signing mode: `"client"` (default) or `"server"`. |
+| `voucherSigner` | string | no | Voucher-signing mode: `"client"` (default) or `"server"`. A client MUST NOT act on a `"server"` accept unless it has trusted that operator out of band (section 8); a server advertising `"server"` SHOULD list a `"client"` accept for the same resource alongside it so clients that do not extend that trust can still pay. |
 | `operator` | string | conditional | Base58 resource-operator Ed25519 key. REQUIRED when `voucherSigner == "server"`; MUST be absent in client mode. |
 | `withdrawDelay` | number | yes | Forced-close grace period in seconds. MUST be an integer from `900` through `2592000` (15 minutes through 30 days), MUST be `>= maxTimeoutSeconds`, and MUST be encoded exactly as the program `grace_period`. The payment-channels program accepts any positive `grace_period`; this range is an x402 conformance bound, so verifying facilitators MUST enforce it and reject out-of-range requirements. |
 | `tokenProgram` | string | yes | SPL Token (`Tokenkeg...`) or Token-2022 (`TokenzQ...`) program that owns `asset`. The client and facilitator MUST verify it against the onchain mint owner. |
@@ -673,7 +674,14 @@ The standard x402 `POST /verify` and `POST /settle` request envelope contains
 `paymentPayload.payload` MUST be one of the client-authored `deposit`, `voucher`,
 `authorization`, or `refund` variants in section 4.3. The facilitator validates the wire fields,
 voucher signature, derived channel PDA, and onchain channel state and, for
-`deposit` and `refund`, the client-signed transaction. For `refund`, it
+`deposit` and `refund`, the client-signed transaction. For `authorization`, and
+for a `deposit` whose `channelConfig` selects server mode, it MUST also verify
+the `BatchAuthorization` itself: the payer signature over the section 4.2
+message, `channelId` equal to the derived PDA, `payer` equal to
+`channelConfig.payer`, `authorizedAmount` equal to `PaymentRequirements.amount`,
+a non-empty `requestId`, and `now < expiresAt`. A facilitator used as a
+standalone verifier therefore never accepts a server-mode request on the
+resource server's word alone. For `refund`, it
 additionally confirms that the transaction is an exact payer-authorized
 `request_close` for the derived channel, the channel is `Open` or is still
 within its `Closing` grace period, and the payer's canonical return ATA is
@@ -723,28 +731,36 @@ instruction it invokes:
 | `authorization` | Client | Ask the operator to accept and sign the next cumulative voucher; no funds move. | None |
 | `claim` | Server | Advance accounting; no funds move to the receiver. | `settle` |
 | `settle` | Server | Move earned funds to the receiver. | `distribute` |
+| `seal` | Server | Finalize a `Closing` channel with the server's latest voucher during the grace period; pays the receiver and returns unused escrow to the payer. | `settle_and_seal` + sealed `distribute` |
 | `refund` | Client, optionally server-enriched | Start a payer-forced close; after the grace period, finalize and return all unused escrow, or use an authenticated immediate cooperative close. | `request_close` then `seal` + sealed `distribute`, or `settle_and_seal` + sealed `distribute` |
 
 The examples in this subsection show the inner `paymentPayload.payload`; the
 caller MUST wrap each one in the standard request envelope defined above.
 
 The `deposit` settle payload is the client variant from section 4.3. A `voucher`
-is stored and answered by the server without a facilitator settlement. The
-server-authored or server-enriched variants are:
+is stored and answered by the server without a facilitator settlement. Every
+server-authored payload identifies a channel by the same entry shape,
+`channelId` plus `channelConfig`, and carries vouchers as `BatchVoucher`
+objects; `claim` and `settle` wrap one to four such entries in an array, while
+`seal` acts on one channel. The server-authored or server-enriched variants
+are:
 
 | Payload | Field | Type | Notes |
 |---|---|---|---|
 | Claim | `type` | string | `"claim"` |
-| Claim | `claims` | array | One to four voucher claims. |
-| Claim | `claims[].voucher.channelConfig` | `ChannelConfig` | Full channel configuration. |
-| Claim | `claims[].voucher.channelId` | string | Channel PDA. |
-| Claim | `claims[].voucher.maxClaimableAmount` | string | Cumulative amount for program `settle`. |
-| Claim | `claims[].voucher.expiresAt` | number | MUST be `0`. |
-| Claim | `claims[].signature` | string | Base58 Ed25519 voucher signature. |
+| Claim | `claims` | array | One to four channels to claim in one transaction. |
+| Claim | `claims[].channelId` | string | Channel PDA. |
+| Claim | `claims[].channelConfig` | `ChannelConfig` | Full channel configuration. |
+| Claim | `claims[].voucher` | `BatchVoucher` | Latest accepted voucher; its `maxClaimableAmount` becomes the new onchain `settled` watermark. `expiresAt` MUST be `0`. |
 | Settle | `type` | string | `"settle"` |
-| Settle | `channels` | array | One or more channels to distribute. |
+| Settle | `channels` | array | One to four channels to distribute in one transaction. |
 | Settle | `channels[].channelId` | string | Channel PDA. |
 | Settle | `channels[].channelConfig` | `ChannelConfig` | Full configuration used to derive accounts, validate the channel, and reconstruct the distribution. |
+| Seal | `type` | string | `"seal"` |
+| Seal | `channelId` | string | Channel PDA. |
+| Seal | `channelConfig` | `ChannelConfig` | Full channel configuration. |
+| Seal | `voucher` | `BatchVoucher` | Latest accepted voucher; its `maxClaimableAmount` becomes the final settled watermark. `expiresAt` MUST be `0`. |
+| Seal | `closeAuthorization` | `CloseAuthorization` | REQUIRED unless the facilitator authenticates the server out of band. Binds this exact close. |
 | Refund | `type` | string | `"refund"` |
 | Refund | `channelConfig` | `ChannelConfig` | Client-provided channel configuration. |
 | Refund | `transaction` | string | Client-signed `request_close` transaction forwarded to the facilitator. |
@@ -821,49 +837,51 @@ by the same worker through `reclaim`; none of these asynchronous transactions
 is part of the initial HTTP refund response.
 
 The server initiates asynchronous accounting with a `claim` payload. Each
-claim carries the full channel configuration needed to derive and validate the
-channel plus the voucher signature needed to construct the Ed25519 precompile
-instruction:
+entry carries the full channel configuration needed to derive and validate the
+channel plus the latest accepted voucher, whose signature builds the Ed25519
+precompile instruction:
 
 ```json
 {
   "type": "claim",
   "claims": [
     {
+      "channelId": "<channel-pda-1>",
+      "channelConfig": {
+        "payer": "<client-wallet-1>",
+        "payerAuthorizer": "<client-voucher-signer-1>",
+        "receiver": "<server-receiver>",
+        "receiverAuthorizer": "<server-close-authorizer>",
+        "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "withdrawDelay": 3600,
+        "salt": "42",
+        "openSlot": 341000000
+      },
       "voucher": {
-        "channelConfig": {
-          "payer": "<client-wallet-1>",
-          "payerAuthorizer": "<client-voucher-signer-1>",
-          "receiver": "<server-receiver>",
-          "receiverAuthorizer": "<server-close-authorizer>",
-          "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-          "withdrawDelay": 3600,
-          "salt": "42",
-          "openSlot": 341000000
-        },
         "channelId": "<channel-pda-1>",
         "maxClaimableAmount": "5000",
-        "expiresAt": 0
-      },
-      "signature": "<base58-ed25519-voucher-signature-1>"
+        "expiresAt": 0,
+        "signature": "<base58-ed25519-voucher-signature-1>"
+      }
     },
     {
+      "channelId": "<channel-pda-2>",
+      "channelConfig": {
+        "payer": "<client-wallet-2>",
+        "payerAuthorizer": "<client-voucher-signer-2>",
+        "receiver": "<server-receiver>",
+        "receiverAuthorizer": "<server-close-authorizer>",
+        "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "withdrawDelay": 3600,
+        "salt": "43",
+        "openSlot": 341000050
+      },
       "voucher": {
-        "channelConfig": {
-          "payer": "<client-wallet-2>",
-          "payerAuthorizer": "<client-voucher-signer-2>",
-          "receiver": "<server-receiver>",
-          "receiverAuthorizer": "<server-close-authorizer>",
-          "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-          "withdrawDelay": 3600,
-          "salt": "43",
-          "openSlot": 341000050
-        },
         "channelId": "<channel-pda-2>",
         "maxClaimableAmount": "7000",
-        "expiresAt": 0
-      },
-      "signature": "<base58-ed25519-voucher-signature-2>"
+        "expiresAt": 0,
+        "signature": "<base58-ed25519-voucher-signature-2>"
+      }
     }
   ]
 }
@@ -913,9 +931,67 @@ a `settle` payload:
 }
 ```
 
-The facilitator invokes `distribute` for every `channels[]` entry and MUST
-process every entry or fail the request. It MUST confirm each transaction
-onchain before returning success.
+`channels[]` MUST contain between one and four entries, the same
+transaction-size bound as `claims[]`. The facilitator invokes `distribute` for
+every `channels[]` entry in one transaction and MUST process every entry or
+fail the request; it MUST NOT silently truncate a batch. It MUST confirm the
+transaction onchain before returning success.
+
+Once the payer has broadcast `request_close`, the channel is `Closing` and
+program `settle` is unavailable: a `claim` for that channel, and a `voucher` or
+`authorization` verification against it, MUST fail with
+`invalid_batch_settlement_svm_channel_closing`. The server's only way to
+collect voucher value above the onchain `settled` watermark is a `seal`
+payload, which the facilitator executes as `payee` before the grace period
+ends. A server SHOULD retry a claim that failed with that code as a `seal`,
+and SHOULD set `withdrawDelay` comfortably above its claim cadence so the
+grace period always covers a scheduled redemption:
+
+```json
+{
+  "type": "seal",
+  "channelId": "<channel-pda>",
+  "channelConfig": {
+    "payer": "<client-wallet>",
+    "payerAuthorizer": "<client-voucher-signer>",
+    "receiver": "<server-receiver>",
+    "receiverAuthorizer": "<server-close-authorizer>",
+    "token": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "withdrawDelay": 3600,
+    "salt": "42",
+    "openSlot": 341000000
+  },
+  "voucher": {
+    "channelId": "<channel-pda>",
+    "maxClaimableAmount": "5000",
+    "expiresAt": 0,
+    "signature": "<base58-ed25519-latest-voucher-signature>"
+  },
+  "closeAuthorization": {
+    "validBefore": 1785341100,
+    "signature": "<base58-server-close-authorization-signature>"
+  }
+}
+```
+
+The facilitator MUST authenticate the server before acting on a `seal`: from
+its trusted request context, or by verifying `closeAuthorization` against the
+receiver authorizer bound to the channel at its first deposit (or a key it
+registered for `payTo` out of band), requiring `now < validBefore <= now +
+maxTimeoutSeconds`. A key that merely appears in the request MUST NOT be
+trusted, because a payer holding an older voucher could otherwise freeze the
+watermark below the server's latest. It MUST verify the voucher signature
+against `channelConfig.payerAuthorizer`, confirm the channel is `Closing` with
+`now < closure_started_at + grace_period`, and require `Channel.settled <=
+voucher.maxClaimableAmount <= Channel.deposit`. When `settled <
+maxClaimableAmount` it emits the voucher's Ed25519 precompile instruction
+immediately followed by `settle_and_seal` with `has_voucher = 1`; when equal it
+invokes `settle_and_seal` with `has_voucher = 0`. It then invokes sealed
+`distribute` in the same transaction, confirms it onchain, and reports
+`amount` as the funds moved to `payTo`; the payer receives `deposit -
+maxClaimableAmount` in the same transaction. Any other state MUST be rejected
+with `invalid_batch_settlement_svm_close_state`. A `seal` occupies the
+`("close", channelId, maxClaimableAmount)` namespace of Phase 5.
 
 Successful responses have operation-specific `amount` semantics:
 
@@ -938,6 +1014,37 @@ Settle (`amount` is the total transferred to the receiver across the batch):
   "transaction": "<base58-transaction-signature>",
   "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
   "amount": "5000"
+}
+```
+
+A facilitator MAY add per-channel confirmation under `extra`: for a claim,
+`extra.accepts[]` entries of `{ "channelId", "totalClaimed" }` giving the
+confirmed onchain `settled` value the claim advanced each channel to; for a
+settle, `extra.channels[]` listing the channel PDAs the transaction paid. A
+server MUST NOT require either field. When they are absent, it reconciles the
+`settled` and `payout_watermark` values by reading the channel account after
+the transaction confirms; when they are present, it MAY use them only if they
+name exactly the channels it submitted.
+
+Seal (`amount` is the delta paid to the receiver; `extra.channelState`
+carries the final watermark, and `balance - totalClaimed` went back to the
+payer):
+
+```json
+{
+  "success": true,
+  "transaction": "<base58-transaction-signature>",
+  "network": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  "payer": "<client-wallet>",
+  "amount": "2000",
+  "extra": {
+    "channelState": {
+      "channelId": "<channel-pda>",
+      "balance": "100000",
+      "totalClaimed": "5000",
+      "withdrawRequestedAt": 0
+    }
+  }
 }
 ```
 
@@ -1088,6 +1195,14 @@ Only after these checks does the client adopt `chargedCumulativeAmount` as its
 new cumulative base and retry. When the server has no accepted voucher for the
 channel, it omits `voucherState` and the client resynchronizes from onchain
 state instead.
+
+In server mode `voucherState.signature` is the operator's, so it proves only
+that the operator produced the snapshot, not that the client authorized it. A
+server-mode client MUST additionally reject a corrective snapshot whose
+`chargedCumulativeAmount` exceeds its own confirmed watermark plus the sum of
+`PaymentRequirements.amount` for its requests on that channel whose outcome it
+never observed. That sum is the most the client has agreed the operator may
+have charged.
 
 ## 5. Phases
 
@@ -1301,7 +1416,10 @@ In client mode, using the last authenticated `PAYMENT-RESPONSE`, the client sets
 PaymentRequirements.amount`, signs a new `BatchVoucher`, and sends a `voucher`
 payload. In server mode it sends an `authorization` payload with an unexpired
 payer proof binding a fresh `requestId` and `PaymentRequirements.amount`; it
-does not propose a cumulative amount.
+does not propose a cumulative amount. A client enters server mode only for an
+operator it has trusted out of band; when a 402 offers both modes for the same
+resource, a client that holds such trust SHOULD prefer the server-mode accept
+and every other client MUST fall back to the client-mode accept.
 The client MUST keep at most one server-mode request in flight per channel so
 the returned cumulative voucher can be evaluated against one exact local
 watermark. A transport retry is a new x402 request and MUST use a new
@@ -1422,6 +1540,11 @@ the request path:
 - **Settle (`type: "settle"`).** Call program `distribute` to pay the newly
   claimed delta to `payTo` and advance `payout_watermark`. The channel remains
   open.
+- **Seal (`type: "seal"`).** For a channel the payer has moved to `Closing`,
+  the server submits its latest voucher with a `CloseAuthorization`; the
+  facilitator, as `payee`, applies it with `settle_and_seal` and pays out with
+  sealed `distribute` before the grace period ends. This is how a server
+  collects voucher value above the onchain watermark once the payer walks.
 - **Refund (`type: "refund"`).** The facilitator broadcasts the client's
   payer-signed `request_close` transaction with its fee-payer signature. After
   the configured grace period, it or another permissionless crank calls `seal`
@@ -1498,10 +1621,11 @@ duplicate request from executing but is not an HTTP response-recovery protocol:
   Once `Closing`, later retries return the observed channel state. A client
   refund does not occupy the cooperative-close authorization namespace and does
   not require a server signature. If the server supplies a cooperative close,
-  the latest voucher and its authorization occupy a distinct `("close",
-  channelId, maxClaimableAmount)` namespace; the server and facilitator MUST
-  cache that result through `closeAuthorization.validBefore` or the replay
-  window of the trusted out-of-band request authentication.
+  as a `seal` payload or a server-enriched refund, the latest voucher and its
+  authorization occupy a distinct `("close", channelId, maxClaimableAmount)`
+  namespace; the server and facilitator MUST cache that result through
+  `closeAuthorization.validBefore` or the replay window of the trusted
+  out-of-band request authentication.
 - **Reclaim.** A channel can transition from `Distributed` to deallocated only
   once. Concurrent reclaim attempts require no additional replay mitigation;
   later attempts observe an absent account or invalid status.
@@ -1639,6 +1763,10 @@ Standard x402 codes apply. The facilitator reports verification failures in
 - `invalid_batch_settlement_svm_close_state` - the channel cannot be closed, or
   an optional cooperative voucher does not equal server state or is behind the
   channel's onchain `settled` value.
+- `invalid_batch_settlement_svm_channel_closing` - the payer has started a
+  forced close, so program `settle` is unavailable: a `claim`, `voucher`, or
+  `authorization` for the channel is refused and the server retries with a
+  `seal` payload inside the grace period.
 - `invalid_batch_settlement_svm_withdraw_delay_mismatch` - channel grace period
   does not match `extra.withdrawDelay`.
 - `invalid_batch_settlement_svm_withdraw_delay_out_of_range` - `withdrawDelay`
@@ -1661,6 +1789,12 @@ Standard x402 codes apply. The facilitator reports verification failures in
 - `invalid_batch_settlement_svm_refund_transaction` - refund transaction is not
   a valid payer-signed `request_close` for the derived channel or contains an
   unauthorized instruction.
+- `invalid_batch_settlement_svm_payout_attribution_ambiguous` - a `settle`
+  transaction confirmed, but the receiver's token-balance delta cannot be
+  attributed to the batch because a sealed payout in the same transaction
+  returned escrow to a payer or treasury that aliases `payTo`. The facilitator
+  returns the confirmed signature with this reason instead of an `amount`;
+  the server reconciles from onchain state.
 - `duplicate_settlement` - a server-mode `requestId` was already reserved or
   completed, or the same client-supplied setup or refund transaction is already
   being settled.
@@ -1678,6 +1812,24 @@ Standard x402 codes apply. The facilitator reports verification failures in
   client mode. A client choosing server mode SHOULD use small, short-lived
   deposits and top up frequently. Over-provisioning is theft exposure in server
   mode, not merely temporarily locked client funds.
+- **Server mode is opt-in per operator, never per 402.** A client MUST NOT open
+  or pay into a server-mode channel because a `PaymentRequired` advertised
+  `voucherSigner: "server"`. It MUST require an explicit, locally configured
+  allowlist of `extra.operator` keys. The grant is keyed by operator alone so
+  it holds on every transport; nothing carried in the 402 body, and no
+  transport-specific attribute such as a request origin, is a trust anchor.
+  The grant SHOULD carry a maximum escrow the client will lock per channel
+  under that operator, expressed per asset; the client MUST clamp every
+  deposit hint, including `extra.minDeposit`, to that cap, since the cap is
+  exactly what a dishonest operator could take. Absent a grant the client MUST
+  refuse the server-mode accept and SHOULD pay a client-mode accept for the
+  same resource, network, and asset at no more than the refused amount when
+  one is offered; servers advertising server mode SHOULD therefore also offer
+  the same resource in client mode, typically at the request ceiling as a
+  fixed price. Because the
+  channel derivation binds `voucherSigner` and `operator`, a server that later
+  changes either cannot reuse a channel the client opened under the old terms;
+  the new terms go through the same trust decision.
 - **Bearer-proof confinement.** The proof binds the channel, payer, operator,
   single-use request identifier, amount ceiling, and expiry under a versioned
   domain. It MUST NOT be logged or sent to any origin other than the authorized

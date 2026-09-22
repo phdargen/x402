@@ -81,7 +81,8 @@ CONCURRENCY=3 NUMBER_OF_ROUNDS=3 pnpm dev:concurrent
 | `EVM_VOUCHER_SIGNER_PRIVATE_KEY` | no | Dedicated voucher-signing EOA (committed as `payerAuthorizer`) |
 | `SVM_PRIVATE_KEY` | one of | Base58-encoded SVM payer keypair bytes |
 | `SVM_RPC_URL` | no | SVM RPC endpoint override |
-| `SVM_DEPOSIT_AMOUNT` | no | Fixed SVM deposit target in atomic units; overrides `extra.minDeposit` and `DEPOSIT_MULTIPLIER` |
+| `SVM_SERVER_SIGNED_OPERATORS` | no | Comma-separated base58 operator keys allowed to sign vouchers for this client (server-signed, metered channels). Empty means server-signed accepts are refused and the client pays with its own vouchers. The operator of a server-signed channel can claim up to the whole escrow. Works over any transport. |
+| `SVM_SERVER_SIGNED_MAX_DEPOSIT` | no | USD cap (e.g. `$0.05`, default) on the escrow locked per channel under a trusted operator, for default assets; server `minDeposit` hints above it are clamped. Non-default tokens need an `allowedAssets` entry with an atomic cap in code. |
 | `RESOURCE_SERVER_URL` | no | Server base URL (default `http://localhost:4021`) |
 | `ENDPOINT_PATH` | no | Path on the server (default `/weather`) |
 | `CHANNEL_SALT` | no | `bytes32` salt for channel id; change to open a fresh channel |

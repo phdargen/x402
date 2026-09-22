@@ -17,6 +17,13 @@ export type BatchExtra = {
   voucherState?: BatchVoucherState | undefined;
   voucherSigner?: BatchVoucherSigner | undefined;
   operator?: string | undefined;
+  /**
+   * Facilitator idle window in seconds, copied from `/supported`. After this
+   * long with no facilitator-visible lifecycle activity an `Open` channel may
+   * be abandon-closed at its onchain settled watermark. Absent means the
+   * facilitator does not idle-close.
+   */
+  maxIdleSecs?: number | undefined;
 };
 
 export type BatchVoucherSigner = "client" | "server";
@@ -109,14 +116,15 @@ export type BatchPayload =
   | BatchAuthorizationPayload
   | BatchRefundPayload;
 
+/**
+ * One channel in a server-authored `claim`: the same `channelId` +
+ * `channelConfig` entry shape as `settle` and `seal`, carrying the latest
+ * accepted voucher as a standard {@link BatchVoucher}.
+ */
 export type BatchVoucherClaim = {
-  voucher: {
-    channelConfig: BatchChannelConfig;
-    channelId: string;
-    maxClaimableAmount: string;
-    expiresAt: number;
-  };
-  signature: string;
+  channelId: string;
+  channelConfig: BatchChannelConfig;
+  voucher: BatchVoucher;
 };
 
 export type BatchClaimPayload = {
@@ -129,7 +137,29 @@ export type BatchSettlePayload = {
   channels: { channelId: string; channelConfig: BatchChannelConfig }[];
 };
 
-export type BatchFacilitatorPayload = BatchPayload | BatchClaimPayload | BatchSettlePayload;
+/**
+ * Server-authored cooperative close of a `Closing` channel: apply the server's
+ * latest accepted voucher with `settle_and_seal` and pay out with a sealed
+ * `distribute` before the payer's grace period ends (spec 4.5).
+ */
+export type BatchSealPayload = {
+  type: "seal";
+  channelId: string;
+  channelConfig: BatchChannelConfig;
+  /** Latest accepted voucher; its cumulative becomes the final settled watermark. */
+  voucher: BatchVoucher;
+  /**
+   * Receiver-authorizer signature binding this exact close. Required unless
+   * the facilitator authenticates the server out of band.
+   */
+  closeAuthorization?: CloseAuthorization | undefined;
+};
+
+export type BatchFacilitatorPayload =
+  | BatchPayload
+  | BatchClaimPayload
+  | BatchSettlePayload
+  | BatchSealPayload;
 
 export type BatchChannelState = {
   channelId: string;
@@ -234,6 +264,14 @@ export function isBatchFacilitatorPayload(value: unknown): value is BatchFacilit
       value.claims.every(isBatchVoucherClaim)
     );
   }
+  if (value.type === "seal") {
+    return (
+      typeof value.channelId === "string" &&
+      isBatchChannelConfig(value.channelConfig) &&
+      isBatchVoucher(value.voucher) &&
+      (value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization))
+    );
+  }
   return (
     value.type === "settle" &&
     Array.isArray(value.channels) &&
@@ -248,20 +286,21 @@ export function isBatchFacilitatorPayload(value: unknown): value is BatchFacilit
 }
 
 function isBatchVoucherClaim(value: unknown): value is BatchVoucherClaim {
-  if (!isRecord(value) || typeof value.signature !== "string" || !isRecord(value.voucher)) {
-    return false;
-  }
   return (
-    isBatchChannelConfig(value.voucher.channelConfig) &&
-    typeof value.voucher.channelId === "string" &&
-    typeof value.voucher.maxClaimableAmount === "string" &&
-    typeof value.voucher.expiresAt === "number"
+    isRecord(value) &&
+    typeof value.channelId === "string" &&
+    isBatchChannelConfig(value.channelConfig) &&
+    isBatchVoucher(value.voucher)
   );
 }
 
 function isCloseAuthorization(value: unknown): value is CloseAuthorization {
   return (
-    isRecord(value) && typeof value.validBefore === "number" && typeof value.signature === "string"
+    isRecord(value) &&
+    typeof value.validBefore === "number" &&
+    Number.isSafeInteger(value.validBefore) &&
+    value.validBefore > 0 &&
+    typeof value.signature === "string"
   );
 }
 
