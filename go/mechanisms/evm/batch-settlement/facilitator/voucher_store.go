@@ -38,6 +38,7 @@ type VoucherStoreDeps struct {
 	DelegatedAuthStore      storage.DelegatedAuthStore
 	EIP6492AllowedFactories []string
 	PendingStore            x402.PendingSettlementStore
+	Retention               FacilitatorRetention
 }
 
 func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) string {
@@ -556,8 +557,7 @@ func settleManagedRefund(
 			next.RefundNonce = current.RefundNonce + 1
 		}
 		next.LastRequestTimestamp = time.Now().UnixMilli()
-		closed := uintCmp(balance, totalClaimed) <= 0 && chargeCount == 0
-		if closed {
+		if ShouldDeleteVoucherRow(deps.Retention, false, next, chargeCount) {
 			return nil
 		}
 		return next

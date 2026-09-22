@@ -3,6 +3,7 @@ package facilitator
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -269,6 +270,65 @@ func TestFacilitatorChannelManager_ClaimSimulationFailureLeavesStore(t *testing.
 	}
 }
 
+func TestFacilitatorChannelManager_ClaimContinuesAfterBatchFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	channels := make([]*FacilitatorChannel, 0, 2)
+	for _, suffix := range []string{"01", "02"} {
+		ch := managerChannel(t, auth, suffix, &channelFields{
+			ChargedCumulativeAmount: "1000",
+			SignedMaxClaimable:      "1000",
+			ChargeCount:             1,
+		})
+		seedManagedChannel(t, store, ch)
+		channels = append(channels, ch)
+	}
+	signer := newManagedSigner(t, nil)
+	innerRead := signer.readContract
+	claimSims := 0
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == "claimWithSignature" {
+			claimSims++
+			if claimSims == 1 {
+				return nil, fmt.Errorf("execution reverted")
+			}
+		}
+		return innerRead(functionName, args...)
+	}
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	results, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
+		MaxClaimsPerBatch: 1,
+		MaxTxsPerRun:      2,
+	})
+	if err == nil {
+		t.Fatal("expected claim batch failure")
+	}
+	if len(results) != 1 || results[0].Vouchers != 1 {
+		t.Fatalf("results = %+v, want the successful batch", results)
+	}
+	if signer.writeCalls != 1 {
+		t.Fatalf("writes = %d, want 1", signer.writeCalls)
+	}
+	claimed := 0
+	untouched := 0
+	for _, ch := range channels {
+		got, getErr := store.Get(context.Background(), ch.ChannelId)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if got.TotalClaimed == "1000" {
+			claimed++
+		} else if got.TotalClaimed == "0" && got.ChargeCount == 1 {
+			untouched++
+		} else {
+			t.Fatalf("channel %s totalClaimed=%s chargeCount=%d", ch.ChannelId, got.TotalClaimed, got.ChargeCount)
+		}
+	}
+	if claimed != 1 || untouched != 1 {
+		t.Fatalf("claimed=%d untouched=%d", claimed, untouched)
+	}
+}
+
 func TestFacilitatorChannelManager_SettleSimulationFailure(t *testing.T) {
 	auth := managedAuthorizer()
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
@@ -276,7 +336,7 @@ func TestFacilitatorChannelManager_SettleSimulationFailure(t *testing.T) {
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{simFail: "settle", receiverClaimed: bigInt(5000)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
-	_, err := mgr.Settle(context.Background())
+	_, err := mgr.Settle(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected settle failure")
 	}
@@ -300,7 +360,7 @@ func TestFacilitatorChannelManager_SettleAlreadySettledDoesNotThrow(t *testing.T
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(5000)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
-	results, err := mgr.Settle(context.Background())
+	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +377,7 @@ func TestFacilitatorChannelManager_SettleAppendsBuilderSuffix(t *testing.T) {
 	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	suffix := []byte{0x80, 0x21, 0xaa, 0xbb}
 	mgr := newTestManager(t, signer, store, auth, "", builderContext(suffix))
-	results, err := mgr.Settle(context.Background())
+	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +397,7 @@ func TestFacilitatorChannelManager_SettleUsesSettleQuery(t *testing.T) {
 	store := &hookStore{inner: inner, useSettleQuery: true, settleQueryItems: nil}
 	signer := newManagedSigner(t, nil)
 	mgr := newTestManager(t, signer, store, auth, "", nil)
-	results, err := mgr.Settle(context.Background())
+	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -632,6 +692,95 @@ func TestFacilitatorChannelManager_ClaimPassesThresholdOptions(t *testing.T) {
 	}
 	if !store.queryFilter.UnclaimedDesc {
 		t.Fatal("UnclaimedDesc not passed through")
+	}
+}
+
+type claimQueryRecorder struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	calls   int
+	filters []storage.ChannelQuery
+}
+
+func (s *claimQueryRecorder) Query(ctx context.Context, filter storage.ChannelQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[*FacilitatorChannel], error) {
+	s.calls++
+	s.filters = append(s.filters, filter)
+	return storage.QueryByScan[*FacilitatorChannel](ctx, s, filter)
+}
+
+func TestFacilitatorChannelManager_ClaimOldestFirstOverflowRequeriesUnclaimedDesc(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	for _, suffix := range []string{"01", "02"} {
+		ch := managerChannel(t, auth, suffix, &channelFields{
+			ChargedCumulativeAmount: "5000",
+			SignedMaxClaimable:      "5000",
+			ChargeCount:             1,
+		})
+		seedManagedChannel(t, inner, ch)
+	}
+	store := &claimQueryRecorder{InMemoryChannelStorage: inner}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+
+	minUnclaimed := "1000"
+	idle := 86400
+	opts := &FacilitatorClaimOptions{
+		MaxClaimsPerBatch: 1,
+		MaxTxsPerRun:      1,
+		OldestFirst:       true,
+		MinUnclaimed:      &minUnclaimed,
+		IdleSecs:          &idle,
+	}
+	if _, err := mgr.Claim(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 2 {
+		t.Fatalf("queryCalls = %d, want probe + overflow re-query", store.calls)
+	}
+	if !store.filters[0].OldestFirst || store.filters[0].UnclaimedDesc {
+		t.Fatalf("first filter = %+v, want oldest-first probe", store.filters[0])
+	}
+	if !store.filters[1].UnclaimedDesc || store.filters[1].OldestFirst {
+		t.Fatalf("second filter = %+v, want UnclaimedDesc re-query", store.filters[1])
+	}
+}
+
+func TestFacilitatorChannelManager_ClaimPassesMaxTxsPerRunLimit(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner, useQuery: true}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+
+	if _, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{MaxClaimsPerBatch: 2, MaxTxsPerRun: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if store.queryFilter.Limit == nil || *store.queryFilter.Limit != 6 {
+		t.Fatalf("Limit = %v, want 6", store.queryFilter.Limit)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleMulticall(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "00", &channelFields{TotalClaimed: "5000", ChargedCumulativeAmount: "5000"})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	minPending := "1"
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MinPending:      &minPending,
+		MaxSettlesPerTx: 10,
+		MaxTxsPerRun:    1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %+v", results)
+	}
+	if signer.writeFns[len(signer.writeFns)-1] != "multicall" {
+		t.Fatalf("writeFns = %v, want multicall", signer.writeFns)
 	}
 }
 

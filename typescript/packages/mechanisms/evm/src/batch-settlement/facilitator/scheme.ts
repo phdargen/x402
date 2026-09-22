@@ -31,7 +31,12 @@ import { resolveDataSuffix } from "../../shared/extensions";
 import * as Errors from "../errors";
 import { settleManaged, verifyManaged, type VoucherStoreDeps } from "./voucherStore";
 import { composeClaimDataSuffix } from "../chargeCounts";
-import { afterClaim, FacilitatorChannelManager, snapshotClaimChargeCounts } from "./channelManager";
+import {
+  afterClaim,
+  FacilitatorChannelManager,
+  snapshotClaimChargeCounts,
+  type FacilitatorRetention,
+} from "./channelManager";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
 import { assertDirectAuthorizerSubmitter, type SubmitContext, type SubmitMode } from "./submit";
 
@@ -71,6 +76,7 @@ export interface BatchSettlementEvmSchemeConfig {
     lockStorage?: ChannelLockStorage;
     withdrawDelay?: number;
     onchainStateTtlMs?: number;
+    retention?: FacilitatorRetention;
   };
   /**
    * Resolves a stable caller identity for a delegated settle. Presence of this
@@ -130,6 +136,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         lockStorage: ChannelLockStorage;
         withdrawDelay: number;
         onchainStateTtlMs?: number;
+        retention: FacilitatorRetention;
       }
     | undefined;
   private readonly resolveCallerIdentity: BatchSettlementEvmSchemeConfig["resolveCallerIdentity"];
@@ -185,6 +192,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         lockStorage,
         withdrawDelay: config.voucherStore.withdrawDelay ?? MIN_WITHDRAW_DELAY,
         onchainStateTtlMs: config.voucherStore.onchainStateTtlMs,
+        retention: config.voucherStore.retention ?? "until-closed",
       };
     }
   }
@@ -388,6 +396,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           requirements.network,
           attested,
           this.delegatedAuthStore,
+          this.voucherStore.retention,
         );
       }
       return settled;
@@ -450,6 +459,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       submitMode: this.submitMode,
       context,
       delegatedAuthStore: this.delegatedAuthStore,
+      retention: this.voucherStore.retention,
     });
   }
 
@@ -475,6 +485,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
       delegatedAuthStore: this.delegatedAuthStore,
       eip6492AllowedFactories: this.config.eip6492AllowedFactories,
       pendingStore: this.pendingStore,
+      retention: this.voucherStore.retention,
     };
   }
 

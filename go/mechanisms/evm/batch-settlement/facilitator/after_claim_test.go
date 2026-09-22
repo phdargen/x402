@@ -73,6 +73,39 @@ func attestedCharge(channels ...*FacilitatorChannel) map[string]int {
 	return out
 }
 
+func TestParseFacilitatorRetention(t *testing.T) {
+	t.Parallel()
+	got, err := ParseFacilitatorRetention("at-claim")
+	if err != nil || got != RetentionAtClaim {
+		t.Fatalf("got %q err=%v", got, err)
+	}
+	got, err = ParseFacilitatorRetention("")
+	if err != nil || got != RetentionUntilClosed {
+		t.Fatalf("default got %q err=%v", got, err)
+	}
+	if _, err := ParseFacilitatorRetention("bogus"); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestShouldDeleteVoucherRow_AtClaim(t *testing.T) {
+	t.Parallel()
+	channel := &FacilitatorChannel{}
+	channel.ChargedCumulativeAmount = "5000"
+	channel.Balance = "10000"
+	channel.TotalClaimed = "0"
+	if ShouldDeleteVoucherRow(RetentionAtClaim, false, channel, 0) {
+		t.Fatal("expected keep while unclaimed")
+	}
+	channel.TotalClaimed = "5000"
+	if !ShouldDeleteVoucherRow(RetentionAtClaim, false, channel, 0) {
+		t.Fatal("expected delete when claimable exhausted with balance left")
+	}
+	if ShouldDeleteVoucherRow(RetentionUntilClosed, false, channel, 0) {
+		t.Fatal("until-closed should keep row while balance exceeds claimed")
+	}
+}
+
 func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	channel := afterClaimChannel("10000", 3)
@@ -114,6 +147,40 @@ func TestAfterClaim_PreservesInFlightIncrements(t *testing.T) {
 	}
 	if got.ChargeCount != 2 {
 		t.Fatalf("chargeCount = %d, want 2", got.ChargeCount)
+	}
+}
+
+func TestAfterClaim_DeletesAtClaimWhenNothingClaimable(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	channel := afterClaimChannel("10000", 0)
+	seedManagedChannel(t, store, channel)
+
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionAtClaim); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background(), channel.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("expected deleted row, got %+v", got)
+	}
+}
+
+func TestAfterClaim_KeepsUntilClosedWhenEscrowRemains(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	channel := afterClaimChannel("10000", 0)
+	seedManagedChannel(t, store, channel)
+
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionUntilClosed); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background(), channel.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected retained row while balance exceeds totalClaimed")
 	}
 }
 

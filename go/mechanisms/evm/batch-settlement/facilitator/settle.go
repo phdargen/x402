@@ -12,11 +12,20 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-// SettleGasLimit is the gas limit for settle submissions.
+// SettleGasLimit is the per-settle gas budget used to estimate multicall limits.
 const SettleGasLimit uint64 = 120_000
+
+// SettleMulticallGasLimit estimates gas for a multicall of n settle() calls.
+func SettleMulticallGasLimit(settleCount int) uint64 {
+	if settleCount <= 0 {
+		return SettleGasLimit
+	}
+	return uint64(settleCount) * SettleGasLimit
+}
 
 // ExecuteSettle executes a settle action, transferring claimed funds to the receiver.
 // Calls settle(receiver, token) on the BatchSettlement contract.
@@ -167,4 +176,114 @@ func readReceiverSettlementTotals(
 	}
 
 	return totalClaimed, totalSettled, nil
+}
+
+// ExecuteSettleBatch submits up to len(targets) settle(receiver, token) calls in one
+// multicall. On simulation revert with multiple targets, the batch is split recursively.
+func ExecuteSettleBatch(
+	ctx context.Context,
+	signer evm.FacilitatorEvmSigner,
+	network x402.Network,
+	targets []storage.SettleTarget,
+	dataSuffix []byte,
+) ([]FacilitatorSettleResult, error) {
+	submissions, err := submitSettleMulticall(ctx, signer, network, targets, dataSuffix)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]FacilitatorSettleResult, 0)
+	for _, sub := range submissions {
+		for _, target := range sub.targets {
+			results = append(results, FacilitatorSettleResult{
+				Network:     string(network),
+				Receiver:    target.Receiver,
+				Token:       target.Token,
+				Transaction: sub.txHash,
+			})
+		}
+	}
+	return results, nil
+}
+
+type settleMulticallSubmission struct {
+	txHash  string
+	targets []storage.SettleTarget
+}
+
+func submitSettleMulticall(
+	ctx context.Context,
+	signer evm.FacilitatorEvmSigner,
+	network x402.Network,
+	targets []storage.SettleTarget,
+	dataSuffix []byte,
+) ([]settleMulticallSubmission, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	calls, err := encodeSettleMulticallCalls(targets)
+	if err != nil {
+		return nil, err
+	}
+	_, simErr := signer.ReadContract(
+		ctx,
+		batchsettlement.BatchSettlementAddress,
+		batchsettlement.BatchSettlementMulticallABI,
+		"multicall",
+		calls,
+	)
+	if simErr != nil {
+		if len(targets) == 1 {
+			return nil, x402.NewSettleError(ErrSettleSimulationFailed, "", network, "",
+				fmt.Sprintf("settle simulation failed: %s", evm.TruncateErrorMessage(simErr.Error())))
+		}
+		mid := len(targets) / 2
+		if mid < 1 {
+			mid = 1
+		}
+		left, err := submitSettleMulticall(ctx, signer, network, targets[:mid], dataSuffix)
+		if err != nil {
+			return nil, err
+		}
+		right, err := submitSettleMulticall(ctx, signer, network, targets[mid:], dataSuffix)
+		if err != nil {
+			return left, err
+		}
+		return append(left, right...), nil
+	}
+
+	txHash, err := signer.WriteContract(
+		ctx,
+		batchsettlement.BatchSettlementAddress,
+		batchsettlement.BatchSettlementMulticallABI,
+		"multicall",
+		dataSuffix,
+		calls,
+	)
+	if err != nil {
+		return nil, x402.NewSettleError(ErrSettleTransactionFailed, "", network, "",
+			fmt.Sprintf("settle multicall transaction failed: %s", evm.TruncateErrorMessage(err.Error())))
+	}
+	if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", network,
+		ErrSettleTransactionFailed, ErrTransactionReverted); err != nil {
+		return nil, err
+	}
+	return []settleMulticallSubmission{{txHash: txHash, targets: targets}}, nil
+}
+
+func encodeSettleMulticallCalls(targets []storage.SettleTarget) ([][]byte, error) {
+	settleAbi, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementSettleABI)))
+	if err != nil {
+		return nil, fmt.Errorf("load settle ABI: %w", err)
+	}
+	calls := make([][]byte, 0, len(targets))
+	for _, target := range targets {
+		receiver := common.HexToAddress(target.Receiver)
+		token := common.HexToAddress(target.Token)
+		call, err := settleAbi.Pack("settle", receiver, token)
+		if err != nil {
+			return nil, fmt.Errorf("encode settle calldata: %w", err)
+		}
+		calls = append(calls, call)
+	}
+	return calls, nil
 }
