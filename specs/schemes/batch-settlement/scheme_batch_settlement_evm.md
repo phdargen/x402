@@ -827,7 +827,7 @@ Facilitator-managed:
       "network": "eip155:8453",
       "extra": {
         "receiverAuthorizer": "0xReceiverAuthorizerAddress",
-        "withdrawDelay": 900,
+        "withdrawDelay": 604800,
         "voucherStore": true,
         "refundAuth": true
       }

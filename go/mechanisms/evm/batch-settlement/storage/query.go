@@ -28,13 +28,14 @@ type ChannelQuery struct {
 	Kind           QueryKind
 	Network        string
 	IdleAtOrBefore *int64
-	// MinUnclaimed is an optional decimal uint256 threshold on unclaimed
-	// amounts. Absent means any positive unclaimed.
+	// MinUnclaimed is an optional decimal uint256 unclaimed threshold; absent means any positive unclaimed.
 	MinUnclaimed *string
 	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
 	UnclaimedDesc bool
-	Limit         *int
-	Cursor        string
+	// OldestFirst sorts claimable rows by lastRequestTimestamp ascending (withdraw-pending first, then earliest withdrawRequestedAt).
+	OldestFirst bool
+	Limit       *int
+	Cursor      string
 }
 
 // SettleQuery filters distinct claimed (network, receiver, token) tuples.
@@ -111,7 +112,8 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 }
 
 // SortChannels orders query matches. Claimable rows put withdraw-pending
-// first, then highest-unclaimed when UnclaimedDesc is set.
+// first, then highest-unclaimed when UnclaimedDesc is set, or oldest
+// lastRequestTimestamp when OldestFirst is set.
 func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 	out := append([]T(nil), channels...)
 	switch filter.Kind {
@@ -128,10 +130,19 @@ func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 			if pendingA != pendingB {
 				return pendingA < pendingB
 			}
-			if !filter.UnclaimedDesc {
-				return false
+			if filter.UnclaimedDesc {
+				return unclaimedValue(a.Base()).Cmp(unclaimedValue(b.Base())) > 0
 			}
-			return unclaimedValue(a.Base()).Cmp(unclaimedValue(b.Base())) > 0
+			if filter.OldestFirst {
+				baseA := a.Base()
+				baseB := b.Base()
+				if baseA.WithdrawRequestedAt > 0 && baseB.WithdrawRequestedAt > 0 &&
+					baseA.WithdrawRequestedAt != baseB.WithdrawRequestedAt {
+					return baseA.WithdrawRequestedAt < baseB.WithdrawRequestedAt
+				}
+				return baseA.LastRequestTimestamp < baseB.LastRequestTimestamp
+			}
+			return false
 		})
 		return out
 	case QueryKindIdleRefundable, QueryKindWithdrawPending:

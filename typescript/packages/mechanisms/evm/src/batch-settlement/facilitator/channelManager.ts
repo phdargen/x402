@@ -27,7 +27,42 @@ import * as Errors from "../errors";
 
 export type { FacilitatorChannel };
 
-export type FacilitatorRetention = "until-closed" | "forever";
+export type FacilitatorRetention = "at-claim" | "until-closed" | "forever";
+
+/**
+ * Applies the default retention policy when retention is unset.
+ *
+ * @param retention - Optional configured retention policy.
+ * @returns Resolved retention policy, defaulting to `until-closed`.
+ */
+function normalizeRetention(retention?: FacilitatorRetention): FacilitatorRetention {
+  return retention ?? "until-closed";
+}
+
+/**
+ * Reports whether a managed voucher row should be hard-deleted from storage.
+ *
+ * @param retention - Row retention policy.
+ * @param held - Whether an admission lock is currently held on the channel.
+ * @param channel - Current channel snapshot used for close predicates.
+ * @param chargeCount - Attested or current unattested charge count after bookkeeping.
+ * @returns Whether the row should be deleted.
+ */
+export function shouldDeleteVoucherRow(
+  retention: FacilitatorRetention | undefined,
+  held: boolean,
+  channel: FacilitatorChannel,
+  chargeCount: number,
+): boolean {
+  const policy = normalizeRetention(retention);
+  if (policy === "forever" || held || chargeCount !== 0) {
+    return false;
+  }
+  if (policy === "at-claim") {
+    return BigInt(channel.chargedCumulativeAmount) <= BigInt(channel.totalClaimed);
+  }
+  return BigInt(channel.balance) <= BigInt(channel.totalClaimed);
+}
 
 export interface FacilitatorChannelManagerConfig {
   storage: ChannelStorage<FacilitatorChannel>;
@@ -142,19 +177,16 @@ export async function afterClaim(
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
     const snapshot = attested.get(channelId.toLowerCase()) ?? 0;
-    const deletable = retention !== "forever";
-    const held = deletable && lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
+    const held = lockStorage ? await channelIsHeld(lockStorage, channelId) : false;
     const result = await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
       }
       const chargeCount = Math.max(0, current.chargeCount - snapshot);
-      const closed =
-        deletable &&
-        !held &&
-        chargeCount === 0 &&
-        BigInt(current.balance) <= BigInt(current.totalClaimed);
-      return closed ? undefined : { ...current, chargeCount };
+      if (shouldDeleteVoucherRow(retention, held, current, chargeCount)) {
+        return undefined;
+      }
+      return { ...current, chargeCount };
     });
     if (result.status === "deleted" && delegatedAuthStore) {
       await delegatedAuthStore.delete(channelId, network);
@@ -597,19 +629,12 @@ export class FacilitatorChannelManager {
       };
     });
 
-    if (this.retention === "forever") {
-      return;
-    }
     const held = this.lockStorage ? await channelIsHeld(this.lockStorage, target.channelId) : false;
     const result = await this.storage.updateChannel(target.channelId, current => {
       if (!current) {
         return current;
       }
-      if (
-        !held &&
-        current.chargeCount === 0 &&
-        BigInt(current.balance) <= BigInt(current.totalClaimed)
-      ) {
+      if (shouldDeleteVoucherRow(this.retention, held, current, current.chargeCount)) {
         return undefined;
       }
       return current;

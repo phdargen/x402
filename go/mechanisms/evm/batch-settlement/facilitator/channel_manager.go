@@ -2,11 +2,15 @@ package facilitator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
+
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
@@ -15,13 +19,59 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-// FacilitatorRetention is the row retention policy after a channel closes.
+// FacilitatorRetention controls when managed voucher rows are removed from storage.
 type FacilitatorRetention string
 
 const (
+	// RetentionAtClaim deletes after claim or refund bookkeeping when nothing
+	// remains claimable (chargedCumulativeAmount <= totalClaimed) and chargeCount
+	// is zero. Residual on-chain balance can be rediscovered from chain state.
+	RetentionAtClaim FacilitatorRetention = "at-claim"
+	// RetentionUntilClosed deletes when escrow is fully accounted for
+	// (balance <= totalClaimed) and chargeCount is zero.
 	RetentionUntilClosed FacilitatorRetention = "until-closed"
-	RetentionForever     FacilitatorRetention = "forever"
+	// RetentionForever keeps closed rows indefinitely.
+	RetentionForever FacilitatorRetention = "forever"
 )
+
+// NormalizeRetention applies the default policy when retention is unset.
+func NormalizeRetention(retention FacilitatorRetention) FacilitatorRetention {
+	if retention == "" {
+		return RetentionUntilClosed
+	}
+	return retention
+}
+
+// ParseFacilitatorRetention validates a configured retention string.
+func ParseFacilitatorRetention(raw string) (FacilitatorRetention, error) {
+	switch FacilitatorRetention(raw) {
+	case RetentionAtClaim, RetentionUntilClosed, RetentionForever, "":
+		return NormalizeRetention(FacilitatorRetention(raw)), nil
+	default:
+		return "", fmt.Errorf("invalid facilitator retention %q (want at-claim, until-closed, or forever)", raw)
+	}
+}
+
+// ShouldDeleteVoucherRow reports whether a managed row should be hard-deleted.
+func ShouldDeleteVoucherRow(
+	retention FacilitatorRetention,
+	held bool,
+	channel *FacilitatorChannel,
+	chargeCount int,
+) bool {
+	retention = NormalizeRetention(retention)
+	if retention == RetentionForever || held || chargeCount != 0 || channel == nil {
+		return false
+	}
+	switch retention {
+	case RetentionAtClaim:
+		return uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) <= 0
+	case RetentionUntilClosed:
+		return uintCmp(channel.Balance, channel.TotalClaimed) <= 0
+	default:
+		return false
+	}
+}
 
 // FacilitatorChannelManagerConfig is storage, signers, submit mode, and retention.
 type FacilitatorChannelManagerConfig struct {
@@ -45,6 +95,20 @@ type FacilitatorClaimOptions struct {
 	MinUnclaimed *string
 	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
 	UnclaimedDesc bool
+	// MaxTxsPerRun caps claim transactions per run. With OldestFirst, the query
+	// limit is MaxTxsPerRun * MaxClaimsPerBatch and overflow re-queries UnclaimedDesc.
+	MaxTxsPerRun int
+	// OldestFirst selects claimable rows oldest lastRequestTimestamp first.
+	OldestFirst bool
+}
+
+// FacilitatorSettleOptions is optional batching and pending filters for Settle.
+type FacilitatorSettleOptions struct {
+	// MinPending skips receivers whose on-chain pending (totalClaimed-totalSettled)
+	// is at or below this decimal uint256 threshold.
+	MinPending      *string
+	MaxSettlesPerTx int
+	MaxTxsPerRun    int
 }
 
 // FacilitatorAutoConfig is interval, idle-refund, and callback configuration.
@@ -124,9 +188,7 @@ func AfterClaim(
 	authStore storage.DelegatedAuthStore,
 	retention FacilitatorRetention,
 ) error {
-	if retention == "" {
-		retention = RetentionUntilClosed
-	}
+	retention = NormalizeRetention(retention)
 	if err := storage.ApplyClaimedTotals(ctx, store, claims, network); err != nil {
 		return err
 	}
@@ -136,8 +198,7 @@ func AfterClaim(
 			return err
 		}
 		snapshot := attested[strings.ToLower(channelId)]
-		deletable := retention != RetentionForever
-		held := deletable && lockStorage != nil && channelIsHeld(ctx, lockStorage, channelId)
+		held := lockStorage != nil && channelIsHeld(ctx, lockStorage, channelId)
 		result, err := store.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
@@ -146,8 +207,7 @@ func AfterClaim(
 			if chargeCount < 0 {
 				chargeCount = 0
 			}
-			closed := deletable && !held && chargeCount == 0 && uintCmp(current.Balance, current.TotalClaimed) <= 0
-			if closed {
+			if ShouldDeleteVoucherRow(retention, held, current, chargeCount) {
 				return nil
 			}
 			next := current.Clone()
@@ -233,10 +293,7 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 	if lockStorage == nil && storage.IsChannelLockStorage(config.Storage) {
 		lockStorage = config.Storage.(storage.ChannelLockStorage)
 	}
-	retention := config.Retention
-	if retention == "" {
-		retention = RetentionUntilClosed
-	}
+	retention := NormalizeRetention(config.Retention)
 	submitMode := config.SubmitMode
 	if submitMode == "" {
 		submitMode = SubmitModeRelay
@@ -258,26 +315,36 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 }
 
 // Claim claims eligible vouchers, grouped by network, withdraw-pending first.
+// A failed batch is skipped. Successful batches are still applied. Every batch
+// failure is joined into the returned error so the caller can retry.
 func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *FacilitatorClaimOptions) ([]FacilitatorClaimResult, error) {
 	maxClaimsPerBatch := 100
 	if opts != nil && opts.MaxClaimsPerBatch > 0 {
 		maxClaimsPerBatch = opts.MaxClaimsPerBatch
 	}
-	filter := storage.ChannelQuery{Kind: storage.QueryKindClaimable, Limit: &maxClaimsPerBatch}
-	if opts != nil {
-		if opts.IdleSecs != nil {
-			idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
-			filter.IdleAtOrBefore = &idleAt
-		}
-		filter.MinUnclaimed = opts.MinUnclaimed
-		filter.UnclaimedDesc = opts.UnclaimedDesc
-	}
+	filter, capacity := buildClaimQuery(opts, maxClaimsPerBatch)
 	page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
 	if err != nil {
 		return nil, err
 	}
+	if capacity > 0 && opts != nil && opts.OldestFirst && len(page.Items) > capacity {
+		filter.UnclaimedDesc = true
+		filter.OldestFirst = false
+		filter.Limit = &capacity
+		page, err = storage.QueryChannels(ctx, m.storage, filter, nil)
+		if err != nil {
+			return nil, err
+		}
+	} else if capacity > 0 && len(page.Items) > capacity {
+		page.Items = page.Items[:capacity]
+	}
+	maxTxsPerRun := 0
+	if opts != nil && opts.MaxTxsPerRun > 0 {
+		maxTxsPerRun = opts.MaxTxsPerRun
+	}
 	byNetwork, order := groupByNetwork(page.Items)
 	results := make([]FacilitatorClaimResult, 0)
+	var batchErrs []error
 
 	for _, network := range order {
 		group := byNetwork[network]
@@ -289,19 +356,25 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 		if len(claims) == 0 {
 			continue
 		}
+		txCount := 0
 		for i := 0; i < len(claims); i += maxClaimsPerBatch {
+			if maxTxsPerRun > 0 && txCount >= maxTxsPerRun {
+				break
+			}
 			end := i + maxClaimsPerBatch
 			if end > len(claims) {
 				end = len(claims)
 			}
 			batch := claims[i:end]
 			result, attested, err := m.submitClaimBatch(ctx, network, batch, group)
+			txCount++
 			if err != nil {
-				return nil, err
+				batchErrs = append(batchErrs, err)
+				continue
 			}
 			results = append(results, result)
 			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention); err != nil {
-				return nil, err
+				batchErrs = append(batchErrs, err)
 			}
 		}
 	}
@@ -310,11 +383,17 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 		m.pendingSettle = true
 		m.mu.Unlock()
 	}
+	if len(batchErrs) > 0 {
+		return results, errors.Join(batchErrs...)
+	}
 	return results, nil
 }
 
 // Settle settles claimed-but-unsettled funds for each distinct (network, receiver, token).
-func (m *FacilitatorChannelManager) Settle(ctx context.Context) ([]FacilitatorSettleResult, error) {
+func (m *FacilitatorChannelManager) Settle(ctx context.Context, opts *FacilitatorSettleOptions) ([]FacilitatorSettleResult, error) {
+	if opts != nil && opts.MaxSettlesPerTx > 1 {
+		return m.settleMulticall(ctx, opts)
+	}
 	settleLimit := 100
 	page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &settleLimit}, nil)
 	if err != nil {
@@ -364,17 +443,15 @@ func (m *FacilitatorChannelManager) Settle(ctx context.Context) ([]FacilitatorSe
 
 // ClaimAndSettle claims eligible vouchers then settles.
 func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *FacilitatorClaimOptions) (claims []FacilitatorClaimResult, settle []FacilitatorSettleResult, err error) {
-	claims, err = m.Claim(ctx, opts)
-	if err != nil {
-		return nil, nil, err
-	}
+	claims, claimErr := m.Claim(ctx, opts)
 	if len(claims) > 0 {
-		settle, err = m.Settle(ctx)
-		if err != nil {
-			return claims, nil, err
+		var settleErr error
+		settle, settleErr = m.Settle(ctx, nil)
+		if settleErr != nil {
+			return claims, nil, errors.Join(claimErr, settleErr)
 		}
 	}
-	return claims, settle, nil
+	return claims, settle, claimErr
 }
 
 // Refund cooperatively refunds stored channels with remaining escrow.
@@ -631,15 +708,12 @@ func (m *FacilitatorChannelManager) afterRefund(
 		return err
 	}
 
-	if m.retention == RetentionForever {
-		return nil
-	}
 	held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, target.ChannelId)
 	result, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
 		}
-		if !held && current.ChargeCount == 0 && uintCmp(current.Balance, current.TotalClaimed) <= 0 {
+		if ShouldDeleteVoucherRow(m.retention, held, current, current.ChargeCount) {
 			return nil
 		}
 		return current
@@ -794,16 +868,13 @@ func (m *FacilitatorChannelManager) runClaimJob() {
 		opts.MaxClaimsPerBatch = cfg.MaxClaimsPerBatch
 	}
 	results, err := m.Claim(context.Background(), opts)
-	if err != nil {
-		if cfg.OnError != nil {
-			cfg.OnError(err)
-		}
-		return
-	}
 	if cfg.OnClaim != nil {
 		for _, result := range results {
 			cfg.OnClaim(result)
 		}
+	}
+	if err != nil && cfg.OnError != nil {
+		cfg.OnError(err)
 	}
 }
 
@@ -815,7 +886,7 @@ func (m *FacilitatorChannelManager) runSettleJob() {
 	if !pending {
 		return
 	}
-	results, err := m.Settle(context.Background())
+	results, err := m.Settle(context.Background(), nil)
 	if err != nil {
 		if cfg.OnError != nil {
 			cfg.OnError(err)
@@ -827,6 +898,166 @@ func (m *FacilitatorChannelManager) runSettleJob() {
 			cfg.OnSettle(result)
 		}
 	}
+}
+
+func buildClaimQuery(opts *FacilitatorClaimOptions, maxClaimsPerBatch int) (storage.ChannelQuery, int) {
+	filter := storage.ChannelQuery{Kind: storage.QueryKindClaimable}
+	capacity := 0
+	limit := maxClaimsPerBatch
+	if opts != nil && opts.MaxTxsPerRun > 0 {
+		capacity = opts.MaxTxsPerRun * maxClaimsPerBatch
+		if opts.OldestFirst {
+			probe := capacity + 1
+			limit = probe
+		} else {
+			limit = capacity
+		}
+	}
+	filter.Limit = &limit
+	if opts != nil {
+		if opts.IdleSecs != nil {
+			idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
+			filter.IdleAtOrBefore = &idleAt
+		}
+		filter.MinUnclaimed = opts.MinUnclaimed
+		filter.UnclaimedDesc = opts.UnclaimedDesc
+		if opts.OldestFirst && opts.MaxTxsPerRun > 0 {
+			filter.OldestFirst = true
+			filter.UnclaimedDesc = false
+		}
+	}
+	return filter, capacity
+}
+
+func (m *FacilitatorChannelManager) settleMulticall(ctx context.Context, opts *FacilitatorSettleOptions) ([]FacilitatorSettleResult, error) {
+	maxSettlesPerTx := opts.MaxSettlesPerTx
+	maxTxsPerRun := opts.MaxTxsPerRun
+	if maxSettlesPerTx <= 0 {
+		maxSettlesPerTx = 100
+	}
+	if maxTxsPerRun <= 0 {
+		maxTxsPerRun = 100
+	}
+	receiverBudget := maxSettlesPerTx * maxTxsPerRun
+	targets, err := m.collectSettleTargets(ctx, opts, receiverBudget)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		m.mu.Lock()
+		m.pendingSettle = false
+		m.mu.Unlock()
+		return nil, nil
+	}
+
+	byNetwork := make(map[string][]storage.SettleTarget)
+	networkOrder := make([]string, 0)
+	for _, target := range targets {
+		if _, ok := byNetwork[target.Network]; !ok {
+			networkOrder = append(networkOrder, target.Network)
+		}
+		byNetwork[target.Network] = append(byNetwork[target.Network], target)
+	}
+
+	results := make([]FacilitatorSettleResult, 0)
+	for _, network := range networkOrder {
+		group := byNetwork[network]
+		txCount := 0
+		for i := 0; i < len(group) && txCount < maxTxsPerRun; i += maxSettlesPerTx {
+			end := i + maxSettlesPerTx
+			if end > len(group) {
+				end = len(group)
+			}
+			batch := group[i:end]
+			payload := &batchsettlement.BatchSettlementSettlePayload{
+				Type:     "settle",
+				Receiver: batch[0].Receiver,
+				Token:    batch[0].Token,
+			}
+			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), batch[0].Token, batch[0].Receiver)
+			if err != nil {
+				return nil, err
+			}
+			batchResults, err := ExecuteSettleBatch(ctx, m.signer, x402.Network(network), batch, dataSuffix)
+			if err != nil {
+				return results, err
+			}
+			results = append(results, batchResults...)
+			txCount++
+		}
+	}
+	m.mu.Lock()
+	m.pendingSettle = false
+	m.mu.Unlock()
+	return results, nil
+}
+
+func (m *FacilitatorChannelManager) collectSettleTargets(
+	ctx context.Context,
+	opts *FacilitatorSettleOptions,
+	budget int,
+) ([]storage.SettleTarget, error) {
+	if budget <= 0 {
+		return nil, nil
+	}
+	pageSize := 100
+	if budget < pageSize {
+		pageSize = budget
+	}
+	var minPending *big.Int
+	if opts != nil && opts.MinPending != nil {
+		parsed, ok := storage.ParseUint256(*opts.MinPending)
+		if !ok {
+			return nil, fmt.Errorf("invalid MinPending threshold")
+		}
+		minPending = parsed
+	}
+
+	eligible := make([]storage.SettleTarget, 0, budget)
+	cursor := ""
+	for len(eligible) < budget {
+		limit := pageSize
+		page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &limit, Cursor: cursor}, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, target := range page.Items {
+			ok, err := m.settleTargetEligible(ctx, target, minPending)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			eligible = append(eligible, target)
+			if len(eligible) >= budget {
+				break
+			}
+		}
+		if page.Cursor == "" || len(eligible) >= budget {
+			break
+		}
+		cursor = page.Cursor
+	}
+	return eligible, nil
+}
+
+func (m *FacilitatorChannelManager) settleTargetEligible(
+	ctx context.Context,
+	target storage.SettleTarget,
+	minPending *big.Int,
+) (bool, error) {
+	if minPending == nil {
+		return true, nil
+	}
+	receiver := common.HexToAddress(target.Receiver)
+	token := common.HexToAddress(target.Token)
+	totalClaimed, totalSettled, err := readReceiverSettlementTotals(ctx, m.signer, receiver, token)
+	if err != nil {
+		return false, err
+	}
+	pending := new(big.Int).Sub(totalClaimed, totalSettled)
+	return pending.Cmp(minPending) > 0, nil
 }
 
 func (m *FacilitatorChannelManager) runRefundJob() {

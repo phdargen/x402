@@ -467,6 +467,26 @@ func TestSortChannels_ClaimableUnclaimedDesc(t *testing.T) {
 	}
 }
 
+func TestSortChannels_ClaimableOldestFirst(t *testing.T) {
+	old := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10", LastRequestTimestamp: queryNow})
+	older := queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "10", LastRequestTimestamp: queryNow - 120_000})
+	pending := queryChannel(paddedId(3), queryChannelExtra{
+		ChargedCumulativeAmount: "10",
+		LastRequestTimestamp:    queryNow,
+		WithdrawRequestedAt:     2,
+	})
+	pendingEarlier := queryChannel(paddedId(4), queryChannelExtra{
+		ChargedCumulativeAmount: "10",
+		LastRequestTimestamp:    queryNow - 60_000,
+		WithdrawRequestedAt:     1,
+	})
+	input := []*Channel{old, older, pending, pendingEarlier}
+	got := SortChannels(append([]*Channel{}, input...), ChannelQuery{Kind: QueryKindClaimable, OldestFirst: true})
+	if want := []string{paddedId(4), paddedId(3), paddedId(2), paddedId(1)}; !reflect.DeepEqual(channelIds(got), want) {
+		t.Fatalf("sorted = %v, want %v", channelIds(got), want)
+	}
+}
+
 func TestSortChannels_ClaimableDefaultPreservesOrder(t *testing.T) {
 	low := queryChannel(paddedId(1), queryChannelExtra{ChargedCumulativeAmount: "10"})
 	high := queryChannel(paddedId(2), queryChannelExtra{ChargedCumulativeAmount: "100"})

@@ -56,6 +56,7 @@ import { verifyVoucher } from "./voucher";
 import { encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitRefund } from "./refund";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
+import { shouldDeleteVoucherRow, type FacilitatorRetention } from "./channelManager";
 import type { SubmitMode } from "./submit";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -78,6 +79,7 @@ export type VoucherStoreDeps = {
   delegatedAuthStore?: DelegatedAuthStore;
   eip6492AllowedFactories: string[];
   pendingStore: PendingSettlementStore;
+  retention?: FacilitatorRetention;
 };
 
 /**
@@ -653,8 +655,10 @@ async function settleManagedRefund(
           refundNonce: Number(extraState?.channelState?.refundNonce ?? current.refundNonce + 1),
           lastRequestTimestamp: Date.now(),
         };
-        const closed = BigInt(balance) <= BigInt(totalClaimed) && chargeCount === 0;
-        return closed ? undefined : next;
+        if (shouldDeleteVoucherRow(deps.retention, false, next, chargeCount)) {
+          return undefined;
+        }
+        return next;
       });
 
       if (updated.status === "deleted" && deps.delegatedAuthStore) {

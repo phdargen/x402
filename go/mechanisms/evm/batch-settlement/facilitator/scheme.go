@@ -32,6 +32,7 @@ type voucherStoreRuntime struct {
 	lockStorage       storage.ChannelLockStorage
 	withdrawDelay     int
 	onchainStateTtlMs *int64
+	retention         FacilitatorRetention
 }
 
 // BatchSettlementEvmScheme implements SchemeNetworkFacilitator for batch settlement on EVM.
@@ -112,6 +113,7 @@ func NewBatchSettlementEvmSchemeWithConfig(
 				lockStorage:       lockStorage,
 				withdrawDelay:     withdrawDelay,
 				onchainStateTtlMs: config.VoucherStore.OnchainStateTtlMs,
+				retention:         NormalizeRetention(config.VoucherStore.Retention),
 			}
 		}
 	}
@@ -289,7 +291,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, err
 		}
 		if settled.Success && attested != nil && f.voucherStore != nil {
-			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, RetentionUntilClosed); afterErr != nil {
+			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, f.voucherStore.retention); afterErr != nil {
 				return nil, afterErr
 			}
 		}
@@ -344,6 +346,7 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		SubmitMode:          f.submitMode,
 		Context:             fctx,
 		DelegatedAuthStore:  f.delegatedAuthStore,
+		Retention:           f.voucherStore.retention,
 	})
 }
 
@@ -361,6 +364,7 @@ func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
 		DelegatedAuthStore:      f.delegatedAuthStore,
 		EIP6492AllowedFactories: f.config.EIP6492AllowedFactories,
 		PendingStore:            f.pendingStore,
+		Retention:               f.voucherStore.retention,
 	}
 }
 
@@ -382,6 +386,13 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 ) string {
 	if amountErr := refundAmountError(raw.Amount); amountErr != "" {
 		return amountErr
+	}
+	// extra.refundAuthorizer is off-chain consent. A signature from that key
+	// is not the on-chain Refund signature unless it is also receiverAuthorizer.
+	if consented, consentErr := acceptRefundAuthorizerConsent(raw, requirements); consentErr != "" {
+		return consentErr
+	} else if consented {
+		return ""
 	}
 	if raw.RefundAuthorizerSignature != "" || f.resolveCallerIdentity == nil {
 		return ""
@@ -411,4 +422,45 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 		return ErrRefundAuthorizerSignature
 	}
 	return ""
+}
+
+// acceptRefundAuthorizerConsent checks a self-managed refund that carries
+// extra.refundAuthorizer. The address unpacked from channel salt must match,
+// and refundAuthorizerSignature must recover to that address. When the consent
+// key is not the channel's receiverAuthorizer, the signature is removed so the
+// facilitator signs the on-chain Refund as receiverAuthorizer.
+//
+// Returns consented=false when extra.refundAuthorizer is absent.
+func acceptRefundAuthorizerConsent(
+	raw *batchsettlement.BatchSettlementEnrichedRefundPayload,
+	requirements types.PaymentRequirements,
+) (bool, string) {
+	if requirements.Extra == nil {
+		return false, ""
+	}
+	refundAuthorizer, _ := requirements.Extra["refundAuthorizer"].(string)
+	if refundAuthorizer == "" {
+		return false, ""
+	}
+	unpacked := batchsettlement.UnpackRefundAuthorizer(raw.ChannelConfig.Salt)
+	if !sameAddress(unpacked, refundAuthorizer) {
+		return false, ErrRefundAuthorizerMismatch
+	}
+	if raw.RefundAuthorizerSignature == "" {
+		return false, ErrRefundAuthorizerSignature
+	}
+	if !verifyRefundAuthorizerSignature(
+		raw.RefundAuthorizerSignature,
+		refundAuthorizer,
+		raw.Voucher.ChannelId,
+		raw.Amount,
+		raw.RefundNonce,
+		requirements.Network,
+	) {
+		return false, ErrRefundAuthorizerSignature
+	}
+	if !sameAddress(refundAuthorizer, raw.ChannelConfig.ReceiverAuthorizer) {
+		raw.RefundAuthorizerSignature = ""
+	}
+	return true, ""
 }
