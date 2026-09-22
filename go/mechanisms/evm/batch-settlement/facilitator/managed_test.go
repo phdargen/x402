@@ -276,7 +276,7 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 		getCode: func(string) ([]byte, error) {
 			return []byte{0x60, 0x80, 0x60, 0x40, 0x52}, nil
 		},
-		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+		readContract: func(functionName string, args ...interface{}) (interface{}, error) {
 			if rpc.readFail {
 				return nil, fmt.Errorf("rpc down")
 			}
@@ -288,7 +288,7 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 			}
 			if functionName == evm.FunctionTryAggregate {
 				rpc.tryAggregate++
-				return multicallChannelStateResult(t, rpc.balance, rpc.totalClaimed, rpc.withdrawAt, rpc.refundNonce), nil
+				return multicallTryAggregateStub(t, rpc, args...), nil
 			}
 			if functionName == "receivers" {
 				return []interface{}{rpc.receiverClaimed, rpc.receiverSettled}, nil

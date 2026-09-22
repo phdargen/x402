@@ -66,9 +66,10 @@ type VoucherStoreConfig struct {
 	// OnchainStateTtlMs is the cached onchain accept window. nil derives from
 	// WithdrawDelay. 0 disables the cache and always re-reads onchain.
 	OnchainStateTtlMs *int64
-	// Retention controls when voucher rows are removed. Empty defaults to
-	// RetentionUntilClosed.
+	// Retention controls when voucher rows are removed. Empty defaults to when-unused.
 	Retention FacilitatorRetention
+	// SettleMinPending sets eligible on settle-target upserts after claim.
+	SettleMinPending *string
 }
 
 func cachedOnchain(channel *FacilitatorChannel) *batchsettlement.CachedChannelOnchain {

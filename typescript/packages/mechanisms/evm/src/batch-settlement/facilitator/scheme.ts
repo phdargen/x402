@@ -192,7 +192,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
         lockStorage,
         withdrawDelay: config.voucherStore.withdrawDelay ?? MIN_WITHDRAW_DELAY,
         onchainStateTtlMs: config.voucherStore.onchainStateTtlMs,
-        retention: config.voucherStore.retention ?? "until-closed",
+        retention: config.voucherStore.retention ?? "when-unused",
       };
     }
   }
