@@ -452,3 +452,63 @@ func TestScheme_GetExtraAdvertisesRefundAuth(t *testing.T) {
 		t.Fatalf("extra = %+v", got)
 	}
 }
+
+func TestAcceptRefundAuthorizerConsent_StripsOffchainSignature(t *testing.T) {
+	receiverAuthorizer := "0x1111111111111111111111111111111111111111"
+	cfg := batchsettlement.ChannelConfig{
+		Payer:              "0x2222222222222222222222222222222222222222",
+		PayerAuthorizer:    "0x2222222222222222222222222222222222222222",
+		Receiver:           managedReceiver,
+		ReceiverAuthorizer: receiverAuthorizer,
+		Token:              managedToken,
+		WithdrawDelay:      900,
+		Salt:               "0x" + strings.Repeat("00", 32),
+	}
+	channelID, err := batchsettlement.ComputeChannelId(cfg, managedNetwork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const amount, nonce = "1000", "0"
+	refundAuthorizer, _ := signRefundConsent(t, channelID, amount, nonce, managedNetwork)
+	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("ab", 12), refundAuthorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Salt = packed
+	// Channel id in the signed digest is independent of salt; recompute only for the payload field.
+	channelID, err = batchsettlement.ComputeChannelId(cfg, managedNetwork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refundAuthorizer, sig := signRefundConsent(t, channelID, amount, nonce, managedNetwork)
+	raw := &batchsettlement.BatchSettlementEnrichedRefundPayload{
+		ChannelConfig:             cfg,
+		Voucher:                   batchsettlement.BatchSettlementVoucherFields{ChannelId: channelID},
+		Amount:                    amount,
+		RefundNonce:               nonce,
+		RefundAuthorizerSignature: sig,
+	}
+	reqs := types.PaymentRequirements{
+		Network: managedNetwork,
+		Extra:   map[string]interface{}{"refundAuthorizer": refundAuthorizer},
+	}
+
+	consented, errCode := acceptRefundAuthorizerConsent(raw, reqs)
+	if !consented || errCode != "" {
+		t.Fatalf("consent = %v %q", consented, errCode)
+	}
+	if raw.RefundAuthorizerSignature != "" {
+		t.Fatal("off-chain refundAuthorizer signature must be cleared so the facilitator signs as receiverAuthorizer")
+	}
+
+	raw.RefundAuthorizerSignature = sig
+	cfg.ReceiverAuthorizer = refundAuthorizer
+	raw.ChannelConfig = cfg
+	consented, errCode = acceptRefundAuthorizerConsent(raw, reqs)
+	if !consented || errCode != "" {
+		t.Fatalf("same-key consent = %v %q", consented, errCode)
+	}
+	if raw.RefundAuthorizerSignature == "" {
+		t.Fatal("signature from receiverAuthorizer must be kept for on-chain submission")
+	}
+}
