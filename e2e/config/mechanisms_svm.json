@@ -45,6 +45,7 @@
     },
     "/batch-settlement/svm": {
       "scheme": "batch-settlement",
+      "requiresEnv": "SERVER_SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY",
       "sdks": ["typescript"],
       "price": { "usd": "$0.001" },
       "extensions": ["bazaar"]

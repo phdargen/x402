@@ -4,7 +4,9 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { signCloseAuthorization } from "../../src/batch-settlement/closeAuthorization";
 import { BatchError } from "../../src/batch-settlement/errors";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { encodeReceiverBindingMemo } from "../../src/batch-settlement/receiverBinding";
 import {
   isBatchFacilitatorPayload,
   type BatchChannelConfig,
@@ -15,7 +17,7 @@ import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAsse
 import type { Channel } from "../../src/payment-channels/generated/accounts/channel";
 import { getChannelDistributionHash } from "../../src/payment-channels/facilitator";
 import { ChannelStatus } from "../../src/payment-channels/onchain";
-import { InMemoryPaymentChannelStorage } from "../../src/payment-channels/storage";
+import { buildOpenPaymentChannelTransaction } from "../../src/payment-channels/open";
 import { signVoucher } from "../../src/payment-channels/voucher";
 
 const NETWORK = SOLANA_DEVNET_CAIP2;
@@ -34,7 +36,22 @@ beforeAll(async () => {
   payer = await generateKeyPairSigner();
   feePayer = await generateKeyPairSigner();
   authorizer = await generateKeyPairSigner();
-  channelId = USDC_MAINNET_ADDRESS;
+  const open = await buildOpenPaymentChannelTransaction({
+    authorizedSigner: payer.address,
+    bindingMemo: encodeReceiverBindingMemo(authorizer.address),
+    blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 0n },
+    deposit: 10_000n,
+    feePayer: feePayer.address,
+    gracePeriod: 900,
+    mint: MINT,
+    openSlot: 1n,
+    payee: feePayer.address,
+    payer,
+    recipients: [{ bps: 10_000, recipient: RECEIVER }],
+    salt: 0n,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+  });
+  channelId = open.channelId;
   channelConfig = {
     openSlot: 1,
     payer: payer.address,
@@ -138,35 +155,23 @@ async function sealPayload(cumulative: bigint, overrides: Partial<BatchSealPaylo
 /**
  * Facilitator whose chain reads are stubbed and whose clock is pinned.
  *
- * @param options - Storage seed and live channel
+ * @param options - Binding seed and live channel
  * @param options.live - The channel account the facilitator reads
  * @param options.bound - Whether the receiver authorizer was bound at deposit
- * @param options.registry - Facilitator-registered receiver authorizers
- * @returns The scheme and its stubbed internals
+ * @returns The scheme, its stubbed internals, and its binding store
  */
 async function facilitator(
   options: {
     live?: Channel;
     bound?: boolean;
-    registry?: Record<string, readonly string[]>;
   } = {},
 ) {
-  const channelStorage = new InMemoryPaymentChannelStorage();
+  const store = new InMemoryBatchReceiverAuthorizerStore();
   if (options.bound ?? true) {
-    await channelStorage.upsert({
-      channelId,
-      expiresAt: 0,
-      firstSeenAt: 1,
-      lastActivityAt: 1,
-      network: NETWORK,
-      payTo: RECEIVER,
-      receiverAuthorizer: authorizer.address,
-      tokenProgram: TOKEN_PROGRAM_ADDRESS,
-    });
+    await store.bind({ channelId, network: NETWORK, receiverAuthorizer: authorizer.address });
   }
   const scheme = new BatchSvmScheme(signer() as never, {
-    channelStorage,
-    ...(options.registry ? { trustedReceiverAuthorizers: options.registry } : {}),
+    receiverAuthorizerStore: store,
   });
   const api = scheme as unknown as Internals;
   api.resolveTerms = vi.fn().mockResolvedValue({
@@ -193,7 +198,7 @@ async function facilitator(
   api.trackChannel = vi.fn().mockResolvedValue(undefined);
   const original = api.sealDependencies.bind(scheme);
   api.sealDependencies = () => ({ ...original(), nowSeconds: () => NOW });
-  return { api, scheme };
+  return { api, scheme, store };
 }
 
 const settle = (scheme: BatchSvmScheme, payload: BatchSealPayload) =>
@@ -203,7 +208,7 @@ describe("batch-settlement seal", () => {
   it("accepts only a well-formed seal payload", async () => {
     const payload = await sealPayload(3_000n);
     expect(isBatchFacilitatorPayload(payload)).toBe(true);
-    expect(isBatchFacilitatorPayload({ ...payload, closeAuthorization: undefined })).toBe(true);
+    expect(isBatchFacilitatorPayload({ ...payload, closeAuthorization: undefined })).toBe(false);
     expect(isBatchFacilitatorPayload({ ...payload, voucher: undefined })).toBe(false);
     expect(
       isBatchFacilitatorPayload({
@@ -284,8 +289,15 @@ describe("batch-settlement seal", () => {
     const payload = await sealPayload(3_000n);
     const missing = await facilitator();
     await expect(
-      settle(missing.scheme, { ...payload, closeAuthorization: undefined }),
-    ).resolves.toMatchObject({ errorReason: BatchError.CLOSE_AUTHORIZATION, success: false });
+      missing.scheme.settle(
+        {
+          accepted: requirements(),
+          payload: { ...payload, closeAuthorization: undefined },
+          x402Version: 2,
+        },
+        requirements(),
+      ),
+    ).resolves.toMatchObject({ errorReason: BatchError.PAYLOAD_TYPE, success: false });
 
     const forged = await facilitator();
     const impostor = await generateKeyPairSigner();
@@ -309,22 +321,73 @@ describe("batch-settlement seal", () => {
       settle(stale.scheme, { ...older, closeAuthorization: payload.closeAuthorization }),
     ).resolves.toMatchObject({ errorReason: BatchError.CLOSE_AUTHORIZATION, success: false });
 
-    // No binding and no registry: nothing to trust, fail closed.
+    // No stored binding: fail closed.
     const unbound = await facilitator({ bound: false });
     await expect(settle(unbound.scheme, payload)).resolves.toMatchObject({
-      errorReason: BatchError.CLOSE_AUTHORIZATION,
+      errorReason: BatchError.RECEIVER_BINDING_UNAVAILABLE,
       success: false,
     });
 
-    // A facilitator-registered key stands in when storage lost the binding.
-    const registered = await facilitator({
-      bound: false,
-      registry: { [RECEIVER]: [authorizer.address] },
+    // A key other than the binding cannot authorize, even when validly signed.
+    const rebound = await facilitator({ bound: false });
+    await rebound.store.bind({ channelId, network: NETWORK, receiverAuthorizer: payer.address });
+    await expect(settle(rebound.scheme, payload)).resolves.toMatchObject({
+      errorReason: BatchError.RECEIVER_AUTHORIZER_MISMATCH,
+      success: false,
     });
-    await expect(settle(registered.scheme, payload)).resolves.toMatchObject({ success: true });
     expect(missing.api.submitRedemption).not.toHaveBeenCalled();
     expect(forged.api.submitRedemption).not.toHaveBeenCalled();
     expect(stale.api.submitRedemption).not.toHaveBeenCalled();
+    expect(unbound.api.submitRedemption).not.toHaveBeenCalled();
+  });
+
+  it("refunds an open channel cooperatively with the server-authorized voucher", async () => {
+    const open = channel({ closureStartedAt: 0n, status: ChannelStatus.Open });
+    const refund = async (cumulative: bigint) => {
+      const { closeAuthorization, voucher } = await sealPayload(cumulative);
+      const { api, scheme } = await facilitator({ live: open });
+      const response = await scheme.settle(
+        {
+          accepted: requirements(),
+          payload: { channelConfig, closeAuthorization, type: "refund", voucher },
+          x402Version: 2,
+        } as never,
+        requirements(),
+      );
+      return { api, response };
+    };
+
+    const above = await refund(3_000n);
+    expect(above.response).toMatchObject({
+      amount: "7000",
+      extra: { channelState: { channelId, withdrawRequestedAt: 0 } },
+      success: true,
+      transaction: SIGNATURE,
+    });
+    const [, , instructions, key] = above.api.submitRedemption.mock.calls[0]!;
+    expect(instructions).toHaveLength(3);
+    expect(key).toBe(`batch:refund:${NETWORK}:${channelId}:3000`);
+
+    // At the watermark the channel seals without a voucher precompile.
+    const equal = await refund(1_000n);
+    expect(equal.response).toMatchObject({ amount: "9000", success: true });
+    expect(equal.api.submitRedemption.mock.calls[0]![2]).toHaveLength(2);
+
+    // A closing channel cannot be refunded cooperatively through the seal path.
+    const { closeAuthorization, voucher } = await sealPayload(3_000n);
+    const closing = await facilitator();
+    closing.api.readChannel = vi.fn().mockResolvedValue(undefined);
+    closing.api.fetchChannel = vi.fn().mockResolvedValue(channel());
+    await expect(
+      closing.scheme.settle(
+        {
+          accepted: requirements(),
+          payload: { channelConfig, closeAuthorization, type: "refund", voucher },
+          x402Version: 2,
+        } as never,
+        requirements(),
+      ),
+    ).resolves.toMatchObject({ errorReason: BatchError.CLOSE_STATE, success: false });
   });
 
   it("rejects a claim against a closing channel with the dedicated code", async () => {

@@ -7,7 +7,7 @@ export type BatchExtra = {
   paymentFlow?: "authorization" | undefined;
   minDeposit?: string | undefined;
   feePayer: string;
-  receiverAuthorizer?: string | undefined;
+  receiverAuthorizer: string;
   withdrawDelay: number;
   tokenProgram: string;
   memo?: string | undefined;
@@ -59,7 +59,7 @@ export type BatchChannelConfig = {
   payer: string;
   payerAuthorizer: string;
   receiver: string;
-  receiverAuthorizer?: string | undefined;
+  receiverAuthorizer: string;
   token: string;
   withdrawDelay: number;
   salt: string;
@@ -102,11 +102,16 @@ export type BatchAuthorizationPayload = {
   authorization: BatchAuthorization;
 };
 
+/**
+ * The client signs `voucher` at the server's accepted cumulative and may add a
+ * payer-signed `request_close` `transaction`. The server attaches
+ * `closeAuthorization` and may replace `voucher` with its latest.
+ */
 export type BatchRefundPayload = {
   type: "refund";
   channelConfig: BatchChannelConfig;
-  transaction: string;
-  voucher?: BatchVoucher | undefined;
+  voucher: BatchVoucher;
+  transaction?: string | undefined;
   closeAuthorization?: CloseAuthorization | undefined;
 };
 
@@ -148,11 +153,7 @@ export type BatchSealPayload = {
   channelConfig: BatchChannelConfig;
   /** Latest accepted voucher; its cumulative becomes the final settled watermark. */
   voucher: BatchVoucher;
-  /**
-   * Receiver-authorizer signature binding this exact close. Required unless
-   * the facilitator authenticates the server out of band.
-   */
-  closeAuthorization?: CloseAuthorization | undefined;
+  closeAuthorization: CloseAuthorization;
 };
 
 export type BatchFacilitatorPayload =
@@ -185,7 +186,7 @@ export function isBatchChannelConfig(value: unknown): value is BatchChannelConfi
     typeof value.payer === "string" &&
     typeof value.payerAuthorizer === "string" &&
     typeof value.receiver === "string" &&
-    (value.receiverAuthorizer === undefined || typeof value.receiverAuthorizer === "string") &&
+    typeof value.receiverAuthorizer === "string" &&
     typeof value.token === "string" &&
     typeof value.withdrawDelay === "number" &&
     typeof value.salt === "string" &&
@@ -227,8 +228,8 @@ export function isBatchPayload(value: unknown): value is BatchPayload {
       );
     case "refund":
       return (
-        typeof value.transaction === "string" &&
-        (value.voucher === undefined || isBatchVoucher(value.voucher)) &&
+        isBatchVoucher(value.voucher) &&
+        (value.transaction === undefined || typeof value.transaction === "string") &&
         (value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization))
       );
     default:
@@ -269,7 +270,7 @@ export function isBatchFacilitatorPayload(value: unknown): value is BatchFacilit
       typeof value.channelId === "string" &&
       isBatchChannelConfig(value.channelConfig) &&
       isBatchVoucher(value.voucher) &&
-      (value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization))
+      isCloseAuthorization(value.closeAuthorization)
     );
   }
   return (

@@ -59,13 +59,12 @@ export interface BatchChannelManagerConfig {
   /** Reports a pass that failed, so an operator can see it. */
   onError?: ((error: unknown) => void) | undefined;
   /**
-   * Receiver-authorizer key advertised as `extra.receiverAuthorizer`. When a
-   * claim finds the payer has started a forced close, the worker signs a
-   * `CloseAuthorization` with it and retries as a `seal`, so vouchers above
-   * the onchain watermark are collected inside the grace period instead of
-   * forfeited. Without it a closing channel is only marked closing.
+   * Receiver-authorizer key advertised as `extra.receiverAuthorizer`. For a
+   * channel the payer is closing, the worker signs a `CloseAuthorization` with
+   * it and submits a `seal`, so vouchers above the onchain watermark are
+   * collected inside the grace period instead of forfeited.
    */
-  closeAuthorizer?: MessagePartialSigner | undefined;
+  receiverAuthorizer: MessagePartialSigner;
 }
 
 /** What one redemption pass moved. */
@@ -89,6 +88,7 @@ export class BatchChannelManager {
   private timer: ReturnType<typeof setInterval> | undefined;
   private passInFlight: Promise<unknown> = Promise.resolve();
   private running = false;
+  private readonly graceElapsedReported = new Set<string>();
 
   /**
    * Build a worker over a store and a way to submit redemption payloads.
@@ -166,15 +166,19 @@ export class BatchChannelManager {
    * @returns The channels whose claim landed
    */
   private async claim(channels: ChannelState[]): Promise<{ claimed: string[]; sealed: string[] }> {
-    const claimable = channels.filter(
+    const unclaimed = channels.filter(
       channel =>
-        channel.status === "open" &&
         channel.highestVoucherSignature !== undefined &&
         channel.signedMaxClaimable > channel.settled,
     );
+    const claimable = unclaimed.filter(channel => channel.status === "open");
+    const closing = unclaimed.filter(channel => channel.status === "closing");
     const result = { claimed: [] as string[], sealed: [] as string[] };
     for (const batch of chunk(claimable, this.batchSize())) {
       await this.claimBatch(batch, result);
+    }
+    for (const channel of closing) {
+      if (await this.seal(channel)) result.sealed.push(channel.channelId);
     }
     return result;
   }
@@ -307,25 +311,37 @@ export class BatchChannelManager {
    * @returns Whether the seal landed
    */
   private async seal(channel: ChannelState): Promise<boolean> {
+    const closeRequestedAt = channel.closeRequestedAt ?? 0;
+    const graceElapsed =
+      closeRequestedAt > 0 &&
+      Math.floor(Date.now() / 1000) >= closeRequestedAt + channel.withdrawDelay;
+    if (graceElapsed) {
+      if (!this.graceElapsedReported.has(channel.channelId)) {
+        this.graceElapsedReported.add(channel.channelId);
+        this.config.onError?.(
+          new Error(
+            `${BATCH_SETTLEMENT_SCHEME} channel ${channel.channelId} grace period elapsed: ` +
+              `voucher value above the onchain watermark can no longer be sealed`,
+          ),
+        );
+      }
+      return false;
+    }
     // Whatever happens next, the payer has started a forced close: stop
     // serving paid requests against this channel.
     await this.record(channel.channelId, state =>
       state.status === "open" ? { ...state, status: "closing" } : state,
     );
-    const authorizer = this.config.closeAuthorizer;
     const feePayer = this.config.requirements.extra?.feePayer;
-    if (!authorizer || typeof feePayer !== "string") {
+    if (typeof feePayer !== "string") {
       this.config.onError?.(
-        new Error(
-          `${BATCH_SETTLEMENT_SCHEME} channel ${channel.channelId} is closing and no closeAuthorizer is configured: ` +
-            `voucher value above the onchain watermark cannot be sealed`,
-        ),
+        new Error(`${BATCH_SETTLEMENT_SCHEME} seal requires requirements.extra.feePayer`),
       );
       return false;
     }
     const { network, maxTimeoutSeconds } = this.config.requirements;
     const expiresAt = channel.highestVoucherExpiresAt ?? 0;
-    const closeAuthorization = await signCloseAuthorization(authorizer, {
+    const closeAuthorization = await signCloseAuthorization(this.config.receiverAuthorizer, {
       channelId: channel.channelId,
       feePayer,
       maxClaimableAmount: channel.signedMaxClaimable,

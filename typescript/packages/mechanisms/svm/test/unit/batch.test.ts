@@ -23,6 +23,7 @@ import {
   calculateDistributionAmount,
 } from "../../src/batch-settlement/facilitator/scheme";
 import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
+import { encodeReceiverBindingMemo } from "../../src/batch-settlement/receiverBinding";
 import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
 import {
   isBatchPayload,
@@ -59,12 +60,15 @@ const WITHDRAW_DELAY = 900;
 
 let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let channelId: string;
 let channelConfig: BatchChannelConfig;
+let openTransaction: string;
 
 beforeAll(async () => {
   payer = await generateKeyPairSigner();
   feePayer = await generateKeyPairSigner();
+  receiverAuthorizer = await generateKeyPairSigner();
   const built = await buildDepositPayload({
     blockhash: { blockhash: DUMMY_BLOCKHASH, lastValidBlockHeight: 1n },
     depositAmount: 10_000n,
@@ -74,11 +78,13 @@ beforeAll(async () => {
     openSlot: OPEN_SLOT,
     payer,
     receiver: RECEIVER,
+    receiverAuthorizer: receiverAuthorizer.address,
     tokenProgram: TOKEN_PROGRAM_ADDRESS,
     withdrawDelay: WITHDRAW_DELAY,
   });
   channelId = built.channelId;
   channelConfig = built.payload.channelConfig;
+  openTransaction = built.payload.deposit.transaction;
 });
 
 function requirements(amount = "1000"): PaymentRequirements {
@@ -87,6 +93,7 @@ function requirements(amount = "1000"): PaymentRequirements {
     asset: MINT,
     extra: {
       feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: WITHDRAW_DELAY,
     },
@@ -128,7 +135,7 @@ async function signedVoucher(maxClaimableAmount: bigint, expiresAt = 0): Promise
 describe("batch-settlement SVM", () => {
   describe("resource server", () => {
     it("parses stablecoin prices", async () => {
-      const server = new BatchServerScheme();
+      const server = new BatchServerScheme({ receiverAuthorizer });
       expect(await server.parsePrice("$0.001", SOLANA_MAINNET_CAIP2)).toMatchObject({
         amount: "1000",
         asset: USDC_MAINNET_ADDRESS,
@@ -140,7 +147,7 @@ describe("batch-settlement SVM", () => {
     });
 
     it("publishes the authorization/channel requirements", async () => {
-      const server = new BatchServerScheme({ withdrawDelay: 1_200 });
+      const server = new BatchServerScheme({ receiverAuthorizer, withdrawDelay: 1_200 });
       const enhanced = await server.enhancePaymentRequirements(
         requirements(),
         {
@@ -165,7 +172,7 @@ describe("batch-settlement SVM", () => {
     it("publishes route minDeposit overrides and optionally enforces them", async () => {
       const routeRequirements = requirements();
       routeRequirements.extra = { ...routeRequirements.extra, minDeposit: "$0.02" };
-      const hinted = await new BatchServerScheme().enhancePaymentRequirements(
+      const hinted = await new BatchServerScheme({ receiverAuthorizer }).enhancePaymentRequirements(
         routeRequirements,
         {
           extra: { feePayer: feePayer.address },
@@ -179,27 +186,31 @@ describe("batch-settlement SVM", () => {
 
       const atomicFloor = requirements();
       atomicFloor.extra = { ...atomicFloor.extra, minDeposit: "500" };
-      expect(new BatchServerScheme().resolveMinDepositHint(atomicFloor)).toBe("1000");
+      expect(new BatchServerScheme({ receiverAuthorizer }).resolveMinDepositHint(atomicFloor)).toBe(
+        "1000",
+      );
       const zeroFloor = requirements();
       zeroFloor.extra = { ...zeroFloor.extra, minDeposit: "0" };
-      expect(() => new BatchServerScheme().resolveMinDepositHint(zeroFloor)).toThrow(/positive/);
+      expect(() =>
+        new BatchServerScheme({ receiverAuthorizer }).resolveMinDepositHint(zeroFloor),
+      ).toThrow(/positive/);
       const wrongCurrency = requirements();
       wrongCurrency.extra = { ...wrongCurrency.extra, minDeposit: "1 USDT" };
-      expect(() => new BatchServerScheme().resolveMinDepositHint(wrongCurrency)).toThrow(
-        /currency must match USDC/,
-      );
+      expect(() =>
+        new BatchServerScheme({ receiverAuthorizer }).resolveMinDepositHint(wrongCurrency),
+      ).toThrow(/currency must match USDC/);
       const customAsset = requirements();
       customAsset.asset = payer.address;
       customAsset.extra = { ...customAsset.extra, minDeposit: "$1" };
-      expect(() => new BatchServerScheme().resolveMinDepositHint(customAsset)).toThrow(
-        /only supported for default assets/,
-      );
+      expect(() =>
+        new BatchServerScheme({ receiverAuthorizer }).resolveMinDepositHint(customAsset),
+      ).toThrow(/only supported for default assets/);
 
       const payment = {
         accepted: hinted,
         payload: {
           channelConfig,
-          deposit: { amount: "10000", transaction: "setup-transaction" },
+          deposit: { amount: "10000", transaction: openTransaction },
           type: "deposit" as const,
           voucher: await signedVoucher(1_000n),
         },
@@ -211,10 +222,11 @@ describe("batch-settlement SVM", () => {
         requirements: hinted,
       };
       await expect(
-        new BatchServerScheme().schemeHooks.onBeforeVerify!(context),
+        new BatchServerScheme({ receiverAuthorizer }).schemeHooks.onBeforeVerify!(context),
       ).resolves.toBeUndefined();
       await expect(
-        new BatchServerScheme({ enforceMinDeposit: true }).schemeHooks.onBeforeVerify!(context),
+        new BatchServerScheme({ receiverAuthorizer, enforceMinDeposit: true }).schemeHooks
+          .onBeforeVerify!(context),
       ).resolves.toMatchObject({
         abort: true,
         reason: BatchError.DEPOSIT_BELOW_MIN_DEPOSIT,
@@ -223,7 +235,7 @@ describe("batch-settlement SVM", () => {
 
     it("publishes the configured operator voucher signer", async () => {
       const operator = await generateKeyPairSigner();
-      const server = new BatchServerScheme({ operator });
+      const server = new BatchServerScheme({ receiverAuthorizer, operator });
       const enhanced = await server.enhancePaymentRequirements(
         requirements(),
         {
@@ -242,7 +254,7 @@ describe("batch-settlement SVM", () => {
 
     it("lets a route stay client-signed next to a configured operator", async () => {
       const operator = await generateKeyPairSigner();
-      const server = new BatchServerScheme({ operator });
+      const server = new BatchServerScheme({ receiverAuthorizer, operator });
       const kind = {
         extra: { feePayer: feePayer.address },
         network: SOLANA_DEVNET_CAIP2,
@@ -271,11 +283,16 @@ describe("batch-settlement SVM", () => {
         voucherSigner: "server",
       });
       expect(
-        (await new BatchServerScheme().enhancePaymentRequirements(requirements(), kind, [])).extra
-          ?.minDeposit,
+        (
+          await new BatchServerScheme({ receiverAuthorizer }).enhancePaymentRequirements(
+            requirements(),
+            kind,
+            [],
+          )
+        ).extra?.minDeposit,
       ).toBe("10000");
       expect(() =>
-        new BatchServerScheme().enhancePaymentRequirements(
+        new BatchServerScheme({ receiverAuthorizer }).enhancePaymentRequirements(
           { ...requirements(), extra: { ...requirements().extra, voucherSigner: "server" } },
           kind,
           [],
@@ -292,13 +309,13 @@ describe("batch-settlement SVM", () => {
 
     it("broadcasts the deposit and commits its voucher only in the post-handler settle", async () => {
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const voucher = await signedVoucher(1_000n);
       const payment = {
         accepted: requirements(),
         payload: {
           channelConfig,
-          deposit: { amount: "10000", transaction: "setup-transaction" },
+          deposit: { amount: "10000", transaction: openTransaction },
           type: "deposit" as const,
           voucher,
         },
@@ -354,7 +371,7 @@ describe("batch-settlement SVM", () => {
       // exceeded it, and on every request after that, growing the escrow on
       // chain while believing it never had.
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
 
       const open = async (amount: bigint, confirmedBalance: string) => {
         const voucher = await signedVoucher(amount);
@@ -362,7 +379,7 @@ describe("batch-settlement SVM", () => {
           accepted: requirements(),
           payload: {
             channelConfig,
-            deposit: { amount: "10000", transaction: "setup-transaction" },
+            deposit: { amount: "10000", transaction: openTransaction },
             type: "deposit" as const,
             voucher,
           },
@@ -416,13 +433,13 @@ describe("batch-settlement SVM", () => {
 
     it("releases a reservation without charging when the handler fails", async () => {
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const voucher = await signedVoucher(1_000n);
       const payment = {
         accepted: requirements(),
         payload: {
           channelConfig,
-          deposit: { amount: "10000", transaction: "setup-transaction" },
+          deposit: { amount: "10000", transaction: openTransaction },
           type: "deposit" as const,
           voucher,
         },
@@ -452,7 +469,7 @@ describe("batch-settlement SVM", () => {
 
     it("rebuilds an unknown channel from the verified onchain snapshot", async () => {
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       // The client believes it was charged 4000; the chain has settled 2000,
       // which is all this server can rebuild from.
       const voucher = await signedVoucher(5_000n);
@@ -504,7 +521,7 @@ describe("batch-settlement SVM", () => {
 
     it("serves the first voucher a rebuilt record expects", async () => {
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const voucher = await signedVoucher(3_000n);
       const context = {
         declaredExtensions: {},
@@ -541,7 +558,7 @@ describe("batch-settlement SVM", () => {
 
     it("refuses to rebuild a record for a channel that is closing", async () => {
       const store = new MemoryChannelStore();
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const voucher = await signedVoucher(3_000n);
       const context = {
         declaredExtensions: {},
@@ -584,7 +601,7 @@ describe("batch-settlement SVM", () => {
           signedMaxClaimable: 3_000n,
         }),
       );
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const stale = await signedVoucher(9_000n);
       const paymentPayload = {
         accepted: requirements(),
@@ -634,7 +651,7 @@ describe("batch-settlement SVM", () => {
       const store = new MemoryChannelStore();
       // A record rebuilt from chain has a base but no signature to prove it.
       await store.put(serverState({ chargedCumulativeAmount: 2_000n, settled: 2_000n }));
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const stale = await signedVoucher(9_000n);
       const paymentPayload = {
         accepted: requirements(),
@@ -671,7 +688,7 @@ describe("batch-settlement SVM", () => {
           signedMaxClaimable: 1_000n,
         }),
       );
-      const server = new BatchServerScheme({ store });
+      const server = new BatchServerScheme({ receiverAuthorizer, store });
       const context = {
         declaredExtensions: {},
         paymentPayload: {
@@ -702,7 +719,11 @@ describe("batch-settlement SVM", () => {
           voucher,
         }),
       ).toBe(true);
-      expect(isBatchPayload({ channelConfig, transaction: "tx", type: "refund" })).toBe(true);
+      expect(isBatchPayload({ channelConfig, type: "refund", voucher })).toBe(true);
+      expect(isBatchPayload({ channelConfig, transaction: "tx", type: "refund", voucher })).toBe(
+        true,
+      );
+      expect(isBatchPayload({ channelConfig, transaction: "tx", type: "refund" })).toBe(false);
       expect(isBatchPayload({ channelId, type: "voucher", voucher })).toBe(false);
       expect(
         isBatchFacilitatorPayload({
@@ -1080,11 +1101,13 @@ describe("batch-settlement SVM", () => {
         openSlot: OPEN_SLOT,
         payer,
         receiver: RECEIVER,
+        receiverAuthorizer: receiverAuthorizer.address,
         tokenProgram: TOKEN_PROGRAM_ADDRESS,
         withdrawDelay: WITHDRAW_DELAY,
       });
       const open = await verifyOpenTransaction(built.payload.deposit.transaction, {
         authorizedSigner: payer.address,
+        expectedBindingMemo: encodeReceiverBindingMemo(receiverAuthorizer.address),
         feePayer: feePayer.address,
         from: payer.address,
         maxCap: 10_000n,
@@ -1122,6 +1145,7 @@ describe("batch-settlement SVM", () => {
         operator: operator.address,
         payer,
         receiver: RECEIVER,
+        receiverAuthorizer: receiverAuthorizer.address,
         tokenProgram: TOKEN_PROGRAM_ADDRESS,
         voucherSigner: "server",
         withdrawDelay: WITHDRAW_DELAY,
@@ -1234,7 +1258,7 @@ describe("batch-settlement SVM", () => {
     });
 
     it("copies the facilitator's idle window into the challenge", async () => {
-      const server = new BatchServerScheme({ store: new MemoryChannelStore() });
+      const server = new BatchServerScheme({ receiverAuthorizer, store: new MemoryChannelStore() });
       const enhanced = await server.enhancePaymentRequirements(
         {
           amount: "1000",
@@ -1257,7 +1281,7 @@ describe("batch-settlement SVM", () => {
     });
 
     it("rejects vouchers with a nonzero expiry", async () => {
-      const server = new BatchServerScheme({ store: new MemoryChannelStore() });
+      const server = new BatchServerScheme({ receiverAuthorizer, store: new MemoryChannelStore() });
       const expiring = await signedVoucher(1_000n, Math.floor(Date.now() / 1000) + 86_400);
       const result = await server.schemeHooks.onBeforeVerify!({
         declaredExtensions: {},
@@ -1287,24 +1311,23 @@ describe("batch-settlement SVM", () => {
       });
     });
 
-    it("rejects cooperative-close fields without a trusted server binding", async () => {
+    it("asks for a request_close, then validates it, when no binding is stored", async () => {
       const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
-      const result = await facilitator.verify(
-        {
-          accepted: requirements(),
-          payload: {
-            channelConfig,
-            closeAuthorization: { signature: "signature", validBefore: 2_000_000_000 },
-            transaction: "request-close",
-            type: "refund",
-            voucher: await signedVoucher(1_000n),
-          },
-          x402Version: 2,
-        },
-        requirements(),
-      );
-      expect(result).toMatchObject({
-        invalidReason: BatchError.CLOSE_AUTHORIZATION,
+      (facilitator as unknown as { readChannel(): Promise<undefined> }).readChannel = async () =>
+        undefined;
+      const refund = {
+        channelConfig,
+        type: "refund" as const,
+        voucher: await signedVoucher(1_000n),
+      };
+      const verify = (payload: typeof refund & { transaction?: string }) =>
+        facilitator.verify({ accepted: requirements(), payload, x402Version: 2 }, requirements());
+      await expect(verify(refund)).resolves.toMatchObject({
+        invalidReason: BatchError.RECEIVER_BINDING_UNAVAILABLE,
+        isValid: false,
+      });
+      await expect(verify({ ...refund, transaction: "not-a-transaction" })).resolves.toMatchObject({
+        invalidReason: BatchError.REFUND_TRANSACTION,
         isValid: false,
       });
     });
@@ -1317,8 +1340,8 @@ describe("batch-settlement SVM", () => {
           payload: {
             amount: "500",
             channelConfig,
-            transaction: "request-close",
             type: "refund",
+            voucher: await signedVoucher(1_000n),
           } as never,
           x402Version: 2,
         },
@@ -1326,22 +1349,6 @@ describe("batch-settlement SVM", () => {
       );
       expect(result).toMatchObject({
         invalidReason: BatchError.CLOSE_AMOUNT_UNSUPPORTED,
-        isValid: false,
-      });
-    });
-
-    it("reports a malformed request_close under the refund_transaction code", async () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
-      const result = await facilitator.verify(
-        {
-          accepted: requirements(),
-          payload: { channelConfig, transaction: "not-a-transaction", type: "refund" },
-          x402Version: 2,
-        },
-        requirements(),
-      );
-      expect(result).toMatchObject({
-        invalidReason: BatchError.REFUND_TRANSACTION,
         isValid: false,
       });
     });

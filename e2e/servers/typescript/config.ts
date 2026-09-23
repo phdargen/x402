@@ -109,24 +109,19 @@ async function registerFamilySchemes(
       const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
         ? await createKeyPairSignerFromBytes(base58.decode(receiverAuthorizerPrivateKey))
         : undefined;
-      if (receiverAuthorizerSigner) {
-        console.info(`SVM receiver authorizer: ${receiverAuthorizerSigner.address}`);
-        server.register(
-          pattern,
-          new UptoSvmScheme({
-            receiverAuthorizerSigner,
-            rpcUrl: process.env.SVM_RPC_URL,
-          }),
-        );
-      }
-      // Batch-settlement needs no server key: vouchers are client-signed and
-      // the receiver authorizer only adds the optional immediate close.
+      if (!receiverAuthorizerSigner) return;
+      console.info(`SVM receiver authorizer: ${receiverAuthorizerSigner.address}`);
+      server.register(
+        pattern,
+        new UptoSvmScheme({
+          receiverAuthorizerSigner,
+          rpcUrl: process.env.SVM_RPC_URL,
+        }),
+      );
       server.register(
         pattern,
         new BatchSettlementSvmScheme({
-          ...(receiverAuthorizerSigner
-            ? { receiverAuthorizer: receiverAuthorizerSigner.address }
-            : {}),
+          receiverAuthorizer: receiverAuthorizerSigner,
         }),
       );
       return;

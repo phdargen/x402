@@ -7,6 +7,7 @@ import {
 } from "@x402/core/http";
 import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 
+import { BatchError } from "../errors";
 import { BATCH_SETTLEMENT_SCHEME } from "../types";
 
 /** Caller-facing options for a refund. */
@@ -17,10 +18,17 @@ export interface BatchRefundOptions {
   requirements?: PaymentRequirements | undefined;
 }
 
+/** How a refund payload is built. */
+export interface RefundPayloadOptions {
+  /** Include a payer-signed `request_close` for a facilitator that cannot close cooperatively. */
+  withTransaction?: boolean | undefined;
+}
+
 /** Builds the payer-signed close payload for a set of requirements. */
 export type RefundPayloadBuilder = (
   x402Version: number,
   requirements: PaymentRequirements,
+  options?: RefundPayloadOptions,
 ) => Promise<{ x402Version: number; payload: unknown }>;
 
 /**
@@ -52,12 +60,12 @@ export async function probeBatchRequirements(
 }
 
 /**
- * Start the payer-forced close of the channel backing `url`.
+ * Close the channel backing `url` and refund its unused escrow.
  *
- * The escrow does not come back with this response: `request_close` begins the
- * forced-close grace period, after which the unused deposit is returned. The
- * scheme has no partial refund — the program returns all unused escrow or
- * nothing — so this takes no amount.
+ * The response is either an immediate cooperative close, or the start of a
+ * payer-forced close whose grace period must elapse before the unused deposit
+ * is returned. The scheme has no partial refund — the program returns all
+ * unused escrow or nothing — so this takes no amount.
  *
  * Unlike a paid request there is nothing to retry against a corrective 402: a
  * close carries no cumulative amount to resynchronize.
@@ -80,26 +88,35 @@ export async function refundBatchChannel(
     ? { requirements: options.requirements, x402Version: 2 }
     : await probeBatchRequirements(url, fetchImpl);
 
-  const payload = await build(probed.x402Version, probed.requirements);
-  const response = await fetchImpl(url, {
-    headers: {
-      "PAYMENT-SIGNATURE": encodePaymentSignatureHeader({
-        accepted: probed.requirements,
-        payload: payload.payload as never,
-        x402Version: payload.x402Version,
-      }),
-    },
-    method: "GET",
-  });
+  const send = async (withTransaction: boolean) => {
+    const payload = await build(probed.x402Version, probed.requirements, { withTransaction });
+    const response = await fetchImpl(url, {
+      headers: {
+        "PAYMENT-SIGNATURE": encodePaymentSignatureHeader({
+          accepted: probed.requirements,
+          payload: payload.payload as never,
+          x402Version: payload.x402Version,
+        }),
+      },
+      method: "GET",
+    });
+    const settledHeader = response.headers.get("PAYMENT-RESPONSE");
+    const settled = settledHeader ? decodePaymentResponseHeader(settledHeader) : undefined;
+    const requiredHeader =
+      response.status === 402 ? response.headers.get("PAYMENT-REQUIRED") : null;
+    const reason =
+      settled?.errorReason ??
+      (requiredHeader ? decodePaymentRequiredHeader(requiredHeader).error : undefined);
+    return { reason, settled, status: response.status };
+  };
 
-  const settled = response.headers.get("PAYMENT-RESPONSE");
-  if (!settled) {
-    if (response.status === 402) {
-      const header = response.headers.get("PAYMENT-REQUIRED");
-      const reason = header ? decodePaymentRequiredHeader(header).error : undefined;
-      throw new Error(`refund refused: ${reason ?? "no reason given"}`);
-    }
-    throw new Error(`refund response has no PAYMENT-RESPONSE header (status ${response.status})`);
+  // Only a facilitator with no stored receiver binding needs the
+  // payer-signed request_close; everyone else closes cooperatively.
+  let result = await send(false);
+  if (result.reason === BatchError.RECEIVER_BINDING_UNAVAILABLE) result = await send(true);
+  if (result.settled) return result.settled;
+  if (result.status === 402) {
+    throw new Error(`refund refused: ${result.reason ?? "no reason given"}`);
   }
-  return decodePaymentResponseHeader(settled);
+  throw new Error(`refund response has no PAYMENT-RESPONSE header (status ${result.status})`);
 }

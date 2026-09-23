@@ -12,6 +12,7 @@ import { buildRequestCloseTransaction } from "../../payment-channels/close";
 import { buildOpenPaymentChannelTransaction } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes } from "../../payment-channels/voucher";
 import { signBatchAuthorization } from "../authorization";
+import { encodeReceiverBindingMemo } from "../receiverBinding";
 import type {
   BatchAuthorization,
   BatchChannelConfig,
@@ -44,6 +45,7 @@ export async function signBatchVoucher(
 
 export class BatchChannelTracker {
   private chargedCumulativeAmount: bigint;
+  private serverVoucher: BatchVoucher | undefined;
 
   constructor(
     readonly channelId: string,
@@ -119,12 +121,42 @@ export class BatchChannelTracker {
     this.commit(this.chargedCumulativeAmount + charge);
     return voucher;
   }
+
+  /**
+   * Keep the operator voucher a server-signed response returned, so a refund
+   * can present it.
+   *
+   * @param voucher - Verified operator voucher
+   */
+  recordServerVoucher(voucher: BatchVoucher): void {
+    this.serverVoucher = voucher;
+  }
+
+  /**
+   * The zero-charge voucher a refund carries: the confirmed cumulative amount.
+   *
+   * @returns A voucher at the confirmed cumulative allocation
+   */
+  async refundVoucher(): Promise<BatchVoucher> {
+    if (this.channelConfig.voucherSigner !== "server") {
+      return signBatchVoucher(this.signer, {
+        channelId: this.channelId,
+        expiresAt: 0,
+        maxClaimableAmount: this.chargedCumulativeAmount,
+      });
+    }
+    // Only the operator can sign vouchers here, and the voucher is held in memory.
+    if (this.serverVoucher?.maxClaimableAmount !== this.chargedCumulativeAmount.toString()) {
+      throw new Error("refund of a server-signed channel requires the operator's latest voucher");
+    }
+    return this.serverVoucher;
+  }
 }
 
 export interface BuildDepositArgs {
   payer: BatchClientSigner;
   receiver: string;
-  receiverAuthorizer?: string | undefined;
+  receiverAuthorizer: string;
   mint: string;
   feePayer: string;
   tokenProgram: string;
@@ -165,6 +197,7 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   }
   const open = await buildOpenPaymentChannelTransaction({
     authorizedSigner,
+    bindingMemo: encodeReceiverBindingMemo(args.receiverAuthorizer),
     blockhash: args.blockhash,
     deposit: args.depositAmount,
     feePayer: args.feePayer,
@@ -183,7 +216,7 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
     payer: args.payer.address,
     payerAuthorizer: authorizedSigner,
     receiver: args.receiver,
-    ...(args.receiverAuthorizer ? { receiverAuthorizer: args.receiverAuthorizer } : {}),
+    receiverAuthorizer: args.receiverAuthorizer,
     salt: open.salt.toString(),
     token: args.mint,
     withdrawDelay: args.withdrawDelay,
@@ -215,14 +248,20 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   };
 }
 
+// `blockhash` adds a payer-signed request_close for a facilitator that cannot
+// close cooperatively.
 export async function buildRefundPayload(args: {
   payer: BatchClientSigner;
   feePayer: string;
   channelId: string;
   channelConfig: BatchChannelConfig;
-  blockhash: { blockhash: string; lastValidBlockHeight: bigint };
+  voucher: BatchVoucher;
+  blockhash?: { blockhash: string; lastValidBlockHeight: bigint } | undefined;
   memo?: string | undefined;
 }): Promise<BatchRefundPayload> {
+  if (args.blockhash === undefined) {
+    return { channelConfig: args.channelConfig, type: "refund", voucher: args.voucher };
+  }
   return {
     channelConfig: args.channelConfig,
     transaction: await buildRequestCloseTransaction({
@@ -233,5 +272,6 @@ export async function buildRefundPayload(args: {
       payer: args.payer,
     }),
     type: "refund",
+    voucher: args.voucher,
   };
 }

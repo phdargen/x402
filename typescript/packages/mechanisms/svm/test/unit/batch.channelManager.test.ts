@@ -1,3 +1,4 @@
+import { generateKeyPairSigner } from "@solana/kit";
 import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +8,7 @@ import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants"
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 
 const RECEIVER = USDC_MAINNET_ADDRESS;
+const receiverAuthorizer = await generateKeyPairSigner();
 
 function requirements(): PaymentRequirements {
   return {
@@ -105,7 +107,7 @@ describe("batch-settlement redemption worker", () => {
     const store = new MemoryChannelStore();
     await store.put(channel("chan-a", { settled: 3000n, payoutWatermark: 1000n }));
     const { settle } = recorder();
-    const options = { requirements: requirements(), settle, store };
+    const options = { receiverAuthorizer, requirements: requirements(), settle, store };
     const result = await new BatchChannelManager({
       ...options,
       readPayoutWatermark: async () => 1000n,
@@ -131,6 +133,7 @@ describe("batch-settlement redemption worker", () => {
       },
     ]) {
       await new BatchChannelManager({
+        receiverAuthorizer,
         requirements: requirements(),
         settle,
         store,
@@ -150,6 +153,7 @@ describe("batch-settlement redemption worker", () => {
 
     const manager = new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -176,6 +180,7 @@ describe("batch-settlement redemption worker", () => {
     const { settle, submitted } = recorder();
     const manager = new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -208,6 +213,7 @@ describe("batch-settlement redemption worker", () => {
     const manager = new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
       onError: error => errors.push(error),
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -235,6 +241,7 @@ describe("batch-settlement redemption worker", () => {
     );
     await new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle: pending.settle,
       store,
@@ -244,6 +251,7 @@ describe("batch-settlement redemption worker", () => {
     const retry = recorder();
     const result = await new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle: retry.settle,
       store,
@@ -261,6 +269,7 @@ describe("batch-settlement redemption worker", () => {
     const result = await new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
       onError: error => errors.push(error),
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -271,17 +280,20 @@ describe("batch-settlement redemption worker", () => {
     expect(errors).toHaveLength(1);
   });
 
-  it("skips channels that are closing", async () => {
+  it("seals a closing channel instead of claiming it", async () => {
     const store = new MemoryChannelStore();
-    await store.put(channel("chan-a", { status: "closing" }));
+    const id = (await generateKeyPairSigner()).address;
+    await store.put(channel(id, { status: "closing" }));
     const { settle, submitted } = recorder();
     const manager = new BatchChannelManager({
       readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
     });
-    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [] });
-    expect(submitted).toEqual([]);
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [id] });
+    expect(submitted.map(s => s.type)).toEqual(["seal"]);
+    expect((await store.get(id))?.status).toBe("distributed");
   });
 });

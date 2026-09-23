@@ -60,10 +60,6 @@ const maxPrice = "$0.01";
  * Initializes facilitator capability checks and starts the batch-settlement server.
  */
 async function main() {
-  const svmReceiverAuthorizerSigner = svmReceiverAuthorizerPrivateKey
-    ? await createKeyPairSignerFromBytes(base58.decode(svmReceiverAuthorizerPrivateKey))
-    : undefined;
-
   let resourceServer = new x402ResourceServer(facilitatorClient);
   let channelManager: ReturnType<BatchSettlementEvmScheme["createChannelManager"]> | undefined;
   let svmChannelManager: BatchChannelManager | undefined;
@@ -105,11 +101,18 @@ async function main() {
     : undefined;
 
   if (svmAddress) {
+    if (!svmReceiverAuthorizerPrivateKey) {
+      console.error("Missing required SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY environment variable");
+      process.exit(1);
+    }
+    const svmReceiverAuthorizerSigner = await createKeyPairSignerFromBytes(
+      base58.decode(svmReceiverAuthorizerPrivateKey),
+    );
     const batchedSvmScheme = new BatchSvmScheme({
       withdrawDelay,
-      // Advertised as extra.receiverAuthorizer and used by the redemption
-      // worker to seal a channel the payer is closing with the latest voucher.
-      ...(svmReceiverAuthorizerSigner ? { closeAuthorizer: svmReceiverAuthorizerSigner } : {}),
+      // Advertised as extra.receiverAuthorizer; signs cooperative refunds and
+      // seals of channels the payer is closing.
+      receiverAuthorizer: svmReceiverAuthorizerSigner,
       ...(svmOperatorSigner ? { operator: svmOperatorSigner } : {}),
       store: new MemoryChannelStore(),
     });

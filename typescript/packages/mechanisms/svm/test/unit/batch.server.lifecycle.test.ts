@@ -3,6 +3,7 @@ import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { buildDepositPayload, buildRefundPayload } from "../../src/batch-settlement/client/channel";
+import { verifyCloseAuthorization } from "../../src/batch-settlement/closeAuthorization";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchSvmScheme } from "../../src/batch-settlement/server/scheme";
 import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
@@ -20,6 +21,7 @@ const RECEIVER = USDC_MAINNET_ADDRESS;
 
 let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let channelId: string;
 let channelConfig: BatchChannelConfig;
 let depositPayload: Extract<BatchPayload, { type: "deposit" }>;
@@ -27,6 +29,7 @@ let depositPayload: Extract<BatchPayload, { type: "deposit" }>;
 beforeAll(async () => {
   payer = await generateKeyPairSigner();
   feePayer = await generateKeyPairSigner();
+  receiverAuthorizer = await generateKeyPairSigner();
   const built = await buildDepositPayload({
     blockhash: { blockhash: RECEIVER, lastValidBlockHeight: 1n },
     depositAmount: 10_000n,
@@ -36,6 +39,7 @@ beforeAll(async () => {
     openSlot: 123n,
     payer,
     receiver: RECEIVER,
+    receiverAuthorizer: receiverAuthorizer.address,
     tokenProgram: TOKEN_PROGRAM_ADDRESS,
     withdrawDelay: 900,
   });
@@ -50,6 +54,7 @@ function requirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequ
     asset: MINT,
     extra: {
       feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: 900,
     },
@@ -135,7 +140,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("validates every immutable payload binding", async () => {
-    const api = internals(new BatchSvmScheme());
+    const api = internals(new BatchSvmScheme({ receiverAuthorizer }));
     await expect(api.validatePayload(depositPayload, requirements())).resolves.toBe(channelId);
     const invalid: Array<[BatchPayload, PaymentRequirements, string]> = [
       [depositPayload, requirements({ extra: undefined }), BatchError.PAYMENT_FLOW],
@@ -220,7 +225,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("accepts and rejects verified snapshot boundaries", () => {
-    const api = internals(new BatchSvmScheme());
+    const api = internals(new BatchSvmScheme({ receiverAuthorizer }));
     expect(
       api.applySnapshot(channelId, {
         channelId,
@@ -249,7 +254,7 @@ describe("batch server lifecycle boundaries", () => {
 
   it("creates provisional/recovered records and merges snapshots monotonically", async () => {
     const store = new MemoryChannelStore();
-    const server = new BatchSvmScheme({ store });
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const api = internals(server);
     expect(
       api.recoveredState(depositPayload, requirements(), channelId, {
@@ -263,7 +268,7 @@ describe("batch server lifecycle boundaries", () => {
     });
     expect(() =>
       api.provisionalState(
-        { channelConfig, transaction: "close", type: "refund" },
+        { channelConfig, type: "refund", voucher: depositPayload.voucher },
         requirements(),
         channelId,
       ),
@@ -292,7 +297,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("rejects a stored channel with different immutable configuration", () => {
-    const api = internals(new BatchSvmScheme());
+    const api = internals(new BatchSvmScheme({ receiverAuthorizer }));
     expect(() => api.assertStoredConfig(state(), channelConfig)).not.toThrow();
     expect(() => api.assertStoredConfig(state(), { ...channelConfig, salt: "1" })).toThrow(
       BatchError.CHANNEL_STATE,
@@ -300,7 +305,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("covers hook no-op and missing-reservation paths", async () => {
-    const server = new BatchSvmScheme();
+    const server = new BatchSvmScheme({ receiverAuthorizer });
     const payment = {
       accepted: requirements(),
       payload: depositPayload,
@@ -342,7 +347,7 @@ describe("batch server lifecycle boundaries", () => {
 
   it("only enriches a validated cumulative mismatch with stored proof", async () => {
     const store = new MemoryChannelStore();
-    const server = new BatchSvmScheme({ store });
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const payment = {
       accepted: requirements(),
       payload: depositPayload,
@@ -411,7 +416,7 @@ describe("batch server lifecycle boundaries", () => {
 
   it("handles unknown channels and rejects unusable facilitator snapshots", async () => {
     const store = new MemoryChannelStore();
-    const server = new BatchSvmScheme({ store });
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const voucherPayload: BatchPayload = {
       channelConfig,
       type: "voucher",
@@ -444,7 +449,7 @@ describe("batch server lifecycle boundaries", () => {
       }),
     ).resolves.toMatchObject({ abort: true, reason: BatchError.CHANNEL_STATE });
 
-    const second = new BatchSvmScheme({ store: new MemoryChannelStore() });
+    const second = new BatchSvmScheme({ receiverAuthorizer, store: new MemoryChannelStore() });
     const payment2 = { ...payment, payload: { ...voucherPayload } } as PaymentPayload;
     const context2 = { ...verifyContext, paymentPayload: payment2 };
     await second.schemeHooks.onBeforeVerify!(context2);
@@ -482,7 +487,7 @@ describe("batch server lifecycle boundaries", () => {
     });
     const store = new MemoryChannelStore();
     await store.put(replayState);
-    const server = new BatchSvmScheme({ store });
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const payment = makePayment();
     await expect(
       server.schemeHooks.onBeforeVerify!({
@@ -507,13 +512,17 @@ describe("batch server lifecycle boundaries", () => {
       requirements: requirements(),
     };
     await expect(
-      new BatchSvmScheme({ onchainStateTtlMs: 1_000, store: freshStore }).schemeHooks
-        .onBeforeVerify!(freshContext),
+      new BatchSvmScheme({ receiverAuthorizer, onchainStateTtlMs: 1_000, store: freshStore })
+        .schemeHooks.onBeforeVerify!(freshContext),
     ).resolves.toMatchObject({ skip: true });
 
     const staleStore = new MemoryChannelStore();
     await staleStore.put(state({ onchainSyncedAt: 0 }));
-    const staleServer = new BatchSvmScheme({ onchainStateTtlMs: 1_000, store: staleStore });
+    const staleServer = new BatchSvmScheme({
+      receiverAuthorizer,
+      onchainStateTtlMs: 1_000,
+      store: staleStore,
+    });
     const stalePayment = { ...payment, payload: { ...payment.payload } } as PaymentPayload;
     const staleContext = { ...freshContext, paymentPayload: stalePayment };
     await expect(staleServer.schemeHooks.onBeforeVerify!(staleContext)).resolves.toBeUndefined();
@@ -557,7 +566,7 @@ describe("batch server lifecycle boundaries", () => {
     for (const stored of cases) {
       const store = new MemoryChannelStore();
       await store.put(stored);
-      const server = new BatchSvmScheme({ store });
+      const server = new BatchSvmScheme({ receiverAuthorizer, store });
       const payment: PaymentPayload = {
         accepted: requirements(),
         payload: depositPayload,
@@ -580,7 +589,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("covers price parser and requirement configuration branches", async () => {
-    const server = new BatchSvmScheme({ receiverAuthorizer: payer.address });
+    const server = new BatchSvmScheme({ receiverAuthorizer });
     await expect(
       server.parsePrice({ amount: "1", asset: MINT }, SOLANA_DEVNET_CAIP2),
     ).resolves.toEqual({
@@ -600,7 +609,7 @@ describe("batch server lifecycle boundaries", () => {
     await expect(server.parsePrice("not money", SOLANA_DEVNET_CAIP2)).rejects.toThrow(
       /Invalid money format/,
     );
-    const custom = new BatchSvmScheme()
+    const custom = new BatchSvmScheme({ receiverAuthorizer })
       .registerMoneyParser(async () => null)
       .registerMoneyParser(async () => ({ amount: "7", asset: MINT }));
     await expect(custom.parsePrice("2", SOLANA_DEVNET_CAIP2)).resolves.toEqual({
@@ -613,9 +622,14 @@ describe("batch server lifecycle boundaries", () => {
         { network: SOLANA_DEVNET_CAIP2, scheme: "batch-settlement", x402Version: 2 },
         [],
       ),
-    ).resolves.toMatchObject({ extra: { receiverAuthorizer: payer.address, withdrawDelay: 900 } });
+    ).resolves.toMatchObject({
+      extra: { receiverAuthorizer: receiverAuthorizer.address, withdrawDelay: 900 },
+    });
     expect(() =>
-      new BatchSvmScheme({ withdrawDelay: 2_592_001 }).enhancePaymentRequirements(
+      new BatchSvmScheme({
+        receiverAuthorizer,
+        withdrawDelay: 2_592_001,
+      }).enhancePaymentRequirements(
         requirements(),
         { network: SOLANA_DEVNET_CAIP2, scheme: "batch-settlement", x402Version: 2 },
         [],
@@ -633,7 +647,7 @@ describe("batch server lifecycle boundaries", () => {
     ];
     for (const channelState of snapshots) {
       const store = new MemoryChannelStore();
-      const server = new BatchSvmScheme({ store });
+      const server = new BatchSvmScheme({ receiverAuthorizer, store });
       const payment: PaymentPayload = {
         accepted: requirements(),
         payload: depositPayload,
@@ -677,7 +691,7 @@ describe("batch server lifecycle boundaries", () => {
     ];
     for (const channelState of responses) {
       const store = new MemoryChannelStore();
-      const server = new BatchSvmScheme({ store });
+      const server = new BatchSvmScheme({ receiverAuthorizer, store });
       const payment: PaymentPayload = {
         accepted: requirements(),
         payload: depositPayload,
@@ -710,7 +724,7 @@ describe("batch server lifecycle boundaries", () => {
   it("commits voucher reservations before settlement and detects replacement", async () => {
     const store = new MemoryChannelStore();
     await store.put(state());
-    const server = new BatchSvmScheme({ store });
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const payment: PaymentPayload = {
       accepted: requirements(),
       payload: {
@@ -736,7 +750,7 @@ describe("batch server lifecycle boundaries", () => {
 
     const changedStore = new MemoryChannelStore();
     await changedStore.put(state());
-    const changed = new BatchSvmScheme({ store: changedStore });
+    const changed = new BatchSvmScheme({ receiverAuthorizer, store: changedStore });
     const payment2 = { ...payment, payload: { ...payment.payload } } as PaymentPayload;
     const ctx2 = { ...ctx, paymentPayload: payment2 };
     await changed.schemeHooks.onBeforeVerify!(ctx2);
@@ -756,7 +770,7 @@ describe("batch server lifecycle boundaries", () => {
   });
 
   it("covers corrective validation and hook state edge cases", async () => {
-    const server = new BatchSvmScheme();
+    const server = new BatchSvmScheme({ receiverAuthorizer });
     const invalidPayment: PaymentPayload = {
       accepted: requirements(),
       payload: {
@@ -774,7 +788,7 @@ describe("batch server lifecycle boundaries", () => {
       } as never),
     ).resolves.toBeUndefined();
 
-    const thrown = new BatchSvmScheme();
+    const thrown = new BatchSvmScheme({ receiverAuthorizer });
     internals(thrown).validatePayload = async () => Promise.reject("validation failed");
     await expect(
       thrown.schemeHooks.onBeforeVerify!({
@@ -788,7 +802,7 @@ describe("batch server lifecycle boundaries", () => {
       reason: "transaction_failed",
     });
 
-    const noRequest = new BatchSvmScheme();
+    const noRequest = new BatchSvmScheme({ receiverAuthorizer });
     const payment: PaymentPayload = {
       accepted: requirements(),
       payload: depositPayload,
@@ -824,14 +838,20 @@ describe("batch server lifecycle boundaries", () => {
 
   it("reserves refunds but never runs them through pre-handler settlement", async () => {
     const store = new MemoryChannelStore();
-    await store.put(state({ highestVoucherSignature: depositPayload.voucher.signature }));
-    const server = new BatchSvmScheme({ store });
+    await store.put(
+      state({
+        chargedCumulativeAmount: 1_000n,
+        highestVoucherSignature: depositPayload.voucher.signature,
+        signedMaxClaimable: 1_000n,
+      }),
+    );
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
     const refund = await buildRefundPayload({
-      blockhash: { blockhash: RECEIVER, lastValidBlockHeight: 1n },
       channelConfig,
       channelId,
       feePayer: feePayer.address,
       payer,
+      voucher: depositPayload.voucher,
     });
     const payment: PaymentPayload = {
       accepted: requirements(),
@@ -852,10 +872,189 @@ describe("batch server lifecycle boundaries", () => {
     await expect(
       server.schemeHooks.onBeforeSettle!({ ...ctx, phase: "before-handler" }),
     ).resolves.toBeUndefined();
+
+    const enriched = await server.enrichSettlementPayload(ctx as never);
+    expect(enriched).toHaveProperty("closeAuthorization");
+    await expect(
+      verifyCloseAuthorization(
+        (enriched as { closeAuthorization: never }).closeAuthorization,
+        {
+          channelId,
+          feePayer: feePayer.address,
+          maxClaimableAmount: 1_000n,
+          network: SOLANA_DEVNET_CAIP2,
+          voucherExpiresAt: BigInt(depositPayload.voucher.expiresAt),
+        },
+        receiverAuthorizer.address,
+        300,
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it("closes a cooperative refund at once and seals a fallback refund on the next pass", async () => {
+    const refund = async (withdrawRequestedAt: number) => {
+      const store = new MemoryChannelStore();
+      await store.put(
+        state({
+          chargedCumulativeAmount: 1_000n,
+          highestVoucherSignature: depositPayload.voucher.signature,
+          signedMaxClaimable: 1_000n,
+        }),
+      );
+      const server = new BatchSvmScheme({ receiverAuthorizer, store });
+      const payload = await buildRefundPayload({
+        channelConfig,
+        channelId,
+        feePayer: feePayer.address,
+        payer,
+        voucher: depositPayload.voucher,
+      });
+      const ctx = {
+        declaredExtensions: {},
+        paymentPayload: { accepted: requirements(), payload, x402Version: 2 },
+        requirements: requirements(),
+      };
+      await server.schemeHooks.onBeforeVerify!(ctx);
+      await server.schemeHooks.onAfterVerify!({
+        ...ctx,
+        result: { isValid: true, payer: payer.address },
+      });
+      await server.schemeHooks.onAfterSettle!({
+        ...ctx,
+        result: {
+          extra: {
+            channelState: {
+              balance: "10000",
+              channelId,
+              totalClaimed: withdrawRequestedAt === 0 ? "1000" : "0",
+              withdrawRequestedAt,
+            },
+          },
+          network: SOLANA_DEVNET_CAIP2,
+          success: true,
+          transaction: "close-signature",
+        },
+      } as never);
+      return { server, store };
+    };
+
+    const cooperative = await refund(0);
+    expect(await cooperative.store.get(channelId)).toMatchObject({
+      payoutWatermark: 1_000n,
+      settled: 1_000n,
+      status: "distributed",
+    });
+
+    const closeRequestedAt = Math.floor(Date.now() / 1000);
+    const fallback = await refund(closeRequestedAt);
+    expect(await fallback.store.get(channelId)).toMatchObject({
+      closeRequestedAt,
+      settled: 0n,
+      status: "closing",
+    });
+    const seen: string[] = [];
+    const manager = fallback.server.createChannelManager(
+      {
+        settle: async payment => {
+          seen.push((payment.payload as { type: string }).type);
+          return { network: SOLANA_DEVNET_CAIP2, success: true, transaction: "seal-signature" };
+        },
+      },
+      requirements(),
+      { readPayoutWatermark: async () => 1_000n },
+    );
+    await expect(manager.redeem()).resolves.toMatchObject({ sealed: [channelId] });
+    expect(seen).toEqual(["seal"]);
+    expect(await fallback.store.get(channelId)).toMatchObject({
+      settled: 1_000n,
+      status: "distributed",
+    });
+  });
+
+  it("marks a channel closing when the facilitator reports channel_closing", async () => {
+    const closing: string[] = [];
+    const store = new MemoryChannelStore();
+    await store.put(state({ onchainSyncedAt: 0 }));
+    const server = new BatchSvmScheme({
+      onChannelClosing: id => closing.push(id),
+      receiverAuthorizer,
+      store,
+    });
+    const ctx = {
+      declaredExtensions: {},
+      paymentPayload: {
+        accepted: requirements(),
+        payload: { channelConfig, type: "voucher", voucher: depositPayload.voucher },
+        x402Version: 2,
+      },
+      requirements: requirements(),
+    };
+    await expect(server.schemeHooks.onBeforeVerify!(ctx)).resolves.toBeUndefined();
+    await server.schemeHooks.onAfterVerify!({
+      ...ctx,
+      result: { invalidReason: BatchError.CHANNEL_CLOSING, isValid: false },
+    });
+    expect((await store.get(channelId))?.status).toBe("closing");
+    expect(closing).toEqual([channelId]);
+  });
+
+  it("refuses a refund voucher that is not the charged cumulative amount", async () => {
+    const store = new MemoryChannelStore();
+    await store.put(state({ chargedCumulativeAmount: 2_000n }));
+    const server = new BatchSvmScheme({ receiverAuthorizer, store });
+    const refund = await buildRefundPayload({
+      channelConfig,
+      channelId,
+      feePayer: feePayer.address,
+      payer,
+      voucher: depositPayload.voucher,
+    });
+    const payment: PaymentPayload = { accepted: requirements(), payload: refund, x402Version: 2 };
+    await expect(
+      server.schemeHooks.onBeforeVerify!({
+        declaredExtensions: {},
+        paymentPayload: payment,
+        requirements: requirements(),
+      }),
+    ).resolves.toMatchObject({ abort: true, reason: BatchError.CUMULATIVE_AMOUNT_MISMATCH });
+  });
+
+  it("refuses a first deposit whose open binds a different receiver authorizer", async () => {
+    const attacker = await buildDepositPayload({
+      blockhash: { blockhash: RECEIVER, lastValidBlockHeight: 1n },
+      depositAmount: 10_000n,
+      feePayer: feePayer.address,
+      firstCharge: 1_000n,
+      mint: MINT,
+      openSlot: 123n,
+      payer,
+      receiver: RECEIVER,
+      receiverAuthorizer: payer.address,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      withdrawDelay: 900,
+    });
+    const payload = {
+      ...attacker.payload,
+      channelConfig: {
+        ...attacker.payload.channelConfig,
+        receiverAuthorizer: receiverAuthorizer.address,
+      },
+    };
+    const server = new BatchSvmScheme({ receiverAuthorizer });
+    await expect(
+      server.schemeHooks.onBeforeVerify!({
+        declaredExtensions: {},
+        paymentPayload: { accepted: requirements(), payload, x402Version: 2 },
+        requirements: requirements(),
+      }),
+    ).resolves.toMatchObject({
+      abort: true,
+      reason: expect.stringContaining(BatchError.RECEIVER_AUTHORIZER_MISMATCH),
+    });
   });
 
   it("rejects an unknown voucher when no verified snapshot creates state", async () => {
-    const server = new BatchSvmScheme();
+    const server = new BatchSvmScheme({ receiverAuthorizer });
     const payment: PaymentPayload = {
       accepted: requirements(),
       payload: { channelConfig, type: "voucher", voucher: depositPayload.voucher },

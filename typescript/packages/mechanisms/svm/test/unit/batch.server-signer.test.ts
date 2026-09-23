@@ -37,12 +37,14 @@ import {
 let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let operator: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let serverDeposit: BatchDepositPayload;
 
 beforeAll(async () => {
   payer = await generateKeyPairSigner();
   operator = await generateKeyPairSigner();
   feePayer = await generateKeyPairSigner();
+  receiverAuthorizer = await generateKeyPairSigner();
   serverDeposit = (
     await buildDepositPayload({
       blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
@@ -54,6 +56,7 @@ beforeAll(async () => {
       operator: operator.address,
       payer,
       receiver: USDC_MAINNET_ADDRESS,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       voucherSigner: "server",
       withdrawDelay: 900,
@@ -69,6 +72,7 @@ function requirements(): PaymentRequirements {
     extra: {
       feePayer: feePayer.address,
       operator: operator.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       voucherSigner: "server",
       withdrawDelay: 900,
@@ -112,6 +116,7 @@ describe("batch server voucher signer boundaries", () => {
         openSlot: 123n,
         payer,
         receiver: USDC_MAINNET_ADDRESS,
+        receiverAuthorizer: receiverAuthorizer.address,
         tokenProgram: TOKEN_PROGRAM_ADDRESS,
         withdrawDelay: 900,
       })
@@ -209,6 +214,7 @@ describe("batch server voucher signer boundaries", () => {
         openSlot: 123n,
         payer,
         receiver: USDC_MAINNET_ADDRESS,
+        receiverAuthorizer: receiverAuthorizer.address,
         tokenProgram: TOKEN_PROGRAM_ADDRESS,
         voucherSigner: "server",
         withdrawDelay: 900,
@@ -247,6 +253,7 @@ describe("batch server voucher signer boundaries", () => {
       openSlot: 123n,
       payer,
       receiver: USDC_MAINNET_ADDRESS,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: 900,
     };
@@ -311,7 +318,7 @@ describe("batch server voucher signer boundaries", () => {
         authorizedAmount: string,
       ): Promise<void>;
     };
-    const api = new BatchServerScheme({ operator }) as unknown as Internals;
+    const api = new BatchServerScheme({ receiverAuthorizer, operator }) as unknown as Internals;
     const channelId = serverDeposit.authorization!.channelId;
     const req = requirements();
     const withExtra = (extra: Record<string, unknown>) => ({
@@ -379,7 +386,7 @@ describe("batch server voucher signer boundaries", () => {
       ).rejects.toThrow(BatchError.VOUCHER_SIGNATURE);
     }
 
-    const unsigned = new BatchServerScheme() as unknown as Internals;
+    const unsigned = new BatchServerScheme({ receiverAuthorizer }) as unknown as Internals;
     await expect(unsigned.signOperatorVoucher(channelId, 1n)).rejects.toThrow(
       BatchError.VOUCHER_SIGNATURE,
     );
@@ -389,6 +396,7 @@ describe("batch server voucher signer boundaries", () => {
     const store = new MemoryChannelStore();
     const operationStore = new MemoryBatchOperationStore();
     const server = new BatchServerScheme({
+      receiverAuthorizer,
       operator,
       operationStore,
       store,
@@ -532,7 +540,7 @@ describe("batch server voucher signer boundaries", () => {
   it("reserves concurrent ceilings, completes out of order, and rejects reused ids", async () => {
     const store = new MemoryChannelStore();
     const operationStore = new MemoryBatchOperationStore();
-    const server = new BatchServerScheme({ operator, operationStore, store });
+    const server = new BatchServerScheme({ receiverAuthorizer, operator, operationStore, store });
     const openPayment: PaymentPayload = {
       accepted: requirements(),
       payload: serverDeposit,
@@ -596,11 +604,15 @@ describe("batch server voucher signer boundaries", () => {
     const refundPayment: PaymentPayload = {
       accepted: requirements(),
       payload: await buildRefundPayload({
-        blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
         channelConfig: serverDeposit.channelConfig,
         channelId,
         feePayer: feePayer.address,
         payer,
+        voucher: await signBatchVoucher(operator, {
+          channelId,
+          expiresAt: 0,
+          maxClaimableAmount: 1_000n,
+        }),
       }),
       x402Version: 2,
     };

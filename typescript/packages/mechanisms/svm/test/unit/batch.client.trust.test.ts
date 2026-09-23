@@ -34,9 +34,11 @@ let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let operator: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let otherOperator: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 
 beforeAll(async () => {
-  [payer, feePayer, operator, otherOperator] = await Promise.all([
+  [payer, feePayer, operator, otherOperator, receiverAuthorizer] = await Promise.all([
+    generateKeyPairSigner(),
     generateKeyPairSigner(),
     generateKeyPairSigner(),
     generateKeyPairSigner(),
@@ -62,6 +64,7 @@ function clientAccept(overrides: Partial<PaymentRequirements> = {}): PaymentRequ
     asset: USDC_DEVNET_ADDRESS,
     extra: {
       feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: 900,
     },

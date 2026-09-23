@@ -6,7 +6,11 @@ import {
 import type { PaymentRequirements } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 
-import { refundBatchChannel } from "../../src/batch-settlement/client/refund";
+import {
+  refundBatchChannel,
+  type RefundPayloadOptions,
+} from "../../src/batch-settlement/client/refund";
+import { BatchError } from "../../src/batch-settlement/errors";
 import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 
@@ -16,7 +20,12 @@ function requirements(): PaymentRequirements {
   return {
     amount: "1000",
     asset: USDC_DEVNET_ADDRESS,
-    extra: { feePayer: FEE_PAYER, tokenProgram: TOKEN_PROGRAM_ADDRESS, withdrawDelay: 900 },
+    extra: {
+      feePayer: FEE_PAYER,
+      receiverAuthorizer: USDC_MAINNET_ADDRESS,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      withdrawDelay: 900,
+    },
     maxTimeoutSeconds: 300,
     network: SOLANA_DEVNET_CAIP2,
     payTo: USDC_MAINNET_ADDRESS,
@@ -31,15 +40,30 @@ const closePayload = {
     payer: USDC_DEVNET_ADDRESS,
     payerAuthorizer: USDC_DEVNET_ADDRESS,
     receiver: USDC_MAINNET_ADDRESS,
+    receiverAuthorizer: USDC_MAINNET_ADDRESS,
     salt: "0",
     token: USDC_DEVNET_ADDRESS,
     withdrawDelay: 900,
   },
-  transaction: "close-transaction",
   type: "refund" as const,
+  voucher: {
+    channelId: USDC_MAINNET_ADDRESS,
+    expiresAt: 0,
+    maxClaimableAmount: "3000",
+    signature: "voucher-signature",
+  },
 };
 
-const build = async (x402Version: number) => ({ payload: closePayload, x402Version });
+const build = async (
+  x402Version: number,
+  _requirements: PaymentRequirements,
+  options?: RefundPayloadOptions,
+) => ({
+  payload: options?.withTransaction
+    ? { ...closePayload, transaction: "request-close-transaction" }
+    : closePayload,
+  x402Version,
+});
 
 describe("batch-settlement refund driver", () => {
   it("probes the route, sends the close, and returns the settlement", async () => {
@@ -80,7 +104,7 @@ describe("batch-settlement refund driver", () => {
     const decoded = decodePaymentSignatureHeader(sent[1]!.headers["PAYMENT-SIGNATURE"]!);
     expect(decoded).toMatchObject({
       accepted: { scheme: "batch-settlement" },
-      payload: { transaction: "close-transaction", type: "refund" },
+      payload: { type: "refund", voucher: { maxClaimableAmount: "3000" } },
       x402Version: 2,
     });
   });
@@ -108,6 +132,42 @@ describe("batch-settlement refund driver", () => {
       }),
     ).resolves.toMatchObject({ success: true });
     expect(calls).toBe(1);
+  });
+
+  it("resends with a request_close when the facilitator has no binding", async () => {
+    const payloads: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      payloads.push(decodePaymentSignatureHeader(headers["PAYMENT-SIGNATURE"]!).payload);
+      if (payloads.length === 1) {
+        const body = encodePaymentRequiredHeader({
+          accepts: [requirements()],
+          error: BatchError.RECEIVER_BINDING_UNAVAILABLE,
+          x402Version: 2,
+        });
+        return new Response(null, { headers: { "PAYMENT-REQUIRED": body }, status: 402 });
+      }
+      return new Response(null, {
+        headers: {
+          "PAYMENT-RESPONSE": encodePaymentResponseHeader({
+            network: SOLANA_DEVNET_CAIP2,
+            success: true,
+            transaction: "request-close-signature",
+          }),
+        },
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      refundBatchChannel(build, "https://example.test/paid", {
+        fetch: fetchImpl,
+        requirements: requirements(),
+      }),
+    ).resolves.toMatchObject({ success: true, transaction: "request-close-signature" });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).not.toHaveProperty("transaction");
+    expect(payloads[1]).toMatchObject({ transaction: "request-close-transaction" });
   });
 
   it("surfaces the server's reason when the close is refused", async () => {

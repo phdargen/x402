@@ -77,8 +77,10 @@ export const OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000;
 export const OPEN_DEFAULT_COMPUTE_UNIT_LIMIT = 90_000;
 /** Spec ceiling for optional Phantom/Solflare Lighthouse assertions after `open`. */
 const OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS = 3;
-/** Max optional suffix length after `open` (3 Lighthouse + 1 Memo). */
+/** Max optional suffix length after `open` (3 Lighthouse + 1 Memo), plus one binding memo when expected. */
 const OPEN_MAX_OPTIONAL_SUFFIX = 4;
+/** Solana packet limit for a serialized transaction. */
+const MAX_TRANSACTION_BYTES = 1232;
 
 /**
  * Slot freshness / reclaim gate window for payment-channel PDAs.
@@ -138,6 +140,8 @@ export interface BuildOpenArgs {
    * data; otherwise a random hex nonce is emitted for uniqueness.
    */
   memo?: string | undefined;
+  /** Optional already-encoded binding memo, emitted as a second Memo instruction. */
+  bindingMemo?: string | undefined;
   /**
    * `SetComputeUnitLimit` units for the transaction. Defaults to
    * {@link OPEN_DEFAULT_COMPUTE_UNIT_LIMIT}; `0` omits the instruction (the
@@ -428,6 +432,10 @@ export async function buildOpenPaymentChannelTransaction(args: BuildOpenArgs): P
     accounts: [] as const,
     data: memoData,
   };
+  const memoIxs =
+    args.bindingMemo === undefined
+      ? [memoIx]
+      : [memoIx, { ...memoIx, data: new TextEncoder().encode(args.bindingMemo) }];
 
   const computeUnitLimit = args.computeUnitLimit ?? OPEN_DEFAULT_COMPUTE_UNIT_LIMIT;
   if (
@@ -472,16 +480,24 @@ export async function buildOpenPaymentChannelTransaction(args: BuildOpenArgs): P
         },
         msg,
       ),
-    msg => appendTransactionMessageInstructions([...computeBudgetIxs, instruction, memoIx], msg),
+    msg =>
+      appendTransactionMessageInstructions([...computeBudgetIxs, instruction, ...memoIxs], msg),
   );
   const signed = await partiallySignTransactionMessageWithSigners(message);
+  const transaction = getBase64EncodedWireTransaction(signed);
+  const size = getBase64Codec().encode(transaction).byteLength;
+  if (size > MAX_TRANSACTION_BYTES) {
+    throw new Error(
+      `open transaction is ${size} bytes, above the ${MAX_TRANSACTION_BYTES}-byte packet limit`,
+    );
+  }
 
   return {
     channelId,
     deposit: args.deposit,
     openSlot,
     salt,
-    transaction: getBase64EncodedWireTransaction(signed),
+    transaction,
   };
 }
 
@@ -520,6 +536,11 @@ export interface VerifyOpenExpected {
    * instruction MUST match this UTF-8 value.
    */
   memo?: string | undefined;
+  /**
+   * Binding memo text. When set, exactly one suffix Memo instruction MUST
+   * match it, and {@link VerifyOpenExpected.memo} applies to the other memos.
+   */
+  expectedBindingMemo?: string | undefined;
   /**
    * Operator ceiling for `SetComputeUnitLimit`. Clamped to the spec max
    * ({@link OPEN_MAX_COMPUTE_UNIT_LIMIT}); unset uses the spec max.
@@ -735,6 +756,7 @@ export async function verifyOpenTransaction(
     maxComputeUnits,
     maxPriorityFeeMicroLamports,
     expectedMemo: expected.memo,
+    expectedBindingMemo: expected.expectedBindingMemo,
   });
 
   // Required-signer set must equal the distinct addresses in
@@ -1004,6 +1026,7 @@ type OpenLayoutLimits = {
   maxComputeUnits: number;
   maxPriorityFeeMicroLamports: number;
   expectedMemo?: string | undefined;
+  expectedBindingMemo?: string | undefined;
 };
 
 /**
@@ -1113,15 +1136,16 @@ function findCanonicalOpenInstruction(
 
   let lighthouseCount = 0;
   let optionalCount = 0;
+  const maxOptional = OPEN_MAX_OPTIONAL_SUFFIX + (limits.expectedBindingMemo === undefined ? 0 : 1);
   const memoDatas: Uint8Array[] = [];
   while (i < instructions.length) {
     const ix = instructions[i];
     if (!ix) break;
     const program = staticAccounts[ix.programAddressIndex];
     optionalCount += 1;
-    if (optionalCount > OPEN_MAX_OPTIONAL_SUFFIX) {
+    if (optionalCount > maxOptional) {
       throw new Error(
-        `verifyOpenTransaction: at most ${OPEN_MAX_OPTIONAL_SUFFIX} optional instructions are allowed after open`,
+        `verifyOpenTransaction: at most ${maxOptional} optional instructions are allowed after open`,
       );
     }
     if (program === LIGHTHOUSE_PROGRAM_ADDRESS) {
@@ -1144,13 +1168,31 @@ function findCanonicalOpenInstruction(
     i += 1;
   }
 
-  if (limits.expectedMemo !== undefined) {
-    if (memoDatas.length !== 1) {
+  let otherMemos = memoDatas;
+  if (limits.expectedBindingMemo !== undefined) {
+    const expectedBinding = limits.expectedBindingMemo;
+    const prefixEnd = expectedBinding.lastIndexOf(":");
+    const prefix = prefixEnd === -1 ? expectedBinding : expectedBinding.slice(0, prefixEnd + 1);
+    const decode = (data: Uint8Array) => new TextDecoder().decode(data);
+    const exact = memoDatas.filter(data => decode(data) === expectedBinding).length;
+    // Any other memo under the same prefix is a second binding, so recovery
+    // would not know which key the payer committed to.
+    const prefixed = memoDatas.filter(data => decode(data).startsWith(prefix)).length;
+    if (exact !== 1 || prefixed !== 1) {
       throw new Error(
-        `verifyOpenTransaction: expected exactly one Memo instruction matching extra.memo, found ${memoDatas.length}`,
+        `verifyOpenTransaction: expected exactly one Memo instruction matching the receiver binding, found ${exact === 1 ? prefixed : exact}`,
       );
     }
-    const actualMemo = new TextDecoder().decode(memoDatas[0]!);
+    otherMemos = memoDatas.filter(data => !decode(data).startsWith(prefix));
+  }
+
+  if (limits.expectedMemo !== undefined) {
+    if (otherMemos.length !== 1) {
+      throw new Error(
+        `verifyOpenTransaction: expected exactly one Memo instruction matching extra.memo, found ${otherMemos.length}`,
+      );
+    }
+    const actualMemo = new TextDecoder().decode(otherMemos[0]!);
     if (actualMemo !== limits.expectedMemo) {
       throw new Error("verifyOpenTransaction: Memo instruction data does not match extra.memo");
     }

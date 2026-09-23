@@ -16,3 +16,11 @@ export type {
 
 export { InMemoryBatchPendingSettlementStore } from "./recovery";
 export type { BatchPendingSettlementStore } from "./recovery";
+export {
+  BatchReceiverAuthorizerConflictError,
+  InMemoryBatchReceiverAuthorizerStore,
+} from "./receiverAuthorizerStore";
+export type {
+  BatchReceiverAuthorizerBinding,
+  BatchReceiverAuthorizerStore,
+} from "./receiverAuthorizerStore";

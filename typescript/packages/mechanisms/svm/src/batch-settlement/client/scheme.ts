@@ -33,7 +33,7 @@ import {
   buildDepositPayload,
   buildRefundPayload,
 } from "./channel";
-import { type BatchRefundOptions, refundBatchChannel } from "./refund";
+import { type BatchRefundOptions, type RefundPayloadOptions, refundBatchChannel } from "./refund";
 import {
   type BatchServerSignedChannelsPolicy,
   type ResolvedServerSignedTrust,
@@ -366,21 +366,22 @@ export class BatchSvmScheme implements SchemeNetworkClient {
   }
 
   /**
-   * Close the channel backing `url` and start its refund.
+   * Close the channel backing `url` and refund its unused escrow.
    *
-   * Probes the route for the requirements the channel was opened against,
-   * sends the payer-signed `request_close`, and returns what the server
-   * reported. The escrow itself comes back after the forced-close grace
-   * period, so a successful response means the close started, not that funds
-   * have moved.
+   * Probes the route for the requirements the channel was opened against and
+   * sends a zero-charge voucher at the confirmed cumulative amount. The server
+   * closes the channel cooperatively, or, when the facilitator has no receiver
+   * binding, the payer-signed `request_close` starts a forced
+   * close whose escrow comes back after the grace period.
    *
    * @param url - Any protected route on the channel to close
    * @param options - Fetch override, or requirements to skip the probe
-   * @returns The settlement response describing the initiated close
+   * @returns The settlement response describing the close
    */
   async refund(url: string, options?: BatchRefundOptions) {
     return refundBatchChannel(
-      (x402Version, requirements) => this.createRefundPayload(x402Version, requirements),
+      (x402Version, requirements, payloadOptions) =>
+        this.createRefundPayload(x402Version, requirements, payloadOptions),
       url,
       options,
     );
@@ -391,10 +392,12 @@ export class BatchSvmScheme implements SchemeNetworkClient {
    *
    * @param x402Version
    * @param requirements
+   * @param options - Whether to include a payer-signed `request_close`
    */
   async createRefundPayload(
     x402Version: number,
     requirements: PaymentRequirements,
+    options?: RefundPayloadOptions,
   ): Promise<Pick<PaymentPayload, "x402Version" | "payload">> {
     const terms = await this.resolveTerms(requirements);
     const key = this.channelKey(requirements, terms.feePayer, terms.withdrawDelay);
@@ -403,8 +406,12 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const existing =
       (await this.loadChannel(key)) ?? (await this.discoverChannel(requirements, terms));
     if (!existing) throw new Error("no batch-settlement channel to refund");
-    const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
-    const blockhash = await resolveBlockhash(rpc, requirements);
+    const blockhash = options?.withTransaction
+      ? await resolveBlockhash(
+          createRpcClient(requirements.network, this.config.rpcUrl),
+          requirements,
+        )
+      : undefined;
     return {
       x402Version,
       payload: await buildRefundPayload({
@@ -414,6 +421,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         feePayer: terms.feePayer,
         memo: terms.memo,
         payer: this.signer,
+        voucher: await existing.tracker.refundVoucher(),
       }),
     };
   }
@@ -536,7 +544,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       feePayer: string;
       withdrawDelay: number;
       tokenProgram: string;
-      receiverAuthorizer?: string | undefined;
+      receiverAuthorizer: string;
       voucherSigner: "client" | "server";
       operator?: string | undefined;
     },
@@ -584,7 +592,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
           payer: channel.channel.payer,
           payerAuthorizer: channel.channel.authorizedSigner,
           receiver: requirements.payTo,
-          ...(terms.receiverAuthorizer ? { receiverAuthorizer: terms.receiverAuthorizer } : {}),
+          receiverAuthorizer: terms.receiverAuthorizer,
           salt: channel.channel.salt.toString(),
           token: channel.channel.mint,
           withdrawDelay: channel.channel.gracePeriod,
@@ -726,6 +734,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const localPrior = pending.confirmed?.tracker.cumulative ?? 0n;
     let charged: bigint;
     let confirmedCumulative: bigint;
+    let serverVoucher: BatchVoucher | undefined;
     if (pending.tracker.channelConfig.voucherSigner === "server") {
       const voucher = extra?.voucher;
       const cumulative =
@@ -756,6 +765,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       }
       charged = cumulative - localPrior;
       confirmedCumulative = localPrior + charged;
+      serverVoucher = voucher;
     } else {
       charged =
         typeof extra?.chargedAmount === "string" && /^\d+$/.test(extra.chargedAmount)
@@ -788,6 +798,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (confirmedCumulative > pending.tracker.cumulative) {
       pending.tracker.commit(confirmedCumulative);
     }
+    if (serverVoucher) pending.tracker.recordServerVoucher(serverVoucher);
     pending.deposit = (pending.confirmed?.deposit ?? 0n) + deposited;
     const confirmed = { deposit: pending.deposit, tracker: pending.tracker };
     this.channels.set(pending.key, confirmed);
@@ -940,7 +951,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
 
   private async resolveTerms(requirements: PaymentRequirements): Promise<{
     feePayer: string;
-    receiverAuthorizer?: string | undefined;
+    receiverAuthorizer: string;
     tokenProgram: string;
     withdrawDelay: number;
     memo?: string | undefined;
@@ -978,8 +989,8 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       throw new Error("extra.tokenProgram does not own requirements.asset");
     }
     const receiverAuthorizer = extra.receiverAuthorizer;
-    if (receiverAuthorizer !== undefined && typeof receiverAuthorizer !== "string") {
-      throw new Error("extra.receiverAuthorizer must be a string when present");
+    if (typeof receiverAuthorizer !== "string" || receiverAuthorizer.length === 0) {
+      throw new Error("extra.receiverAuthorizer must be a non-empty string");
     }
     const memo = extra.memo;
     if (memo !== undefined && typeof memo !== "string") {
@@ -1004,7 +1015,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     return {
       feePayer,
       ...(memo !== undefined ? { memo } : {}),
-      ...(receiverAuthorizer !== undefined ? { receiverAuthorizer } : {}),
+      receiverAuthorizer,
       tokenProgram,
       withdrawDelay,
       voucherSigner,

@@ -15,7 +15,6 @@ import {
   TOKEN_2022_PROGRAM_ADDRESS,
   TOKEN_PROGRAM_ADDRESS,
 } from "../../constants";
-import { verifyRequestCloseTransaction } from "../../payment-channels/close";
 import {
   discoverChannelsByRentPayer,
   type DiscoveredChannel,
@@ -87,8 +86,22 @@ import {
 
 import { recordPendingOrTerminal, TransactionOnchainFailureError } from "../../utils";
 import { ErrSettlementPending } from "../../exact/facilitator/errors";
-import { assertNotClosing, type SealDependencies, settleSeal } from "./seal";
+import {
+  assertNotClosing,
+  prepareRefund,
+  type SealDependencies,
+  settleCooperativeRefund,
+  settleSeal,
+  validateRefund,
+} from "./seal";
+import {
+  BatchReceiverAuthorizerConflictError,
+  type BatchReceiverAuthorizerStore,
+  InMemoryBatchReceiverAuthorizerStore,
+  requireReceiverAuthorizer,
+} from "./receiverAuthorizerStore";
 import { BatchError } from "../errors";
+import { encodeReceiverBindingMemo } from "../receiverBinding";
 import {
   BATCH_SETTLEMENT_SCHEME,
   type BatchChannelConfig,
@@ -136,19 +149,16 @@ export interface BatchSvmFacilitatorConfig {
   maxComputeUnits?: number | undefined;
   maxRequiredSignatures?: number | undefined;
   /**
-   * Receiver-authorizer keys registered out of band, by `payTo`. A `seal`
-   * request is normally authenticated against the key bound to the channel at
-   * its first deposit; this registry covers channels whose binding was lost
-   * with facilitator storage. A key that merely appears in a request is never
-   * trusted.
+   * Receiver authorizer each channel was opened for, bound before its open is
+   * broadcast. A missing row is unavailable. Defaults to an in-memory store.
    */
-  trustedReceiverAuthorizers?: Readonly<Record<string, readonly string[]>> | undefined;
+  receiverAuthorizerStore?: BatchReceiverAuthorizerStore | undefined;
 }
 
 type BatchTerms = {
   feePayer: string;
   feePayerSigner: FacilitatorSigningCapabilities;
-  receiverAuthorizer?: string | undefined;
+  receiverAuthorizer: string;
   tokenProgram: string;
   withdrawDelay: number;
   memo?: string | undefined;
@@ -163,12 +173,6 @@ type ValidatedDeposit = {
   expectedDeposit: bigint;
   isTopUp: boolean;
   voucherAmount: bigint;
-};
-
-type ValidatedRefund = {
-  channel: Channel;
-  channelId: string;
-  terms: BatchTerms;
 };
 
 type DurableBroadcastResult =
@@ -202,6 +206,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   private readonly confirmationSlots = new Map<string, bigint>();
   private readonly distributionPasses: Map<string, Promise<SettleResponse>>;
   private readonly maxIdleSecs: number;
+  private readonly receiverAuthorizers: BatchReceiverAuthorizerStore;
 
   constructor(
     private readonly signer: FacilitatorSvmSigner,
@@ -217,6 +222,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     this.pendingStore = config.pendingSettlementStore ?? new InMemoryBatchPendingSettlementStore();
     this.distributionPasses = distributionsForStore(this.pendingStore);
     this.maxIdleSecs = assertMaxIdleSecs(config.maxIdleSecs);
+    this.receiverAuthorizers =
+      config.receiverAuthorizerStore ?? new InMemoryBatchReceiverAuthorizerStore();
   }
 
   getExtra(_: Network): Record<string, unknown> {
@@ -243,7 +250,15 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       network,
       rpcUrl: this.config.rpcUrl,
       signer: this.signer,
-      storage: this.channelStorage,
+      storage: {
+        get: channelId => this.channelStorage.get(channelId),
+        list: () => this.channelStorage.list(),
+        upsert: record => this.channelStorage.upsert(record),
+        delete: async channelId => {
+          await this.channelStorage.delete(channelId);
+          await this.receiverAuthorizers.delete(network, channelId);
+        },
+      },
     });
   }
 
@@ -310,6 +325,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
             ChannelStatus.Open,
           ]);
+          await this.assertReceiverBinding(terms, requirements, channelId);
           const ceiling = parseU64(requirements.amount, "amount");
           if (ceiling > channel.deposit) {
             throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
@@ -321,7 +337,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           };
         }
         case "refund": {
-          const validated = await this.validateRefund(payload, requirements);
+          const deps = this.sealDependencies();
+          const validated = await validateRefund(deps, payload, requirements, this.config);
           return {
             isValid: true,
             payer: validated.channel.payer,
@@ -361,7 +378,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         case "settle":
           return await this.settleDistributions(payment, payload, requirements);
         case "seal":
-          return await settleSeal(this.sealDependencies(), payment, payload, requirements);
+          return await settleSeal(this.sealDependencies(), payment, payload, requirements, "seal");
       }
     } catch (error) {
       return settleFailure(
@@ -826,6 +843,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       this.assertClaimChannel(existing, payload.channelConfig, terms, requirements, [
         ChannelStatus.Open,
       ]);
+      await this.assertReceiverBinding(terms, requirements, channelId);
       const expectedDeposit = existing.deposit + deposit;
       if (
         voucherAmount !== undefined &&
@@ -866,6 +884,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     }
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
       authorizedSigner: payload.channelConfig.payerAuthorizer,
+      expectedBindingMemo: encodeReceiverBindingMemo(terms.receiverAuthorizer),
       feePayer: terms.feePayer,
       from: payload.channelConfig.payer,
       maxCap: deposit,
@@ -970,14 +989,21 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         network: requirements.network,
         payTo: requirements.payTo,
         tokenProgram: terms.tokenProgram,
-        // Bound at first deposit and fixed for the channel lifetime; a later
-        // `seal` must carry a CloseAuthorization from this key (spec §3).
-        ...(terms.receiverAuthorizer ? { receiverAuthorizer: terms.receiverAuthorizer } : {}),
       });
+      if (!validated.isTopUp) {
+        await this.receiverAuthorizers.bind({
+          channelId,
+          network: requirements.network,
+          receiverAuthorizer: terms.receiverAuthorizer,
+        });
+      }
     } catch (error) {
       // No transaction has been broadcast. Release the channel lock so a
       // caller can safely retry once durable indexing is healthy again.
       this.settlementCache.delete(key);
+      if (error instanceof BatchReceiverAuthorizerConflictError) {
+        throw new Error(`${BatchError.RECEIVER_AUTHORIZER_MISMATCH}: ${error.message}`);
+      }
       throw error;
     }
     const broadcast = await this.broadcastDurably(
@@ -1096,55 +1122,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
       ChannelStatus.Open,
     ]);
+    await this.assertReceiverBinding(terms, requirements, channelId);
     if (cumulative > channel.deposit) throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
     return channel;
-  }
-
-  private async validateRefund(
-    payload: BatchRefundPayload,
-    requirements: PaymentRequirements,
-  ): Promise<ValidatedRefund> {
-    const { channelId, terms } = await this.prepareRefund(payload, requirements);
-    const channel = await this.fetchChannel(requirements.network, channelId);
-    this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
-      ChannelStatus.Open,
-      ChannelStatus.Closing,
-    ]);
-    return { channel, channelId, terms };
-  }
-
-  private async prepareRefund(
-    payload: BatchRefundPayload,
-    requirements: PaymentRequirements,
-  ): Promise<{ channelId: string; terms: BatchTerms }> {
-    if ("amount" in payload) {
-      // The program returns all unused escrow; a partial close is not a thing
-      // this scheme can honor (spec 4.3).
-      throw new Error(
-        `${BatchError.CLOSE_AMOUNT_UNSUPPORTED}: refund returns the full unused escrow`,
-      );
-    }
-    if (payload.voucher !== undefined || payload.closeAuthorization !== undefined) {
-      throw new Error(
-        `${BatchError.CLOSE_AUTHORIZATION}: cooperative close requires a trusted server binding`,
-      );
-    }
-    const terms = await this.resolveTerms(payload.channelConfig, requirements);
-    const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
-    try {
-      await verifyRequestCloseTransaction(payload.transaction, {
-        channelId,
-        feePayer: terms.feePayer,
-        maxComputeUnits: this.config.maxComputeUnits,
-        maxPriorityFeeMicroLamports: this.config.maxPriorityFeeMicroLamports,
-        memo: terms.memo,
-        payer: payload.channelConfig.payer,
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`${BatchError.REFUND_TRANSACTION}: ${detail}`);
-    }
-    return { channelId, terms };
   }
 
   private async settleRefund(
@@ -1152,8 +1132,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     payload: BatchRefundPayload,
     requirements: PaymentRequirements,
   ): Promise<SettleResponse> {
-    const { channelId, terms } = await this.prepareRefund(payload, requirements);
-    const key = `batch:refund:${requirements.network}:${channelId}:${payload.transaction}`;
+    const deps = this.sealDependencies();
+    const prepared = await prepareRefund(deps, payload, requirements, this.config);
+    const { channelId, requestClose, terms } = prepared;
+    if (requestClose === undefined) {
+      return settleCooperativeRefund(deps, payment, payload, requirements, prepared);
+    }
+    const key = `batch:refund:${requirements.network}:${channelId}:${requestClose}`;
     const completed = await this.pendingStore.get(this.completedBroadcastKey(key));
     if (completed) {
       const observed = await this.fetchChannelUntil(
@@ -1257,12 +1242,12 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           // Simulated unsigned: the fee payer's signature is not what the
           // program checks here, and leaving it off keeps simulation portable
           // across signer backends that will not sign twice.
-          await this.signer.simulateTransaction(payload.transaction, requirements.network);
+          await this.signer.simulateTransaction(requestClose, requirements.network);
           return await broadcastOpen(
             this.submissionSigner(),
             address(terms.feePayer),
             requirements.network,
-            payload.transaction,
+            requestClose,
             undefined,
             onBroadcast,
           );
@@ -1357,8 +1342,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     }
     const receiverAuthorizer = extra.receiverAuthorizer;
     if (
-      (receiverAuthorizer === undefined) !== (config.receiverAuthorizer === undefined) ||
-      (receiverAuthorizer !== undefined && receiverAuthorizer !== config.receiverAuthorizer)
+      typeof receiverAuthorizer !== "string" ||
+      receiverAuthorizer.length === 0 ||
+      receiverAuthorizer !== config.receiverAuthorizer
     ) {
       throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
     }
@@ -1388,7 +1374,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       feePayer,
       feePayerSigner,
       ...(memo !== undefined ? { memo } : {}),
-      ...(typeof receiverAuthorizer === "string" ? { receiverAuthorizer } : {}),
+      receiverAuthorizer,
       tokenProgram,
       withdrawDelay,
       voucherSigner,
@@ -1906,7 +1892,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   private assertClaimChannel(
     channel: Channel,
     config: BatchChannelConfig,
-    terms: BatchTerms,
+    terms: Pick<BatchTerms, "feePayer" | "withdrawDelay">,
     requirements: PaymentRequirements,
     allowedStatuses: readonly ChannelStatus[],
   ): void {
@@ -1953,7 +1939,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     return {
       assertClaimChannel: (channel, config, terms, requirements, allowed) =>
         this.assertClaimChannel(channel, config, terms as BatchTerms, requirements, allowed),
-      channelStorage: this.channelStorage,
       completeOrPending: (key, signature, network, payer) =>
         this.completeOrPending(key, signature, network, payer),
       deriveChannelId: (config, feePayer) => this.deriveChannelId(config, feePayer),
@@ -1963,13 +1948,26 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       nowSeconds: () => Math.floor(Date.now() / 1000),
       pendingStore: this.pendingStore,
       readChannel: (network, channelId) => this.readChannel(network, channelId),
+      resolveReceiverAuthorizer: async (network, channelId) =>
+        (await this.receiverAuthorizers.get(network, channelId))?.receiverAuthorizer,
       resolveTerms: (config, requirements) => this.resolveTerms(config, requirements),
       settlementCache: this.settlementCache,
       submitRedemption: (feePayer, network, instructions, key, payer) =>
         this.submitRedemption(feePayer, network, instructions, key, payer),
       trackChannel: record => this.trackChannel(record),
-      trustedReceiverAuthorizers: this.config.trustedReceiverAuthorizers,
     };
+  }
+
+  private async assertReceiverBinding(
+    terms: BatchTerms,
+    requirements: PaymentRequirements,
+    channelId: string,
+  ): Promise<void> {
+    const bound = await this.sealDependencies().resolveReceiverAuthorizer(
+      requirements.network,
+      channelId,
+    );
+    requireReceiverAuthorizer(bound, terms.receiverAuthorizer, channelId);
   }
 
   private trackChannel(

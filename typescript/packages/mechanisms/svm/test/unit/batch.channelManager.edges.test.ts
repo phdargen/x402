@@ -14,6 +14,7 @@ import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants"
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 
 const RECEIVER = USDC_MAINNET_ADDRESS;
+const receiverAuthorizer = await generateKeyPairSigner();
 
 function requirements(): PaymentRequirements {
   return {
@@ -103,7 +104,12 @@ describe("batch-settlement redemption worker edge cases", () => {
       put: async () => undefined,
       update: async () => channel("x"),
     };
-    const manager = new BatchChannelManager({ requirements: requirements(), settle: ok, store });
+    const manager = new BatchChannelManager({
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: ok,
+      store,
+    });
     await expect(manager.redeem()).rejects.toThrow(/can list its channels/);
   });
 
@@ -113,6 +119,7 @@ describe("batch-settlement redemption worker edge cases", () => {
     const { payloads, settle } = settler(boundDistribute);
     await new BatchChannelManager({
       readPayoutWatermark: async () => 3_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -131,6 +138,7 @@ describe("batch-settlement redemption worker edge cases", () => {
     });
     const result = await new BatchChannelManager({
       onError: error => errors.push((error as Error).message),
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -161,6 +169,7 @@ describe("batch-settlement redemption worker edge cases", () => {
       const result = await new BatchChannelManager({
         onError: error => errors.push((error as Error).message),
         readPayoutWatermark: async () => 3_000n,
+        receiverAuthorizer,
         requirements: requirements(),
         settle: async () => answer,
         store,
@@ -182,6 +191,7 @@ describe("batch-settlement redemption worker edge cases", () => {
       onError: error => errors.push(error),
       readPayoutWatermark: async () => 3_000n,
       readSettledWatermark: async () => 3_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle: async () => ok(),
       store,
@@ -201,6 +211,7 @@ describe("batch-settlement redemption worker edge cases", () => {
       onError: error => errors.push((error as Error).message),
       readPayoutWatermark: async () => 0n,
       readSettledWatermark: async () => 2_999n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle: async () => ok(),
       store,
@@ -217,6 +228,7 @@ describe("batch-settlement redemption worker edge cases", () => {
     await new BatchChannelManager({
       maxChannelsPerBatch: 8,
       readPayoutWatermark: async () => 3_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -226,7 +238,6 @@ describe("batch-settlement redemption worker edge cases", () => {
   });
 
   it("seals a closing channel with its latest voucher when a claim reports channel_closing", async () => {
-    const closeAuthorizer = await generateKeyPairSigner();
     const store = new MemoryChannelStore();
     // Real 32-byte keys: the close authorization binds the channel PDA.
     const OPEN_ID = TOKEN_PROGRAM_ADDRESS;
@@ -251,9 +262,9 @@ describe("batch-settlement redemption worker edge cases", () => {
       return raw.type === "seal" ? { ...ok(), amount: "3000" } : boundDistribute(raw);
     };
     const result = await new BatchChannelManager({
-      closeAuthorizer,
       readPayoutWatermark: async () => 3_000n,
       readSettledWatermark: async () => 3_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -290,7 +301,7 @@ describe("batch-settlement redemption worker edge cases", () => {
           network: SOLANA_DEVNET_CAIP2,
           voucherExpiresAt: 0n,
         },
-        closeAuthorizer.address,
+        receiverAuthorizer.address,
         300,
       ),
     ).resolves.toBe(true);
@@ -302,16 +313,26 @@ describe("batch-settlement redemption worker edge cases", () => {
     expect((await store.get(OPEN_ID))?.status).toBe("open");
   });
 
-  it("only marks a closing channel when no close authorizer is configured", async () => {
+  it("marks a channel closing and retries its seal after a transient failure", async () => {
     const store = new MemoryChannelStore();
-    await store.put(channel("chan-a"));
+    const id = (await generateKeyPairSigner()).address;
+    await store.put(channel(id));
     const errors: string[] = [];
     const seen: string[] = [];
-    const result = await new BatchChannelManager({
+    let sealAnswer: SettleResponse = {
+      errorReason: "settlement_pending",
+      network: SOLANA_DEVNET_CAIP2,
+      success: false,
+    };
+    const manager = new BatchChannelManager({
       onError: error => errors.push((error as Error).message),
+      readPayoutWatermark: async () => 3_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle: async (request: { payload: unknown }) => {
-        seen.push((request.payload as Payload).type);
+        const type = (request.payload as Payload).type;
+        seen.push(type);
+        if (type === "seal") return sealAnswer;
         return {
           network: SOLANA_DEVNET_CAIP2,
           success: false,
@@ -319,11 +340,40 @@ describe("batch-settlement redemption worker edge cases", () => {
         };
       },
       store,
-    }).redeem();
-    expect(result).toEqual({ claimed: [], distributed: [], sealed: [] });
-    expect(seen).toEqual(["claim"]);
-    expect(errors).toEqual([expect.stringMatching(/closing and no closeAuthorizer/)]);
-    expect((await store.get("chan-a"))?.status).toBe("closing");
+    });
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [] });
+    expect(errors).toEqual(["batch-settlement seal failed: settlement_pending"]);
+    expect((await store.get(id))?.status).toBe("closing");
+
+    sealAnswer = ok();
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [id] });
+    expect(seen).toEqual(["claim", "seal", "seal"]);
+    expect(await store.get(id)).toMatchObject({ settled: 3_000n, status: "distributed" });
+  });
+
+  it("does not seal once the grace period has elapsed", async () => {
+    const store = new MemoryChannelStore();
+    const id = (await generateKeyPairSigner()).address;
+    const closeRequestedAt = Math.floor(Date.now() / 1000) - 900;
+    await store.put(channel(id, { closeRequestedAt, status: "closing" }));
+    const errors: string[] = [];
+    const seen: string[] = [];
+    const manager = new BatchChannelManager({
+      onError: error => errors.push((error as Error).message),
+      readPayoutWatermark: async () => 0n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: async (request: { payload: unknown }) => {
+        seen.push((request.payload as Payload).type);
+        return ok();
+      },
+      store,
+    });
+    await manager.redeem();
+    expect(await manager.redeem()).toEqual({ claimed: [], distributed: [], sealed: [] });
+    expect(seen).toEqual([]);
+    expect(errors).toEqual([expect.stringMatching(/grace period elapsed/)]);
+    expect(await store.get(id)).toMatchObject({ settled: 0n, status: "closing" });
   });
 
   it("never lowers watermarks the store already advanced past", async () => {
@@ -343,6 +393,7 @@ describe("batch-settlement redemption worker edge cases", () => {
     const { settle } = settler(boundDistribute);
     const result = await new BatchChannelManager({
       readPayoutWatermark: async () => 2_000n,
+      receiverAuthorizer,
       requirements: requirements(),
       settle,
       store,
@@ -366,7 +417,12 @@ describe("batch-settlement redemption worker edge cases", () => {
     await store.put(channel("chan-a"));
     const { settle } = settler(boundDistribute);
     await expect(
-      new BatchChannelManager({ requirements: requirements(), settle, store }).redeem(),
+      new BatchChannelManager({
+        receiverAuthorizer,
+        requirements: requirements(),
+        settle,
+        store,
+      }).redeem(),
     ).rejects.toThrow(/vanished mid-redemption/);
   });
 });

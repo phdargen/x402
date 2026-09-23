@@ -16,4 +16,9 @@ export {
   type ServerSignedChannelsAsset,
   UntrustedOperatorError,
 } from "./trust";
-export { type BatchRefundOptions, probeBatchRequirements, refundBatchChannel } from "./refund";
+export {
+  type BatchRefundOptions,
+  probeBatchRequirements,
+  refundBatchChannel,
+  type RefundPayloadOptions,
+} from "./refund";

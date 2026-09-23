@@ -7,6 +7,7 @@ import type {
   SkipHandlerDirective,
   VerifiedPaymentCanceledContext,
   VerifyContext,
+  VerifyFailureContext,
   VerifyResultContext,
 } from "@x402/core/server";
 import type {
@@ -33,7 +34,11 @@ import {
   signVoucher,
   verifyVoucherSignature,
 } from "../../payment-channels/voucher";
-import { findPaymentChannelPda, parseU64 } from "../../payment-channels/open";
+import {
+  findPaymentChannelPda,
+  parseU64,
+  verifyOpenTransaction,
+} from "../../payment-channels/open";
 import {
   convertToTokenAmount,
   getStablecoinAddress,
@@ -42,7 +47,9 @@ import {
 } from "../../utils";
 import { BatchError } from "../errors";
 import { verifyBatchAuthorization } from "../authorization";
-import type { BatchChannelConfig, BatchPayload, BatchVoucher } from "../types";
+import { signCloseAuthorization } from "../closeAuthorization";
+import { encodeReceiverBindingMemo } from "../receiverBinding";
+import type { BatchChannelConfig, BatchPayload, BatchVoucher, CloseAuthorization } from "../types";
 import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
 import { type BatchOperationStore, MemoryBatchOperationStore } from "./operationStore";
 import { BatchChannelManager, type BatchChannelManagerConfig } from "./channelManager";
@@ -80,14 +87,14 @@ const DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER = 3n;
 
 export interface BatchSvmServerConfig {
   withdrawDelay?: number | undefined;
-  /** Receiver-authorizer address to advertise; derived from `closeAuthorizer` when omitted. */
-  receiverAuthorizer?: string | undefined;
   /**
-   * Receiver-authorizer signer. Advertised as `extra.receiverAuthorizer` and
-   * used by the redemption worker to sign `CloseAuthorization`s, so a channel
-   * the payer is closing can still be finalized with the latest voucher.
+   * Receiver-authorizer signer. Advertised as `extra.receiverAuthorizer`,
+   * bound to each channel at open, and used to sign the `CloseAuthorization`s
+   * that cooperative refunds and seals of closing channels require.
    */
-  closeAuthorizer?: MessagePartialSigner | undefined;
+  receiverAuthorizer: MessagePartialSigner;
+  /** Called when the facilitator reports a paid request's channel as closing, so the host can run a redemption pass. */
+  onChannelClosing?: ((channelId: string) => void) | undefined;
   store?: ChannelStore | undefined;
   /** Maximum age of onchain state used to verify vouchers locally. */
   onchainStateTtlMs?: number | undefined;
@@ -125,14 +132,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   private moneyParsers: MoneyParser[] = [];
   private reservationSequence = 0;
 
-  constructor(private readonly config: BatchSvmServerConfig = {}) {
-    if (
-      config.receiverAuthorizer !== undefined &&
-      config.closeAuthorizer !== undefined &&
-      config.receiverAuthorizer !== config.closeAuthorizer.address
-    ) {
-      throw new Error("receiverAuthorizer must be the closeAuthorizer's address when both are set");
-    }
+  constructor(private readonly config: BatchSvmServerConfig) {
     this.store = config.store ?? new MemoryChannelStore();
     this.operationStore = config.operationStore ?? new MemoryBatchOperationStore();
     this.schemeHooks = {
@@ -140,10 +140,44 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       onAfterVerify: ctx => this.afterVerify(ctx),
       onBeforeSettle: ctx => this.beforeSettle(ctx),
       onAfterSettle: ctx => this.afterSettle(ctx),
+      onVerifyFailure: ctx => this.onVerifyFailure(ctx),
       onSettleFailure: ctx => this.onSettleFailure(ctx),
       onVerifiedPaymentCanceled: ctx => this.onCanceled(ctx),
     };
   }
+
+  /**
+   * Attach the receiver authorizer's `CloseAuthorization` to a refund, so the
+   * facilitator can close the channel cooperatively with the accepted voucher.
+   *
+   * @param ctx - Settle context for the refund
+   * @returns The `closeAuthorization` field, or nothing for other payloads
+   */
+  enrichSettlementPayload = async (ctx: SettleContext): Promise<Record<string, unknown> | void> => {
+    const raw = ctx.paymentPayload.payload;
+    if (!isBatchPayload(raw) || raw.type !== "refund") return;
+    const request = this.requestContexts.get(ctx.paymentPayload);
+    if (!request?.pendingId) throw new Error(CHANNEL_BUSY);
+    const feePayer = ctx.requirements.extra?.feePayer;
+    if (typeof feePayer !== "string") throw new Error(BatchError.FEE_PAYER_MISMATCH);
+    let closeAuthorization: CloseAuthorization | undefined;
+    await this.store.update(request.channelId, async current => {
+      if (!current?.reservations?.[request.pendingId!]) throw new Error(CHANNEL_BUSY);
+      if (BigInt(raw.voucher.maxClaimableAmount) !== current.chargedCumulativeAmount) {
+        throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+      }
+      closeAuthorization = await signCloseAuthorization(this.config.receiverAuthorizer, {
+        channelId: request.channelId,
+        feePayer,
+        maxClaimableAmount: current.chargedCumulativeAmount,
+        network: ctx.requirements.network,
+        validBefore: Math.floor(Date.now() / 1000) + ctx.requirements.maxTimeoutSeconds,
+        voucherExpiresAt: BigInt(raw.voucher.expiresAt),
+      });
+      return current;
+    });
+    return { closeAuthorization };
+  };
 
   enrichSettlementResponse = async (
     ctx: SettleResultContext,
@@ -272,7 +306,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         ),
         withdrawDelay,
         minDeposit: this.resolveMinDepositHint(paymentRequirements),
-        ...(this.receiverAuthorizer() ? { receiverAuthorizer: this.receiverAuthorizer() } : {}),
+        receiverAuthorizer: this.config.receiverAuthorizer.address,
         ...(serverSigned
           ? { operator: this.config.operator!.address, voucherSigner: "server" }
           : {}),
@@ -321,7 +355,10 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   createChannelManager(
     facilitator: Pick<FacilitatorClient, "settle">,
     requirements: PaymentRequirements,
-    options: Omit<BatchChannelManagerConfig, "store" | "settle" | "requirements"> = {},
+    options: Omit<
+      BatchChannelManagerConfig,
+      "store" | "settle" | "requirements" | "receiverAuthorizer"
+    > = {},
   ): BatchChannelManager {
     if (typeof requirements.extra?.feePayer !== "string") {
       throw new Error(
@@ -330,8 +367,8 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       );
     }
     return new BatchChannelManager({
-      closeAuthorizer: this.config.closeAuthorizer,
       ...options,
+      receiverAuthorizer: this.config.receiverAuthorizer,
       requirements,
       settle: (payload, accepted) =>
         facilitator.settle(payload as unknown as PaymentPayload, accepted),
@@ -394,6 +431,31 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       if (state) {
         this.assertStoredConfig(state, raw.channelConfig);
       }
+      if (raw.type === "deposit" && !state) {
+        const extra = ctx.requirements.extra!;
+        try {
+          await verifyOpenTransaction(raw.deposit.transaction, {
+            authorizedSigner: raw.channelConfig.payerAuthorizer,
+            expectedBindingMemo: encodeReceiverBindingMemo(this.config.receiverAuthorizer.address),
+            feePayer: String(extra.feePayer),
+            from: raw.channelConfig.payer,
+            maxCap: parseU64(raw.deposit.amount, "deposit.amount"),
+            memo: typeof extra.memo === "string" ? extra.memo : undefined,
+            mint: ctx.requirements.asset,
+            openSlot: BigInt(raw.channelConfig.openSlot),
+            payee: String(extra.feePayer),
+            recipients: [{ bps: 10_000, recipient: ctx.requirements.payTo }],
+            tokenProgram: String(extra.tokenProgram),
+            withdrawDelay: raw.channelConfig.withdrawDelay,
+          });
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          const reason = detail.includes("receiver binding")
+            ? BatchError.RECEIVER_AUTHORIZER_MISMATCH
+            : BatchError.SETUP_TRANSACTION;
+          throw new Error(`${reason}: ${detail}`);
+        }
+      }
 
       if (raw.type === "deposit" || raw.type === "voucher" || raw.type === "authorization") {
         // A channel this server holds no record for is not a dead end: the
@@ -448,6 +510,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         }
       } else {
         if (!state) throw new Error(BatchError.CHANNEL_STATE);
+        if (BigInt(raw.voucher.maxClaimableAmount) !== state.chargedCumulativeAmount) {
+          throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+        }
         this.requestContexts.set(ctx.paymentPayload, { channelId });
       }
       // Deposits and refunds carry transactions whose complete instruction and
@@ -475,7 +540,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     | { skipHandler: true; response?: SkipHandlerDirective }
   > {
     const raw = ctx.paymentPayload.payload;
-    if (!ctx.result.isValid || !isBatchPayload(raw)) return;
+    if (!isBatchPayload(raw)) return;
+    if (!ctx.result.isValid) {
+      if (ctx.result.invalidReason === BatchError.CHANNEL_CLOSING) {
+        await this.markChannelClosing(ctx.paymentPayload);
+      }
+      return;
+    }
     const request = this.requestContexts.get(ctx.paymentPayload);
     if (!request) return this.abort(BatchError.CHANNEL_STATE, "missing request state");
     // The facilitator has now confirmed this payload against onchain state and
@@ -725,17 +796,59 @@ export class BatchSvmScheme implements SchemeNetworkServer {
           throw new Error(CHANNEL_BUSY);
         }
         const snapshot = readChannelState(ctx.result);
+        const reservations = withoutReservation(current.reservations, request.pendingId!);
+        // A cooperative close seals and distributes in one step; only a
+        // payer-signed request_close leaves a grace period running.
+        if (snapshot.withdrawRequestedAt === 0) {
+          const confirmed = BigInt(snapshot.totalClaimed);
+          const settled = confirmed > current.settled ? confirmed : current.settled;
+          return {
+            ...current,
+            closeSignature: ctx.result.transaction,
+            onchainSyncedAt: Date.now(),
+            payoutWatermark: settled,
+            reservations,
+            settled,
+            status: "distributed",
+          };
+        }
         return {
           ...current,
           closeRequestedAt: snapshot.withdrawRequestedAt,
           closeSignature: ctx.result.transaction,
           onchainSyncedAt: Date.now(),
-          reservations: withoutReservation(current.reservations, request.pendingId!),
+          reservations,
           status: "closing",
         };
       });
       this.requestContexts.delete(ctx.paymentPayload);
     }
+  }
+
+  private async onVerifyFailure(ctx: VerifyFailureContext): Promise<void> {
+    if (ctx.error.message.includes(BatchError.CHANNEL_CLOSING)) {
+      await this.markChannelClosing(ctx.paymentPayload);
+    }
+  }
+
+  /**
+   * Stop serving a paid request's channel once the facilitator reports the
+   * payer is closing it, and let the host start a redemption pass.
+   *
+   * @param payload - The payment whose verification failed
+   */
+  private async markChannelClosing(payload: DeepReadonly<PaymentPayload>): Promise<void> {
+    const raw = payload.payload;
+    if (!isBatchPayload(raw) || raw.type === "refund") return;
+    const channelId = this.requestContexts.get(payload)?.channelId;
+    if (channelId === undefined) return;
+    const state = await this.store.get(channelId);
+    if (state?.status !== "open") return;
+    await this.store.update(channelId, current => {
+      const base = current ?? state;
+      return base.status === "open" ? { ...base, status: "closing" } : base;
+    });
+    this.config.onChannelClosing?.(channelId);
   }
 
   private async onSettleFailure(ctx: SettleFailureContext): Promise<void> {
@@ -805,10 +918,8 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       throw new Error(BatchError.WITHDRAW_DELAY_MISMATCH);
     }
     if (
-      (raw.channelConfig.receiverAuthorizer === undefined) !==
-        (extra.receiverAuthorizer === undefined) ||
-      (raw.channelConfig.receiverAuthorizer !== undefined &&
-        raw.channelConfig.receiverAuthorizer !== extra.receiverAuthorizer)
+      extra.receiverAuthorizer !== this.config.receiverAuthorizer.address ||
+      raw.channelConfig.receiverAuthorizer !== extra.receiverAuthorizer
     ) {
       throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
     }
@@ -923,15 +1034,6 @@ export class BatchSvmScheme implements SchemeNetworkServer {
    * @param snapshot - Confirmed onchain snapshot from the facilitator
    * @returns Whether the snapshot may be persisted
    */
-  /**
-   * The receiver-authorizer address this server advertises, if any.
-   *
-   * @returns The configured address, or the close authorizer's
-   */
-  private receiverAuthorizer(): string | undefined {
-    return this.config.receiverAuthorizer ?? this.config.closeAuthorizer?.address;
-  }
-
   private applySnapshot(channelId: string, snapshot: VerifiedChannelState): boolean {
     if (snapshot.channelId !== undefined && snapshot.channelId !== channelId) return false;
     if (snapshot.withdrawRequestedAt !== 0) return false;

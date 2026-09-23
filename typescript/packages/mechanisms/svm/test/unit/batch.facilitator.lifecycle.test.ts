@@ -10,6 +10,7 @@ import {
   signBatchVoucher,
 } from "../../src/batch-settlement/client/channel";
 import { BatchError } from "../../src/batch-settlement/errors";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import {
   BatchSvmScheme,
   calculateDistributionAmount,
@@ -39,6 +40,7 @@ const SIGNATURE = USDC_DEVNET_ADDRESS as Signature;
 
 let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+let receiverAuthorizer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
 let channelId: string;
 let channelConfig: BatchChannelConfig;
 let actualChannelId: string;
@@ -47,12 +49,14 @@ let actualDeposit: Awaited<ReturnType<typeof buildDepositPayload>>["payload"];
 beforeAll(async () => {
   payer = await generateKeyPairSigner();
   feePayer = await generateKeyPairSigner();
+  receiverAuthorizer = await generateKeyPairSigner();
   channelId = USDC_MAINNET_ADDRESS;
   channelConfig = {
     openSlot: 1,
     payer: payer.address,
     payerAuthorizer: payer.address,
     receiver: RECEIVER,
+    receiverAuthorizer: receiverAuthorizer.address,
     salt: "0",
     token: MINT,
     withdrawDelay: 900,
@@ -66,6 +70,7 @@ beforeAll(async () => {
     openSlot: 123n,
     payer,
     receiver: RECEIVER,
+    receiverAuthorizer: receiverAuthorizer.address,
     tokenProgram: TOKEN_PROGRAM_ADDRESS,
     withdrawDelay: 900,
   });
@@ -79,6 +84,7 @@ function requirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequ
     asset: MINT,
     extra: {
       feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: 900,
     },
@@ -151,8 +157,6 @@ type FacilitatorInternals = {
     broadcast: (onBroadcast: (signature: string) => Promise<void>) => Promise<string>,
   ): Promise<unknown>;
   validateDeposit: ReturnType<typeof vi.fn>;
-  validateRefund: ReturnType<typeof vi.fn>;
-  prepareRefund: ReturnType<typeof vi.fn>;
   validateVoucherOnly: ReturnType<typeof vi.fn>;
   settleDeposit(
     payment: PaymentPayload,
@@ -498,7 +502,13 @@ describe("batch facilitator lifecycle", () => {
 
   it("verifies the payer proof behind server-mode payloads", async () => {
     const operator = await generateKeyPairSigner();
-    const scheme = new BatchSvmScheme(signer() as never);
+    const store = new InMemoryBatchReceiverAuthorizerStore();
+    await store.bind({
+      channelId,
+      network: NETWORK,
+      receiverAuthorizer: receiverAuthorizer.address,
+    });
+    const scheme = new BatchSvmScheme(signer() as never, { receiverAuthorizerStore: store });
     const api = internals(scheme);
     const serverConfig: BatchChannelConfig = {
       ...channelConfig,
@@ -514,6 +524,7 @@ describe("batch facilitator lifecycle", () => {
     });
     api.resolveTerms = vi.fn().mockResolvedValue({
       feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       voucherSigner: "server",
       withdrawDelay: 900,
@@ -596,7 +607,8 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("validates real open, voucher, and refund transactions", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const store = new InMemoryBatchReceiverAuthorizerStore();
+    const scheme = new BatchSvmScheme(signer() as never, { receiverAuthorizerStore: store });
     const api = internals(scheme);
     api.readChannel = vi.fn().mockResolvedValue(undefined);
     await expect(
@@ -606,6 +618,11 @@ describe("batch facilitator lifecycle", () => {
       ),
     ).resolves.toMatchObject({ isValid: true, extra: { channelId: actualChannelId } });
 
+    await store.bind({
+      channelId: actualChannelId,
+      network: NETWORK,
+      receiverAuthorizer: receiverAuthorizer.address,
+    });
     const voucherPayment = {
       channelConfig: actualDeposit.channelConfig,
       type: "voucher" as const,
@@ -638,19 +655,32 @@ describe("batch facilitator lifecycle", () => {
       invalidReason: BatchError.CUMULATIVE_EXCEEDS_DEPOSIT,
     });
 
-    const refund = await buildRefundPayload({
-      blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
+    const refundArgs = {
       channelConfig: actualDeposit.channelConfig,
       channelId: actualChannelId,
       feePayer: feePayer.address,
       payer,
-    });
+      voucher: actualDeposit.voucher,
+    };
+    const refund = await buildRefundPayload(refundArgs);
     api.fetchChannel = vi
       .fn()
       .mockResolvedValue(channel({ authorizedSigner: address(payer.address), openSlot: 123n }));
-    await expect(
-      scheme.verify({ accepted: requirements(), payload: refund, x402Version: 2 }, requirements()),
-    ).resolves.toMatchObject({ isValid: true });
+    const verifyRefund = (payload: typeof refund) =>
+      scheme.verify({ accepted: requirements(), payload, x402Version: 2 }, requirements());
+    await expect(verifyRefund(refund)).resolves.toMatchObject({ isValid: true });
+
+    // Without a stored binding only a payer-signed request_close is accepted.
+    await store.delete(NETWORK, actualChannelId);
+    await expect(verifyRefund(refund)).resolves.toMatchObject({
+      invalidReason: BatchError.RECEIVER_BINDING_UNAVAILABLE,
+      isValid: false,
+    });
+    const fallback = await buildRefundPayload({
+      ...refundArgs,
+      blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
+    });
+    await expect(verifyRefund(fallback)).resolves.toMatchObject({ isValid: true });
   });
 
   it("routes facilitator settlement variants and converts thrown errors", async () => {
@@ -689,7 +719,11 @@ describe("batch facilitator lifecycle", () => {
                 type,
               }
             : type === "refund"
-              ? { channelConfig, transaction: "x", type }
+              ? {
+                  channelConfig,
+                  type,
+                  voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1", signature: "x" },
+                }
               : type === "deposit"
                 ? {
                     channelConfig,
@@ -769,7 +803,10 @@ describe("batch facilitator lifecycle", () => {
 
   it("settles top-ups, idempotent opens, vouchers, and refunds", async () => {
     const facilitatorSigner = signer();
-    const scheme = new BatchSvmScheme(facilitatorSigner as never);
+    const store = new InMemoryBatchReceiverAuthorizerStore();
+    const scheme = new BatchSvmScheme(facilitatorSigner as never, {
+      receiverAuthorizerStore: store,
+    });
     const api = internals(scheme);
     const voucher = await signBatchVoucher(payer, {
       channelId,
@@ -840,9 +877,15 @@ describe("batch facilitator lifecycle", () => {
       ),
     ).resolves.toMatchObject({ success: false, errorReason: BatchError.PAYLOAD_TYPE });
 
-    const refund = { channelConfig, transaction: "close", type: "refund" as const };
-    api.prepareRefund = vi.fn().mockResolvedValue({ channelId, terms });
-    api.fetchChannel = vi
+    const refund = { channelConfig, type: "refund" as const, voucher };
+    api.deriveChannelId = vi.fn().mockResolvedValue(channelId);
+    await store.bind({
+      channelId,
+      network: NETWORK,
+      receiverAuthorizer: receiverAuthorizer.address,
+    });
+    // A cooperative refund of a channel already closing reports its state without a broadcast.
+    api.readChannel = vi
       .fn()
       .mockResolvedValue(channel({ closureStartedAt: 20n, status: ChannelStatus.Closing }));
     await expect(
@@ -857,6 +900,17 @@ describe("batch facilitator lifecycle", () => {
       extra: { channelState: { withdrawRequestedAt: 20 } },
     });
 
+    // An unbound channel falls back to the payer-signed request_close.
+    await store.delete(NETWORK, channelId);
+    const fallback = await buildRefundPayload({
+      blockhash: { blockhash: USDC_MAINNET_ADDRESS, lastValidBlockHeight: 1n },
+      channelConfig,
+      channelId,
+      feePayer: feePayer.address,
+      payer,
+      voucher,
+    });
+    api.readChannel = vi.fn().mockResolvedValue(channel());
     api.fetchChannel = vi.fn().mockResolvedValue(channel());
     api.broadcastDurably = vi.fn().mockResolvedValue({ ok: true, signature: SIGNATURE });
     api.fetchChannelUntil = vi
@@ -864,11 +918,22 @@ describe("batch facilitator lifecycle", () => {
       .mockResolvedValue(channel({ closureStartedAt: 20n, status: ChannelStatus.Closing }));
     await expect(
       api.settleRefund(
+        { accepted: requirements(), payload: fallback, x402Version: 2 } as never,
+        fallback,
+        requirements(),
+      ),
+    ).resolves.toMatchObject({
+      extra: { channelState: { withdrawRequestedAt: 20 } },
+      success: true,
+      transaction: SIGNATURE,
+    });
+    await expect(
+      api.settleRefund(
         { accepted: requirements(), payload: refund, x402Version: 2 } as never,
         refund,
         requirements(),
       ),
-    ).resolves.toMatchObject({ success: true, transaction: SIGNATURE });
+    ).rejects.toThrow(BatchError.RECEIVER_BINDING_UNAVAILABLE);
   });
 
   it("serializes opens by channel and releases the lock before broadcast failures", async () => {

@@ -8,6 +8,7 @@ import { signBatchVoucher } from "../../src/batch-settlement/client/channel";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { InMemoryBatchPendingSettlementStore } from "../../src/batch-settlement/facilitator/recovery";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { prepareRefund } from "../../src/batch-settlement/facilitator/seal";
 import type {
   BatchChannelConfig,
   BatchClaimPayload,
@@ -19,6 +20,11 @@ import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAsse
 import type { Channel } from "../../src/payment-channels/generated/accounts/channel";
 import { getChannelDistributionHash } from "../../src/payment-channels/facilitator";
 import { ChannelStatus } from "../../src/payment-channels/onchain";
+
+vi.mock("../../src/batch-settlement/facilitator/seal", async importOriginal => ({
+  ...(await importOriginal<typeof import("../../src/batch-settlement/facilitator/seal")>()),
+  prepareRefund: vi.fn(),
+}));
 
 const NETWORK = SOLANA_DEVNET_CAIP2;
 const MINT = USDC_DEVNET_ADDRESS;
@@ -39,6 +45,7 @@ beforeAll(async () => {
     payer: payer.address,
     payerAuthorizer: payer.address,
     receiver: RECEIVER,
+    receiverAuthorizer: RECEIVER,
     salt: "0",
     token: MINT,
     withdrawDelay: 900,
@@ -51,6 +58,7 @@ function requirements(): PaymentRequirements {
     asset: MINT,
     extra: {
       feePayer: feePayer.address,
+      receiverAuthorizer: RECEIVER,
       tokenProgram: TOKEN_PROGRAM_ADDRESS,
       withdrawDelay: 900,
     },
@@ -111,7 +119,6 @@ type RecoveryInternals = {
   fetchChannelsUntil: ReturnType<typeof vi.fn>;
   fetchChannelUntil: ReturnType<typeof vi.fn>;
   forgetPending(key: string): Promise<void>;
-  prepareRefund: ReturnType<typeof vi.fn>;
   readChannel: ReturnType<typeof vi.fn>;
   reconcileBroadcast: ReturnType<typeof vi.fn>;
   resolveTerms: ReturnType<typeof vi.fn>;
@@ -476,14 +483,16 @@ describe("batch-settlement outcome recovery", () => {
       channelConfig,
       transaction: "signed-close",
       type: "refund",
+      voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1000", signature: "signature" },
     };
     const key = `batch:refund:${NETWORK}:${channelId}:signed-close`;
     const store = new InMemoryPendingSettlementStore();
     await store.set(key, TX);
     const recovering = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
     const recoveryApi = configure(recovering);
-    recoveryApi.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await recoveryApi.resolveTerms(channelConfig, requirements()),
     });
     recoveryApi.readChannel = vi
@@ -504,8 +513,9 @@ describe("batch-settlement outcome recovery", () => {
       pendingSettlementStore: store,
     });
     const completedReplayApi = configure(completedReplay);
-    completedReplayApi.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await completedReplayApi.resolveTerms(channelConfig, requirements()),
     });
     completedReplayApi.readChannel = vi
@@ -519,8 +529,9 @@ describe("batch-settlement outcome recovery", () => {
 
     const restarted = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
     const restartedApi = configure(restarted);
-    restartedApi.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await restartedApi.resolveTerms(channelConfig, requirements()),
     });
     restartedApi.readChannel = vi.fn().mockResolvedValue(undefined);
@@ -543,6 +554,7 @@ describe("batch-settlement outcome recovery", () => {
       channelConfig,
       transaction: "signed-close",
       type: "refund",
+      voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1000", signature: "signature" },
     };
     const store = new InMemoryPendingSettlementStore();
     await store.set(`batch:claim:${NETWORK}:${channelId}:1000`, TX);
@@ -560,8 +572,9 @@ describe("batch-settlement outcome recovery", () => {
     });
     api.fetchChannelsUntil = vi.fn().mockResolvedValue(undefined);
     api.fetchChannelUntil = vi.fn().mockResolvedValue(false);
-    api.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await api.resolveTerms(channelConfig, requirements()),
     });
 
@@ -590,6 +603,7 @@ describe("batch-settlement outcome recovery", () => {
       channelConfig,
       transaction: "signed-close",
       type: "refund",
+      voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1000", signature: "signature" },
     };
     const store = new InMemoryPendingSettlementStore();
     await store.set(`batch:claim:${NETWORK}:${channelId}:1000`, TX);
@@ -604,8 +618,9 @@ describe("batch-settlement outcome recovery", () => {
       transaction: TX,
     } as SettleResponse;
     api.reconcileBroadcast = vi.fn().mockResolvedValue({ ok: false, response: failure });
-    api.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await api.resolveTerms(channelConfig, requirements()),
     });
 
@@ -626,6 +641,7 @@ describe("batch-settlement outcome recovery", () => {
       channelConfig,
       transaction: "signed-close",
       type: "refund",
+      voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1000", signature: "signature" },
     };
     const scheme = new BatchSvmScheme(signer() as never);
     const api = configure(scheme);
@@ -635,8 +651,9 @@ describe("batch-settlement outcome recovery", () => {
       .mockResolvedValueOnce(channel({ settlement: { payoutWatermark: 0n, settled: 1_000n } }))
       .mockResolvedValueOnce(channel());
     api.submitRedemption = vi.fn().mockResolvedValue({ ok: true, replayed: true, signature: TX });
-    api.prepareRefund = vi.fn().mockResolvedValue({
+    vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
+      requestClose: "signed-close",
       terms: await api.resolveTerms(channelConfig, requirements()),
     });
     api.broadcastDurably = vi.fn().mockResolvedValue({ ok: true, replayed: true, signature: TX });
