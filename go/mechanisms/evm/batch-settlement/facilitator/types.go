@@ -58,18 +58,19 @@ type DelegatedSettleContext struct {
 // ResolveCallerIdentity resolves a stable caller identity for a delegated settle.
 type ResolveCallerIdentity func(ctx DelegatedSettleContext) (string, error)
 
-// VoucherStoreConfig is the facilitator voucher store attached to the scheme.
+// VoucherStoreConfig is read only when BatchSettlementEvmSchemeConfig.VoucherStore is set.
 type VoucherStoreConfig struct {
-	Storage       storage.ChannelStorage[*FacilitatorChannel]
-	LockStorage   storage.ChannelLockStorage
-	WithdrawDelay int
+	Storage     storage.ChannelStorage[*FacilitatorChannel]
+	LockStorage storage.ChannelLockStorage
+	// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
+	// Nil defaults to an in-memory cache.
+	SettleTargetStorage storage.SettleTargetStorage
+	WithdrawDelay       int
 	// OnchainStateTtlMs is the cached onchain accept window. nil derives from
 	// WithdrawDelay. 0 disables the cache and always re-reads onchain.
 	OnchainStateTtlMs *int64
 	// Retention controls when voucher rows are removed. Empty defaults to when-unused.
 	Retention FacilitatorRetention
-	// SettleMinPending sets eligible on settle-target upserts after claim.
-	SettleMinPending *string
 }
 
 func cachedOnchain(channel *FacilitatorChannel) *batchsettlement.CachedChannelOnchain {

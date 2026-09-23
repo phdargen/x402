@@ -364,7 +364,10 @@ func buildManagedBatchedPipeline(t *testing.T, keys *batchedTestKeys) *managedBa
 		facilitatorSigner,
 		authorizerSigner,
 		&batchedfacilitator.BatchSettlementEvmSchemeConfig{
-			VoucherStore: &batchedfacilitator.VoucherStoreConfig{Storage: facilitatorStorage},
+			VoucherStore: &batchedfacilitator.VoucherStoreConfig{
+				Storage:             facilitatorStorage,
+				SettleTargetStorage: bsstorage.NewInMemorySettleTargetStorage(),
+			},
 		},
 	)
 	if err != nil {

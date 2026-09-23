@@ -20,20 +20,22 @@ type BatchSettlementEvmSchemeConfig struct {
 	// deployment, so counterfactual deposits are rejected with ErrFactoryNotAllowed.
 	EIP6492AllowedFactories []string
 	PendingSettlementStore  x402.PendingSettlementStore
-	VoucherStore            *VoucherStoreConfig
-	ResolveCallerIdentity   ResolveCallerIdentity
-	DelegatedAuthStore      storage.DelegatedAuthStore
-	SubmitMode              SubmitMode
-	AuthorizerSubmitter     evm.FacilitatorEvmSigner
+	// VoucherStore enables facilitator-managed custody. Nil keeps self-managed mode.
+	// Every field on VoucherStoreConfig is read only when this is set.
+	VoucherStore          *VoucherStoreConfig
+	ResolveCallerIdentity ResolveCallerIdentity
+	DelegatedAuthStore    storage.DelegatedAuthStore
+	SubmitMode            SubmitMode
+	AuthorizerSubmitter   evm.FacilitatorEvmSigner
 }
 
 type voucherStoreRuntime struct {
-	storage           storage.ChannelStorage[*FacilitatorChannel]
-	lockStorage       storage.ChannelLockStorage
-	withdrawDelay     int
-	onchainStateTtlMs *int64
-	retention         FacilitatorRetention
-	settleMinPending  *string
+	storage             storage.ChannelStorage[*FacilitatorChannel]
+	lockStorage         storage.ChannelLockStorage
+	settleTargetStorage storage.SettleTargetStorage
+	withdrawDelay       int
+	onchainStateTtlMs   *int64
+	retention           FacilitatorRetention
 }
 
 // BatchSettlementEvmScheme implements SchemeNetworkFacilitator for batch settlement on EVM.
@@ -109,13 +111,17 @@ func NewBatchSettlementEvmSchemeWithConfig(
 			if withdrawDelay == 0 {
 				withdrawDelay = batchsettlement.MinWithdrawDelay
 			}
+			settleTargets := config.VoucherStore.SettleTargetStorage
+			if settleTargets == nil {
+				settleTargets = storage.NewInMemorySettleTargetStorage()
+			}
 			s.voucherStore = &voucherStoreRuntime{
-				storage:           config.VoucherStore.Storage,
-				lockStorage:       lockStorage,
-				withdrawDelay:     withdrawDelay,
-				onchainStateTtlMs: config.VoucherStore.OnchainStateTtlMs,
-				retention:         NormalizeRetention(config.VoucherStore.Retention),
-				settleMinPending:  config.VoucherStore.SettleMinPending,
+				storage:             config.VoucherStore.Storage,
+				lockStorage:         lockStorage,
+				settleTargetStorage: settleTargets,
+				withdrawDelay:       withdrawDelay,
+				onchainStateTtlMs:   config.VoucherStore.OnchainStateTtlMs,
+				retention:           NormalizeRetention(config.VoucherStore.Retention),
 			}
 		}
 	}
@@ -293,7 +299,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, err
 		}
 		if settled.Success && attested != nil && f.voucherStore != nil {
-			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, f.voucherStore.retention, f.voucherStore.settleMinPending); afterErr != nil {
+			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, f.voucherStore.retention, f.voucherStore.settleTargetStorage); afterErr != nil {
 				return nil, afterErr
 			}
 		}
@@ -349,7 +355,7 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		Context:             fctx,
 		DelegatedAuthStore:  f.delegatedAuthStore,
 		Retention:           f.voucherStore.retention,
-		SettleMinPending:    f.voucherStore.settleMinPending,
+		SettleTargetStorage: f.voucherStore.settleTargetStorage,
 	})
 }
 
@@ -368,7 +374,6 @@ func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
 		EIP6492AllowedFactories: f.config.EIP6492AllowedFactories,
 		PendingStore:            f.pendingStore,
 		Retention:               f.voucherStore.retention,
-		SettleMinPending:        f.voucherStore.settleMinPending,
 	}
 }
 

@@ -108,8 +108,9 @@ func main() {
 		}
 		batchScheme, err = batchedfac.NewBatchSettlementEvmSchemeWithConfig(evmSigner, authorizer, &batchedfac.BatchSettlementEvmSchemeConfig{
 			VoucherStore: &batchedfac.VoucherStoreConfig{
-				Storage:       store,
-				WithdrawDelay: voucherStoreWithdrawDelay,
+				Storage:             store,
+				WithdrawDelay:       voucherStoreWithdrawDelay,
+				SettleTargetStorage: channelstorage.NewInMemorySettleTargetStorage(),
 			},
 		})
 		if err != nil {

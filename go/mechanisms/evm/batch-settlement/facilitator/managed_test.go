@@ -442,20 +442,17 @@ func eoaVoucherSignature(t *testing.T, channelId, maxClaimable, network string) 
 }
 
 type hookStore struct {
-	inner            *storage.InMemoryChannelStorage[*FacilitatorChannel]
-	getErr           error
-	acquireErr       error
-	releaseErr       error
-	isHeldErr        error
-	updateErr        error
-	updateConflict   bool
-	queryItems       []*FacilitatorChannel
-	queryCalls       int
-	queryFilter      storage.ChannelQuery
-	settleQueryItems []storage.SettleTarget
-	settleQueryCalls int
-	useQuery         bool
-	useSettleQuery   bool
+	inner          *storage.InMemoryChannelStorage[*FacilitatorChannel]
+	getErr         error
+	acquireErr     error
+	releaseErr     error
+	isHeldErr      error
+	updateErr      error
+	updateConflict bool
+	queryItems     []*FacilitatorChannel
+	queryCalls     int
+	queryFilter    storage.ChannelQuery
+	useQuery       bool
 }
 
 func (s *hookStore) Get(ctx context.Context, channelId string) (*FacilitatorChannel, error) {
@@ -504,14 +501,31 @@ func (s *hookStore) Query(ctx context.Context, filter storage.ChannelQuery, opts
 	_ = opts
 	return &storage.QueryPage[*FacilitatorChannel]{Items: s.queryItems}, nil
 }
-func (s *hookStore) SettleQuery(ctx context.Context, filter storage.SettleQuery, opts *storage.ChannelStoreOptions) (*storage.QueryPage[storage.SettleTarget], error) {
-	s.settleQueryCalls++
-	if !s.useSettleQuery {
-		return nil, nil
-	}
-	_ = filter
-	_ = opts
-	return &storage.QueryPage[storage.SettleTarget]{Items: s.settleQueryItems}, nil
+
+type recordingSettleTargets struct {
+	calls int
+	items []storage.SettleTarget
+}
+
+func (s *recordingSettleTargets) SettleQuery(context.Context, storage.SettleQuery) (*storage.QueryPage[storage.SettleTarget], error) {
+	s.calls++
+	return &storage.QueryPage[storage.SettleTarget]{Items: s.items}, nil
+}
+
+func (s *recordingSettleTargets) ApplySettleTargetClaimDelta(context.Context, storage.SettleTargetClaimDelta) error {
+	return nil
+}
+
+func (s *recordingSettleTargets) DeleteSettleTarget(context.Context, storage.SettleTarget) error {
+	return nil
+}
+
+func (s *recordingSettleTargets) StampSettleTargetAttempts(context.Context, []storage.SettleTarget, int64) error {
+	return nil
+}
+
+func (s *recordingSettleTargets) SyncSettleTargetFromChain(context.Context, storage.SettleTarget, *big.Int) error {
+	return nil
 }
 
 type stubBuilderCode struct {
@@ -536,6 +550,6 @@ func syntaxLockErr() error {
 func bigInt(n int64) *big.Int { return big.NewInt(n) }
 
 var _ storage.ChannelQuerier[*FacilitatorChannel] = (*hookStore)(nil)
-var _ storage.SettleQuerier = (*hookStore)(nil)
+var _ storage.SettleTargetStorage = (*recordingSettleTargets)(nil)
 var _ storage.ChannelLockStorage = (*hookStore)(nil)
 var _ evm.BuilderCodeFacilitatorExtension = (*stubBuilderCode)(nil)

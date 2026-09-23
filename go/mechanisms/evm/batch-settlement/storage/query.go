@@ -40,9 +40,10 @@ type ChannelQuery struct {
 
 // SettleQuery filters distinct claimed (network, receiver, token) tuples.
 type SettleQuery struct {
-	Network string
-	Limit   *int
-	Cursor  string
+	Network    string
+	Limit      *int
+	Cursor     string
+	MinPending *big.Int
 }
 
 // SettleTarget is a distinct claimed (network, receiver, token) used by facilitator settle.
@@ -64,10 +65,9 @@ type ChannelQuerier[T ChannelRecord[T]] interface {
 	Query(ctx context.Context, filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error)
 }
 
-// SettleQuerier is an optional indexed settle-target query. QuerySettleTargets
-// type-asserts this and falls back to SettleQueryByScan when it is absent.
-type SettleQuerier interface {
-	SettleQuery(ctx context.Context, filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
+// ChannelReceiverTokenQuerier lists channels for one receiver and token.
+type ChannelReceiverTokenQuerier[T ChannelRecord[T]] interface {
+	QueryByReceiverToken(ctx context.Context, network, receiver, token string) ([]T, error)
 }
 
 // MatchesChannelQuery reports whether channel satisfies filter.
@@ -168,39 +168,6 @@ func QueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T
 	return PageItems(SortChannels(matched, filter), filter.Limit, filter.Cursor), nil
 }
 
-// SettleQueryByScan lists claimed rows (totalClaimed > 0) deduped per
-// (network, receiver, token) in first-seen order.
-func SettleQueryByScan[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter SettleQuery) (*QueryPage[SettleTarget], error) {
-	all, err := store.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	targets := make([]SettleTarget, 0)
-	seen := make(map[string]struct{})
-	for _, record := range all {
-		channel := record.Base()
-		if claimed, ok := ParseUint256(channel.TotalClaimed); !ok || claimed.Sign() == 0 {
-			continue
-		}
-		network := channelNetwork(channel)
-		if network == "" {
-			network = filter.Network
-		}
-		if network == "" || (filter.Network != "" && network != filter.Network) {
-			continue
-		}
-		receiver := channel.ChannelConfig.Receiver
-		token := channel.ChannelConfig.Token
-		key := network + ":" + strings.ToLower(receiver) + ":" + strings.ToLower(token)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		targets = append(targets, SettleTarget{Network: network, Receiver: receiver, Token: token})
-	}
-	return PageItems(targets, filter.Limit, filter.Cursor), nil
-}
-
 // QueryChannels runs a named worker query, using a native ChannelQuerier when
 // present and QueryByScan otherwise.
 func QueryChannels[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[T], error) {
@@ -216,19 +183,37 @@ func QueryChannels[T ChannelRecord[T]](ctx context.Context, store ChannelStorage
 	return QueryByScan(ctx, store, filter)
 }
 
-// QuerySettleTargets lists distinct claimed settle targets, using a native
-// SettleQuerier when present and SettleQueryByScan otherwise.
-func QuerySettleTargets[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-	if querier, ok := store.(SettleQuerier); ok {
-		page, err := querier.SettleQuery(ctx, filter, opts)
-		if err != nil {
-			return nil, err
-		}
-		if page != nil {
-			return page, nil
-		}
+// QueryChannelsByReceiverToken loads channels for cleanup after settle.
+func QueryChannelsByReceiverToken[T ChannelRecord[T]](
+	ctx context.Context,
+	store ChannelStorage[T],
+	network, receiver, token string,
+) ([]T, error) {
+	if querier, ok := store.(ChannelReceiverTokenQuerier[T]); ok {
+		return querier.QueryByReceiverToken(ctx, network, receiver, token)
 	}
-	return SettleQueryByScan(ctx, store, filter)
+	all, err := store.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]T, 0)
+	wantReceiver := strings.ToLower(receiver)
+	wantToken := strings.ToLower(token)
+	for _, row := range all {
+		base := row.Base()
+		if base == nil {
+			continue
+		}
+		if network != "" && channelNetwork(base) != network {
+			continue
+		}
+		if strings.ToLower(base.ChannelConfig.Receiver) != wantReceiver ||
+			strings.ToLower(base.ChannelConfig.Token) != wantToken {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out, nil
 }
 
 func matchesIdle(channel *Channel, idleAtOrBefore *int64) bool {

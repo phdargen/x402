@@ -1078,8 +1078,9 @@ func main() {
 			store := channelstorage.NewInMemoryChannelStorage[*batchedevm.FacilitatorChannel]()
 			batchScheme, err := batchedevm.NewBatchSettlementEvmSchemeWithConfig(evmSigner, batchedAuthorizer, &batchedevm.BatchSettlementEvmSchemeConfig{
 				VoucherStore: &batchedevm.VoucherStoreConfig{
-					Storage:       store,
-					WithdrawDelay: 900,
+					Storage:             store,
+					WithdrawDelay:       900,
+					SettleTargetStorage: channelstorage.NewInMemorySettleTargetStorage(),
 				},
 			})
 			if err != nil {

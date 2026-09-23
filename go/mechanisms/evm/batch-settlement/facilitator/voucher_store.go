@@ -39,7 +39,6 @@ type VoucherStoreDeps struct {
 	EIP6492AllowedFactories []string
 	PendingStore            x402.PendingSettlementStore
 	Retention               FacilitatorRetention
-	SettleMinPending        *string
 }
 
 func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) string {

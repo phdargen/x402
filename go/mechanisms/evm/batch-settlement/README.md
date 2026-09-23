@@ -310,8 +310,8 @@ scheme, err := facilitator.NewBatchSettlementEvmSchemeWithConfig(evmSigner, auth
         Storage: facilitator.NewFileChannelStorage(batchsettlement.FileChannelStorageOptions{
             Directory: "./voucher-store",
         }),
-        // LockStorage is inferred when storage implements ChannelLockStorage
-        // WithdrawDelay defaults to 900 (15 min)
+        // LockStorage is inferred when storage implements ChannelLockStorage.
+        // WithdrawDelay defaults to 900. Nil SettleTargetStorage uses storage.NewInMemorySettleTargetStorage().
     },
     ResolveCallerIdentity: resolveCallerIdentity,
 })
