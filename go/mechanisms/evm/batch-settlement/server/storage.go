@@ -74,16 +74,6 @@ func QueryChannels(ctx context.Context, store SessionStorage, filter ChannelQuer
 	return storage.QueryChannels(ctx, store, filter, opts)
 }
 
-// QuerySettleTargets lists distinct claimed settle targets.
-func QuerySettleTargets(ctx context.Context, store SessionStorage, filter SettleQuery, opts *ChannelStoreOptions) (*storage.QueryPage[SettleTarget], error) {
-	return storage.QuerySettleTargets(ctx, store, filter, opts)
-}
-
-// SettleQueryByScan lists claimed rows deduped per (network, receiver, token).
-func SettleQueryByScan(ctx context.Context, store SessionStorage, filter SettleQuery) (*storage.QueryPage[SettleTarget], error) {
-	return storage.SettleQueryByScan(ctx, store, filter)
-}
-
 // NewInMemoryDelegatedAuthStore creates an empty in-memory binding store.
 func NewInMemoryDelegatedAuthStore() *InMemoryDelegatedAuthStore {
 	return storage.NewInMemoryDelegatedAuthStore()

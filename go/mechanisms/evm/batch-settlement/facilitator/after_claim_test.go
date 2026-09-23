@@ -64,9 +64,9 @@ func attestedCharge(channels ...*FacilitatorChannel) map[string]int {
 	return out
 }
 
-func managedAfterClaimStore(t *testing.T) *storage.InMemoryManagedChannelStorage[*FacilitatorChannel] {
+func managedAfterClaimStores(t *testing.T) (*storage.InMemoryChannelStorage[*FacilitatorChannel], storage.SettleTargetStorage) {
 	t.Helper()
-	return storage.NewInMemoryManagedChannelStorage[*FacilitatorChannel](afterClaimNetwork)
+	return storage.NewInMemoryChannelStorage[*FacilitatorChannel](), storage.NewInMemorySettleTargetStorage()
 }
 
 func TestParseFacilitatorRetention(t *testing.T) {
@@ -86,20 +86,19 @@ func TestParseFacilitatorRetention(t *testing.T) {
 
 func TestAfterClaim_DoesNotDeleteWhenFullyClaimed(t *testing.T) {
 	t.Parallel()
-	store := managedAfterClaimStore(t)
+	store, targets := managedAfterClaimStores(t)
 	channel := afterClaimChannel("5000", 0)
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	minPending := "1"
-	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionWhenUnused, &minPending); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionWhenUnused, targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got == nil {
 		t.Fatalf("row deleted: %v", err)
 	}
-	page, err := store.SettleQuery(context.Background(), storage.SettleQuery{Limit: intPtr(10)}, nil)
+	page, err := targets.SettleQuery(context.Background(), storage.SettleQuery{Network: afterClaimNetwork, Limit: intPtr(10)})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("settle target upsert: %v items=%d", err, len(page.Items))
 	}
@@ -107,12 +106,12 @@ func TestAfterClaim_DoesNotDeleteWhenFullyClaimed(t *testing.T) {
 
 func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	t.Parallel()
-	store := managedAfterClaimStore(t)
+	store, targets := managedAfterClaimStores(t)
 	channel := afterClaimChannel("5000", 2)
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, "", nil); err != nil {
+	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, "", targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)

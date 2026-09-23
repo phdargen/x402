@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 
@@ -101,9 +102,11 @@ type FacilitatorChannelManagerConfig struct {
 	AuthorizerSubmitter evm.FacilitatorEvmSigner
 	SubmitMode          SubmitMode
 	Retention           FacilitatorRetention
-	SettleMinPending    *string
 	Context             *x402.FacilitatorContext
 	DelegatedAuthStore  storage.DelegatedAuthStore
+	// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
+	// Nil defaults to an in-memory cache.
+	SettleTargetStorage storage.SettleTargetStorage
 }
 
 // FacilitatorClaimOptions is optional batching and idle filter for Claim.
@@ -209,7 +212,7 @@ func AfterClaim(
 	attested map[string]int,
 	authStore storage.DelegatedAuthStore,
 	retention FacilitatorRetention,
-	settleMinPending *string,
+	targetStore storage.SettleTargetStorage,
 ) error {
 	_ = NormalizeRetention(retention)
 	deltas, err := settleTargetClaimDeltas(ctx, store, claims, network)
@@ -219,16 +222,12 @@ func AfterClaim(
 	if err := storage.ApplyClaimedTotals(ctx, store, claims, network); err != nil {
 		return err
 	}
-	var minPending *big.Int
-	if settleMinPending != nil {
-		parsed, ok := storage.ParseUint256(*settleMinPending)
-		if ok {
-			minPending = parsed
+	if len(deltas) > 0 {
+		if targetStore == nil {
+			return fmt.Errorf("settle target storage is required")
 		}
-	}
-	if targetStore, ok := store.(storage.SettleTargetStore); ok {
 		for _, delta := range deltas {
-			if err := targetStore.ApplySettleTargetClaimDelta(ctx, delta, minPending); err != nil {
+			if err := targetStore.ApplySettleTargetClaimDelta(ctx, delta); err != nil {
 				return err
 			}
 		}
@@ -347,7 +346,7 @@ type FacilitatorChannelManager struct {
 	retention           FacilitatorRetention
 	context             *x402.FacilitatorContext
 	delegatedAuthStore  storage.DelegatedAuthStore
-	settleMinPending    *string
+	settleTargetStorage storage.SettleTargetStorage
 
 	mu            sync.Mutex
 	timers        map[autoJob]*time.Ticker
@@ -373,6 +372,10 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 	if submitMode == "" {
 		submitMode = SubmitModeRelay
 	}
+	settleTargets := config.SettleTargetStorage
+	if settleTargets == nil {
+		settleTargets = storage.NewInMemorySettleTargetStorage()
+	}
 	return &FacilitatorChannelManager{
 		storage:             config.Storage,
 		lockStorage:         lockStorage,
@@ -381,9 +384,9 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 		authorizerSubmitter: config.AuthorizerSubmitter,
 		submitMode:          submitMode,
 		retention:           retention,
-		settleMinPending:    config.SettleMinPending,
 		context:             config.Context,
 		delegatedAuthStore:  config.DelegatedAuthStore,
+		settleTargetStorage: settleTargets,
 		timers:              make(map[autoJob]*time.Ticker),
 		stopChans:           make(map[autoJob]chan struct{}),
 		pendingJobs:         make(map[autoJob]struct{}),
@@ -449,7 +452,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 				continue
 			}
 			results = append(results, result)
-			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention, m.settleMinPending); err != nil {
+			if err := AfterClaim(ctx, m.storage, m.lockStorage, batch, network, attested, m.delegatedAuthStore, m.retention, m.settleTargetStorage); err != nil {
 				batchErrs = append(batchErrs, err)
 			}
 		}
@@ -481,7 +484,7 @@ func (m *FacilitatorChannelManager) runSettlePass(
 ) ([]FacilitatorSettleResult, error) {
 	maxSettlesPerTx, maxTxsPerRun, pageSize, readCap, minPending := settlePassLimits(opts)
 	receiverBudget := maxSettlesPerTx * maxTxsPerRun
-	targets, err := m.collectSettleTargetPages(ctx, pageSize, receiverBudget)
+	targets, err := m.collectSettleTargetPages(ctx, pageSize, receiverBudget, minPending)
 	if err != nil {
 		return nil, err
 	}
@@ -506,9 +509,7 @@ func (m *FacilitatorChannelManager) runSettlePass(
 			continue
 		}
 		if minPending != nil && row.pending.Cmp(minPending) <= 0 {
-			if store := m.settleTargetStore(); store != nil {
-				_ = store.SyncSettleTargetFromChain(ctx, row.target, row.pending, minPending)
-			}
+			m.syncSettleTarget(ctx, row.target, row.pending)
 			continue
 		}
 		toSettle = append(toSettle, row.target)
@@ -516,8 +517,10 @@ func (m *FacilitatorChannelManager) runSettlePass(
 			break
 		}
 	}
-	if store := m.settleTargetStore(); store != nil && len(stamp) > 0 {
-		_ = store.StampSettleTargetAttempts(ctx, stamp, now)
+	if m.settleTargetStorage != nil && len(stamp) > 0 {
+		if err := m.settleTargetStorage.StampSettleTargetAttempts(ctx, stamp, now); err != nil {
+			log.Printf("batch-settlement: stamp settle targets: %v", err)
+		}
 	}
 	if len(toSettle) == 0 {
 		m.clearPendingSettle()
@@ -569,9 +572,7 @@ func (m *FacilitatorChannelManager) runSettlePass(
 	}
 	for _, row := range confirm {
 		if row.pending.Sign() != 0 {
-			if store := m.settleTargetStore(); store != nil {
-				_ = store.SyncSettleTargetFromChain(ctx, row.target, row.pending, minPending)
-			}
+			m.syncSettleTarget(ctx, row.target, row.pending)
 			continue
 		}
 		if err := m.cleanupSettledPair(ctx, row.target); err != nil {
@@ -610,21 +611,27 @@ func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPe
 	return maxSettlesPerTx, maxTxsPerRun, pageSize, readCap, minPending
 }
 
-func (m *FacilitatorChannelManager) settleTargetStore() storage.SettleTargetStore {
-	store, ok := m.storage.(storage.SettleTargetStore)
-	if !ok {
-		return nil
+func (m *FacilitatorChannelManager) syncSettleTarget(ctx context.Context, target storage.SettleTarget, pending *big.Int) {
+	if m.settleTargetStorage == nil {
+		log.Printf("batch-settlement: settle target storage missing during sync")
+		return
 	}
-	return store
+	if err := m.settleTargetStorage.SyncSettleTargetFromChain(ctx, target, pending); err != nil {
+		log.Printf("batch-settlement: sync settle target: %v", err)
+	}
 }
 
 func (m *FacilitatorChannelManager) collectSettleTargetPages(
 	ctx context.Context,
 	pageSize int,
 	budget int,
+	minPending *big.Int,
 ) ([]storage.SettleTarget, error) {
 	if budget <= 0 {
 		return nil, nil
+	}
+	if m.settleTargetStorage == nil {
+		return nil, fmt.Errorf("settle target storage is required")
 	}
 	out := make([]storage.SettleTarget, 0, budget)
 	cursor := ""
@@ -633,9 +640,16 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 		if budget-len(out) < limit {
 			limit = budget - len(out)
 		}
-		page, err := storage.QuerySettleTargets(ctx, m.storage, storage.SettleQuery{Limit: &limit, Cursor: cursor}, nil)
+		page, err := m.settleTargetStorage.SettleQuery(ctx, storage.SettleQuery{
+			Limit:      &limit,
+			Cursor:     cursor,
+			MinPending: minPending,
+		})
 		if err != nil {
 			return nil, err
+		}
+		if page == nil || len(page.Items) == 0 {
+			break
 		}
 		out = append(out, page.Items...)
 		if page.Cursor == "" || len(out) >= budget {
@@ -728,8 +742,8 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 	ctx context.Context,
 	target storage.SettleTarget,
 ) error {
-	if store := m.settleTargetStore(); store != nil {
-		if err := store.DeleteSettleTarget(ctx, target); err != nil {
+	if m.settleTargetStorage != nil {
+		if err := m.settleTargetStorage.DeleteSettleTarget(ctx, target); err != nil {
 			return err
 		}
 	}
@@ -923,7 +937,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 		if err != nil {
 			return nil, err
 		}
-		if err := AfterClaim(ctx, m.storage, m.lockStorage, claims, target.Network, attested, m.delegatedAuthStore, m.retention, m.settleMinPending); err != nil {
+		if err := AfterClaim(ctx, m.storage, m.lockStorage, claims, target.Network, attested, m.delegatedAuthStore, m.retention, m.settleTargetStorage); err != nil {
 			return nil, err
 		}
 		return &FacilitatorRefundResult{

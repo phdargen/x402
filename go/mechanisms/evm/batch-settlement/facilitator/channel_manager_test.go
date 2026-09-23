@@ -31,6 +31,18 @@ func managerChannel(t *testing.T, auth *fakeAuthorizerSigner, saltSuffix string,
 	return ch
 }
 
+func seedManagerSettleTarget(t *testing.T, mgr *FacilitatorChannelManager, ch *FacilitatorChannel) {
+	t.Helper()
+	if err := mgr.settleTargetStorage.ApplySettleTargetClaimDelta(context.Background(), storage.SettleTargetClaimDelta{
+		Network:  ch.Network,
+		Receiver: ch.ChannelConfig.Receiver,
+		Token:    ch.ChannelConfig.Token,
+		Amount:   bigInt(1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newTestManager(t *testing.T, signer evm.FacilitatorEvmSigner, store storage.ChannelStorage[*FacilitatorChannel], auth *fakeAuthorizerSigner, retention FacilitatorRetention, fctx *x402.FacilitatorContext) *FacilitatorChannelManager {
 	t.Helper()
 	if auth == nil {
@@ -336,6 +348,7 @@ func TestFacilitatorChannelManager_SettleSimulationFailure(t *testing.T) {
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{simFail: "multicall", receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
+	seedManagerSettleTarget(t, mgr, ch)
 	_, err := mgr.Settle(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected settle failure")
@@ -360,6 +373,7 @@ func TestFacilitatorChannelManager_SettleAlreadySettledDoesNotThrow(t *testing.T
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(5000)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
+	seedManagerSettleTarget(t, mgr, ch)
 	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +391,7 @@ func TestFacilitatorChannelManager_SettleAppendsBuilderSuffix(t *testing.T) {
 	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	suffix := []byte{0x80, 0x21, 0xaa, 0xbb}
 	mgr := newTestManager(t, signer, store, auth, "", builderContext(suffix))
+	seedManagerSettleTarget(t, mgr, ch)
 	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -394,14 +409,15 @@ func TestFacilitatorChannelManager_SettleUsesSettleQuery(t *testing.T) {
 	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	ch := managerChannel(t, auth, "00", &channelFields{TotalClaimed: "5000"})
 	seedManagedChannel(t, inner, ch)
-	store := &hookStore{inner: inner, useSettleQuery: true, settleQueryItems: nil}
+	targets := &recordingSettleTargets{}
 	signer := newManagedSigner(t, nil)
-	mgr := newTestManager(t, signer, store, auth, "", nil)
+	mgr := newTestManager(t, signer, inner, auth, "", nil)
+	mgr.settleTargetStorage = targets
 	results, err := mgr.Settle(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.settleQueryCalls == 0 {
+	if targets.calls == 0 {
 		t.Fatal("expected SettleQuery")
 	}
 	if len(results) != 0 || signer.writeCalls != 0 {
@@ -767,6 +783,14 @@ func TestFacilitatorChannelManager_SettleMulticall(t *testing.T) {
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
+	if err := mgr.settleTargetStorage.ApplySettleTargetClaimDelta(context.Background(), storage.SettleTargetClaimDelta{
+		Network:  ch.Network,
+		Receiver: ch.ChannelConfig.Receiver,
+		Token:    ch.ChannelConfig.Token,
+		Amount:   bigInt(2),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	minPending := "1"
 	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
 		MinPending:      &minPending,

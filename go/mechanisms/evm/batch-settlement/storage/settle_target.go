@@ -13,14 +13,14 @@ import (
 
 const defaultSettleTargetPageSize = 100
 
-// SettleTargetPageCursor encodes lastAttemptAt for eligible target paging.
+// SettleTargetPageCursor encodes lastAttemptAt for settle-target paging.
 type SettleTargetPageCursor struct {
 	LastAttemptAt int64
 	Receiver      string
 	Token         string
 }
 
-// EncodeSettleTargetCursor serializes paging state for eligible settle targets.
+// EncodeSettleTargetCursor serializes paging state for settle targets.
 func EncodeSettleTargetCursor(c SettleTargetPageCursor) string {
 	if c.LastAttemptAt == 0 && c.Receiver == "" && c.Token == "" {
 		return ""
@@ -28,7 +28,7 @@ func EncodeSettleTargetCursor(c SettleTargetPageCursor) string {
 	return strconv.FormatInt(c.LastAttemptAt, 10) + "|" + strings.ToLower(c.Receiver) + "|" + strings.ToLower(c.Token)
 }
 
-// DecodeSettleTargetCursor parses paging state for eligible settle targets.
+// DecodeSettleTargetCursor parses paging state for settle targets.
 func DecodeSettleTargetCursor(raw string) (SettleTargetPageCursor, bool) {
 	if raw == "" {
 		return SettleTargetPageCursor{}, true
@@ -56,63 +56,63 @@ type SettleTargetClaimDelta struct {
 	Amount   *big.Int
 }
 
-// SettleTargetStore tracks cached pending per receiver pair for settle discovery.
-type SettleTargetStore interface {
-	SettleQuerier
-	ApplySettleTargetClaimDelta(ctx context.Context, delta SettleTargetClaimDelta, minPending *big.Int) error
+// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
+// SettleQuery returns pendingAmount > MinPending (nil means > 0). Sync deletes non-positive pending.
+type SettleTargetStorage interface {
+	SettleQuery(ctx context.Context, filter SettleQuery) (*QueryPage[SettleTarget], error)
+	ApplySettleTargetClaimDelta(ctx context.Context, delta SettleTargetClaimDelta) error
 	DeleteSettleTarget(ctx context.Context, target SettleTarget) error
 	StampSettleTargetAttempts(ctx context.Context, targets []SettleTarget, atMillis int64) error
-	SyncSettleTargetFromChain(ctx context.Context, target SettleTarget, pending *big.Int, minPending *big.Int) error
+	SyncSettleTargetFromChain(ctx context.Context, target SettleTarget, pending *big.Int) error
 }
 
-// InMemorySettleTargetStore backs settle targets beside channel records in tests and file storage.
-type InMemorySettleTargetStore struct {
+// InMemorySettleTargetStorage is a process-local cache. Each row is keyed by its own network.
+type InMemorySettleTargetStorage struct {
 	mu      sync.Mutex
-	network string
 	entries map[string]*inMemorySettleTargetEntry
 }
 
 type inMemorySettleTargetEntry struct {
+	network       string
 	receiver      string
 	token         string
 	pendingAmount int64
-	eligible      bool
 	lastAttemptAt int64
 }
 
-func NewInMemorySettleTargetStore(network string) *InMemorySettleTargetStore {
-	return &InMemorySettleTargetStore{
-		network: network,
+var _ SettleTargetStorage = (*InMemorySettleTargetStorage)(nil)
+
+func NewInMemorySettleTargetStorage() *InMemorySettleTargetStorage {
+	return &InMemorySettleTargetStorage{
 		entries: make(map[string]*inMemorySettleTargetEntry),
 	}
 }
 
-func settleTargetKey(receiver, token string) string {
-	return strings.ToLower(receiver) + ":" + strings.ToLower(token)
+func settleTargetKey(network, receiver, token string) string {
+	return strings.ToLower(network) + ":" + strings.ToLower(receiver) + ":" + strings.ToLower(token)
 }
 
-func (s *InMemorySettleTargetStore) SettleQuery(
+func (s *InMemorySettleTargetStorage) SettleQuery(
 	_ context.Context,
 	filter SettleQuery,
-	_ *ChannelStoreOptions,
 ) (*QueryPage[SettleTarget], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if filter.Network != "" && filter.Network != s.network {
-		return &QueryPage[SettleTarget]{Items: []SettleTarget{}}, nil
-	}
 	type row struct {
 		target SettleTarget
 		at     int64
 	}
 	rows := make([]row, 0, len(s.entries))
 	for _, entry := range s.entries {
-		if !entry.eligible {
+		if !pendingAboveMin(entry.pendingAmount, filter.MinPending) {
+			continue
+		}
+		if filter.Network != "" && !strings.EqualFold(entry.network, filter.Network) {
 			continue
 		}
 		rows = append(rows, row{
 			target: SettleTarget{
-				Network:  s.network,
+				Network:  entry.network,
 				Receiver: entry.receiver,
 				Token:    entry.token,
 			},
@@ -123,9 +123,10 @@ func (s *InMemorySettleTargetStore) SettleQuery(
 		if rows[i].at != rows[j].at {
 			return rows[i].at < rows[j].at
 		}
-		ki := strings.ToLower(rows[i].target.Receiver) + ":" + strings.ToLower(rows[i].target.Token)
-		kj := strings.ToLower(rows[j].target.Receiver) + ":" + strings.ToLower(rows[j].target.Token)
-		return ki < kj
+		if rows[i].target.Receiver != rows[j].target.Receiver {
+			return rows[i].target.Receiver < rows[j].target.Receiver
+		}
+		return rows[i].target.Token < rows[j].target.Token
 	})
 	cursor, ok := DecodeSettleTargetCursor(filter.Cursor)
 	if !ok {
@@ -139,7 +140,7 @@ func (s *InMemorySettleTargetStore) SettleQuery(
 				break
 			}
 			if row.at == cursor.LastAttemptAt {
-				ki := strings.ToLower(row.target.Receiver) + ":" + strings.ToLower(row.target.Token)
+				ki := row.target.Receiver + ":" + row.target.Token
 				ck := strings.ToLower(cursor.Receiver) + ":" + strings.ToLower(cursor.Token)
 				if ki > ck {
 					start = i
@@ -151,13 +152,7 @@ func (s *InMemorySettleTargetStore) SettleQuery(
 			}
 		}
 	}
-	limit := defaultSettleTargetPageSize
-	if filter.Limit != nil {
-		limit = *filter.Limit
-		if limit < 0 {
-			limit = 0
-		}
-	}
+	limit := settleQueryLimit(filter.Limit)
 	end := start + limit
 	if end > len(rows) {
 		end = len(rows)
@@ -178,44 +173,50 @@ func (s *InMemorySettleTargetStore) SettleQuery(
 	return out, nil
 }
 
-func (s *InMemorySettleTargetStore) ApplySettleTargetClaimDelta(
+func settleQueryLimit(limit *int) int {
+	if limit == nil || *limit <= 0 {
+		return defaultSettleTargetPageSize
+	}
+	return *limit
+}
+
+func (s *InMemorySettleTargetStorage) ApplySettleTargetClaimDelta(
 	_ context.Context,
 	delta SettleTargetClaimDelta,
-	minPending *big.Int,
 ) error {
 	if delta.Amount == nil || delta.Amount.Sign() <= 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := settleTargetKey(delta.Receiver, delta.Token)
+	key := settleTargetKey(delta.Network, delta.Receiver, delta.Token)
 	entry := s.entries[key]
 	now := time.Now().UnixMilli()
 	if entry == nil {
 		entry = &inMemorySettleTargetEntry{
-			receiver:      delta.Receiver,
-			token:         delta.Token,
+			network:       delta.Network,
+			receiver:      strings.ToLower(delta.Receiver),
+			token:         strings.ToLower(delta.Token),
 			lastAttemptAt: now,
 		}
 		s.entries[key] = entry
 	}
 	entry.pendingAmount = saturateAddInt64(entry.pendingAmount, delta.Amount)
-	entry.eligible = pendingEligibleInt64(entry.pendingAmount, minPending)
 	return nil
 }
 
-func (s *InMemorySettleTargetStore) DeleteSettleTarget(_ context.Context, target SettleTarget) error {
+func (s *InMemorySettleTargetStorage) DeleteSettleTarget(_ context.Context, target SettleTarget) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.entries, settleTargetKey(target.Receiver, target.Token))
+	delete(s.entries, settleTargetKey(target.Network, target.Receiver, target.Token))
 	return nil
 }
 
-func (s *InMemorySettleTargetStore) StampSettleTargetAttempts(_ context.Context, targets []SettleTarget, atMillis int64) error {
+func (s *InMemorySettleTargetStorage) StampSettleTargetAttempts(_ context.Context, targets []SettleTarget, atMillis int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, target := range targets {
-		entry := s.entries[settleTargetKey(target.Receiver, target.Token)]
+		entry := s.entries[settleTargetKey(target.Network, target.Receiver, target.Token)]
 		if entry != nil {
 			entry.lastAttemptAt = atMillis
 		}
@@ -223,46 +224,28 @@ func (s *InMemorySettleTargetStore) StampSettleTargetAttempts(_ context.Context,
 	return nil
 }
 
-// InMemoryManagedChannelStorage pairs channels with in-memory settle targets.
-type InMemoryManagedChannelStorage[T ChannelRecord[T]] struct {
-	*InMemoryChannelStorage[T]
-	*InMemorySettleTargetStore
-}
-
-func NewInMemoryManagedChannelStorage[T ChannelRecord[T]](network string) *InMemoryManagedChannelStorage[T] {
-	return &InMemoryManagedChannelStorage[T]{
-		InMemoryChannelStorage:    NewInMemoryChannelStorage[T](),
-		InMemorySettleTargetStore: NewInMemorySettleTargetStore(network),
-	}
-}
-
-func (s *InMemoryManagedChannelStorage[T]) QueryByReceiverToken(
-	ctx context.Context,
-	network, receiver, token string,
-) ([]T, error) {
-	return QueryChannelsByReceiverToken(ctx, s.InMemoryChannelStorage, network, receiver, token)
-}
-
-func (s *InMemorySettleTargetStore) SyncSettleTargetFromChain(
+func (s *InMemorySettleTargetStorage) SyncSettleTargetFromChain(
 	_ context.Context,
 	target SettleTarget,
 	pending *big.Int,
-	minPending *big.Int,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := settleTargetKey(target.Receiver, target.Token)
+	key := settleTargetKey(target.Network, target.Receiver, target.Token)
 	entry := s.entries[key]
 	if pending == nil || pending.Sign() <= 0 {
 		delete(s.entries, key)
 		return nil
 	}
 	if entry == nil {
-		entry = &inMemorySettleTargetEntry{receiver: target.Receiver, token: target.Token}
+		entry = &inMemorySettleTargetEntry{
+			network:  target.Network,
+			receiver: strings.ToLower(target.Receiver),
+			token:    strings.ToLower(target.Token),
+		}
 		s.entries[key] = entry
 	}
 	entry.pendingAmount = bigIntToSaturatedInt64(pending)
-	entry.eligible = pendingEligibleInt64(entry.pendingAmount, minPending)
 	entry.lastAttemptAt = time.Now().UnixMilli()
 	return nil
 }
@@ -291,7 +274,8 @@ func bigIntToSaturatedInt64(v *big.Int) int64 {
 	return v.Int64()
 }
 
-func pendingEligibleInt64(pending int64, minPending *big.Int) bool {
+// pendingAboveMin reports pending > minPending. A threshold above MaxInt64 matches nothing.
+func pendingAboveMin(pending int64, minPending *big.Int) bool {
 	if pending <= 0 {
 		return false
 	}
@@ -299,45 +283,7 @@ func pendingEligibleInt64(pending int64, minPending *big.Int) bool {
 		return true
 	}
 	if !minPending.IsInt64() {
-		return int64(math.MaxInt64) > 0
+		return false
 	}
 	return pending > minPending.Int64()
-}
-
-// ChannelReceiverTokenQuerier lists channels for one receiver and token.
-type ChannelReceiverTokenQuerier[T ChannelRecord[T]] interface {
-	QueryByReceiverToken(ctx context.Context, network, receiver, token string) ([]T, error)
-}
-
-// QueryChannelsByReceiverToken loads channels for cleanup after settle.
-func QueryChannelsByReceiverToken[T ChannelRecord[T]](
-	ctx context.Context,
-	store ChannelStorage[T],
-	network, receiver, token string,
-) ([]T, error) {
-	if querier, ok := store.(ChannelReceiverTokenQuerier[T]); ok {
-		return querier.QueryByReceiverToken(ctx, network, receiver, token)
-	}
-	all, err := store.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]T, 0)
-	wantReceiver := strings.ToLower(receiver)
-	wantToken := strings.ToLower(token)
-	for _, row := range all {
-		base := row.Base()
-		if base == nil {
-			continue
-		}
-		if network != "" && channelNetwork(base) != network {
-			continue
-		}
-		if strings.ToLower(base.ChannelConfig.Receiver) != wantReceiver ||
-			strings.ToLower(base.ChannelConfig.Token) != wantToken {
-			continue
-		}
-		out = append(out, row)
-	}
-	return out, nil
 }
