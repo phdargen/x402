@@ -43,16 +43,11 @@ func padHex(n, width int) string {
 
 type queryingStore struct {
 	*InMemoryChannelStorage[*Channel]
-	queryFn  func(context.Context, ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error)
-	settleFn func(context.Context, SettleQuery, *ChannelStoreOptions) (*QueryPage[SettleTarget], error)
+	queryFn func(context.Context, ChannelQuery, *ChannelStoreOptions) (*QueryPage[*Channel], error)
 }
 
 func (s queryingStore) Query(ctx context.Context, filter ChannelQuery, opts *ChannelStoreOptions) (*QueryPage[*Channel], error) {
 	return s.queryFn(ctx, filter, opts)
-}
-
-func (s queryingStore) SettleQuery(ctx context.Context, filter SettleQuery, opts *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-	return s.settleFn(ctx, filter, opts)
 }
 
 func TestQueryChannels_SelectsClaimableAsBigInt(t *testing.T) {
@@ -122,37 +117,6 @@ func TestQueryChannels_PagesClaimableWithLimitAndCursor(t *testing.T) {
 	}
 }
 
-func TestQuerySettleTargets_DedupesClaimedTuples(t *testing.T) {
-	store := seededQueryStore(t)
-	got, err := QuerySettleTargets(context.Background(), store, SettleQuery{}, nil)
-	if err != nil {
-		t.Fatalf("QuerySettleTargets: %v", err)
-	}
-	want := []SettleTarget{
-		{Network: queryNetworkA, Receiver: queryReceiverA, Token: queryTokenA},
-		{Network: queryNetworkB, Receiver: queryReceiverB, Token: queryTokenB},
-		{Network: queryNetworkB, Receiver: queryReceiverA, Token: queryTokenA},
-	}
-	if !reflect.DeepEqual(got.Items, want) {
-		t.Fatalf("items = %+v, want %+v", got.Items, want)
-	}
-}
-
-func TestQuerySettleTargets_FiltersByNetwork(t *testing.T) {
-	store := seededQueryStore(t)
-	got, err := QuerySettleTargets(context.Background(), store, SettleQuery{Network: queryNetworkB}, nil)
-	if err != nil {
-		t.Fatalf("QuerySettleTargets: %v", err)
-	}
-	want := []SettleTarget{
-		{Network: queryNetworkB, Receiver: queryReceiverB, Token: queryTokenB},
-		{Network: queryNetworkB, Receiver: queryReceiverA, Token: queryTokenA},
-	}
-	if !reflect.DeepEqual(got.Items, want) {
-		t.Fatalf("items = %+v, want %+v", got.Items, want)
-	}
-}
-
 func TestQueryChannels_PrefersNativeQuery(t *testing.T) {
 	inner := NewInMemoryChannelStorage[*Channel]()
 	queried := queryChannel(paddedId(0x99), queryChannelExtra{ChargedCumulativeAmount: "1"})
@@ -160,9 +124,6 @@ func TestQueryChannels_PrefersNativeQuery(t *testing.T) {
 		InMemoryChannelStorage: inner,
 		queryFn: func(ctx context.Context, _ ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
 			return &QueryPage[*Channel]{Items: []*Channel{queried}}, nil
-		},
-		settleFn: func(ctx context.Context, _ SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-			return SettleQueryByScan[*Channel](ctx, inner, SettleQuery{})
 		},
 	}
 	got, err := QueryChannels[*Channel](context.Background(), store, ChannelQuery{Kind: QueryKindClaimable}, nil)
@@ -181,9 +142,6 @@ func TestQueryChannels_NativeMatchesScanShim(t *testing.T) {
 		queryFn: func(ctx context.Context, filter ChannelQuery, _ *ChannelStoreOptions) (*QueryPage[*Channel], error) {
 			return QueryByScan[*Channel](ctx, inner, filter)
 		},
-		settleFn: func(ctx context.Context, filter SettleQuery, _ *ChannelStoreOptions) (*QueryPage[SettleTarget], error) {
-			return SettleQueryByScan[*Channel](ctx, inner, filter)
-		},
 	}
 	native, err := QueryChannels[*Channel](context.Background(), store, ChannelQuery{Kind: QueryKindClaimable}, nil)
 	if err != nil {
@@ -195,17 +153,6 @@ func TestQueryChannels_NativeMatchesScanShim(t *testing.T) {
 	}
 	if !reflect.DeepEqual(channelIds(native.Items), channelIds(scan.Items)) {
 		t.Fatalf("native %v scan %v", channelIds(native.Items), channelIds(scan.Items))
-	}
-	nativeSettle, err := QuerySettleTargets[*Channel](context.Background(), store, SettleQuery{}, nil)
-	if err != nil {
-		t.Fatalf("native settle: %v", err)
-	}
-	scanSettle, err := SettleQueryByScan[*Channel](context.Background(), inner, SettleQuery{})
-	if err != nil {
-		t.Fatalf("scan settle: %v", err)
-	}
-	if !reflect.DeepEqual(nativeSettle.Items, scanSettle.Items) {
-		t.Fatalf("settle native %+v scan %+v", nativeSettle.Items, scanSettle.Items)
 	}
 }
 
@@ -255,26 +202,6 @@ func TestMatchesChannelQuery_SkipsCorruptWatermarks(t *testing.T) {
 	zeroBalance := queryChannel(paddedId(1), queryChannelExtra{Balance: "0"})
 	if MatchesChannelQuery(zeroBalance, ChannelQuery{Kind: QueryKindIdleRefundable}) {
 		t.Fatal("zero balance must not match idle-refundable")
-	}
-}
-
-func TestSettleQueryByScan_SkipsCorruptTotalClaimed(t *testing.T) {
-	store := NewInMemoryChannelStorage[*Channel]()
-	valid := queryChannel(paddedId(1), queryChannelExtra{TotalClaimed: "10", ChargedCumulativeAmount: "10"})
-	// Distinct tuple so the corrupt row is only excluded by the parse guard,
-	// not by target dedup.
-	corrupt := queryChannel(paddedId(2), queryChannelExtra{TotalClaimed: "not-a-number", ChargedCumulativeAmount: "10", Receiver: queryReceiverB})
-	for _, ch := range []*Channel{valid, corrupt} {
-		if _, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(*Channel) *Channel { return ch }); err != nil {
-			t.Fatalf("seed %s: %v", ch.ChannelId, err)
-		}
-	}
-	page, err := SettleQueryByScan[*Channel](context.Background(), store, SettleQuery{})
-	if err != nil {
-		t.Fatalf("SettleQueryByScan: %v", err)
-	}
-	if len(page.Items) != 1 || page.Items[0].Receiver != queryReceiverA || page.Items[0].Token != queryTokenA {
-		t.Fatalf("settle targets = %+v, want only the valid row", page.Items)
 	}
 }
 
