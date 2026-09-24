@@ -241,12 +241,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       },
       ...(state.highestVoucherSignature !== undefined
         ? {
-            voucherState: {
-              signedMaxClaimable: state.signedMaxClaimable.toString(),
-              expiresAt: state.highestVoucherExpiresAt ?? 0,
-              signature: state.highestVoucherSignature,
-            },
-          }
+          voucherState: {
+            signedMaxClaimable: state.signedMaxClaimable.toString(),
+            expiresAt: state.highestVoucherExpiresAt ?? 0,
+            signature: state.highestVoucherSignature,
+          },
+        }
         : {}),
     };
     return ctx.requirements;
@@ -336,11 +336,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     const { operator: _routeOperator, ...routeExtra } = paymentRequirements.extra ?? {};
     void _routeOperator;
     const advertised = supportedKind.extra?.receiverAuthorizer;
-    const local = this.config.receiverAuthorizer?.address;
-    if (local && typeof advertised === "string" && advertised !== local) {
-      throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
-    }
-    const receiverAuthorizer = local ?? (typeof advertised === "string" ? advertised : undefined);
+    const receiverAuthorizer =
+      this.config.receiverAuthorizer?.address ??
+      (typeof advertised === "string" ? advertised : undefined);
     if (!receiverAuthorizer || !validateSvmAddress(receiverAuthorizer)) {
       throw new Error("Payment requirements must include a valid extra.receiverAuthorizer");
     }
@@ -412,7 +410,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (typeof requirements.extra?.feePayer !== "string") {
       throw new Error(
         "createChannelManager requires requirements.extra.feePayer; pass the requirements " +
-          "returned by enhancePaymentRequirements for the facilitator's /supported kind",
+        "returned by enhancePaymentRequirements for the facilitator's /supported kind",
       );
     }
     return new BatchChannelManager({
@@ -445,7 +443,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         if (!asset) {
           throw new Error(
             `extra.minDeposit money values are only supported for default assets; ` +
-              `use an integer atomic string for ${paymentRequirements.asset} on ${paymentRequirements.network}.`,
+            `use an integer atomic string for ${paymentRequirements.asset} on ${paymentRequirements.network}.`,
           );
         }
         const parsed = this.parseMoney(override);
@@ -461,9 +459,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     const minimum =
       configured ??
       amount *
-        (this.isServerSigned(paymentRequirements)
-          ? DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER
-          : DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER);
+      (this.isServerSigned(paymentRequirements)
+        ? DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER
+        : DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER);
     return (minimum > amount ? minimum : amount).toString();
   }
 
@@ -527,9 +525,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
             requiresCumulativeCheck: true,
             ...(raw.type === "authorization"
               ? {
-                  ceiling: BigInt(ctx.requirements.amount),
-                  requestId: raw.authorization.requestId,
-                }
+                ceiling: BigInt(ctx.requirements.amount),
+                requestId: raw.authorization.requestId,
+              }
               : {}),
           });
           return;
@@ -999,7 +997,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       raw.type === "deposit" &&
       this.config.enforceMinDeposit === true &&
       parseU64(raw.deposit.amount, "deposit.amount") <
-        parseU64(this.resolveMinDepositHint(requirements), "minDeposit")
+      parseU64(this.resolveMinDepositHint(requirements), "minDeposit")
     ) {
       throw new Error(BatchError.DEPOSIT_BELOW_MIN_DEPOSIT);
     }

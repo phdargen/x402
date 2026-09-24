@@ -97,7 +97,7 @@ Register `BatchSvmScheme` with an `x402ResourceServer`. The server owns the offc
 
 Every channel is bound at `open` to `extra.receiverAuthorizer` via an onchain Memo. That key signs cooperative `CloseAuthorization` messages for refunds and for sealing channels the payer is closing.
 
-- **Self-managed** (recommended): pass `receiverAuthorizer` in `BatchSvmServerConfig`. Advertised as `extra.receiverAuthorizer`; must match the binding Memo the client includes at open.
+- **Self-managed** (recommended): pass `receiverAuthorizer` in `BatchSvmServerConfig`. Advertised as `extra.receiverAuthorizer`; must match the binding Memo the client includes at open. 
 - **Facilitator-delegated**: omit `receiverAuthorizer`. Copy `extra.receiverAuthorizer` from the facilitator's `/supported` advertisement. Cooperative closes authenticate the caller identity at the facilitator instead of a local `CloseAuthorization`.
 
 ```typescript
@@ -212,6 +212,7 @@ import { toFacilitatorSvmSigner } from "@x402/svm";
 import {
   BatchSvmScheme,
   InMemoryBatchChannelStorage,
+  InMemoryBatchDelegatedAuthStore,
   InMemoryBatchReceiverAuthorizerStore,
 } from "@x402/svm/batch-settlement/facilitator";
 
@@ -223,8 +224,15 @@ const svmSigner = toFacilitatorSvmSigner(
 const scheme = new BatchSvmScheme(svmSigner, {
   channelStorage: new InMemoryBatchChannelStorage(),
   receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
-  // Optional delegated closes: advertise receiverAuthorizer and authenticate callers
-  // delegatedReceiverAuth: { authorizerSigner, resolveCallerIdentity: ... },
+  // Optional delegated closes. `receiverAuthorizer` is a Solana address you
+  // choose, separate from the fee-payer signers. This facilitator does not
+  // sign with it: a channel bound to that address authenticates seal and
+  // cooperative refund by caller identity instead of CloseAuthorization.
+  // delegatedReceiverAuth: {
+  //   receiverAuthorizer,
+  //   identityStore: new InMemoryBatchDelegatedAuthStore(),
+  //   resolveCallerIdentity: () => callerIdentity,
+  // },
 });
 
 const rentCleanup = scheme.createRentCleanupManager(network);
@@ -236,7 +244,7 @@ rentCleanup.start({
 
 Configure **either** `receiverAuthorizerStore` **or** `receiverBindingHistoryReader` (or both: store primary, history fallback). The facilitator must enforce the receiver-authorizer binding read from the open transaction Memo before broadcasting deposit, and on cooperative `seal` / `refund`.
 
-`getExtra()` advertises `feePayer` (channel `rent_payer` and zero-share `payee`), `withdrawDelay`, and optionally `maxIdleSecs` for abandon-close. Production deployments should use durable `pendingSettlementStore` and shared `channelStorage` when running multiple replicas.
+`getExtra()` advertises `feePayer` (channel `rent_payer` and zero-share `payee`) and, when idle cleanup is enabled, `maxIdleSecs`. It advertises `receiverAuthorizer` only when `delegatedReceiverAuth` is set. `withdrawDelay` comes from the server. Production deployments should use durable `pendingSettlementStore`, a shared `channelStorage`, and a shared `identityStore` when running multiple replicas.
 
 ## Supported Networks
 

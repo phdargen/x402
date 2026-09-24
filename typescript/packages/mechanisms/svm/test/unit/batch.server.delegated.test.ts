@@ -2,7 +2,6 @@ import { generateKeyPairSigner } from "@solana/kit";
 import type { PaymentRequirements } from "@x402/core/types";
 import { describe, expect, it } from "vitest";
 
-import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchSvmScheme } from "../../src/batch-settlement/server/scheme";
 import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
@@ -69,19 +68,21 @@ describe("batch-settlement server delegated receiver authorizer", () => {
     ).toThrow(/valid extra.receiverAuthorizer/);
   });
 
-  it("rejects a facilitator key that differs from the local signer", async () => {
+  it("prefers the local signer when the facilitator advertises a different key", async () => {
     const local = await generateKeyPairSigner();
     const other = await generateKeyPairSigner();
     const server = new BatchSvmScheme({ receiverAuthorizer: local });
     expect(
       server.validateFacilitatorSupport?.(NETWORK, supported({ feePayer: other.address }), []),
     ).toBeUndefined();
-    expect(() =>
+    await expect(
       server.enhancePaymentRequirements(
         requirements(),
         supported({ feePayer: other.address, receiverAuthorizer: other.address }),
         [],
       ),
-    ).toThrow(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
+    ).resolves.toMatchObject({
+      extra: { feePayer: other.address, receiverAuthorizer: local.address },
+    });
   });
 });
