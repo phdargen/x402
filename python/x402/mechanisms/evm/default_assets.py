@@ -83,6 +83,15 @@ DEFAULT_ASSETS: dict[str, list[ExactDefaultAssetInfo]] = {
             "symbol": "USDC",
         },
     ],  # Monad mainnet USDC
+    "eip155:10143": [
+        {
+            "asset": "0xf817257fed379853cDe0fa4F97AB987181B1E5Ea",
+            "name": "USDC",
+            "version": "2",
+            "decimals": 6,
+            "symbol": "USDC",
+        },
+    ],  # Monad testnet USDC
     "eip155:988": [
         {
             "asset": "0x779Ded0c9e1022225f8E0630b35a9b54bE713736",
