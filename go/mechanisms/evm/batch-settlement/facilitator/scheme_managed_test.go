@@ -269,7 +269,7 @@ func TestScheme_SelfManagedRefundIdentityMismatch(t *testing.T) {
 	delegated := storage.NewInMemoryDelegatedAuthStore()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
+	if _, err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "bound-service",
 	}); err != nil {
 		t.Fatal(err)
@@ -343,7 +343,9 @@ func TestScheme_SelfManagedRefundMalformedAmount(t *testing.T) {
 	delegated := storage.NewInMemoryDelegatedAuthStore()
 	cfg := managedConfig(auth.addr, "00")
 	channelId := mustChannelId(t, cfg)
-	_ = delegated.Bind(context.Background(), storage.DelegatedAuthBinding{ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc"})
+	if _, err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc"}); err != nil {
+		t.Fatal(err)
+	}
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{
 		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
 		DelegatedAuthStore:    delegated,

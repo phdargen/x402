@@ -2,6 +2,7 @@ package facilitator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -57,19 +58,84 @@ func ResolveDepositDelegatedCaller(
 	return identity, nil
 }
 
-func bindDelegatedAuthAfterBroadcast(
+const delegatedAuthRollbackTimeout = 3 * time.Second
+
+func delegatedAuthInsertedMarker(cacheKey string) string {
+	return "binding-inserted:" + cacheKey
+}
+
+// bindDelegatedAuthForDeposit writes the binding before any chain transaction.
+// Conflict and store errors fail closed; an empty identity skips the write.
+func bindDelegatedAuthForDeposit(
 	ctx context.Context,
 	authStore storage.DelegatedAuthStore,
-	channelId, network, callerIdentity string,
-) {
+	channelId, network, callerIdentity, payer string,
+) (bool, error) {
 	if authStore == nil || callerIdentity == "" {
-		return
+		return false, nil
 	}
-	_ = authStore.Bind(ctx, storage.DelegatedAuthBinding{
+	inserted, err := authStore.Bind(ctx, storage.DelegatedAuthBinding{
 		ChannelId:      channelId,
 		Network:        network,
 		CallerIdentity: callerIdentity,
 	})
+	if err == nil {
+		return inserted, nil
+	}
+	net := x402.Network(network)
+	var conflict *storage.DelegatedAuthIdentityConflictError
+	if errors.As(err, &conflict) {
+		return false, x402.NewSettleError(ErrDelegatedSettleUnauthenticated, payer, net, "",
+			"delegated deposit settle is unauthenticated")
+	}
+	return false, x402.NewSettleError(ErrVoucherStoreUnavailable, payer, net, "",
+		fmt.Sprintf("delegated auth bind failed: %s", err))
+}
+
+func markInsertedDelegatedAuth(
+	ctx context.Context,
+	store x402.PendingSettlementStore,
+	cacheKey string,
+	inserted bool,
+) (string, error) {
+	if !inserted || store == nil || cacheKey == "" {
+		return "", nil
+	}
+	key := delegatedAuthInsertedMarker(cacheKey)
+	if err := store.Set(ctx, key, "1"); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
+// deleteInsertedDelegatedAuth rolls back a row this attempt created, even if ctx is cancelled.
+func deleteInsertedDelegatedAuth(ctx context.Context, authStore storage.DelegatedAuthStore, channelId, network string) {
+	if authStore == nil {
+		return
+	}
+	delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), delegatedAuthRollbackTimeout)
+	defer cancel()
+	_ = authStore.Delete(delCtx, channelId, network)
+}
+
+func deleteDelegatedAuthMarker(ctx context.Context, store x402.PendingSettlementStore, markerKey string) {
+	if store == nil || markerKey == "" {
+		return
+	}
+	delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), delegatedAuthRollbackTimeout)
+	defer cancel()
+	_ = store.Delete(delCtx, markerKey)
+}
+
+func settleErrorKeepsDelegatedBinding(err error) bool {
+	var se *x402.SettleError
+	if !errors.As(err, &se) {
+		return false
+	}
+	if se.ErrorReason == ErrSettlementPending {
+		return true
+	}
+	return strings.Contains(se.ErrorMessage, "failed to persist for retry")
 }
 
 // resolveDepositTransferMethod inspects the requirements + payload to pick the
@@ -377,7 +443,7 @@ func depositSettlementCacheKey(
 // `store` is consulted first (keyed by depositSettlementCacheKey) to reconcile
 // a previously-broadcast-but-unconfirmed deposit transaction from a prior
 // settlement_pending response, instead of re-broadcasting. A nil store
-// disables this fast path.
+// disables this fast path. A delegated binding is written before any chain transaction.
 func SettleDeposit(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
@@ -443,13 +509,12 @@ func SettleDeposit(
 	// — the authorization's nonce/signature has already been consumed onchain).
 	if store != nil && cacheKey != "" {
 		if txHash, hit, _ := store.Get(ctx, cacheKey); hit {
-			// Remove before reconciling (rather than after) so a concurrent retry
-			// of the same payload misses here instead of also reconciling: it
-			// falls through to the normal broadcast path, which independently
-			// rejects it as an on-chain replay (nonce already consumed).
+			// Remove before reconciling so a concurrent retry misses and falls
+			// through to broadcast, which rejects the consumed authorization.
 			_ = store.Delete(ctx, cacheKey)
-			bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, channelId, networkStr, delegatedCallerIdentity)
-			return reconcilePendingDeposit(ctx, depositSettleContext{
+			markerKey := delegatedAuthInsertedMarker(cacheKey)
+			_, markerHit, _ := store.Get(ctx, markerKey)
+			resp, recErr := reconcilePendingDeposit(ctx, depositSettleContext{
 				signer:            signer,
 				receiptWaitSigner: receiptWaitSigner,
 				config:            config,
@@ -460,6 +525,15 @@ func SettleDeposit(
 				store:             store,
 				cacheKey:          cacheKey,
 			})
+			if recErr != nil {
+				if markerHit && !settleErrorKeepsDelegatedBinding(recErr) {
+					deleteInsertedDelegatedAuth(ctx, delegatedAuth, channelId, networkStr)
+					deleteDelegatedAuthMarker(ctx, store, markerKey)
+				}
+				return nil, recErr
+			}
+			deleteDelegatedAuthMarker(ctx, store, markerKey)
+			return resp, nil
 		}
 	}
 
@@ -468,6 +542,26 @@ func SettleDeposit(
 		return nil, x402.NewSettleError(ErrInvalidDepositPayload, config.Payer, network, "",
 			fmt.Sprintf("failed to build collector data: %s", err))
 	}
+
+	inserted, err := bindDelegatedAuthForDeposit(ctx, delegatedAuth, channelId, networkStr, delegatedCallerIdentity, config.Payer)
+	if err != nil {
+		return nil, err
+	}
+	markerKey, err := markInsertedDelegatedAuth(ctx, store, cacheKey, inserted)
+	if err != nil {
+		deleteInsertedDelegatedAuth(ctx, delegatedAuth, channelId, networkStr)
+		return nil, x402.NewSettleError(ErrVoucherStoreUnavailable, config.Payer, network, "",
+			fmt.Sprintf("failed to record delegated auth binding: %s", err))
+	}
+	// Roll back only a row this call inserted. Pending and success keep it.
+	keepBinding := !inserted
+	defer func() {
+		if keepBinding {
+			return
+		}
+		deleteInsertedDelegatedAuth(ctx, delegatedAuth, channelId, networkStr)
+		deleteDelegatedAuthMarker(ctx, store, markerKey)
+	}()
 
 	// Build channel config tuple for contract call
 	configTuple := ToContractChannelConfig(config)
@@ -558,12 +652,7 @@ func SettleDeposit(
 		}
 	}
 
-	deferDelegatedBind := unconfirmedBundleHash
-	if !deferDelegatedBind {
-		bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, channelId, networkStr, delegatedCallerIdentity)
-	}
-
-	return finishDepositSettle(ctx, depositSettleContext{
+	resp, err := finishDepositSettle(ctx, depositSettleContext{
 		signer:            signer,
 		receiptWaitSigner: receiptWaitSigner,
 		config:            config,
@@ -578,7 +667,18 @@ func SettleDeposit(
 		totalClaimed:        priorTotalClaimed,
 		withdrawRequestedAt: priorWithdrawRequestedAt,
 		refundNonce:         priorRefundNonce,
-	}, delegatedAuth, delegatedCallerIdentity, networkStr, deferDelegatedBind)
+	})
+	if err != nil {
+		if settleErrorKeepsDelegatedBinding(err) {
+			keepBinding = true
+		}
+		return nil, err
+	}
+	keepBinding = true
+	if cacheKey != "" {
+		deleteDelegatedAuthMarker(ctx, store, delegatedAuthInsertedMarker(cacheKey))
+	}
+	return resp, nil
 }
 
 // depositSettleContext holds the fields common to finishDepositSettle and
@@ -624,9 +724,6 @@ func finishDepositSettle(
 	depositAmount *big.Int,
 	unconfirmedBundleHash bool,
 	prior priorChannelState,
-	delegatedAuth storage.DelegatedAuthStore,
-	delegatedCallerIdentity, delegatedNetwork string,
-	deferDelegatedBind bool,
 ) (*x402.SettleResponse, error) {
 	if _, err := evm.WaitForSettleReceiptWithPendingStore(ctx, sc.store, sc.cacheKey, sc.receiptWaitSigner, sc.txHash, sc.config.Payer, sc.network,
 		ErrDepositTransactionFailed, ErrTransactionReverted); err != nil {
@@ -691,10 +788,6 @@ func finishDepositSettle(
 	}
 
 	extra := BuildSettleExtra(sc.channelId, finalState)
-
-	if deferDelegatedBind {
-		bindDelegatedAuthAfterBroadcast(ctx, delegatedAuth, sc.channelId, delegatedNetwork, delegatedCallerIdentity)
-	}
 
 	return &x402.SettleResponse{
 		Success:     true,

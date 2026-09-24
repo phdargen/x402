@@ -358,42 +358,18 @@ func TestResolveDepositDelegatedCaller_EmptyIdentityIsUnauthenticated(t *testing
 	}
 }
 
-func TestBindDelegatedAuthAfterBroadcast_ConflictKeepsFirstWriter(t *testing.T) {
-	store := storage.NewInMemoryDelegatedAuthStore()
-	if err := store.Bind(context.Background(), storage.DelegatedAuthBinding{
-		ChannelId: "0xchan", Network: "eip155:84532", CallerIdentity: "owner-a",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	bindDelegatedAuthAfterBroadcast(context.Background(), store, "0xchan", "eip155:84532", "owner-b")
-	got, _ := store.Get(context.Background(), "0xchan", "eip155:84532")
-	if got == nil || got.CallerIdentity != "owner-a" {
-		t.Fatalf("conflict must keep the first binding, got %+v", got)
-	}
-}
-
-func TestBindDelegatedAuthAfterBroadcast_BindsAndIsIdempotent(t *testing.T) {
-	store := storage.NewInMemoryDelegatedAuthStore()
-	for i := 0; i < 2; i++ {
-		bindDelegatedAuthAfterBroadcast(context.Background(), store, "0xchan", "eip155:84532", "svc")
-	}
-	got, _ := store.Get(context.Background(), "0xchan", "eip155:84532")
-	if got == nil || got.CallerIdentity != "svc" {
-		t.Fatalf("got %+v", got)
-	}
-}
-
-func TestSettle_SelfManagedDepositBindingConflictDoesNotBlockSettle(t *testing.T) {
+func TestSettle_SelfManagedDepositBindingConflictFailsBeforeBroadcast(t *testing.T) {
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "09")
 	channelId := mustChannelId(t, cfg)
 	delegated := storage.NewInMemoryDelegatedAuthStore()
-	if err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
+	if _, err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "owner-a",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{
+	signer := newManagedSigner(t, nil)
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
 		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "owner-b", nil },
 		DelegatedAuthStore:    delegated,
 	})
@@ -413,8 +389,11 @@ func TestSettle_SelfManagedDepositBindingConflictDoesNotBlockSettle(t *testing.T
 			},
 		}, nil)
 	var se *x402.SettleError
-	if errors.As(err, &se) && se.ErrorReason == ErrDelegatedSettleUnauthenticated {
-		t.Fatalf("binding conflict must not reject deposit at resolve time, got err = %v", err)
+	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("binding conflict must fail before broadcast, got err = %v", err)
+	}
+	if signer.writeCalls != 0 || signer.sendCalls != 0 {
+		t.Fatalf("conflict broadcast writes=%d sends=%d", signer.writeCalls, signer.sendCalls)
 	}
 	got, _ := delegated.Get(context.Background(), channelId, managedNetwork)
 	if got == nil || got.CallerIdentity != "owner-a" {
