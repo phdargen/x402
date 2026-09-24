@@ -196,6 +196,9 @@ const requirements = await batchedSvmScheme.enhancePaymentRequirements(
 
 const manager = batchedSvmScheme.createChannelManager(facilitatorClient, requirements, {
   rpcUrl: process.env.SVM_RPC_URL,
+  onClaim: r => console.log(`Claimed ${r.vouchers} vouchers (tx: ${r.transaction})`),
+  onSettle: r => console.log(`Distributed to payTo (tx: ${r.transaction})`),
+  onSeal: r => console.log(`Sealed channel ${r.channel} (tx: ${r.transaction})`),
   onError: e => console.error(e),
 });
 manager.start(60); // seconds between passes

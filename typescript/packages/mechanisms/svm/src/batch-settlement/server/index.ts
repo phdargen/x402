@@ -7,6 +7,9 @@ export type { BatchOperation, BatchOperationStore } from "./operationStore";
 export {
   BatchChannelManager,
   type BatchChannelManagerConfig,
+  type ClaimResult,
   type RedemptionResult,
   type RedemptionSettler,
+  type SealResult,
+  type SettleResult,
 } from "./channelManager";

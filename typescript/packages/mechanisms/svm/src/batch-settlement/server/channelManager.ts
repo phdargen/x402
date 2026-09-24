@@ -30,6 +30,23 @@ export type RedemptionSettler = (
   requirements: PaymentRequirements,
 ) => Promise<SettleResponse>;
 
+/** Outcome of a successful onchain claim batch. */
+export interface ClaimResult {
+  vouchers: number;
+  transaction: string;
+}
+
+/** Outcome of a successful distribute batch that pays `payTo`. */
+export interface SettleResult {
+  transaction: string;
+}
+
+/** Outcome of a successful `seal` on a channel the payer is closing. */
+export interface SealResult {
+  channel: string;
+  transaction: string;
+}
+
 export interface BatchChannelManagerConfig {
   /** The server's channel state, holding the vouchers to redeem. */
   store: ChannelStore;
@@ -56,6 +73,12 @@ export interface BatchChannelManagerConfig {
    * `success`, `transaction`, `network` and `amount` for a claim).
    */
   readSettledWatermark?: ((channelId: string) => Promise<bigint | undefined>) | undefined;
+  /** Fires after a successful onchain claim batch. */
+  onClaim?: ((result: ClaimResult) => void) | undefined;
+  /** Fires after a successful distribute (`settle`) batch. */
+  onSettle?: ((result: SettleResult) => void) | undefined;
+  /** Fires after a successful `seal` on a closing channel. */
+  onSeal?: ((result: SealResult) => void) | undefined;
   /** Reports a pass that failed, so an operator can see it. */
   onError?: ((error: unknown) => void) | undefined;
   /**
@@ -132,12 +155,21 @@ export class BatchChannelManager {
     }, intervalSecs * 1_000);
   }
 
-  /** Stop the interval and wait for a pass already under way. */
-  async stop(): Promise<void> {
+  /**
+   * Stop the interval and wait for a pass already under way.
+   *
+   * @param opts - Stop options.
+   * @param opts.flush - When true, run one final {@link redeem} before returning.
+   * @returns Resolves when the interval is stopped (and flush work completes, if requested).
+   */
+  async stop(opts?: { flush?: boolean }): Promise<void> {
     this.running = false;
     if (this.timer !== undefined) {
       clearInterval(this.timer);
       this.timer = undefined;
+    }
+    if (opts?.flush) {
+      await this.redeem().catch(error => this.config.onError?.(error));
     }
     await this.passInFlight;
   }
@@ -274,6 +306,7 @@ export class BatchChannelManager {
           return;
         }
       }
+      let claimedInBatch = 0;
       for (const channel of batch) {
         let settled = channel.signedMaxClaimable;
         if (accepts === undefined) {
@@ -296,6 +329,13 @@ export class BatchChannelManager {
           settled: state.settled > settled ? state.settled : settled,
         }));
         result.claimed.push(channel.channelId);
+        claimedInBatch++;
+      }
+      if (claimedInBatch > 0) {
+        this.config.onClaim?.({
+          transaction: response.transaction ?? "",
+          vouchers: claimedInBatch,
+        });
       }
     }
   }
@@ -383,6 +423,10 @@ export class BatchChannelManager {
       settled: state.settled > final ? state.settled : final,
       status: "distributed",
     }));
+    this.config.onSeal?.({
+      channel: channel.channelId,
+      transaction: response.transaction ?? "",
+    });
     return true;
   }
 
@@ -442,6 +486,7 @@ export class BatchChannelManager {
         );
         continue;
       }
+      let distributedInBatch = 0;
       for (const channel of batch) {
         try {
           // This response may recover an earlier sweep. A channel ID and a
@@ -454,11 +499,17 @@ export class BatchChannelManager {
             onchainSyncedAt: Date.now(),
             payoutWatermark: state.payoutWatermark > paid ? state.payoutWatermark : paid,
           }));
-          if (paid >= channel.settled) distributed.push(channel.channelId);
+          if (paid >= channel.settled) {
+            distributed.push(channel.channelId);
+            distributedInBatch++;
+          }
         } catch (error) {
           // Leave the balance payable for the next pass, including after restart.
           this.config.onError?.(error);
         }
+      }
+      if (distributedInBatch > 0) {
+        this.config.onSettle?.({ transaction: response.transaction ?? "" });
       }
     }
     return distributed;

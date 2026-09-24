@@ -1,6 +1,6 @@
 import { generateKeyPairSigner } from "@solana/kit";
 import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { BatchChannelManager } from "../../src/batch-settlement/server/channelManager";
 import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
@@ -282,6 +282,88 @@ describe("batch-settlement redemption worker", () => {
     expect(result).toEqual({ claimed: [], distributed: [], sealed: [] });
     expect((await store.get("chan-a"))?.settled).toBe(0n);
     expect(errors).toHaveLength(1);
+  });
+
+  it("stop with flush runs one final redeem pass", async () => {
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    const { settle, submitted } = recorder();
+    const manager = new BatchChannelManager({
+      readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle,
+      store,
+    });
+    manager.start(3600);
+    await manager.stop({ flush: true });
+    expect(submitted.map(entry => entry.type)).toEqual(["claim", "settle"]);
+  });
+
+  it("uses empty transaction in lifecycle callbacks when the facilitator omits it", async () => {
+    const onClaim = vi.fn();
+    const onSettle = vi.fn();
+    const onSeal = vi.fn();
+    const noTx = (payload: RedemptionPayload): SettleResponse => {
+      const { transaction: _tx, ...rest } = recovered(payload);
+      return rest;
+    };
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    await new BatchChannelManager({
+      onClaim,
+      onSettle,
+      readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: recorder(noTx).settle,
+      store,
+    }).redeem();
+    expect(onClaim).toHaveBeenCalledWith({ transaction: "", vouchers: 1 });
+    expect(onSettle).toHaveBeenCalledWith({ transaction: "" });
+
+    const id = (await generateKeyPairSigner()).address;
+    await store.put(channel(id, { status: "closing" }));
+    await new BatchChannelManager({
+      onSeal,
+      readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: recorder(noTx).settle,
+      store,
+    }).redeem();
+    expect(onSeal).toHaveBeenCalledWith({ channel: id, transaction: "" });
+  });
+
+  it("fires onClaim, onSettle, and onSeal with facilitator transaction signatures", async () => {
+    const onClaim = vi.fn();
+    const onSettle = vi.fn();
+    const onSeal = vi.fn();
+    const store = new MemoryChannelStore();
+    await store.put(channel("chan-a"));
+    await new BatchChannelManager({
+      onClaim,
+      onSettle,
+      readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: recorder().settle,
+      store,
+    }).redeem();
+    expect(onClaim).toHaveBeenCalledWith({ transaction: "sig", vouchers: 1 });
+    expect(onSettle).toHaveBeenCalledWith({ transaction: "sig" });
+
+    const id = (await generateKeyPairSigner()).address;
+    await store.put(channel(id, { status: "closing" }));
+    await new BatchChannelManager({
+      onSeal,
+      readPayoutWatermark: async () => 3000n,
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle: recorder().settle,
+      store,
+    }).redeem();
+    expect(onSeal).toHaveBeenCalledWith({ channel: id, transaction: "sig" });
   });
 
   it("seals a closing channel instead of claiming it", async () => {
