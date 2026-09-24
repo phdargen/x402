@@ -22,23 +22,12 @@ func (e *DelegatedAuthIdentityConflictError) Error() string {
 	return "delegated auth binding already exists for a different identity"
 }
 
-// DelegatedAuthStore is a pluggable store of delegated deposit/refund
-// caller-identity bindings.
-//
-// After a deposit transaction is broadcast, the facilitator calls Bind on the
-// hot path; implementations may persist synchronously or enqueue work and return
-// nil immediately. Deposit settlement does not fail on Bind errors (best-effort).
-//
-// Bind is keyed by (channelId, network) and is first-writer-wins:
-//
-//   - no existing row → insert
-//   - existing row, same CallerIdentity → success (idempotent retry)
-//   - existing row, different CallerIdentity → DelegatedAuthIdentityConflictError
-//
-// Get returns the zero binding for not-found and propagates store errors so a
-// host can map infra failures separately from unauthenticated.
+// DelegatedAuthStore persists delegated deposit/refund caller-identity bindings.
+// Bind is durable; nil means a later Get sees the row. Do not broadcast before that.
 type DelegatedAuthStore interface {
-	Bind(ctx context.Context, binding DelegatedAuthBinding) error
+	// Bind is first-writer-wins. inserted is true only when this call created the row.
+	// Same identity returns inserted == false; a different identity conflicts.
+	Bind(ctx context.Context, binding DelegatedAuthBinding) (inserted bool, err error)
 	Get(ctx context.Context, channelId string, network string) (*DelegatedAuthBinding, error)
 	Delete(ctx context.Context, channelId string, network string) error
 }
@@ -57,21 +46,20 @@ func NewInMemoryDelegatedAuthStore() *InMemoryDelegatedAuthStore {
 	return &InMemoryDelegatedAuthStore{bindings: make(map[string]DelegatedAuthBinding)}
 }
 
-// Bind records the caller identity for a channel. First writer wins: a later
-// Bind with the same identity is a no-op; a different identity is an error.
-func (s *InMemoryDelegatedAuthStore) Bind(_ context.Context, binding DelegatedAuthBinding) error {
+// Bind records the caller identity. inserted is true only for a new row.
+func (s *InMemoryDelegatedAuthStore) Bind(_ context.Context, binding DelegatedAuthBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := bindingKey(binding.ChannelId, binding.Network)
 	existing, ok := s.bindings[key]
 	if ok {
 		if existing.CallerIdentity == binding.CallerIdentity {
-			return nil
+			return false, nil
 		}
-		return &DelegatedAuthIdentityConflictError{}
+		return false, &DelegatedAuthIdentityConflictError{}
 	}
 	s.bindings[key] = binding
-	return nil
+	return true, nil
 }
 
 // Get looks up a binding. The returned value is a copy so callers cannot
