@@ -2,6 +2,7 @@
 import { address, type Signature } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token-2022";
 import type {
+  FacilitatorContext,
   Network,
   PaymentPayload,
   PaymentRequirements,
@@ -93,11 +94,35 @@ import {
   validateRefund,
 } from "./seal";
 import {
+  assertBindingSource,
+  assertDelegatedReceiverAuth,
+  type BatchSvmFacilitatorConfig,
+  delegatedIdentityForOpen,
+  isDelegatedAuthorizer,
+  readReceiverAuthorizer,
+  resolveDelegatedIdentity,
+  storedDelegatedIdentity,
+} from "./bindingSource";
+import {
+  BatchDelegatedAuthIdentityConflictError,
+  type BatchDelegatedReceiverAuth,
+} from "./delegatedAuthStore";
+import {
   BatchReceiverAuthorizerConflictError,
   type BatchReceiverAuthorizerStore,
-  InMemoryBatchReceiverAuthorizerStore,
   requireReceiverAuthorizer,
 } from "./receiverAuthorizerStore";
+import {
+  receiverBindingHistoryReaderFromSigner,
+  type BatchReceiverBindingHistoryReader,
+} from "./receiverBindingHistoryReader";
+import type {
+  BatchTerms,
+  DurableBroadcastResult,
+  PreparedClaim,
+  PreparedDistribution,
+  ValidatedDeposit,
+} from "./schemeTypes";
 import { BatchError } from "../errors";
 import { encodeReceiverBindingMemo } from "../receiverBinding";
 import {
@@ -120,79 +145,7 @@ const COMPLETED_BROADCAST_SUFFIX = ":completed";
 /** Four Ed25519+settle pairs fit under Solana's transaction packet limit. */
 export const MAX_CHANNELS_PER_SETTLE_TX = 4;
 
-export interface BatchSvmFacilitatorConfig {
-  /**
-   * Durable record of pending signatures and completed operation outcomes, so
-   * retries — including after a restart — reconcile instead of rebroadcasting.
-   * Defaults to an in-memory store. Production deployments should supply a
-   * shared durable store whose TTL covers their client retry window.
-   */
-  pendingSettlementStore?: BatchPendingSettlementStore | undefined;
-  /** Called before completing a payout; implementations must deduplicate by transaction. */
-  onDistributionConfirmed?: (
-    response: SettleResponse,
-    requirements: PaymentRequirements,
-  ) => Promise<void>;
-  /** Shared, facilitator-owned lifecycle index used for rent cleanup. */
-  channelStorage?: PaymentChannelStorage | undefined;
-  /**
-   * Idle window advertised as `extra.maxIdleSecs`: seconds without
-   * facilitator-visible lifecycle activity after which rent cleanup MAY
-   * abandon-close an Open channel at its settled watermark. `0` disables and
-   * is not advertised. Defaults to `DEFAULT_MAX_IDLE_SECS` (seven days).
-   */
-  maxIdleSecs?: number | undefined;
-  maxPriorityFeeMicroLamports?: number | undefined;
-  maxComputeUnits?: number | undefined;
-  maxRequiredSignatures?: number | undefined;
-  /**
-   * Receiver authorizer each channel was opened for, bound before its open is
-   * broadcast. A missing row is unavailable. Defaults to an in-memory store.
-   */
-  receiverAuthorizerStore?: BatchReceiverAuthorizerStore | undefined;
-}
-
-type BatchTerms = {
-  feePayer: string;
-  feePayerSigner: FacilitatorSigningCapabilities;
-  receiverAuthorizer: string;
-  tokenProgram: string;
-  withdrawDelay: number;
-  memo?: string | undefined;
-  voucherSigner: "client" | "server";
-};
-
-type ValidatedDeposit = {
-  payload: BatchDepositPayload;
-  terms: BatchTerms;
-  channelId: string;
-  deposit: bigint;
-  expectedDeposit: bigint;
-  isTopUp: boolean;
-  voucherAmount: bigint;
-};
-
-type DurableBroadcastResult =
-  | { ok: true; replayed: boolean; signature: string }
-  | { ok: false; response: SettleResponse };
-
-type PreparedClaim = {
-  claim: BatchClaimPayload["claims"][number];
-  channelId: string;
-  feePayer: string;
-  cumulative: bigint;
-  expiresAt: number;
-  payTo: string;
-  tokenProgram: string;
-  terms: BatchTerms;
-};
-
-type PreparedDistribution = {
-  channelConfig: BatchSettlePayload["channels"][number]["channelConfig"];
-  channelId: string;
-  feePayer: string;
-  terms: BatchTerms;
-};
+export { calculateDistributionAmount, type BatchSvmFacilitatorConfig } from "./bindingSource";
 
 export class BatchSvmScheme implements SchemeNetworkFacilitator {
   readonly scheme = BATCH_SETTLEMENT_SCHEME;
@@ -203,7 +156,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   private readonly confirmationSlots = new Map<string, bigint>();
   private readonly distributionPasses: Map<string, Promise<SettleResponse>>;
   private readonly maxIdleSecs: number;
-  private readonly receiverAuthorizers: BatchReceiverAuthorizerStore;
+  private readonly receiverAuthorizers: BatchReceiverAuthorizerStore | undefined;
+  private readonly receiverBindingHistoryReader: BatchReceiverBindingHistoryReader | undefined;
+  private readonly delegatedReceiverAuth: BatchDelegatedReceiverAuth | undefined;
 
   constructor(
     private readonly signer: FacilitatorSvmSigner,
@@ -219,8 +174,15 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     this.pendingStore = config.pendingSettlementStore ?? new InMemoryBatchPendingSettlementStore();
     this.distributionPasses = distributionsForStore(this.pendingStore);
     this.maxIdleSecs = assertMaxIdleSecs(config.maxIdleSecs);
-    this.receiverAuthorizers =
-      config.receiverAuthorizerStore ?? new InMemoryBatchReceiverAuthorizerStore();
+    const receiverBindingHistoryReader =
+      config.receiverBindingHistoryReader ?? receiverBindingHistoryReaderFromSigner(signer);
+    assertBindingSource({
+      receiverAuthorizerStore: config.receiverAuthorizerStore,
+      receiverBindingHistoryReader,
+    });
+    this.receiverAuthorizers = config.receiverAuthorizerStore;
+    this.receiverBindingHistoryReader = receiverBindingHistoryReader;
+    this.delegatedReceiverAuth = assertDelegatedReceiverAuth(config.delegatedReceiverAuth);
   }
 
   getExtra(_: Network): Record<string, unknown> {
@@ -230,6 +192,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       // Servers copy the idle window into the 402: it is how long they have
       // to claim before an idle channel is closed at its onchain watermark.
       ...(this.maxIdleSecs > 0 ? { maxIdleSecs: this.maxIdleSecs } : {}),
+      ...(this.delegatedReceiverAuth
+        ? { receiverAuthorizer: this.delegatedReceiverAuth.receiverAuthorizer }
+        : {}),
     };
   }
 
@@ -252,7 +217,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         upsert: record => this.channelStorage.upsert(record),
         delete: async channelId => {
           await this.channelStorage.delete(channelId);
-          await this.receiverAuthorizers.delete(network, channelId);
+          await this.receiverAuthorizers?.delete(network, channelId);
+          await this.delegatedReceiverAuth?.identityStore.delete(network, channelId);
         },
       },
     });
@@ -354,6 +320,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   async settle(
     payment: PaymentPayload,
     requirements: PaymentRequirements,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const payload = payment.payload;
     if (!isBatchFacilitatorPayload(payload)) {
@@ -362,19 +329,26 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     try {
       switch (payload.type) {
         case "deposit":
-          return await this.settleDeposit(payment, payload, requirements);
+          return await this.settleDeposit(payment, payload, requirements, context);
         case "voucher":
           return await this.settleVoucher(payment, payload, requirements);
         case "authorization":
           return await this.settleVoucher(payment, payload, requirements);
         case "refund":
-          return await this.settleRefund(payment, payload, requirements);
+          return await this.settleRefund(payment, payload, requirements, context);
         case "claim":
           return await this.settleClaims(payment, payload, requirements);
         case "settle":
           return await this.settleDistributions(payment, payload, requirements);
         case "seal":
-          return await settleSeal(this.sealDependencies(), payment, payload, requirements, "seal");
+          return await settleSeal(
+            this.sealDependencies(),
+            payment,
+            payload,
+            requirements,
+            "seal",
+            context,
+          );
       }
     } catch (error) {
       return settleFailure(
@@ -919,6 +893,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     payment: PaymentPayload,
     payload: BatchDepositPayload,
     requirements: PaymentRequirements,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const validated = await this.validateDeposit(payload, requirements);
     const { channelId, terms } = validated;
@@ -987,11 +962,28 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         tokenProgram: terms.tokenProgram,
       });
       if (!validated.isTopUp) {
-        await this.receiverAuthorizers.bind({
+        const callerIdentity = await delegatedIdentityForOpen(
+          this.delegatedReceiverAuth,
+          terms.receiverAuthorizer,
           channelId,
-          network: requirements.network,
-          receiverAuthorizer: terms.receiverAuthorizer,
-        });
+          payload.channelConfig.payer,
+          requirements,
+          context,
+        );
+        if (this.receiverAuthorizers) {
+          await this.receiverAuthorizers.bind({
+            channelId,
+            network: requirements.network,
+            receiverAuthorizer: terms.receiverAuthorizer,
+          });
+        }
+        if (callerIdentity !== undefined && this.delegatedReceiverAuth) {
+          await this.delegatedReceiverAuth.identityStore.bind({
+            callerIdentity,
+            channelId,
+            network: requirements.network,
+          });
+        }
       }
     } catch (error) {
       // No transaction has been broadcast. Release the channel lock so a
@@ -999,6 +991,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       this.settlementCache.delete(key);
       if (error instanceof BatchReceiverAuthorizerConflictError) {
         throw new Error(`${BatchError.RECEIVER_AUTHORIZER_MISMATCH}: ${error.message}`);
+      }
+      if (error instanceof BatchDelegatedAuthIdentityConflictError) {
+        throw new Error(`${BatchError.DELEGATED_UNAUTHENTICATED}: ${error.message}`);
       }
       throw error;
     }
@@ -1127,12 +1122,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     payment: PaymentPayload,
     payload: BatchRefundPayload,
     requirements: PaymentRequirements,
+    context?: FacilitatorContext,
   ): Promise<SettleResponse> {
     const deps = this.sealDependencies();
-    const prepared = await prepareRefund(deps, payload, requirements, this.config);
+    const prepared = await prepareRefund(deps, payload, requirements, this.config, context);
     const { channelId, requestClose, terms } = prepared;
     if (requestClose === undefined) {
-      return settleCooperativeRefund(deps, payment, payload, requirements, prepared);
+      return settleCooperativeRefund(deps, payment, payload, requirements, prepared, context);
     }
     const key = `batch:refund:${requirements.network}:${channelId}:${requestClose}`;
     const completed = await this.pendingStore.get(this.completedBroadcastKey(key));
@@ -1944,8 +1940,17 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       nowSeconds: () => Math.floor(Date.now() / 1000),
       pendingStore: this.pendingStore,
       readChannel: (network, channelId) => this.readChannel(network, channelId),
-      resolveReceiverAuthorizer: async (network, channelId) =>
-        (await this.receiverAuthorizers.get(network, channelId))?.receiverAuthorizer,
+      getDelegatedCallerIdentity: (network, channelId) =>
+        storedDelegatedIdentity(this.delegatedReceiverAuth, network, channelId),
+      isDelegatedAuthorizer: bound => isDelegatedAuthorizer(this.delegatedReceiverAuth, bound),
+      resolveDelegatedIdentity: ctx => resolveDelegatedIdentity(this.delegatedReceiverAuth, ctx),
+      resolveReceiverAuthorizer: (network, channelId) =>
+        readReceiverAuthorizer(
+          this.receiverAuthorizers,
+          this.receiverBindingHistoryReader,
+          network,
+          channelId,
+        ),
       resolveTerms: (config, requirements) => this.resolveTerms(config, requirements),
       settlementCache: this.settlementCache,
       submitRedemption: (feePayer, network, instructions, key, payer) =>
@@ -1959,7 +1964,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
     channelId: string,
   ): Promise<void> {
-    const bound = await this.sealDependencies().resolveReceiverAuthorizer(
+    const bound = await readReceiverAuthorizer(
+      this.receiverAuthorizers,
+      this.receiverBindingHistoryReader,
       requirements.network,
       channelId,
     );
@@ -1973,15 +1980,4 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     const now = Date.now();
     return this.channelStorage.upsert({ ...record, firstSeenAt: now, lastActivityAt: now });
   }
-}
-
-export function calculateDistributionAmount(
-  channels: readonly { payoutWatermark: bigint; settled: bigint }[],
-): bigint {
-  return channels.reduce((total, channel) => {
-    if (channel.payoutWatermark > channel.settled) {
-      throw new Error(`${BatchError.CHANNEL_STATE}: payout watermark exceeds settled amount`);
-    }
-    return total + channel.settled - channel.payoutWatermark;
-  }, 0n);
 }

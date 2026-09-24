@@ -204,11 +204,17 @@ function internals(scheme: BatchSvmScheme): FacilitatorInternals {
 
 describe("batch facilitator lifecycle", () => {
   it("requires a usable managed signer", () => {
-    expect(() => new BatchSvmScheme({ getAddresses: () => [feePayer.address] } as never)).toThrow(
-      /requires getSigner/,
-    );
     expect(
-      () => new BatchSvmScheme({ getAddresses: () => [], getSigner: vi.fn() } as never),
+      () =>
+        new BatchSvmScheme({ getAddresses: () => [feePayer.address] } as never, {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
+    ).toThrow(/requires getSigner/);
+    expect(
+      () =>
+        new BatchSvmScheme({ getAddresses: () => [], getSigner: vi.fn() } as never, {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
     ).toThrow(/at least one fee payer/);
   });
 
@@ -223,7 +229,11 @@ describe("batch facilitator lifecycle", () => {
       readIndex += 1;
       return exists ? { owner: TOKEN_PROGRAM_ADDRESS } : null;
     });
-    const api = internals(new BatchSvmScheme(signer({ getAccountInfo }) as never));
+    const api = internals(
+      new BatchSvmScheme(signer({ getAccountInfo }) as never, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      }),
+    );
 
     await expect(
       api.assertSettlementAccounts(requirements(), payer.address, TOKEN_PROGRAM_ADDRESS),
@@ -237,6 +247,7 @@ describe("batch facilitator lifecycle", () => {
         signer({
           getAccountInfo: vi.fn().mockResolvedValue({ owner: TOKEN_2022_PROGRAM_ADDRESS }),
         }) as never,
+        { receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore() },
       ),
     );
 
@@ -246,7 +257,11 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("requires account reads for settlement-path preflight", async () => {
-    const api = internals(new BatchSvmScheme(signer({ getAccountInfo: undefined }) as never));
+    const api = internals(
+      new BatchSvmScheme(signer({ getAccountInfo: undefined }) as never, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      }),
+    );
 
     await expect(
       api.assertSettlementAccounts(requirements(), payer.address, TOKEN_PROGRAM_ADDRESS),
@@ -258,7 +273,9 @@ describe("batch facilitator lifecycle", () => {
       .fn()
       .mockResolvedValueOnce({ owner: TOKEN_PROGRAM_ADDRESS })
       .mockResolvedValueOnce(null);
-    const scheme = new BatchSvmScheme(signer({ getAccountInfo }) as never);
+    const scheme = new BatchSvmScheme(signer({ getAccountInfo }) as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const paymentRequirements = requirements();
 
     await expect(
@@ -277,7 +294,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("resolves valid channel terms and rejects malformed requirements", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     await expect(
       internals(scheme).resolveTerms(channelConfig, requirements()),
     ).resolves.toMatchObject({
@@ -316,11 +335,14 @@ describe("batch facilitator lifecycle", () => {
     const resolve = (scheme: BatchSvmScheme, config = channelConfig, req = requirements()) =>
       internals(scheme).resolveTerms(config, req);
     const validSigner = signer();
-    const valid = new BatchSvmScheme(validSigner as never);
+    const valid = new BatchSvmScheme(validSigner as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const token2022 = new BatchSvmScheme(
       signer({
         getAccountInfo: vi.fn().mockResolvedValue({ owner: TOKEN_2022_PROGRAM_ADDRESS }),
       }) as never,
+      { receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore() },
     );
     const receiverAuthorizer = payer.address;
     await expect(
@@ -372,10 +394,13 @@ describe("batch facilitator lifecycle", () => {
     ];
     for (const [config, req] of cases) await expect(resolve(valid, config, req)).rejects.toThrow();
 
-    const noAccountRead = new BatchSvmScheme(signer({ getAccountInfo: undefined }) as never);
+    const noAccountRead = new BatchSvmScheme(signer({ getAccountInfo: undefined }) as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     await expect(resolve(noAccountRead)).rejects.toThrow(/requires getAccountInfo/);
     const missingMint = new BatchSvmScheme(
       signer({ getAccountInfo: vi.fn().mockResolvedValue(undefined) }) as never,
+      { receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore() },
     );
     await expect(resolve(missingMint)).rejects.toThrow(BatchError.TOKEN_PROGRAM);
 
@@ -386,13 +411,11 @@ describe("batch facilitator lifecycle", () => {
       withdrawDelay: 900,
     };
     const assert = (value: Channel, config = channelConfig, allowed = [ChannelStatus.Open]) =>
-      internals(new BatchSvmScheme(signer() as never)).assertClaimChannel(
-        value,
-        config,
-        terms,
-        requirements(),
-        allowed,
-      );
+      internals(
+        new BatchSvmScheme(signer() as never, {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
+      ).assertClaimChannel(value, config, terms, requirements(), allowed);
     const mutations: Channel[] = [
       channel({ discriminator: 0 }),
       channel({ status: ChannelStatus.Closing }),
@@ -412,7 +435,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("verifies scheme and network envelopes before channel reads", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const voucher = await signBatchVoucher(payer, {
       channelId,
       expiresAt: 0,
@@ -432,7 +457,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("routes verify variants and classifies validation failures", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = internals(scheme);
     const voucher = await signBatchVoucher(payer, {
       channelId,
@@ -684,7 +711,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("routes facilitator settlement variants and converts thrown errors", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = internals(scheme) as FacilitatorInternals &
       Record<string, ReturnType<typeof vi.fn>>;
     const cases = [
@@ -938,7 +967,9 @@ describe("batch facilitator lifecycle", () => {
 
   it("serializes opens by channel and releases the lock before broadcast failures", async () => {
     const facilitatorSigner = signer();
-    const scheme = new BatchSvmScheme(facilitatorSigner as never);
+    const scheme = new BatchSvmScheme(facilitatorSigner as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = internals(scheme);
     const terms = {
       feePayer: feePayer.address,
@@ -986,6 +1017,7 @@ describe("batch facilitator lifecycle", () => {
       signer({
         simulateTransaction: vi.fn().mockRejectedValue(new Error("bad simulation")),
       }) as never,
+      { receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore() },
     );
     const simulationApi = internals(simulation);
     simulationApi.validateDeposit = vi.fn().mockResolvedValue({
@@ -1019,6 +1051,7 @@ describe("batch facilitator lifecycle", () => {
             new Error(`${BatchError.SETTLEMENT_SIMULATION}: missing treasury ATA`),
           ),
       }) as never,
+      { receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore() },
     );
     const classifiedApi = internals(classifiedSimulation);
     classifiedApi.validateDeposit = simulationApi.validateDeposit;
@@ -1035,7 +1068,9 @@ describe("batch facilitator lifecycle", () => {
       ),
     ).rejects.toThrow(`${BatchError.SETTLEMENT_SIMULATION}: missing treasury ATA`);
 
-    const indexing = new BatchSvmScheme(signer() as never);
+    const indexing = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const indexingApi = internals(indexing);
     indexingApi.validateDeposit = simulationApi.validateDeposit;
     indexingApi.readChannel = vi.fn().mockResolvedValue(undefined);
@@ -1056,7 +1091,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("prepares and confirms a voucher claim batch", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const privateApi = internals(scheme);
     privateApi.resolveTerms = vi.fn().mockResolvedValue({
       feePayer: feePayer.address,
@@ -1130,7 +1167,9 @@ describe("batch facilitator lifecycle", () => {
       ],
     });
     const configured = () => {
-      const scheme = new BatchSvmScheme(signer() as never);
+      const scheme = new BatchSvmScheme(signer() as never, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       const api = internals(scheme);
       api.resolveTerms = vi.fn().mockResolvedValue({
         feePayer: feePayer.address,
@@ -1217,7 +1256,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("prepares and confirms a distribution batch", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const privateApi = internals(scheme);
     privateApi.resolveTerms = vi.fn().mockResolvedValue({
       feePayer: feePayer.address,
@@ -1282,7 +1323,9 @@ describe("batch facilitator lifecycle", () => {
       channels: [{ channelConfig, channelId }],
     };
     const configured = () => {
-      const scheme = new BatchSvmScheme(signer() as never);
+      const scheme = new BatchSvmScheme(signer() as never, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       const api = internals(scheme);
       api.resolveTerms = vi.fn().mockResolvedValue({
         feePayer: feePayer.address,
@@ -1352,7 +1395,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("rejects empty and oversized redemption batches", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const emptyClaims: BatchClaimPayload = { claims: [], type: "claim" };
     await expect(
       scheme.settleClaims(
@@ -1382,7 +1427,9 @@ describe("batch facilitator lifecycle", () => {
 
   it("persists, reconciles, and forgets durable broadcast signatures", async () => {
     const facilitatorSigner = signer();
-    const scheme = new BatchSvmScheme(facilitatorSigner as never);
+    const scheme = new BatchSvmScheme(facilitatorSigner as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const privateApi = internals(scheme);
     const first = await privateApi.broadcastDurably(
       "key",
@@ -1405,6 +1452,7 @@ describe("batch facilitator lifecycle", () => {
       set: vi.fn().mockResolvedValue(undefined),
     };
     const recovering = new BatchSvmScheme(facilitatorSigner as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       pendingSettlementStore: pendingStore,
     });
     await expect(
@@ -1417,7 +1465,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("distinguishes pre-broadcast, pending, and onchain-terminal failures", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = internals(scheme);
     await expect(
       api.broadcastDurably("ordinary", NETWORK, payer.address, async () => {
@@ -1446,7 +1496,10 @@ describe("batch facilitator lifecycle", () => {
       signer({
         confirmTransaction: vi.fn().mockRejectedValue(new TransactionOnchainFailureError("failed")),
       }) as never,
-      { pendingSettlementStore: terminalStore },
+      {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        pendingSettlementStore: terminalStore,
+      },
     );
     await expect(
       internals(terminal).broadcastDurably("terminal", NETWORK, payer.address, vi.fn()),
@@ -1467,7 +1520,10 @@ describe("batch facilitator lifecycle", () => {
     };
     const retry = new BatchSvmScheme(
       signer({ confirmTransaction: vi.fn().mockRejectedValue(new Error("timeout")) }) as never,
-      { pendingSettlementStore: retryStore },
+      {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        pendingSettlementStore: retryStore,
+      },
     );
     await expect(
       internals(retry).broadcastDurably("retry", NETWORK, payer.address, vi.fn()),
@@ -1475,7 +1531,9 @@ describe("batch facilitator lifecycle", () => {
   });
 
   it("rejects invalid expiry, fee payer, deposit, and distribution arithmetic", () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = internals(scheme) as FacilitatorInternals & {
       resolveFeePayer(value: string): unknown;
       assertDepositChannel(value: Channel, validated: unknown, req: PaymentRequirements): void;

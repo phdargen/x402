@@ -153,7 +153,11 @@ export type BatchSealPayload = {
   channelConfig: BatchChannelConfig;
   /** Latest accepted voucher; its cumulative becomes the final settled watermark. */
   voucher: BatchVoucher;
-  closeAuthorization: CloseAuthorization;
+  /**
+   * Required when the channel's receiver authorizer is a server key. Omitted
+   * when the facilitator is that authorizer and authenticates the caller.
+   */
+  closeAuthorization?: CloseAuthorization | undefined;
 };
 
 export type BatchFacilitatorPayload =
@@ -270,7 +274,7 @@ export function isBatchFacilitatorPayload(value: unknown): value is BatchFacilit
       typeof value.channelId === "string" &&
       isBatchChannelConfig(value.channelConfig) &&
       isBatchVoucher(value.voucher) &&
-      isCloseAuthorization(value.closeAuthorization)
+      (value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization))
     );
   }
   return (

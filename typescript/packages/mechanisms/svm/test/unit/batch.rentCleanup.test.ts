@@ -19,6 +19,7 @@ import {
   BatchSvmRentCleanupManager,
 } from "../../src/batch-settlement/facilitator/rentCleanupManager";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import {
   InMemoryPaymentChannelStorage,
   type PaymentChannelRecord,
@@ -123,6 +124,7 @@ describe("Batch channel storage + scheme wiring", () => {
     const payTo = await generateKeyPairSigner();
     const storage = new InMemoryPaymentChannelStorage();
     const scheme = new BatchSvmScheme(toFacilitatorSvmSigner(feePayer), {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       channelStorage: storage,
     });
 

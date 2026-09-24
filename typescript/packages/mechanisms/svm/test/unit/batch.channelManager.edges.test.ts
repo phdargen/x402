@@ -425,4 +425,25 @@ describe("batch-settlement redemption worker edge cases", () => {
       }).redeem(),
     ).rejects.toThrow(/vanished mid-redemption/);
   });
+
+  it("seals a closing channel without closeAuthorization when no signer is configured", async () => {
+    const store = new MemoryChannelStore();
+    const id = (await generateKeyPairSigner()).address;
+    await store.put(channel(id, { status: "closing" }));
+    const seen: Record<string, unknown>[] = [];
+    const result = await new BatchChannelManager({
+      readPayoutWatermark: async () => 3_000n,
+      readSettledWatermark: async () => 3_000n,
+      requirements: requirements(),
+      settle: async request => {
+        seen.push(request.payload as Record<string, unknown>);
+        return ok();
+      },
+      store,
+    }).redeem();
+    expect(result.sealed).toEqual([id]);
+    const seal = seen.find(payload => payload.type === "seal");
+    expect(seal).toMatchObject({ channelId: id, type: "seal" });
+    expect(seal).not.toHaveProperty("closeAuthorization");
+  });
 });

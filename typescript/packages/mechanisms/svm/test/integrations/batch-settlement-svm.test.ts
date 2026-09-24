@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { BatchSvmScheme as BatchClientScheme } from "../../src/batch-settlement/client/scheme";
 import { BatchSvmScheme as BatchFacilitatorScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
 import { BatchChannelManager } from "../../src/batch-settlement/server/channelManager";
 import { MemoryChannelStore } from "../../src/batch-settlement/server/storage";
@@ -153,11 +154,13 @@ describe("batch-settlement SVM onchain", () => {
     let payer: KeyPairSigner;
     let operator: KeyPairSigner;
     let receiver: KeyPairSigner;
+    let receiverAuthorizer: KeyPairSigner;
 
     beforeAll(async () => {
       payer = await generateKeyPairSigner();
       operator = await generateKeyPairSigner();
       receiver = await generateKeyPairSigner();
+      receiverAuthorizer = await generateKeyPairSigner();
       await fundSol(payer.address, 10_000_000_000);
       await fundSol(operator.address, 10_000_000_000);
       await fundSol(receiver.address, 10_000_000_000);
@@ -181,10 +184,15 @@ describe("batch-settlement SVM onchain", () => {
     function pipeline(store = new MemoryChannelStore(), coldClient = false) {
       const facilitator = new x402Facilitator().register(
         NETWORK,
-        new BatchFacilitatorScheme(toFacilitatorSvmSigner(operator, { defaultRpcUrl: RPC_URL })),
+        new BatchFacilitatorScheme(toFacilitatorSvmSigner(operator, { defaultRpcUrl: RPC_URL }), {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
       );
       const server = new x402ResourceServer(new SvmFacilitatorClient(facilitator));
-      server.register(NETWORK, new BatchServerScheme({ store, withdrawDelay: WITHDRAW_DELAY }));
+      server.register(
+        NETWORK,
+        new BatchServerScheme({ receiverAuthorizer, store, withdrawDelay: WITHDRAW_DELAY }),
+      );
       const clientScheme = coldClient
         ? new BatchClientScheme(payer, { depositAmount: DEPOSIT, rpcUrl: RPC_URL })
         : lifecycleClient;
@@ -371,12 +379,15 @@ describe("batch-settlement SVM onchain", () => {
       const facilitatorSigner = toFacilitatorSvmSigner(operator, { defaultRpcUrl: RPC_URL });
       const facilitator = new x402Facilitator().register(
         NETWORK,
-        new BatchFacilitatorScheme(facilitatorSigner),
+        new BatchFacilitatorScheme(facilitatorSigner, {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
       );
       const before = await usdcBalance(receiver.address);
       const errors: unknown[] = [];
       const manager = new BatchChannelManager({
         onError: error => errors.push(error),
+        receiverAuthorizer,
         rpcUrl: RPC_URL,
         requirements: accepts()[0]!,
         settle: (payload, requirements) => facilitator.settle(payload as never, requirements),
@@ -409,10 +420,15 @@ describe("batch-settlement SVM onchain", () => {
       });
       const facilitator = new x402Facilitator().register(
         NETWORK,
-        new BatchFacilitatorScheme(toFacilitatorSvmSigner(operator, { defaultRpcUrl: RPC_URL })),
+        new BatchFacilitatorScheme(toFacilitatorSvmSigner(operator, { defaultRpcUrl: RPC_URL }), {
+          receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        }),
       );
       const server = new x402ResourceServer(new SvmFacilitatorClient(facilitator));
-      server.register(NETWORK, new BatchServerScheme({ store, withdrawDelay: WITHDRAW_DELAY }));
+      server.register(
+        NETWORK,
+        new BatchServerScheme({ receiverAuthorizer, store, withdrawDelay: WITHDRAW_DELAY }),
+      );
       await server.initialize();
       const client = new x402Client().register(NETWORK, thrifty);
 
@@ -487,16 +503,20 @@ describe("batch-settlement SVM onchain", () => {
         await fundUsdc(receiver.address, 0);
 
         const store = new MemoryChannelStore();
+        const receiverAuthorizer = await generateKeyPairSigner();
         const facilitatorSigner = toFacilitatorSvmSigner(feePayer, { defaultRpcUrl: RPC_URL });
         const facilitator = new x402Facilitator().register(
           NETWORK,
-          new BatchFacilitatorScheme(facilitatorSigner),
+          new BatchFacilitatorScheme(facilitatorSigner, {
+            receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+          }),
         );
         const server = new x402ResourceServer(new SvmFacilitatorClient(facilitator));
         server.register(
           NETWORK,
           new BatchServerScheme({
             operator: voucherOperator,
+            receiverAuthorizer,
             store,
             withdrawDelay: WITHDRAW_DELAY,
           }),
@@ -611,6 +631,7 @@ describe("batch-settlement SVM onchain", () => {
 
         const before = await usdcBalance(receiver.address);
         const manager = new BatchChannelManager({
+          receiverAuthorizer,
           requirements: matched,
           rpcUrl: RPC_URL,
           settle: (payload, requirements) => facilitator.settle(payload as never, requirements),

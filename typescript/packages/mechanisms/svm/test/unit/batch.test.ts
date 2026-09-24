@@ -22,6 +22,7 @@ import {
   BatchSvmScheme as BatchFacilitatorScheme,
   calculateDistributionAmount,
 } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
 import { encodeReceiverBindingMemo } from "../../src/batch-settlement/receiverBinding";
 import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
@@ -1235,7 +1236,9 @@ describe("batch-settlement SVM", () => {
 
   describe("facilitator registration surface", () => {
     it("advertises one managed fee payer without a paymentFlow override", () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       expect(facilitator.getExtra(SOLANA_DEVNET_CAIP2)).toEqual({
         feePayer: feePayer.address,
         maxIdleSecs: 604_800,
@@ -1245,15 +1248,21 @@ describe("batch-settlement SVM", () => {
 
     it("advertises the configured idle window and omits a disabled one", () => {
       const tuned = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
         maxIdleSecs: 3_600,
       });
       expect(tuned.getExtra(SOLANA_DEVNET_CAIP2)).toMatchObject({ maxIdleSecs: 3_600 });
       const disabled = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
         maxIdleSecs: 0,
       });
       expect(disabled.getExtra(SOLANA_DEVNET_CAIP2)).toEqual({ feePayer: feePayer.address });
       expect(
-        () => new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), { maxIdleSecs: -1 }),
+        () =>
+          new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+            receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+            maxIdleSecs: -1,
+          }),
       ).toThrow(/maxIdleSecs/);
     });
 
@@ -1296,7 +1305,9 @@ describe("batch-settlement SVM", () => {
     });
 
     it("rejects legacy payload shapes before touching RPC", async () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       const result = await facilitator.verify(
         {
           accepted: requirements(),
@@ -1312,7 +1323,9 @@ describe("batch-settlement SVM", () => {
     });
 
     it("asks for a request_close, then validates it, when no binding is stored", async () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       (facilitator as unknown as { readChannel(): Promise<undefined> }).readChannel = async () =>
         undefined;
       const refund = {
@@ -1333,7 +1346,9 @@ describe("batch-settlement SVM", () => {
     });
 
     it("rejects a refund that names an amount: only the full unused escrow returns", async () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer));
+      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       const result = await facilitator.verify(
         {
           accepted: requirements(),

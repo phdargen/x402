@@ -123,7 +123,11 @@ type ServerInternals = {
     requirements: PaymentRequirements,
     channelId: string,
   ): ChannelState;
-  assertStoredConfig(value: ChannelState, config: BatchChannelConfig): void;
+  assertStoredConfig(
+    value: ChannelState,
+    config: BatchChannelConfig,
+    requirements: PaymentRequirements,
+  ): void;
 };
 
 function internals(server: BatchSvmScheme): ServerInternals {
@@ -298,10 +302,10 @@ describe("batch server lifecycle boundaries", () => {
 
   it("rejects a stored channel with different immutable configuration", () => {
     const api = internals(new BatchSvmScheme({ receiverAuthorizer }));
-    expect(() => api.assertStoredConfig(state(), channelConfig)).not.toThrow();
-    expect(() => api.assertStoredConfig(state(), { ...channelConfig, salt: "1" })).toThrow(
-      BatchError.CHANNEL_STATE,
-    );
+    expect(() => api.assertStoredConfig(state(), channelConfig, requirements())).not.toThrow();
+    expect(() =>
+      api.assertStoredConfig(state(), { ...channelConfig, salt: "1" }, requirements()),
+    ).toThrow(BatchError.CHANNEL_STATE);
   });
 
   it("covers hook no-op and missing-reservation paths", async () => {

@@ -208,7 +208,7 @@ describe("batch-settlement seal", () => {
   it("accepts only a well-formed seal payload", async () => {
     const payload = await sealPayload(3_000n);
     expect(isBatchFacilitatorPayload(payload)).toBe(true);
-    expect(isBatchFacilitatorPayload({ ...payload, closeAuthorization: undefined })).toBe(false);
+    expect(isBatchFacilitatorPayload({ ...payload, closeAuthorization: undefined })).toBe(true);
     expect(isBatchFacilitatorPayload({ ...payload, voucher: undefined })).toBe(false);
     expect(
       isBatchFacilitatorPayload({
@@ -297,7 +297,7 @@ describe("batch-settlement seal", () => {
         },
         requirements(),
       ),
-    ).resolves.toMatchObject({ errorReason: BatchError.PAYLOAD_TYPE, success: false });
+    ).resolves.toMatchObject({ errorReason: BatchError.CLOSE_AUTHORIZATION, success: false });
 
     const forged = await facilitator();
     const impostor = await generateKeyPairSigner();

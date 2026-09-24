@@ -62,9 +62,10 @@ export interface BatchChannelManagerConfig {
    * Receiver-authorizer key advertised as `extra.receiverAuthorizer`. For a
    * channel the payer is closing, the worker signs a `CloseAuthorization` with
    * it and submits a `seal`, so vouchers above the onchain watermark are
-   * collected inside the grace period instead of forfeited.
+   * collected inside the grace period instead of forfeited. Omit it when the
+   * facilitator authenticates the close itself.
    */
-  receiverAuthorizer: MessagePartialSigner;
+  receiverAuthorizer?: MessagePartialSigner | undefined;
 }
 
 /** What one redemption pass moved. */
@@ -341,18 +342,20 @@ export class BatchChannelManager {
     }
     const { network, maxTimeoutSeconds } = this.config.requirements;
     const expiresAt = channel.highestVoucherExpiresAt ?? 0;
-    const closeAuthorization = await signCloseAuthorization(this.config.receiverAuthorizer, {
-      channelId: channel.channelId,
-      feePayer,
-      maxClaimableAmount: channel.signedMaxClaimable,
-      network,
-      validBefore: Math.floor(Date.now() / 1000) + maxTimeoutSeconds,
-      voucherExpiresAt: BigInt(expiresAt),
-    });
+    const authorizer = this.config.receiverAuthorizer;
+    const closeAuthorization = authorizer
+      ? await signCloseAuthorization(authorizer, {
+          channelId: channel.channelId,
+          feePayer,
+          maxClaimableAmount: channel.signedMaxClaimable,
+          network,
+          validBefore: Math.floor(Date.now() / 1000) + maxTimeoutSeconds,
+          voucherExpiresAt: BigInt(expiresAt),
+        })
+      : undefined;
     const payload: BatchSealPayload = {
       channelConfig: channel.channelConfig,
       channelId: channel.channelId,
-      closeAuthorization,
       type: "seal",
       voucher: {
         channelId: channel.channelId,
@@ -360,6 +363,7 @@ export class BatchChannelManager {
         maxClaimableAmount: channel.signedMaxClaimable.toString(),
         signature: channel.highestVoucherSignature!,
       },
+      ...(closeAuthorization ? { closeAuthorization } : {}),
     };
     const response = await this.config.settle(
       { accepted: this.config.requirements, payload, x402Version: 2 },

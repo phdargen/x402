@@ -21,7 +21,10 @@ import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { toFacilitatorAptosSigner } from "@x402/aptos";
 import { ExactAptosScheme } from "@x402/aptos/exact/facilitator";
-import { FacilitatorCasperSigner, createFacilitatorCasperSigner } from "@x402/casper";
+import {
+  FacilitatorCasperSigner,
+  createFacilitatorCasperSigner,
+} from "@x402/casper";
 import { ExactCasperScheme } from "@x402/casper/exact/facilitator";
 import { toFacilitatorAvmSigner } from "@x402/avm";
 import { ExactAvmScheme } from "@x402/avm/exact/facilitator";
@@ -39,7 +42,11 @@ import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { ExactEvmSchemeV1 } from "@x402/evm/exact/v1/facilitator";
 import { NETWORKS as EVM_V1_NETWORKS } from "@x402/evm/v1";
-import { BAZAAR, extractDiscoveryInfo, type DiscoveryResource } from "@x402/extensions/bazaar";
+import {
+  BAZAAR,
+  extractDiscoveryInfo,
+  type DiscoveryResource,
+} from "@x402/extensions/bazaar";
 import {
   EIP2612_GAS_SPONSORING,
   createErc20ApprovalGasSponsoringExtension,
@@ -56,7 +63,10 @@ import {
 } from "@x402/hedera";
 import { ExactHederaScheme } from "@x402/hedera/exact/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
-import { BatchSvmScheme as BatchSettlementSvmScheme } from "@x402/svm/batch-settlement/facilitator";
+import {
+  BatchSvmScheme as BatchSettlementSvmScheme,
+  InMemoryBatchReceiverAuthorizerStore,
+} from "@x402/svm/batch-settlement/facilitator";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
 import { ExactSvmSchemeV1 } from "@x402/svm/exact/v1/facilitator";
@@ -82,7 +92,10 @@ import {
   type FacilitatorHighloadV3Signer,
 } from "@x402/tvm";
 import { ExactTvmScheme } from "@x402/tvm/exact/facilitator";
-import { createFacilitatorNearSigner, type FacilitatorNearSignerConfig } from "@x402/near";
+import {
+  createFacilitatorNearSigner,
+  type FacilitatorNearSignerConfig,
+} from "@x402/near";
 import { ExactNearScheme as ExactNearFacilitatorScheme } from "@x402/near/exact/facilitator";
 import { ExactXrplScheme as ExactXrplFacilitatorScheme } from "@x402/xrpl/exact/facilitator";
 import * as KeetaNet from "@keetanetwork/keetanet-client";
@@ -135,7 +148,9 @@ const APTOS_RPC_URL = process.env.APTOS_RPC_URL;
 const CASPER_RPC_URL = process.env.CASPER_RPC_URL;
 const HEDERA_RPC_URL = process.env.HEDERA_RPC_URL;
 const STELLAR_RPC_URL = process.env.STELLAR_RPC_URL;
-const TVM_PROVIDER = (process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER).toLowerCase();
+const TVM_PROVIDER = (
+  process.env.TVM_PROVIDER || TVM_PROVIDER_TONCENTER
+).toLowerCase();
 
 // Map CAIP-2 network IDs to viem chains
 function getEvmChain(network: string): Chain {
@@ -173,14 +188,18 @@ const hasFacilitatorCredential = [
   process.env.FACILITATOR_EVM_PRIVATE_KEY,
   process.env.FACILITATOR_SVM_PRIVATE_KEY,
   process.env.FACILITATOR_APTOS_PRIVATE_KEY,
-  process.env.FACILITATOR_CASPER_PRIVATE_KEY && process.env.FACILITATOR_CASPER_PRIVATE_KEY_ALGORITHM,
+  process.env.FACILITATOR_CASPER_PRIVATE_KEY &&
+    process.env.FACILITATOR_CASPER_PRIVATE_KEY_ALGORITHM,
   process.env.FACILITATOR_AVM_PRIVATE_KEY,
-  process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
+  process.env.FACILITATOR_HEDERA_ACCOUNT_ID &&
+    process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
   process.env.FACILITATOR_KEETA_MNEMONIC,
   process.env.FACILITATOR_STELLAR_PRIVATE_KEY,
   process.env.FACILITATOR_TVM_PRIVATE_KEY,
-  process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIVATE_KEY,
-  process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRESS,
+  process.env.FACILITATOR_NEAR_ACCOUNT_ID &&
+    process.env.FACILITATOR_NEAR_PRIVATE_KEY,
+  process.env.FACILITATOR_CCD_PRIVATE_KEY &&
+    process.env.FACILITATOR_CCD_ADDRESS,
   process.env.XRPL_NETWORK, // keyless XRPL facilitator
   process.env.BLOCKFROST_PROJECT_ID, // Cardano runs provider-only without a mnemonic
 ].some(Boolean);
@@ -192,9 +211,12 @@ if (!hasFacilitatorCredential) {
 
 // Initialize the EVM account from private key when configured
 const evmAccount = process.env.FACILITATOR_EVM_PRIVATE_KEY
-  ? privateKeyToAccount(process.env.FACILITATOR_EVM_PRIVATE_KEY as `0x${string}`, {
-    nonceManager,
-  })
+  ? privateKeyToAccount(
+      process.env.FACILITATOR_EVM_PRIVATE_KEY as `0x${string}`,
+      {
+        nonceManager,
+      },
+    )
   : undefined;
 if (evmAccount) {
   console.info(`EVM Facilitator account: ${evmAccount.address}`);
@@ -204,12 +226,12 @@ if (evmAccount) {
 // delegate to this address or supply their own (SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY).
 const authorizerSigner: AuthorizerSigner | undefined = evmAccount
   ? {
-    address: evmAccount.address,
-    signTypedData: (params) =>
-      evmAccount.signTypedData(
-        params as Parameters<typeof evmAccount.signTypedData>[0],
-      ),
-  }
+      address: evmAccount.address,
+      signTypedData: (params) =>
+        evmAccount.signTypedData(
+          params as Parameters<typeof evmAccount.signTypedData>[0],
+        ),
+    }
   : undefined;
 if (authorizerSigner) {
   console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
@@ -218,8 +240,8 @@ if (authorizerSigner) {
 // Initialize the SVM account from private key when configured
 const svmAccount = process.env.FACILITATOR_SVM_PRIVATE_KEY
   ? await createKeyPairSignerFromBytes(
-    base58.decode(process.env.FACILITATOR_SVM_PRIVATE_KEY as string),
-  )
+      base58.decode(process.env.FACILITATOR_SVM_PRIVATE_KEY as string),
+    )
   : undefined;
 if (svmAccount) {
   console.info(`SVM Facilitator account: ${svmAccount.address}`);
@@ -242,7 +264,9 @@ if (process.env.FACILITATOR_APTOS_PRIVATE_KEY) {
 // Initialize the AVM signer from private key (optional)
 let avmSigner: ReturnType<typeof toFacilitatorAvmSigner> | undefined;
 if (process.env.FACILITATOR_AVM_PRIVATE_KEY) {
-  avmSigner = toFacilitatorAvmSigner(process.env.FACILITATOR_AVM_PRIVATE_KEY as string);
+  avmSigner = toFacilitatorAvmSigner(
+    process.env.FACILITATOR_AVM_PRIVATE_KEY as string,
+  );
   console.info(`AVM Facilitator account: ${avmSigner.getAddresses()[0]}`);
 }
 
@@ -250,20 +274,29 @@ let casperFacilitatorSigner: FacilitatorCasperSigner | undefined;
 if (process.env.FACILITATOR_CASPER_PRIVATE_KEY) {
   casperFacilitatorSigner = await createFacilitatorCasperSigner(
     process.env.FACILITATOR_CASPER_PRIVATE_KEY,
-    process.env.FACILITATOR_CASPER_PRIVATE_KEY_ALGORITHM === "secp256k1" ? 2 : 1, // Default to ED25519 if not specified);
+    process.env.FACILITATOR_CASPER_PRIVATE_KEY_ALGORITHM === "secp256k1"
+      ? 2
+      : 1, // Default to ED25519 if not specified);
     {
-      rpcUrlConfig: CASPER_RPC_URL ? { [`${CASPER_NETWORK}`]: CASPER_RPC_URL } : undefined,
+      rpcUrlConfig: CASPER_RPC_URL
+        ? { [`${CASPER_NETWORK}`]: CASPER_RPC_URL }
+        : undefined,
       speculativeRpcUrlConfig: process.env.CASPER_SPECULATIVE_RPC_URL
         ? { [`${CASPER_NETWORK}`]: process.env.CASPER_SPECULATIVE_RPC_URL }
         : undefined,
     },
   );
-  console.info(`Casper Facilitator account: ${casperFacilitatorSigner.getAddresses(CASPER_NETWORK as Network)[0]}`);
+  console.info(
+    `Casper Facilitator account: ${casperFacilitatorSigner.getAddresses(CASPER_NETWORK as Network)[0]}`,
+  );
 }
 
 // Initialize the Hedera signer from account + private key (optional)
 let hederaSigner: ReturnType<typeof toFacilitatorHederaSigner> | undefined;
-if (process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_PRIVATE_KEY) {
+if (
+  process.env.FACILITATOR_HEDERA_ACCOUNT_ID &&
+  process.env.FACILITATOR_HEDERA_PRIVATE_KEY
+) {
   const hederaAccountId = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
   const hederaKey = HederaPrivateKey.fromStringECDSA(
     process.env.FACILITATOR_HEDERA_PRIVATE_KEY,
@@ -290,10 +323,14 @@ if (process.env.FACILITATOR_HEDERA_ACCOUNT_ID && process.env.FACILITATOR_HEDERA_
 let keetaSigner: FacilitatorKeetaSigner | undefined;
 if (process.env.FACILITATOR_KEETA_MNEMONIC) {
   const keetaAccount = KeetaNet.lib.Account.fromSeed(
-    await KeetaNet.lib.Account.seedFromPassphrase(process.env.FACILITATOR_KEETA_MNEMONIC),
+    await KeetaNet.lib.Account.seedFromPassphrase(
+      process.env.FACILITATOR_KEETA_MNEMONIC,
+    ),
     0,
   );
-  console.info(`Keeta Facilitator account: ${keetaAccount.publicKeyString.toString()}`);
+  console.info(
+    `Keeta Facilitator account: ${keetaAccount.publicKeyString.toString()}`,
+  );
   keetaSigner = toFacilitatorKeetaSigner([keetaAccount]);
 }
 
@@ -310,21 +347,29 @@ if (process.env.FACILITATOR_STELLAR_PRIVATE_KEY) {
 // Initialize the TVM highload signer from private key (optional)
 let tvmSigner: FacilitatorHighloadV3Signer | undefined;
 if (process.env.FACILITATOR_TVM_PRIVATE_KEY) {
-  const tvmConfig = HighloadV3Config.fromPrivateKey(process.env.FACILITATOR_TVM_PRIVATE_KEY, {
-    provider: TVM_PROVIDER,
-    apiKey:
-      TVM_PROVIDER === TVM_PROVIDER_TONAPI
-        ? process.env.TVM_TONAPI_API_KEY
-        : process.env.TVM_TONCENTER_API_KEY,
-    providerBaseUrl: process.env.TVM_RPC_URL,
-  });
+  const tvmConfig = HighloadV3Config.fromPrivateKey(
+    process.env.FACILITATOR_TVM_PRIVATE_KEY,
+    {
+      provider: TVM_PROVIDER,
+      apiKey:
+        TVM_PROVIDER === TVM_PROVIDER_TONAPI
+          ? process.env.TVM_TONAPI_API_KEY
+          : process.env.TVM_TONCENTER_API_KEY,
+      providerBaseUrl: process.env.TVM_RPC_URL,
+    },
+  );
   tvmSigner = toFacilitatorTvmSigner({ [TVM_NETWORK]: tvmConfig });
-  console.info(`TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`);
+  console.info(
+    `TVM Facilitator account: ${tvmSigner.getAddressesForNetwork(TVM_NETWORK)[0]}`,
+  );
 }
 
 // Initialize the NEAR facilitator (relayer) signer from account + key (optional)
 let nearSigner: ReturnType<typeof createFacilitatorNearSigner> | undefined;
-if (process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIVATE_KEY) {
+if (
+  process.env.FACILITATOR_NEAR_ACCOUNT_ID &&
+  process.env.FACILITATOR_NEAR_PRIVATE_KEY
+) {
   nearSigner = createFacilitatorNearSigner({
     relayers: [
       {
@@ -335,7 +380,9 @@ if (process.env.FACILITATOR_NEAR_ACCOUNT_ID && process.env.FACILITATOR_NEAR_PRIV
     ],
     rpcUrls: NEAR_RPC_URL ? { [NEAR_NETWORK]: NEAR_RPC_URL } : undefined,
   });
-  console.info(`NEAR Facilitator relayer: ${process.env.FACILITATOR_NEAR_ACCOUNT_ID}`);
+  console.info(
+    `NEAR Facilitator relayer: ${process.env.FACILITATOR_NEAR_ACCOUNT_ID}`,
+  );
 }
 
 let cardanoSigner: ReturnType<typeof toFacilitatorCardanoSigner> | undefined;
@@ -344,7 +391,10 @@ if (process.env.BLOCKFROST_PROJECT_ID && CARDANO_RPC_URL) {
     mnemonic: process.env.FACILITATOR_CARDANO_MNEMONIC,
     network: CARDANO_NETWORK,
     provider: {
-      blockfrost: { baseUrl: CARDANO_RPC_URL, projectId: process.env.BLOCKFROST_PROJECT_ID },
+      blockfrost: {
+        baseUrl: CARDANO_RPC_URL,
+        projectId: process.env.BLOCKFROST_PROJECT_ID,
+      },
     },
     awaitConfirmation: false,
   });
@@ -353,84 +403,92 @@ if (process.env.BLOCKFROST_PROJECT_ID && CARDANO_RPC_URL) {
   );
 }
 
-let concordiumSigner: ReturnType<typeof toConcordiumFacilitatorSigner> | undefined;
-if (process.env.FACILITATOR_CCD_PRIVATE_KEY && process.env.FACILITATOR_CCD_ADDRESS) {
+let concordiumSigner:
+  | ReturnType<typeof toConcordiumFacilitatorSigner>
+  | undefined;
+if (
+  process.env.FACILITATOR_CCD_PRIVATE_KEY &&
+  process.env.FACILITATOR_CCD_ADDRESS
+) {
   const [host, port] = parseGrpcUrl(CCD_RPC_URL);
   concordiumSigner = toConcordiumFacilitatorSigner(
     process.env.FACILITATOR_CCD_ADDRESS,
     process.env.FACILITATOR_CCD_PRIVATE_KEY,
     { host, port, useTls: true },
   );
-  console.info(`CCD Facilitator account: ${process.env.FACILITATOR_CCD_ADDRESS} on ${CCD_NETWORK} (private key)`);
+  console.info(
+    `CCD Facilitator account: ${process.env.FACILITATOR_CCD_ADDRESS} on ${CCD_NETWORK} (private key)`,
+  );
 }
 
 // Create a Viem client with both wallet and public capabilities when EVM is configured
 const evmChain = getEvmChain(EVM_NETWORK);
 const viemClient = evmAccount
   ? createWalletClient({
-    account: evmAccount,
-    chain: evmChain,
-    transport: http(EVM_RPC_URL),
-  }).extend(publicActions)
+      account: evmAccount,
+      chain: evmChain,
+      transport: http(EVM_RPC_URL),
+    }).extend(publicActions)
   : undefined;
 
-const evmSigner = evmAccount && viemClient
-  ? toFacilitatorEvmSigner({
-    address: evmAccount.address,
-    readContract: (args: {
-      address: `0x${string}`;
-      abi: readonly unknown[];
-      functionName: string;
-      args?: readonly unknown[];
-    }) =>
-      viemClient.readContract({
-        ...args,
-        args: args.args || [],
-      }),
-    verifyTypedData: (args: {
-      address: `0x${string}`;
-      domain: Record<string, unknown>;
-      types: Record<string, unknown>;
-      primaryType: string;
-      message: Record<string, unknown>;
-      signature: `0x${string}`;
-    }) => viemClient.verifyTypedData(args as any),
-    writeContract: (args: {
-      address: `0x${string}`;
-      abi: readonly unknown[];
-      functionName: string;
-      args: readonly unknown[];
-      gas?: bigint;
-    }) =>
-      viemClient.writeContract({
-        ...args,
-        args: args.args || [],
-        gas: args.gas,
-      }),
-    sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
-      viemClient.sendTransaction(args),
-    waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
-      viemClient.waitForTransactionReceipt(args),
-    getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
-  })
-  : undefined;
+const evmSigner =
+  evmAccount && viemClient
+    ? toFacilitatorEvmSigner({
+        address: evmAccount.address,
+        readContract: (args: {
+          address: `0x${string}`;
+          abi: readonly unknown[];
+          functionName: string;
+          args?: readonly unknown[];
+        }) =>
+          viemClient.readContract({
+            ...args,
+            args: args.args || [],
+          }),
+        verifyTypedData: (args: {
+          address: `0x${string}`;
+          domain: Record<string, unknown>;
+          types: Record<string, unknown>;
+          primaryType: string;
+          message: Record<string, unknown>;
+          signature: `0x${string}`;
+        }) => viemClient.verifyTypedData(args as any),
+        writeContract: (args: {
+          address: `0x${string}`;
+          abi: readonly unknown[];
+          functionName: string;
+          args: readonly unknown[];
+          gas?: bigint;
+        }) =>
+          viemClient.writeContract({
+            ...args,
+            args: args.args || [],
+            gas: args.gas,
+          }),
+        sendTransaction: (args: { to: `0x${string}`; data: `0x${string}` }) =>
+          viemClient.sendTransaction(args),
+        waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
+          viemClient.waitForTransactionReceipt(args),
+        getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
+      })
+    : undefined;
 
 // Facilitator can now handle all Solana networks with automatic RPC creation
 // Pass custom RPC URL if provided
 const svmSigner = svmAccount
   ? toFacilitatorSvmSigner(
-    svmAccount,
-    SVM_RPC_URL ? { defaultRpcUrl: SVM_RPC_URL } : undefined,
-  )
+      svmAccount,
+      SVM_RPC_URL ? { defaultRpcUrl: SVM_RPC_URL } : undefined,
+    )
   : undefined;
 
 // Facilitator can handle all Aptos networks with automatic RPC creation
 // Pass custom RPC URL if provided
 const aptosSigner = aptosAccount
   ? toFacilitatorAptosSigner(
-    aptosAccount,
-    APTOS_RPC_URL ? { defaultRpcUrl: APTOS_RPC_URL } : undefined,
-  )
+      aptosAccount,
+      APTOS_RPC_URL ? { defaultRpcUrl: APTOS_RPC_URL } : undefined,
+    )
   : undefined;
 
 const verifiedPayments = new Map<string, number>();
@@ -482,7 +540,8 @@ function extractPayloadAction(paymentPayload: PaymentPayload): string {
 }
 
 // Minimal ABI fragment for reading channel state from the BatchSettlement contract
-const BATCH_SETTLEMENT_ADDRESS = "0x4020e07E964De72a79367828c9C6140fcaE00003" as const;
+const BATCH_SETTLEMENT_ADDRESS =
+  "0x4020e07E964De72a79367828c9C6140fcaE00003" as const;
 const channelsAbi = [
   {
     type: "function",
@@ -513,7 +572,11 @@ async function readChannelBalance(channelId: `0x${string}`): Promise<bigint> {
 async function waitForChannelDepositConfirmed(
   channelId: `0x${string}`,
   expectedMinBalance: bigint,
-  options: { initialDelayMs?: number; maxDelayMs?: number; timeoutMs?: number } = {},
+  options: {
+    initialDelayMs?: number;
+    maxDelayMs?: number;
+    timeoutMs?: number;
+  } = {},
 ): Promise<void> {
   const initialDelayMs = options.initialDelayMs ?? 250;
   const maxDelayMs = options.maxDelayMs ?? 4_000;
@@ -553,8 +616,12 @@ async function waitForChannelDepositConfirmed(
 async function waitForBatchSettlementDepositConfirmed(
   extra: Record<string, unknown> | undefined,
 ): Promise<void> {
-  const channelId = typeof extra?.channelId === "string" ? (extra.channelId as `0x${string}`) : undefined;
-  const balanceStr = typeof extra?.balance === "string" ? extra.balance : undefined;
+  const channelId =
+    typeof extra?.channelId === "string"
+      ? (extra.channelId as `0x${string}`)
+      : undefined;
+  const balanceStr =
+    typeof extra?.balance === "string" ? extra.balance : undefined;
 
   if (!channelId || !balanceStr) {
     console.warn(
@@ -567,7 +634,9 @@ async function waitForBatchSettlementDepositConfirmed(
   try {
     expectedMinBalance = BigInt(balanceStr);
   } catch {
-    console.warn(`⏳ deposit confirm: unparseable balance ${balanceStr}, skipping wait`);
+    console.warn(
+      `⏳ deposit confirm: unparseable balance ${balanceStr}, skipping wait`,
+    );
     return;
   }
 
@@ -605,13 +674,12 @@ if (svmSigner) {
         enableSmartWalletVerification: true,
       }),
     )
+    .register(SVM_NETWORK as Network, new UptoSvmScheme(svmSigner))
     .register(
       SVM_NETWORK as Network,
-      new UptoSvmScheme(svmSigner),
-    )
-    .register(
-      SVM_NETWORK as Network,
-      new BatchSettlementSvmScheme(svmSigner),
+      new BatchSettlementSvmScheme(svmSigner, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      }),
     )
     .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
 }
@@ -637,7 +705,10 @@ if (hederaSigner) {
   );
 }
 if (keetaSigner) {
-  facilitator.register(KEETA_NETWORK as Network, new ExactKeetaScheme(keetaSigner, console));
+  facilitator.register(
+    KEETA_NETWORK as Network,
+    new ExactKeetaScheme(keetaSigner, console),
+  );
 }
 if (stellarSigner) {
   facilitator.register(
@@ -649,16 +720,27 @@ if (tvmSigner) {
   facilitator.register(TVM_NETWORK as Network, new ExactTvmScheme(tvmSigner));
 }
 if (nearSigner) {
-  facilitator.register(NEAR_NETWORK as Network, new ExactNearFacilitatorScheme(nearSigner));
+  facilitator.register(
+    NEAR_NETWORK as Network,
+    new ExactNearFacilitatorScheme(nearSigner),
+  );
 }
 if (process.env.XRPL_NETWORK) {
   facilitator.register(
     XRPL_NETWORK as Network,
     new ExactXrplFacilitatorScheme(
-      XRPL_RPC_URL ? { wsUrlByNetwork: { [XRPL_NETWORK as `xrpl:${number}`]: XRPL_RPC_URL } } : {},
+      XRPL_RPC_URL
+        ? {
+            wsUrlByNetwork: {
+              [XRPL_NETWORK as `xrpl:${number}`]: XRPL_RPC_URL,
+            },
+          }
+        : {},
     ),
   );
-  console.info(`XRPL facilitator enabled on ${XRPL_NETWORK} (payer-signed; no facilitator signer)`);
+  console.info(
+    `XRPL facilitator enabled on ${XRPL_NETWORK} (payer-signed; no facilitator signer)`,
+  );
 }
 if (concordiumSigner) {
   facilitator.register(
@@ -674,7 +756,6 @@ if (cardanoSigner) {
     }),
   );
 }
-
 
 facilitator.registerExtension(BAZAAR);
 
@@ -740,7 +821,9 @@ if (evmSigner && viemClient) {
 
   facilitator
     .registerExtension(EIP2612_GAS_SPONSORING)
-    .registerExtension(createErc20ApprovalGasSponsoringExtension(erc20ApprovalSigner));
+    .registerExtension(
+      createErc20ApprovalGasSponsoringExtension(erc20ApprovalSigner),
+    );
 }
 
 facilitator
@@ -752,13 +835,13 @@ facilitator
       verifiedPayments.set(paymentHash, Date.now());
 
       // Hook 2: Extract and catalog bazaar discovery info
-        const discovered = extractDiscoveryInfo(
-          context.paymentPayload,
-          context.requirements,
-        );
-        if (discovered) {
-          const action =
-            "toolName" in discovered ? discovered.toolName : discovered.method;
+      const discovered = extractDiscoveryInfo(
+        context.paymentPayload,
+        context.requirements,
+      );
+      if (discovered) {
+        const action =
+          "toolName" in discovered ? discovered.toolName : discovered.method;
         if (!action) {
           return;
         }
@@ -829,7 +912,10 @@ facilitator
     // server's automatic retry with the same payload (core's
     // settleWithPendingRetry); that retry must still pass Hook 3, so the
     // verified-payment record is kept until a terminal outcome.
-    if (!context.result.success && context.result.errorReason === "settlement_pending") {
+    if (
+      !context.result.success &&
+      context.result.errorReason === "settlement_pending"
+    ) {
       console.log(
         `⏳ Settlement pending: ${context.result.transaction} (${JSON.stringify(context.result.extra ?? {})})`,
       );
@@ -1016,9 +1102,13 @@ app.get("/health", (req, res) => {
     svmNetwork: SVM_NETWORK,
     avmNetwork: avmSigner ? AVM_NETWORK : "(not configured)",
     aptosNetwork: aptosAccount ? APTOS_NETWORK : "(not configured)",
-    casperNetwork: casperFacilitatorSigner ? CASPER_NETWORK : "(not configured)",
+    casperNetwork: casperFacilitatorSigner
+      ? CASPER_NETWORK
+      : "(not configured)",
     hederaNetwork: hederaSigner ? HEDERA_NETWORK : "(not configured)",
-    keetaNetwork: process.env.FACILITATOR_KEETA_MNEMONIC ? KEETA_NETWORK : "(not configured)",
+    keetaNetwork: process.env.FACILITATOR_KEETA_MNEMONIC
+      ? KEETA_NETWORK
+      : "(not configured)",
     stellarNetwork: stellarSigner ? STELLAR_NETWORK : "(not configured)",
     nearNetwork: nearSigner ? NEAR_NETWORK : "(not configured)",
     xrplNetwork: process.env.XRPL_NETWORK ? XRPL_NETWORK : "(not configured)",

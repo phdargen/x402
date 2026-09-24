@@ -13,6 +13,7 @@
  */
 
 import type {
+  FacilitatorContext,
   Network,
   PaymentPayload,
   PaymentRequirements,
@@ -39,6 +40,7 @@ import type {
   BatchSealPayload,
   BatchVoucher,
 } from "../types";
+import type { BatchDelegatedSettleContext } from "./delegatedAuthStore";
 import { requireReceiverAuthorizer } from "./receiverAuthorizerStore";
 import type { BatchPendingSettlementStore } from "./recovery";
 import {
@@ -81,6 +83,12 @@ export interface SealDependencies {
   settlementCache: SettlementCache;
   resolveTerms(config: BatchChannelConfig, requirements: PaymentRequirements): Promise<SealTerms>;
   resolveReceiverAuthorizer(network: Network, channelId: string): Promise<string | undefined>;
+  /** True when `bound` is this facilitator's delegated receiver authorizer. */
+  isDelegatedAuthorizer(bound: string): boolean;
+  /** Caller identity for this settle, or undefined when the caller is unauthenticated. */
+  resolveDelegatedIdentity(ctx: BatchDelegatedSettleContext): Promise<string | undefined>;
+  /** Identity bound at open, or undefined when this facilitator has no row. */
+  getDelegatedCallerIdentity(network: Network, channelId: string): Promise<string | undefined>;
   deriveChannelId(config: BatchChannelConfig, feePayer: string): Promise<string>;
   fetchChannel(network: string, channelId: string): Promise<Channel>;
   readChannel(network: string, channelId: string): Promise<Channel | undefined>;
@@ -142,6 +150,7 @@ export function assertNotClosing(channel: Channel, channelId: string): void {
  * @param payload - The close to apply
  * @param requirements - The server's requirements for the channel
  * @param intent - Which close this is; decides the required channel status
+ * @param context - Facilitator extensions (used by delegated caller identity)
  * @returns The settle response
  */
 export async function settleSeal(
@@ -150,6 +159,7 @@ export async function settleSeal(
   payload: BatchSealPayload,
   requirements: PaymentRequirements,
   intent: CloseIntent,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const network = requirements.network;
   const payer = payload.channelConfig.payer;
@@ -158,7 +168,16 @@ export async function settleSeal(
   if (channelId !== payload.channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
   const cumulative = await verifyCloseVoucher(payload.voucher, payload.channelConfig, channelId);
 
-  await authenticateServer(deps, payload, requirements, terms, channelId, cumulative);
+  await authenticateServer(
+    deps,
+    payload,
+    requirements,
+    terms,
+    channelId,
+    cumulative,
+    intent,
+    context,
+  );
 
   // Namespace from spec Phase 5: ("close", channelId, maxClaimableAmount).
   const key = `batch:${intent}:${network}:${channelId}:${cumulative}`;
@@ -257,6 +276,7 @@ export async function settleSeal(
  * @param payload - The refund payload
  * @param requirements - The server's requirements for the channel
  * @param limits - Operator ceilings the `request_close` must respect
+ * @param context - Facilitator extensions (used by delegated caller identity)
  * @returns Channel, terms, and the verified `request_close` for the fallback path
  */
 export async function prepareRefund(
@@ -264,6 +284,7 @@ export async function prepareRefund(
   payload: BatchRefundPayload,
   requirements: PaymentRequirements,
   limits: RefundLimits,
+  context?: FacilitatorContext,
 ): Promise<PreparedRefund> {
   if ("amount" in payload) {
     // The program returns all unused escrow; a partial close is not a thing
@@ -282,6 +303,7 @@ export async function prepareRefund(
     );
   }
 
+  void context;
   const bound = await deps.resolveReceiverAuthorizer(requirements.network, channelId);
   if (bound !== undefined) {
     requireReceiverAuthorizer(bound, terms.receiverAuthorizer, channelId);
@@ -315,6 +337,7 @@ export async function prepareRefund(
  * @param payload - The refund payload
  * @param requirements - The server's requirements for the channel
  * @param limits - Operator ceilings the `request_close` must respect
+ * @param context - Facilitator extensions (used by delegated caller identity)
  * @returns The channel, its id, and the resolved terms
  */
 export async function validateRefund(
@@ -322,8 +345,9 @@ export async function validateRefund(
   payload: BatchRefundPayload,
   requirements: PaymentRequirements,
   limits: RefundLimits,
+  context?: FacilitatorContext,
 ): Promise<{ channel: Channel; channelId: string; terms: SealTerms }> {
-  const { channelId, terms } = await prepareRefund(deps, payload, requirements, limits);
+  const { channelId, terms } = await prepareRefund(deps, payload, requirements, limits, context);
   const channel = await deps.fetchChannel(requirements.network, channelId);
   deps.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
     ChannelStatus.Open,
@@ -341,6 +365,7 @@ export async function validateRefund(
  * @param payload - The refund payload
  * @param requirements - The server's requirements for the channel
  * @param prepared - The validated refund
+ * @param context - Facilitator extensions (used by delegated caller identity)
  * @returns The settle response
  */
 export async function settleCooperativeRefund(
@@ -349,6 +374,7 @@ export async function settleCooperativeRefund(
   payload: BatchRefundPayload,
   requirements: PaymentRequirements,
   prepared: PreparedRefund,
+  context?: FacilitatorContext,
 ): Promise<SettleResponse> {
   const { channelId, terms } = prepared;
   const current = await deps.readChannel(requirements.network, channelId);
@@ -358,18 +384,14 @@ export async function settleCooperativeRefund(
     ]);
     return refundResponse(channelId, current, requirements.network, "");
   }
-  const closeAuthorization = payload.closeAuthorization;
-  if (!closeAuthorization) {
-    throw new Error(`${BatchError.CLOSE_AUTHORIZATION}: a closeAuthorization is required`);
-  }
   const seal: BatchSealPayload = {
     channelConfig: payload.channelConfig,
     channelId,
-    closeAuthorization,
     type: "seal",
     voucher: payload.voucher,
+    ...(payload.closeAuthorization ? { closeAuthorization: payload.closeAuthorization } : {}),
   };
-  return settleSeal(deps, payment, seal, requirements, "refund");
+  return settleSeal(deps, payment, seal, requirements, "refund", context);
 }
 
 /**
@@ -410,6 +432,8 @@ async function verifyCloseVoucher(
  * @param terms - Resolved terms
  * @param channelId - Channel PDA
  * @param cumulative - Final voucher amount the authorization must bind
+ * @param intent - Which close this is; selects the delegated identity step
+ * @param context - Facilitator extensions (used by delegated caller identity)
  */
 async function authenticateServer(
   deps: SealDependencies,
@@ -418,12 +442,33 @@ async function authenticateServer(
   terms: SealTerms,
   channelId: string,
   cumulative: bigint,
+  intent: CloseIntent,
+  context?: FacilitatorContext,
 ): Promise<void> {
   const bound = requireReceiverAuthorizer(
     await deps.resolveReceiverAuthorizer(requirements.network, channelId),
     terms.receiverAuthorizer,
     channelId,
   );
+  if (deps.isDelegatedAuthorizer(bound)) {
+    const identity = await deps.resolveDelegatedIdentity({
+      channelId,
+      facilitatorContext: context,
+      network: requirements.network,
+      payer: payload.channelConfig.payer,
+      step: intent === "refund" ? "refund" : "seal",
+    });
+    const stored = await deps.getDelegatedCallerIdentity(requirements.network, channelId);
+    if (!identity || identity !== stored) {
+      throw new Error(
+        `${BatchError.DELEGATED_UNAUTHENTICATED}: caller identity does not match the channel binding`,
+      );
+    }
+    return;
+  }
+  if (!payload.closeAuthorization) {
+    throw new Error(`${BatchError.CLOSE_AUTHORIZATION}: a closeAuthorization is required`);
+  }
   const binding = {
     channelId,
     feePayer: terms.feePayer,

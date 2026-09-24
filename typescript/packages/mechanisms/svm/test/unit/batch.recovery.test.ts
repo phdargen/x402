@@ -8,6 +8,7 @@ import { signBatchVoucher } from "../../src/batch-settlement/client/channel";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { InMemoryBatchPendingSettlementStore } from "../../src/batch-settlement/facilitator/recovery";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { prepareRefund } from "../../src/batch-settlement/facilitator/seal";
 import type {
   BatchChannelConfig,
@@ -185,7 +186,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(`batch:claim:${NETWORK}:${channelId}:1000:completed`, TX);
     for (let attempt = 0; attempt < 2; attempt++) {
       const transport = signer();
-      const restarted = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+      const restarted = new BatchSvmScheme(transport as never, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        pendingSettlementStore: store,
+      });
       const api = configure(restarted);
       api.readChannel = vi.fn().mockResolvedValue(undefined);
       api.submitRedemption = vi.fn();
@@ -210,7 +214,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(key, TX);
     await store.set(`batch:transaction:${NETWORK}:${TX}:wire`, "original-signed-bytes");
     const transport = signer(vi.fn().mockResolvedValue({ slot: 123n }));
-    const restarted = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+    const restarted = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(restarted);
     api.readChannel = vi
       .fn()
@@ -233,7 +240,10 @@ describe("batch-settlement outcome recovery", () => {
     const key = `batch:claim:${NETWORK}:${channelId}:1000`;
     await store.set(key, TX);
     const transport = signer(vi.fn().mockResolvedValue({ slot: 321n }));
-    const scheme = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     api.waitForChannelRead = vi.fn();
     const { getChannelEncoder } = await import(
@@ -267,7 +277,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(key, TX);
     await store.set(`batch:transaction:${NETWORK}:${TX}:wire`, "original-signed-bytes");
     const transport = signer(vi.fn().mockRejectedValue(new Error("history unavailable")));
-    const scheme = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     api.submitRedemption = vi.fn();
     const payload = await claimPayload();
@@ -286,7 +299,9 @@ describe("batch-settlement outcome recovery", () => {
   });
 
   it("retries a stale claim read after confirmation", async () => {
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = configure(scheme);
     api.readChannel = vi
       .fn()
@@ -314,6 +329,7 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(key, TX);
     const confirm = vi.fn().mockResolvedValue(undefined);
     const recovering = new BatchSvmScheme(signer(confirm) as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       pendingSettlementStore: store,
     });
     const recoveryApi = configure(recovering);
@@ -329,7 +345,10 @@ describe("batch-settlement outcome recovery", () => {
     expect(await store.get(key)).toBeUndefined();
     expect(await store.get(`${key}:completed`)).toBe(TX);
 
-    const restarted = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const restarted = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const restartedApi = configure(restarted);
     restartedApi.readChannel = vi.fn();
     restartedApi.submitRedemption = vi.fn();
@@ -339,7 +358,9 @@ describe("batch-settlement outcome recovery", () => {
     expect(restartedApi.readChannel).not.toHaveBeenCalled();
     expect(restartedApi.submitRedemption).not.toHaveBeenCalled();
 
-    const unrelated = new BatchSvmScheme(signer() as never);
+    const unrelated = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const unrelatedApi = configure(unrelated);
     unrelatedApi.readChannel = vi
       .fn()
@@ -356,8 +377,14 @@ describe("batch-settlement outcome recovery", () => {
     const key = `batch:distribute:${NETWORK}:${MINT}:${RECEIVER}:${channelId}`;
     await store.set(key, TX);
     const transport = signer();
-    const first = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
-    const second = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+    const first = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
+    const second = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     configure(first);
     configure(second);
     const payload: BatchSettlePayload = {
@@ -376,7 +403,10 @@ describe("batch-settlement outcome recovery", () => {
   it("does not delete a successor transaction when an older completion finishes late", async () => {
     const store = new InMemoryBatchPendingSettlementStore();
     await store.set("key", "successor");
-    const scheme = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     await api.completeOrPending("key", TX, NETWORK, payer.address);
     expect(await store.get("key")).toBe("successor");
@@ -392,7 +422,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(key, TX);
     const firstSigner = signer();
     firstSigner.getConfirmedTransaction.mockResolvedValue(await payoutEvidence("200", "1700"));
-    const first = new BatchSvmScheme(firstSigner as never, { pendingSettlementStore: store });
+    const first = new BatchSvmScheme(firstSigner as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(first);
     api.submitRedemption = vi.fn();
     const response = await first.settleDistributions(payment(payload), payload, requirements());
@@ -407,7 +440,10 @@ describe("batch-settlement outcome recovery", () => {
     expect(api.submitRedemption).not.toHaveBeenCalled();
     expect(await store.get(key)).toBeUndefined();
 
-    const restarted = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const restarted = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const restartedApi = configure(restarted);
     restartedApi.readChannel = vi
       .fn()
@@ -435,7 +471,9 @@ describe("batch-settlement outcome recovery", () => {
       .mockResolvedValueOnce(null as never)
       .mockRejectedValueOnce(new Error("RPC catching up"))
       .mockResolvedValue(await payoutEvidence("200", "9000"));
-    const scheme = new BatchSvmScheme(transport as never);
+    const scheme = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = configure(scheme);
     api.fetchChannel = vi
       .fn()
@@ -460,6 +498,7 @@ describe("batch-settlement outcome recovery", () => {
       .mockRejectedValueOnce(new Error("ledger unavailable"))
       .mockResolvedValue(undefined);
     const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       pendingSettlementStore: store,
       onDistributionConfirmed: record,
     });
@@ -488,7 +527,10 @@ describe("batch-settlement outcome recovery", () => {
     const key = `batch:refund:${NETWORK}:${channelId}:signed-close`;
     const store = new InMemoryPendingSettlementStore();
     await store.set(key, TX);
-    const recovering = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const recovering = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const recoveryApi = configure(recovering);
     vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
@@ -510,6 +552,7 @@ describe("batch-settlement outcome recovery", () => {
     expect(recoveryApi.readChannel).toHaveBeenCalledTimes(2);
 
     const completedReplay = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       pendingSettlementStore: store,
     });
     const completedReplayApi = configure(completedReplay);
@@ -527,7 +570,10 @@ describe("batch-settlement outcome recovery", () => {
     ).resolves.toMatchObject({ extra: {}, success: true, transaction: TX });
     expect(completedReplayApi.readChannel).toHaveBeenCalledTimes(2);
 
-    const restarted = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const restarted = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const restartedApi = configure(restarted);
     vi.mocked(prepareRefund).mockResolvedValue({
       channelId,
@@ -562,7 +608,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(`batch:refund:${NETWORK}:${channelId}:signed-close`, TX);
     const transport = signer();
     transport.getConfirmedTransaction.mockResolvedValue(null as never);
-    const scheme = new BatchSvmScheme(transport as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(transport as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     api.waitForChannelRead = vi.fn();
     api.reconcileBroadcast = vi.fn().mockResolvedValue({
@@ -609,7 +658,10 @@ describe("batch-settlement outcome recovery", () => {
     await store.set(`batch:claim:${NETWORK}:${channelId}:1000`, TX);
     await store.set(`batch:distribute:${NETWORK}:${MINT}:${RECEIVER}:${channelId}`, TX);
     await store.set(`batch:refund:${NETWORK}:${channelId}:signed-close`, TX);
-    const scheme = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     const failure = {
       errorReason: "transaction_failed",
@@ -643,7 +695,9 @@ describe("batch-settlement outcome recovery", () => {
       type: "refund",
       voucher: { channelId, expiresAt: 0, maxClaimableAmount: "1000", signature: "signature" },
     };
-    const scheme = new BatchSvmScheme(signer() as never);
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
     const api = configure(scheme);
     api.fetchChannel = vi
       .fn()
@@ -679,7 +733,10 @@ describe("batch-settlement outcome recovery", () => {
       get: vi.fn().mockResolvedValue(undefined),
       set: vi.fn().mockRejectedValue(new Error("write unavailable")),
     };
-    const scheme = new BatchSvmScheme(signer() as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = configure(scheme);
     await expect(api.completeOrPending("key", TX, NETWORK, payer.address)).resolves.toMatchObject({
       errorReason: "settlement_pending",

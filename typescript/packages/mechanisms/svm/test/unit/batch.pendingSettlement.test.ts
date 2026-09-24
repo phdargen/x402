@@ -9,6 +9,7 @@ import { InMemoryPendingSettlementStore } from "@x402/core/facilitator";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { BatchSvmScheme as BatchFacilitatorScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { broadcastOpen } from "../../src/payment-channels/facilitator";
 import { USDC_DEVNET_ADDRESS } from "../../src/defaultAssets";
 import { SOLANA_DEVNET_CAIP2, MEMO_PROGRAM_ADDRESS } from "../../src/constants";
@@ -47,7 +48,10 @@ describe("batch-settlement pending settlement", () => {
     });
     const scheme = new BatchFacilitatorScheme(
       { ...signer, confirmTransaction: async () => undefined },
-      { pendingSettlementStore: store },
+      {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        pendingSettlementStore: store,
+      },
     );
     return scheme as unknown as Durable;
   }
@@ -73,7 +77,9 @@ describe("batch-settlement pending settlement", () => {
         confirmTransaction: confirm,
         getAccountInfo: vi.fn().mockResolvedValue(null),
       };
-      const scheme = new BatchFacilitatorScheme(transport);
+      const scheme = new BatchFacilitatorScheme(transport, {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      });
       const internals = scheme as any;
       const instructions = [
         {
@@ -159,7 +165,10 @@ describe("batch-settlement pending settlement", () => {
           recordDuringConfirm = await store.get(KEY);
         },
       },
-      { pendingSettlementStore: store },
+      {
+        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+        pendingSettlementStore: store,
+      },
     );
     let broadcasts = 0;
 

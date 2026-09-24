@@ -22,6 +22,7 @@ import type {
   SchemeNetworkServer,
   SchemeServerHooks,
   SettleResponse,
+  SupportedKind,
   VerifyResponse,
 } from "@x402/core/types";
 import type { DeepReadonly } from "@x402/core/types";
@@ -44,6 +45,7 @@ import {
   getStablecoinAddress,
   getStablecoinTokenProgram,
   numberToDecimalString,
+  validateSvmAddress,
 } from "../../utils";
 import { BatchError } from "../errors";
 import { verifyBatchAuthorization } from "../authorization";
@@ -91,8 +93,10 @@ export interface BatchSvmServerConfig {
    * Receiver-authorizer signer. Advertised as `extra.receiverAuthorizer`,
    * bound to each channel at open, and used to sign the `CloseAuthorization`s
    * that cooperative refunds and seals of closing channels require.
+   * Omit it to delegate those closes to a facilitator that advertises its own
+   * `receiverAuthorizer`.
    */
-  receiverAuthorizer: MessagePartialSigner;
+  receiverAuthorizer?: MessagePartialSigner | undefined;
   /** Called when the facilitator reports a paid request's channel as closing, so the host can run a redemption pass. */
   onChannelClosing?: ((channelId: string) => void) | undefined;
   store?: ChannelStore | undefined;
@@ -166,17 +170,19 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       if (BigInt(raw.voucher.maxClaimableAmount) !== current.chargedCumulativeAmount) {
         throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
       }
-      closeAuthorization = await signCloseAuthorization(this.config.receiverAuthorizer, {
-        channelId: request.channelId,
-        feePayer,
-        maxClaimableAmount: current.chargedCumulativeAmount,
-        network: ctx.requirements.network,
-        validBefore: Math.floor(Date.now() / 1000) + ctx.requirements.maxTimeoutSeconds,
-        voucherExpiresAt: BigInt(raw.voucher.expiresAt),
-      });
+      if (this.config.receiverAuthorizer) {
+        closeAuthorization = await signCloseAuthorization(this.config.receiverAuthorizer, {
+          channelId: request.channelId,
+          feePayer,
+          maxClaimableAmount: current.chargedCumulativeAmount,
+          network: ctx.requirements.network,
+          validBefore: Math.floor(Date.now() / 1000) + ctx.requirements.maxTimeoutSeconds,
+          voucherExpiresAt: BigInt(raw.voucher.expiresAt),
+        });
+      }
       return current;
     });
-    return { closeAuthorization };
+    return closeAuthorization ? { closeAuthorization } : undefined;
   };
 
   enrichSettlementResponse = async (
@@ -270,6 +276,40 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return this.defaultMoneyConversion(amount, network, stablecoin);
   }
 
+  /**
+   * Fail server startup when the facilitator does not advertise a usable `feePayer`,
+   * or when this server delegates and the facilitator does not advertise a
+   * `receiverAuthorizer`.
+   *
+   * @param network - The network identifier being validated
+   * @param supportedKind - The facilitator's advertised kind for this scheme/network
+   * @param _ - Extensions advertised by the facilitator (unused)
+   * @returns A problem message when misconfigured, or void when valid
+   */
+  validateFacilitatorSupport(
+    network: Network,
+    supportedKind: SupportedKind,
+    _: string[],
+  ): string | void {
+    const feePayer = supportedKind.extra?.feePayer;
+    if (typeof feePayer !== "string" || !validateSvmAddress(feePayer)) {
+      return (
+        `facilitator does not advertise a valid feePayer for batch-settlement on ${network}; ` +
+        `a base58 Solana address is required`
+      );
+    }
+    if (this.config.receiverAuthorizer) return;
+
+    const advertised = supportedKind.extra?.receiverAuthorizer;
+    if (typeof advertised !== "string" || !validateSvmAddress(advertised)) {
+      return (
+        `no receiverAuthorizer is configured and the facilitator does not advertise a ` +
+        `receiverAuthorizer on ${network}. Configure a receiverAuthorizer or use a ` +
+        `facilitator that advertises one.`
+      );
+    }
+  }
+
   enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
     supportedKind: {
@@ -295,6 +335,15 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     // still have a way to pay.
     const { operator: _routeOperator, ...routeExtra } = paymentRequirements.extra ?? {};
     void _routeOperator;
+    const advertised = supportedKind.extra?.receiverAuthorizer;
+    const local = this.config.receiverAuthorizer?.address;
+    if (local && typeof advertised === "string" && advertised !== local) {
+      throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
+    }
+    const receiverAuthorizer = local ?? (typeof advertised === "string" ? advertised : undefined);
+    if (!receiverAuthorizer || !validateSvmAddress(receiverAuthorizer)) {
+      throw new Error("Payment requirements must include a valid extra.receiverAuthorizer");
+    }
     return Promise.resolve({
       ...paymentRequirements,
       extra: {
@@ -306,7 +355,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         ),
         withdrawDelay,
         minDeposit: this.resolveMinDepositHint(paymentRequirements),
-        receiverAuthorizer: this.config.receiverAuthorizer.address,
+        receiverAuthorizer,
         ...(serverSigned
           ? { operator: this.config.operator!.address, voucherSigner: "server" }
           : {}),
@@ -368,7 +417,9 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
     return new BatchChannelManager({
       ...options,
-      receiverAuthorizer: this.config.receiverAuthorizer,
+      ...(this.config.receiverAuthorizer
+        ? { receiverAuthorizer: this.config.receiverAuthorizer }
+        : {}),
       requirements,
       settle: (payload, accepted) =>
         facilitator.settle(payload as unknown as PaymentPayload, accepted),
@@ -429,14 +480,18 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       const channelId = await this.validatePayload(raw, ctx.requirements);
       const state = await this.store.get(channelId);
       if (state) {
-        this.assertStoredConfig(state, raw.channelConfig);
+        this.assertStoredConfig(state, raw.channelConfig, ctx.requirements);
       }
       if (raw.type === "deposit" && !state) {
         const extra = ctx.requirements.extra!;
+        const receiverAuthorizer = extra.receiverAuthorizer;
+        if (typeof receiverAuthorizer !== "string") {
+          throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
+        }
         try {
           await verifyOpenTransaction(raw.deposit.transaction, {
             authorizedSigner: raw.channelConfig.payerAuthorizer,
-            expectedBindingMemo: encodeReceiverBindingMemo(this.config.receiverAuthorizer.address),
+            expectedBindingMemo: encodeReceiverBindingMemo(receiverAuthorizer),
             feePayer: String(extra.feePayer),
             from: raw.channelConfig.payer,
             maxCap: parseU64(raw.deposit.amount, "deposit.amount"),
@@ -598,7 +653,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       await this.store.update(request.channelId, current => {
         const state = current ?? this.provisionalState(raw, ctx.requirements, request.channelId);
         if (state.status !== "open") throw new Error(BatchError.CLOSE_STATE);
-        this.assertStoredConfig(state, raw.channelConfig);
+        this.assertStoredConfig(state, raw.channelConfig, ctx.requirements);
         const reservations = liveReservations(state.reservations);
         const active = Object.values(reservations);
         const kind = raw.type === "refund" ? "close" : request.requestId ? "server" : "client";
@@ -918,8 +973,10 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       throw new Error(BatchError.WITHDRAW_DELAY_MISMATCH);
     }
     if (
-      extra.receiverAuthorizer !== this.config.receiverAuthorizer.address ||
-      raw.channelConfig.receiverAuthorizer !== extra.receiverAuthorizer
+      typeof extra.receiverAuthorizer !== "string" ||
+      raw.channelConfig.receiverAuthorizer !== extra.receiverAuthorizer ||
+      (this.config.receiverAuthorizer !== undefined &&
+        extra.receiverAuthorizer !== this.config.receiverAuthorizer.address)
     ) {
       throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
     }
@@ -1161,9 +1218,21 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     };
   }
 
-  private assertStoredConfig(state: ChannelState, config: BatchChannelConfig): void {
+  private assertStoredConfig(
+    state: ChannelState,
+    config: BatchChannelConfig,
+    requirements: PaymentRequirements,
+  ): void {
     if (JSON.stringify(state.channelConfig) !== JSON.stringify(config)) {
       throw new Error(BatchError.CHANNEL_STATE);
+    }
+    const challenged = requirements.extra?.receiverAuthorizer;
+    if (
+      state.channelConfig.receiverAuthorizer !== challenged ||
+      (this.config.receiverAuthorizer !== undefined &&
+        challenged !== this.config.receiverAuthorizer.address)
+    ) {
+      throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
     }
   }
 

@@ -133,19 +133,46 @@ requires closing the channel and opening a new one. The facilitator MUST NOT
 trust a receiver-authorizer key merely because it appears in
 `PaymentRequirements` or a settlement request.
 
-The facilitator records the binding keyed by `(network, channelId)` before it
-broadcasts the open. The first writer wins: a retry with the same key succeeds,
-and a different key MUST be rejected with
-`invalid_batch_settlement_svm_receiver_authorizer_mismatch`. A missing record is
-unavailable. The payer-signed memo makes reconstruction possible; this scheme
-assumes the facilitator retains the record. Bindings are enforced as follows:
+The bound key is either the server's own signer (**self-managed**) or a key the
+facilitator advertises and holds (**delegated**). A server with no local signer
+MUST copy `extra.receiverAuthorizer` from the facilitator's `/supported`
+advertisement and MUST refuse to start when that advertisement is missing or
+not a Solana address. A server with a local signer MUST reject a challenge
+whose `extra.receiverAuthorizer` is a different key.
+
+In delegated mode the facilitator authenticates the caller. On the open it
+resolves a caller identity and records it, keyed by `(network, channelId)`,
+before broadcast. A missing identity MUST be rejected with
+`invalid_batch_settlement_svm_delegated_unauthenticated`. The first writer
+wins. On `seal` and cooperative `refund` the same identity MUST be presented
+again; `closeAuthorization` is then omitted. The identity is not onchain. If
+the facilitator loses it, those closes fail closed and the client falls back
+to `request_close`. A facilitator that did not opt into delegated
+authorization MUST reject a close that omits `closeAuthorization`.
+
+The facilitator MUST be able to read the binding from at least one of:
+
+- a store, written before the open is broadcast (first writer wins; a different
+  key MUST be rejected with
+  `invalid_batch_settlement_svm_receiver_authorizer_mismatch`), or
+- the payment-channel facilitator signer's RPC, by paging the channel
+  account's signatures to the oldest successful transaction and reading the
+  binding memo from the base64 `getTransaction` result.
+
+Configuring both is allowed. The store is primary; a history read is written
+back into the store. A history-only facilitator does not write a store row,
+because the transaction is the record. History depth cannot be checked at
+startup: the signer's RPC MUST retain the open for the life of the
+channel, and a pruned history is an unavailable binding. Bindings are enforced
+as follows:
 
 - `deposit` (top-up), `voucher` and `authorization`: the bound key MUST equal
   `extra.receiverAuthorizer`. No `CloseAuthorization` is involved.
 - `seal` and cooperative `refund`: the bound key MUST equal
-  `extra.receiverAuthorizer`, and the request MUST carry a valid
-  `CloseAuthorization` from that key. A `seal` without an available binding
-  MUST be rejected.
+  `extra.receiverAuthorizer`. Self-managed closes MUST carry a valid
+  `CloseAuthorization` from that key. Delegated closes MUST match the caller
+  identity bound at open and MUST NOT require `closeAuthorization`. A `seal`
+  without an available binding MUST be rejected.
 - `claim` and `settle`: no receiver-authorizer check.
 
 Neither the binding nor a `CloseAuthorization` replaces the facilitator's
@@ -398,7 +425,7 @@ fields revoke the operator's onchain authority to sign vouchers for the channel.
 | Field | Type | Notes |
 |---|---|---|
 | `validBefore` | number | Integer Unix seconds. The server MUST set it no later than its current time plus `maxTimeoutSeconds`; the facilitator MUST require `now < validBefore <= now + maxTimeoutSeconds`. |
-| `signature` | string | Base58 Ed25519 signature by the channel's bound receiver authorizer (section 3). |
+| `signature` | string | Base58 Ed25519 signature by the channel's bound receiver authorizer (section 3). Omitted on a delegated close; the facilitator authenticates the caller instead. |
 
 The receiver authorizer signs the SHA-256 digest of this exact byte sequence:
 
@@ -1110,16 +1137,19 @@ A cooperative refund (section 3) instead returns the close signature and
 
 The facilitator advertises its SVM transaction fee payer and, when it runs
 idle rent cleanup, the idle window `maxIdleSecs` (a positive integer number of
-seconds; the reference implementation defaults to `604800`, seven days). The
-server MUST copy both values into `PaymentRequirements.extra`, then set
-`extra.tokenProgram` from the selected asset's verified mint owner. A server
-SHOULD claim every channel well inside `maxIdleSecs`, because the facilitator
-may close an idle channel at its onchain `settled` watermark and any voucher
-value above it is then forfeited. The scheme
-resolves to the protocol-default `authorization` payment flow, so
-`extra.paymentFlow` is normally omitted; when either party emits it, the value
-MUST be `"authorization"`. The server MUST set `extra.receiverAuthorizer`
-(section 3). That key is server-owned and is not advertised by the facilitator:
+seconds; the reference implementation defaults to `604800`, seven days). A
+facilitator that accepts delegated closes also advertises
+`extra.receiverAuthorizer`, the key it binds into those channels. The server
+MUST copy `feePayer` and `maxIdleSecs` into `PaymentRequirements.extra`, then
+set `extra.tokenProgram` from the selected asset's verified mint owner. A
+server SHOULD claim every channel well inside `maxIdleSecs`, because the
+facilitator may close an idle channel at its onchain `settled` watermark and
+any voucher value above it is then forfeited. The scheme resolves to the
+protocol-default `authorization` payment flow, so `extra.paymentFlow` is
+normally omitted; when either party emits it, the value MUST be
+`"authorization"`. The server MUST set `extra.receiverAuthorizer` (section 3):
+its own signer when it self-manages closes, otherwise the facilitator's
+advertised key:
 
 ```json
 {
@@ -1744,6 +1774,9 @@ Standard x402 codes apply. The facilitator reports verification failures in
   in section 3 does not match `extra.receiverAuthorizer`.
 - `invalid_batch_settlement_svm_receiver_binding_unavailable` - the binding in
   section 3 is unavailable.
+- `invalid_batch_settlement_svm_delegated_unauthenticated` - a delegated open,
+  seal, or cooperative refund has no caller identity, or the identity does not
+  match the one bound at open.
 - `invalid_batch_settlement_svm_close_authorization` - close authorization is
   missing, malformed, expired, signed by a key other than the channel's bound
   receiver authorizer, or does not bind the exact cooperative-close request.

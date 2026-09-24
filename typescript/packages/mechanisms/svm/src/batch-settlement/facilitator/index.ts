@@ -28,6 +28,16 @@ export type {
 export { InMemoryBatchPendingSettlementStore } from "./recovery";
 export type { BatchPendingSettlementStore } from "./recovery";
 export {
+  BatchDelegatedAuthIdentityConflictError,
+  InMemoryBatchDelegatedAuthStore,
+} from "./delegatedAuthStore";
+export type {
+  BatchDelegatedAuthBinding,
+  BatchDelegatedAuthStore,
+  BatchDelegatedReceiverAuth,
+  BatchDelegatedSettleContext,
+} from "./delegatedAuthStore";
+export {
   BatchReceiverAuthorizerConflictError,
   InMemoryBatchReceiverAuthorizerStore,
 } from "./receiverAuthorizerStore";
@@ -35,3 +45,8 @@ export type {
   BatchReceiverAuthorizerBinding,
   BatchReceiverAuthorizerStore,
 } from "./receiverAuthorizerStore";
+export { createReceiverBindingHistoryReader } from "./receiverBindingHistoryReader";
+export type {
+  BatchReceiverBindingHistoryReader,
+  BatchReceiverBindingHistorySignature,
+} from "./receiverBindingHistoryReader";

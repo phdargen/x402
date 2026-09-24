@@ -23,6 +23,7 @@ import {
   BatchSvmRentCleanupManager,
   BatchSvmScheme,
   InMemoryBatchChannelStorage,
+  InMemoryBatchReceiverAuthorizerStore,
   type RentCleanupCloseResult,
   type RentCleanupReclaimResult,
 } from "@x402/svm/batch-settlement/facilitator";
@@ -163,7 +164,10 @@ if (svmPrivateKey) {
     svmAccount,
     svmRpcUrl ? { defaultRpcUrl: svmRpcUrl } : undefined,
   );
-  const svmBatchScheme = new BatchSvmScheme(svmSigner, { channelStorage });
+  const svmBatchScheme = new BatchSvmScheme(svmSigner, {
+    channelStorage,
+    receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+  });
   facilitator.register(SVM_NETWORK, svmBatchScheme);
 
   rentCleanupManager = svmBatchScheme.createRentCleanupManager(SVM_NETWORK);

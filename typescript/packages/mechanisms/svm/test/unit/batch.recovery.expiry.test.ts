@@ -22,6 +22,7 @@ import {
   InMemoryBatchPendingSettlementStore,
 } from "../../src/batch-settlement/facilitator/recovery";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
+import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import type { BatchChannelConfig, BatchSettlePayload } from "../../src/batch-settlement/types";
 import {
   MEMO_PROGRAM_ADDRESS,
@@ -127,7 +128,10 @@ async function pendingScheme(signer: ReturnType<typeof transport>, key = KEY) {
   const store = new InMemoryBatchPendingSettlementStore();
   await store.set(key, signature);
   await store.set(wireKey(), wire);
-  const scheme = new BatchSvmScheme(signer as never, { pendingSettlementStore: store });
+  const scheme = new BatchSvmScheme(signer as never, {
+    receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    pendingSettlementStore: store,
+  });
   return { internals: scheme as unknown as Internals, scheme, store };
 }
 
@@ -245,6 +249,7 @@ describe("ambiguous payout attribution", () => {
     const store = new InMemoryBatchPendingSettlementStore();
     await store.set(key, signature);
     const scheme = new BatchSvmScheme(signer as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       pendingSettlementStore: store,
       onDistributionConfirmed: record,
     });
@@ -285,7 +290,10 @@ describe("wire records", () => {
     const signer = transport();
     const store = new InMemoryBatchPendingSettlementStore();
     await store.set(KEY, "other-signature");
-    const scheme = new BatchSvmScheme(signer as never, { pendingSettlementStore: store });
+    const scheme = new BatchSvmScheme(signer as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+      pendingSettlementStore: store,
+    });
     const api = scheme as unknown as Internals & { reconcileBroadcast: unknown };
     api.reconcileBroadcast = vi
       .fn()
