@@ -242,7 +242,7 @@ rentCleanup.start({
 });
 ```
 
-Configure **either** `receiverAuthorizerStore` **or** `receiverBindingHistoryReader` (or both: store primary, history fallback). The facilitator must enforce the receiver-authorizer binding read from the open transaction Memo before broadcasting deposit, and on cooperative `seal` / `refund`.
+Configure `receiverAuthorizerStore`, `receiverBindingHistoryReader`, or both. The history reader is used only when set here; it is not taken from the signer. A store-only facilitator binds the receiver authorizer and reads it back before broadcasting an open, and does not broadcast if that write fails. When both are set, a failed store write still broadcasts the open. The binding is checked on cooperative `seal` and `refund` only.
 
 `getExtra()` advertises `feePayer` (channel `rent_payer` and zero-share `payee`) and, when idle cleanup is enabled, `maxIdleSecs`. It advertises `receiverAuthorizer` only when `delegatedReceiverAuth` is set. `withdrawDelay` comes from the server. Production deployments should use durable `pendingSettlementStore`, a shared `channelStorage`, and a shared `identityStore` when running multiple replicas.
 

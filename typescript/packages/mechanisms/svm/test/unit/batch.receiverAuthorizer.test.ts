@@ -8,6 +8,7 @@ import {
   BatchReceiverAuthorizerConflictError,
   InMemoryBatchReceiverAuthorizerStore,
 } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
+import type { BatchReceiverBindingHistoryReader } from "../../src/batch-settlement/facilitator/receiverBindingHistoryReader";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
 import {
   encodeReceiverBindingMemo,
@@ -219,9 +220,10 @@ describe("batch-settlement receiver-authorizer binding", () => {
     ).resolves.toMatchObject({ success: true, transaction: SIGNATURE });
     expect((await store.get(NETWORK, channelId))?.receiverAuthorizer).toBe(payer.address);
 
-    // Later, against the real server, neither a voucher nor a top-up is accepted.
+    // Voucher and top-up do not read the binding. Cooperative refund does.
     const serverRequirements = requirements(server.address);
     const channelConfig = { ...attack.payload.channelConfig, receiverAuthorizer: server.address };
+    const reads = vi.spyOn(store, "get");
     await expect(
       scheme.verify(
         {
@@ -231,16 +233,23 @@ describe("batch-settlement receiver-authorizer binding", () => {
         },
         serverRequirements,
       ),
-    ).resolves.toMatchObject({
-      invalidReason: BatchError.RECEIVER_AUTHORIZER_MISMATCH,
-      isValid: false,
-    });
+    ).resolves.toMatchObject({ isValid: true });
     api.readChannel = vi.fn().mockResolvedValue(channel());
+    await scheme.verify(
+      {
+        accepted: serverRequirements,
+        payload: { ...attack.payload, channelConfig },
+        x402Version: 2,
+      },
+      serverRequirements,
+    );
+    expect(reads).not.toHaveBeenCalled();
+    api.readChannel = vi.fn().mockResolvedValue(undefined);
     await expect(
       scheme.verify(
         {
           accepted: serverRequirements,
-          payload: { ...attack.payload, channelConfig },
+          payload: { channelConfig, type: "refund", voucher: attack.payload.voucher },
           x402Version: 2,
         },
         serverRequirements,
@@ -250,4 +259,105 @@ describe("batch-settlement receiver-authorizer binding", () => {
       isValid: false,
     });
   });
+
+  it("broadcasts an open only after a store-only bind reads back", async () => {
+    const attack = await openedDeposit();
+    const down = new InMemoryBatchReceiverAuthorizerStore();
+    vi.spyOn(down, "bind").mockRejectedValue(new Error("store down"));
+    const failed = await facilitatorFor(down);
+    await expect(failed.scheme.settle(attack.payment, attack.requirements)).resolves.toMatchObject({
+      errorReason: "transaction_failed",
+      success: false,
+    });
+    expect(failed.broadcast).not.toHaveBeenCalled();
+
+    const unread = new InMemoryBatchReceiverAuthorizerStore();
+    vi.spyOn(unread, "get").mockResolvedValue(undefined);
+    const missing = await facilitatorFor(unread);
+    await expect(missing.scheme.settle(attack.payment, attack.requirements)).resolves.toMatchObject(
+      {
+        errorReason: BatchError.RECEIVER_BINDING_UNAVAILABLE,
+        success: false,
+      },
+    );
+    expect(missing.broadcast).not.toHaveBeenCalled();
+
+    const stored = new InMemoryBatchReceiverAuthorizerStore();
+    const opened = await facilitatorFor(stored);
+    await expect(opened.scheme.settle(attack.payment, attack.requirements)).resolves.toMatchObject({
+      success: true,
+      transaction: SIGNATURE,
+    });
+    expect(opened.broadcast).toHaveBeenCalledOnce();
+    expect((await stored.get(NETWORK, attack.channelId))?.receiverAuthorizer).toBe(payer.address);
+  });
+
+  it("still broadcasts when a store write fails and history is configured", async () => {
+    const attack = await openedDeposit();
+    const store = new InMemoryBatchReceiverAuthorizerStore();
+    vi.spyOn(store, "bind").mockRejectedValue(new Error("store down"));
+    const { broadcast, scheme } = await facilitatorFor(store, {
+      getSignaturesForAddress: vi.fn(),
+      getTransaction: vi.fn(),
+    });
+    await expect(scheme.settle(attack.payment, attack.requirements)).resolves.toMatchObject({
+      success: true,
+      transaction: SIGNATURE,
+    });
+    expect(broadcast).toHaveBeenCalledOnce();
+    expect(await store.get(NETWORK, attack.channelId)).toBeUndefined();
+  });
+
+  it("skips the bind when only a history reader is configured", async () => {
+    const attack = await openedDeposit();
+    const { broadcast, scheme } = await facilitatorFor(undefined, {
+      getSignaturesForAddress: vi.fn(),
+      getTransaction: vi.fn(),
+    });
+    await expect(scheme.settle(attack.payment, attack.requirements)).resolves.toMatchObject({
+      success: true,
+      transaction: SIGNATURE,
+    });
+    expect(broadcast).toHaveBeenCalledOnce();
+  });
 });
+
+async function openedDeposit() {
+  const built = await buildDepositPayload({
+    blockhash: { blockhash: RECEIVER, lastValidBlockHeight: 1n },
+    depositAmount: 10_000n,
+    feePayer: feePayer.address,
+    firstCharge: 1_000n,
+    mint: MINT,
+    openSlot: OPEN_SLOT,
+    payer,
+    receiver: RECEIVER,
+    receiverAuthorizer: payer.address,
+    salt: 0n,
+    tokenProgram: TOKEN_PROGRAM_ADDRESS,
+    withdrawDelay: 900,
+  });
+  return {
+    channelId: built.channelId,
+    payment: { accepted: requirements(payer.address), payload: built.payload, x402Version: 2 },
+    requirements: requirements(payer.address),
+  };
+}
+
+async function facilitatorFor(
+  store: InMemoryBatchReceiverAuthorizerStore | undefined,
+  historyReader?: BatchReceiverBindingHistoryReader,
+) {
+  const scheme = new BatchSvmScheme(signer() as never, {
+    ...(store ? { receiverAuthorizerStore: store } : {}),
+    ...(historyReader ? { receiverBindingHistoryReader: historyReader } : {}),
+  });
+  const api = scheme as unknown as Record<string, ReturnType<typeof vi.fn>>;
+  const broadcast = vi.fn().mockResolvedValue({ ok: true, signature: SIGNATURE });
+  api.readChannel = vi.fn().mockResolvedValue(undefined);
+  api.fetchChannel = vi.fn().mockResolvedValue(channel());
+  api.broadcastDurably = broadcast;
+  api.completeOrPending = vi.fn().mockResolvedValue(undefined);
+  api.trackChannel = vi.fn().mockResolvedValue(undefined);
+  return { broadcast, scheme };
+}

@@ -2,9 +2,20 @@ import { generateKeyPairSigner } from "@solana/kit";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildOpenPaymentChannelTransaction } from "../../src/payment-channels/open";
-import { readReceiverAuthorizer } from "../../src/batch-settlement/facilitator/bindingSource";
-import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
+import {
+  assertBindingSource,
+  assertDelegatedReceiverAuth,
+  isDelegatedAuthorizer,
+  readReceiverAuthorizer,
+  resolveDelegatedIdentity,
+} from "../../src/batch-settlement/facilitator/bindingSource";
+import { InMemoryBatchDelegatedAuthStore } from "../../src/batch-settlement/facilitator/delegatedAuthStore";
+import {
+  BatchReceiverAuthorizerConflictError,
+  InMemoryBatchReceiverAuthorizerStore,
+} from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import type { BatchReceiverBindingHistoryReader } from "../../src/batch-settlement/facilitator/receiverBindingHistoryReader";
+import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
 import {
   encodeReceiverBindingMemo,
@@ -77,6 +88,14 @@ describe("batch-settlement binding source", () => {
     expect(() => new BatchSvmScheme(signer() as never)).toThrow(/receiverAuthorizerStore/);
     expect(
       () =>
+        new BatchSvmScheme({
+          ...signer(),
+          getSignaturesForAddress: vi.fn(),
+          getTransaction: vi.fn(),
+        } as never),
+    ).toThrow(/receiverAuthorizerStore/);
+    expect(
+      () =>
         new BatchSvmScheme(signer() as never, {
           receiverBindingHistoryReader: {
             getSignaturesForAddress: vi.fn(),
@@ -137,6 +156,128 @@ describe("batch-settlement binding source", () => {
     ).resolves.toBeUndefined();
     expect(await store.get(NETWORK, missing.channelId)).toBeUndefined();
     expect(await store.get(NETWORK, doubled.channelId)).toBeUndefined();
+  });
+
+  it("returns a store hit without consulting history", async () => {
+    const store = new InMemoryBatchReceiverAuthorizerStore();
+    const channelId = "stored-channel";
+    await store.bind({ channelId, network: NETWORK, receiverAuthorizer: server.address });
+    const historyReader: BatchReceiverBindingHistoryReader = {
+      getSignaturesForAddress: vi.fn(async () => {
+        throw new Error("history should not run");
+      }),
+      getTransaction: vi.fn(),
+    };
+
+    await expect(readReceiverAuthorizer(store, historyReader, NETWORK, channelId)).resolves.toBe(
+      server.address,
+    );
+    expect(historyReader.getSignaturesForAddress).not.toHaveBeenCalled();
+  });
+
+  it("maps a write-back conflict to RECEIVER_AUTHORIZER_MISMATCH and rethrows other bind errors", async () => {
+    const open = await buildOpenPaymentChannelTransaction(openArgs());
+    const historyReader: BatchReceiverBindingHistoryReader = {
+      getSignaturesForAddress: async () => [{ err: null, signature: "open" }],
+      getTransaction: async () => open.transaction,
+    };
+    const conflictStore = {
+      bind: vi.fn(async () => {
+        throw new BatchReceiverAuthorizerConflictError();
+      }),
+      delete: vi.fn(),
+      get: vi.fn(async () => undefined),
+    };
+    await expect(
+      readReceiverAuthorizer(conflictStore, historyReader, NETWORK, open.channelId),
+    ).rejects.toThrow(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
+
+    const failingStore = {
+      bind: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+      delete: vi.fn(),
+      get: vi.fn(async () => undefined),
+    };
+    await expect(
+      readReceiverAuthorizer(failingStore, historyReader, NETWORK, open.channelId),
+    ).rejects.toThrow(/disk full/);
+  });
+
+  it("validates binding-source and delegated-auth configuration", () => {
+    expect(assertDelegatedReceiverAuth(undefined)).toBeUndefined();
+    const identityStore = new InMemoryBatchDelegatedAuthStore();
+    const delegated = {
+      identityStore,
+      receiverAuthorizer: server.address,
+      resolveCallerIdentity: async () => "caller",
+    };
+    expect(assertDelegatedReceiverAuth(delegated)).toBe(delegated);
+
+    expect(() =>
+      assertDelegatedReceiverAuth({
+        ...delegated,
+        receiverAuthorizer: "not-a-key",
+      }),
+    ).toThrow(/receiverAuthorizer address/);
+    expect(() =>
+      assertDelegatedReceiverAuth({
+        ...delegated,
+        identityStore: { bind: vi.fn() } as never,
+      }),
+    ).toThrow(/identityStore must implement/);
+
+    expect(() =>
+      assertBindingSource({
+        receiverAuthorizerStore: { bind: vi.fn() } as never,
+      }),
+    ).toThrow(/receiverAuthorizerStore must implement/);
+    expect(() =>
+      assertBindingSource({
+        receiverBindingHistoryReader: { getSignaturesForAddress: vi.fn() } as never,
+      }),
+    ).toThrow(/receiverBindingHistoryReader must implement/);
+  });
+
+  it("resolves delegated identity and recognizes the delegated authorizer key", async () => {
+    const delegated = {
+      identityStore: new InMemoryBatchDelegatedAuthStore(),
+      receiverAuthorizer: server.address,
+      resolveCallerIdentity: vi.fn(),
+    };
+    delegated.resolveCallerIdentity.mockResolvedValueOnce("caller-a");
+    await expect(
+      resolveDelegatedIdentity(delegated, {
+        channelId: "ch",
+        network: NETWORK,
+        payer: payer.address,
+        step: "deposit",
+      }),
+    ).resolves.toBe("caller-a");
+
+    delegated.resolveCallerIdentity.mockRejectedValueOnce(new Error("auth down"));
+    await expect(
+      resolveDelegatedIdentity(delegated, {
+        channelId: "ch",
+        network: NETWORK,
+        payer: payer.address,
+        step: "seal",
+      }),
+    ).resolves.toBeUndefined();
+
+    delegated.resolveCallerIdentity.mockResolvedValueOnce("");
+    await expect(
+      resolveDelegatedIdentity(delegated, {
+        channelId: "ch",
+        network: NETWORK,
+        payer: payer.address,
+        step: "refund",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(isDelegatedAuthorizer(delegated, server.address)).toBe(true);
+    expect(isDelegatedAuthorizer(delegated, payer.address)).toBe(false);
+    expect(isDelegatedAuthorizer(undefined, server.address)).toBe(false);
   });
 });
 

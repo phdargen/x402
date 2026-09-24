@@ -74,7 +74,11 @@ function historyReaderFromChannelHistory(
 }
 
 /**
- * Use the signer's history reads when this facilitator signer has them.
+ * Adapt a signer's history reads to {@link BatchReceiverBindingHistoryReader}.
+ *
+ * `BatchSvmScheme` does not call this. Pass the result as
+ * `receiverBindingHistoryReader` only when that signer is the history source
+ * the facilitator intends to use.
  *
  * @param signer - Facilitator signer, possibly a {@link PaymentChannelFacilitatorSigner}
  * @returns A history reader, or undefined when the signer has no history reads

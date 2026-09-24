@@ -57,17 +57,21 @@ export interface BatchSvmFacilitatorConfig {
   maxComputeUnits?: number | undefined;
   maxRequiredSignatures?: number | undefined;
   /**
-   * Receiver authorizer each channel was opened for, bound before its open is
-   * broadcast. A missing row is resolved from
-   * {@link receiverBindingHistoryReader} when that is set, then written back
-   * here. One of this store or the history reader is required.
+   * Receiver authorizer each channel was opened for. Required unless
+   * {@link receiverBindingHistoryReader} is set. When this is the only source,
+   * the open is bound and read back before broadcast, and a failed write does
+   * not send the transaction. When a history reader is also set, a failed
+   * write still broadcasts. A missing row is resolved from that reader and
+   * written back here.
    */
   receiverAuthorizerStore?: BatchReceiverAuthorizerStore | undefined;
   /**
-   * Full-history reader of the open transaction's binding memo. Used when the
-   * store misses, and as the only record when no store is configured.
-   * Configuring both is allowed: the store is primary and the history reader
-   * is the fallback plus the source for write-back.
+   * Explicit full-history reader of the open transaction's binding memo.
+   * Used only when set here: the facilitator does not adopt one from the
+   * signer or a public RPC. Used when the store misses, and as the only
+   * record when no store is configured. Configuring both is allowed: the
+   * store is primary, a failed store write still broadcasts the open, and
+   * the history reader is the fallback plus the source for write-back.
    */
   receiverBindingHistoryReader?: BatchReceiverBindingHistoryReader | undefined;
   /**
@@ -80,7 +84,7 @@ export interface BatchSvmFacilitatorConfig {
 }
 
 /**
- * Require a store or a history reader, and reject a value that lacks its methods.
+ * Require a store or an explicit history reader, and reject a value that lacks its methods.
  *
  * @param config - Facilitator configuration
  */

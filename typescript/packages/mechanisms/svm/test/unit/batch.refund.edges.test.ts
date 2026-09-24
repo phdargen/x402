@@ -45,6 +45,29 @@ describe("batch-settlement refund driver edge cases", () => {
     );
   });
 
+  it("selects the Solana accept when an EVM batch-settlement accept is listed first", async () => {
+    const evm = {
+      ...requirements(),
+      extra: {},
+      network: "eip155:84532",
+    };
+    const header = encodePaymentRequiredHeader({
+      accepts: [evm, requirements()],
+      x402Version: 2,
+    });
+    await expect(
+      probeBatchRequirements(
+        "https://example.test/paid",
+        respond(402, { "PAYMENT-REQUIRED": header }),
+      ),
+    ).resolves.toMatchObject({
+      requirements: {
+        extra: { feePayer: USDC_MAINNET_ADDRESS },
+        network: SOLANA_DEVNET_CAIP2,
+      },
+    });
+  });
+
   it("rejects a route that advertises no batch-settlement accept", async () => {
     const header = encodePaymentRequiredHeader({
       accepts: [requirements("exact")],

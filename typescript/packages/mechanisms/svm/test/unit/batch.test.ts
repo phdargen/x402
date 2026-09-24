@@ -51,7 +51,7 @@ import {
   encodeVoucherMessageBytes,
   verifyVoucherSignature,
 } from "../../src/payment-channels/voucher";
-import { toFacilitatorSvmSigner } from "../../src/signer";
+import { type FacilitatorSvmSigner, toFacilitatorSvmSigner } from "../../src/signer";
 
 const DUMMY_BLOCKHASH = USDC_MAINNET_ADDRESS;
 const MINT = USDC_DEVNET_ADDRESS;
@@ -131,6 +131,18 @@ function serverState(overrides: Partial<ChannelState> = {}): ChannelState {
 
 async function signedVoucher(maxClaimableAmount: bigint, expiresAt = 0): Promise<BatchVoucher> {
   return signBatchVoucher(payer, { channelId, expiresAt, maxClaimableAmount });
+}
+
+/** Avoid devnet RPC in verify paths that call `resolveTerms` (mint owner read). */
+function batchFacilitatorSigner(feePayerSigner: typeof feePayer): FacilitatorSvmSigner {
+  return {
+    ...toFacilitatorSvmSigner(feePayerSigner),
+    getAccountInfo: async () => ({
+      data: "AA==",
+      lamports: 0n,
+      owner: TOKEN_PROGRAM_ADDRESS,
+    }),
+  };
 }
 
 describe("batch-settlement SVM", () => {
@@ -1323,7 +1335,7 @@ describe("batch-settlement SVM", () => {
     });
 
     it("asks for a request_close, then validates it, when no binding is stored", async () => {
-      const facilitator = new BatchFacilitatorScheme(toFacilitatorSvmSigner(feePayer), {
+      const facilitator = new BatchFacilitatorScheme(batchFacilitatorSigner(feePayer), {
         receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
       });
       (facilitator as unknown as { readChannel(): Promise<undefined> }).readChannel = async () =>

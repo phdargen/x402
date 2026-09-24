@@ -747,6 +747,17 @@ function envFlagDefaultTrue(value: string | undefined): boolean {
   return !['0', 'false', 'no', 'off'].includes(value.toLowerCase());
 }
 
+function batchSettlementRecoveryForFamily(protocolFamily: string): boolean {
+  switch (protocolFamily) {
+    case 'evm':
+      return envFlagDefaultTrue(process.env.EVM_BATCH_SETTLEMENT_RECOVERY);
+    case 'svm':
+      return envFlagDefaultTrue(process.env.SVM_BATCH_SETTLEMENT_RECOVERY);
+    default:
+      return true;
+  }
+}
+
 function waitForChildProcess(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve(true);
@@ -812,8 +823,6 @@ async function runTest() {
   const facilitatorEvmPrivateKey = process.env.FACILITATOR_EVM_PRIVATE_KEY;
   const facilitatorHederaAccountId = process.env.FACILITATOR_HEDERA_ACCOUNT_ID;
   const facilitatorHederaPrivateKey = process.env.FACILITATOR_HEDERA_PRIVATE_KEY;
-  const batchSettlementRecovery = envFlagDefaultTrue(process.env.EVM_BATCH_SETTLEMENT_RECOVERY);
-
   // Discover all servers, clients, and facilitators (always include legacy)
   const discovery = new TestDiscovery('.');
 
@@ -1383,7 +1392,7 @@ async function runTest() {
           ...(svmServerSignedOperators ? { svmServerSignedOperators } : {}),
         };
 
-        if (!batchSettlementRecovery) {
+        if (!batchSettlementRecoveryForFamily(scenario.protocolFamily)) {
           const fullResult = await runClientTest(scenario.client.proxy, {
             ...baseClientConfig,
             batchSettlement: { ...batchBase, phase: 'full' },

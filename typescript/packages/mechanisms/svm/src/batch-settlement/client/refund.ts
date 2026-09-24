@@ -35,11 +35,13 @@ export type RefundPayloadBuilder = (
  * Probe a protected route for the requirements its channel was opened against.
  *
  * A refund needs the same `feePayer`, asset and `withdrawDelay` the channel was
- * derived from, and an unpaid `GET` is what advertises them.
+ * derived from, and an unpaid `GET` is what advertises them. When the route
+ * lists more than one `batch-settlement` accept, this selects the `solana:`
+ * one.
  *
  * @param url - A protected route on the channel's server
  * @param fetchImpl - Fetch implementation to probe with
- * @returns The advertised batch-settlement requirements and x402 version
+ * @returns The advertised Solana batch-settlement requirements and x402 version
  */
 export async function probeBatchRequirements(
   url: string,
@@ -53,7 +55,7 @@ export async function probeBatchRequirements(
   if (!header) throw new Error("refund probe response has no PAYMENT-REQUIRED header");
   const paymentRequired = decodePaymentRequiredHeader(header);
   const requirements = paymentRequired.accepts.find(
-    accept => accept.scheme === BATCH_SETTLEMENT_SCHEME,
+    accept => accept.scheme === BATCH_SETTLEMENT_SCHEME && accept.network.startsWith("solana:"),
   );
   if (!requirements) throw new Error(`${url} does not offer ${BATCH_SETTLEMENT_SCHEME}`);
   return { requirements, x402Version: paymentRequired.x402Version };

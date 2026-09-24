@@ -110,12 +110,8 @@ import {
 import {
   BatchReceiverAuthorizerConflictError,
   type BatchReceiverAuthorizerStore,
-  requireReceiverAuthorizer,
 } from "./receiverAuthorizerStore";
-import {
-  receiverBindingHistoryReaderFromSigner,
-  type BatchReceiverBindingHistoryReader,
-} from "./receiverBindingHistoryReader";
+import type { BatchReceiverBindingHistoryReader } from "./receiverBindingHistoryReader";
 import type {
   BatchTerms,
   DurableBroadcastResult,
@@ -174,14 +170,12 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     this.pendingStore = config.pendingSettlementStore ?? new InMemoryBatchPendingSettlementStore();
     this.distributionPasses = distributionsForStore(this.pendingStore);
     this.maxIdleSecs = assertMaxIdleSecs(config.maxIdleSecs);
-    const receiverBindingHistoryReader =
-      config.receiverBindingHistoryReader ?? receiverBindingHistoryReaderFromSigner(signer);
     assertBindingSource({
       receiverAuthorizerStore: config.receiverAuthorizerStore,
-      receiverBindingHistoryReader,
+      receiverBindingHistoryReader: config.receiverBindingHistoryReader,
     });
     this.receiverAuthorizers = config.receiverAuthorizerStore;
-    this.receiverBindingHistoryReader = receiverBindingHistoryReader;
+    this.receiverBindingHistoryReader = config.receiverBindingHistoryReader;
     this.delegatedReceiverAuth = assertDelegatedReceiverAuth(config.delegatedReceiverAuth);
   }
 
@@ -287,7 +281,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
             ChannelStatus.Open,
           ]);
-          await this.assertReceiverBinding(terms, requirements, channelId);
           const ceiling = parseU64(requirements.amount, "amount");
           if (ceiling > channel.deposit) {
             throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
@@ -813,7 +806,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       this.assertClaimChannel(existing, payload.channelConfig, terms, requirements, [
         ChannelStatus.Open,
       ]);
-      await this.assertReceiverBinding(terms, requirements, channelId);
       const expectedDeposit = existing.deposit + deposit;
       if (
         voucherAmount !== undefined &&
@@ -970,13 +962,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           requirements,
           context,
         );
-        if (this.receiverAuthorizers) {
-          await this.receiverAuthorizers.bind({
-            channelId,
-            network: requirements.network,
-            receiverAuthorizer: terms.receiverAuthorizer,
-          });
-        }
+        await this.bindReceiverAuthorizer(
+          channelId,
+          requirements.network,
+          terms.receiverAuthorizer,
+        );
         if (callerIdentity !== undefined && this.delegatedReceiverAuth) {
           await this.delegatedReceiverAuth.identityStore.bind({
             callerIdentity,
@@ -1113,7 +1103,6 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
       ChannelStatus.Open,
     ]);
-    await this.assertReceiverBinding(terms, requirements, channelId);
     if (cumulative > channel.deposit) throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
     return channel;
   }
@@ -1959,18 +1948,38 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     };
   }
 
-  private async assertReceiverBinding(
-    terms: BatchTerms,
-    requirements: PaymentRequirements,
+  /**
+   * Persist the open's receiver authorizer before it is broadcast.
+   *
+   * Store only: the write must succeed and read back as the same key, or the
+   * open is not sent. Store and an explicit history reader: a failed write
+   * still allows the open, because history is the fallback at close. History
+   * only: nothing is written.
+   *
+   * @param channelId - Channel PDA
+   * @param network - CAIP-2 network the channel is opening on
+   * @param receiverAuthorizer - Key carried in the open's binding memo
+   */
+  private async bindReceiverAuthorizer(
     channelId: string,
+    network: Network,
+    receiverAuthorizer: string,
   ): Promise<void> {
-    const bound = await readReceiverAuthorizer(
-      this.receiverAuthorizers,
-      this.receiverBindingHistoryReader,
-      requirements.network,
-      channelId,
-    );
-    requireReceiverAuthorizer(bound, terms.receiverAuthorizer, channelId);
+    const store = this.receiverAuthorizers;
+    if (!store) return;
+    try {
+      await store.bind({ channelId, network, receiverAuthorizer });
+    } catch (error) {
+      if (this.receiverBindingHistoryReader) return;
+      throw error;
+    }
+    if (this.receiverBindingHistoryReader) return;
+    const stored = await store.get(network, channelId);
+    if (stored?.receiverAuthorizer !== receiverAuthorizer) {
+      throw new Error(
+        `${BatchError.RECEIVER_BINDING_UNAVAILABLE}: receiver authorizer was not stored for ${channelId}`,
+      );
+    }
   }
 
   private trackChannel(

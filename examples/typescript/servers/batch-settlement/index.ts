@@ -63,6 +63,7 @@ async function main() {
   let resourceServer = new x402ResourceServer(facilitatorClient);
   let channelManager: ReturnType<BatchSettlementEvmScheme["createChannelManager"]> | undefined;
   let svmChannelManager: BatchChannelManager | undefined;
+  let svmRedemptionTimer: ReturnType<typeof setInterval> | undefined;
 
   if (evmAddress) {
     const batchedEvmScheme = new BatchSettlementEvmScheme(evmAddress, {
@@ -100,12 +101,16 @@ async function main() {
     ? await createKeyPairSignerFromBytes(base58.decode(svmOperatorPrivateKey))
     : undefined;
 
+  let svmReceiverAuthorizerSigner: Awaited<
+    ReturnType<typeof createKeyPairSignerFromBytes>
+  > | undefined;
+
   if (svmAddress) {
     if (!svmReceiverAuthorizerPrivateKey) {
       console.error("Missing required SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY environment variable");
       process.exit(1);
     }
-    const svmReceiverAuthorizerSigner = await createKeyPairSignerFromBytes(
+    svmReceiverAuthorizerSigner = await createKeyPairSignerFromBytes(
       base58.decode(svmReceiverAuthorizerPrivateKey),
     );
     const batchedSvmScheme = new BatchSvmScheme({
@@ -147,14 +152,37 @@ async function main() {
         facilitatorClient,
         svmRequirements,
         {
-          onError: (e: unknown) => console.error("[SVM] Redemption error:", e),
+          onError: (e: unknown) => console.error("[SVM] Redemption pass error:", e),
           rpcUrl: process.env.SVM_RPC_URL,
         },
       );
+      const svmRedemptionIntervalSecs = 60;
+      const runSvmRedemption = async () => {
+        if (!svmChannelManager) return;
+        try {
+          const { claimed, distributed, sealed } = await svmChannelManager.redeem();
+          if (claimed.length > 0) {
+            console.log(`[SVM] Claimed ${claimed.length} channel(s): ${claimed.join(", ")}`);
+          }
+          if (distributed.length > 0) {
+            console.log(
+              `[SVM] Distributed to ${svmAddress} for ${distributed.length} channel(s): ${distributed.join(", ")}`,
+            );
+          }
+          if (sealed.length > 0) {
+            console.log(`[SVM] Sealed closing channel(s): ${sealed.join(", ")}`);
+          }
+        } catch (e) {
+          console.error("[SVM] Redemption error:", e);
+        }
+      };
       // Well inside the facilitator's idle window (default seven days).
-      svmChannelManager.start(60);
+      svmRedemptionTimer = setInterval(
+        () => void runSvmRedemption(),
+        svmRedemptionIntervalSecs * 1_000,
+      );
       console.log(
-        `[SVM] Redeeming every 60s; facilitator idle window: ${String(svmKind.extra?.maxIdleSecs ?? "none")}s`,
+        `[SVM] Redeeming every ${svmRedemptionIntervalSecs}s; facilitator idle window: ${String(svmKind.extra?.maxIdleSecs ?? "none")}s`,
       );
     } else {
       console.warn(
@@ -167,7 +195,18 @@ async function main() {
     process.on("SIGINT", async () => {
       console.log("Shutting down — flushing pending claims…");
       await channelManager?.stop({ flush: true });
-      svmChannelManager?.stop();
+      if (svmRedemptionTimer !== undefined) {
+        clearInterval(svmRedemptionTimer);
+        svmRedemptionTimer = undefined;
+      }
+      if (svmChannelManager) {
+        try {
+          await svmChannelManager.redeem();
+        } catch (e) {
+          console.error("[SVM] Final redemption error:", e);
+        }
+        await svmChannelManager.stop();
+      }
       process.exit(0);
     });
   }
@@ -256,8 +295,12 @@ async function main() {
         console.log("  EVM receiver authorizer: facilitator");
       }
     }
-    if (svmAddress && svmReceiverAuthorizerSigner) {
-      console.log(`  SVM receiver authorizer: ${svmReceiverAuthorizerSigner.address}`);
+    if (svmAddress) {
+      if (svmReceiverAuthorizerSigner) {
+        console.log(`  SVM receiver authorizer: local signer ${svmReceiverAuthorizerSigner.address}`);
+      } else {
+        console.log("  SVM receiver authorizer: facilitator");
+      }
     }
     if (svmAddress) {
       console.log(

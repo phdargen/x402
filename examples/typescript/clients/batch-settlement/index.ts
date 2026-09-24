@@ -21,6 +21,7 @@ const url = `${baseURL}${endpointPath}`;
 const storageDir = process.env.STORAGE_DIR;
 const channelSalt = (process.env.CHANNEL_SALT ??
   "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
+const svmChannelSalt = process.env.SVM_CHANNEL_SALT?.trim() || "0";
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
 const refundAfterRequests = process.env.REFUND_AFTER_REQUESTS === "true";
 const refundAmount = process.env.REFUND_AMOUNT;
@@ -84,6 +85,7 @@ async function main(): Promise<void> {
     const svmSigner = await createKeyPairSignerFromBytes(base58.decode(svmPrivateKeyRaw));
     svmScheme = new BatchSvmScheme(svmSigner, {
       depositPolicy: { depositMultiplier },
+      salt: svmChannelSalt,
       ...(svmRpcUrl ? { rpcUrl: svmRpcUrl } : {}),
       ...(svmServerSignedOperators.length > 0
         ? {
@@ -104,6 +106,7 @@ async function main(): Promise<void> {
     client.registerPolicy(svmScheme.paymentPolicy);
 
     console.log("SVM payer:", svmSigner.address);
+    console.log("SVM channel salt:", svmChannelSalt);
     console.log(
       "SVM server-signed channels:",
       svmServerSignedOperators.length > 0

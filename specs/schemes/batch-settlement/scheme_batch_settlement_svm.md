@@ -152,22 +152,35 @@ authorization MUST reject a close that omits `closeAuthorization`.
 
 The facilitator MUST be able to read the binding from at least one of:
 
-- a store, written before the open is broadcast (first writer wins; a different
-  key MUST be rejected with
-  `invalid_batch_settlement_svm_receiver_authorizer_mismatch`), or
-- the payment-channel facilitator signer's RPC, by paging the channel
-  account's signatures to the oldest successful transaction and reading the
-  binding memo from the base64 `getTransaction` result.
+- a store, or
+- an explicitly configured history reader that pages the channel account's
+  signatures to the oldest successful transaction and reads the binding memo
+  from the base64 `getTransaction` result.
+
+The history reader is used only when facilitator config sets it. The
+facilitator MUST NOT adopt one from the signer or from a public RPC. Startup
+MUST fail when both sources are absent.
 
 Configuring both is allowed. The store is primary; a history read is written
-back into the store. A history-only facilitator does not write a store row,
-because the transaction is the record. History depth cannot be checked at
-startup: the signer's RPC MUST retain the open for the life of the
-channel, and a pruned history is an unavailable binding. Bindings are enforced
-as follows:
+back into the store. Deposit broadcast depends on which sources are configured:
 
-- `deposit` (top-up), `voucher` and `authorization`: the bound key MUST equal
-  `extra.receiverAuthorizer`. No `CloseAuthorization` is involved.
+- Store only: the facilitator MUST bind the open's key and read that row back
+  before broadcasting. A failed write, or a read-back that is missing or a
+  different key, MUST NOT send the open. The first writer wins; a different
+  key MUST be rejected with
+  `invalid_batch_settlement_svm_receiver_authorizer_mismatch`.
+- Store and history: the facilitator attempts the bind. A failed write MUST
+  NOT abort the open; the deposit is still broadcast, and history remains the
+  fallback at close.
+- History only: the facilitator does not write a store row, because the
+  transaction is the record, and the open proceeds.
+
+History depth cannot be checked at startup: the history reader's RPC MUST
+retain the open for the life of the channel, and a pruned history is an
+unavailable binding. The binding is read only when closing:
+
+- `deposit`, `voucher`, and `authorization`: no receiver-authorizer check. A
+  top-up does not re-bind.
 - `seal` and cooperative `refund`: the bound key MUST equal
   `extra.receiverAuthorizer`. Self-managed closes MUST carry a valid
   `CloseAuthorization` from that key. Delegated closes MUST match the caller

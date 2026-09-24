@@ -187,11 +187,11 @@ export async function createE2EClient(): Promise<E2EClientContext> {
       ...(svmSaltHex ? { salt: svmChannelSalt(svmSaltHex) } : {}),
       ...(svmServerSignedOperators.length > 0
         ? {
-            serverSignedChannelsPolicy: {
-              allowedOperators: svmServerSignedOperators,
-              ...(serverSignedMaxDeposit ? { maxDeposit: serverSignedMaxDeposit } : {}),
-            },
-          }
+          serverSignedChannelsPolicy: {
+            allowedOperators: svmServerSignedOperators,
+            ...(serverSignedMaxDeposit ? { maxDeposit: serverSignedMaxDeposit } : {}),
+          },
+        }
         : {}),
     });
     if (batchFamily === "svm") batchSettlementScheme = svmBatchSettlementScheme;
@@ -472,7 +472,7 @@ export async function runClientScenario(deps: ClientScenarioDeps): Promise<void>
   if (batchSettlementPhase && !batchSettlementScheme) {
     throw new Error(
       "BATCH_SETTLEMENT_PHASE is set but no CLIENT_EVM_PRIVATE_KEY / CLIENT_SVM_PRIVATE_KEY was " +
-        "provided to build the batch-settlement scheme for this endpoint from.",
+      "provided to build the batch-settlement scheme for this endpoint from.",
     );
   }
   const sendRefund = deps.refund ?? (() => batchSettlementScheme!.refund(url));

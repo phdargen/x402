@@ -27,6 +27,10 @@
       "required": false,
       "roles": ["facilitator"]
     },
+    "SVM_BATCH_SETTLEMENT_RECOVERY": {
+      "required": false,
+      "roles": ["client"]
+    },
     "SWIG_ACCOUNT_ADDRESS": { "required": false, "roles": ["client"] },
     "SWIG_ID_BASE58": { "required": false, "roles": ["client"] }
   },
