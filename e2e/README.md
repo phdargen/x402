@@ -303,6 +303,11 @@ Optional environment variables (batch-settlement scheme):
 ```bash
 SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...              # optional: self-managed receiver authorizer (omit to delegate to facilitator /supported)
 SERVER_SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=...                # required for /upto/svm and /batch-settlement/svm; signs upto vouchers and the batch receiver authorizer (no SOL required)
+SERVER_SVM_OPERATOR_PRIVATE_KEY=...                           # required for /batch-settlement-server-signed/svm; operator that meters and signs vouchers
+CLIENT_SVM_SERVER_SIGNED_OPERATORS=...                        # optional: base58 operator pubkeys trusted by the client (defaults to pubkey derived from SERVER_SVM_OPERATOR_PRIVATE_KEY on server-signed routes)
+CLIENT_SVM_SERVER_SIGNED_MAX_DEPOSIT=$1                       # optional USD escrow cap per server-signed channel (default asset)
+FACILITATOR_SVM_BATCH_BINDING_STORE=memory                  # optional: `memory` (default) uses in-memory receiver-authorizer store; `none` relies on RPC history reads
+SVM_ARCHIVE_RPC_URL=https://...                               # optional: full-history RPC for receiver-binding reconstruction (archive node)
 CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY=0x...  # EOA the client uses to sign vouchers
 EVM_BATCH_SETTLEMENT_RECOVERY=true                            # test client state-loss recovery scenario (default: true)
 ```

@@ -41,6 +41,12 @@ export class GenericClientProxy extends BaseProxy implements ClientProxy {
                       config.batchSettlement.voucherSignerPrivateKey,
                   }
                 : {}),
+              ...(config.batchSettlement.svmServerSignedOperators
+                ? {
+                    CLIENT_SVM_SERVER_SIGNED_OPERATORS:
+                      config.batchSettlement.svmServerSignedOperators,
+                  }
+                : {}),
             }
           : {}),
       };

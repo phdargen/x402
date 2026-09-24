@@ -109,6 +109,7 @@ export async function createE2EClient(): Promise<E2EClientContext> {
 
   const schemes: SchemeRegistration[] = [];
   let batchSettlementScheme: BatchSettlementScheme | undefined;
+  let svmServerSignedOperators: string[] = [];
   // One process runs one endpoint, so the route path picks which family's
   // batch-settlement scheme drives the phases and the refund.
   const batchFamily: "svm" | "evm" = endpointPath.includes("/svm") ? "svm" : "evm";
@@ -175,9 +176,23 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     // stays on: the recovery phase runs in a fresh process and must find the
     // channel the initial phase opened.
     const svmSaltHex = process.env.BATCH_SETTLEMENT_CHANNEL ?? process.env.EVM_BATCH_SETTLEMENT_CHANNEL;
+    svmServerSignedOperators =
+      process.env.CLIENT_SVM_SERVER_SIGNED_OPERATORS
+        ?.split(",")
+        .map(part => part.trim())
+        .filter(Boolean) ?? [];
+    const serverSignedMaxDeposit = process.env.CLIENT_SVM_SERVER_SIGNED_MAX_DEPOSIT?.trim();
     const svmBatchSettlementScheme = new BatchSettlementSvmScheme(svmSigner, {
       ...svmSchemeOptions,
       ...(svmSaltHex ? { salt: svmChannelSalt(svmSaltHex) } : {}),
+      ...(svmServerSignedOperators.length > 0
+        ? {
+            serverSignedChannelsPolicy: {
+              allowedOperators: svmServerSignedOperators,
+              ...(serverSignedMaxDeposit ? { maxDeposit: serverSignedMaxDeposit } : {}),
+            },
+          }
+        : {}),
     });
     if (batchFamily === "svm") batchSettlementScheme = svmBatchSettlementScheme;
 
@@ -371,6 +386,10 @@ export async function createE2EClient(): Promise<E2EClientContext> {
     schemes,
     spendControls: false,
   });
+
+  if (batchSettlementScheme instanceof BatchSettlementSvmScheme && svmServerSignedOperators.length > 0) {
+    client.registerPolicy(batchSettlementScheme.paymentPolicy);
+  }
 
   const batchSettlementPhase = (process.env.BATCH_SETTLEMENT_PHASE ??
     process.env.EVM_BATCH_SETTLEMENT_PHASE) as BatchSettlementPhase | undefined;

@@ -74,6 +74,8 @@ export interface BatchSettlementClientConfig {
   phase: BatchSettlementPhase;
   /** Optional alternate EOA used to sign vouchers (deposits still use the main client signer). */
   voucherSignerPrivateKey?: string;
+  /** Trusted SVM batch operator pubkeys for server-signed voucher mode (base58, comma-separated). */
+  svmServerSignedOperators?: string;
 }
 export interface ClientConfig {
   serverUrl: string;

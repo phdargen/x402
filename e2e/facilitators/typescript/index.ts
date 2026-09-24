@@ -65,7 +65,9 @@ import { ExactHederaScheme } from "@x402/hedera/exact/facilitator";
 import { toFacilitatorSvmSigner } from "@x402/svm";
 import {
   BatchSvmScheme as BatchSettlementSvmScheme,
+  createReceiverBindingHistoryReader,
   InMemoryBatchReceiverAuthorizerStore,
+  type BatchSvmFacilitatorConfig,
 } from "@x402/svm/batch-settlement/facilitator";
 import { ExactSvmScheme } from "@x402/svm/exact/facilitator";
 import { UptoSvmScheme } from "@x402/svm/upto/facilitator";
@@ -482,6 +484,35 @@ const svmSigner = svmAccount
     )
   : undefined;
 
+/** SVM batch-settlement facilitator binding source (in-memory store and/or archive RPC history). */
+function buildSvmBatchFacilitatorConfig(network: Network): BatchSvmFacilitatorConfig {
+  const bindingStore = process.env.FACILITATOR_SVM_BATCH_BINDING_STORE?.trim().toLowerCase();
+  const useInMemoryStore =
+    bindingStore === undefined ||
+    bindingStore === "" ||
+    bindingStore === "memory" ||
+    bindingStore === "inmemory" ||
+    bindingStore === "true" ||
+    bindingStore === "1";
+  const archiveRpcUrl = process.env.SVM_ARCHIVE_RPC_URL?.trim();
+
+  const config: BatchSvmFacilitatorConfig = {};
+  if (useInMemoryStore) {
+    config.receiverAuthorizerStore = new InMemoryBatchReceiverAuthorizerStore();
+  }
+  if (archiveRpcUrl) {
+    config.receiverBindingHistoryReader = createReceiverBindingHistoryReader({
+      [network]: archiveRpcUrl,
+    });
+    console.info(`SVM batch-settlement binding history RPC: ${archiveRpcUrl}`);
+  } else if (!useInMemoryStore) {
+    console.info(
+      "SVM batch-settlement: in-memory receiver binding store disabled; using signer RPC history reads",
+    );
+  }
+  return config;
+}
+
 // Facilitator can handle all Aptos networks with automatic RPC creation
 // Pass custom RPC URL if provided
 const aptosSigner = aptosAccount
@@ -677,9 +708,7 @@ if (svmSigner) {
     .register(SVM_NETWORK as Network, new UptoSvmScheme(svmSigner))
     .register(
       SVM_NETWORK as Network,
-      new BatchSettlementSvmScheme(svmSigner, {
-        receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
-      }),
+      new BatchSettlementSvmScheme(svmSigner, buildSvmBatchFacilitatorConfig(SVM_NETWORK as Network)),
     )
     .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
 }

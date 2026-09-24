@@ -137,6 +137,8 @@ export type RouteDefinition = {
   requiresEnv?: string;
   /** Payment completion window advertised on this route. */
   maxTimeoutSeconds?: number;
+  /** Merged into the route payment option's `extra` (wire `PaymentRequirements.extra`). */
+  requirementsExtra?: Record<string, unknown>;
 };
 
 /** Fixed success body for every paid route (`timestamp` is added by the server). */
@@ -1004,7 +1006,13 @@ export function resolvePaymentRoutes(
     if (!payTo) continue;
 
     const { price, extra: priceExtra } = resolvePrice(route, caip2, env);
-    const extra = mergeRouteExtra(priceExtra, cardanoRouteExtra(route, env), route.paymentFlow);
+    const extra = mergeRouteExtra(
+      priceExtra,
+      route.requirementsExtra
+        ? { ...route.requirementsExtra, ...cardanoRouteExtra(route, env) }
+        : cardanoRouteExtra(route, env),
+      route.paymentFlow,
+    );
 
     resolved.push({
       path: route.path,

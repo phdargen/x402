@@ -118,10 +118,18 @@ async function registerFamilySchemes(
           rpcUrl: process.env.SVM_RPC_URL,
         }),
       );
+      const operatorPrivateKey = process.env.SERVER_SVM_OPERATOR_PRIVATE_KEY;
+      const operatorSigner = operatorPrivateKey
+        ? await createKeyPairSignerFromBytes(base58.decode(operatorPrivateKey))
+        : undefined;
+      if (operatorSigner) {
+        console.info(`SVM batch-settlement operator: ${operatorSigner.address}`);
+      }
       server.register(
         pattern,
         new BatchSettlementSvmScheme({
           receiverAuthorizer: receiverAuthorizerSigner,
+          ...(operatorSigner ? { operator: operatorSigner } : {}),
         }),
       );
       return;

@@ -22,6 +22,8 @@ import { FacilitatorManager } from './src/facilitators/facilitator-manager';
 import { waitForHealth } from './src/health';
 import { probeMcpReady } from './src/mcpHealth';
 import { createPortAllocator } from './src/ports';
+import { base58 } from '@scure/base';
+import { createKeyPairSignerFromBytes } from '@solana/kit';
 
 /**
  * Generates a fresh 32-byte hex salt for a batch-settlement test scenario so
@@ -29,6 +31,27 @@ import { createPortAllocator } from './src/ports';
  *
  * @returns Hex-encoded 32-byte salt prefixed with `0x`.
  */
+/**
+ * Operator pubkeys the SVM client should trust for server-signed batch routes.
+ * Uses CLIENT_SVM_SERVER_SIGNED_OPERATORS when set; otherwise derives the pubkey
+ * from SERVER_SVM_OPERATOR_PRIVATE_KEY for /batch-settlement-server-signed/* routes.
+ */
+async function resolveSvmServerSignedOperators(endpointPath: string): Promise<string | undefined> {
+  const explicit = process.env.CLIENT_SVM_SERVER_SIGNED_OPERATORS?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  if (!endpointPath.includes('/batch-settlement-server-signed/')) {
+    return undefined;
+  }
+  const operatorKey = process.env.SERVER_SVM_OPERATOR_PRIVATE_KEY?.trim();
+  if (!operatorKey) {
+    return undefined;
+  }
+  const signer = await createKeyPairSignerFromBytes(base58.decode(operatorKey));
+  return signer.address;
+}
+
 function generateChannelSalt(): `0x${string}` {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
@@ -1353,9 +1376,11 @@ async function runTest() {
 
       if (isBatchSettlement) {
         const channelSalt = generateChannelSalt();
+        const svmServerSignedOperators = await resolveSvmServerSignedOperators(scenario.endpoint.path);
         const batchBase = {
           channelSalt,
           ...(voucherSignerPrivateKey ? { voucherSignerPrivateKey } : {}),
+          ...(svmServerSignedOperators ? { svmServerSignedOperators } : {}),
         };
 
         if (!batchSettlementRecovery) {
