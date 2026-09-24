@@ -49,10 +49,13 @@ import {
   type ServerInstruction,
 } from "../../payment-channels/onchain";
 import type { ChannelSplit } from "../../payment-channels/open";
+import {
+  accountFetchRpc,
+  type PaymentChannelFacilitatorSigner,
+} from "../../payment-channels/signer";
 import type { FacilitatorSvmSigner } from "../../signer";
 import { TransactionOnchainFailureError } from "../../utils";
 import { STATE_COMMITMENT } from "../shared";
-import type { UptoFacilitatorSigner } from "./signer";
 
 /** Payment-channels `AccountDiscriminator::Channel` (byte 0 is reserved for uninitialized accounts). */
 const CHANNEL_ACCOUNT_DISCRIMINATOR = 1;
@@ -120,33 +123,6 @@ export type UptoSvmSigner = TransactionSigner & MessagePartialSigner;
 const SIM_PLACEHOLDER_BLOCKHASH = "11111111111111111111111111111111" as Blockhash;
 
 /**
- * Kit-compatible RPC adapter for generated account fetch helpers.
- *
- * @param signer - Upto facilitator signer
- * @param network - CAIP-2 network identifier
- * @returns Minimal RPC surface for {@link fetchMaybeChannel}
- */
-export function accountFetchRpc(
-  signer: UptoFacilitatorSigner,
-  network: string,
-): Parameters<typeof fetchMaybeChannel>[0] {
-  return {
-    getAccountInfo: (
-      accountAddress: Address,
-      config?: { commitment?: string; encoding?: string },
-    ) => ({
-      send: async () => ({
-        context: { slot: 0n },
-        value: await signer.getAccountInfo(accountAddress.toString(), network, {
-          commitment: config?.commitment,
-          encoding: config?.encoding,
-        }),
-      }),
-    }),
-  } as Parameters<typeof fetchMaybeChannel>[0];
-}
-
-/**
  * Whether the channel account already exists onchain (open already broadcast).
  *
  * @param signer - Facilitator signer with read RPC
@@ -155,7 +131,7 @@ export function accountFetchRpc(
  * @returns Whether the account exists
  */
 export async function channelExists(
-  signer: UptoFacilitatorSigner,
+  signer: PaymentChannelFacilitatorSigner,
   network: string,
   channelId: string,
 ): Promise<boolean> {
@@ -240,7 +216,7 @@ export interface VerifiedOpenChannel {
  * @returns Verified channel facts for settlement
  */
 export async function fetchAndVerifyOpenChannel(
-  signer: UptoFacilitatorSigner,
+  signer: PaymentChannelFacilitatorSigner,
   network: string,
   channelId: string,
   expected: ExpectedOpenChannel,
@@ -552,7 +528,7 @@ export class SettlementSimulationError extends Error {
 export async function submitSettle(
   feePayer: UptoSvmSigner,
   signer: Pick<
-    UptoFacilitatorSigner,
+    PaymentChannelFacilitatorSigner,
     "getLatestBlockhash" | "simulateTransaction" | "sendTransaction" | "confirmTransaction"
   >,
   network: string,

@@ -1,27 +1,35 @@
 /**
  * Facilitator-side async rent cleanup for SVM payment channels.
  *
- * Driven entirely by verify-time {@link PaymentChannelStorage}: each pass lists
- * stored channels, refetches live account status, then acts on whatever is
- * ready (abandon-close / forced-close / distribute / reclaim). RPC is not
- * used for discovery.
+ * Driven entirely by verify-time channel storage: each pass lists stored
+ * channels, refetches live account status, then acts on whatever is ready
+ * (abandon-close / forced-close / distribute / reclaim). RPC is not used for
+ * discovery.
  *
  * Signs with the live channel `payee` / `rent_payer` (same key in this scheme)
  * from the facilitator's existing signer pool — no dedicated cleanup key.
  *
- * Policy note (spec §8): sealing abandoned Open channels before the server
- * settles freezes the watermark and refunds the unsettled remainder to the
- * client. Expiring vouchers (`upto`) abandon at `expiresAt + grace`.
- * Non-expiring vouchers (`batch-settlement`, `expiresAt === 0`) abandon only
- * after `maxIdleSecs` without facilitator-visible lifecycle activity — the
- * window the facilitator advertises as `extra.maxIdleSecs`, so servers know
- * how long they have to claim before unclaimed vouchers are forfeited.
+ * Two scheme policies share this worker:
+ * - `expiry` (`upto`): an Open channel is abandoned at `expiresAt + grace`.
+ *   `expiresAt === 0` is already due. Closing channels are left alone.
+ * - `idle` (batch settlement, the default): non-expiring vouchers
+ *   (`expiresAt === 0`) abandon only after `maxIdleSecs` without
+ *   facilitator-visible lifecycle activity — the window advertised as
+ *   `extra.maxIdleSecs`. Closing channels are sealed once their onchain grace
+ *   elapses.
  */
 
 import { address, type Address, type Signature } from "@solana/kit";
 import type { Network } from "@x402/core/types";
 
+import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../signer";
+import { BASIS_POINTS_DENOMINATOR, SLOT_COMMITMENT, STATE_COMMITMENT } from "./commitments";
 import { discoverChannelsByRentPayer } from "./discovery";
+import {
+  type PaymentChannelSvmSigner,
+  reclaimComputeUnitLimit,
+  submitChannelTransactionWithSigner,
+} from "./facilitator";
 import { fetchMaybeChannel, type Channel } from "./generated/accounts/channel";
 import {
   buildDistributeInstruction,
@@ -32,12 +40,48 @@ import {
   type ServerInstruction,
 } from "./onchain";
 import { OPEN_SLOT_WINDOW } from "./open";
-import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../signer";
-import { BASIS_POINTS_DENOMINATOR, SLOT_COMMITMENT, STATE_COMMITMENT } from "../upto/shared";
-import { createRpcClient } from "../utils";
-import type { ChannelRpc, PaymentChannelSvmSigner } from "./facilitator";
-import { reclaimComputeUnitLimit, submitSettle } from "./facilitator";
-import type { PaymentChannelRecord, PaymentChannelStorage } from "./storage";
+import {
+  accountFetchRpc,
+  assertPaymentChannelFacilitatorSigner,
+  type PaymentChannelFacilitatorSigner,
+} from "./signer";
+
+/**
+ * How an Open channel becomes an abandon candidate.
+ * - `idle`: `expiresAt === 0` waits {@link DEFAULT_MAX_IDLE_SECS} (or the
+ *   configured window) since the last facilitator-visible activity. Batch
+ *   settlement.
+ * - `expiry`: every Open channel waits `expiresAt + grace`, so `expiresAt === 0`
+ *   is already due. `upto`.
+ */
+export type OpenAbandonPolicy = "expiry" | "idle";
+
+/**
+ * Stored facts the cleanup pass reads. `lastActivityAt` is only consulted by
+ * the `idle` policy; `upto` records omit it.
+ */
+export interface RentCleanupChannelRecord {
+  channelId: string;
+  payTo: string;
+  tokenProgram: string;
+  firstSeenAt: number;
+  expiresAt: number;
+  lastActivityAt?: number;
+  network: Network;
+}
+
+/** Record discovery writes. `lastActivityAt` is always present. */
+export interface RentCleanupChannelWrite extends RentCleanupChannelRecord {
+  lastActivityAt: number;
+}
+
+/** Storage the cleanup pass lists, updates, and deletes. */
+export interface RentCleanupChannelStorage {
+  get?(channelId: string): Promise<RentCleanupChannelRecord | undefined>;
+  list(): Promise<RentCleanupChannelRecord[]>;
+  upsert(record: RentCleanupChannelWrite): Promise<void>;
+  delete(channelId: string): Promise<void>;
+}
 
 /** Reclaim work item: storage key plus live rent_payer from the channel account. */
 interface ReclaimCandidate {
@@ -52,7 +96,7 @@ interface ReclaimCandidate {
  * @param b - Second record
  * @returns Negative, zero, or positive per `Array.prototype.sort`
  */
-function compareChannelId(a: PaymentChannelRecord, b: PaymentChannelRecord): number {
+function compareChannelId(a: RentCleanupChannelRecord, b: RentCleanupChannelRecord): number {
   if (a.channelId < b.channelId) return -1;
   if (a.channelId > b.channelId) return 1;
   return 0;
@@ -61,7 +105,7 @@ function compareChannelId(a: PaymentChannelRecord, b: PaymentChannelRecord): num
 /**
  * Put records in scan order, resuming where the previous pass stopped.
  *
- * `PaymentChannelStorage.list()` promises no ordering, so the manager imposes
+ * `list()` promises no ordering, so the manager imposes
  * one: without it the resume cursor would mean something different on every
  * storage implementation, and a backlog larger than the budget could revisit
  * the same records forever. Sorts by channel id, then rotates so `cursor`
@@ -72,7 +116,10 @@ function compareChannelId(a: PaymentChannelRecord, b: PaymentChannelRecord): num
  * @param cursor - Channel id to resume from, or "" to scan from the start
  * @returns Records sorted, then rotated so `cursor` (if present) comes first
  */
-function orderForScan(records: PaymentChannelRecord[], cursor: string): PaymentChannelRecord[] {
+function orderForScan(
+  records: RentCleanupChannelRecord[],
+  cursor: string,
+): RentCleanupChannelRecord[] {
   const sorted = [...records].sort(compareChannelId);
   if (!cursor) return sorted;
   const index = sorted.findIndex(record => record.channelId === cursor);
@@ -139,6 +186,39 @@ function resolveCleanupCount(
   const resolved =
     value !== undefined && Number.isFinite(value) && value > 0 ? value : defaultValue;
   return max !== undefined ? Math.min(resolved, max) : resolved;
+}
+
+/**
+ * Whether an Open channel is ready to abandon-close.
+ *
+ * @param policy - Expiry grace (`upto`) or idle window (batch settlement)
+ * @param record - Stored channel facts
+ * @param nowSecs - Current unix time
+ * @param abandonGraceSecs - Grace added to `expiresAt`
+ * @param maxIdleSecs - Idle window for non-expiring vouchers; `0` disables it
+ * @returns Whether the channel should be abandon-closed on this pass
+ */
+function openChannelDue(
+  policy: OpenAbandonPolicy,
+  record: RentCleanupChannelRecord,
+  nowSecs: number,
+  abandonGraceSecs: number,
+  maxIdleSecs: number,
+): boolean {
+  switch (policy) {
+    case "expiry":
+      return nowSecs >= record.expiresAt + abandonGraceSecs;
+    case "idle": {
+      if (record.expiresAt !== 0) return nowSecs >= record.expiresAt + abandonGraceSecs;
+      if (maxIdleSecs <= 0) return false;
+      const idleSinceSecs = Math.floor((record.lastActivityAt || record.firstSeenAt) / 1_000);
+      return nowSecs >= idleSinceSecs + maxIdleSecs;
+    }
+    default: {
+      const exhaustive: never = policy;
+      return exhaustive;
+    }
+  }
 }
 
 /** Default grace after voucher expiry before abandon-closing an Open channel. */
@@ -288,9 +368,8 @@ export interface RentCleanupStartConfig extends RentCleanupOptions {
 
 export interface PaymentChannelRentCleanupManagerConfig {
   signer: FacilitatorSvmSigner;
-  storage: PaymentChannelStorage;
+  storage: RentCleanupChannelStorage;
   network: Network;
-  rpcUrl?: string;
   /**
    * `SetComputeUnitPrice` (microlamports per compute unit) attached to cleanup
    * transactions; `0` omits the instruction. Defaults to
@@ -305,14 +384,28 @@ export interface PaymentChannelRentCleanupManagerConfig {
    * (`reclaimComputeUnitLimit`) and are mint-independent.
    */
   settleComputeUnitLimit?: number;
-  /** Injected RPC client used instead of building one from `rpcUrl`. */
-  rpc?: ChannelRpc;
   /**
    * Default idle window for passes that do not set
    * {@link RentCleanupOptions.maxIdleSecs}. Facilitator schemes pass the value
-   * they advertise so cleanup and advertisement cannot diverge.
+   * they advertise so cleanup and advertisement cannot diverge. Used only by
+   * the `idle` abandon policy.
    */
   maxIdleSecs?: number;
+  /**
+   * Open-channel abandon rule. Defaults to `idle` (batch settlement). `upto`
+   * passes `expiry`.
+   */
+  abandonPolicy?: OpenAbandonPolicy;
+  /**
+   * When true (default), seal a Closing channel once its onchain grace
+   * elapses. `upto` passes false and leaves Closing channels alone.
+   */
+  sealClosingChannels?: boolean;
+  /**
+   * Component name used in capability errors. Defaults to
+   * `PaymentChannelRentCleanupManager`.
+   */
+  label?: string;
 }
 
 /**
@@ -322,15 +415,16 @@ export interface PaymentChannelRentCleanupManagerConfig {
  * {@link cleanup}; the facilitator scheme never auto-starts this.
  */
 export class PaymentChannelRentCleanupManager {
-  private readonly signer: FacilitatorSvmSigner;
+  private readonly signer: PaymentChannelFacilitatorSigner;
   private readonly getKitSigner: (feePayer: Address) => FacilitatorSigningCapabilities;
-  private readonly storage: PaymentChannelStorage;
+  private readonly storage: RentCleanupChannelStorage;
   private readonly network: Network;
-  private readonly rpcUrl: string | undefined;
   private readonly computeUnitPriceMicroLamports: number | undefined;
   private readonly settleComputeUnitLimit: number | undefined;
-  private readonly rpc: ChannelRpc | undefined;
   private readonly maxIdleSecs: number | undefined;
+  private readonly abandonPolicy: OpenAbandonPolicy;
+  private readonly sealClosingChannels: boolean;
+  private readonly label: string;
 
   private timer: ReturnType<typeof setInterval> | undefined;
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
@@ -365,24 +459,21 @@ export class PaymentChannelRentCleanupManager {
   /**
    * Create a rent cleanup manager for one network.
    *
-   * @param config - Signer pool, channel storage, and network/RPC
+   * @param config - Signer pool, channel storage, and network
    */
   constructor(config: PaymentChannelRentCleanupManagerConfig) {
-    if (typeof config.signer.getSigner !== "function") {
-      throw new Error(
-        "PaymentChannelRentCleanupManager requires getSigner on the signer. " +
-          "Use toFacilitatorSvmSigner() which provides all required methods.",
-      );
-    }
+    const label = config.label ?? "PaymentChannelRentCleanupManager";
+    assertPaymentChannelFacilitatorSigner(config.signer, label);
     this.getKitSigner = config.signer.getSigner.bind(config.signer);
     this.signer = config.signer;
     this.storage = config.storage;
     this.network = config.network;
-    this.rpcUrl = config.rpcUrl;
     this.computeUnitPriceMicroLamports = config.computeUnitPriceMicroLamports;
     this.settleComputeUnitLimit = config.settleComputeUnitLimit;
-    this.rpc = config.rpc;
     this.maxIdleSecs = config.maxIdleSecs;
+    this.abandonPolicy = config.abandonPolicy ?? "idle";
+    this.sealClosingChannels = config.sealClosingChannels ?? true;
+    this.label = label;
   }
 
   /**
@@ -500,7 +591,7 @@ export class PaymentChannelRentCleanupManager {
     const maxClosesPerRun = resolveCleanupCount(opts.maxClosesPerRun, DEFAULT_MAX_CLOSES_PER_RUN);
     const abort = passAbort(this.abortController?.signal, opts.signal);
 
-    const rpc = this.rpc ?? createRpcClient(this.network, this.rpcUrl);
+    const rpc = accountFetchRpc(this.signer, this.network);
     const records = orderForScan(await this.storage.list(), this.scanCursor);
     this.scanCursor = "";
     const nowSecs = Math.floor(Date.now() / 1_000);
@@ -509,7 +600,7 @@ export class PaymentChannelRentCleanupManager {
     let closesUsed = 0;
     const reclaimCandidates: ReclaimCandidate[] = [];
     const getCurrentSlot = async (): Promise<bigint> => {
-      currentSlot ??= await rpc.getSlot({ commitment: SLOT_COMMITMENT }).send();
+      currentSlot ??= await this.signer.getSlot(this.network, SLOT_COMMITMENT);
       return currentSlot;
     };
 
@@ -536,27 +627,20 @@ export class PaymentChannelRentCleanupManager {
         const live = maybe.data;
         const status = live.status as ChannelStatus;
 
+        if (status === ChannelStatus.Closing && !this.sealClosingChannels) {
+          continue;
+        }
+
         if (
           status === ChannelStatus.Open ||
           status === ChannelStatus.Closing ||
           status === ChannelStatus.Sealed
         ) {
           if (status === ChannelStatus.Open) {
-            if (record.expiresAt === 0) {
-              // Batch-settlement vouchers never expire, so the channel is an
-              // abandonment candidate only once it has seen no
-              // facilitator-visible lifecycle activity for the advertised
-              // idle window. Closing at the onchain settled watermark
-              // forfeits whatever the server left unclaimed, which is why
-              // the window is published as `extra.maxIdleSecs`.
-              if (maxIdleSecs <= 0) continue;
-              const idleSinceSecs = Math.floor(
-                (record.lastActivityAt || record.firstSeenAt) / 1_000,
-              );
-              if (nowSecs < idleSinceSecs + maxIdleSecs) continue;
-            } else {
-              const readyAt = record.expiresAt + abandonGraceSecs;
-              if (nowSecs < readyAt) continue;
+            if (
+              !openChannelDue(this.abandonPolicy, record, nowSecs, abandonGraceSecs, maxIdleSecs)
+            ) {
+              continue;
             }
           } else if (
             status === ChannelStatus.Closing &&
@@ -589,7 +673,6 @@ export class PaymentChannelRentCleanupManager {
 
           const signature = await this.submitCloseOrDistribute(
             feePayerSigner,
-            rpc,
             record,
             live,
             status,
@@ -606,7 +689,7 @@ export class PaymentChannelRentCleanupManager {
                   ? "forced_close"
                   : "distribute",
           });
-          await this.syncStorageAfterAction(rpc, record.channelId);
+          await this.syncStorageAfterAction(record.channelId);
           continue;
         }
 
@@ -632,7 +715,7 @@ export class PaymentChannelRentCleanupManager {
       }
     }
 
-    await this.submitReclaimBatches(rpc, reclaimCandidates, {
+    await this.submitReclaimBatches(reclaimCandidates, {
       maxReclaimsPerTx,
       maxTxsPerSigner,
       abort,
@@ -649,7 +732,12 @@ export class PaymentChannelRentCleanupManager {
    */
   private async runDiscovery(opts: RentDiscoveryOptions): Promise<void> {
     const abort = passAbort(this.abortController?.signal, opts.signal);
-    const rpc = this.rpc ?? createRpcClient(this.network, this.rpcUrl);
+    if (typeof this.signer.getProgramAccounts !== "function") {
+      throw new Error(
+        `${this.label}.discover requires getProgramAccounts on the signer. ` +
+          "Use toFacilitatorSvmSigner() which provides all required methods.",
+      );
+    }
 
     const known = new Set((await this.storage.list()).map(record => record.channelId));
     const discovered: string[] = [];
@@ -664,7 +752,7 @@ export class PaymentChannelRentCleanupManager {
         opts.onError?.(error);
         continue;
       }
-      currentSlot ??= await rpc.getSlot({ commitment: SLOT_COMMITMENT }).send();
+      currentSlot ??= await this.signer.getSlot(this.network, SLOT_COMMITMENT);
 
       for (const { channelId, channel } of found) {
         if (known.has(channelId)) continue;
@@ -732,7 +820,6 @@ export class PaymentChannelRentCleanupManager {
    * seal+distribute for Closing, or distribute alone for Sealed.
    *
    * @param feePayerSigner - Channel feePayer / payee signer
-   * @param rpc - RPC client
    * @param record - Stored channel (must include payTo + tokenProgram)
    * @param live - Refetched channel account
    * @param status - Live status that selected this path
@@ -740,8 +827,7 @@ export class PaymentChannelRentCleanupManager {
    */
   private async submitCloseOrDistribute(
     feePayerSigner: PaymentChannelSvmSigner,
-    rpc: ChannelRpc,
-    record: PaymentChannelRecord,
+    record: RentCleanupChannelRecord,
     live: Channel,
     status: ChannelStatus,
   ): Promise<Signature> {
@@ -772,22 +858,29 @@ export class PaymentChannelRentCleanupManager {
       instructions = [distribute];
     }
 
-    return submitSettle(feePayerSigner, rpc, instructions, {
-      computeUnitLimit: this.settleComputeUnitLimit,
-      computeUnitPriceMicroLamports: this.computeUnitPriceMicroLamports,
-    });
+    return submitChannelTransactionWithSigner(
+      feePayerSigner,
+      this.signer,
+      this.network,
+      instructions,
+      {
+        computeUnitLimit: this.settleComputeUnitLimit,
+        computeUnitPriceMicroLamports: this.computeUnitPriceMicroLamports,
+      },
+    );
   }
 
   /**
    * After a close/distribute, delete the storage entry if the PDA is gone.
    *
-   * @param rpc - RPC client
    * @param channelId - Channel PDA
    */
-  private async syncStorageAfterAction(rpc: ChannelRpc, channelId: string): Promise<void> {
-    const maybe = await fetchMaybeChannel(rpc, address(channelId), {
-      commitment: STATE_COMMITMENT,
-    });
+  private async syncStorageAfterAction(channelId: string): Promise<void> {
+    const maybe = await fetchMaybeChannel(
+      accountFetchRpc(this.signer, this.network),
+      address(channelId),
+      { commitment: STATE_COMMITMENT },
+    );
     if (!maybe.exists) {
       await this.storage.delete(channelId);
     }
@@ -805,7 +898,6 @@ export class PaymentChannelRentCleanupManager {
    * maxTxsPerSigner more reclaim throughput per pass, not a share of a fixed
    * pool.
    *
-   * @param rpc - RPC client
    * @param candidates - Distributed channels ready to reclaim
    * @param opts - Batch size, tx budget, callbacks
    * @param opts.maxReclaimsPerTx - Max reclaim instructions per transaction
@@ -815,7 +907,6 @@ export class PaymentChannelRentCleanupManager {
    * @param opts.onError - Optional error callback
    */
   private async submitReclaimBatches(
-    rpc: ChannelRpc,
     candidates: ReclaimCandidate[],
     opts: {
       maxReclaimsPerTx: number;
@@ -836,7 +927,7 @@ export class PaymentChannelRentCleanupManager {
 
     await Promise.all(
       Array.from(byRentPayer.entries()).map(([rentPayer, group]) =>
-        this.submitReclaimGroup(rpc, rentPayer, group, opts, { remaining: opts.maxTxsPerSigner }),
+        this.submitReclaimGroup(rentPayer, group, opts, { remaining: opts.maxTxsPerSigner }),
       ),
     );
   }
@@ -845,7 +936,6 @@ export class PaymentChannelRentCleanupManager {
    * Submit one rent payer's reclaim batches sequentially, claiming a slot
    * from the shared budget before each attempt.
    *
-   * @param rpc - RPC client
    * @param rentPayer - Rent payer this group's channels share
    * @param group - This rent payer's reclaim candidates
    * @param opts - Batch size and callbacks
@@ -857,7 +947,6 @@ export class PaymentChannelRentCleanupManager {
    * @param budget.remaining - Reclaim transactions this rent payer may submit
    */
   private async submitReclaimGroup(
-    rpc: ChannelRpc,
     rentPayer: string,
     group: ReclaimCandidate[],
     opts: {
@@ -891,6 +980,7 @@ export class PaymentChannelRentCleanupManager {
       const batch = group.slice(i, i + opts.maxReclaimsPerTx);
       try {
         // Refetch each account immediately before acting (stale → skip).
+        const rpc = accountFetchRpc(this.signer, this.network);
         const liveBatch: ReclaimCandidate[] = [];
         for (const candidate of batch) {
           const maybe = await fetchMaybeChannel(rpc, address(candidate.channelId), {
@@ -914,10 +1004,16 @@ export class PaymentChannelRentCleanupManager {
             rentPayer: candidate.rentPayer,
           }),
         );
-        const signature = await submitSettle(feePayerSigner, rpc, instructions, {
-          computeUnitLimit: reclaimComputeUnitLimit(liveBatch.length),
-          computeUnitPriceMicroLamports: this.computeUnitPriceMicroLamports,
-        });
+        const signature = await submitChannelTransactionWithSigner(
+          feePayerSigner,
+          this.signer,
+          this.network,
+          instructions,
+          {
+            computeUnitLimit: reclaimComputeUnitLimit(liveBatch.length),
+            computeUnitPriceMicroLamports: this.computeUnitPriceMicroLamports,
+          },
+        );
         opts.onReclaim?.({
           channelIds: liveBatch.map(c => c.channelId),
           transaction: signature,

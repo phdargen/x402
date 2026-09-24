@@ -146,7 +146,10 @@ async function main() {
       svmChannelManager = batchedSvmScheme.createChannelManager(
         facilitatorClient,
         svmRequirements,
-        { onError: (e: unknown) => console.error("[SVM] Redemption error:", e) },
+        {
+          onError: (e: unknown) => console.error("[SVM] Redemption error:", e),
+          rpcUrl: process.env.SVM_RPC_URL,
+        },
       );
       // Well inside the facilitator's idle window (default seven days).
       svmChannelManager.start(60);

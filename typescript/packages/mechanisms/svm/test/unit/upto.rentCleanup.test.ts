@@ -53,13 +53,13 @@ vi.mock("../../src/payment-channels/generated/accounts/channel", async () => {
   };
 });
 
-vi.mock("../../src/upto/facilitator/channel", async () => {
-  const actual = await vi.importActual<typeof import("../../src/upto/facilitator/channel")>(
-    "../../src/upto/facilitator/channel",
+vi.mock("../../src/payment-channels/facilitator", async () => {
+  const actual = await vi.importActual<typeof import("../../src/payment-channels/facilitator")>(
+    "../../src/payment-channels/facilitator",
   );
   return {
     ...actual,
-    submitSettle: submitSettleMock,
+    submitChannelTransactionWithSigner: submitSettleMock,
   };
 });
 

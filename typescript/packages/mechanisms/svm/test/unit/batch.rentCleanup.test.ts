@@ -16,15 +16,15 @@ import { OPEN_SLOT_WINDOW } from "../../src/payment-channels/open";
 import {
   DEFAULT_MAX_IDLE_SECS,
   MAX_SAFE_RECLAIMS_PER_TX,
-  PaymentChannelRentCleanupManager,
-} from "../../src/payment-channels/rentCleanup";
+  BatchSvmRentCleanupManager,
+} from "../../src/batch-settlement/facilitator/rentCleanupManager";
+import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
 import {
   InMemoryPaymentChannelStorage,
   type PaymentChannelRecord,
 } from "../../src/payment-channels/storage";
 import type { FacilitatorSvmSigner } from "../../src/signer";
 import { toFacilitatorSvmSigner } from "../../src/signer";
-import { UptoSvmScheme } from "../../src/upto/facilitator/scheme";
 
 const NETWORK = SOLANA_DEVNET_CAIP2 as Network;
 const OPEN_SLOT = 100n;
@@ -33,7 +33,7 @@ const CURRENT_SLOT_TOO_EARLY = OPEN_SLOT + OPEN_SLOT_WINDOW;
 const FAR_FUTURE = 4_102_444_800;
 
 const fetchMaybeChannelMock = vi.hoisted(() => vi.fn());
-const submitSettleMock = vi.hoisted(() => vi.fn());
+const submitChannelMock = vi.hoisted(() => vi.fn());
 const buildDistributeMock = vi.hoisted(() => vi.fn());
 const getSlotMock = vi.hoisted(() => vi.fn());
 const discoverChannelsMock = vi.hoisted(() => vi.fn());
@@ -64,7 +64,7 @@ vi.mock("../../src/payment-channels/facilitator", async () => {
   );
   return {
     ...actual,
-    submitSettle: submitSettleMock,
+    submitChannelTransactionWithSigner: submitChannelMock,
   };
 });
 
@@ -78,15 +78,21 @@ vi.mock("../../src/payment-channels/onchain", async () => {
   };
 });
 
-vi.mock("../../src/utils", async () => {
-  const actual = await vi.importActual<typeof import("../../src/utils")>("../../src/utils");
+/**
+ * Facilitator signer whose slot reads are the test double. Cleanup no longer
+ * builds its own RPC client, so `getSlot` has to live on the signer.
+ *
+ * @param feePayer - Key this facilitator can sign with
+ * @returns Signer double bound to {@link getSlotMock}
+ */
+function cleanupSigner(
+  feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>,
+): FacilitatorSvmSigner {
   return {
-    ...actual,
-    createRpcClient: () => ({
-      getSlot: () => ({ send: getSlotMock }),
-    }),
+    ...toFacilitatorSvmSigner(feePayer),
+    getSlot: () => getSlotMock(),
   };
-});
+}
 
 describe("payment-channel reclaim primitive", () => {
   it("exports OPEN_SLOT_WINDOW and builds reclaim with disc 9", async () => {
@@ -110,13 +116,13 @@ describe("payment-channel reclaim primitive", () => {
   });
 });
 
-describe("UptoChannelStorage + scheme wiring", () => {
+describe("Batch channel storage + scheme wiring", () => {
   it("upserts on verify success, retains after settle, deletes when PDA gone", async () => {
     const feePayer = await generateKeyPairSigner();
     const channel = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
     const storage = new InMemoryPaymentChannelStorage();
-    const scheme = new UptoSvmScheme(toFacilitatorSvmSigner(feePayer), {
+    const scheme = new BatchSvmScheme(toFacilitatorSvmSigner(feePayer), {
       channelStorage: storage,
     });
 
@@ -148,22 +154,22 @@ describe("UptoChannelStorage + scheme wiring", () => {
   it("createRentCleanupManager returns a manager bound to the scheme storage", async () => {
     const feePayer = await generateKeyPairSigner();
     const storage = new InMemoryPaymentChannelStorage();
-    const manager = new PaymentChannelRentCleanupManager({
+    const manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
-      signer: toFacilitatorSvmSigner(feePayer),
+      signer: cleanupSigner(feePayer),
       storage,
     });
-    expect(manager).toBeInstanceOf(PaymentChannelRentCleanupManager);
+    expect(manager).toBeInstanceOf(BatchSvmRentCleanupManager);
     expect(storage).toBeInstanceOf(InMemoryPaymentChannelStorage);
   });
 });
 
-describe("UptoSvmRentCleanupManager — cleanup", () => {
+describe("BatchSvmRentCleanupManager — cleanup", () => {
   let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payTo: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let storage: InMemoryPaymentChannelStorage;
-  let manager: PaymentChannelRentCleanupManager;
+  let manager: BatchSvmRentCleanupManager;
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -171,12 +177,12 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     payer = await generateKeyPairSigner();
     payTo = await generateKeyPairSigner();
     storage = new InMemoryPaymentChannelStorage();
-    manager = new PaymentChannelRentCleanupManager({
+    manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
-      signer: toFacilitatorSvmSigner(feePayer),
+      signer: cleanupSigner(feePayer),
       storage,
     });
-    submitSettleMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
+    submitChannelMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
     buildDistributeMock.mockResolvedValue({
       accounts: [],
       data: new Uint8Array([7]),
@@ -249,7 +255,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       const onClose = vi.fn();
       await manager.cleanup({ onClose });
       expect(onClose).not.toHaveBeenCalled();
-      expect(submitSettleMock).not.toHaveBeenCalled();
+      expect(submitChannelMock).not.toHaveBeenCalled();
       expect(await storage.get(record.channelId)).toBeDefined();
     });
 
@@ -268,7 +274,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       expect(onClose).toHaveBeenCalledWith(
         expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
       );
-      expect(submitSettleMock).toHaveBeenCalledTimes(1);
+      expect(submitChannelMock).toHaveBeenCalledTimes(1);
     });
 
     it("honours a per-pass idle window and a zero window disables idle cleanup", async () => {
@@ -280,7 +286,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Open }));
 
       await manager.cleanup({ maxIdleSecs: 0 });
-      expect(submitSettleMock).not.toHaveBeenCalled();
+      expect(submitChannelMock).not.toHaveBeenCalled();
 
       fetchMaybeChannelMock
         .mockReset()
@@ -318,7 +324,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const onClose = vi.fn();
     await manager.cleanup({ abandonGraceSecs: 120, onClose });
     expect(onClose).not.toHaveBeenCalled();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
     expect(await storage.get(record.channelId)).toBeDefined();
   });
 
@@ -338,8 +344,8 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(onClose).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: record.channelId, action: "abandon_close" }),
     );
-    expect(submitSettleMock).toHaveBeenCalledTimes(1);
-    const instructions = submitSettleMock.mock.calls[0]![2] as unknown[];
+    expect(submitChannelMock).toHaveBeenCalledTimes(1);
+    const instructions = submitChannelMock.mock.calls[0]![3] as unknown[];
     expect(instructions.length).toBeGreaterThanOrEqual(2);
     expect(await storage.get(record.channelId)).toBeUndefined();
   });
@@ -356,7 +362,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     await manager.cleanup({ abandonGraceSecs: 120, onClose });
 
     expect(onClose).not.toHaveBeenCalled();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
     expect(await storage.get(record.channelId)).toBeDefined();
   });
 
@@ -371,7 +377,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(onClose).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: record.channelId, action: "distribute" }),
     );
-    const instructions = submitSettleMock.mock.calls[0]![2] as unknown[];
+    const instructions = submitChannelMock.mock.calls[0]![3] as unknown[];
     expect(instructions).toHaveLength(1);
   });
 
@@ -390,7 +396,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     await manager.cleanup({ onClose, onReclaim });
     expect(onClose).not.toHaveBeenCalled();
     expect(onReclaim).not.toHaveBeenCalled();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
   });
 
   it("seals and distributes Closing channels after the onchain grace period", async () => {
@@ -412,7 +418,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(onClose).toHaveBeenCalledWith(
       expect.objectContaining({ channelId: record.channelId, action: "forced_close" }),
     );
-    const instructions = submitSettleMock.mock.calls[0]![2] as { data: Uint8Array }[];
+    const instructions = submitChannelMock.mock.calls[0]![3] as { data: Uint8Array }[];
     expect(instructions).toHaveLength(2);
     expect(instructions[0]?.data[0]).toBe(SEAL_DISCRIMINATOR);
     expect(await storage.get(record.channelId)).toBeUndefined();
@@ -426,7 +432,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const onReclaim = vi.fn();
     await manager.cleanup({ onReclaim });
     expect(onReclaim).not.toHaveBeenCalled();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
   });
 
   it("batch-reclaims Distributed channels after the open-slot gate", async () => {
@@ -442,11 +448,11 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     expect(onReclaim.mock.calls[0]![0].channelIds).toEqual(
       expect.arrayContaining([a.channelId, b.channelId]),
     );
-    const instructions = submitSettleMock.mock.calls[0]![2] as { data: Uint8Array }[];
+    const instructions = submitChannelMock.mock.calls[0]![3] as { data: Uint8Array }[];
     expect(instructions).toHaveLength(2);
     expect(instructions.every(ix => ix.data[0] === RECLAIM_DISCRIMINATOR)).toBe(true);
     // Reclaim batches carry a per-channel compute-unit limit (base + 2 × per-channel).
-    expect(submitSettleMock.mock.calls[0]![3]).toMatchObject({ computeUnitLimit: 35_000 });
+    expect(submitChannelMock.mock.calls[0]![4]).toMatchObject({ computeUnitLimit: 35_000 });
     expect(await storage.get(a.channelId)).toBeUndefined();
     expect(await storage.get(b.channelId)).toBeUndefined();
   });
@@ -458,7 +464,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const b = await seed();
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Distributed }));
     getSlotMock.mockResolvedValue(CURRENT_SLOT_READY);
-    submitSettleMock.mockRejectedValue(new Error("broadcast failed"));
+    submitChannelMock.mockRejectedValue(new Error("broadcast failed"));
 
     const onError = vi.fn();
     const onReclaim = vi.fn();
@@ -482,7 +488,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
 
     expect(onReclaim).toHaveBeenCalledTimes(1);
     expect(onReclaim.mock.calls[0]![0].channelIds).toHaveLength(2);
-    expect(submitSettleMock).toHaveBeenCalledTimes(1);
+    expect(submitChannelMock).toHaveBeenCalledTimes(1);
   });
 
   // An operator-configured maxReclaimsPerTx above MAX_SAFE_RECLAIMS_PER_TX
@@ -545,7 +551,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const onReclaim = vi.fn();
     await manager.cleanup({ onReclaim });
     expect(onReclaim).not.toHaveBeenCalled();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
     expect(await storage.get(record.channelId)).toBeUndefined();
   });
 
@@ -595,7 +601,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     const first = await seed({ expiresAt: nowSecs - 200 });
     const second = await seed({ expiresAt: nowSecs - 200 });
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Sealed }));
-    submitSettleMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
+    submitChannelMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
 
     const firstPassCloses = vi.fn();
     await manager.cleanup({ maxTxsPerRun: 1, onClose: firstPassCloses });
@@ -659,7 +665,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
 
     let inFlight = 0;
     let overlapped = false;
-    submitSettleMock.mockImplementation(async () => {
+    submitChannelMock.mockImplementation(async () => {
       inFlight += 1;
       if (inFlight > 1) overlapped = true;
       await new Promise(resolve => setTimeout(resolve, 10));
@@ -680,7 +686,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     fetchMaybeChannelMock.mockResolvedValue(channelAccount({ status: ChannelStatus.Sealed }));
 
     const controller = new AbortController();
-    submitSettleMock.mockImplementation(async () => {
+    submitChannelMock.mockImplementation(async () => {
       controller.abort();
       return "Sig11111111111111111111111111111111111111111";
     });
@@ -690,7 +696,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     );
     // The first record's settle completed; the abort is observed before the
     // second one is classified.
-    expect(submitSettleMock).toHaveBeenCalledTimes(1);
+    expect(submitChannelMock).toHaveBeenCalledTimes(1);
   });
 
   it("stop waits for the in-flight pass and does not report the abort as an error", async () => {
@@ -702,7 +708,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
     let settleFinished = false;
     let releaseSettle: (() => void) | undefined;
     const settleStarted = new Promise<void>(resolve => {
-      submitSettleMock.mockImplementation(async () => {
+      submitChannelMock.mockImplementation(async () => {
         resolve();
         await new Promise<void>(release => {
           releaseSettle = release;
@@ -735,7 +741,7 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
   it("stop is idempotent and safe when no pass ever ran", async () => {
     await manager.stop();
     await manager.stop();
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
   });
 
   it("skips channels whose feePayer is not in the signer set", async () => {
@@ -758,12 +764,12 @@ describe("UptoSvmRentCleanupManager — cleanup", () => {
       }),
       expect.any(Object),
     );
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
   });
 });
 
 /**
- * Build a facilitator signer over more than one key. `submitSettle` is
+ * Build a facilitator signer over more than one key. Channel submission is
  * mocked in these tests, so `getSigner` need only return a value tied to
  * its `feePayer`, not a real kit signer.
  *
@@ -791,11 +797,11 @@ function multiKeySigner(
   } as FacilitatorSvmSigner;
 }
 
-describe("UptoSvmRentCleanupManager — onchain discovery", () => {
+describe("BatchSvmRentCleanupManager — onchain discovery", () => {
   let feePayer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let payer: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let storage: InMemoryPaymentChannelStorage;
-  let manager: PaymentChannelRentCleanupManager;
+  let manager: BatchSvmRentCleanupManager;
   let discoveredChannelId: Address;
 
   beforeEach(async () => {
@@ -804,12 +810,12 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
     payer = await generateKeyPairSigner();
     discoveredChannelId = (await generateKeyPairSigner()).address;
     storage = new InMemoryPaymentChannelStorage();
-    manager = new PaymentChannelRentCleanupManager({
+    manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
-      signer: toFacilitatorSvmSigner(feePayer),
+      signer: cleanupSigner(feePayer),
       storage,
     });
-    submitSettleMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
+    submitChannelMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
     getSlotMock.mockResolvedValue(CURRENT_SLOT_READY);
     discoverChannelsMock.mockResolvedValue([]);
   });
@@ -849,7 +855,7 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
       tokenProgram: "",
     });
     // Discovery itself never submits: reclaiming is the next cleanup's job.
-    expect(submitSettleMock).not.toHaveBeenCalled();
+    expect(submitChannelMock).not.toHaveBeenCalled();
   });
 
   it("reclaims a discovered channel on the following cleanup pass", async () => {
@@ -920,7 +926,7 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
 
   it("reports a sweep failure for one signer and continues", async () => {
     const other = await generateKeyPairSigner();
-    manager = new PaymentChannelRentCleanupManager({
+    manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayer, other]),
       storage,
@@ -963,7 +969,7 @@ describe("UptoSvmRentCleanupManager — onchain discovery", () => {
   });
 });
 
-describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
+describe("BatchSvmRentCleanupManager — concurrent signer groups", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -974,7 +980,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     const payer = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
     const storage = new InMemoryPaymentChannelStorage();
-    const manager = new PaymentChannelRentCleanupManager({
+    const manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayerA, feePayerB]),
       storage,
@@ -1018,7 +1024,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     let entered = 0;
     let sawConcurrentEntry = false;
     const releasers: (() => void)[] = [];
-    submitSettleMock.mockImplementation(
+    submitChannelMock.mockImplementation(
       () =>
         new Promise(resolve => {
           entered += 1;
@@ -1034,7 +1040,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     await pass;
 
     expect(sawConcurrentEntry).toBe(true);
-    expect(submitSettleMock).toHaveBeenCalledTimes(2);
+    expect(submitChannelMock).toHaveBeenCalledTimes(2);
   });
 
   it("budgets each rent-payer group independently instead of sharing a pool", async () => {
@@ -1043,7 +1049,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
     const payer = await generateKeyPairSigner();
     const payTo = await generateKeyPairSigner();
     const storage = new InMemoryPaymentChannelStorage();
-    const manager = new PaymentChannelRentCleanupManager({
+    const manager = new BatchSvmRentCleanupManager({
       network: NETWORK,
       signer: multiKeySigner([feePayerA, feePayerB]),
       storage,
@@ -1088,7 +1094,7 @@ describe("UptoSvmRentCleanupManager — concurrent signer groups", () => {
         exists: true,
       });
     });
-    submitSettleMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
+    submitChannelMock.mockResolvedValue("Sig11111111111111111111111111111111111111111");
 
     const onReclaim = vi.fn();
     await manager.cleanup({ maxReclaimsPerTx: 1, maxTxsPerSigner: 2, onReclaim });

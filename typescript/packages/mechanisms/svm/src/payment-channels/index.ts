@@ -6,6 +6,7 @@
 
 export * from "./generated/index";
 export * from "./facilitator";
+export * from "./signer";
 export * from "./onchain";
 export * from "./open";
 export * from "./rentCleanup";

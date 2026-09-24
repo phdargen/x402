@@ -19,7 +19,7 @@ import {
 } from "../../src/index";
 import type { FacilitatorSvmSigner } from "../../src/signer";
 import { UptoSvmScheme } from "../../src/upto/facilitator/scheme";
-import { PaymentChannelRentCleanupManager as UptoSvmRentCleanupManager } from "../../src/payment-channels/rentCleanup";
+import { PaymentChannelRentCleanupManager } from "../../src/payment-channels/rentCleanup";
 import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import { ExactSvmScheme as ServerExactSvmScheme } from "../../src/exact/server/scheme";
 import * as exactClientEntry from "../../src/exact/client";
@@ -218,10 +218,10 @@ describe("@x402/svm", () => {
       );
     });
 
-    it("rejects exact-only signers for UptoSvmRentCleanupManager at runtime", () => {
+    it("rejects exact-only signers for PaymentChannelRentCleanupManager at runtime", () => {
       expect(
         () =>
-          new UptoSvmRentCleanupManager({
+          new PaymentChannelRentCleanupManager({
             signer: exactOnlySigner,
             storage: {
               upsert: async () => {},

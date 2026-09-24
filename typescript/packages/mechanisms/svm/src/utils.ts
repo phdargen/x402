@@ -36,7 +36,7 @@ import {
 } from "./constants";
 import { DEFAULT_ASSETS, findDefaultAsset, getDefaultAsset } from "./defaultAssets";
 import type { ExactSvmPayloadV1 } from "./types";
-import { SLOT_COMMITMENT } from "./upto/shared";
+import { SLOT_COMMITMENT } from "./payment-channels/commitments";
 
 export { normalizeNetwork } from "./constants";
 

@@ -611,7 +611,7 @@ if (svmSigner) {
     )
     .register(
       SVM_NETWORK as Network,
-      new BatchSettlementSvmScheme(svmSigner, SVM_RPC_URL ? { rpcUrl: SVM_RPC_URL } : {}),
+      new BatchSettlementSvmScheme(svmSigner),
     )
     .registerV1(SVM_V1_NETWORKS as Network[], new ExactSvmSchemeV1(svmSigner));
 }

@@ -53,7 +53,7 @@ import {
 } from "./onchain";
 import type { ChannelSplit } from "./open";
 import type { FacilitatorSvmSigner } from "../signer";
-import { BLOCKHASH_COMMITMENT, STATE_COMMITMENT } from "../upto/shared";
+import { BLOCKHASH_COMMITMENT, STATE_COMMITMENT } from "./commitments";
 import { createRpcClient, TransactionOnchainFailureError } from "../utils";
 
 /** Solana per-transaction compute-unit maximum. */

@@ -15,7 +15,6 @@ import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAsse
 
 const RECEIVER = USDC_MAINNET_ADDRESS;
 const receiverAuthorizer = await generateKeyPairSigner();
-
 function requirements(): PaymentRequirements {
   return {
     amount: "1000",
@@ -418,6 +417,7 @@ describe("batch-settlement redemption worker edge cases", () => {
     const { settle } = settler(boundDistribute);
     await expect(
       new BatchChannelManager({
+        readPayoutWatermark: async () => 0n,
         receiverAuthorizer,
         requirements: requirements(),
         settle,

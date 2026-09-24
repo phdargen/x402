@@ -349,7 +349,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
    *
    * @param facilitator - Facilitator client that submits redemption payloads
    * @param requirements - Enhanced requirements the channels were opened against
-   * @param options - Worker tuning: batch size, RPC, watermark reader, error hook
+   * @param options - Worker tuning: batch size, watermark reader, error hook
    * @returns A worker the caller starts, or drives with `redeem()`
    */
   createChannelManager(

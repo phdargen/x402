@@ -18,8 +18,12 @@ vi.mock("../../src/payment-channels/generated/accounts/channel", async importOri
   };
 });
 
+import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import {
   accountFetchRpc,
+  type PaymentChannelFacilitatorSigner,
+} from "../../src/payment-channels/signer";
+import {
   channelExists,
   DEFAULT_CHANNEL_READ_BACKOFF_STEP_MS,
   DEFAULT_CHANNEL_READ_MAX_ATTEMPTS,
@@ -29,11 +33,9 @@ import {
   resolveChannelReadPolicy,
   type ExpectedOpenChannel,
 } from "../../src/upto/facilitator/channel";
-import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
-import type { UptoFacilitatorSigner } from "../../src/upto/facilitator/signer";
 
 const CHANNEL_ID = USDC_MAINNET_ADDRESS;
-const signer = {} as UptoFacilitatorSigner;
+const signer = {} as PaymentChannelFacilitatorSigner;
 const NETWORK = SOLANA_DEVNET_CAIP2;
 const PAYEE = USDC_DEVNET_ADDRESS;
 const PAYER = USDC_MAINNET_ADDRESS;

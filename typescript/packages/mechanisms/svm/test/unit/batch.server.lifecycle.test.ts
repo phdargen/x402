@@ -961,7 +961,9 @@ describe("batch server lifecycle boundaries", () => {
         },
       },
       requirements(),
-      { readPayoutWatermark: async () => 1_000n },
+      {
+        readPayoutWatermark: async () => 1_000n,
+      },
     );
     await expect(manager.redeem()).resolves.toMatchObject({ sealed: [channelId] });
     expect(seen).toEqual(["seal"]);

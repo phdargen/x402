@@ -20,6 +20,10 @@ import {
 } from "../../payment-channels/onchain";
 import { parseU64, verifyOpenTransaction } from "../../payment-channels/open";
 import {
+  assertPaymentChannelFacilitatorSigner,
+  type PaymentChannelFacilitatorSigner,
+} from "../../payment-channels/signer";
+import {
   encodeVoucherMessageBytes,
   signVoucher,
   verifyVoucherSignature,
@@ -60,7 +64,6 @@ import {
   type UptoChannelStorage,
 } from "./channelStorage";
 import { InMemoryUptoDelegatedAuthStore, type UptoDelegatedAuthStore } from "./delegatedAuthStore";
-import { assertUptoFacilitatorSigner, type UptoFacilitatorSigner } from "./signer";
 import { UptoSvmRentCleanupManager } from "./rentCleanupManager";
 
 /** Scheme-specific error returned when the settlement amount exceeds the ceiling. */
@@ -296,7 +299,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
   private readonly authorizerSigner: MessagePartialSigner | undefined;
   private readonly resolveCallerIdentity: UptoSvmFacilitatorConfig["resolveCallerIdentity"];
   private readonly delegatedAuthStore: UptoDelegatedAuthStore;
-  private readonly signer: UptoFacilitatorSigner;
+  private readonly signer: PaymentChannelFacilitatorSigner;
 
   private readonly getKitSigner: (feePayer: Address) => FacilitatorSigningCapabilities;
 
@@ -317,7 +320,7 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     assertLimit("maxRequiredSignatures", config.maxRequiredSignatures, 1);
     assertLimit("computeUnitPriceMicroLamports", config.computeUnitPriceMicroLamports, 0);
     assertLimit("settleComputeUnitLimit", config.settleComputeUnitLimit, 1);
-    assertUptoFacilitatorSigner(signer);
+    assertPaymentChannelFacilitatorSigner(signer, "UptoSvmScheme");
     this.signer = signer;
     this.getKitSigner = signer.getSigner.bind(signer);
     if (this.signer.getAddresses().length === 0) {
@@ -357,9 +360,9 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
     network: Network,
     options?: { signer?: FacilitatorSvmSigner },
   ): UptoSvmRentCleanupManager {
-    let cleanupSigner: UptoFacilitatorSigner = this.signer;
+    let cleanupSigner: PaymentChannelFacilitatorSigner = this.signer;
     if (options?.signer) {
-      assertUptoFacilitatorSigner(options.signer, "UptoSvmRentCleanupManager");
+      assertPaymentChannelFacilitatorSigner(options.signer, "UptoSvmRentCleanupManager");
       cleanupSigner = options.signer;
     }
     return new UptoSvmRentCleanupManager({

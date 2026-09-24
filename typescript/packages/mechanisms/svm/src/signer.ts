@@ -9,10 +9,7 @@ import type {
   SolanaRpcApiMainnet,
   Address,
 } from "@solana/kit";
-import {
-  fetchAddressesForLookupTables,
-  getBase64EncodedWireTransaction,
-} from "@solana/kit";
+import { fetchAddressesForLookupTables, getBase64EncodedWireTransaction } from "@solana/kit";
 import {
   createRpcClient,
   decodeTransactionFromPayload,

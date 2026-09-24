@@ -9,7 +9,6 @@ import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAsse
 
 const RECEIVER = USDC_MAINNET_ADDRESS;
 const receiverAuthorizer = await generateKeyPairSigner();
-
 function requirements(): PaymentRequirements {
   return {
     amount: "1000",
@@ -107,7 +106,12 @@ describe("batch-settlement redemption worker", () => {
     const store = new MemoryChannelStore();
     await store.put(channel("chan-a", { settled: 3000n, payoutWatermark: 1000n }));
     const { settle } = recorder();
-    const options = { receiverAuthorizer, requirements: requirements(), settle, store };
+    const options = {
+      receiverAuthorizer,
+      requirements: requirements(),
+      settle,
+      store,
+    };
     const result = await new BatchChannelManager({
       ...options,
       readPayoutWatermark: async () => 1000n,

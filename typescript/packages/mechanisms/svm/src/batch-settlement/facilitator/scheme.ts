@@ -51,14 +51,12 @@ import {
   SettlementConfirmationTimeoutError,
 } from "../../payment-channels/facilitator";
 import {
-  assertMaxIdleSecs,
-  PaymentChannelRentCleanupManager,
-} from "../../payment-channels/rentCleanup";
-import {
   InMemoryPaymentChannelStorage,
   type PaymentChannelRecord,
   type PaymentChannelStorage,
 } from "../../payment-channels/storage";
+import { assertMaxIdleSecs } from "../../payment-channels/rentCleanup";
+import { BatchSvmRentCleanupManager } from "./rentCleanupManager";
 import { simulateOpenSettleDistribute } from "../../upto/facilitator/channel";
 import {
   InMemoryBatchPendingSettlementStore,
@@ -123,7 +121,6 @@ const COMPLETED_BROADCAST_SUFFIX = ":completed";
 export const MAX_CHANNELS_PER_SETTLE_TX = 4;
 
 export interface BatchSvmFacilitatorConfig {
-  rpcUrl?: string | undefined;
   /**
    * Durable record of pending signatures and completed operation outcomes, so
    * retries — including after a restart — reconcile instead of rebroadcasting.
@@ -244,11 +241,10 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     return this.channelStorage;
   }
 
-  createRentCleanupManager(network: Network): PaymentChannelRentCleanupManager {
-    return new PaymentChannelRentCleanupManager({
+  createRentCleanupManager(network: Network): BatchSvmRentCleanupManager {
+    return new BatchSvmRentCleanupManager({
       maxIdleSecs: this.maxIdleSecs,
       network,
-      rpcUrl: this.config.rpcUrl,
       signer: this.signer,
       storage: {
         get: channelId => this.channelStorage.get(channelId),
