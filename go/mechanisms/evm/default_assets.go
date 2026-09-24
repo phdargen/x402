@@ -39,7 +39,7 @@ var DefaultAssets = map[string][]DefaultAssetInfo{
 		{Asset: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603", Name: "USDC", Version: "2", Decimals: 6, Symbol: "USDC"},
 	},
 	"eip155:10143": {
-		{Asset: "0xf817257fed379853cDe0fa4F97AB987181B1E5Ea", Name: "USDC", Version: "2", Decimals: 6, Symbol: "USDC"},
+		{Asset: "0x534b2f3A21130d7a60830c2Df862319e593943A3", Name: "USDC", Version: "2", Decimals: 6, Symbol: "USDC"},
 	},
 	"eip155:988": {
 		{Asset: "0x779Ded0c9e1022225f8E0630b35a9b54bE713736", Name: "USDT0", Version: "1", Decimals: 6, Symbol: "USDT0"},

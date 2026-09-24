@@ -96,7 +96,7 @@ export const DEFAULT_ASSETS: DefaultAssetTable<ExactDefaultAssetInfo> = {
   ], // Monad mainnet USDC
   "eip155:10143": [
     {
-      asset: "0xf817257fed379853cDe0fa4F97AB987181B1E5Ea",
+      asset: "0x534b2f3A21130d7a60830c2Df862319e593943A3",
       name: "USDC",
       version: "2",
       decimals: 6,
