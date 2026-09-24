@@ -13,12 +13,13 @@ const (
 
 func TestInMemoryDelegatedAuthStore_BindAndGetCopy(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
-	if err := store.Bind(context.Background(), DelegatedAuthBinding{
+	inserted, err := store.Bind(context.Background(), DelegatedAuthBinding{
 		ChannelId:      delegatedChannelId,
 		Network:        delegatedNetwork,
 		CallerIdentity: "tenant-a",
-	}); err != nil {
-		t.Fatalf("Bind: %v", err)
+	})
+	if err != nil || !inserted {
+		t.Fatalf("Bind: inserted=%v err=%v", inserted, err)
 	}
 	row, err := store.Get(context.Background(), delegatedChannelId, delegatedNetwork)
 	if err != nil {
@@ -40,20 +41,22 @@ func TestInMemoryDelegatedAuthStore_BindAndGetCopy(t *testing.T) {
 func TestInMemoryDelegatedAuthStore_RepeatBindIsIdempotent(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
 	binding := DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}
-	if err := store.Bind(context.Background(), binding); err != nil {
-		t.Fatalf("Bind: %v", err)
+	inserted, err := store.Bind(context.Background(), binding)
+	if err != nil || !inserted {
+		t.Fatalf("Bind: inserted=%v err=%v", inserted, err)
 	}
-	if err := store.Bind(context.Background(), binding); err != nil {
-		t.Fatalf("repeat Bind: %v", err)
+	inserted, err = store.Bind(context.Background(), binding)
+	if err != nil || inserted {
+		t.Fatalf("repeat Bind: inserted=%v err=%v", inserted, err)
 	}
 }
 
 func TestInMemoryDelegatedAuthStore_RejectsSecondIdentity(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
-	if err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}); err != nil {
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
-	err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b"})
+	_, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b"})
 	var conflict *DelegatedAuthIdentityConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("err = %v, want DelegatedAuthIdentityConflictError", err)
@@ -62,7 +65,7 @@ func TestInMemoryDelegatedAuthStore_RejectsSecondIdentity(t *testing.T) {
 
 func TestInMemoryDelegatedAuthStore_DeleteAllowsRebind(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
-	if err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}); err != nil {
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
 	if err := store.Delete(context.Background(), delegatedChannelId, delegatedNetwork); err != nil {
@@ -72,7 +75,7 @@ func TestInMemoryDelegatedAuthStore_DeleteAllowsRebind(t *testing.T) {
 	if err != nil || row != nil {
 		t.Fatalf("Get after delete: row=%+v err=%v", row, err)
 	}
-	if err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b"}); err != nil {
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b"}); err != nil {
 		t.Fatalf("rebind: %v", err)
 	}
 	row, err = store.Get(context.Background(), delegatedChannelId, delegatedNetwork)

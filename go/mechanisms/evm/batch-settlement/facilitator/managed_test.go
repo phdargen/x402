@@ -144,7 +144,7 @@ func seedManagedChannel(t *testing.T, store *storage.InMemoryChannelStorage[*Fac
 
 func bindManagedIdentity(t *testing.T, store storage.DelegatedAuthStore, channelId, identity string) {
 	t.Helper()
-	if err := store.Bind(context.Background(), storage.DelegatedAuthBinding{
+	if _, err := store.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: identity,
 	}); err != nil {
 		t.Fatal(err)

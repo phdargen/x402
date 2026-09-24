@@ -498,31 +498,33 @@ func TestSettleManagedDeposit_IdentityErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestSettleManagedDeposit_BindingConflictDoesNotBlockDeposit(t *testing.T) {
+func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "03")
 	channelId := mustChannelId(t, cfg)
-	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
-	if err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+	signer := managedDepositSigner(t)
+	deps := managedDeps(t, store, store, auth, signer)
+	if _, err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "owner-a",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "owner-b", nil }
 
-	resp, err := SettleManaged(context.Background(), deps,
+	_, err := SettleManaged(context.Background(), deps,
 		managedDepositEnvelope(cfg, channelId),
 		managedRequirements(auth.addr), nil, nil)
-	if err != nil {
-		t.Fatal(err)
+	var se *x402.SettleError
+	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
+		t.Fatalf("binding conflict must fail before broadcast, got %v", err)
 	}
-	if !resp.Success {
-		t.Fatalf("binding conflict must not fail deposit at resolve time, got %+v", resp)
+	if signer.writeCalls != 0 {
+		t.Fatalf("conflict must not broadcast, writes=%d", signer.writeCalls)
 	}
 	binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork)
 	if binding == nil || binding.CallerIdentity != "owner-a" {
-		t.Fatalf("async bind conflict must keep the first binding, got %+v", binding)
+		t.Fatalf("bind conflict must keep the first binding, got %+v", binding)
 	}
 }
 
@@ -532,7 +534,7 @@ func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 	cfg := managedConfig(auth.addr, "04")
 	channelId := mustChannelId(t, cfg)
 	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
-	if err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+	if _, err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: channelId, Network: managedNetwork, CallerIdentity: "svc",
 	}); err != nil {
 		t.Fatal(err)
@@ -1286,7 +1288,9 @@ func TestVerifyManaged_RefundMatchesWatermark(t *testing.T) {
 
 type failingDelegatedAuth struct{}
 
-func (failingDelegatedAuth) Bind(_ context.Context, _ storage.DelegatedAuthBinding) error { return nil }
+func (failingDelegatedAuth) Bind(context.Context, storage.DelegatedAuthBinding) (bool, error) {
+	return false, nil
+}
 func (failingDelegatedAuth) Get(_ context.Context, _, _ string) (*storage.DelegatedAuthBinding, error) {
 	return nil, errors.New("auth store down")
 }
