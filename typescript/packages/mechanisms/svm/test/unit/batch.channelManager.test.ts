@@ -306,6 +306,7 @@ describe("batch-settlement redemption worker", () => {
     const onSeal = vi.fn();
     const noTx = (payload: RedemptionPayload): SettleResponse => {
       const { transaction: _tx, ...rest } = recovered(payload);
+      void _tx;
       return rest;
     };
     const store = new MemoryChannelStore();
