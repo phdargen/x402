@@ -1,6 +1,7 @@
 package facilitator
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -1046,31 +1048,166 @@ type testMulticallResult struct {
 
 func multicallTryAggregateStub(t *testing.T, rpc *managedRPC, args ...interface{}) []testMulticallResult {
 	t.Helper()
-	if len(args) < 2 {
+	calls, ok := multicallArgCalls(args)
+	if !ok {
 		return multicallChannelStateResult(t, rpc.balance, rpc.totalClaimed, rpc.withdrawAt, rpc.refundNonce)
 	}
-	calls := reflect.ValueOf(args[1])
-	if calls.Kind() != reflect.Slice || calls.Len() == 3 {
+	if calls.Len() == 3 && bytes.Equal(multicallSelector(calls.Index(2)), refundNonceSelector()) {
+		view := managedChainView{Balance: rpc.balance, TotalClaimed: rpc.totalClaimed, WithdrawAt: rpc.withdrawAt}
+		if rpc.resyncView != nil {
+			view = *rpc.resyncView
+		} else if override, found := chainViewForCall(rpc, calls.Index(0)); found {
+			view = override
+		}
+		return multicallChannelStateResult(t, view.Balance, view.TotalClaimed, view.WithdrawAt, rpc.refundNonce)
+	}
+	if bytes.Equal(multicallSelector(calls.Index(0)), receiversSelector()) {
+		return multicallReceiversResults(t, rpc, calls)
+	}
+	if bytes.Equal(multicallSelector(calls.Index(0)), channelsSelector()) ||
+		bytes.Equal(multicallSelector(calls.Index(0)), pendingWithdrawalsSelector()) {
+		return multicallChannelReadResults(t, rpc, calls)
+	}
+	if calls.Len() == 3 {
 		return multicallChannelStateResult(t, rpc.balance, rpc.totalClaimed, rpc.withdrawAt, rpc.refundNonce)
 	}
-	return multicallReceiversResults(t, rpc.receiverClaimed, rpc.receiverSettled, calls.Len())
+	return multicallReceiversResults(t, rpc, calls)
 }
 
-func multicallReceiversResults(t *testing.T, claimed, settled *big.Int, count int) []testMulticallResult {
+func multicallArgCalls(args []interface{}) (reflect.Value, bool) {
+	if len(args) < 2 {
+		return reflect.Value{}, false
+	}
+	calls := reflect.ValueOf(args[1])
+	if calls.Kind() != reflect.Slice || calls.Len() == 0 {
+		return reflect.Value{}, false
+	}
+	return calls, true
+}
+
+func multicallSelector(call reflect.Value) []byte {
+	data := call.FieldByName("CallData").Bytes()
+	if len(data) < 4 {
+		return nil
+	}
+	return data[:4]
+}
+
+func channelIDForCall(call reflect.Value) (string, bool) {
+	data := call.FieldByName("CallData").Bytes()
+	if len(data) < 36 {
+		return "", false
+	}
+	return strings.ToLower(common.BytesToHash(data[4:36]).Hex()), true
+}
+
+func chainViewForCall(rpc *managedRPC, call reflect.Value) (managedChainView, bool) {
+	if rpc == nil || rpc.chainViews == nil {
+		return managedChainView{}, false
+	}
+	id, ok := channelIDForCall(call)
+	if !ok {
+		return managedChainView{}, false
+	}
+	view, ok := rpc.chainViews[id]
+	return view, ok
+}
+
+func multicallChannelReadResults(t *testing.T, rpc *managedRPC, calls reflect.Value) []testMulticallResult {
+	t.Helper()
+	channelsABI, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementChannelsABI)))
+	if err != nil {
+		t.Fatalf("channels abi: %v", err)
+	}
+	pendingABI, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementPendingWithdrawalsABI)))
+	if err != nil {
+		t.Fatalf("pending withdrawals abi: %v", err)
+	}
+	out := make([]testMulticallResult, calls.Len())
+	for i := 0; i < calls.Len(); i++ {
+		call := calls.Index(i)
+		if id, found := channelIDForCall(call); found {
+			if _, fail := rpc.failReads[id]; fail {
+				out[i] = testMulticallResult{Success: false}
+				continue
+			}
+		}
+		view := managedChainView{Balance: rpc.balance, TotalClaimed: rpc.totalClaimed, WithdrawAt: rpc.withdrawAt}
+		if override, found := chainViewForCall(rpc, call); found {
+			view = override
+		}
+		sel := multicallSelector(call)
+		var data []byte
+		switch {
+		case bytes.Equal(sel, channelsSelector()):
+			data, err = channelsABI.Methods["channels"].Outputs.Pack(view.Balance, view.TotalClaimed)
+		case bytes.Equal(sel, pendingWithdrawalsSelector()):
+			data, err = pendingABI.Methods["pendingWithdrawals"].Outputs.Pack(big.NewInt(0), big.NewInt(view.WithdrawAt))
+		default:
+			t.Fatalf("unexpected claim preflight selector %x", sel)
+		}
+		if err != nil {
+			t.Fatalf("pack channel read: %v", err)
+		}
+		out[i] = testMulticallResult{Success: true, ReturnData: data}
+	}
+	return out
+}
+
+func channelsSelector() []byte {
+	return mustMethodID(batchsettlement.BatchSettlementChannelsABI, "channels")
+}
+
+func pendingWithdrawalsSelector() []byte {
+	return mustMethodID(batchsettlement.BatchSettlementPendingWithdrawalsABI, "pendingWithdrawals")
+}
+
+func receiversSelector() []byte {
+	return mustMethodID(batchsettlement.BatchSettlementReceiversABI, "receivers")
+}
+
+func refundNonceSelector() []byte {
+	return mustMethodID(batchsettlement.BatchSettlementRefundNonceABI, "refundNonce")
+}
+
+func mustMethodID(abiJSON []byte, name string) []byte {
+	parsed, err := abi.JSON(strings.NewReader(string(abiJSON)))
+	if err != nil {
+		panic(err)
+	}
+	return parsed.Methods[name].ID
+}
+
+func multicallReceiversResults(t *testing.T, rpc *managedRPC, calls reflect.Value) []testMulticallResult {
 	t.Helper()
 	receiversABI, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementReceiversABI)))
 	if err != nil {
 		t.Fatalf("receivers abi: %v", err)
 	}
-	data, err := receiversABI.Methods["receivers"].Outputs.Pack(claimed, settled)
+	data, err := receiversABI.Methods["receivers"].Outputs.Pack(rpc.receiverClaimed, rpc.receiverSettled)
 	if err != nil {
 		t.Fatalf("pack receivers: %v", err)
 	}
-	out := make([]testMulticallResult, count)
+	out := make([]testMulticallResult, calls.Len())
 	for i := range out {
+		call := calls.Index(i)
+		if receiver, found := receiverForCall(call); found {
+			if _, fail := rpc.failReceivers[receiver]; fail {
+				out[i] = testMulticallResult{Success: false}
+				continue
+			}
+		}
 		out[i] = testMulticallResult{Success: true, ReturnData: data}
 	}
 	return out
+}
+
+func receiverForCall(call reflect.Value) (string, bool) {
+	data := call.FieldByName("CallData").Bytes()
+	if len(data) < 36 {
+		return "", false
+	}
+	return strings.ToLower(common.BytesToAddress(data[4:36]).Hex()), true
 }
 
 func multicallChannelStateResult(

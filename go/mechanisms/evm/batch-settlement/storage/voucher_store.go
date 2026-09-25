@@ -211,7 +211,8 @@ func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelS
 		if !input.LocalVerify && !isZeroRecord(resolved) {
 			snap := resolved.Base()
 			ub.Balance = snap.Balance
-			ub.TotalClaimed = snap.TotalClaimed
+			// Deposit snapshots mirror escrow; the claimed watermark only moves forward.
+			ub.TotalClaimed = maxUint256String(ub.TotalClaimed, snap.TotalClaimed)
 			ub.WithdrawRequestedAt = snap.WithdrawRequestedAt
 			ub.RefundNonce = snap.RefundNonce
 			ub.OnchainSyncedAt = now
@@ -236,4 +237,14 @@ func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelS
 		return &CommitVoucherChargeResult[T]{Status: CommitConflict}, nil
 	}
 	return outcome, nil
+}
+
+// maxUint256String returns the greater decimal uint256.
+// An unparseable operand leaves current in place.
+func maxUint256String(current, next string) string {
+	cmp, ok := Uint256Cmp(current, next)
+	if !ok || cmp >= 0 {
+		return current
+	}
+	return next
 }

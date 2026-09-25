@@ -322,8 +322,41 @@ func TestCommitVoucherCharge_RefreshesEscrowFromSnapshot(t *testing.T) {
 	if result.Status != CommitCommitted {
 		t.Fatalf("status = %q", result.Status)
 	}
-	if result.Current.Balance != "10000" || result.Current.TotalClaimed != "0" || result.Current.ChargedCumulativeAmount != "3000" {
+	if result.Current.Balance != "10000" || result.Current.TotalClaimed != "9" || result.Current.ChargedCumulativeAmount != "3000" {
 		t.Fatalf("current = %+v", result.Current)
+	}
+}
+
+func TestCommitVoucherCharge_DoesNotLowerTotalClaimed(t *testing.T) {
+	store := NewInMemoryChannelStorage[*Channel]()
+	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel {
+		return voucherBaseChannel(&Channel{Balance: "1", TotalClaimed: "50", RefundNonce: 1, WithdrawRequestedAt: 2})
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	lower, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+		Increment: big.NewInt(1),
+		SignedCap: big.NewInt(5000),
+		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
+		Snapshot:  voucherBaseChannel(&Channel{Balance: "10000", TotalClaimed: "10"}),
+	})
+	if err != nil {
+		t.Fatalf("CommitVoucherCharge: %v", err)
+	}
+	if lower.Status != CommitCommitted || lower.Current.TotalClaimed != "50" || lower.Current.Balance != "10000" {
+		t.Fatalf("lower snapshot = %+v", lower.Current)
+	}
+	higher, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+		Increment: big.NewInt(1),
+		SignedCap: big.NewInt(5000),
+		Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xccc"},
+		Snapshot:  voucherBaseChannel(&Channel{Balance: "10000", TotalClaimed: "80"}),
+	})
+	if err != nil {
+		t.Fatalf("CommitVoucherCharge: %v", err)
+	}
+	if higher.Status != CommitCommitted || higher.Current.TotalClaimed != "80" {
+		t.Fatalf("higher snapshot = %+v", higher.Current)
 	}
 }
 
