@@ -1,4 +1,5 @@
-export { BatchSvmScheme, MAX_CHANNELS_PER_SETTLE_TX } from "./scheme";
+export { BatchSvmScheme } from "./scheme";
+export { MAX_CHANNELS_PER_SETTLE_TX } from "./constants";
 export type { BatchSvmFacilitatorConfig } from "./scheme";
 export { InMemoryPaymentChannelStorage as InMemoryBatchChannelStorage } from "../../payment-channels/storage";
 export type {
@@ -49,4 +50,4 @@ export { createReceiverBindingHistoryReader } from "./receiverBindingHistoryRead
 export type {
   BatchReceiverBindingHistoryReader,
   BatchReceiverBindingHistorySignature,
-} from "./receiverBindingHistoryReader";
+} from "./types";

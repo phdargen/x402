@@ -1,7 +1,7 @@
 /* eslint-disable jsdoc/require-jsdoc */
 /** Wire types for the SVM `batch-settlement` scheme. */
 
-export const BATCH_SETTLEMENT_SCHEME = "batch-settlement";
+export { BATCH_SETTLEMENT_SCHEME } from "./constants";
 
 export type BatchExtra = {
   paymentFlow?: "authorization" | undefined;

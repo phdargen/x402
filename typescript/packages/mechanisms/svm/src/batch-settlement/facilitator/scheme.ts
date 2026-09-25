@@ -96,8 +96,6 @@ import {
   assertServerModeProof as checkServerModeProof,
   assertServerModeRefundProof,
   voucherSignerFor,
-  type ProofAmountBound,
-  type VoucherModeBinding,
 } from "./voucherMode";
 import {
   assertBindingSource,
@@ -117,16 +115,30 @@ import {
   BatchReceiverAuthorizerConflictError,
   type BatchReceiverAuthorizerStore,
 } from "./receiverAuthorizerStore";
-import type { BatchReceiverBindingHistoryReader } from "./receiverBindingHistoryReader";
+import {
+  CHANNEL_READ_ATTEMPTS,
+  CHANNEL_READ_INITIAL_BACKOFF_MS,
+  COMPLETED_BROADCAST_SUFFIX,
+  MAX_CHANNELS_PER_SETTLE_TX,
+} from "./constants";
 import type {
+  BatchReceiverBindingHistoryReader,
   BatchTerms,
   DurableBroadcastResult,
   PreparedClaim,
   PreparedDistribution,
+  ProofAmountBound,
   ValidatedDeposit,
-} from "./schemeTypes";
+  VoucherModeBinding,
+} from "./types";
 import { BatchError } from "../errors";
 import { encodeReceiverBindingMemo } from "../receiverBinding";
+import {
+  CLIENT_VOUCHER_EXPIRES_AT,
+  FULL_SPLIT_BPS,
+  MAX_WITHDRAW_DELAY,
+  MIN_WITHDRAW_DELAY,
+} from "../constants";
 import {
   BATCH_SETTLEMENT_SCHEME,
   type BatchChannelConfig,
@@ -138,19 +150,11 @@ import {
   isBatchFacilitatorPayload,
   isBatchPayload,
 } from "../types";
-const MIN_WITHDRAW_DELAY = 900;
-const MAX_WITHDRAW_DELAY = 2_592_000;
-const CHANNEL_READ_ATTEMPTS = 5;
-const CHANNEL_READ_INITIAL_BACKOFF_MS = 200;
-const COMPLETED_BROADCAST_SUFFIX = ":completed";
 
 function isTransientRpcError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\b429\b/.test(message) || /\b503\b/.test(message) || /too many requests/i.test(message);
 }
-
-/** Four Ed25519+settle pairs fit under Solana's transaction packet limit. */
-export const MAX_CHANNELS_PER_SETTLE_TX = 4;
 
 export { calculateDistributionAmount, type BatchSvmFacilitatorConfig } from "./bindingSource";
 
@@ -781,7 +785,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           swept.map(item =>
             this.trackChannel({
               channelId: item.channelId,
-              expiresAt: 0,
+              expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
               network: requirements.network,
               payTo: requirements.payTo,
               tokenProgram: item.terms.tokenProgram,
@@ -921,7 +925,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       openSlot: BigInt(payload.channelConfig.openSlot),
       payee: terms.feePayer,
       recentSlot: parseOptionalSlot(requirements.extra?.recentSlot),
-      recipients: [{ bps: 10_000, recipient: requirements.payTo }],
+      recipients: [{ bps: FULL_SPLIT_BPS, recipient: requirements.payTo }],
       tokenProgram: terms.tokenProgram,
       withdrawDelay: terms.withdrawDelay,
     });
@@ -991,7 +995,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
               payee: terms.feePayer,
               payer: payload.channelConfig.payer,
               rentPayer: terms.feePayer,
-              splits: [{ bps: 10_000, recipient: requirements.payTo }],
+              splits: [{ bps: FULL_SPLIT_BPS, recipient: requirements.payTo }],
               tokenProgram: terms.tokenProgram,
             },
             openTransactionBase64: payload.deposit.transaction,
@@ -1011,7 +1015,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     try {
       await this.trackChannel({
         channelId,
-        expiresAt: payload.voucher?.expiresAt ?? 0,
+        expiresAt: payload.voucher?.expiresAt ?? CLIENT_VOUCHER_EXPIRES_AT,
         network: requirements.network,
         payTo: requirements.payTo,
         tokenProgram: terms.tokenProgram,
@@ -1272,7 +1276,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     }
     await this.trackChannel({
       channelId,
-      expiresAt: 0,
+      expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
       network: requirements.network,
       payTo: requirements.payTo,
       tokenProgram: terms.tokenProgram,
@@ -1426,7 +1430,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   }
 
   private assertExpiry(expiresAt: number): void {
-    if (expiresAt !== 0) throw new Error(BatchError.VOUCHER_EXPIRY);
+    if (expiresAt !== CLIENT_VOUCHER_EXPIRES_AT) throw new Error(BatchError.VOUCHER_EXPIRY);
   }
 
   /**
@@ -1911,7 +1915,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     allowedStatuses: readonly ChannelStatus[],
   ): void {
     const expectedDistributionHash = getChannelDistributionHash([
-      { bps: 10_000, recipient: requirements.payTo },
+      { bps: FULL_SPLIT_BPS, recipient: requirements.payTo },
     ]);
     if (
       channel.discriminator !== AccountDiscriminator.Channel ||
@@ -1944,7 +1948,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       payee: channel.payee,
       payer: channel.payer,
       rentPayer: channel.rentPayer,
-      splits: [{ bps: 10_000, recipient: requirements.payTo }],
+      splits: [{ bps: FULL_SPLIT_BPS, recipient: requirements.payTo }],
       tokenProgram: terms.tokenProgram,
     });
   }

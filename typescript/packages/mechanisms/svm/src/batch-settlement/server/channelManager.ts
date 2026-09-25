@@ -16,7 +16,7 @@ import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 import { signCloseAuthorization } from "../closeAuthorization";
 import { BatchError } from "../errors";
 import { BATCH_SETTLEMENT_SCHEME, type BatchSealPayload } from "../types";
-import type { ChannelState, ChannelStore } from "./storage";
+import type { ChannelState, ChannelStore } from "./types";
 
 /**
  * The spec packs no more than four channels into one claim transaction, and a

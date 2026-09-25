@@ -47,6 +47,12 @@ import {
   numberToDecimalString,
   validateSvmAddress,
 } from "../../utils";
+import {
+  CLIENT_VOUCHER_EXPIRES_AT,
+  FULL_SPLIT_BPS,
+  MAX_WITHDRAW_DELAY,
+  MIN_WITHDRAW_DELAY,
+} from "../constants";
 import { BatchError } from "../errors";
 import { verifyBatchAuthorization } from "../authorization";
 import { signCloseAuthorization } from "../closeAuthorization";
@@ -55,37 +61,21 @@ import type { BatchChannelConfig, BatchPayload, BatchVoucher, CloseAuthorization
 import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
 import { type BatchOperationStore, MemoryBatchOperationStore } from "./operationStore";
 import { BatchChannelManager, type BatchChannelManagerConfig } from "./channelManager";
-import { type ChannelState, type ChannelStore, MemoryChannelStore } from "./storage";
-
-type ParsedMoney = { amount: number; stablecoin?: SvmStablecoinSymbol };
-type SvmStablecoinSymbol = "USDC" | "USDT" | "USDG" | "PYUSD" | "CASH";
-type RequestContext = {
-  channelId: string;
-  /** Client-signed cumulative amount, when the payer supplies the voucher. */
-  cumulative?: bigint;
-  /** Maximum charge advertised before the handler runs. */
-  ceiling?: bigint;
-  requestId?: string;
-  pendingId?: string;
-  topUp?: boolean;
-  /**
-   * Set when local state is absent or stale, so the cumulative rule must be
-   * applied after the facilitator refreshes the onchain snapshot.
-   */
-  requiresCumulativeCheck?: boolean;
-};
-
-const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);
-const MIN_WITHDRAW_DELAY = 900;
-const MAX_WITHDRAW_DELAY = 2_592_000;
-const CHANNEL_BUSY = "duplicate_settlement";
-const DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER = 10n;
-/**
- * In server mode the escrow is what the operator could take, so the hint the
- * server publishes stays close to the client-side minimum instead of nudging
- * clients into over-provisioning.
- */
-const DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER = 3n;
+import { MemoryChannelStore } from "./storage";
+import {
+  CHANNEL_BUSY,
+  DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER,
+  DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER,
+  PRICE_STABLECOINS,
+} from "./constants";
+import type {
+  ChannelState,
+  ChannelStore,
+  ParsedMoney,
+  RequestContext,
+  SvmStablecoinSymbol,
+  VerifiedChannelState,
+} from "./types";
 
 export interface BatchSvmServerConfig {
   withdrawDelay?: number | undefined;
@@ -521,7 +511,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
             mint: ctx.requirements.asset,
             openSlot: BigInt(raw.channelConfig.openSlot),
             payee: String(extra.feePayer),
-            recipients: [{ bps: 10_000, recipient: ctx.requirements.payTo }],
+            recipients: [{ bps: FULL_SPLIT_BPS, recipient: ctx.requirements.payTo }],
             tokenProgram: String(extra.tokenProgram),
             withdrawDelay: raw.channelConfig.withdrawDelay,
           });
@@ -1142,12 +1132,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (!this.config.operator) throw new Error(BatchError.VOUCHER_SIGNATURE);
     return {
       channelId,
-      expiresAt: 0,
+      expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
       maxClaimableAmount: cumulativeAmount.toString(),
       signature: await signVoucher(this.config.operator, {
         channelId,
         cumulativeAmount,
-        expiresAt: 0n,
+        expiresAt: BigInt(CLIENT_VOUCHER_EXPIRES_AT),
       }),
     };
   }
@@ -1406,14 +1396,6 @@ function withoutExistingFields(
 ): Record<string, unknown> {
   return Object.fromEntries(Object.entries(extra).filter(([key]) => !(key in (existing ?? {}))));
 }
-
-/** A channel snapshot a facilitator confirmed against the chain. */
-type VerifiedChannelState = {
-  channelId?: string | undefined;
-  balance?: bigint | undefined;
-  totalClaimed: bigint;
-  withdrawRequestedAt: number;
-};
 
 /**
  * Read the channel snapshot from a facilitator verify response.

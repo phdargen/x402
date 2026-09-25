@@ -1293,7 +1293,7 @@ export function parseU64(value: bigint | number | string, name: string): bigint 
  *
  * @returns A random u64 bigint
  */
-export function randomU64(): bigint {
+function randomU64(): bigint {
   const bytes = new Uint8Array(8);
   globalThis.crypto.getRandomValues(bytes);
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(0, true);

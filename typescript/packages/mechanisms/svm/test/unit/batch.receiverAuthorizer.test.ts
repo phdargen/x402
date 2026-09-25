@@ -8,7 +8,7 @@ import {
   BatchReceiverAuthorizerConflictError,
   InMemoryBatchReceiverAuthorizerStore,
 } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
-import type { BatchReceiverBindingHistoryReader } from "../../src/batch-settlement/facilitator/receiverBindingHistoryReader";
+import type { BatchReceiverBindingHistoryReader } from "../../src/batch-settlement/facilitator/types";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
 import {
   encodeReceiverBindingMemo,

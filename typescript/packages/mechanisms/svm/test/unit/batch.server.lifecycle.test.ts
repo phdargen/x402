@@ -6,7 +6,8 @@ import { buildDepositPayload, buildRefundPayload } from "../../src/batch-settlem
 import { verifyCloseAuthorization } from "../../src/batch-settlement/closeAuthorization";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchSvmScheme } from "../../src/batch-settlement/server/scheme";
-import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
+import { MemoryChannelStore } from "../../src/batch-settlement/server/storage";
+import type { ChannelState } from "../../src/batch-settlement/server/types";
 import {
   isBatchFacilitatorPayload,
   isBatchPayload,

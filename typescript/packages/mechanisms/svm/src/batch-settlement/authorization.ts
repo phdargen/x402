@@ -8,9 +8,8 @@ import {
 } from "@solana/kit";
 
 import { verifyEd25519Signature } from "../payment-channels/voucher";
+import { AUTHORIZATION_DOMAIN } from "./constants";
 import type { BatchAuthorization } from "./types";
-
-const AUTHORIZATION_DOMAIN = new TextEncoder().encode("x402-batch-authorization-v2");
 
 /**
  * Encode the channel-bound proof that lets an operator meter requests.

@@ -12,6 +12,7 @@ import { buildRequestCloseTransaction } from "../../payment-channels/close";
 import { buildOpenPaymentChannelTransaction } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes } from "../../payment-channels/voucher";
 import { signBatchAuthorization } from "../authorization";
+import { CLIENT_VOUCHER_EXPIRES_AT, FULL_SPLIT_BPS } from "../constants";
 import { encodeReceiverBindingMemo } from "../receiverBinding";
 import type {
   BatchAuthorization,
@@ -72,7 +73,7 @@ export class BatchChannelTracker {
     }
     return signBatchVoucher(this.signer, {
       channelId: this.channelId,
-      expiresAt: 0,
+      expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
       maxClaimableAmount: this.chargedCumulativeAmount + charge,
     });
   }
@@ -132,7 +133,7 @@ export class BatchChannelTracker {
     }
     return signBatchVoucher(this.signer, {
       channelId: this.channelId,
-      expiresAt: 0,
+      expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
       maxClaimableAmount: this.chargedCumulativeAmount,
     });
   }
@@ -192,7 +193,7 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
     openSlot: args.openSlot,
     payee: args.feePayer,
     payer: args.payer,
-    recipients: [{ bps: 10_000, recipient: args.receiver }],
+    recipients: [{ bps: FULL_SPLIT_BPS, recipient: args.receiver }],
     ...(args.salt !== undefined ? { salt: args.salt } : {}),
     tokenProgram: args.tokenProgram,
   });

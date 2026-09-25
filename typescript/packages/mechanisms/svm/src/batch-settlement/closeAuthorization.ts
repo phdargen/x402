@@ -17,9 +17,8 @@ import {
 
 import { PAYMENT_CHANNELS_PROGRAM_ID } from "../payment-channels/onchain";
 import { verifyEd25519Signature } from "../payment-channels/voucher";
+import { CLOSE_DOMAIN } from "./constants";
 import type { CloseAuthorization } from "./types";
-
-const CLOSE_DOMAIN = new TextEncoder().encode("x402:batch-settlement:svm:close:v1");
 
 /** Fields the close authorization commits to. */
 export interface CloseAuthorizationBinding {

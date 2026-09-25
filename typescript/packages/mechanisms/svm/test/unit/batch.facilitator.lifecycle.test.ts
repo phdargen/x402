@@ -11,10 +11,10 @@ import {
 } from "../../src/batch-settlement/client/channel";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
+import { MAX_CHANNELS_PER_SETTLE_TX } from "../../src/batch-settlement/facilitator/constants";
 import {
   BatchSvmScheme,
   calculateDistributionAmount,
-  MAX_CHANNELS_PER_SETTLE_TX,
 } from "../../src/batch-settlement/facilitator/scheme";
 import type {
   BatchChannelConfig,

@@ -4,15 +4,7 @@ import { parseU64 } from "../../payment-channels/open";
 import { verifyBatchAuthorization } from "../authorization";
 import { BatchError } from "../errors";
 import type { BatchChannelConfig, BatchPayload, BatchRefundPayload } from "../types";
-
-/** Verify requires the proof to equal the advertised amount; settle allows a lower metered charge. */
-export type ProofAmountBound = "exact" | "ceiling";
-
-/**
- * Client payments must match the requirements. Redemption reads the mode from
- * the payload, because one worker requirements object covers both modes.
- */
-export type VoucherModeBinding = "requirements" | "payload";
+import type { ProofAmountBound, VoucherModeBinding } from "./types";
 
 /**
  * Verify server-mode refund identity: close intent via `authorizedAmount` zero.

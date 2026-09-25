@@ -31,8 +31,8 @@ import { parseU64 } from "../../payment-channels/open";
 import type { PaymentChannelRecord } from "../../payment-channels/storage";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import type { SettlementCache } from "../../settlement-cache";
-import type { FacilitatorSigningCapabilities } from "../../signer";
 import { verifyCloseAuthorization } from "../closeAuthorization";
+import { CLIENT_VOUCHER_EXPIRES_AT } from "../constants";
 import { BatchError } from "../errors";
 import {
   isBatchVoucher,
@@ -51,16 +51,10 @@ import {
   settleFailure,
   settlementPending,
 } from "./responses";
+import type { BatchTerms } from "./types";
 
-/** The terms the scheme resolved from `PaymentRequirements`, as `seal` needs them. */
-export interface SealTerms {
-  feePayer: string;
-  feePayerSigner: FacilitatorSigningCapabilities;
-  receiverAuthorizer: string;
-  tokenProgram: string;
-  withdrawDelay: number;
-  memo?: string | undefined;
-}
+/** Terms `seal` needs: everything {@link BatchTerms} carries except who signs vouchers. */
+export type SealTerms = Omit<BatchTerms, "voucherSigner">;
 
 /** A server-authored close: `seal` of a `Closing` channel or cooperative `refund` of an `Open` one. */
 export type CloseIntent = "seal" | "refund";
@@ -224,7 +218,7 @@ export async function settleSeal(
             voucher: {
               authorizedSigner: payload.channelConfig.payerAuthorizer,
               cumulativeAmount: cumulative,
-              expiresAt: 0n,
+              expiresAt: BigInt(CLIENT_VOUCHER_EXPIRES_AT),
               signatureBase58: payload.voucher.signature,
             },
           }
@@ -268,7 +262,7 @@ export async function settleSeal(
   // PDA gone or Distributed and reclaim rent from there.
   await deps.trackChannel({
     channelId,
-    expiresAt: 0,
+    expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
     network,
     payTo: requirements.payTo,
     tokenProgram: terms.tokenProgram,
@@ -426,10 +420,14 @@ async function verifyCloseVoucher(
   channelId: string,
 ): Promise<bigint> {
   if (voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
-  if (voucher.expiresAt !== 0) throw new Error(BatchError.VOUCHER_EXPIRY);
+  if (voucher.expiresAt !== CLIENT_VOUCHER_EXPIRES_AT) throw new Error(BatchError.VOUCHER_EXPIRY);
   const cumulative = parseU64(voucher.maxClaimableAmount, "maxClaimableAmount");
   const valid = await verifyVoucherSignature({
-    message: encodeVoucherMessageBytes({ channelId, cumulativeAmount: cumulative, expiresAt: 0n }),
+    message: encodeVoucherMessageBytes({
+      channelId,
+      cumulativeAmount: cumulative,
+      expiresAt: BigInt(CLIENT_VOUCHER_EXPIRES_AT),
+    }),
     signatureBase58: voucher.signature,
     signerBase58: config.payerAuthorizer,
   });

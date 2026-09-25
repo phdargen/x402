@@ -5,11 +5,8 @@ import { describe, expect, it } from "vitest";
 import { verifyCloseAuthorization } from "../../src/batch-settlement/closeAuthorization";
 import { BatchError } from "../../src/batch-settlement/errors";
 import { BatchChannelManager } from "../../src/batch-settlement/server/channelManager";
-import {
-  type ChannelState,
-  type ChannelStore,
-  MemoryChannelStore,
-} from "../../src/batch-settlement/server/storage";
+import { MemoryChannelStore } from "../../src/batch-settlement/server/storage";
+import type { ChannelState, ChannelStore } from "../../src/batch-settlement/server/types";
 import { SOLANA_DEVNET_CAIP2, TOKEN_PROGRAM_ADDRESS } from "../../src/constants";
 import { USDC_DEVNET_ADDRESS, USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
 

@@ -239,7 +239,7 @@ export const DEFAULT_MAX_IDLE_SECS = 7 * 24 * 60 * 60;
  * @param value - Configured idle window in seconds
  * @returns The idle window to enforce
  */
-export function resolveMaxIdleSecs(value: number | undefined): number {
+function resolveMaxIdleSecs(value: number | undefined): number {
   return value !== undefined && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : DEFAULT_MAX_IDLE_SECS;

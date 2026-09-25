@@ -19,16 +19,9 @@ import {
 import type {
   BatchReceiverBindingHistoryReader,
   BatchReceiverBindingHistorySignature,
-} from "./receiverBindingHistoryReader";
-
-/** The two places a facilitator may read a channel's receiver-authorizer binding. */
-type BindingSourceConfig = {
-  receiverAuthorizerStore?: BatchReceiverAuthorizerStore | undefined;
-  receiverBindingHistoryReader?: BatchReceiverBindingHistoryReader | undefined;
-};
-
-/** `getSignaturesForAddress` page size. RPC rejects a limit above this. */
-const BINDING_HISTORY_PAGE_LIMIT = 1_000;
+  BindingSourceConfig,
+} from "./types";
+import { BINDING_HISTORY_PAGE_LIMIT } from "./constants";
 
 /** Optional configuration for the batch-settlement SVM facilitator. */
 export interface BatchSvmFacilitatorConfig {

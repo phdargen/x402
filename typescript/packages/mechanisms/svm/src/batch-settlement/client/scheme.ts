@@ -17,6 +17,7 @@ import { discoverChannelsByPayer, type ProgramAccountScan } from "../../payment-
 import { ChannelStatus } from "../../payment-channels/generated/types/channelStatus";
 import type { ClientSvmConfig } from "../../signer";
 import { createRpcClient, resolveBlockhash, resolveOpenSlot } from "../../utils";
+import { MAX_WITHDRAW_DELAY, MIN_WITHDRAW_DELAY } from "../constants";
 import { BatchError } from "../errors";
 import {
   BATCH_SETTLEMENT_SCHEME,
@@ -33,6 +34,11 @@ import {
   buildDepositPayload,
   buildRefundPayload,
 } from "./channel";
+import {
+  DEFAULT_DEPOSIT_MULTIPLIER,
+  MIN_DEPOSIT_MULTIPLIER,
+  OPERATION_KEY_SEPARATOR,
+} from "./constants";
 import { type BatchRefundOptions, type RefundPayloadOptions, refundBatchChannel } from "./refund";
 import {
   type BatchServerSignedChannelsPolicy,
@@ -40,26 +46,13 @@ import {
   ServerSignedTrustPolicy,
   UntrustedOperatorError,
 } from "./trust";
-
-interface OpenChannel {
-  tracker: BatchChannelTracker;
-  deposit: bigint;
-}
-
-type PendingPayment = {
-  payload: Extract<BatchPayload, { type: "authorization" | "deposit" | "voucher" }>;
-  x402Version: number;
-};
-type PendingChannel = OpenChannel & {
-  /** Confirmed allocation to restore if this pending request is rejected. */
-  confirmed?: OpenChannel | undefined;
-  key: string;
-  operationKey: string;
-  amount: string;
-  cumulative: bigint;
-  payment: PendingPayment;
-};
-type PaymentResponseContext = Parameters<NonNullable<SchemeClientHooks["onPaymentResponse"]>>[0];
+import type {
+  OpenChannel,
+  PaymentResponseContext,
+  PendingChannel,
+  PendingPayment,
+  ResolvedTerms,
+} from "./types";
 
 /** A serializable, confirmed client channel allocation. */
 export interface BatchClientChannelRecord {
@@ -148,8 +141,11 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     private readonly config: BatchSvmClientConfig = {},
   ) {
     const multiplier = config.depositPolicy?.depositMultiplier;
-    if (multiplier !== undefined && (!Number.isInteger(multiplier) || multiplier < 3)) {
-      throw new Error("depositMultiplier must be an integer >= 3");
+    if (
+      multiplier !== undefined &&
+      (!Number.isInteger(multiplier) || multiplier < MIN_DEPOSIT_MULTIPLIER)
+    ) {
+      throw new Error(`depositMultiplier must be an integer >= ${MIN_DEPOSIT_MULTIPLIER}`);
     }
     this.trust = new ServerSignedTrustPolicy(config.serverSignedChannelsPolicy);
   }
@@ -235,7 +231,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
           confirmed: existing,
           cumulative,
           key,
-          operationKey: requestId ? `${key}\u0000${requestId}` : key,
+          operationKey: requestId ? `${key}${OPERATION_KEY_SEPARATOR}${requestId}` : key,
           payment,
         };
         this.pending.set(next.operationKey, next);
@@ -350,7 +346,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       deposit,
       key,
       operationKey: built.payload.authorization
-        ? `${key}\u0000${built.payload.authorization.requestId}`
+        ? `${key}${OPERATION_KEY_SEPARATOR}${built.payload.authorization.requestId}`
         : key,
       payment,
       tracker: built.tracker,
@@ -492,7 +488,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     trust: ResolvedServerSignedTrust | undefined,
     existingDeposit: bigint,
   ): bigint {
-    const multiplier = this.config.depositPolicy?.depositMultiplier ?? 5;
+    const multiplier = this.config.depositPolicy?.depositMultiplier ?? DEFAULT_DEPOSIT_MULTIPLIER;
     const configured =
       this.config.depositAmount === undefined
         ? undefined
@@ -548,14 +544,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
    */
   private async discoverChannel(
     requirements: PaymentRequirements,
-    terms: {
-      feePayer: string;
-      withdrawDelay: number;
-      tokenProgram: string;
-      receiverAuthorizer: string;
-      voucherSigner: "client" | "server";
-      operator?: string | undefined;
-    },
+    terms: ResolvedTerms,
   ): Promise<OpenChannel | undefined> {
     if (this.config.discoverChannels === false) return undefined;
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
@@ -946,7 +935,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
   private async resolveRefundTerms(
     probed: PaymentRequirements,
     cached?: OpenChannel,
-  ): Promise<Awaited<ReturnType<typeof this.resolveTerms>>> {
+  ): Promise<ResolvedTerms> {
     if (cached?.tracker.channelConfig.voucherSigner === "server") {
       const clientProbed: PaymentRequirements = {
         ...probed,
@@ -1019,17 +1008,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     ].join(":");
   }
 
-  private async resolveTerms(requirements: PaymentRequirements): Promise<{
-    feePayer: string;
-    receiverAuthorizer: string;
-    tokenProgram: string;
-    withdrawDelay: number;
-    memo?: string | undefined;
-    voucherSigner: "client" | "server";
-    operator?: string | undefined;
-    /** Grant under which server mode was allowed; absent in client mode. */
-    trust?: ResolvedServerSignedTrust | undefined;
-  }> {
+  private async resolveTerms(requirements: PaymentRequirements): Promise<ResolvedTerms> {
     const extra = requirements.extra;
     if (!extra) throw new Error("requirements.extra is required");
     if (extra.paymentFlow !== undefined && extra.paymentFlow !== "authorization") {
@@ -1043,8 +1022,8 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (
       typeof withdrawDelay !== "number" ||
       !Number.isInteger(withdrawDelay) ||
-      withdrawDelay < 900 ||
-      withdrawDelay > 2_592_000 ||
+      withdrawDelay < MIN_WITHDRAW_DELAY ||
+      withdrawDelay > MAX_WITHDRAW_DELAY ||
       withdrawDelay < requirements.maxTimeoutSeconds
     ) {
       throw new Error("extra.withdrawDelay is outside the allowed range");

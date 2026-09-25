@@ -48,7 +48,7 @@ export function pendingSignatureOf(error: unknown): string | undefined {
  * @param chargedCumulativeAmount - Server watermark to include, when known
  * @returns The corrective snapshot carried in responses and 402s
  */
-export function snapshotChannel(
+function snapshotChannel(
   channelId: string,
   channel: Channel,
   chargedCumulativeAmount?: bigint,

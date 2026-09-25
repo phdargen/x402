@@ -25,7 +25,8 @@ import {
 import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { BatchSvmScheme as BatchServerScheme } from "../../src/batch-settlement/server/scheme";
 import { encodeReceiverBindingMemo } from "../../src/batch-settlement/receiverBinding";
-import { MemoryChannelStore, type ChannelState } from "../../src/batch-settlement/server/storage";
+import { MemoryChannelStore } from "../../src/batch-settlement/server/storage";
+import type { ChannelState } from "../../src/batch-settlement/server/types";
 import {
   isBatchPayload,
   isBatchFacilitatorPayload,
