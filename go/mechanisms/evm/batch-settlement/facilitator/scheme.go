@@ -374,6 +374,7 @@ func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
 		EIP6492AllowedFactories: f.config.EIP6492AllowedFactories,
 		PendingStore:            f.pendingStore,
 		Retention:               f.voucherStore.retention,
+		SettleTargetStorage:     f.voucherStore.settleTargetStorage,
 	}
 }
 

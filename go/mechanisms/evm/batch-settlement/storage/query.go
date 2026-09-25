@@ -66,6 +66,8 @@ type ChannelQuerier[T ChannelRecord[T]] interface {
 }
 
 // ChannelReceiverTokenQuerier lists channels for one receiver and token.
+// Implementations may return only finished candidates. cleanupSettledPair
+// re-checks ShouldDeleteFinishedChannelAtSettle before deleting a row.
 type ChannelReceiverTokenQuerier[T ChannelRecord[T]] interface {
 	QueryByReceiverToken(ctx context.Context, network, receiver, token string) ([]T, error)
 }
