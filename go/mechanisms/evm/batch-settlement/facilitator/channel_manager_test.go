@@ -3,6 +3,7 @@ package facilitator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"reflect"
@@ -354,9 +355,22 @@ func TestFacilitatorChannelManager_SettleSimulationFailure(t *testing.T) {
 	signer := newManagedSigner(t, &managedRPC{simFail: "multicall", receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
 	mgr := newTestManager(t, signer, store, auth, "", nil)
 	seedManagerSettleTarget(t, mgr, ch)
-	_, err := mgr.Settle(context.Background(), nil)
-	if err == nil {
-		t.Fatal("expected settle failure")
+	var reported []string
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		OnError: func(err error, target *storage.SettleTarget) {
+			if target != nil {
+				reported = append(reported, target.Receiver)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("results = %+v", results)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %v", reported)
 	}
 }
 
@@ -1364,4 +1378,334 @@ func claimTotalsFromArgs(args []interface{}) []string {
 		out = append(out, total.Interface().(*big.Int).String())
 	}
 	return out
+}
+
+func TestFacilitatorChannelManager_SortsWithdrawPendingBeforeReservedIdle(t *testing.T) {
+	t.Parallel()
+	rows := []*FacilitatorChannel{
+		{Channel: storage.Channel{ChannelId: "high", ChargedCumulativeAmount: "900", TotalClaimed: "0", LastRequestTimestamp: 3}},
+		{Channel: storage.Channel{ChannelId: "late-withdraw", ChargedCumulativeAmount: "1", TotalClaimed: "0", WithdrawRequestedAt: 50}},
+		{Channel: storage.Channel{ChannelId: "idle", ChargedCumulativeAmount: "10", TotalClaimed: "0", LastRequestTimestamp: 1}},
+		{Channel: storage.Channel{ChannelId: "early-withdraw", ChargedCumulativeAmount: "1", TotalClaimed: "0", WithdrawRequestedAt: 10}},
+		{Channel: storage.Channel{ChannelId: "mid", ChargedCumulativeAmount: "400", TotalClaimed: "0", LastRequestTimestamp: 2}},
+	}
+	sortClaimRows(rows, map[string]struct{}{"idle": {}})
+	got := make([]string, len(rows))
+	for i, row := range rows {
+		got[i] = row.ChannelId
+	}
+	want := []string{"early-withdraw", "late-withdraw", "idle", "high", "mid"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestFacilitatorChannelManager_ClaimOldestFirstKeepsIdleReserve(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	// capacity = 5, probe = 6. The oldest idle row is reserved even though its unclaimed amount is smallest.
+	specs := []struct {
+		suffix    string
+		unclaimed string
+		at        int64
+	}{
+		{"01", "1", 1},
+		{"02", "100", 2},
+		{"03", "200", 3},
+		{"04", "300", 4},
+		{"05", "400", 5},
+		{"06", "500", 6},
+	}
+	for _, spec := range specs {
+		ch := managerChannel(t, auth, spec.suffix, &channelFields{
+			ChargedCumulativeAmount: spec.unclaimed,
+			SignedMaxClaimable:      spec.unclaimed,
+			ChargeCount:             1,
+			LastRequestTimestamp:    spec.at,
+		})
+		seedManagedChannel(t, inner, ch)
+	}
+	store := &claimQueryRecorder{InMemoryChannelStorage: inner}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	_, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
+		MaxClaimsPerBatch: 1,
+		MaxTxsPerRun:      5,
+		OldestFirst:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldest := managerChannel(t, auth, "01", nil)
+	dropped := managerChannel(t, auth, "02", nil)
+	gotOldest, err := inner.Get(context.Background(), oldest.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOldest.TotalClaimed != "1" {
+		t.Fatalf("oldest totalClaimed = %s, want the idle reserve claimed", gotOldest.TotalClaimed)
+	}
+	gotDropped, err := inner.Get(context.Background(), dropped.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDropped.TotalClaimed != "0" {
+		t.Fatalf("low unclaimed row was claimed: %s", gotDropped.TotalClaimed)
+	}
+}
+
+func TestFacilitatorChannelManager_ClaimStopsWhenContextCanceled(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	first := managerChannel(t, auth, "01", &channelFields{ChargedCumulativeAmount: "5000", SignedMaxClaimable: "5000", ChargeCount: 1, LastRequestTimestamp: 1})
+	second := managerChannel(t, auth, "02", &channelFields{ChargedCumulativeAmount: "9000", SignedMaxClaimable: "9000", ChargeCount: 1, LastRequestTimestamp: 2})
+	seedManagedChannel(t, inner, first)
+	seedManagedChannel(t, inner, second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancelAfterUpdateStore{InMemoryChannelStorage: inner, cancel: cancel, after: 1}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	_, err := mgr.Claim(ctx, &FacilitatorClaimOptions{
+		MaxClaimsPerBatch: 1,
+		MaxTxsPerRun:      2,
+		UnclaimedDesc:     true,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want canceled", err)
+	}
+	gotFirst, err := inner.Get(context.Background(), first.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotFirst.TotalClaimed != "0" {
+		t.Fatalf("lower unclaimed row was claimed: %s", gotFirst.TotalClaimed)
+	}
+	gotSecond, err := inner.Get(context.Background(), second.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSecond.TotalClaimed != "9000" || gotSecond.ChargeCount != 0 {
+		t.Fatalf("landed totalClaimed=%s chargeCount=%d", gotSecond.TotalClaimed, gotSecond.ChargeCount)
+	}
+	if signer.writeCalls != 1 {
+		t.Fatalf("writes = %d, want 1", signer.writeCalls)
+	}
+}
+
+type cancelAfterUpdateStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	cancel func()
+	after  int
+	calls  int
+}
+
+func (s *cancelAfterUpdateStore) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	s.calls++
+	if s.calls == s.after {
+		s.cancel()
+	}
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelID, update)
+}
+
+func TestFacilitatorChannelManager_ClaimPreflightAppliesSettleTargetDelta(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "11", &channelFields{
+		ChargedCumulativeAmount: "5000",
+		SignedMaxClaimable:      "5000",
+		TotalClaimed:            "0",
+		ChargeCount:             1,
+	})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, &managedRPC{
+		chainViews: map[string]managedChainView{
+			strings.ToLower(ch.ChannelId): {Balance: bigInt(10000), TotalClaimed: bigInt(5000)},
+		},
+	})
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	results, err := mgr.Claim(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || signer.writeCalls != 0 {
+		t.Fatalf("results=%v writes=%d, want a skipped claim", results, signer.writeCalls)
+	}
+	page, err := mgr.settleTargetStorage.SettleQuery(context.Background(), storage.SettleQuery{Network: ch.Network, Limit: intPtr(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("settle targets = %d, want the ahead delta", len(page.Items))
+	}
+	got, err := store.Get(context.Background(), ch.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TotalClaimed != "5000" {
+		t.Fatalf("totalClaimed = %s", got.TotalClaimed)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleSkipsOneSimulationFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	innerRead := signer.readContract
+	sims := 0
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == "multicall" {
+			sims++
+			if sims <= 2 {
+				return nil, errors.New("execution reverted")
+			}
+		}
+		return innerRead(functionName, args...)
+	}
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	first := storage.SettleTarget{Network: managedNetwork, Receiver: "0x1111111111111111111111111111111111111111", Token: managedToken}
+	second := storage.SettleTarget{Network: managedNetwork, Receiver: "0x2222222222222222222222222222222222222222", Token: managedToken}
+	for _, target := range []storage.SettleTarget{first, second} {
+		if err := mgr.settleTargetStorage.ApplySettleTargetClaimDelta(context.Background(), storage.SettleTargetClaimDelta{
+			Network: target.Network, Receiver: target.Receiver, Token: target.Token, Amount: bigInt(5),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var skipped []string
+	var batchErrs int
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MaxSettlesPerTx: 2,
+		OnError: func(err error, target *storage.SettleTarget) {
+			if target == nil {
+				batchErrs++
+				return
+			}
+			skipped = append(skipped, target.Receiver)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batchErrs != 0 || len(skipped) != 1 || len(results) != 1 {
+		t.Fatalf("skipped=%v batchErrs=%d results=%v", skipped, batchErrs, results)
+	}
+	if results[0].Receiver != second.Receiver {
+		t.Fatalf("settled %s, want %s", results[0].Receiver, second.Receiver)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleReportsBatchFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	signer.writeContract = func(string, ...interface{}) (string, error) {
+		return "", errors.New("rpc down")
+	}
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	seedManagerSettleTarget(t, mgr, managerChannel(t, auth, "00", &channelFields{TotalClaimed: "5000"}))
+	var got error
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		OnError: func(err error, target *storage.SettleTarget) {
+			got = err
+			if target != nil {
+				t.Fatal("batch failure should not carry a target")
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(results) != 0 {
+		t.Fatalf("onError=%v results=%v", got, results)
+	}
+}
+
+func TestFacilitatorChannelManager_ClaimReportsBatchFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "03", &channelFields{ChargedCumulativeAmount: "5000", SignedMaxClaimable: "5000", ChargeCount: 1})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, nil)
+	signer.writeContract = func(string, ...interface{}) (string, error) {
+		return "", errors.New("rpc down")
+	}
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	var got error
+	results, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
+		OnError: func(err error, channelID string) {
+			got = err
+			if channelID != "" {
+				t.Fatalf("batch failure channelID = %s", channelID)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(results) != 0 {
+		t.Fatalf("onError=%v results=%v", got, results)
+	}
+}
+
+func TestFacilitatorChannelManager_RefundClaimsApplySettleTargetDelta(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "00", &channelFields{
+		ChargedCumulativeAmount: "5000",
+		SignedMaxClaimable:      "5000",
+		Balance:                 "10000",
+		TotalClaimed:            "1000",
+		ChargeCount:             2,
+	})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	if _, err := mgr.Refund(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	page, err := mgr.settleTargetStorage.SettleQuery(context.Background(), storage.SettleQuery{Network: ch.Network, Limit: intPtr(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("settle targets = %d", len(page.Items))
+	}
+
+	targets := storage.NewInMemorySettleTargetStorage()
+	deps := managedDeps(t, store, store, auth, signer)
+	deps.SettleTargetStorage = targets
+	refundAuth := auth.addr
+	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("11", 12), refundAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ch.ChannelConfig
+	cfg.Salt = packed
+	channelID := mustChannelId(t, cfg)
+	_, sig := signRefundConsent(t, channelID, "1000", "0", managedNetwork)
+	hot := storedManagedChannel(cfg, channelID, &channelFields{
+		ChargedCumulativeAmount: "5000",
+		Balance:                 "10000",
+		TotalClaimed:            "1000",
+		ChargeCount:             1,
+	})
+	seedManagedChannel(t, store, hot)
+	reqs := managedRequirements(auth.addr)
+	reqs.Extra["refundAuthorizer"] = refundAuth
+	resp, err := SettleManaged(context.Background(), deps,
+		refundEnvelope(cfg, voucherFields(channelID, "5000", dummySig), "1000", "", sig),
+		reqs, nil, nil)
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("hot refund %+v %v", resp, err)
+	}
+	hotPage, err := targets.SettleQuery(context.Background(), storage.SettleQuery{Network: managedNetwork, Limit: intPtr(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hotPage.Items) != 1 {
+		t.Fatalf("hot settle targets = %d", len(hotPage.Items))
+	}
 }

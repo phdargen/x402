@@ -3,6 +3,7 @@ package facilitator
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 
@@ -187,27 +188,36 @@ func ExecuteSettleBatch(
 	targets []storage.SettleTarget,
 	dataSuffix []byte,
 ) ([]FacilitatorSettleResult, error) {
-	submissions, err := submitSettleMulticall(ctx, signer, network, targets, dataSuffix)
-	if err != nil {
-		return nil, err
-	}
-	results := make([]FacilitatorSettleResult, 0)
-	for _, sub := range submissions {
-		for _, target := range sub.targets {
-			results = append(results, FacilitatorSettleResult{
-				Network:     string(network),
-				Receiver:    target.Receiver,
-				Token:       target.Token,
-				Transaction: sub.txHash,
-			})
-		}
-	}
-	return results, nil
+	submissions, _, err := submitSettleMulticall(ctx, signer, network, targets, dataSuffix)
+	results, _ := settleResultsFromSubmissions(string(network), submissions)
+	return results, err
 }
 
 type settleMulticallSubmission struct {
 	txHash  string
 	targets []storage.SettleTarget
+}
+
+type skippedSettleTarget struct {
+	target storage.SettleTarget
+	err    error
+}
+
+func settleResultsFromSubmissions(network string, submissions []settleMulticallSubmission) ([]FacilitatorSettleResult, []storage.SettleTarget) {
+	results := make([]FacilitatorSettleResult, 0)
+	landed := make([]storage.SettleTarget, 0)
+	for _, sub := range submissions {
+		for _, target := range sub.targets {
+			results = append(results, FacilitatorSettleResult{
+				Network:     network,
+				Receiver:    target.Receiver,
+				Token:       target.Token,
+				Transaction: sub.txHash,
+			})
+			landed = append(landed, target)
+		}
+	}
+	return results, landed
 }
 
 func submitSettleMulticall(
@@ -216,13 +226,16 @@ func submitSettleMulticall(
 	network x402.Network,
 	targets []storage.SettleTarget,
 	dataSuffix []byte,
-) ([]settleMulticallSubmission, error) {
+) ([]settleMulticallSubmission, []skippedSettleTarget, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	calls, err := encodeSettleMulticallCalls(targets)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	_, simErr := signer.ReadContract(
 		ctx,
@@ -232,23 +245,29 @@ func submitSettleMulticall(
 		calls,
 	)
 	if simErr != nil {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 		if len(targets) == 1 {
-			return nil, x402.NewSettleError(ErrSettleSimulationFailed, "", network, "",
+			skipErr := x402.NewSettleError(ErrSettleSimulationFailed, "", network, "",
 				fmt.Sprintf("settle simulation failed: %s", evm.TruncateErrorMessage(simErr.Error())))
+			log.Printf("batch-settlement: skipping settle for %s %s on %s after simulation failure: %v",
+				targets[0].Receiver, targets[0].Token, network, skipErr)
+			return nil, []skippedSettleTarget{{target: targets[0], err: skipErr}}, nil
 		}
 		mid := len(targets) / 2
 		if mid < 1 {
 			mid = 1
 		}
-		left, err := submitSettleMulticall(ctx, signer, network, targets[:mid], dataSuffix)
+		left, leftSkipped, err := submitSettleMulticall(ctx, signer, network, targets[:mid], dataSuffix)
 		if err != nil {
-			return nil, err
+			return left, leftSkipped, err
 		}
-		right, err := submitSettleMulticall(ctx, signer, network, targets[mid:], dataSuffix)
+		right, rightSkipped, err := submitSettleMulticall(ctx, signer, network, targets[mid:], dataSuffix)
 		if err != nil {
-			return left, err
+			return append(left, right...), append(leftSkipped, rightSkipped...), err
 		}
-		return append(left, right...), nil
+		return append(left, right...), append(leftSkipped, rightSkipped...), nil
 	}
 
 	txHash, err := signer.WriteContract(
@@ -260,14 +279,14 @@ func submitSettleMulticall(
 		calls,
 	)
 	if err != nil {
-		return nil, x402.NewSettleError(ErrSettleTransactionFailed, "", network, "",
+		return nil, nil, x402.NewSettleError(ErrSettleTransactionFailed, "", network, "",
 			fmt.Sprintf("settle multicall transaction failed: %s", evm.TruncateErrorMessage(err.Error())))
 	}
 	if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", network,
 		ErrSettleTransactionFailed, ErrTransactionReverted); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return []settleMulticallSubmission{{txHash: txHash, targets: targets}}, nil
+	return []settleMulticallSubmission{{txHash: txHash, targets: targets}}, nil, nil
 }
 
 func encodeSettleMulticallCalls(targets []storage.SettleTarget) ([][]byte, error) {

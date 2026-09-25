@@ -39,6 +39,7 @@ type VoucherStoreDeps struct {
 	EIP6492AllowedFactories []string
 	PendingStore            x402.PendingSettlementStore
 	Retention               FacilitatorRetention
+	SettleTargetStorage     storage.SettleTargetStorage
 }
 
 func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) string {
@@ -517,6 +518,12 @@ func settleManagedRefund(
 	}
 
 	extraState, _ := settled.Extra["channelState"].(map[string]interface{})
+	if len(claims) > 0 {
+		newClaimed := refundClaimedTotal(stored.TotalClaimed, claims, extraState)
+		if err := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); err != nil {
+			return settled, nil
+		}
+	}
 	balance := stored.Balance
 	totalClaimed := stored.TotalClaimed
 	if extraState != nil {
