@@ -123,6 +123,77 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	}
 }
 
+func TestAfterClaim_UpsertsAggregatedTargetsBeforeChannelUpdates(t *testing.T) {
+	t.Parallel()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	log := make([]string, 0)
+	channels := orderLogStore{InMemoryChannelStorage: inner, log: &log}
+	targets := &orderLogTargets{InMemorySettleTargetStorage: storage.NewInMemorySettleTargetStorage(), log: &log}
+	first := afterClaimChannel("5000", 2)
+	secondCfg := afterClaimConfig()
+	secondCfg.Salt = managedSalt("02")
+	secondID, err := batchsettlement.ComputeChannelId(secondCfg, afterClaimNetwork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := afterClaimChannel("5000", 1)
+	second.ChannelId = secondID
+	second.ChannelConfig = secondCfg
+	second.ChargedCumulativeAmount = "300"
+	second.TotalClaimed = "100"
+	claimSecond := afterClaimVoucher(second)
+	claimSecond.TotalClaimed = "300"
+	if err := seedChannel(&channels, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedChannel(&channels, second); err != nil {
+		t.Fatal(err)
+	}
+	log = nil
+	claims := []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(first), claimSecond}
+	known := []*FacilitatorChannel{first, second}
+	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, attestedCharge(first, second), targets, known); err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 3 || log[0] != "target" || log[1] != "channel" || log[2] != "channel" {
+		t.Fatalf("ops = %v, want target then one update per channel", log)
+	}
+	if len(targets.amounts) != 1 || targets.amounts[0] != "5200" {
+		t.Fatalf("deltas = %v, want one aggregated 5200", targets.amounts)
+	}
+	got, err := inner.Get(context.Background(), first.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TotalClaimed != "5000" || got.ChargeCount != 0 {
+		t.Fatalf("first totalClaimed=%s chargeCount=%d", got.TotalClaimed, got.ChargeCount)
+	}
+}
+
+type orderLogStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	log *[]string
+}
+
+func (s *orderLogStore) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	*s.log = append(*s.log, "channel")
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelID, update)
+}
+
+type orderLogTargets struct {
+	*storage.InMemorySettleTargetStorage
+	log     *[]string
+	amounts []string
+}
+
+func (s *orderLogTargets) ApplySettleTargetClaimDelta(ctx context.Context, delta storage.SettleTargetClaimDelta) error {
+	*s.log = append(*s.log, "target")
+	if delta.Amount != nil {
+		s.amounts = append(s.amounts, delta.Amount.String())
+	}
+	return s.InMemorySettleTargetStorage.ApplySettleTargetClaimDelta(ctx, delta)
+}
+
 func seedChannel(store storage.ChannelStorage[*FacilitatorChannel], channel *FacilitatorChannel) error {
 	_, err := store.UpdateChannel(context.Background(), channel.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current != nil {
