@@ -85,9 +85,16 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 
 	switch filter.Kind {
 	case QueryKindClaimable:
+		if !ClaimableEscrow(channel) {
+			return false
+		}
+		// Withdraw-pending rows are inside the contract withdraw window, so dust still claims.
+		if channel.WithdrawRequestedAt > 0 {
+			return true
+		}
 		charged, chargedOk := ParseUint256(channel.ChargedCumulativeAmount)
 		claimed, claimedOk := ParseUint256(channel.TotalClaimed)
-		if !chargedOk || !claimedOk || charged.Cmp(claimed) <= 0 {
+		if !chargedOk || !claimedOk {
 			return false
 		}
 		if filter.MinUnclaimed != nil && filter.IdleAtOrBefore != nil {
@@ -214,6 +221,20 @@ func QueryChannelsByReceiverToken[T ChannelRecord[T]](
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// ClaimableEscrow reports charged > totalClaimed and balance > totalClaimed.
+func ClaimableEscrow(channel *Channel) bool {
+	if channel == nil {
+		return false
+	}
+	charged, chargedOk := ParseUint256(channel.ChargedCumulativeAmount)
+	claimed, claimedOk := ParseUint256(channel.TotalClaimed)
+	balance, balanceOk := ParseUint256(channel.Balance)
+	if !chargedOk || !claimedOk || !balanceOk {
+		return false
+	}
+	return charged.Cmp(claimed) > 0 && balance.Cmp(claimed) > 0
 }
 
 func matchesIdle(channel *Channel, idleAtOrBefore *int64) bool {

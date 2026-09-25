@@ -369,6 +369,23 @@ func TestMatchesChannelQuery_ThresholdOrIdle(t *testing.T) {
 	if MatchesChannelQuery(freshLow, ChannelQuery{Kind: QueryKindClaimable, IdleAtOrBefore: &idle}) {
 		t.Fatal("idle alone should not match a fresh row")
 	}
+	pending := queryChannel(paddedId(4), queryChannelExtra{
+		ChargedCumulativeAmount: "100",
+		LastRequestTimestamp:    queryNow,
+		WithdrawRequestedAt:     5,
+	})
+	if !MatchesChannelQuery(pending, both) {
+		t.Fatal("fresh withdraw-pending row below threshold should match")
+	}
+	drained := queryChannel(paddedId(6), queryChannelExtra{
+		ChargedCumulativeAmount: "100",
+		TotalClaimed:            "40",
+		Balance:                 "40",
+		WithdrawRequestedAt:     5,
+	})
+	if MatchesChannelQuery(drained, both) {
+		t.Fatal("drained row should not match")
+	}
 }
 
 func TestQueryChannels_AppliesMinUnclaimedToClaimable(t *testing.T) {
