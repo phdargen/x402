@@ -67,8 +67,6 @@ export interface BatchClientChannelRecord {
   channelId: string;
   chargedCumulativeAmount: string;
   deposit: string;
-  /** Operator voucher at `chargedCumulativeAmount` for server-signed channels. */
-  serverVoucher?: BatchVoucher | undefined;
   /** Whether the top-level allocation is confirmed while `pending` is in flight. */
   hasConfirmedState?: boolean | undefined;
   pending?:
@@ -747,7 +745,6 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const localPrior = pending.confirmed?.tracker.cumulative ?? 0n;
     let charged: bigint;
     let confirmedCumulative: bigint;
-    let serverVoucher: BatchVoucher | undefined;
     if (pending.tracker.channelConfig.voucherSigner === "server") {
       const voucher = extra?.voucher;
       const cumulative =
@@ -778,7 +775,6 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       }
       charged = cumulative - localPrior;
       confirmedCumulative = localPrior + charged;
-      serverVoucher = voucher;
     } else {
       charged =
         typeof extra?.chargedAmount === "string" && /^\d+$/.test(extra.chargedAmount)
@@ -811,7 +807,6 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     if (confirmedCumulative > pending.tracker.cumulative) {
       pending.tracker.commit(confirmedCumulative);
     }
-    if (serverVoucher) pending.tracker.recordServerVoucher(serverVoucher);
     pending.deposit = (pending.confirmed?.deposit ?? 0n) + deposited;
     const confirmed = { deposit: pending.deposit, tracker: pending.tracker };
     this.channels.set(pending.key, confirmed);
@@ -904,25 +899,14 @@ export class BatchSvmScheme implements SchemeNetworkClient {
   }
 
   private hydrateChannel(record: BatchClientChannelRecord): OpenChannel {
-    const cumulative = parseU64(record.chargedCumulativeAmount, "stored chargedCumulativeAmount");
-    const tracker = new BatchChannelTracker(
-      record.channelId,
-      record.channelConfig,
-      this.signer,
-      cumulative,
-    );
-    const voucher = record.serverVoucher;
-    if (
-      voucher &&
-      record.channelConfig.voucherSigner === "server" &&
-      voucher.maxClaimableAmount === cumulative.toString() &&
-      voucher.channelId === record.channelId
-    ) {
-      tracker.recordServerVoucher(voucher);
-    }
     return {
       deposit: parseU64(record.deposit, "stored deposit"),
-      tracker,
+      tracker: new BatchChannelTracker(
+        record.channelId,
+        record.channelConfig,
+        this.signer,
+        parseU64(record.chargedCumulativeAmount, "stored chargedCumulativeAmount"),
+      ),
     };
   }
 
@@ -930,10 +914,6 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     channel: OpenChannel,
     options?: { hasConfirmedState?: boolean; pending?: BatchClientChannelRecord["pending"] },
   ): BatchClientChannelRecord {
-    const serverVoucher =
-      channel.tracker.channelConfig.voucherSigner === "server"
-        ? channel.tracker.getServerVoucher()
-        : undefined;
     return {
       channelConfig: channel.tracker.channelConfig,
       channelId: channel.tracker.channelId,
@@ -941,7 +921,6 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       deposit: channel.deposit.toString(),
       ...(options?.hasConfirmedState ? { hasConfirmedState: true } : {}),
       ...(options?.pending ? { pending: options.pending } : {}),
-      ...(serverVoucher ? { serverVoucher } : {}),
     };
   }
 

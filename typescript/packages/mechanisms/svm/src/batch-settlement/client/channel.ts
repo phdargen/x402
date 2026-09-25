@@ -45,7 +45,6 @@ export async function signBatchVoucher(
 
 export class BatchChannelTracker {
   private chargedCumulativeAmount: bigint;
-  private serverVoucher: BatchVoucher | undefined;
 
   constructor(
     readonly channelId: string,
@@ -120,24 +119,6 @@ export class BatchChannelTracker {
     const voucher = await this.previewVoucher(charge);
     this.commit(this.chargedCumulativeAmount + charge);
     return voucher;
-  }
-
-  /**
-   * Keep the operator voucher from a server-signed PAYMENT-RESPONSE receipt.
-   *
-   * @param voucher - Operator voucher returned by the server
-   */
-  recordServerVoucher(voucher: BatchVoucher): void {
-    this.serverVoucher = voucher;
-  }
-
-  /**
-   * Latest operator voucher confirmed in a server-signed PAYMENT-RESPONSE.
-   *
-   * @returns The stored server voucher, if any
-   */
-  getServerVoucher(): BatchVoucher | undefined {
-    return this.serverVoucher;
   }
 
   /**
