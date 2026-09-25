@@ -235,6 +235,12 @@ func voucherFields(channelId, maxClaimable, signature string) batchsettlement.Ba
 	}
 }
 
+type managedChainView struct {
+	Balance      *big.Int
+	TotalClaimed *big.Int
+	WithdrawAt   int64
+}
+
 type managedRPC struct {
 	t               *testing.T
 	balance         *big.Int
@@ -247,6 +253,14 @@ type managedRPC struct {
 	invalidSig      bool
 	simFail         string
 	readFail        bool
+	// chainViews overrides channels() and pendingWithdrawals() by channel id.
+	chainViews map[string]managedChainView
+	// failReads marks channel ids whose preflight subcalls revert.
+	failReads map[string]struct{}
+	// failReceivers marks receiver addresses whose receivers() subcalls revert.
+	failReceivers map[string]struct{}
+	// resyncView overrides the 3-call channel-state read used after a failed claim.
+	resyncView *managedChainView
 }
 
 func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
