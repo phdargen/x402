@@ -147,9 +147,15 @@ import {
   type BatchPayload,
   type BatchRefundPayload,
   type BatchSettlePayload,
+  type BatchVoucher,
   isBatchFacilitatorPayload,
   isBatchPayload,
+  proofOf,
 } from "../types";
+
+type DurablePhase = "completed" | "pending" | "broadcast";
+
+type DurableObservation<T> = { ok: true; channel: T } | { ok: false; response: SettleResponse };
 
 function isTransientRpcError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -421,24 +427,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       if (channelId !== claim.channelId || channelId !== claim.voucher.channelId) {
         throw new Error(BatchError.CHANNEL_ID_MISMATCH);
       }
-      const cumulative = parseU64(claim.voucher.maxClaimableAmount, "maxClaimableAmount");
-      this.assertExpiry(claim.voucher.expiresAt);
-      const voucher = {
-        authorizedSigner: claim.channelConfig.payerAuthorizer,
-        cumulativeAmount: cumulative,
-        expiresAt: BigInt(claim.voucher.expiresAt),
-        signatureBase58: claim.voucher.signature,
-      };
-      const valid = await verifyVoucherSignature({
-        message: encodeVoucherMessageBytes({
-          channelId,
-          cumulativeAmount: cumulative,
-          expiresAt: voucher.expiresAt,
-        }),
-        signatureBase58: claim.voucher.signature,
-        signerBase58: voucher.authorizedSigner,
-      });
-      if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
+      const cumulative = await this.verifySignedVoucher(
+        channelId,
+        claim.voucher,
+        claim.channelConfig.payerAuthorizer,
+      );
       prepared.push({
         claim,
         channelId,
@@ -460,127 +453,87 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       .map(item => `${item.channelId}:${item.cumulative}`)
       .sort()
       .join(",")}`;
-    const completed = await this.pendingStore.get(this.completedBroadcastKey(claimKey));
-    if (completed) return claimResponse(prepared, requirements.network, completed);
-
-    // A completed replay must not re-register a channel already reclaimed by cleanup.
-    await Promise.all(
-      prepared.map(item =>
-        this.trackChannel({
-          channelId: item.channelId,
-          expiresAt: item.expiresAt,
-          network: requirements.network,
-          payTo: item.payTo,
-          tokenProgram: item.tokenProgram,
-        }),
-      ),
-    );
-
-    const pending = await this.pendingStore.get(claimKey);
-    if (pending) {
-      const recovered = await this.reconcileBroadcast(
-        claimKey,
-        pending,
-        requirements.network,
-        prepared[0]?.claim.channelConfig.payer ?? "",
-      );
-      if (!recovered.ok) return recovered.response;
-      const confirmed = await this.fetchChannelsUntil(
-        requirements.network,
-        prepared.map(item => item.channelId),
-        channels =>
-          channels.every(
-            (channel, index) =>
-              channel !== undefined && channel.settlement.settled >= prepared[index]!.cumulative,
-          ),
-      );
-      if (!confirmed) {
-        return settlementPending(
-          requirements.network,
-          prepared[0]?.claim.channelConfig.payer ?? "",
-          recovered.signature,
-          "claim confirmed but its channel watermark is not visible yet",
-        );
-      }
-      this.assertRecoveredClaims(confirmed, prepared, requirements);
-      const incomplete = await this.completeOrPending(
-        claimKey,
-        recovered.signature,
-        requirements.network,
-        prepared[0]?.claim.channelConfig.payer ?? "",
-      );
-      return incomplete ?? claimResponse(prepared, requirements.network, recovered.signature);
-    }
-
-    const channels = await Promise.all(
-      prepared.map(item => this.fetchChannel(requirements.network, item.channelId)),
-    );
+    const payer = prepared[0]?.claim.channelConfig.payer ?? "";
     const instructions: ServerInstruction[] = [];
-    for (let index = 0; index < prepared.length; index += 1) {
-      const item = prepared[index]!;
-      const channel = channels[index]!;
-      assertNotClosing(channel, item.channelId);
-      this.assertClaimChannel(channel, item.claim.channelConfig, item.terms, requirements, [
-        ChannelStatus.Open,
-      ]);
-      if (item.cumulative <= channel.settlement.settled || item.cumulative > channel.deposit) {
-        throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
-      }
-      instructions.push(
-        ...buildSettleInstructions({
-          channelId: item.channelId,
-          voucher: {
-            authorizedSigner: item.claim.channelConfig.payerAuthorizer,
-            cumulativeAmount: item.cumulative,
-            expiresAt: BigInt(item.expiresAt),
-            signatureBase58: item.claim.voucher.signature,
-          },
-        }),
-      );
-    }
-    if (this.settlementCache.isDuplicate(claimKey)) {
-      return settleFailure(
-        payment.accepted.network,
-        CHANNEL_BUSY,
-        prepared[0]?.claim.channelConfig.payer ?? "",
-      );
-    }
-    const submitted = await this.submitRedemption(
-      feePayer,
-      requirements.network,
-      instructions,
-      claimKey,
-      prepared[0]?.claim.channelConfig.payer ?? "",
-    );
-    if (!submitted.ok) return submitted.response;
-    if (submitted.replayed) {
-      return claimResponse(prepared, requirements.network, submitted.signature);
-    }
-    const confirmed = await this.fetchChannelsUntil(
-      requirements.network,
-      prepared.map(item => item.channelId),
-      observed =>
-        observed.every(
-          (channel, index) =>
-            channel !== undefined && channel.settlement.settled >= prepared[index]!.cumulative,
-        ),
-    );
-    if (!confirmed) {
-      return settlementPending(
-        requirements.network,
-        prepared[0]?.claim.channelConfig.payer ?? "",
-        submitted.signature,
-        "claim confirmed but its channel watermark is not visible yet",
-      );
-    }
-    this.assertRecoveredClaims(confirmed, prepared, requirements);
-    const incomplete = await this.completeOrPending(
-      claimKey,
-      submitted.signature,
-      requirements.network,
-      prepared[0]?.claim.channelConfig.payer ?? "",
-    );
-    return incomplete ?? claimResponse(prepared, requirements.network, submitted.signature);
+    const settled = await this.settleDurably({
+      key: claimKey,
+      network: requirements.network,
+      payer,
+      onCompleted: async signature => claimResponse(prepared, requirements.network, signature),
+      beforePending: async () => {
+        // A completed replay must not re-register a channel already reclaimed by cleanup.
+        await Promise.all(
+          prepared.map(item =>
+            this.trackChannel({
+              channelId: item.channelId,
+              expiresAt: item.expiresAt,
+              network: requirements.network,
+              payTo: item.payTo,
+              tokenProgram: item.tokenProgram,
+            }),
+          ),
+        );
+      },
+      beforeSend: async () => {
+        const channels = await Promise.all(
+          prepared.map(item => this.fetchChannel(requirements.network, item.channelId)),
+        );
+        for (let index = 0; index < prepared.length; index += 1) {
+          const item = prepared[index]!;
+          const channel = channels[index]!;
+          assertNotClosing(channel, item.channelId);
+          this.assertClaimChannel(channel, item.claim.channelConfig, item.terms, requirements, [
+            ChannelStatus.Open,
+          ]);
+          if (item.cumulative <= channel.settlement.settled || item.cumulative > channel.deposit) {
+            throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+          }
+          instructions.push(
+            ...buildSettleInstructions({
+              channelId: item.channelId,
+              voucher: {
+                authorizedSigner: item.claim.channelConfig.payerAuthorizer,
+                cumulativeAmount: item.cumulative,
+                expiresAt: BigInt(item.expiresAt),
+                signatureBase58: item.claim.voucher.signature,
+              },
+            }),
+          );
+        }
+        if (this.settlementCache.isDuplicate(claimKey)) {
+          return settleFailure(payment.accepted.network, CHANNEL_BUSY, payer);
+        }
+      },
+      broadcast: () =>
+        this.submitRedemption(feePayer, requirements.network, instructions, claimKey, payer),
+      onReplay: signature => claimResponse(prepared, requirements.network, signature),
+      postcondition: async signature => {
+        const confirmed = await this.fetchChannelsUntil(
+          requirements.network,
+          prepared.map(item => item.channelId),
+          channels =>
+            channels.every(
+              (channel, index) =>
+                channel !== undefined && channel.settlement.settled >= prepared[index]!.cumulative,
+            ),
+        );
+        if (!confirmed) {
+          return {
+            ok: false as const,
+            response: settlementPending(
+              requirements.network,
+              payer,
+              signature,
+              "claim confirmed but its channel watermark is not visible yet",
+            ),
+          };
+        }
+        this.assertRecoveredClaims(confirmed, prepared, requirements);
+        return { ok: true as const, channel: confirmed };
+      },
+    });
+    if (!("channel" in settled)) return settled;
+    return claimResponse(prepared, requirements.network, settled.signature);
   }
 
   async settleDistributions(
@@ -828,35 +781,37 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     const deposit = parseU64(payload.deposit.amount, "deposit.amount");
     const charge = parseU64(requirements.amount, "amount");
     const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
-    const voucherAmount = payload.voucher
-      ? parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount")
-      : terms.voucherSigner === "server"
-        ? charge
-        : undefined;
-    if (terms.voucherSigner === "client" && !payload.voucher) {
-      throw new Error(`${BatchError.VOUCHER_SIGNATURE}: client voucher missing`);
-    }
-    if (terms.voucherSigner === "server" && voucherAmount === undefined) {
-      throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: amount missing`);
-    }
-    if (terms.voucherSigner === "server") {
-      await this.assertServerModeProof(payload, channelId, requirements, proofBound);
-    }
-    if (payload.voucher) {
-      if (payload.voucher.channelId !== channelId) {
-        throw new Error(`${BatchError.CHANNEL_ID_MISMATCH}: voucher channel mismatch`);
+    const proof = proofOf(payload);
+    let proofAmount: bigint;
+    switch (proof.signer) {
+      case "client": {
+        // Parse before the channel check: a non-numeric amount fails first.
+        proofAmount = parseU64(proof.voucher.maxClaimableAmount, "maxClaimableAmount");
+        if (proof.voucher.channelId !== channelId) {
+          throw new Error(`${BatchError.CHANNEL_ID_MISMATCH}: voucher channel mismatch`);
+        }
+        const voucherValid = await verifyVoucherSignature({
+          message: encodeVoucherMessageBytes({
+            channelId,
+            cumulativeAmount: proofAmount,
+            expiresAt: BigInt(proof.voucher.expiresAt),
+          }),
+          signatureBase58: proof.voucher.signature,
+          signerBase58: payload.channelConfig.payerAuthorizer,
+        });
+        if (!voucherValid) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid voucher`);
+        this.assertExpiry(proof.voucher.expiresAt);
+        break;
       }
-      const voucherValid = await verifyVoucherSignature({
-        message: encodeVoucherMessageBytes({
-          channelId,
-          cumulativeAmount: voucherAmount!,
-          expiresAt: BigInt(payload.voucher.expiresAt),
-        }),
-        signatureBase58: payload.voucher.signature,
-        signerBase58: payload.channelConfig.payerAuthorizer,
-      });
-      if (!voucherValid) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid voucher`);
-      this.assertExpiry(payload.voucher.expiresAt);
+      case "server": {
+        proofAmount = charge;
+        await this.assertServerModeProof(payload, channelId, requirements, proofBound);
+        break;
+      }
+      default: {
+        const unexpected: never = proof;
+        throw new Error(String(unexpected));
+      }
     }
     const existing = await this.readChannel(requirements.network, channelId);
     if (existing) {
@@ -864,19 +819,25 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         ChannelStatus.Open,
       ]);
       const expectedDeposit = existing.deposit + deposit;
-      if (terms.voucherSigner === "server") {
-        if (charge > expectedDeposit) {
-          throw new Error(
-            `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: charge exceeds topped-up ceiling`,
-          );
+      switch (proof.signer) {
+        case "server":
+          if (charge > expectedDeposit) {
+            throw new Error(
+              `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: charge exceeds topped-up ceiling`,
+            );
+          }
+          break;
+        case "client":
+          if (proofAmount < charge || proofAmount > expectedDeposit) {
+            throw new Error(
+              `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: voucher exceeds topped-up ceiling`,
+            );
+          }
+          break;
+        default: {
+          const unexpected: never = proof;
+          throw new Error(String(unexpected));
         }
-      } else if (
-        voucherAmount !== undefined &&
-        (voucherAmount < charge || voucherAmount > expectedDeposit)
-      ) {
-        throw new Error(
-          `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: voucher exceeds topped-up ceiling`,
-        );
       }
       await verifyTopUpTransaction(payload.deposit.transaction, {
         amount: deposit,
@@ -900,16 +861,26 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         expectedDeposit,
         isTopUp: true,
         payload,
+        proof,
+        proofAmount,
         terms,
-        voucherAmount: voucherAmount!,
       };
     }
-    if (terms.voucherSigner === "server") {
-      if (charge > deposit) {
-        throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
+    switch (proof.signer) {
+      case "server":
+        if (charge > deposit) {
+          throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
+        }
+        break;
+      case "client":
+        if (proofAmount !== charge || charge > deposit) {
+          throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
+        }
+        break;
+      default: {
+        const unexpected: never = proof;
+        throw new Error(String(unexpected));
       }
-    } else if ((voucherAmount !== undefined && voucherAmount !== charge) || charge > deposit) {
-      throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
     }
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
       authorizedSigner: payload.channelConfig.payerAuthorizer,
@@ -943,8 +914,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       expectedDeposit: deposit,
       isTopUp: false,
       payload,
+      proof,
+      proofAmount,
       terms,
-      voucherAmount: voucherAmount!,
     };
   }
 
@@ -1054,11 +1026,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       }
       throw error;
     }
-    const broadcast = await this.broadcastDurably(
+    const settled = await this.settleDurably({
       key,
-      requirements.network,
-      payload.channelConfig.payer,
-      async onBroadcast => {
+      network: requirements.network,
+      payer: payload.channelConfig.payer,
+      send: async onBroadcast => {
         try {
           return await broadcastOpen(
             this.submissionSigner(),
@@ -1075,21 +1047,20 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           throw error;
         }
       },
+      postcondition: async () => {
+        const channel = await this.fetchChannel(requirements.network, channelId);
+        this.assertDepositChannel(channel, validated, requirements);
+        return { ok: true as const, channel };
+      },
+    });
+    if (!("channel" in settled)) return settled;
+    return depositResponse(
+      channelId,
+      settled.channel,
+      requirements.network,
+      settled.signature,
+      validated.deposit,
     );
-    if (!broadcast.ok) return broadcast.response;
-    const signature = broadcast.signature;
-    const channel = await this.fetchChannel(requirements.network, channelId);
-    this.assertDepositChannel(channel, validated, requirements);
-    if (!broadcast.replayed) {
-      const incomplete = await this.completeOrPending(
-        key,
-        signature,
-        requirements.network,
-        payload.channelConfig.payer,
-      );
-      if (incomplete) return incomplete;
-    }
-    return depositResponse(channelId, channel, requirements.network, signature, validated.deposit);
   }
 
   private async assertSettlementAccounts(
@@ -1153,18 +1124,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     terms: BatchTerms,
     channelId: string,
   ): Promise<Channel> {
-    const cumulative = parseU64(payload.voucher.maxClaimableAmount, "maxClaimableAmount");
-    this.assertExpiry(payload.voucher.expiresAt);
-    const valid = await verifyVoucherSignature({
-      message: encodeVoucherMessageBytes({
-        channelId,
-        cumulativeAmount: cumulative,
-        expiresAt: BigInt(payload.voucher.expiresAt),
-      }),
-      signatureBase58: payload.voucher.signature,
-      signerBase58: payload.channelConfig.payerAuthorizer,
-    });
-    if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
+    const cumulative = await this.verifySignedVoucher(
+      channelId,
+      payload.voucher,
+      payload.channelConfig.payerAuthorizer,
+    );
     const channel = await this.fetchChannel(requirements.network, channelId);
     assertNotClosing(channel, channelId);
     this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
@@ -1187,105 +1151,49 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       return settleCooperativeRefund(deps, payment, payload, requirements, prepared, context);
     }
     const key = `batch:refund:${requirements.network}:${channelId}:${requestClose}`;
-    const completed = await this.pendingStore.get(this.completedBroadcastKey(key));
-    if (completed) {
-      const observed = await this.fetchChannelUntil(
-        requirements.network,
-        channelId,
-        channel =>
-          channel === undefined ||
-          channel.status === ChannelStatus.Closing ||
-          channel.status === ChannelStatus.Sealed ||
-          channel.status === ChannelStatus.Distributed,
-      );
-      if (observed) {
-        this.assertClaimChannel(observed, payload.channelConfig, terms, requirements, [
-          ChannelStatus.Closing,
-          ChannelStatus.Sealed,
-          ChannelStatus.Distributed,
-        ]);
-        return refundResponse(channelId, observed, requirements.network, completed);
-      }
-      return recoveredRefundResponse(
-        channelId,
-        payload.channelConfig.payer,
-        requirements.network,
-        completed,
-      );
-    }
-    const pending = await this.pendingStore.get(key);
-    if (pending) {
-      const recovered = await this.reconcileBroadcast(
-        key,
-        pending,
-        requirements.network,
-        payload.channelConfig.payer,
-      );
-      if (!recovered.ok) return recovered.response;
-      const observed = await this.fetchChannelUntil(
-        requirements.network,
-        channelId,
-        channel =>
-          channel === undefined ||
-          channel.status === ChannelStatus.Closing ||
-          channel.status === ChannelStatus.Sealed ||
-          channel.status === ChannelStatus.Distributed,
-      );
-      if (observed === false) {
-        return settlementPending(
-          requirements.network,
-          payload.channelConfig.payer,
-          recovered.signature,
-          "request_close confirmed but the closing state is not visible yet",
-        );
-      }
-      if (observed) {
-        this.assertClaimChannel(observed, payload.channelConfig, terms, requirements, [
-          ChannelStatus.Closing,
-          ChannelStatus.Sealed,
-          ChannelStatus.Distributed,
-        ]);
-      }
-      const incomplete = await this.completeOrPending(
-        key,
-        recovered.signature,
-        requirements.network,
-        payload.channelConfig.payer,
-      );
-      if (incomplete) return incomplete;
-      return observed
-        ? refundResponse(channelId, observed, requirements.network, recovered.signature)
-        : recoveredRefundResponse(
-            channelId,
-            payload.channelConfig.payer,
-            requirements.network,
-            recovered.signature,
-          );
-    }
-
-    const channel = await this.fetchChannel(requirements.network, channelId);
-    this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
-      ChannelStatus.Open,
+    const payer = payload.channelConfig.payer;
+    const closed: readonly ChannelStatus[] = [
       ChannelStatus.Closing,
-    ]);
-    if (channel.status === ChannelStatus.Closing) {
-      return refundResponse(channelId, channel, requirements.network, "");
-    }
-    if (this.settlementCache.isDuplicate(key)) {
-      return settleFailure(payment.accepted.network, "duplicate_settlement", channel.payer);
-    }
-    await this.trackChannel({
-      channelId,
-      expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
-      network: requirements.network,
-      payTo: requirements.payTo,
-      tokenProgram: terms.tokenProgram,
-    });
-    const broadcast = await this.broadcastDurably(
+      ChannelStatus.Sealed,
+      ChannelStatus.Distributed,
+    ];
+    const settled = await this.settleDurably<Channel | undefined>({
       key,
-      requirements.network,
-      channel.payer,
-      async onBroadcast => {
+      network: requirements.network,
+      payer,
+      onCompleted: async signature => {
+        const observed = await this.fetchChannelUntil(
+          requirements.network,
+          channelId,
+          channel => channel === undefined || closed.includes(channel.status),
+        );
+        if (observed) {
+          this.assertClaimChannel(observed, payload.channelConfig, terms, requirements, closed);
+          return refundResponse(channelId, observed, requirements.network, signature);
+        }
+        return recoveredRefundResponse(channelId, payer, requirements.network, signature);
+      },
+      beforeSend: async () => {
+        const channel = await this.fetchChannel(requirements.network, channelId);
+        this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
+          ChannelStatus.Open,
+          ChannelStatus.Closing,
+        ]);
+        if (channel.status === ChannelStatus.Closing) {
+          return refundResponse(channelId, channel, requirements.network, "");
+        }
+        if (this.settlementCache.isDuplicate(key)) {
+          return settleFailure(payment.accepted.network, "duplicate_settlement", channel.payer);
+        }
+        await this.trackChannel({
+          channelId,
+          expiresAt: CLIENT_VOUCHER_EXPIRES_AT,
+          network: requirements.network,
+          payTo: requirements.payTo,
+          tokenProgram: terms.tokenProgram,
+        });
+      },
+      send: async onBroadcast => {
         try {
           // Simulated unsigned: the fee payer's signature is not what the
           // program checks here, and leaving it off keeps simulation portable
@@ -1304,47 +1212,35 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           throw error;
         }
       },
-    );
-    if (!broadcast.ok) return broadcast.response;
-    if (broadcast.replayed) {
-      return recoveredRefundResponse(
-        channelId,
-        payload.channelConfig.payer,
-        requirements.network,
-        broadcast.signature,
-      );
-    }
-    const closing = await this.fetchChannelUntil(
-      requirements.network,
-      channelId,
-      observed =>
-        observed !== undefined &&
-        (observed.status === ChannelStatus.Closing ||
-          observed.status === ChannelStatus.Sealed ||
-          observed.status === ChannelStatus.Distributed),
-    );
-    if (!closing) {
-      return settlementPending(
-        requirements.network,
-        payload.channelConfig.payer,
-        broadcast.signature,
-        "request_close confirmed but the closing state is not visible yet",
-      );
-    }
-    this.assertClaimChannel(closing, payload.channelConfig, terms, requirements, [
-      ChannelStatus.Closing,
-      ChannelStatus.Sealed,
-      ChannelStatus.Distributed,
-    ]);
-    const incomplete = await this.completeOrPending(
-      key,
-      broadcast.signature,
-      requirements.network,
-      payload.channelConfig.payer,
-    );
-    return (
-      incomplete ?? refundResponse(channelId, closing, requirements.network, broadcast.signature)
-    );
+      onReplay: signature =>
+        recoveredRefundResponse(channelId, payer, requirements.network, signature),
+      postcondition: async (signature, phase) => {
+        const pendingView = phase === "pending";
+        const observed = await this.fetchChannelUntil(requirements.network, channelId, channel =>
+          pendingView
+            ? channel === undefined || closed.includes(channel.status)
+            : channel !== undefined && closed.includes(channel.status),
+        );
+        if (pendingView && observed === undefined) return { ok: true as const, channel: undefined };
+        if (!observed) {
+          return {
+            ok: false as const,
+            response: settlementPending(
+              requirements.network,
+              payer,
+              signature,
+              "request_close confirmed but the closing state is not visible yet",
+            ),
+          };
+        }
+        this.assertClaimChannel(observed, payload.channelConfig, terms, requirements, closed);
+        return { ok: true as const, channel: observed };
+      },
+    });
+    if (!("channel" in settled)) return settled;
+    return settled.channel
+      ? refundResponse(channelId, settled.channel, requirements.network, settled.signature)
+      : recoveredRefundResponse(channelId, payer, requirements.network, settled.signature);
   }
 
   private async resolveTerms(
@@ -1431,6 +1327,78 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
 
   private assertExpiry(expiresAt: number): void {
     if (expiresAt !== CLIENT_VOUCHER_EXPIRES_AT) throw new Error(BatchError.VOUCHER_EXPIRY);
+  }
+
+  // Signature and expiry of a client voucher. The caller checks the channel id.
+  private async verifySignedVoucher(
+    channelId: string,
+    voucher: Pick<BatchVoucher, "expiresAt" | "maxClaimableAmount" | "signature">,
+    signerBase58: string,
+  ): Promise<bigint> {
+    const cumulative = parseU64(voucher.maxClaimableAmount, "maxClaimableAmount");
+    this.assertExpiry(voucher.expiresAt);
+    const valid = await verifyVoucherSignature({
+      message: encodeVoucherMessageBytes({
+        channelId,
+        cumulativeAmount: cumulative,
+        expiresAt: BigInt(voucher.expiresAt),
+      }),
+      signatureBase58: voucher.signature,
+      signerBase58,
+    });
+    if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
+    return cumulative;
+  }
+
+  // Completed record, pending reconcile, or a new broadcast, then the postcondition.
+  // A completed signature is not marked complete again; onReplay skips that check.
+  private async settleDurably<T>(args: {
+    key: string;
+    network: Network;
+    payer: string;
+    beforePending?: () => Promise<void>;
+    beforeSend?: () => Promise<SettleResponse | void>;
+    send?: (onBroadcast: (signature: string, wire: string) => Promise<void>) => Promise<string>;
+    // Claims already broadcast inside submitRedemption, so they skip send.
+    broadcast?: () => Promise<DurableBroadcastResult>;
+    onCompleted?: (signature: string) => Promise<SettleResponse> | SettleResponse;
+    onReplay?: (signature: string) => SettleResponse;
+    postcondition: (signature: string, phase: DurablePhase) => Promise<DurableObservation<T>>;
+  }): Promise<{ signature: string; channel: T } | SettleResponse> {
+    const finish = async (signature: string, phase: DurablePhase) => {
+      const observed = await args.postcondition(signature, phase);
+      if (!observed.ok) return observed.response;
+      if (phase === "completed") return { signature, channel: observed.channel };
+      const incomplete = await this.completeOrPending(
+        args.key,
+        signature,
+        args.network,
+        args.payer,
+      );
+      return incomplete ?? { signature, channel: observed.channel };
+    };
+    const completed = await this.pendingStore.get(this.completedBroadcastKey(args.key));
+    if (completed)
+      return args.onCompleted ? args.onCompleted(completed) : finish(completed, "completed");
+    if (args.beforePending) await args.beforePending();
+    const pending = await this.pendingStore.get(args.key);
+    if (pending) {
+      const recovered = await this.reconcileBroadcast(args.key, pending, args.network, args.payer);
+      if (!recovered.ok) return recovered.response;
+      return finish(recovered.signature, "pending");
+    }
+    if (args.beforeSend) {
+      const early = await args.beforeSend();
+      if (early) return early;
+    }
+    const send = args.send;
+    if (!args.broadcast && !send) throw new Error("settleDurably requires send");
+    const sent = args.broadcast
+      ? await args.broadcast()
+      : await this.broadcastDurably(args.key, args.network, args.payer, send!);
+    if (!sent.ok) return sent.response;
+    if (sent.replayed && args.onReplay) return args.onReplay(sent.signature);
+    return finish(sent.signature, sent.replayed ? "completed" : "broadcast");
   }
 
   /**

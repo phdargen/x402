@@ -33,6 +33,7 @@ import {
   BatchChannelTracker,
   buildDepositPayload,
   buildRefundPayload,
+  credentialFor,
 } from "./channel";
 import {
   DEFAULT_DEPOSIT_MULTIPLIER,
@@ -206,20 +207,21 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       if (cumulative <= existing.deposit) {
         const requestId = terms.voucherSigner === "server" ? crypto.randomUUID() : undefined;
         const payload: Extract<BatchPayload, { type: "authorization" | "voucher" }> =
-          terms.voucherSigner === "server"
+          requestId === undefined
             ? {
-                authorization: await existing.tracker.authorization(
-                  requestId!,
-                  charge,
-                  authorizationExpiresAt,
-                ),
-                channelConfig: existing.tracker.channelConfig,
-                type: "authorization",
-              }
-            : {
                 channelConfig: existing.tracker.channelConfig,
                 type: "voucher",
-                voucher: await existing.tracker.previewVoucher(charge),
+                voucher: (await credentialFor("client", existing.tracker, charge)).voucher,
+              }
+            : {
+                authorization: (
+                  await credentialFor("server", existing.tracker, charge, {
+                    requestId,
+                    expiresAt: authorizationExpiresAt,
+                  })
+                ).authorization,
+                channelConfig: existing.tracker.channelConfig,
+                type: "authorization",
               };
         const payment: PendingPayment = {
           x402Version,
@@ -262,21 +264,20 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         tokenProgram: terms.tokenProgram,
       });
       const topUpRequestId = crypto.randomUUID();
+      const topUpCredential =
+        terms.voucherSigner === "server"
+          ? await credentialFor("server", existing.tracker, charge, {
+              requestId: topUpRequestId,
+              expiresAt: authorizationExpiresAt,
+            })
+          : await credentialFor("client", existing.tracker, charge);
       const payment: PendingPayment = {
         x402Version,
         payload: {
           channelConfig: existing.tracker.channelConfig,
           deposit: { amount: topUpAmount.toString(), transaction: topUp.transaction },
           type: "deposit",
-          ...(terms.voucherSigner === "server"
-            ? {
-                authorization: await existing.tracker.authorization(
-                  topUpRequestId,
-                  charge,
-                  authorizationExpiresAt,
-                ),
-              }
-            : { voucher: await existing.tracker.previewVoucher(charge) }),
+          ...topUpCredential,
         },
       };
       const next = {
@@ -412,10 +413,11 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const serverMode = existing.tracker.channelConfig.voucherSigner === "server";
     const expiresAt = Math.floor(Date.now() / 1000) + lookupRequirements.maxTimeoutSeconds;
     const credential = serverMode
-      ? {
-          authorization: await existing.tracker.authorization(crypto.randomUUID(), 0n, expiresAt),
-        }
-      : { voucher: await existing.tracker.refundVoucher() };
+      ? await credentialFor("server", existing.tracker, 0n, {
+          requestId: crypto.randomUUID(),
+          expiresAt,
+        })
+      : await credentialFor("client", existing.tracker, 0n, undefined, true);
     return {
       x402Version,
       payload: await buildRefundPayload({

@@ -139,6 +139,52 @@ export class BatchChannelTracker {
   }
 }
 
+// Client voucher, or the payer authorization a server-signed charge needs.
+export async function credentialFor(
+  mode: "client",
+  tracker: BatchChannelTracker,
+  charge: bigint,
+  authorization?: undefined,
+  refund?: boolean,
+): Promise<{ voucher: BatchVoucher }>;
+export async function credentialFor(
+  mode: "server",
+  tracker: BatchChannelTracker,
+  charge: bigint,
+  authorization: { requestId: string; expiresAt: number },
+  refund?: boolean,
+): Promise<{ authorization: BatchAuthorization }>;
+export async function credentialFor(
+  mode: "client" | "server",
+  tracker: BatchChannelTracker,
+  charge: bigint,
+  authorization?: { requestId: string; expiresAt: number },
+  refund = false,
+): Promise<{ voucher: BatchVoucher } | { authorization: BatchAuthorization }> {
+  switch (mode) {
+    case "client":
+      return {
+        voucher: refund ? await tracker.refundVoucher() : await tracker.previewVoucher(charge),
+      };
+    case "server": {
+      if (!authorization) {
+        throw new Error("authorizationExpiresAt is required for operator voucher signing");
+      }
+      return {
+        authorization: await tracker.authorization(
+          authorization.requestId,
+          charge,
+          authorization.expiresAt,
+        ),
+      };
+    }
+    default: {
+      const unexpected: never = mode;
+      throw new Error(String(unexpected));
+    }
+  }
+}
+
 export interface BuildDepositArgs {
   payer: BatchClientSigner;
   receiver: string;
@@ -175,11 +221,17 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   const voucherSigner = args.voucherSigner ?? "client";
   const authorizedSigner = voucherSigner === "server" ? args.operator : args.payer.address;
   if (!authorizedSigner) throw new Error("operator is required for operator voucher signing");
-  if (
-    voucherSigner === "server" &&
-    (!Number.isSafeInteger(args.authorizationExpiresAt) || args.authorizationExpiresAt! <= 0)
-  ) {
-    throw new Error("authorizationExpiresAt is required for operator voucher signing");
+  const authorizationExpiresAt = args.authorizationExpiresAt;
+  let pendingAuthorization: { requestId: string; expiresAt: number } | undefined;
+  if (voucherSigner === "server") {
+    if (
+      authorizationExpiresAt === undefined ||
+      !Number.isSafeInteger(authorizationExpiresAt) ||
+      authorizationExpiresAt <= 0
+    ) {
+      throw new Error("authorizationExpiresAt is required for operator voucher signing");
+    }
+    pendingAuthorization = { requestId: crypto.randomUUID(), expiresAt: authorizationExpiresAt };
   }
   const open = await buildOpenPaymentChannelTransaction({
     authorizedSigner,
@@ -211,17 +263,9 @@ export async function buildDepositPayload(args: BuildDepositArgs): Promise<Built
   const tracker = new BatchChannelTracker(open.channelId, channelConfig, args.payer);
   // A payment payload is only an authorization.  Do not advance local state
   // until the resource server confirms it in PAYMENT-RESPONSE.
-  const requestId = crypto.randomUUID();
-  const credential =
-    voucherSigner === "server"
-      ? {
-          authorization: await tracker.authorization(
-            requestId,
-            args.firstCharge,
-            args.authorizationExpiresAt!,
-          ),
-        }
-      : { voucher: await tracker.previewVoucher(args.firstCharge) };
+  const credential = pendingAuthorization
+    ? await credentialFor("server", tracker, args.firstCharge, pendingAuthorization)
+    : await credentialFor("client", tracker, args.firstCharge);
   return {
     channelId: open.channelId,
     payload: {
@@ -247,16 +291,9 @@ export async function buildRefundPayload(args: {
   memo?: string | undefined;
 }): Promise<BatchRefundPayload> {
   const serverMode = args.channelConfig.voucherSigner === "server";
-  if (serverMode) {
-    if (!args.authorization || args.voucher !== undefined) {
-      throw new Error("server-signed refund requires payer authorization only");
-    }
-  } else if (!args.voucher || args.authorization !== undefined) {
-    throw new Error("client-signed refund requires a voucher");
-  }
   const credential = serverMode
-    ? { authorization: args.authorization }
-    : { voucher: args.voucher! };
+    ? { authorization: serverRefundAuthorization(args) }
+    : { voucher: clientRefundVoucher(args) };
   if (args.blockhash === undefined) {
     return { channelConfig: args.channelConfig, type: "refund", ...credential };
   }
@@ -272,4 +309,24 @@ export async function buildRefundPayload(args: {
     type: "refund",
     ...credential,
   };
+}
+
+function serverRefundAuthorization(args: {
+  authorization?: BatchAuthorization | undefined;
+  voucher?: BatchVoucher | undefined;
+}): BatchAuthorization {
+  if (!args.authorization || args.voucher !== undefined) {
+    throw new Error("server-signed refund requires payer authorization only");
+  }
+  return args.authorization;
+}
+
+function clientRefundVoucher(args: {
+  authorization?: BatchAuthorization | undefined;
+  voucher?: BatchVoucher | undefined;
+}): BatchVoucher {
+  if (!args.voucher || args.authorization !== undefined) {
+    throw new Error("client-signed refund requires a voucher");
+  }
+  return args.voucher;
 }

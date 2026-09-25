@@ -1,6 +1,8 @@
 /* eslint-disable jsdoc/require-jsdoc */
 /** Wire types for the SVM `batch-settlement` scheme. */
 
+import { BatchError } from "./errors";
+
 export { BATCH_SETTLEMENT_SCHEME } from "./constants";
 
 export type BatchExtra = {
@@ -101,6 +103,32 @@ export type BatchAuthorizationPayload = {
   channelConfig: BatchChannelConfig;
   authorization: BatchAuthorization;
 };
+
+/** Client-signed voucher or server-mode payer authorization. */
+export type BatchProof =
+  | { signer: "client"; voucher: BatchVoucher }
+  | { signer: "server"; authorization: BatchAuthorization };
+
+export function proofOf(
+  payload: BatchDepositPayload | BatchVoucherPayload | BatchAuthorizationPayload,
+): BatchProof {
+  switch (payload.type) {
+    case "voucher":
+      return { signer: "client", voucher: payload.voucher };
+    case "authorization":
+      return { signer: "server", authorization: payload.authorization };
+    case "deposit":
+      if (payload.voucher !== undefined) return { signer: "client", voucher: payload.voucher };
+      if (payload.authorization !== undefined) {
+        return { signer: "server", authorization: payload.authorization };
+      }
+      throw new Error(BatchError.VOUCHER_SIGNATURE);
+    default: {
+      const unexpected: never = payload;
+      throw new Error(String(unexpected));
+    }
+  }
+}
 
 /**
  * Client mode: payer-signed `voucher` at the accepted cumulative. Server mode:

@@ -1,4 +1,4 @@
-import type { BatchChannelConfig } from "../types";
+import type { BatchChannelConfig, BatchProof } from "../types";
 
 export type BatchChannelStatus = "open" | "closing" | "distributed";
 
@@ -110,6 +110,8 @@ export interface ChannelStore {
 /** Per-request bookkeeping the server keeps from verify until settle. */
 export type RequestContext = {
   channelId: string;
+  /** Deposit, voucher, or authorization. Refund does not fit this union. */
+  proof?: BatchProof;
   /** Client-signed cumulative amount, when the payer supplies the voucher. */
   cumulative?: bigint;
   /** Maximum charge advertised before the handler runs. */

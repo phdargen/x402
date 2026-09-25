@@ -57,8 +57,15 @@ import { BatchError } from "../errors";
 import { verifyBatchAuthorization } from "../authorization";
 import { signCloseAuthorization } from "../closeAuthorization";
 import { encodeReceiverBindingMemo } from "../receiverBinding";
-import type { BatchChannelConfig, BatchPayload, BatchVoucher, CloseAuthorization } from "../types";
-import { BATCH_SETTLEMENT_SCHEME, isBatchPayload } from "../types";
+import type {
+  BatchAuthorization,
+  BatchChannelConfig,
+  BatchPayload,
+  BatchProof,
+  BatchVoucher,
+  CloseAuthorization,
+} from "../types";
+import { BATCH_SETTLEMENT_SCHEME, isBatchPayload, proofOf } from "../types";
 import { type BatchOperationStore, MemoryBatchOperationStore } from "./operationStore";
 import { BatchChannelManager, type BatchChannelManagerConfig } from "./channelManager";
 import { MemoryChannelStore } from "./storage";
@@ -525,6 +532,7 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       }
 
       if (raw.type === "deposit" || raw.type === "voucher" || raw.type === "authorization") {
+        const proof = proofOf(raw);
         // A channel this server holds no record for is not a dead end: the
         // facilitator verifies the voucher against confirmed onchain state,
         // and `afterVerify` rebuilds the record from the snapshot it returns.
@@ -536,44 +544,52 @@ export class BatchSvmScheme implements SchemeNetworkServer {
         ) {
           this.requestContexts.set(ctx.paymentPayload, {
             channelId,
+            proof,
             requiresCumulativeCheck: true,
-            ...(raw.type === "authorization"
+            ...(proof.signer === "server"
               ? {
                   ceiling: BigInt(ctx.requirements.amount),
-                  requestId: raw.authorization.requestId,
+                  requestId: proof.authorization.requestId,
                 }
               : {}),
           });
           return;
         }
         const expected = (state?.chargedCumulativeAmount ?? 0n) + BigInt(ctx.requirements.amount);
-        const voucher =
-          raw.type === "voucher" ? raw.voucher : raw.type === "deposit" ? raw.voucher : undefined;
-        if (voucher) {
-          const submitted = BigInt(voucher.maxClaimableAmount);
-          const replay =
-            state !== undefined &&
-            submitted === state.chargedCumulativeAmount &&
-            voucher.signature === state.highestVoucherSignature;
-          if (replay) throw new Error(CHANNEL_BUSY);
-          if (!replay && submitted !== expected) {
-            throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+        const topUp = raw.type === "deposit" && state ? { topUp: true as const } : {};
+        switch (proof.signer) {
+          case "client": {
+            const submitted = BigInt(proof.voucher.maxClaimableAmount);
+            const replay =
+              state !== undefined &&
+              submitted === state.chargedCumulativeAmount &&
+              proof.voucher.signature === state.highestVoucherSignature;
+            if (replay) throw new Error(CHANNEL_BUSY);
+            if (!replay && submitted !== expected) {
+              throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+            }
+            this.requestContexts.set(ctx.paymentPayload, {
+              channelId,
+              proof,
+              cumulative: submitted,
+              ceiling: BigInt(ctx.requirements.amount),
+              ...topUp,
+            });
+            break;
           }
-          this.requestContexts.set(ctx.paymentPayload, {
-            channelId,
-            cumulative: submitted,
-            ceiling: BigInt(ctx.requirements.amount),
-            ...(raw.type === "deposit" && state ? { topUp: true } : {}),
-          });
-        } else {
-          if (raw.type === "voucher") throw new Error(BatchError.PAYLOAD_TYPE);
-          const requestId = raw.authorization!.requestId;
-          this.requestContexts.set(ctx.paymentPayload, {
-            channelId,
-            ceiling: BigInt(ctx.requirements.amount),
-            requestId,
-            ...(raw.type === "deposit" && state ? { topUp: true } : {}),
-          });
+          case "server":
+            this.requestContexts.set(ctx.paymentPayload, {
+              channelId,
+              proof,
+              ceiling: BigInt(ctx.requirements.amount),
+              requestId: proof.authorization.requestId,
+              ...topUp,
+            });
+            break;
+          default: {
+            const unexpected: never = proof;
+            throw new Error(String(unexpected));
+          }
         }
       } else if (raw.type === "refund") {
         if (!state) throw new Error(BatchError.CHANNEL_STATE);
@@ -645,10 +661,10 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
 
     // A client-signed voucher must be checked against the refreshed baseline.
-    if (request.requiresCumulativeCheck && raw.type === "voucher") {
+    if (request.requiresCumulativeCheck && request.proof?.signer === "client") {
       const state = await this.store.get(request.channelId);
       if (!state) return this.abort(BatchError.CHANNEL_STATE, "channel state unavailable");
-      const submitted = BigInt(raw.voucher.maxClaimableAmount);
+      const submitted = BigInt(request.proof.voucher.maxClaimableAmount);
       const expected = state.chargedCumulativeAmount + BigInt(ctx.requirements.amount);
       if (submitted !== expected) {
         // The corrective 402 that follows carries this rebuilt snapshot and no
@@ -746,9 +762,10 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (!isBatchPayload(raw) || raw.type === "refund") return;
 
     const request = this.requestContexts.get(ctx.paymentPayload);
-    if (!request?.pendingId) return this.abort(CHANNEL_BUSY, "missing reservation");
+    const pendingId = request?.pendingId;
+    if (!request || !pendingId) return this.abort(CHANNEL_BUSY, "missing reservation");
     const state = await this.store.get(request.channelId);
-    if (!state?.reservations?.[request.pendingId]) {
+    if (!state?.reservations?.[pendingId]) {
       return this.abort(CHANNEL_BUSY, "reservation changed");
     }
 
@@ -760,47 +777,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     try {
       const actual = BigInt(ctx.requirements.amount);
       const ceiling = request.ceiling ?? actual;
-      if (actual > ceiling) {
+      const proof = request.proof ?? proofOf(raw);
+      if (actual > ceiling || (proof.signer === "client" && actual !== ceiling)) {
         throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
       }
-      if (raw.type !== "authorization" && actual !== ceiling) {
-        throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
-      }
-      let response: SettleResponse | undefined;
-      const committed = await this.store.update(request.channelId, async current => {
-        const reservation = current?.reservations?.[request.pendingId!];
-        if (!current || !reservation) {
-          throw new Error(CHANNEL_BUSY);
-        }
-        if (actual > reservation.ceiling) throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
-        const cumulative = current.chargedCumulativeAmount + actual;
-        const voucher =
-          raw.type === "authorization"
-            ? await this.signOperatorVoucher(request.channelId, cumulative)
-            : raw.voucher;
-        const next: ChannelState = {
-          ...current,
-          chargedCumulativeAmount: BigInt(voucher.maxClaimableAmount),
-          highestVoucherExpiresAt: voucher.expiresAt,
-          highestVoucherSignature: voucher.signature,
-          reservations: withoutReservation(current.reservations, request.pendingId!),
-          signedMaxClaimable: BigInt(voucher.maxClaimableAmount),
-        };
-        if (request.requestId) {
-          await this.operationStore.complete({
-            status: "completed",
-            channelId: request.channelId,
-            requestId: request.requestId,
-            ceiling: reservation.ceiling,
-            actual,
-            cumulative,
-          });
-        }
-        response = acceptedResponse(next, ctx.requirements);
-        return next;
-      });
+      const committed = await this.commitCharge({ ...request, pendingId }, proof, actual);
       this.requestContexts.delete(ctx.paymentPayload);
-      return { skip: true, result: response ?? acceptedResponse(committed, ctx.requirements) };
+      return { skip: true, result: acceptedResponse(committed, ctx.requirements) };
     } catch (error) {
       return this.abort(
         classifyError(error),
@@ -813,55 +796,36 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     const raw = ctx.paymentPayload.payload;
     if (!ctx.result.success || !isBatchPayload(raw)) return;
     const request = this.requestContexts.get(ctx.paymentPayload);
-    if (!request?.pendingId) return;
+    const pendingId = request?.pendingId;
+    if (!request || !pendingId) return;
 
     if (raw.type === "deposit") {
       const reserved = await this.store.get(request.channelId);
-      if (!reserved?.reservations?.[request.pendingId]) {
+      if (!reserved?.reservations?.[pendingId]) {
         throw new Error(CHANNEL_BUSY);
       }
       const actual = BigInt(ctx.requirements.amount);
       const ceiling = request.ceiling ?? actual;
-      if (actual > ceiling) throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
-      if (raw.voucher && actual !== ceiling) {
+      const proof = request.proof ?? proofOf(raw);
+      if (actual > ceiling || (proof.signer === "client" && actual !== ceiling)) {
         throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
       }
-      const committed = await this.store.update(request.channelId, async current => {
-        const reservation = current?.reservations?.[request.pendingId!];
-        if (!current || !reservation) {
-          throw new Error(CHANNEL_BUSY);
-        }
-        if (actual > reservation.ceiling) throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
-        const cumulative = current.chargedCumulativeAmount + actual;
-        const voucher =
-          raw.voucher ?? (await this.signOperatorVoucher(request.channelId, cumulative));
-        const confirmed = readChannelState(ctx.result);
-        const next: ChannelState = {
-          ...current,
-          // A top-up raises the escrow ceiling; without this the stored deposit
-          // would stay at the original open amount forever.
-          deposit: confirmedDeposit(current.deposit, confirmed.balance),
-          openSignature: ctx.result.transaction,
-          settled: BigInt(confirmed.totalClaimed),
-          chargedCumulativeAmount: BigInt(voucher.maxClaimableAmount),
-          highestVoucherExpiresAt: voucher.expiresAt,
-          highestVoucherSignature: voucher.signature,
-          signedMaxClaimable: BigInt(voucher.maxClaimableAmount),
-          onchainSyncedAt: Date.now(),
-          reservations: withoutReservation(current.reservations, request.pendingId!),
-        };
-        if (request.requestId) {
-          await this.operationStore.complete({
-            status: "completed",
-            channelId: request.channelId,
-            requestId: request.requestId,
-            ceiling: reservation.ceiling,
-            actual,
-            cumulative,
-          });
-        }
-        return next;
-      });
+      const committed = await this.commitCharge(
+        { ...request, pendingId },
+        proof,
+        actual,
+        current => {
+          const confirmed = readChannelState(ctx.result);
+          return {
+            // A top-up raises the escrow ceiling; without this the stored deposit
+            // would stay at the original open amount forever.
+            deposit: confirmedDeposit(current.deposit, confirmed.balance),
+            openSignature: ctx.result.transaction,
+            settled: BigInt(confirmed.totalClaimed),
+            onchainSyncedAt: Date.now(),
+          };
+        },
+      );
       this.settlementExtras.set(
         ctx.paymentPayload,
         settlementExtra(committed, ctx.requirements.amount),
@@ -872,11 +836,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
 
     if (raw.type === "refund") {
       await this.store.update(request.channelId, current => {
-        if (!current?.reservations?.[request.pendingId!]) {
+        if (!current?.reservations?.[pendingId]) {
           throw new Error(CHANNEL_BUSY);
         }
         const snapshot = readChannelState(ctx.result);
-        const reservations = withoutReservation(current.reservations, request.pendingId!);
+        const reservations = withoutReservation(current.reservations, pendingId);
         // A cooperative close seals and distributes in one step; only a
         // payer-signed request_close leaves a grace period running.
         if (snapshot.withdrawRequestedAt === 0) {
@@ -1039,85 +1003,121 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     voucherSigner: "client" | "server",
     authorizedAmount: string,
   ): Promise<void> {
-    if (raw.type === "deposit" || raw.type === "voucher" || raw.type === "authorization") {
-      const voucher =
-        raw.type === "voucher" ? raw.voucher : raw.type === "deposit" ? raw.voucher : undefined;
-      const authorization =
-        raw.type === "authorization"
-          ? raw.authorization
-          : raw.type === "deposit"
-            ? raw.authorization
-            : undefined;
-      if (voucherSigner === "client" && !voucher) throw new Error(BatchError.VOUCHER_SIGNATURE);
-      if (voucherSigner === "server" && !authorization) {
-        throw new Error(BatchError.VOUCHER_SIGNATURE);
-      }
-      if (voucher) {
-        if (voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
-        this.assertExpiry(voucher);
-        const valid = await verifyVoucherSignature({
-          message: encodeVoucherMessageBytes({
-            channelId,
-            cumulativeAmount: BigInt(voucher.maxClaimableAmount),
-            expiresAt: BigInt(voucher.expiresAt),
-          }),
-          signatureBase58: voucher.signature,
-          signerBase58: raw.channelConfig.payerAuthorizer,
-        });
-        if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
-      }
-      if (authorization) {
-        const requestId =
-          raw.type === "authorization"
-            ? raw.authorization.requestId
-            : raw.type === "deposit"
-              ? raw.authorization?.requestId
-              : undefined;
-        if (
-          authorization.channelId !== channelId ||
-          authorization.payer !== raw.channelConfig.payer ||
-          authorization.authorizedAmount !== authorizedAmount ||
-          typeof requestId !== "string" ||
-          requestId.length === 0 ||
-          !(await verifyBatchAuthorization(authorization, raw.channelConfig.payerAuthorizer))
-        ) {
-          throw new Error(BatchError.VOUCHER_SIGNATURE);
-        }
-      }
-      return;
-    }
     if (raw.type === "refund") {
       if (voucherSigner === "server") {
-        if (raw.voucher !== undefined) throw new Error(BatchError.VOUCHER_SIGNATURE);
-        const authorization = raw.authorization;
-        if (!authorization) throw new Error(BatchError.VOUCHER_SIGNATURE);
-        if (
-          authorization.channelId !== channelId ||
-          authorization.payer !== raw.channelConfig.payer ||
-          authorization.authorizedAmount !== authorizedAmount ||
-          typeof authorization.requestId !== "string" ||
-          authorization.requestId.length === 0 ||
-          !(await verifyBatchAuthorization(authorization, raw.channelConfig.payerAuthorizer))
-        ) {
+        if (raw.voucher !== undefined || !raw.authorization) {
           throw new Error(BatchError.VOUCHER_SIGNATURE);
         }
+        await this.assertPayerAuthorization(raw.authorization, raw, channelId, authorizedAmount);
         return;
       }
-      if (raw.authorization !== undefined) throw new Error(BatchError.VOUCHER_SIGNATURE);
-      const voucher = raw.voucher;
-      if (!voucher) throw new Error(BatchError.VOUCHER_SIGNATURE);
-      if (voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
-      this.assertExpiry(voucher);
-      const valid = await verifyVoucherSignature({
-        message: encodeVoucherMessageBytes({
-          channelId,
-          cumulativeAmount: BigInt(voucher.maxClaimableAmount),
-          expiresAt: BigInt(voucher.expiresAt),
-        }),
-        signatureBase58: voucher.signature,
-        signerBase58: raw.channelConfig.payerAuthorizer,
-      });
-      if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
+      if (raw.authorization !== undefined || !raw.voucher) {
+        throw new Error(BatchError.VOUCHER_SIGNATURE);
+      }
+      await this.assertSignedVoucher(raw.voucher, channelId, raw.channelConfig.payerAuthorizer);
+      return;
+    }
+    const proof = proofOf(raw);
+    if (proof.signer !== voucherSigner) throw new Error(BatchError.VOUCHER_SIGNATURE);
+    switch (proof.signer) {
+      case "client":
+        await this.assertSignedVoucher(proof.voucher, channelId, raw.channelConfig.payerAuthorizer);
+        return;
+      case "server":
+        await this.assertPayerAuthorization(proof.authorization, raw, channelId, authorizedAmount);
+        return;
+      default: {
+        const unexpected: never = proof;
+        throw new Error(String(unexpected));
+      }
+    }
+  }
+
+  private async assertSignedVoucher(
+    voucher: BatchVoucher,
+    channelId: string,
+    signer: string,
+  ): Promise<void> {
+    if (voucher.channelId !== channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
+    this.assertExpiry(voucher);
+    const valid = await verifyVoucherSignature({
+      message: encodeVoucherMessageBytes({
+        channelId,
+        cumulativeAmount: BigInt(voucher.maxClaimableAmount),
+        expiresAt: BigInt(voucher.expiresAt),
+      }),
+      signatureBase58: voucher.signature,
+      signerBase58: signer,
+    });
+    if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
+  }
+
+  private async assertPayerAuthorization(
+    authorization: BatchAuthorization,
+    raw: BatchPayload,
+    channelId: string,
+    authorizedAmount: string,
+  ): Promise<void> {
+    if (
+      authorization.channelId !== channelId ||
+      authorization.payer !== raw.channelConfig.payer ||
+      authorization.authorizedAmount !== authorizedAmount ||
+      typeof authorization.requestId !== "string" ||
+      authorization.requestId.length === 0 ||
+      !(await verifyBatchAuthorization(authorization, raw.channelConfig.payerAuthorizer))
+    ) {
+      throw new Error(BatchError.VOUCHER_SIGNATURE);
+    }
+  }
+
+  private async commitCharge(
+    request: RequestContext & { pendingId: string },
+    proof: BatchProof,
+    actual: bigint,
+    patch?: (current: ChannelState) => Partial<ChannelState>,
+  ): Promise<ChannelState> {
+    return this.store.update(request.channelId, async current => {
+      const reservation = current?.reservations?.[request.pendingId];
+      if (!current || !reservation) throw new Error(CHANNEL_BUSY);
+      if (actual > reservation.ceiling) throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+      const cumulative = current.chargedCumulativeAmount + actual;
+      const voucher = await this.voucherForCharge(proof, request.channelId, cumulative);
+      if (request.requestId) {
+        await this.operationStore.complete({
+          actual,
+          ceiling: reservation.ceiling,
+          channelId: request.channelId,
+          cumulative,
+          requestId: request.requestId,
+          status: "completed",
+        });
+      }
+      return {
+        ...current,
+        ...patch?.(current),
+        chargedCumulativeAmount: BigInt(voucher.maxClaimableAmount),
+        highestVoucherExpiresAt: voucher.expiresAt,
+        highestVoucherSignature: voucher.signature,
+        reservations: withoutReservation(current.reservations, request.pendingId),
+        signedMaxClaimable: BigInt(voucher.maxClaimableAmount),
+      };
+    });
+  }
+
+  private async voucherForCharge(
+    proof: BatchProof,
+    channelId: string,
+    cumulative: bigint,
+  ): Promise<BatchVoucher> {
+    switch (proof.signer) {
+      case "client":
+        return proof.voucher;
+      case "server":
+        return this.signOperatorVoucher(channelId, cumulative);
+      default: {
+        const unexpected: never = proof;
+        throw new Error(String(unexpected));
+      }
     }
   }
 

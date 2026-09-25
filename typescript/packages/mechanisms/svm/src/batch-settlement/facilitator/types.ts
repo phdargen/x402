@@ -1,7 +1,12 @@
 import type { Network, SettleResponse } from "@x402/core/types";
 
 import type { FacilitatorSigningCapabilities } from "../../signer";
-import type { BatchClaimPayload, BatchDepositPayload, BatchSettlePayload } from "../types";
+import type {
+  BatchClaimPayload,
+  BatchDepositPayload,
+  BatchProof,
+  BatchSettlePayload,
+} from "../types";
 import type { BatchReceiverAuthorizerStore } from "./receiverAuthorizerStore";
 
 /** Terms resolved from a channel config and the facilitator's fee payer. */
@@ -23,7 +28,9 @@ export type ValidatedDeposit = {
   deposit: bigint;
   expectedDeposit: bigint;
   isTopUp: boolean;
-  voucherAmount: bigint;
+  proof: BatchProof;
+  /** Client: signed cumulative. Server: metered charge (`requirements.amount`). */
+  proofAmount: bigint;
 };
 
 /** Outcome of a durable broadcast: landed bytes, or a terminal settle response. */
