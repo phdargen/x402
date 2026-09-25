@@ -25,7 +25,27 @@ function requirements(scheme = "batch-settlement"): PaymentRequirements {
   };
 }
 
-const build = async (x402Version: number) => ({ payload: { type: "refund" }, x402Version });
+const refundPayload = {
+  channelConfig: {
+    openSlot: 1,
+    payer: USDC_DEVNET_ADDRESS,
+    payerAuthorizer: USDC_DEVNET_ADDRESS,
+    receiver: USDC_MAINNET_ADDRESS,
+    receiverAuthorizer: USDC_MAINNET_ADDRESS,
+    salt: "0",
+    token: USDC_DEVNET_ADDRESS,
+    withdrawDelay: 900,
+  },
+  type: "refund" as const,
+  voucher: {
+    channelId: USDC_MAINNET_ADDRESS,
+    expiresAt: 0,
+    maxClaimableAmount: "0",
+    signature: "sig",
+  },
+};
+
+const build = async (x402Version: number) => ({ payload: refundPayload, x402Version });
 
 /** A fetch that answers every call with the same response. */
 function respond(status: number, headers: Record<string, string> = {}): typeof fetch {

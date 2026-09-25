@@ -109,6 +109,54 @@ describe("batch-settlement refund driver", () => {
     });
   });
 
+  it("binds the close to client-signed requirements when the probe lists server-signed first", async () => {
+    const operator = USDC_MAINNET_ADDRESS;
+    const serverSigned = {
+      ...requirements(),
+      extra: {
+        ...requirements().extra,
+        operator,
+        voucherSigner: "server" as const,
+      },
+    };
+    const clientSigned = {
+      ...requirements(),
+      extra: { ...requirements().extra, voucherSigner: "client" as const },
+    };
+    const sent: ReturnType<typeof decodePaymentSignatureHeader>[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (!headers["PAYMENT-SIGNATURE"]) {
+        return new Response(null, {
+          headers: {
+            "PAYMENT-REQUIRED": encodePaymentRequiredHeader({
+              accepts: [serverSigned, clientSigned],
+              x402Version: 2,
+            }),
+          },
+          status: 402,
+        });
+      }
+      sent.push(decodePaymentSignatureHeader(headers["PAYMENT-SIGNATURE"]!));
+      return new Response(null, {
+        headers: {
+          "PAYMENT-RESPONSE": encodePaymentResponseHeader({
+            network: SOLANA_DEVNET_CAIP2,
+            success: true,
+            transaction: "close-signature",
+          }),
+        },
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      refundBatchChannel(build, "https://example.test/paid", { fetch: fetchImpl }),
+    ).resolves.toMatchObject({ success: true });
+
+    expect(sent[0]?.accepted).toEqual(clientSigned);
+  });
+
   it("skips the probe when the caller already holds the requirements", async () => {
     let calls = 0;
     const fetchImpl = (async () => {

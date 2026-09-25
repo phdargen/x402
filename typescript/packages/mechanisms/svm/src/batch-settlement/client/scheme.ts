@@ -40,7 +40,12 @@ import {
   MIN_DEPOSIT_MULTIPLIER,
   OPERATION_KEY_SEPARATOR,
 } from "./constants";
-import { type BatchRefundOptions, type RefundPayloadOptions, refundBatchChannel } from "./refund";
+import {
+  alignRefundRequirements,
+  type BatchRefundOptions,
+  type RefundPayloadOptions,
+  refundBatchChannel,
+} from "./refund";
 import {
   type BatchServerSignedChannelsPolicy,
   type ResolvedServerSignedTrust,
@@ -395,7 +400,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const lookupRequirements = cached
       ? this.requirementsForRefund(requirements, cached)
       : requirements;
-    const terms = await this.resolveRefundTerms(requirements, cached);
+    const terms = await this.resolveRefundTerms(lookupRequirements, cached);
     const key = this.channelKey(lookupRequirements, terms.feePayer, terms.withdrawDelay);
     // A client with no local record is exactly the one that needs to close a
     // channel it can no longer pay from, so fall back to the chain.
@@ -961,22 +966,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     probed: PaymentRequirements,
     cached: OpenChannel,
   ): PaymentRequirements {
-    const mode = cached.tracker.channelConfig.voucherSigner ?? "client";
-    if ((probed.extra?.voucherSigner ?? "client") === mode) return probed;
-    const extra = { ...probed.extra };
-    if (mode === "server") {
-      return {
-        ...probed,
-        extra: {
-          ...extra,
-          operator: cached.tracker.channelConfig.payerAuthorizer,
-          voucherSigner: "server",
-        },
-      };
-    }
-    const { operator: _operator, ...clientExtra } = extra ?? {};
-    void _operator;
-    return { ...probed, extra: { ...clientExtra, voucherSigner: "client" } };
+    return alignRefundRequirements(probed, cached.tracker.channelConfig);
   }
 
   private async restoreConfirmedChannel(pending: PendingChannel): Promise<void> {

@@ -753,4 +753,39 @@ describe("batch client lifecycle", () => {
       new BatchSvmScheme(payer, { discoverChannels: false }).createRefundPayload(2, requirements()),
     ).rejects.toThrow(/no batch-settlement channel/);
   });
+
+  it("refunds a client-signed channel when the probe lists server-signed first", async () => {
+    const operator = await generateKeyPairSigner();
+    const client = new BatchSvmScheme(payer, { discoverChannels: false });
+    const api = internals(client);
+    const config: BatchChannelConfig = {
+      openSlot: 123,
+      payer: payer.address,
+      payerAuthorizer: payer.address,
+      receiver: RECEIVER,
+      receiverAuthorizer: receiverAuthorizer.address,
+      salt: "0",
+      token: MINT,
+      voucherSigner: "client",
+      withdrawDelay: 900,
+    };
+    const clientRequirements = requirements();
+    const key = api.channelKey(clientRequirements, feePayer.address, 900);
+    api.channels.set(key, {
+      deposit: 5_000n,
+      tracker: new BatchChannelTracker(RECEIVER, config, payer, 1_000n),
+    });
+    const serverFirstProbe = requirements({
+      extra: {
+        ...clientRequirements.extra,
+        operator: operator.address,
+        voucherSigner: "server",
+      },
+    });
+    const cooperative = await client.createRefundPayload(2, serverFirstProbe);
+    expect(cooperative).toMatchObject({
+      x402Version: 2,
+      payload: { type: "refund", voucher: { channelId: RECEIVER, maxClaimableAmount: "1000" } },
+    });
+  });
 });

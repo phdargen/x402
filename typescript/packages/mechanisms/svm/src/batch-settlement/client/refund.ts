@@ -8,7 +8,82 @@ import {
 import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 
 import { BatchError } from "../errors";
-import { BATCH_SETTLEMENT_SCHEME } from "../types";
+import { BATCH_SETTLEMENT_SCHEME, isBatchPayload, type BatchChannelConfig } from "../types";
+
+/**
+ * Match probed 402 requirements to the channel the refund payload closes.
+ *
+ * A route may list server-signed before client-signed; the unpaid probe keeps
+ * the first Solana accept, but the close payload must bind to the channel's
+ * actual voucher-signer mode.
+ *
+ * @param probed - Requirements from an unpaid GET on the route
+ * @param channelConfig - Channel configuration carried by the refund payload
+ * @returns Requirements whose `extra.voucherSigner` matches `channelConfig`
+ */
+export function alignRefundRequirements(
+  probed: PaymentRequirements,
+  channelConfig: BatchChannelConfig,
+): PaymentRequirements {
+  const mode = channelConfig.voucherSigner ?? "client";
+  if ((probed.extra?.voucherSigner ?? "client") === mode) return probed;
+  const extra = { ...probed.extra };
+  if (mode === "server") {
+    return {
+      ...probed,
+      extra: {
+        ...extra,
+        operator: channelConfig.payerAuthorizer,
+        voucherSigner: "server",
+      },
+    };
+  }
+  const { operator: _operator, ...clientExtra } = extra ?? {};
+  void _operator;
+  return { ...probed, extra: { ...clientExtra, voucherSigner: "client" } };
+}
+
+/**
+ * Keep only Solana batch-settlement accepts from a 402's advertised list.
+ *
+ * @param accepts - Every accept from the unpaid 402
+ * @returns Accepts whose scheme and network are batch settlement on Solana
+ */
+function batchSolanaAccepts(accepts: readonly PaymentRequirements[]): PaymentRequirements[] {
+  return accepts.filter(
+    accept => accept.scheme === BATCH_SETTLEMENT_SCHEME && accept.network.startsWith("solana:"),
+  );
+}
+
+/**
+ * Pick the server-advertised accept that matches the channel being closed.
+ *
+ * v2 matching requires the client's `accepted` to line up with one of the
+ * route's advertised accepts; mutating the first probe result is not enough.
+ *
+ * @param accepts - Every accept from the unpaid 402
+ * @param channelConfig - Channel configuration carried by the refund payload
+ * @param probed - First Solana batch accept from the probe, for single-accept fallback
+ * @returns The advertised requirement to bind in PAYMENT-SIGNATURE
+ */
+export function selectRefundAccept(
+  accepts: readonly PaymentRequirements[],
+  channelConfig: BatchChannelConfig,
+  probed?: PaymentRequirements,
+): PaymentRequirements {
+  const mode = channelConfig.voucherSigner ?? "client";
+  const match = batchSolanaAccepts(accepts).find(accept => {
+    const signer = accept.extra?.voucherSigner ?? "client";
+    if (signer !== mode) return false;
+    if (mode === "server") {
+      return accept.extra?.operator === channelConfig.payerAuthorizer;
+    }
+    return accept.extra?.operator === undefined;
+  });
+  if (match) return match;
+  if (probed) return alignRefundRequirements(probed, channelConfig);
+  throw new Error(`no ${mode}-signed batch-settlement accept advertised for refund`);
+}
 
 /** Caller-facing options for a refund. */
 export interface BatchRefundOptions {
@@ -46,7 +121,11 @@ export type RefundPayloadBuilder = (
 export async function probeBatchRequirements(
   url: string,
   fetchImpl: typeof fetch,
-): Promise<{ x402Version: number; requirements: PaymentRequirements }> {
+): Promise<{
+  accepts: PaymentRequirements[];
+  requirements: PaymentRequirements;
+  x402Version: number;
+}> {
   const probe = await fetchImpl(url, { method: "GET" });
   if (probe.status !== 402) {
     throw new Error(`refund probe expected 402 from ${url}, got ${probe.status}`);
@@ -58,7 +137,11 @@ export async function probeBatchRequirements(
     accept => accept.scheme === BATCH_SETTLEMENT_SCHEME && accept.network.startsWith("solana:"),
   );
   if (!requirements) throw new Error(`${url} does not offer ${BATCH_SETTLEMENT_SCHEME}`);
-  return { requirements, x402Version: paymentRequired.x402Version };
+  return {
+    accepts: paymentRequired.accepts,
+    requirements,
+    x402Version: paymentRequired.x402Version,
+  };
 }
 
 /**
@@ -87,15 +170,20 @@ export async function refundBatchChannel(
     throw new Error("refund requires a fetch implementation (globalThis.fetch unavailable)");
   }
   const probed = options?.requirements
-    ? { requirements: options.requirements, x402Version: 2 }
+    ? { accepts: [options.requirements], requirements: options.requirements, x402Version: 2 }
     : await probeBatchRequirements(url, fetchImpl);
 
   const send = async (withTransaction: boolean) => {
     const payload = await build(probed.x402Version, probed.requirements, { withTransaction });
+    const raw = payload.payload;
+    if (!isBatchPayload(raw) || raw.type !== "refund") {
+      throw new Error("refund builder must return a batch-settlement refund payload");
+    }
+    const accepted = selectRefundAccept(probed.accepts, raw.channelConfig, probed.requirements);
     const response = await fetchImpl(url, {
       headers: {
         "PAYMENT-SIGNATURE": encodePaymentSignatureHeader({
-          accepted: probed.requirements,
+          accepted,
           payload: payload.payload as never,
           x402Version: payload.x402Version,
         }),
