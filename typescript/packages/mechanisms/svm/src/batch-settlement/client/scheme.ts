@@ -9,9 +9,9 @@ import type {
   SchemeNetworkClient,
 } from "@x402/core/types";
 
-import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from "../../constants";
 import { findDefaultAsset } from "../../defaultAssets";
 import { buildTopUpPaymentChannelTransaction, parseU64 } from "../../payment-channels/open";
+import { requireTokenProgramHint } from "../../payment-channels/requirements";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { discoverChannelsByPayer, type ProgramAccountScan } from "../../payment-channels/discovery";
 import { ChannelStatus } from "../../payment-channels/generated/types/channelStatus";
@@ -1030,10 +1030,10 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     ) {
       throw new Error("extra.withdrawDelay is outside the allowed range");
     }
-    const tokenProgram = extra.tokenProgram;
-    if (tokenProgram !== TOKEN_PROGRAM_ADDRESS && tokenProgram !== TOKEN_2022_PROGRAM_ADDRESS) {
-      throw new Error("extra.tokenProgram is not a supported SPL token program");
-    }
+    const tokenProgram = requireTokenProgramHint(
+      extra,
+      "extra.tokenProgram is not a supported SPL token program",
+    );
     const rpc = createRpcClient(requirements.network, this.config.rpcUrl);
     const mint = await fetchMint(rpc, requirements.asset as Address);
     if (mint.programAddress.toString() !== tokenProgram) {

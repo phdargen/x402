@@ -10,5 +10,6 @@ export * from "./signer";
 export * from "./onchain";
 export * from "./open";
 export * from "./rentCleanup";
+export * from "./requirements";
 export * from "./storage";
 export * from "./voucher";

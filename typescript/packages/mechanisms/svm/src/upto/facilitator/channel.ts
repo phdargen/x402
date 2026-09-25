@@ -42,6 +42,7 @@ import {
   COMPUTE_BUDGET_PROGRAM_ADDRESS,
   DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
 } from "../../constants";
+import { STATE_COMMITMENT } from "../../payment-channels/commitments";
 import { fetchMaybeChannel, type Channel } from "../../payment-channels/generated/accounts/channel";
 import {
   buildDistributeInstruction,
@@ -55,7 +56,6 @@ import {
 } from "../../payment-channels/signer";
 import type { FacilitatorSvmSigner } from "../../signer";
 import { TransactionOnchainFailureError } from "../../utils";
-import { STATE_COMMITMENT } from "../shared";
 
 /** Payment-channels `AccountDiscriminator::Channel` (byte 0 is reserved for uninitialized accounts). */
 const CHANNEL_ACCOUNT_DISCRIMINATOR = 1;

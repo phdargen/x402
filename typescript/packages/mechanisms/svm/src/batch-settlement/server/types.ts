@@ -133,8 +133,3 @@ export type VerifiedChannelState = {
   totalClaimed: bigint;
   withdrawRequestedAt: number;
 };
-
-export type SvmStablecoinSymbol = "USDC" | "USDT" | "USDG" | "PYUSD" | "CASH";
-
-/** A price string broken into a decimal amount and an optional stablecoin ticker. */
-export type ParsedMoney = { amount: number; stablecoin?: SvmStablecoinSymbol };

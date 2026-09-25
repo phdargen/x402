@@ -11,11 +11,7 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 
-import {
-  MEMO_PROGRAM_ADDRESS,
-  TOKEN_2022_PROGRAM_ADDRESS,
-  TOKEN_PROGRAM_ADDRESS,
-} from "../../constants";
+import { MEMO_PROGRAM_ADDRESS } from "../../constants";
 import {
   discoverChannelsByRentPayer,
   type DiscoveredChannel,
@@ -35,6 +31,7 @@ import {
   verifyOpenTransaction,
   verifyTopUpTransaction,
 } from "../../payment-channels/open";
+import { requireTokenProgramHint } from "../../payment-channels/requirements";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { SettlementCache } from "../../settlement-cache";
 import type {
@@ -1281,10 +1278,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     ) {
       throw new Error(BatchError.RECEIVER_AUTHORIZER_MISMATCH);
     }
-    const tokenProgram = extra.tokenProgram;
-    if (tokenProgram !== TOKEN_PROGRAM_ADDRESS && tokenProgram !== TOKEN_2022_PROGRAM_ADDRESS) {
-      throw new Error(BatchError.TOKEN_PROGRAM);
-    }
+    const tokenProgram = requireTokenProgramHint(extra, BatchError.TOKEN_PROGRAM);
     // A mint's owner is its token program, so the declared one is checked
     // with an account read rather than a decode.
     if (typeof this.signer.getAccountInfo !== "function") {

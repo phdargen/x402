@@ -26,10 +26,11 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 import type { DeepReadonly } from "@x402/core/types";
+import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
 import type { MessagePartialSigner } from "@solana/kit";
 
 import { TOKEN_2022_PROGRAM_ADDRESS, TOKEN_PROGRAM_ADDRESS } from "../../constants";
-import { findDefaultAsset } from "../../defaultAssets";
+import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import {
   encodeVoucherMessageBytes,
   signVoucher,
@@ -40,13 +41,7 @@ import {
   parseU64,
   verifyOpenTransaction,
 } from "../../payment-channels/open";
-import {
-  convertToTokenAmount,
-  getStablecoinAddress,
-  getStablecoinTokenProgram,
-  numberToDecimalString,
-  validateSvmAddress,
-} from "../../utils";
+import { getStablecoinTokenProgram, validateSvmAddress } from "../../utils";
 import {
   CLIENT_VOUCHER_EXPIRES_AT,
   FULL_SPLIT_BPS,
@@ -73,16 +68,8 @@ import {
   CHANNEL_BUSY,
   DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER,
   DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER,
-  PRICE_STABLECOINS,
 } from "./constants";
-import type {
-  ChannelState,
-  ChannelStore,
-  ParsedMoney,
-  RequestContext,
-  SvmStablecoinSymbol,
-  VerifiedChannelState,
-} from "./types";
+import type { ChannelState, ChannelStore, RequestContext, VerifiedChannelState } from "./types";
 
 export interface BatchSvmServerConfig {
   withdrawDelay?: number | undefined;
@@ -289,12 +276,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
       }
       return { amount: price.amount, asset: price.asset, extra: price.extra || {} };
     }
-    const { amount, stablecoin } = this.parseMoney(price);
+    const { amount, symbol } = parseMoney(price);
     for (const parser of this.moneyParsers) {
       const result = await parser(amount, network);
       if (result !== null) return result;
     }
-    return this.defaultMoneyConversion(amount, network, stablecoin);
+    return this.defaultMoneyConversion(amount, network, symbol);
   }
 
   /**
@@ -467,12 +454,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
               `use an integer atomic string for ${paymentRequirements.asset} on ${paymentRequirements.network}.`,
           );
         }
-        const parsed = this.parseMoney(override);
-        if (parsed.stablecoin !== undefined && parsed.stablecoin !== asset.symbol) {
+        const parsed = parseMoney(override);
+        if (parsed.symbol !== undefined && parsed.symbol !== asset.symbol) {
           throw new Error(`extra.minDeposit currency must match ${asset.symbol}`);
         }
         configured = parsePositiveAmount(
-          convertToTokenAmount(numberToDecimalString(parsed.amount), asset.decimals),
+          convertToTokenAmount(parsed.amount, asset.decimals),
           "minDeposit",
         );
       }
@@ -1301,30 +1288,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return { abort: true as const, message, reason };
   }
 
-  private parseMoney(money: string | number): ParsedMoney {
-    if (typeof money === "number") return { amount: money };
-    const cleanMoney = money.replace(/^\$/, "").trim();
-    const amount = parseFloat(cleanMoney);
-    if (isNaN(amount)) throw new Error(`Invalid money format: ${money}`);
-    const suffix = cleanMoney
-      .match(/[A-Za-z][A-Za-z0-9]*\s*$/)?.[0]
-      .trim()
-      .toUpperCase();
-    if (suffix === "USD") return { amount, stablecoin: "USDC" };
-    if (suffix && PRICE_STABLECOINS.has(suffix)) {
-      return { amount, stablecoin: suffix as SvmStablecoinSymbol };
-    }
-    return { amount };
-  }
-
-  private defaultMoneyConversion(
-    amount: number,
-    network: Network,
-    stablecoin: SvmStablecoinSymbol = "USDC",
-  ): AssetAmount {
+  private defaultMoneyConversion(amount: string, network: Network, symbol?: string): AssetAmount {
+    const assetInfo = getDefaultAsset(network, symbol);
     return {
-      amount: convertToTokenAmount(numberToDecimalString(amount), 6),
-      asset: getStablecoinAddress(stablecoin, network),
+      amount: convertToTokenAmount(amount, assetInfo.decimals),
+      asset: assetInfo.asset,
       extra: {},
     };
   }

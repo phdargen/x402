@@ -9,6 +9,3 @@ export const DEFAULT_SERVER_MIN_DEPOSIT_MULTIPLIER = 10n;
  * min-deposit hint stays near the client-side minimum.
  */
 export const DEFAULT_SERVER_SIGNED_MIN_DEPOSIT_MULTIPLIER = 3n;
-
-/** Tickers `parsePrice` treats as 6-decimal stablecoins; an unknown ticker falls back to USDC. */
-export const PRICE_STABLECOINS = new Set(["USDC", "USDT", "USDG", "PYUSD", "CASH"]);

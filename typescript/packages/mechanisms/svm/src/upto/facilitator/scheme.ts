@@ -13,12 +13,14 @@ import {
   type PendingSettlementStore,
 } from "@x402/core/facilitator";
 
+import { SLOT_COMMITMENT } from "../../payment-channels/commitments";
 import {
   buildDistributeInstruction,
   buildSettleAndSealInstructions,
   type ServerInstruction,
 } from "../../payment-channels/onchain";
 import { parseU64, verifyOpenTransaction } from "../../payment-channels/open";
+import { resolveTokenProgram, resolveUptoSvmMemo } from "../../payment-channels/requirements";
 import {
   assertPaymentChannelFacilitatorSigner,
   type PaymentChannelFacilitatorSigner,
@@ -39,13 +41,7 @@ import {
   validateSvmAddress,
 } from "../../utils";
 import { ErrSettlementPending } from "../../exact/facilitator/errors";
-import {
-  resolveTokenProgram,
-  resolveUptoSvmMemo,
-  resolveUptoSvmPaymentChannelConfig,
-  SLOT_COMMITMENT,
-  type UptoSvmPaymentChannelConfig,
-} from "../shared";
+import { resolveUptoSvmPaymentChannelConfig, type UptoSvmPaymentChannelConfig } from "../shared";
 import {
   broadcastOpen,
   channelExists,

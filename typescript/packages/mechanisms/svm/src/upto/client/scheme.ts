@@ -5,14 +5,11 @@ import type { PaymentPayload, PaymentRequirements, SchemeNetworkClient } from "@
 
 import { findDefaultAsset } from "../../defaultAssets";
 import { buildOpenPaymentChannelTransaction } from "../../payment-channels/open";
+import { parseTokenProgramHint, resolveUptoSvmMemo } from "../../payment-channels/requirements";
 import type { ClientSvmConfig, ClientSvmSigner } from "../../signer";
 import { type UptoSvmPayloadV2 } from "../../types";
 import { createRpcClient, resolveBlockhash, resolveOpenSlot } from "../../utils";
-import {
-  parseTokenProgramHint,
-  resolveUptoSvmMemo,
-  resolveUptoSvmPaymentChannelConfig,
-} from "../shared";
+import { resolveUptoSvmPaymentChannelConfig } from "../shared";
 
 /**
  * SVM client implementation for the `upto` payment scheme.
