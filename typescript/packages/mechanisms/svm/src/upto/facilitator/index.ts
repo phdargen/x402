@@ -19,13 +19,13 @@ export type {
 } from "./scheme";
 export { ErrSettlementPending } from "../../exact/facilitator/errors";
 export {
-  ChannelOpenConfirmationError,
+  ChannelBroadcastConfirmationError as ChannelOpenConfirmationError,
   DEFAULT_CHANNEL_READ_BACKOFF_STEP_MS,
   DEFAULT_CHANNEL_READ_MAX_ATTEMPTS,
+  ChannelSimulationError as SettlementSimulationError,
   SettlementConfirmationTimeoutError,
-  SettlementSimulationError,
-} from "./channel";
-export type { UptoSvmSigner } from "./channel";
+} from "../../payment-channels/facilitator";
+export type { PaymentChannelSvmSigner as UptoSvmSigner } from "../../payment-channels/facilitator";
 export { InMemoryUptoChannelStorage } from "./channelStorage";
 export type { UptoChannelRecord, UptoChannelStorage } from "./channelStorage";
 export {

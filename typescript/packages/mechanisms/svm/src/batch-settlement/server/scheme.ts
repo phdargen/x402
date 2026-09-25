@@ -1,4 +1,3 @@
-/* eslint-disable jsdoc/require-jsdoc */
 import type {
   FacilitatorClient,
   SettleContext,
@@ -120,6 +119,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   private moneyParsers: MoneyParser[] = [];
   private reservationSequence = 0;
 
+  /**
+   * Construct the server-side batch-settlement scheme.
+   *
+   * @param config - Channel store, operator, receiver authorizer, and hook options
+   */
   constructor(private readonly config: BatchSvmServerConfig) {
     this.store = config.store ?? new MemoryChannelStore();
     this.operationStore = config.operationStore ?? new MemoryBatchOperationStore();
@@ -260,15 +264,35 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return ctx.requirements;
   };
 
+  /**
+   * Expose the channel store for tests and redemption workers.
+   *
+   * @returns The configured or default in-memory channel store
+   */
   getChannelStore(): ChannelStore {
     return this.store;
   }
 
+  /**
+   * Register a custom money parser in the parser chain (tried in order).
+   *
+   * @param parser - Custom function to convert an amount to an AssetAmount (or null to skip)
+   * @returns This instance for chaining
+   */
   registerMoneyParser(parser: MoneyParser): BatchSvmScheme {
     this.moneyParsers.push(parser);
     return this;
   }
 
+  /**
+   * Parse a price into an asset amount. AssetAmount inputs pass through; Money
+   * inputs are parsed to a decimal and run through the parser chain, falling
+   * back to the default stablecoin conversion.
+   *
+   * @param price - The price to parse
+   * @param network - The network to use
+   * @returns The parsed asset amount
+   */
   async parsePrice(price: Price, network: Network): Promise<AssetAmount> {
     if (typeof price === "object" && price !== null && "amount" in price) {
       if (!price.asset) {
@@ -318,6 +342,20 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Fold facilitator extras into the accept: `feePayer`, `tokenProgram`,
+   * `withdrawDelay`, `minDeposit`, `receiverAuthorizer`, and optional
+   * server-signed `operator` / `voucherSigner`.
+   *
+   * @param paymentRequirements - Route requirements before enrichment
+   * @param supportedKind - Facilitator `/supported` kind for this network
+   * @param supportedKind.x402Version - The x402 version
+   * @param supportedKind.scheme - The payment scheme
+   * @param supportedKind.network - The network identifier
+   * @param supportedKind.extra - Facilitator extra (`feePayer`, optional `receiverAuthorizer`)
+   * @param extensionKeys - Extension keys on the accept (unused)
+   * @returns Enriched payment requirements for the 402 challenge
+   */
   enhancePaymentRequirements(
     paymentRequirements: PaymentRequirements,
     supportedKind: {
@@ -473,6 +511,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return (minimum > amount ? minimum : amount).toString();
   }
 
+  /**
+   * Reserve channel capacity and validate payloads before facilitator verify.
+   *
+   * @param ctx - Verify hook context
+   * @returns Abort directive, local verify skip, or void to continue to the facilitator
+   */
   private async beforeVerify(
     ctx: VerifyContext,
   ): Promise<
@@ -615,6 +659,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Merge facilitator snapshots, create reservations, and optionally skip the handler.
+   *
+   * @param ctx - Post-verify hook context
+   * @returns Abort directive, skip-handler directive, or void to run the handler
+   */
   private async afterVerify(
     ctx: VerifyResultContext,
   ): Promise<
@@ -738,6 +788,12 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Commit voucher charges for steady-state requests before facilitator settle.
+   *
+   * @param ctx - Pre-settle hook context
+   * @returns Abort directive, local settle skip, or void to continue to the facilitator
+   */
   private async beforeSettle(
     ctx: SettleContext,
   ): Promise<
@@ -779,6 +835,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Finalize deposits and refunds after a successful facilitator settlement.
+   *
+   * @param ctx - Post-settle hook context
+   */
   private async afterSettle(ctx: SettleResultContext): Promise<void> {
     const raw = ctx.paymentPayload.payload;
     if (!ctx.result.success || !isBatchPayload(raw)) return;
@@ -856,6 +917,11 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * React to verify failures that indicate the payer is closing the channel.
+   *
+   * @param ctx - Verify failure hook context
+   */
   private async onVerifyFailure(ctx: VerifyFailureContext): Promise<void> {
     if (ctx.error.message.includes(BatchError.CHANNEL_CLOSING)) {
       await this.markChannelClosing(ctx.paymentPayload);
@@ -882,14 +948,29 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     this.config.onChannelClosing?.(channelId);
   }
 
+  /**
+   * Drop reservations when settlement fails after verify.
+   *
+   * @param ctx - Settle failure hook context
+   */
   private async onSettleFailure(ctx: SettleFailureContext): Promise<void> {
     await this.clearReservation(ctx.paymentPayload);
   }
 
+  /**
+   * Drop reservations when a verified payment is canceled before settle.
+   *
+   * @param ctx - Cancellation hook context
+   */
   private async onCanceled(ctx: VerifiedPaymentCanceledContext): Promise<void> {
     await this.clearReservation(ctx.paymentPayload);
   }
 
+  /**
+   * Remove the pending reservation and release any server-signed operation lock.
+   *
+   * @param payload - Payment whose reservation should be cleared
+   */
   private async clearReservation(payload: DeepReadonly<PaymentPayload>): Promise<void> {
     const request = this.requestContexts.get(payload);
     this.requestContexts.delete(payload);
@@ -907,6 +988,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Validate payload bindings against requirements and derive the channel PDA.
+   *
+   * @param raw - Batch-settlement payload from the client
+   * @param requirements - Accepted payment requirements
+   * @returns Channel id for the payload
+   */
   private async validatePayload(
     raw: BatchPayload,
     requirements: PaymentRequirements,
@@ -984,6 +1072,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     return channelId;
   }
 
+  /**
+   * Validate the voucher or payer authorization carried by a request payload.
+   *
+   * @param raw - Batch-settlement payload
+   * @param channelId - Derived channel id
+   * @param voucherSigner - Expected signer mode from requirements
+   * @param authorizedAmount - Amount the proof must authorize
+   */
   private async validateRequestProof(
     raw: BatchPayload,
     channelId: string,
@@ -1020,6 +1116,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Verify a client-signed cumulative voucher for the channel.
+   *
+   * @param voucher - Voucher presented on the payload
+   * @param channelId - Expected channel id
+   * @param signer - Payer authorizer that must have signed the voucher
+   */
   private async assertSignedVoucher(
     voucher: BatchVoucher,
     channelId: string,
@@ -1039,6 +1142,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     if (!valid) throw new Error(BatchError.VOUCHER_SIGNATURE);
   }
 
+  /**
+   * Verify a server-signed payer authorization for the request.
+   *
+   * @param authorization - Authorization presented on the payload
+   * @param raw - Parent batch payload
+   * @param channelId - Expected channel id
+   * @param authorizedAmount - Amount the authorization must cover
+   */
   private async assertPayerAuthorization(
     authorization: BatchAuthorization,
     raw: BatchPayload,
@@ -1057,6 +1168,15 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Commit a reserved charge, persist the new voucher watermark, and complete server ops.
+   *
+   * @param request - Request context including the reservation id
+   * @param proof - Client voucher or server authorization proof
+   * @param actual - Measured charge for this request
+   * @param patch - Optional extra fields to merge after a deposit settle
+   * @returns Updated channel state after the commit
+   */
   private async commitCharge(
     request: RequestContext & { pendingId: string },
     proof: BatchProof,
@@ -1091,6 +1211,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     });
   }
 
+  /**
+   * Resolve the voucher that records the new cumulative charge.
+   *
+   * @param proof - Proof from the verified payload
+   * @param channelId - Channel being charged
+   * @param cumulative - New cumulative claimable amount
+   * @returns Voucher to persist as the watermark
+   */
   private async voucherForCharge(
     proof: BatchProof,
     channelId: string,
@@ -1108,10 +1236,22 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Batch client vouchers must use the fixed zero expiry sentinel.
+   *
+   * @param voucher - Voucher whose expiry is checked
+   */
   private assertExpiry(voucher: BatchVoucher): void {
     if (voucher.expiresAt !== 0) throw new Error(BatchError.VOUCHER_EXPIRY);
   }
 
+  /**
+   * Sign an operator voucher for server-signed channels.
+   *
+   * @param channelId - Channel the voucher is for
+   * @param cumulativeAmount - Cumulative claimable amount
+   * @returns Operator-signed voucher
+   */
   private async signOperatorVoucher(
     channelId: string,
     cumulativeAmount: bigint,
@@ -1237,6 +1377,14 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     };
   }
 
+  /**
+   * Seed channel state for a first deposit before the facilitator confirms open.
+   *
+   * @param raw - Deposit payload
+   * @param requirements - Accepted requirements
+   * @param channelId - Derived channel id
+   * @returns Provisional open channel record
+   */
   private provisionalState(
     raw: BatchPayload,
     requirements: PaymentRequirements,
@@ -1266,6 +1414,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     };
   }
 
+  /**
+   * Ensure stored channel bindings still match the challenged payload and authorizer.
+   *
+   * @param state - Stored channel record
+   * @param config - Channel config from the payload
+   * @param requirements - Requirements the payload answers
+   */
   private assertStoredConfig(
     state: ChannelState,
     config: BatchChannelConfig,
@@ -1284,10 +1439,25 @@ export class BatchSvmScheme implements SchemeNetworkServer {
     }
   }
 
+  /**
+   * Build a hook abort result with a machine reason and human message.
+   *
+   * @param reason - Machine-readable failure reason
+   * @param message - Human-readable detail
+   * @returns Abort directive for scheme hooks
+   */
   private abort(reason: string, message: string) {
     return { abort: true as const, message, reason };
   }
 
+  /**
+   * Convert a parsed money amount to the default stablecoin for the network.
+   *
+   * @param amount - Decimal amount string
+   * @param network - Network identifier
+   * @param symbol - Optional stablecoin symbol
+   * @returns Asset amount in atomic units
+   */
   private defaultMoneyConversion(amount: string, network: Network, symbol?: string): AssetAmount {
     const assetInfo = getDefaultAsset(network, symbol);
     return {
@@ -1298,6 +1468,13 @@ export class BatchSvmScheme implements SchemeNetworkServer {
   }
 }
 
+/**
+ * Build a successful local settle response after committing a charge.
+ *
+ * @param state - Channel state after the commit
+ * @param requirements - Requirements that were settled
+ * @returns Settle response with channel extras for the client
+ */
 function acceptedResponse(state: ChannelState, requirements: PaymentRequirements): SettleResponse {
   return {
     success: true,
@@ -1309,6 +1486,13 @@ function acceptedResponse(state: ChannelState, requirements: PaymentRequirements
   };
 }
 
+/**
+ * Settlement extras returned to the client after a committed charge.
+ *
+ * @param state - Channel state after the commit
+ * @param chargedAmount - Amount charged on this request
+ * @returns Extra fields for the settle response
+ */
 function settlementExtra(state: ChannelState, chargedAmount: string): Record<string, unknown> {
   const serverSigned = state.channelConfig.voucherSigner === "server";
   return {
@@ -1319,6 +1503,12 @@ function settlementExtra(state: ChannelState, chargedAmount: string): Record<str
   };
 }
 
+/**
+ * Operator voucher to echo back on server-signed channels when available.
+ *
+ * @param state - Channel state after the commit
+ * @returns Stored operator voucher, if any
+ */
 function serverVoucher(state: ChannelState): BatchVoucher | undefined {
   if (state.highestVoucherSignature === undefined) return undefined;
   return {
@@ -1329,6 +1519,12 @@ function serverVoucher(state: ChannelState): BatchVoucher | undefined {
   };
 }
 
+/**
+ * Serialize channel state for settlement and 402 enrichment responses.
+ *
+ * @param state - Channel record to snapshot
+ * @returns Wire-shaped channel state object
+ */
 function snapshot(state: ChannelState) {
   return {
     channelId: state.channelId,
@@ -1339,6 +1535,12 @@ function snapshot(state: ChannelState) {
   };
 }
 
+/**
+ * Drop expired reservations before enforcing capacity limits.
+ *
+ * @param reservations - Reservation map from channel state
+ * @returns Reservations that have not yet expired
+ */
 function liveReservations(
   reservations: ChannelState["reservations"],
 ): NonNullable<ChannelState["reservations"]> {
@@ -1349,6 +1551,13 @@ function liveReservations(
   );
 }
 
+/**
+ * Remove one reservation id from the map.
+ *
+ * @param reservations - Reservation map from channel state
+ * @param reservationId - Id to remove
+ * @returns Updated reservation map
+ */
 function withoutReservation(
   reservations: ChannelState["reservations"],
   reservationId: string,
@@ -1358,6 +1567,13 @@ function withoutReservation(
   );
 }
 
+/**
+ * Merge settlement extras without overwriting keys already on the response.
+ *
+ * @param extra - New extra fields to attach
+ * @param existing - Extra fields already on the settle response
+ * @returns Filtered extras safe to merge
+ */
 function withoutExistingFields(
   extra: Record<string, unknown>,
   existing: Record<string, unknown> | undefined,
@@ -1398,6 +1614,12 @@ function readVerifiedChannelState(result: VerifyResponse): VerifiedChannelState 
   };
 }
 
+/**
+ * Read `channelState` from a facilitator settle response.
+ *
+ * @param result - Facilitator settle response
+ * @returns Parsed channel snapshot fields with safe defaults
+ */
 function readChannelState(result: SettleResponse): {
   balance?: string;
   totalClaimed: string;
@@ -1444,23 +1666,49 @@ function confirmedDeposit(current: bigint, confirmed: string | undefined): bigin
   }
 }
 
+/**
+ * Whether locally cached onchain fields are still within the configured TTL.
+ *
+ * @param state - Channel record with optional `onchainSyncedAt`
+ * @param configuredTtlMs - Override TTL in milliseconds
+ * @returns True when local snapshot may be trusted for verify fast-path
+ */
 function isOnchainStateFresh(state: ChannelState, configuredTtlMs: number | undefined): boolean {
   if (state.onchainSyncedAt === undefined) return false;
   const ttlMs = configuredTtlMs ?? defaultOnchainStateTtlMs(state.withdrawDelay);
   return Date.now() - state.onchainSyncedAt <= ttlMs;
 }
 
+/**
+ * Default onchain snapshot TTL derived from the channel withdraw delay.
+ *
+ * @param withdrawDelaySeconds - Channel withdraw delay in seconds
+ * @returns TTL in milliseconds, clamped between 30s and 5m
+ */
 function defaultOnchainStateTtlMs(withdrawDelaySeconds: number): number {
   const withdrawDelayMs = Math.max(0, withdrawDelaySeconds) * 1_000;
   return Math.min(5 * 60_000, Math.max(30_000, Math.floor(withdrawDelayMs / 3)));
 }
 
+/**
+ * Parse a non-zero unsigned integer field from requirements or extras.
+ *
+ * @param value - Decimal string amount
+ * @param field - Field name used in error messages
+ * @returns Parsed positive amount
+ */
 function parsePositiveAmount(value: string, field: string): bigint {
   const amount = parseU64(value, field);
   if (amount === 0n) throw new Error(`${field} must resolve to a positive integer`);
   return amount;
 }
 
+/**
+ * Map thrown errors to batch-settlement machine reasons for hook responses.
+ *
+ * @param error - Caught error from hook logic
+ * @returns Machine-readable reason string
+ */
 function classifyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes(CHANNEL_BUSY)) return CHANNEL_BUSY;

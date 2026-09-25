@@ -43,6 +43,7 @@ import type {
 import {
   broadcastOpen,
   getChannelDistributionHash,
+  simulateOpenSettleDistribute,
   submitChannelTransactionWithSigner,
   ChannelSimulationError,
   SettlementConfirmationTimeoutError,
@@ -54,7 +55,6 @@ import {
 } from "../../payment-channels/storage";
 import { assertMaxIdleSecs } from "../../payment-channels/rentCleanup";
 import { BatchSvmRentCleanupManager } from "./rentCleanupManager";
-import { simulateOpenSettleDistribute } from "../../upto/facilitator/channel";
 import {
   InMemoryBatchPendingSettlementStore,
   PayoutAttributionAmbiguousError,

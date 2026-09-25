@@ -4,7 +4,10 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildDepositPayload } from "../../src/batch-settlement/client/channel";
 import { BatchError } from "../../src/batch-settlement/errors";
-import { InMemoryBatchDelegatedAuthStore } from "../../src/batch-settlement/facilitator/delegatedAuthStore";
+import {
+  BatchDelegatedAuthIdentityConflictError,
+  InMemoryBatchDelegatedAuthStore,
+} from "../../src/batch-settlement/facilitator/delegatedAuthStore";
 import { InMemoryBatchReceiverAuthorizerStore } from "../../src/batch-settlement/facilitator/receiverAuthorizerStore";
 import { BatchSvmScheme } from "../../src/batch-settlement/facilitator/scheme";
 import type {
@@ -300,6 +303,25 @@ describe("batch-settlement delegated receiver authorization", () => {
       errorReason: BatchError.CLOSE_AUTHORIZATION,
       success: false,
     });
+  });
+
+  it("InMemoryBatchDelegatedAuthStore bind is first-writer-wins", async () => {
+    const store = new InMemoryBatchDelegatedAuthStore();
+    const binding = {
+      callerIdentity: CALLER,
+      channelId: payer.address,
+      network: NETWORK,
+    };
+
+    await store.bind(binding);
+    await store.bind(binding);
+
+    await expect(store.bind({ ...binding, callerIdentity: "other" })).rejects.toBeInstanceOf(
+      BatchDelegatedAuthIdentityConflictError,
+    );
+    expect(await store.get(NETWORK, payer.address)).toMatchObject({ callerIdentity: CALLER });
+    await store.delete(NETWORK, payer.address);
+    expect(await store.get(NETWORK, payer.address)).toBeUndefined();
   });
 
   it("drops the caller identity when rent cleanup deletes the channel", async () => {

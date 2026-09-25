@@ -61,12 +61,12 @@ import {
   getChannelDistributionHash,
   reclaimComputeUnitLimit,
   broadcastOpen,
-  ChannelOpenConfirmationError,
+  ChannelBroadcastConfirmationError as ChannelOpenConfirmationError,
   simulateOpenSettleDistribute,
   SettlementConfirmationTimeoutError,
-  submitSettle,
+  submitChannelTransactionWithSigner as submitSettle,
   verifyOpenChannelAccount,
-} from "../../src/upto/facilitator/channel";
+} from "../../src/payment-channels/facilitator";
 import {
   ERR_SETTLEMENT_EXCEEDS_AMOUNT,
   UptoSvmScheme as UptoFacilitatorScheme,
