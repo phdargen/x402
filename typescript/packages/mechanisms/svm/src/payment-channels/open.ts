@@ -63,18 +63,14 @@ const U64_MAX = (1n << 64n) - 1n;
 /** Spec ceiling for `SetComputeUnitLimit` on an open transaction. */
 export const OPEN_MAX_COMPUTE_UNIT_LIMIT = 400_000;
 /**
- * Default `SetComputeUnitLimit` for a built open transaction. Without one the
- * runtime reserves 200,000 CU per instruction (SIMD-0170) — 400,000 for the
- * open + memo pair — while an observed open consumes ~51,000 CU. The default
- * keeps ~1.8x headroom over that, and any `SetComputeUnitPrice` priority fee
- * is charged on the requested limit, so right-sizing buys the same scheduling
- * priority at a fraction of the fee. Assumes standard SPL Token (or
- * Token-2022 without execution extensions) behavior — mints whose escrow
- * transfer runs compute-heavy extensions (e.g. transfer hooks) need an
- * explicit {@link BuildOpenArgs.computeUnitLimit} override, up to the spec
- * ceiling {@link OPEN_MAX_COMPUTE_UNIT_LIMIT}.
+ * Default `SetComputeUnitLimit` for a built open or top-up. Bump-seed search
+ * (1,500 CU per rejected candidate) plus the nonce and binding Memos can
+ * exceed 110,000 CU; 200,000 leaves room for a longer streak. Priority fee is
+ * charged on the requested limit. Mints with compute-heavy transfer extensions
+ * need an explicit {@link BuildOpenArgs.computeUnitLimit}, up to
+ * {@link OPEN_MAX_COMPUTE_UNIT_LIMIT}.
  */
-export const OPEN_DEFAULT_COMPUTE_UNIT_LIMIT = 90_000;
+export const OPEN_DEFAULT_COMPUTE_UNIT_LIMIT = 200_000;
 /** Spec ceiling for optional Phantom/Solflare Lighthouse assertions after `open`. */
 const OPEN_MAX_LIGHTHOUSE_INSTRUCTIONS = 3;
 /** Max optional suffix length after `open` (3 Lighthouse + 1 Memo), plus one binding memo when expected. */

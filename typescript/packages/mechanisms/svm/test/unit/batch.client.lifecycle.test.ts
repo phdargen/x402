@@ -738,14 +738,17 @@ describe("batch client lifecycle", () => {
       deposit: 5_000n,
       tracker: new BatchChannelTracker(
         RECEIVER,
-        { ...config, voucherSigner: "server" },
+        { ...config, payerAuthorizer: payer.address, voucherSigner: "server" },
         payer,
         1_000n,
       ),
     });
-    await expect(client.createRefundPayload(2, requirements())).rejects.toThrow(
-      /requires the operator's latest voucher/,
-    );
+    const serverRefund = await client.createRefundPayload(2, requirements());
+    expect(serverRefund.payload).toMatchObject({
+      authorization: { authorizedAmount: "0", channelId: RECEIVER },
+      type: "refund",
+    });
+    expect(serverRefund.payload).not.toHaveProperty("voucher");
     await expect(
       new BatchSvmScheme(payer, { discoverChannels: false }).createRefundPayload(2, requirements()),
     ).rejects.toThrow(/no batch-settlement channel/);

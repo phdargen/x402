@@ -123,33 +123,37 @@ export class BatchChannelTracker {
   }
 
   /**
-   * Keep the operator voucher a server-signed response returned, so a refund
-   * can present it.
+   * Keep the operator voucher from a server-signed PAYMENT-RESPONSE receipt.
    *
-   * @param voucher - Verified operator voucher
+   * @param voucher - Operator voucher returned by the server
    */
   recordServerVoucher(voucher: BatchVoucher): void {
     this.serverVoucher = voucher;
   }
 
   /**
-   * The zero-charge voucher a refund carries: the confirmed cumulative amount.
+   * Latest operator voucher confirmed in a server-signed PAYMENT-RESPONSE.
    *
-   * @returns A voucher at the confirmed cumulative allocation
+   * @returns The stored server voucher, if any
+   */
+  getServerVoucher(): BatchVoucher | undefined {
+    return this.serverVoucher;
+  }
+
+  /**
+   * Client-mode refund voucher at the confirmed cumulative allocation.
+   *
+   * @returns A voucher signed for the charged cumulative amount
    */
   async refundVoucher(): Promise<BatchVoucher> {
-    if (this.channelConfig.voucherSigner !== "server") {
-      return signBatchVoucher(this.signer, {
-        channelId: this.channelId,
-        expiresAt: 0,
-        maxClaimableAmount: this.chargedCumulativeAmount,
-      });
+    if (this.channelConfig.voucherSigner === "server") {
+      throw new Error("server-signed channels refund with payer authorization");
     }
-    // Only the operator can sign vouchers here, and the voucher is held in memory.
-    if (this.serverVoucher?.maxClaimableAmount !== this.chargedCumulativeAmount.toString()) {
-      throw new Error("refund of a server-signed channel requires the operator's latest voucher");
-    }
-    return this.serverVoucher;
+    return signBatchVoucher(this.signer, {
+      channelId: this.channelId,
+      expiresAt: 0,
+      maxClaimableAmount: this.chargedCumulativeAmount,
+    });
   }
 }
 
@@ -255,12 +259,24 @@ export async function buildRefundPayload(args: {
   feePayer: string;
   channelId: string;
   channelConfig: BatchChannelConfig;
-  voucher: BatchVoucher;
+  voucher?: BatchVoucher | undefined;
+  authorization?: BatchAuthorization | undefined;
   blockhash?: { blockhash: string; lastValidBlockHeight: bigint } | undefined;
   memo?: string | undefined;
 }): Promise<BatchRefundPayload> {
+  const serverMode = args.channelConfig.voucherSigner === "server";
+  if (serverMode) {
+    if (!args.authorization || args.voucher !== undefined) {
+      throw new Error("server-signed refund requires payer authorization only");
+    }
+  } else if (!args.voucher || args.authorization !== undefined) {
+    throw new Error("client-signed refund requires a voucher");
+  }
+  const credential = serverMode
+    ? { authorization: args.authorization }
+    : { voucher: args.voucher! };
   if (args.blockhash === undefined) {
-    return { channelConfig: args.channelConfig, type: "refund", voucher: args.voucher };
+    return { channelConfig: args.channelConfig, type: "refund", ...credential };
   }
   return {
     channelConfig: args.channelConfig,
@@ -272,6 +288,6 @@ export async function buildRefundPayload(args: {
       payer: args.payer,
     }),
     type: "refund",
-    voucher: args.voucher,
+    ...credential,
   };
 }

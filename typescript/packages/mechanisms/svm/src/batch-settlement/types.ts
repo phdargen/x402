@@ -103,14 +103,15 @@ export type BatchAuthorizationPayload = {
 };
 
 /**
- * The client signs `voucher` at the server's accepted cumulative and may add a
- * payer-signed `request_close` `transaction`. The server attaches
- * `closeAuthorization` and may replace `voucher` with its latest.
+ * Client mode: payer-signed `voucher` at the accepted cumulative. Server mode:
+ * payer `authorization` with `authorizedAmount` `"0"`; the server injects the
+ * operator voucher and `closeAuthorization` before settle.
  */
 export type BatchRefundPayload = {
   type: "refund";
   channelConfig: BatchChannelConfig;
-  voucher: BatchVoucher;
+  voucher?: BatchVoucher | undefined;
+  authorization?: BatchAuthorization | undefined;
   transaction?: string | undefined;
   closeAuthorization?: CloseAuthorization | undefined;
 };
@@ -230,12 +231,29 @@ export function isBatchPayload(value: unknown): value is BatchPayload {
         value.requestId === undefined &&
         value.maxClaimableAmount === undefined
       );
-    case "refund":
-      return (
-        isBatchVoucher(value.voucher) &&
-        (value.transaction === undefined || typeof value.transaction === "string") &&
-        (value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization))
-      );
+    case "refund": {
+      const txOk = value.transaction === undefined || typeof value.transaction === "string";
+      const closeOk =
+        value.closeAuthorization === undefined || isCloseAuthorization(value.closeAuthorization);
+      const signer = value.channelConfig.voucherSigner ?? "client";
+      if (signer === "server") {
+        const authOk =
+          value.authorization === undefined ||
+          (isBatchAuthorization(value.authorization) &&
+            value.authorization.authorizedAmount === "0");
+        if (isBatchVoucher(value.voucher)) {
+          return authOk && txOk && closeOk;
+        }
+        return (
+          value.voucher === undefined &&
+          isBatchAuthorization(value.authorization) &&
+          value.authorization.authorizedAmount === "0" &&
+          txOk &&
+          closeOk
+        );
+      }
+      return isBatchVoucher(value.voucher) && value.authorization === undefined && txOk && closeOk;
+    }
     default:
       return false;
   }

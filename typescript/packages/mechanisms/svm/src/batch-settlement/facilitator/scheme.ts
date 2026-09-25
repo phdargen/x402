@@ -37,7 +37,6 @@ import {
 } from "../../payment-channels/open";
 import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment-channels/voucher";
 import { SettlementCache } from "../../settlement-cache";
-import { verifyBatchAuthorization } from "../authorization";
 import type {
   FacilitatorAccountInfo,
   FacilitatorConfirmedTransaction,
@@ -94,6 +93,13 @@ import {
   validateRefund,
 } from "./seal";
 import {
+  assertServerModeProof as checkServerModeProof,
+  assertServerModeRefundProof,
+  voucherSignerFor,
+  type ProofAmountBound,
+  type VoucherModeBinding,
+} from "./voucherMode";
+import {
   assertBindingSource,
   assertDelegatedReceiverAuth,
   type BatchSvmFacilitatorConfig,
@@ -137,6 +143,11 @@ const MAX_WITHDRAW_DELAY = 2_592_000;
 const CHANNEL_READ_ATTEMPTS = 5;
 const CHANNEL_READ_INITIAL_BACKOFF_MS = 200;
 const COMPLETED_BROADCAST_SUFFIX = ":completed";
+
+function isTransientRpcError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b429\b/.test(message) || /\b503\b/.test(message) || /too many requests/i.test(message);
+}
 
 /** Four Ed25519+settle pairs fit under Solana's transaction packet limit. */
 export const MAX_CHANNELS_PER_SETTLE_TX = 4;
@@ -252,7 +263,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     try {
       switch (payload.type) {
         case "deposit": {
-          const validated = await this.validateDeposit(payload, requirements);
+          const validated = await this.validateDeposit(payload, requirements, "exact");
           return {
             isValid: true,
             payer: payload.channelConfig.payer,
@@ -260,7 +271,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           };
         }
         case "voucher": {
-          const terms = await this.resolveTerms(payload.channelConfig, requirements);
+          const terms = await this.resolveTerms(
+            payload.channelConfig,
+            requirements,
+            "requirements",
+          );
           const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
           if (payload.voucher.channelId !== channelId) {
             return verifyFailure(BatchError.CHANNEL_ID_MISMATCH, payload.channelConfig.payer);
@@ -273,9 +288,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           };
         }
         case "authorization": {
-          const terms = await this.resolveTerms(payload.channelConfig, requirements);
+          const terms = await this.resolveTerms(
+            payload.channelConfig,
+            requirements,
+            "requirements",
+          );
           const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
-          await this.assertServerModeProof(payload, channelId, requirements);
+          await this.assertServerModeProof(payload, channelId, requirements, "exact");
           const channel = await this.fetchChannel(requirements.network, channelId);
           assertNotClosing(channel, channelId);
           this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
@@ -292,6 +311,39 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           };
         }
         case "refund": {
+          if ("amount" in payload) {
+            throw new Error(
+              `${BatchError.CLOSE_AMOUNT_UNSUPPORTED}: refund returns the full unused escrow`,
+            );
+          }
+          const terms = await this.resolveTerms(
+            payload.channelConfig,
+            requirements,
+            "requirements",
+          );
+          const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
+          const voucherSigner = voucherSignerFor(
+            payload.channelConfig,
+            requirements.extra ?? {},
+            "payload",
+          );
+          if (voucherSigner === "server" && payload.voucher === undefined) {
+            await assertServerModeRefundProof(payload, channelId);
+            const channel = await this.fetchChannel(requirements.network, channelId);
+            assertNotClosing(channel, channelId);
+            this.assertClaimChannel(channel, payload.channelConfig, terms, requirements, [
+              ChannelStatus.Open,
+              ChannelStatus.Closing,
+            ]);
+            return {
+              isValid: true,
+              payer: payload.channelConfig.payer,
+              extra: verifiedChannelExtra(channelId, channel),
+            };
+          }
+          if (voucherSigner === "server" && payload.voucher !== undefined) {
+            throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid payer proof`);
+          }
           const deps = this.sealDependencies();
           const validated = await validateRefund(deps, payload, requirements, this.config);
           return {
@@ -360,7 +412,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   ): Promise<SettleResponse> {
     const prepared: PreparedClaim[] = [];
     for (const claim of payload.claims) {
-      const terms = await this.resolveTerms(claim.channelConfig, requirements);
+      const terms = await this.resolveTerms(claim.channelConfig, requirements, "payload");
       const channelId = await this.deriveChannelId(claim.channelConfig, terms.feePayer);
       if (channelId !== claim.channelId || channelId !== claim.voucher.channelId) {
         throw new Error(BatchError.CHANNEL_ID_MISMATCH);
@@ -564,7 +616,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   ): Promise<SettleResponse> {
     const prepared: PreparedDistribution[] = [];
     for (const entry of payload.channels) {
-      const terms = await this.resolveTerms(entry.channelConfig, requirements);
+      const terms = await this.resolveTerms(entry.channelConfig, requirements, "payload");
       const channelId = await this.deriveChannelId(entry.channelConfig, terms.feePayer);
       if (channelId !== entry.channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
       prepared.push({
@@ -766,8 +818,9 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   private async validateDeposit(
     payload: BatchDepositPayload,
     requirements: PaymentRequirements,
+    proofBound: ProofAmountBound,
   ): Promise<ValidatedDeposit> {
-    const terms = await this.resolveTerms(payload.channelConfig, requirements);
+    const terms = await this.resolveTerms(payload.channelConfig, requirements, "requirements");
     const deposit = parseU64(payload.deposit.amount, "deposit.amount");
     const charge = parseU64(requirements.amount, "amount");
     const channelId = await this.deriveChannelId(payload.channelConfig, terms.feePayer);
@@ -783,7 +836,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: amount missing`);
     }
     if (terms.voucherSigner === "server") {
-      await this.assertServerModeProof(payload, channelId, requirements);
+      await this.assertServerModeProof(payload, channelId, requirements, proofBound);
     }
     if (payload.voucher) {
       if (payload.voucher.channelId !== channelId) {
@@ -807,7 +860,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         ChannelStatus.Open,
       ]);
       const expectedDeposit = existing.deposit + deposit;
-      if (
+      if (terms.voucherSigner === "server") {
+        if (charge > expectedDeposit) {
+          throw new Error(
+            `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: charge exceeds topped-up ceiling`,
+          );
+        }
+      } else if (
         voucherAmount !== undefined &&
         (voucherAmount < charge || voucherAmount > expectedDeposit)
       ) {
@@ -841,7 +900,11 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         voucherAmount: voucherAmount!,
       };
     }
-    if ((voucherAmount !== undefined && voucherAmount !== charge) || charge > deposit) {
+    if (terms.voucherSigner === "server") {
+      if (charge > deposit) {
+        throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
+      }
+    } else if ((voucherAmount !== undefined && voucherAmount !== charge) || charge > deposit) {
       throw new Error(`${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: invalid first voucher amount`);
     }
     const open = await verifyOpenTransaction(payload.deposit.transaction, {
@@ -887,7 +950,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     requirements: PaymentRequirements,
     context?: FacilitatorContext,
   ): Promise<SettleResponse> {
-    const validated = await this.validateDeposit(payload, requirements);
+    const validated = await this.validateDeposit(payload, requirements, "ceiling");
     const { channelId, terms } = validated;
     // Serialize opens by channel so two distinct signed setup transactions
     // cannot race for the same PDA. Top-ups remain transaction-scoped because
@@ -1283,6 +1346,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
   private async resolveTerms(
     config: BatchChannelConfig,
     requirements: PaymentRequirements,
+    binding: VoucherModeBinding = "requirements",
   ): Promise<BatchTerms> {
     const extra = requirements.extra;
     if (!extra || (extra.paymentFlow !== undefined && extra.paymentFlow !== "authorization")) {
@@ -1291,19 +1355,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     const feePayer = extra.feePayer;
     if (typeof feePayer !== "string") throw new Error(BatchError.FEE_PAYER_MISMATCH);
     const feePayerSigner = this.resolveFeePayer(feePayer);
-    const voucherSigner = extra.voucherSigner ?? "client";
-    const operator = extra.operator;
-    if (voucherSigner !== "client" && voucherSigner !== "server") {
-      throw new Error(BatchError.CHANNEL_STATE);
-    }
-    if (
-      (voucherSigner === "server" &&
-        (typeof operator !== "string" || config.payerAuthorizer !== operator)) ||
-      (voucherSigner === "client" && operator !== undefined) ||
-      (config.voucherSigner ?? "client") !== voucherSigner
-    ) {
-      throw new Error(BatchError.CHANNEL_STATE);
-    }
+    const voucherSigner = voucherSignerFor(config, extra, binding);
     if (config.payer === feePayer || config.payerAuthorizer === feePayer) {
       throw new Error(BatchError.FEE_PAYER_MISMATCH);
     }
@@ -1714,9 +1766,12 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         // A slot floor is only advisory for the read: a load-balanced RPC node
         // that has not reached the remembered confirmation slot rejects it.
         // Give the backend time to catch up instead of failing a deposit or
-        // claim that merely wanted the channel's current state. Reads without
-        // a floor have nothing to wait for and surface the error at once.
-        if (minContextSlot === undefined || attempt + 1 >= CHANNEL_READ_ATTEMPTS) throw error;
+        // claim that merely wanted the channel's current state. Also backoff on
+        // transient RPC rate limits, which are common on public devnet endpoints.
+        const retry =
+          attempt + 1 < CHANNEL_READ_ATTEMPTS &&
+          (minContextSlot !== undefined || isTransientRpcError(error));
+        if (!retry) throw error;
         await this.waitForChannelRead(attempt);
       }
     }
@@ -1839,35 +1894,13 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     }
   }
 
-  /**
-   * Verify the payer proof behind a server-signed request.
-   *
-   * The resource server checks this proof before serving, but a facilitator
-   * used as a standalone verifier must not accept a forged or replayed proof
-   * on the server's word: the proof is what ties this request to the payer's
-   * explicit, expiring, amount-bounded delegation to the operator.
-   *
-   * @param payload - Server-mode `authorization` or `deposit` payload
-   * @param channelId - Derived channel PDA
-   * @param requirements - Accepted requirements; `amount` is the request ceiling
-   */
-  private async assertServerModeProof(
+  private assertServerModeProof(
     payload: Extract<BatchPayload, { type: "authorization" | "deposit" }>,
     channelId: string,
     requirements: PaymentRequirements,
+    proofBound: ProofAmountBound = "exact",
   ): Promise<void> {
-    const authorization = payload.authorization;
-    if (!authorization) throw new Error(`${BatchError.VOUCHER_SIGNATURE}: payer proof missing`);
-    if (
-      authorization.channelId !== channelId ||
-      authorization.payer !== payload.channelConfig.payer ||
-      authorization.authorizedAmount !== requirements.amount ||
-      typeof authorization.requestId !== "string" ||
-      authorization.requestId.length === 0 ||
-      !(await verifyBatchAuthorization(authorization, payload.channelConfig.payerAuthorizer))
-    ) {
-      throw new Error(`${BatchError.VOUCHER_SIGNATURE}: invalid payer proof`);
-    }
+    return checkServerModeProof(payload, channelId, requirements, proofBound);
   }
 
   private assertClaimChannel(
@@ -1940,7 +1973,8 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           network,
           channelId,
         ),
-      resolveTerms: (config, requirements) => this.resolveTerms(config, requirements),
+      resolveTerms: (config, requirements, binding) =>
+        this.resolveTerms(config, requirements, binding ?? "requirements"),
       settlementCache: this.settlementCache,
       submitRedemption: (feePayer, network, instructions, key, payer) =>
         this.submitRedemption(feePayer, network, instructions, key, payer),

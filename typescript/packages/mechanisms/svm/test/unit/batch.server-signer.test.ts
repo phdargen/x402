@@ -463,7 +463,7 @@ describe("batch server voucher signer boundaries", () => {
     expect(actualSettlement).toMatchObject({
       skip: true,
       result: {
-        extra: { commitmentId: `${channelId}:1400` },
+        extra: { chargedAmount: "400", commitmentId: `${channelId}:1400` },
         success: true,
       },
     });
@@ -604,15 +604,11 @@ describe("batch server voucher signer boundaries", () => {
     const refundPayment: PaymentPayload = {
       accepted: requirements(),
       payload: await buildRefundPayload({
+        authorization: await authorizationFor("refund-close", 0n),
         channelConfig: serverDeposit.channelConfig,
         channelId,
         feePayer: feePayer.address,
         payer,
-        voucher: await signBatchVoucher(operator, {
-          channelId,
-          expiresAt: 0,
-          maxClaimableAmount: 1_000n,
-        }),
       }),
       x402Version: 2,
     };
@@ -679,5 +675,61 @@ describe("batch server voucher signer boundaries", () => {
 
     const replay = await reserve(replacementPayment, exhaustedRequirements);
     expect(replay.result).toMatchObject({ abort: true, reason: "duplicate_settlement" });
+  });
+
+  it("enriches server-mode refunds with the stored operator voucher", async () => {
+    const store = new MemoryChannelStore();
+    const server = new BatchServerScheme({ operator, receiverAuthorizer, store });
+    const channelId = serverDeposit.authorization!.channelId;
+    await store.put({
+      channelConfig: serverDeposit.channelConfig,
+      channelId,
+      chargedCumulativeAmount: 2_000n,
+      deposit: 10_000n,
+      feePayer: feePayer.address,
+      highestVoucherExpiresAt: 0,
+      highestVoucherSignature: "stored-operator-sig",
+      mint: USDC_DEVNET_ADDRESS,
+      onchainSyncedAt: Date.now(),
+      openSlot: BigInt(serverDeposit.channelConfig.openSlot),
+      payer: payer.address,
+      payerAuthorizer: operator.address,
+      payoutWatermark: 0n,
+      receiver: serverDeposit.channelConfig.receiver,
+      reservations: {},
+      salt: BigInt(serverDeposit.channelConfig.salt),
+      settled: 0n,
+      signedMaxClaimable: 2_000n,
+      status: "open",
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      withdrawDelay: serverDeposit.channelConfig.withdrawDelay,
+    });
+    const refund = await buildRefundPayload({
+      authorization: await authorizationFor("refund-enrich", 0n),
+      channelConfig: serverDeposit.channelConfig,
+      channelId,
+      feePayer: feePayer.address,
+      payer,
+    });
+    const payment: PaymentPayload = {
+      accepted: requirements(),
+      payload: refund,
+      x402Version: 2,
+    };
+    const ctx = { declaredExtensions: {}, paymentPayload: payment, requirements: requirements() };
+    await server.schemeHooks.onBeforeVerify!(ctx);
+    await server.schemeHooks.onAfterVerify!({
+      ...ctx,
+      result: { isValid: true, payer: payer.address },
+    });
+    const enriched = await server.enrichSettlementPayload(ctx as never);
+    expect(enriched).toMatchObject({
+      closeAuthorization: expect.anything(),
+      voucher: {
+        channelId,
+        maxClaimableAmount: "2000",
+        signature: "stored-operator-sig",
+      },
+    });
   });
 });

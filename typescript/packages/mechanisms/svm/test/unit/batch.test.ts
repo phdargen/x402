@@ -737,6 +737,35 @@ describe("batch-settlement SVM", () => {
         true,
       );
       expect(isBatchPayload({ channelConfig, transaction: "tx", type: "refund" })).toBe(false);
+      const operator = await generateKeyPairSigner();
+      const serverChannelConfig = {
+        ...channelConfig,
+        payerAuthorizer: operator.address,
+        voucherSigner: "server" as const,
+      };
+      const refundAuth = await signBatchAuthorization(
+        payer,
+        channelId,
+        operator.address,
+        "refund-req",
+        0n,
+        Math.floor(Date.now() / 1000) + 300,
+      );
+      expect(
+        isBatchPayload({
+          authorization: refundAuth,
+          channelConfig: serverChannelConfig,
+          type: "refund",
+        }),
+      ).toBe(true);
+      expect(
+        isBatchPayload({
+          authorization: refundAuth,
+          channelConfig: serverChannelConfig,
+          type: "refund",
+          voucher,
+        }),
+      ).toBe(true);
       expect(isBatchPayload({ channelId, type: "voucher", voucher })).toBe(false);
       expect(
         isBatchFacilitatorPayload({
@@ -1209,6 +1238,7 @@ describe("batch-settlement SVM", () => {
         feePayer: feePayer.address,
         memo: "invoice-42",
         payer,
+        voucher: await signedVoucher(1_000n),
       });
       await expect(
         verifyRequestCloseTransaction(payload.transaction, {

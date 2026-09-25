@@ -67,6 +67,8 @@ export interface BatchClientChannelRecord {
   channelId: string;
   chargedCumulativeAmount: string;
   deposit: string;
+  /** Operator voucher at `chargedCumulativeAmount` for server-signed channels. */
+  serverVoucher?: BatchVoucher | undefined;
   /** Whether the top-level allocation is confirmed while `pending` is in flight. */
   hasConfirmedState?: boolean | undefined;
   pending?:
@@ -302,12 +304,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     const discovered = await this.discoverChannel(requirements, terms);
     if (discovered) {
       this.channels.set(key, discovered);
-      await this.config.channelStorage?.set(key, {
-        channelConfig: discovered.tracker.channelConfig,
-        channelId: discovered.tracker.channelId,
-        chargedCumulativeAmount: discovered.tracker.cumulative.toString(),
-        deposit: discovered.deposit.toString(),
-      });
+      await this.config.channelStorage?.set(key, this.toStorageRecord(discovered));
       return this.createPaymentPayload(x402Version, requirements, context);
     }
 
@@ -399,19 +396,32 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     requirements: PaymentRequirements,
     options?: RefundPayloadOptions,
   ): Promise<Pick<PaymentPayload, "x402Version" | "payload">> {
-    const terms = await this.resolveTerms(requirements);
-    const key = this.channelKey(requirements, terms.feePayer, terms.withdrawDelay);
+    const cached = this.findCachedChannelForRoute(requirements);
+    const lookupRequirements = cached
+      ? this.requirementsForRefund(requirements, cached)
+      : requirements;
+    const terms = await this.resolveRefundTerms(requirements, cached);
+    const key = this.channelKey(lookupRequirements, terms.feePayer, terms.withdrawDelay);
     // A client with no local record is exactly the one that needs to close a
     // channel it can no longer pay from, so fall back to the chain.
     const existing =
-      (await this.loadChannel(key)) ?? (await this.discoverChannel(requirements, terms));
+      (await this.loadChannel(key)) ??
+      cached ??
+      (await this.discoverChannel(lookupRequirements, terms));
     if (!existing) throw new Error("no batch-settlement channel to refund");
     const blockhash = options?.withTransaction
       ? await resolveBlockhash(
-          createRpcClient(requirements.network, this.config.rpcUrl),
-          requirements,
+          createRpcClient(lookupRequirements.network, this.config.rpcUrl),
+          lookupRequirements,
         )
       : undefined;
+    const serverMode = existing.tracker.channelConfig.voucherSigner === "server";
+    const expiresAt = Math.floor(Date.now() / 1000) + lookupRequirements.maxTimeoutSeconds;
+    const credential = serverMode
+      ? {
+          authorization: await existing.tracker.authorization(crypto.randomUUID(), 0n, expiresAt),
+        }
+      : { voucher: await existing.tracker.refundVoucher() };
     return {
       x402Version,
       payload: await buildRefundPayload({
@@ -421,7 +431,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
         feePayer: terms.feePayer,
         memo: terms.memo,
         payer: this.signer,
-        voucher: await existing.tracker.refundVoucher(),
+        ...credential,
       }),
     };
   }
@@ -646,20 +656,23 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       candidate => candidate.key === pending.key,
     );
     const confirmed = this.channels.get(pending.key) ?? pending.confirmed;
-    return this.config.channelStorage?.set(pending.key, {
-      channelConfig: pending.tracker.channelConfig,
-      channelId: pending.tracker.channelId,
-      chargedCumulativeAmount: (confirmed?.tracker.cumulative ?? 0n).toString(),
-      deposit: (confirmed?.deposit ?? 0n).toString(),
-      hasConfirmedState: confirmed !== undefined,
-      pending: allPending.map(item => ({
-        amount: item.amount,
-        chargedCumulativeAmount: item.cumulative.toString(),
-        deposit: item.deposit.toString(),
-        operationKey: item.operationKey,
-        payment: item.payment,
-      })),
-    });
+    const recordChannel = confirmed ?? {
+      deposit: pending.deposit ?? 0n,
+      tracker: pending.tracker,
+    };
+    return this.config.channelStorage?.set(
+      pending.key,
+      this.toStorageRecord(recordChannel, {
+        hasConfirmedState: confirmed !== undefined,
+        pending: allPending.map(item => ({
+          amount: item.amount,
+          chargedCumulativeAmount: item.cumulative.toString(),
+          deposit: item.deposit.toString(),
+          operationKey: item.operationKey,
+          payment: item.payment,
+        })),
+      }),
+    );
   }
 
   /**
@@ -804,13 +817,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
     this.channels.set(pending.key, confirmed);
     const remaining = [...this.pending.values()].find(candidate => candidate.key === pending.key);
     if (remaining) await this.persistPending(remaining);
-    else
-      await this.config.channelStorage?.set(pending.key, {
-        channelConfig: confirmed.tracker.channelConfig,
-        channelId: confirmed.tracker.channelId,
-        chargedCumulativeAmount: confirmed.tracker.cumulative.toString(),
-        deposit: confirmed.deposit.toString(),
-      });
+    else await this.config.channelStorage?.set(pending.key, this.toStorageRecord(confirmed));
     return false;
   }
 
@@ -892,25 +899,114 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       ),
     };
     this.channels.set(pending.key, adopted);
-    await this.config.channelStorage?.set(pending.key, {
-      channelConfig: adopted.tracker.channelConfig,
-      channelId: adopted.tracker.channelId,
-      chargedCumulativeAmount: charged.toString(),
-      deposit: adopted.deposit.toString(),
-    });
+    await this.config.channelStorage?.set(pending.key, this.toStorageRecord(adopted));
     return true;
   }
 
   private hydrateChannel(record: BatchClientChannelRecord): OpenChannel {
+    const cumulative = parseU64(record.chargedCumulativeAmount, "stored chargedCumulativeAmount");
+    const tracker = new BatchChannelTracker(
+      record.channelId,
+      record.channelConfig,
+      this.signer,
+      cumulative,
+    );
+    const voucher = record.serverVoucher;
+    if (
+      voucher &&
+      record.channelConfig.voucherSigner === "server" &&
+      voucher.maxClaimableAmount === cumulative.toString() &&
+      voucher.channelId === record.channelId
+    ) {
+      tracker.recordServerVoucher(voucher);
+    }
     return {
       deposit: parseU64(record.deposit, "stored deposit"),
-      tracker: new BatchChannelTracker(
-        record.channelId,
-        record.channelConfig,
-        this.signer,
-        parseU64(record.chargedCumulativeAmount, "stored chargedCumulativeAmount"),
-      ),
+      tracker,
     };
+  }
+
+  private toStorageRecord(
+    channel: OpenChannel,
+    options?: { hasConfirmedState?: boolean; pending?: BatchClientChannelRecord["pending"] },
+  ): BatchClientChannelRecord {
+    const serverVoucher =
+      channel.tracker.channelConfig.voucherSigner === "server"
+        ? channel.tracker.getServerVoucher()
+        : undefined;
+    return {
+      channelConfig: channel.tracker.channelConfig,
+      channelId: channel.tracker.channelId,
+      chargedCumulativeAmount: channel.tracker.cumulative.toString(),
+      deposit: channel.deposit.toString(),
+      ...(options?.hasConfirmedState ? { hasConfirmedState: true } : {}),
+      ...(options?.pending ? { pending: options.pending } : {}),
+      ...(serverVoucher ? { serverVoucher } : {}),
+    };
+  }
+
+  private findCachedChannelForRoute(requirements: PaymentRequirements): OpenChannel | undefined {
+    for (const channel of this.channels.values()) {
+      const config = channel.tracker.channelConfig;
+      if (config.receiver === requirements.payTo && config.token === requirements.asset) {
+        return channel;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Align probed refund requirements with how the open channel was authorized.
+   *
+   * A refund probe takes the first Solana accept, which may be client-signed
+   * even when this wallet paid through a server-signed accept on the same route.
+   *
+   * @param probed
+   * @param cached
+   */
+  private async resolveRefundTerms(
+    probed: PaymentRequirements,
+    cached?: OpenChannel,
+  ): Promise<Awaited<ReturnType<typeof this.resolveTerms>>> {
+    if (cached?.tracker.channelConfig.voucherSigner === "server") {
+      const clientProbed: PaymentRequirements = {
+        ...probed,
+        extra: {
+          ...probed.extra,
+          operator: undefined,
+          voucherSigner: "client",
+        },
+      };
+      const terms = await this.resolveTerms(clientProbed);
+      return {
+        ...terms,
+        operator: cached.tracker.channelConfig.payerAuthorizer,
+        voucherSigner: "server",
+      };
+    }
+    return this.resolveTerms(probed);
+  }
+
+  private requirementsForRefund(
+    probed: PaymentRequirements,
+    cached: OpenChannel,
+  ): PaymentRequirements {
+    const mode = cached.tracker.channelConfig.voucherSigner ?? "client";
+    if ((probed.extra?.voucherSigner ?? "client") === mode) return probed;
+    const extra = { ...probed.extra };
+    if (mode === "server") {
+      return {
+        ...probed,
+        extra: {
+          ...extra,
+          operator: cached.tracker.channelConfig.payerAuthorizer,
+          voucherSigner: "server",
+        },
+      };
+    }
+    const { operator: _operator, ...clientExtra } = extra ?? {};
+    void _operator;
+    return { ...probed, extra: { ...clientExtra, voucherSigner: "client" } };
   }
 
   private async restoreConfirmedChannel(pending: PendingChannel): Promise<void> {
@@ -924,12 +1020,7 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       return;
     }
     this.channels.set(pending.key, pending.confirmed);
-    await this.config.channelStorage?.set(pending.key, {
-      channelConfig: pending.confirmed.tracker.channelConfig,
-      channelId: pending.confirmed.tracker.channelId,
-      chargedCumulativeAmount: pending.confirmed.tracker.cumulative.toString(),
-      deposit: pending.confirmed.deposit.toString(),
-    });
+    await this.config.channelStorage?.set(pending.key, this.toStorageRecord(pending.confirmed));
   }
 
   private channelKey(

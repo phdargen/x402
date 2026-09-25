@@ -350,6 +350,7 @@ export function settlementPending(
 export function classifyError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes(CHANNEL_BUSY)) return CHANNEL_BUSY;
+  if (/\b429\b/.test(message) || /\b503\b/.test(message)) return BatchError.CHANNEL_STATE;
   const known = Object.values(BatchError).find(value => message.includes(value));
   return known ?? "transaction_failed";
 }

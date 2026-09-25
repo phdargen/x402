@@ -137,10 +137,12 @@ type FacilitatorInternals = {
   resolveTerms(
     config: BatchChannelConfig,
     requirements: PaymentRequirements,
+    binding?: "requirements" | "payload",
   ): Promise<{
     feePayer: string;
     feePayerSigner: typeof feePayer;
     tokenProgram: string;
+    voucherSigner: "client" | "server";
     withdrawDelay: number;
   }>;
   deriveChannelId: ReturnType<typeof vi.fn>;
@@ -185,6 +187,7 @@ type FacilitatorInternals = {
     payload: unknown,
     channelId: string,
     requirements: PaymentRequirements,
+    proofBound?: "exact" | "ceiling",
   ): Promise<void>;
   assertSettlementAccounts(
     requirements: PaymentRequirements,
@@ -631,6 +634,167 @@ describe("batch facilitator lifecycle", () => {
         serverRequirements,
       ),
     ).rejects.toThrow(/payer proof missing/);
+  });
+
+  it("treats a server-mode payer proof as a ceiling only at settle", async () => {
+    const operator = await generateKeyPairSigner();
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
+    const api = internals(scheme);
+    const serverConfig: BatchChannelConfig = {
+      ...channelConfig,
+      payerAuthorizer: operator.address,
+      voucherSigner: "server",
+    };
+    const serverRequirements = requirements({
+      extra: {
+        ...requirements().extra,
+        operator: operator.address,
+        voucherSigner: "server",
+      },
+    });
+    api.resolveTerms = vi.fn().mockResolvedValue({
+      feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      voucherSigner: "server",
+      withdrawDelay: 900,
+    });
+    api.deriveChannelId = vi.fn().mockResolvedValue(channelId);
+    api.readChannel = vi.fn().mockResolvedValue(undefined);
+    const expiresAt = Math.floor(Date.now() / 1000) + 600;
+    const proof = await signBatchAuthorization(
+      payer,
+      channelId,
+      operator.address,
+      "request-1",
+      1_000n,
+      expiresAt,
+    );
+    const deposit = {
+      authorization: proof,
+      channelConfig: serverConfig,
+      deposit: { amount: "10000", transaction: "setup" },
+      type: "deposit" as const,
+    };
+    const payment = { accepted: serverRequirements, payload: deposit, x402Version: 2 } as never;
+    const verify = (amount: string) => scheme.verify(payment, { ...serverRequirements, amount });
+    const settle = (amount: string) => scheme.settle(payment, { ...serverRequirements, amount });
+
+    // Verify still requires the proof to equal the advertised ceiling, even
+    // when the signature itself is valid for a different amount.
+    await expect(verify("1000")).resolves.toMatchObject({
+      invalidReason: expect.not.stringMatching(BatchError.VOUCHER_SIGNATURE),
+      isValid: false,
+    });
+    await expect(verify("500")).resolves.toMatchObject({
+      invalidReason: BatchError.VOUCHER_SIGNATURE,
+      isValid: false,
+    });
+    const higher = await signBatchAuthorization(
+      payer,
+      channelId,
+      operator.address,
+      "request-1",
+      2_000n,
+      expiresAt,
+    );
+    await expect(
+      scheme.verify(
+        { ...payment, payload: { ...deposit, authorization: higher } },
+        serverRequirements,
+      ),
+    ).resolves.toMatchObject({
+      invalidReason: BatchError.VOUCHER_SIGNATURE,
+      isValid: false,
+    });
+
+    // Settle accepts a metered charge below the proof and rejects one above it.
+    await expect(settle("500")).resolves.toMatchObject({
+      errorReason: expect.not.stringMatching(BatchError.VOUCHER_SIGNATURE),
+      success: false,
+    });
+    await expect(settle("1000")).resolves.toMatchObject({
+      errorReason: expect.not.stringMatching(BatchError.VOUCHER_SIGNATURE),
+      success: false,
+    });
+    await expect(settle("1001")).resolves.toMatchObject({
+      errorReason: BatchError.VOUCHER_SIGNATURE,
+      success: false,
+    });
+
+    // Client-signed deposits stay fixed-price: a lower settle amount is not a ceiling.
+    api.resolveTerms = vi.fn().mockResolvedValue({
+      feePayer: feePayer.address,
+      receiverAuthorizer: receiverAuthorizer.address,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      voucherSigner: "client",
+      withdrawDelay: 900,
+    });
+    api.deriveChannelId = vi.fn().mockResolvedValue(actualChannelId);
+    await expect(
+      scheme.settle(
+        { accepted: requirements(), payload: actualDeposit, x402Version: 2 },
+        { ...requirements(), amount: "500" },
+      ),
+    ).resolves.toMatchObject({
+      errorReason: BatchError.CUMULATIVE_AMOUNT_MISMATCH,
+      success: false,
+    });
+  });
+
+  it("redeems a client-signed channel when the worker requirements are server-signed", async () => {
+    const operator = await generateKeyPairSigner();
+    const scheme = new BatchSvmScheme(signer() as never, {
+      receiverAuthorizerStore: new InMemoryBatchReceiverAuthorizerStore(),
+    });
+    const serverRequirements = requirements({
+      extra: {
+        ...requirements().extra,
+        operator: operator.address,
+        voucherSigner: "server",
+      },
+    });
+    const voucher = {
+      channelId,
+      expiresAt: 0,
+      maxClaimableAmount: "1",
+      signature: "x",
+    };
+    await expect(
+      internals(scheme).resolveTerms(channelConfig, serverRequirements, "payload"),
+    ).resolves.toMatchObject({ voucherSigner: "client" });
+    await expect(internals(scheme).resolveTerms(channelConfig, serverRequirements)).rejects.toThrow(
+      BatchError.CHANNEL_STATE,
+    );
+
+    const settled = async (payload: unknown) =>
+      scheme.settle(
+        { accepted: serverRequirements, payload, x402Version: 2 } as never,
+        serverRequirements,
+      );
+    for (const payload of [
+      {
+        claims: [{ channelConfig, channelId, voucher }],
+        type: "claim",
+      },
+      {
+        channels: [{ channelConfig, channelId }],
+        type: "settle",
+      },
+      {
+        channelConfig,
+        channelId,
+        type: "seal",
+        voucher,
+      },
+    ]) {
+      await expect(settled(payload)).resolves.toMatchObject({
+        errorReason: expect.not.stringMatching(BatchError.CHANNEL_STATE),
+        success: false,
+      });
+    }
   });
 
   it("validates real open, voucher, and refund transactions", async () => {

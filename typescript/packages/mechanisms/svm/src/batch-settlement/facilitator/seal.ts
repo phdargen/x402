@@ -34,11 +34,12 @@ import type { SettlementCache } from "../../settlement-cache";
 import type { FacilitatorSigningCapabilities } from "../../signer";
 import { verifyCloseAuthorization } from "../closeAuthorization";
 import { BatchError } from "../errors";
-import type {
-  BatchChannelConfig,
-  BatchRefundPayload,
-  BatchSealPayload,
-  BatchVoucher,
+import {
+  isBatchVoucher,
+  type BatchChannelConfig,
+  type BatchRefundPayload,
+  type BatchSealPayload,
+  type BatchVoucher,
 } from "../types";
 import type { BatchDelegatedSettleContext } from "./delegatedAuthStore";
 import { requireReceiverAuthorizer } from "./receiverAuthorizerStore";
@@ -81,7 +82,11 @@ export interface PreparedRefund {
 export interface SealDependencies {
   pendingStore: BatchPendingSettlementStore;
   settlementCache: SettlementCache;
-  resolveTerms(config: BatchChannelConfig, requirements: PaymentRequirements): Promise<SealTerms>;
+  resolveTerms(
+    config: BatchChannelConfig,
+    requirements: PaymentRequirements,
+    binding?: "requirements" | "payload",
+  ): Promise<SealTerms>;
   resolveReceiverAuthorizer(network: Network, channelId: string): Promise<string | undefined>;
   /** True when `bound` is this facilitator's delegated receiver authorizer. */
   isDelegatedAuthorizer(bound: string): boolean;
@@ -163,7 +168,11 @@ export async function settleSeal(
 ): Promise<SettleResponse> {
   const network = requirements.network;
   const payer = payload.channelConfig.payer;
-  const terms = await deps.resolveTerms(payload.channelConfig, requirements);
+  const terms = await deps.resolveTerms(
+    payload.channelConfig,
+    requirements,
+    intent === "seal" ? "payload" : "requirements",
+  );
   const channelId = await deps.deriveChannelId(payload.channelConfig, terms.feePayer);
   if (channelId !== payload.channelId) throw new Error(BatchError.CHANNEL_ID_MISMATCH);
   const cumulative = await verifyCloseVoucher(payload.voucher, payload.channelConfig, channelId);
@@ -295,7 +304,16 @@ export async function prepareRefund(
   }
   const terms = await deps.resolveTerms(payload.channelConfig, requirements);
   const channelId = await deps.deriveChannelId(payload.channelConfig, terms.feePayer);
-  const cumulative = await verifyCloseVoucher(payload.voucher, payload.channelConfig, channelId);
+  const voucher = payload.voucher;
+  if (!isBatchVoucher(voucher)) {
+    const serverMode = (payload.channelConfig.voucherSigner ?? "client") === "server";
+    throw new Error(
+      serverMode
+        ? `${BatchError.VOUCHER_SIGNATURE}: refund missing operator voucher`
+        : `${BatchError.VOUCHER_SIGNATURE}: refund missing voucher`,
+    );
+  }
+  const cumulative = await verifyCloseVoucher(voucher, payload.channelConfig, channelId);
   const channel = await deps.readChannel(requirements.network, channelId);
   if (channel && (cumulative < channel.settlement.settled || cumulative > channel.deposit)) {
     throw new Error(

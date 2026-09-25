@@ -352,6 +352,88 @@ describe("server-signed channels on the client scheme", () => {
     );
   });
 
+  it("refunds server-signed channels with payer authorization only", async () => {
+    const accept = serverAccept();
+    const client = new BatchSvmScheme(payer, {
+      depositAmount: 10_000n,
+      discoverChannels: false,
+      serverSignedChannelsPolicy: { allowedOperators: [operator.address] },
+    });
+    const opened = await client.createPaymentPayload(2, accept);
+    const channelId = opened.payload.authorization!.channelId;
+    const settle = async (payment: typeof opened, cumulative: bigint) =>
+      client.schemeHooks.onPaymentResponse!({
+        paymentPayload: { accepted: accept, ...payment },
+        requirements: accept,
+        settleResponse: {
+          extra: {
+            channelState: { chargedCumulativeAmount: cumulative.toString() },
+            commitmentId: `${channelId}:${cumulative}`,
+            voucher: {
+              channelId,
+              expiresAt: 0,
+              maxClaimableAmount: cumulative.toString(),
+              signature: await signVoucher(operator, {
+                channelId,
+                cumulativeAmount: cumulative,
+                expiresAt: 0n,
+              }),
+            },
+          },
+          success: true,
+        },
+      } as never);
+
+    await settle(opened, 1_000n);
+    await settle(await client.createPaymentPayload(2, accept), 2_000n);
+
+    const refund = await client.createRefundPayload(2, accept);
+    expect(refund.payload).toMatchObject({
+      type: "refund",
+      authorization: { authorizedAmount: "0", channelId },
+    });
+    expect(refund.payload).not.toHaveProperty("voucher");
+  });
+
+  it("refunds a server-signed channel when the probe returns a client-signed accept", async () => {
+    const accept = serverAccept();
+    const client = new BatchSvmScheme(payer, {
+      depositAmount: 10_000n,
+      discoverChannels: false,
+      serverSignedChannelsPolicy: { allowedOperators: [operator.address] },
+    });
+    const opened = await client.createPaymentPayload(2, accept);
+    const channelId = opened.payload.authorization!.channelId;
+    await client.schemeHooks.onPaymentResponse!({
+      paymentPayload: { accepted: accept, ...opened },
+      requirements: accept,
+      settleResponse: {
+        extra: {
+          channelState: { chargedCumulativeAmount: "1000" },
+          commitmentId: `${channelId}:1000`,
+          voucher: {
+            channelId,
+            expiresAt: 0,
+            maxClaimableAmount: "1000",
+            signature: await signVoucher(operator, {
+              channelId,
+              cumulativeAmount: 1_000n,
+              expiresAt: 0n,
+            }),
+          },
+        },
+        success: true,
+      },
+    } as never);
+
+    const refund = await client.createRefundPayload(2, clientAccept());
+    expect(refund.payload).toMatchObject({
+      type: "refund",
+      authorization: { authorizedAmount: "0", channelId },
+    });
+    expect(refund.payload).not.toHaveProperty("voucher");
+  });
+
   it("adopts a corrective 402 only up to what this client authorized", async () => {
     const trust = { allowedOperators: [operator.address] };
     const accept = serverAccept();

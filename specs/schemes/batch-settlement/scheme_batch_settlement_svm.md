@@ -189,7 +189,9 @@ unavailable binding. The binding is read only when closing:
 - `claim` and `settle`: no receiver-authorizer check.
 
 Neither the binding nor a `CloseAuthorization` replaces the facilitator's
-onchain `payee` signature or the client's voucher signature. The server MUST
+onchain `payee` signature or the close voucher the server supplies at settle
+(client-signed in client mode, operator-signed after server enrichment in
+server mode). The server MUST
 reject an open whose binding Memo is not its own key before forwarding the
 deposit. A refund for a channel that is already `Closing` reports that close.
 
@@ -626,7 +628,8 @@ so the resource handler MUST be bypassed, and the payload MUST NOT contain an
 |---|---|---|
 | `type` | string | `"refund"` |
 | `channelConfig` | `ChannelConfig` | Full channel configuration. |
-| `voucher` | `BatchVoucher` | REQUIRED. The server's accepted cumulative amount (`expiresAt` MUST be `0`). |
+| `voucher` | `BatchVoucher` | REQUIRED in client mode. The server's accepted cumulative amount (`expiresAt` MUST be `0`). MUST be absent in server mode on the client-authored payload. |
+| `authorization` | `BatchAuthorization` | REQUIRED in server mode. `authorizedAmount` MUST be `"0"` (close intent). MUST be absent in client mode. |
 | `transaction` | string | Omitted unless retrying after `invalid_batch_settlement_svm_receiver_binding_unavailable` (section 3). Base64 payer-signed `request_close` with `extra.feePayer` as the Solana fee payer. |
 
 ```json
@@ -681,7 +684,7 @@ so the resource handler MUST be bypassed, and the payload MUST NOT contain an
 | `network` | string | yes | CAIP-2 network identifier. |
 | `amount` | string | no | Amount moved onchain; empty for voucher acceptance and `claim`. |
 | `extra.commitmentId` | string | no | MUST be non-empty for voucher acceptance, e.g. `channelId:maxClaimableAmount`. |
-| `extra.chargedAmount` | string | conditional | REQUIRED in client mode and MUST equal `PaymentRequirements.amount`. Absent in server mode, where the client derives the charge from the voucher delta. |
+| `extra.chargedAmount` | string | yes | Actual charge for this request. |
 | `extra.channelState` | `ChannelState` | no | Current channel snapshot. |
 | `extra.voucher` | `BatchVoucher` | conditional | REQUIRED in server mode. This operator-signed cumulative voucher is the receipt. |
 
@@ -697,6 +700,7 @@ A successful voucher-only response is:
   "amount": "",
   "extra": {
     "commitmentId": "<channel-pda>:5000",
+    "chargedAmount": "2000",
     "channelState": {
       "channelId": "<channel-pda>",
       "balance": "100000",
@@ -816,7 +820,8 @@ are:
 | Seal | `closeAuthorization` | `CloseAuthorization` | REQUIRED (section 3). Binds this exact close. |
 | Refund | `type` | string | `"refund"` |
 | Refund | `channelConfig` | `ChannelConfig` | Client-provided channel configuration. |
-| Refund | `voucher` | `BatchVoucher` | Section 4.3. |
+| Refund | `voucher` | `BatchVoucher` | Client mode: section 4.3. Server mode: injected by the server from stored operator state before settle. |
+| Refund | `authorization` | `BatchAuthorization` | Server mode only on the client payload (section 4.3). |
 | Refund | `transaction` | string | Section 4.3. |
 | Refund | `closeAuthorization` | `CloseAuthorization` | Added by the server (section 3). |
 
@@ -828,11 +833,14 @@ by the authenticated resource server because it is a bearer credential for
 that server; it is not a facilitator payment authorization.
 
 For `refund`, the server MUST serialize processing with every paid request and
-other close for the channel, and bypass the resource handler. It MUST reject a
-voucher whose `maxClaimableAmount` differs from its accepted cumulative amount,
-and MUST add a `CloseAuthorization` over that amount before forwarding
-(section 3). Once a sponsored `request_close` confirms, the server MUST reject
-new paid requests for the channel:
+other close for the channel, and bypass the resource handler. In client mode it
+MUST reject a voucher whose `maxClaimableAmount` differs from its accepted
+cumulative amount. In server mode it MUST verify the payer `authorization`
+(`authorizedAmount` `"0"`), MUST reject a client-supplied `voucher`, MUST inject
+the stored operator voucher at the accepted cumulative, and MUST add a
+`CloseAuthorization` over that amount before forwarding (section 3). Once a
+sponsored `request_close` confirms, the server MUST reject new paid requests for
+the channel:
 
 ```json
 {
@@ -1509,7 +1517,9 @@ request, the server MUST:
    `authorization` locally only while its mirrored onchain state is within a
    bounded freshness interval. A missing or stale snapshot MUST fall through
    to facilitator verification, and a successful verification MUST refresh the
-   stored snapshot timestamp.
+   stored snapshot timestamp. For server-mode `refund`, verify the payer proof
+   (`authorizedAmount` `"0"`, fresh `requestId`, expiry) and reject any
+   client-supplied `voucher` before reserving the close.
 4. **No voucher expiry.** The client MUST sign `expiresAt = 0`, and the
    server and facilitator MUST reject any voucher with nonzero `expiresAt`.
    The forced-close grace period already bounds the redemption window after a
@@ -1540,8 +1550,8 @@ request, the server MUST:
    `newCumulative = chargedCumulativeAmount + chargedAmount`. Only after handler
    success, atomically store the new cumulative amount and voucher, then return
    `PAYMENT-RESPONSE` with `transaction == ""`, `extra.commitmentId`,
-   `extra.channelState`, and either client-mode `extra.chargedAmount` or the
-   server-mode operator-signed `extra.voucher`. The server-mode client MUST
+   `extra.chargedAmount`, `extra.channelState`, and in server mode the
+   operator-signed `extra.voucher`. The server-mode client MUST
    verify that voucher against `channelConfig.payerAuthorizer`, derive
    `chargedAmount = voucher.maxClaimableAmount - localConfirmed`, and require
    `0 <= chargedAmount <= PaymentRequirements.amount`. On any mismatch it MUST
