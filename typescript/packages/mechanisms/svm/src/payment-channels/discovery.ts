@@ -8,7 +8,7 @@
 
 import { address, type Address, type Base58EncodedBytes, getBase64Encoder } from "@solana/kit";
 
-import type { FacilitatorSvmSigner } from "../signer";
+import type { PaymentChannelFacilitatorSigner } from "./signer";
 import type { Channel } from "./generated/accounts/channel";
 import { AccountDiscriminator } from "./generated/types/accountDiscriminator";
 import { getChannelDecoder } from "./generated/accounts/channel";
@@ -44,7 +44,7 @@ export interface DiscoveredChannel {
  * by `getProgramAccounts` itself, which only lists accounts owned by the
  * program passed to it.
  *
- * @param signer - Facilitator signer with {@link FacilitatorSvmSigner.getProgramAccounts}
+ * @param signer - Facilitator signer with {@link PaymentChannelFacilitatorSigner.getProgramAccounts}
  * @param network - CAIP-2 network identifier
  * @param rentPayer - Facilitator key to discover channels for (base58)
  * @param programId - Optional payment-channels program id override
@@ -120,7 +120,7 @@ export async function discoverChannelsByPayer(
 }
 
 export async function discoverChannelsByRentPayer(
-  signer: Pick<FacilitatorSvmSigner, "getProgramAccounts">,
+  signer: Pick<PaymentChannelFacilitatorSigner, "getProgramAccounts">,
   network: string,
   rentPayer: string,
   programId?: string,

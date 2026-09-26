@@ -203,9 +203,8 @@ describe("@x402/svm", () => {
       confirmTransaction: async () => {},
     };
 
-    it("allows exact-only signers without getSigner", () => {
+    it("allows exact-only signers", () => {
       expect(exactOnlySigner.getAddresses()).toHaveLength(1);
-      expect(exactOnlySigner.getSigner).toBeUndefined();
     });
 
     it("accepts exact-only signers for ExactSvmScheme", () => {

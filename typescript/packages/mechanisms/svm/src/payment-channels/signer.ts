@@ -12,22 +12,80 @@ export type ChannelAccountSignature = {
   err: unknown;
 };
 
+/** Account info returned by {@link PaymentChannelFacilitatorSigner.getAccountInfo}. */
+export type FacilitatorAccountInfo = {
+  data: [string, string] | string;
+  owner: string;
+  lamports: bigint;
+};
+
+/** One row from {@link PaymentChannelFacilitatorSigner.getProgramAccounts}. */
+export type FacilitatorProgramAccount = {
+  pubkey: Address;
+  account: {
+    data: [string, string];
+    owner: Address;
+  };
+};
+
+type ConfirmedTokenBalance = {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string };
+};
+
+/** Minimal transaction metadata needed by batch payout reconciliation. */
+export type FacilitatorConfirmedTransaction = {
+  slot: bigint | number;
+  meta: {
+    err: unknown;
+    preTokenBalances?: readonly ConfirmedTokenBalance[] | null;
+    postTokenBalances?: readonly ConfirmedTokenBalance[] | null;
+  } | null;
+  transaction: { message: { accountKeys: readonly (string | { pubkey: string })[] } };
+};
+
 /**
- * {@link FacilitatorSvmSigner} narrowed to the caps payment-channel
- * facilitator work requires: reading a channel, a slot, and a blockhash, and
- * resolving a kit signer. Exact-only signers omit these methods, so they stay
- * off the base type. `upto` and batch settlement both use this set.
+ * {@link FacilitatorSvmSigner} plus the reads payment-channel facilitator
+ * work requires: a channel account, a slot, a blockhash, and a kit signer.
+ * Exact-only signers omit these methods. `upto` and batch settlement both
+ * use this set.
  *
- * History reads are optional and are not provided by {@link toFacilitatorSvmSigner}.
- * A batch facilitator with a receiver-authorizer store does not need them.
- * {@link channelHistoryReads} serves them from an RPC. A null `getTransaction`
- * means that open was pruned.
+ * `getProgramAccounts`, `isBlockhashValid`, and `getConfirmedTransaction` stay
+ * optional. History reads are also optional and are not provided by
+ * {@link toFacilitatorSvmSigner}. A batch facilitator with a
+ * receiver-authorizer store does not need them. {@link channelHistoryReads}
+ * serves them from an RPC. A null `getTransaction` means that open was pruned.
  */
 export type PaymentChannelFacilitatorSigner = FacilitatorSvmSigner & {
-  getAccountInfo: NonNullable<FacilitatorSvmSigner["getAccountInfo"]>;
-  getLatestBlockhash: NonNullable<FacilitatorSvmSigner["getLatestBlockhash"]>;
-  getSlot: NonNullable<FacilitatorSvmSigner["getSlot"]>;
   getSigner(feePayer: Address): FacilitatorSigningCapabilities;
+  getAccountInfo(
+    accountAddress: string,
+    network: string,
+    options?: { commitment?: string; encoding?: string; minContextSlot?: bigint },
+  ): Promise<FacilitatorAccountInfo | null>;
+  getLatestBlockhash(network: string): Promise<{
+    blockhash: string;
+    lastValidBlockHeight: bigint;
+  }>;
+  getSlot(network: string, commitment?: string): Promise<bigint>;
+  getProgramAccounts?(
+    network: string,
+    programId: string,
+    config: {
+      commitment?: string;
+      encoding?: string;
+      filters?: readonly unknown[];
+    },
+  ): Promise<readonly FacilitatorProgramAccount[]>;
+  /** Whether a blockhash can still serve as a transaction lifetime. */
+  isBlockhashValid?(blockhash: string, network: string): Promise<boolean>;
+  /** Confirmed transaction evidence used to attribute batch payouts. */
+  getConfirmedTransaction?(
+    signature: string,
+    network: string,
+  ): Promise<FacilitatorConfirmedTransaction | null>;
   getSignaturesForAddress?(
     accountAddress: string,
     network: string,
@@ -56,8 +114,9 @@ export function assertPaymentChannelFacilitatorSigner(
   signer: FacilitatorSvmSigner,
   label: string,
 ): asserts signer is PaymentChannelFacilitatorSigner {
+  const candidate = signer as FacilitatorSvmSigner & Record<string, unknown>;
   for (const method of PAYMENT_CHANNEL_FACILITATOR_METHODS) {
-    if (typeof signer[method] !== "function") {
+    if (typeof candidate[method] !== "function") {
       throw new Error(`${label} requires ${method} on the signer.`);
     }
   }

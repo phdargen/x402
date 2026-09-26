@@ -30,14 +30,13 @@ export { toClientSvmSigner, toFacilitatorSvmSigner } from "./signer";
 export type {
   ClientSvmSigner,
   FacilitatorSvmSigner,
-  FacilitatorAccountInfo,
-  FacilitatorProgramAccount,
   FacilitatorSimulateTransactionOptions,
   FacilitatorRpcClient,
   FacilitatorRpcConfig,
   ClientSvmConfig,
   SvmInnerInstructionsResult,
 } from "./signer";
+export type { FacilitatorAccountInfo, FacilitatorProgramAccount } from "./payment-channels/signer";
 
 // Export payload types
 export type { ExactSvmPayloadV1, ExactSvmPayloadV2, UptoSvmPayloadV2 } from "./types";
