@@ -1,5 +1,5 @@
 ---
-"@x402/svm": minor
+"@x402/svm": patch
 ---
 
-Payment-channel RPC (`getSigner`, `getAccountInfo`, `getLatestBlockhash`, `getSlot`, and the optional `getProgramAccounts`, `isBlockhashValid`, and `getConfirmedTransaction`) now lives on `PaymentChannelFacilitatorSigner` instead of `FacilitatorSvmSigner`. `toFacilitatorSvmSigner()` still provides those reads. Exact-only signers no longer include them.
+Batch settlement validates payment-channel signer capabilities at construction and records confirmation slots via a signer proxy, removing scattered runtime checks and the `submissionSigner()` wrapper.

@@ -37,7 +37,6 @@ import {
   type ExpectedOpenChannel,
 } from "../../src/payment-channels/facilitator";
 import { MEMO_PROGRAM_ADDRESS, SOLANA_DEVNET_CAIP2 } from "../../src/constants";
-import type { PaymentChannelFacilitatorSigner } from "../../src/payment-channels/signer";
 
 const CHANNEL_ID = USDC_MAINNET_ADDRESS;
 const rpc = {} as ChannelRpc;
@@ -188,7 +187,7 @@ describe("payment-channel transaction submission", () => {
         simulateTransaction: async () => undefined,
         sendTransaction,
         confirmTransaction: vi.fn(),
-      } as PaymentChannelFacilitatorSigner,
+      },
       SOLANA_DEVNET_CAIP2,
       [instruction],
       {
@@ -215,7 +214,7 @@ describe("payment-channel transaction submission", () => {
           simulateTransaction: async () => undefined,
           sendTransaction,
           confirmTransaction: vi.fn(),
-        } as PaymentChannelFacilitatorSigner,
+        },
         SOLANA_DEVNET_CAIP2,
         [instruction],
         {
@@ -268,40 +267,39 @@ describe("payment-channel transaction submission", () => {
     };
     const onBroadcast = vi.fn().mockResolvedValue(undefined);
     await expect(
-      submitChannelTransactionWithSigner(
-        feePayer,
-        signer as PaymentChannelFacilitatorSigner,
-        SOLANA_DEVNET_CAIP2,
-        [instruction],
-        {
-          computeUnitLimit: DEFAULT_SETTLE_COMPUTE_UNIT_LIMIT,
-          onBroadcast,
-        },
-      ),
+      submitChannelTransactionWithSigner(feePayer, signer, SOLANA_DEVNET_CAIP2, [instruction], {
+        computeUnitLimit: DEFAULT_SETTLE_COMPUTE_UNIT_LIMIT,
+        onBroadcast,
+      }),
     ).resolves.toBe(signature);
     expect(signer.simulateTransaction).toHaveBeenCalledOnce();
     expect(onBroadcast).toHaveBeenCalledWith(signature);
     expect(signer.confirmTransaction).toHaveBeenCalledWith(signature, SOLANA_DEVNET_CAIP2);
   });
 
-  it("rejects simulation failures before broadcast", async () => {
+  it("rejects missing blockhash support and simulation failures", async () => {
     const feePayer = await generateKeyPairSigner();
+    const withoutBlockhash = {
+      simulateTransaction: vi.fn(),
+      sendTransaction: vi.fn(),
+      confirmTransaction: vi.fn(),
+    };
+    await expect(
+      submitChannelTransactionWithSigner(feePayer, withoutBlockhash, SOLANA_DEVNET_CAIP2, [
+        instruction,
+      ]),
+    ).rejects.toThrow(/requires getLatestBlockhash/);
+
     const signer = {
+      ...withoutBlockhash,
       getLatestBlockhash: vi.fn().mockResolvedValue({
         blockhash: USDC_MAINNET_ADDRESS,
         lastValidBlockHeight: 1n,
       }),
       simulateTransaction: vi.fn().mockRejectedValue(new Error("bad simulation")),
-      sendTransaction: vi.fn(),
-      confirmTransaction: vi.fn(),
     };
     await expect(
-      submitChannelTransactionWithSigner(
-        feePayer,
-        signer as PaymentChannelFacilitatorSigner,
-        SOLANA_DEVNET_CAIP2,
-        [instruction],
-      ),
+      submitChannelTransactionWithSigner(feePayer, signer, SOLANA_DEVNET_CAIP2, [instruction]),
     ).rejects.toBeInstanceOf(ChannelSimulationError);
     expect(signer.sendTransaction).not.toHaveBeenCalled();
   });
@@ -318,12 +316,7 @@ describe("payment-channel transaction submission", () => {
       confirmTransaction: vi.fn().mockRejectedValue(new Error("rpc timeout")),
     };
     await expect(
-      submitChannelTransactionWithSigner(
-        feePayer,
-        signer as PaymentChannelFacilitatorSigner,
-        SOLANA_DEVNET_CAIP2,
-        [instruction],
-      ),
+      submitChannelTransactionWithSigner(feePayer, signer, SOLANA_DEVNET_CAIP2, [instruction]),
     ).rejects.toMatchObject({ name: "SettlementConfirmationTimeoutError", signature });
   });
 

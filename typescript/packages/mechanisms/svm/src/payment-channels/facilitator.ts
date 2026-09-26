@@ -52,7 +52,6 @@ import {
   type ServerInstruction,
 } from "./onchain";
 import type { ChannelSplit } from "./open";
-import type { PaymentChannelFacilitatorSigner } from "./signer";
 import type { FacilitatorSvmSigner } from "../signer";
 import { BLOCKHASH_COMMITMENT, STATE_COMMITMENT } from "./commitments";
 import { createRpcClient, TransactionOnchainFailureError } from "../utils";
@@ -564,6 +563,16 @@ export async function submitSettle(
   return signature;
 }
 
+/** The subset of a facilitator signer a channel submission needs. */
+export type ChannelSubmitSigner = {
+  getLatestBlockhash?(
+    network: string,
+  ): Promise<{ blockhash: string; lastValidBlockHeight: bigint }>;
+  simulateTransaction(transaction: string, network: string): Promise<unknown>;
+  sendTransaction(transaction: string, network: string): Promise<string>;
+  confirmTransaction(signature: string, network: string): Promise<unknown>;
+};
+
 /**
  * Thrown when explicit simulation rejects a channel transaction, so the caller
  * can report it as a settlement-simulation failure rather than a generic send
@@ -596,11 +605,17 @@ export class ChannelSimulationError extends Error {
  */
 export async function submitChannelTransactionWithSigner(
   feePayer: PaymentChannelSvmSigner,
-  signer: PaymentChannelFacilitatorSigner,
+  signer: ChannelSubmitSigner,
   network: string,
   instructions: readonly ServerInstruction[],
   options: SubmitSettleOptions = {},
 ): Promise<Signature> {
+  if (typeof signer.getLatestBlockhash !== "function") {
+    throw new Error(
+      "submitChannelTransactionWithSigner requires getLatestBlockhash on the signer. " +
+        "Use toFacilitatorSvmSigner() which provides all required methods.",
+    );
+  }
   const latestBlockhash = options.latestBlockhash ?? (await signer.getLatestBlockhash(network));
   const wire = await buildChannelTransaction(feePayer, latestBlockhash, instructions, options);
   try {

@@ -8,7 +8,7 @@ import { PAYMENT_CHANNELS_PROGRAM_ID } from "../../src/payment-channels/onchain"
 import { findPaymentChannelPda } from "../../src/payment-channels/open";
 import { SOLANA_DEVNET_CAIP2 } from "../../src/constants";
 import { USDC_MAINNET_ADDRESS } from "../../src/defaultAssets";
-import type { PaymentChannelFacilitatorSigner } from "../../src/payment-channels/signer";
+import type { FacilitatorSvmSigner } from "../../src/signer";
 
 /**
  * Builds a channel account whose payer/payee/mint/authorizedSigner/salt/
@@ -66,7 +66,7 @@ async function validDiscoveryChannel(rentPayer: string): Promise<{ pda: string; 
  */
 function stubSigner(
   rows: { pubkey: string; owner: string; data: string }[],
-): Pick<PaymentChannelFacilitatorSigner, "getProgramAccounts"> {
+): Pick<FacilitatorSvmSigner, "getProgramAccounts"> {
   return {
     getProgramAccounts: vi.fn().mockResolvedValue(
       rows.map(row => ({
@@ -74,7 +74,7 @@ function stubSigner(
         pubkey: row.pubkey as Address,
       })),
     ),
-  } as unknown as Pick<PaymentChannelFacilitatorSigner, "getProgramAccounts">;
+  } as unknown as Pick<FacilitatorSvmSigner, "getProgramAccounts">;
 }
 
 describe("discoverChannelsByRentPayer", () => {
