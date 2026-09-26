@@ -52,7 +52,8 @@ import {
   encodeVoucherMessageBytes,
   verifyVoucherSignature,
 } from "../../src/payment-channels/voucher";
-import { type FacilitatorSvmSigner, toFacilitatorSvmSigner } from "../../src/signer";
+import type { PaymentChannelFacilitatorSigner } from "../../src/payment-channels/signer";
+import { toFacilitatorSvmSigner } from "../../src/signer";
 
 const DUMMY_BLOCKHASH = USDC_MAINNET_ADDRESS;
 const MINT = USDC_DEVNET_ADDRESS;
@@ -135,7 +136,7 @@ async function signedVoucher(maxClaimableAmount: bigint, expiresAt = 0): Promise
 }
 
 /** Avoid devnet RPC in verify paths that call `resolveTerms` (mint owner read). */
-function batchFacilitatorSigner(feePayerSigner: typeof feePayer): FacilitatorSvmSigner {
+function batchFacilitatorSigner(feePayerSigner: typeof feePayer): PaymentChannelFacilitatorSigner {
   return {
     ...toFacilitatorSvmSigner(feePayerSigner),
     getAccountInfo: async () => ({
@@ -143,7 +144,7 @@ function batchFacilitatorSigner(feePayerSigner: typeof feePayer): FacilitatorSvm
       lamports: 0n,
       owner: TOKEN_PROGRAM_ADDRESS,
     }),
-  };
+  } as PaymentChannelFacilitatorSigner;
 }
 
 describe("batch-settlement SVM", () => {

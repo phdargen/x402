@@ -6,7 +6,7 @@ import {
 } from "@solana/kit";
 import type { PendingSettlementStore } from "@x402/core/facilitator";
 
-import type { FacilitatorSvmSigner } from "../../signer";
+import type { PaymentChannelFacilitatorSigner } from "../../payment-channels/signer";
 
 /** Batch recovery records must outlive an unresolved transaction. */
 export interface BatchPendingSettlementStore extends PendingSettlementStore {
@@ -120,7 +120,7 @@ export class PayoutAttributionAmbiguousError extends Error {
  * @returns `true` only when the blockhash is invalid and no record of the signature exists
  */
 export async function broadcastExpiredWithoutLanding(
-  signer: Pick<FacilitatorSvmSigner, "isBlockhashValid" | "getConfirmedTransaction">,
+  signer: Pick<PaymentChannelFacilitatorSigner, "isBlockhashValid" | "getConfirmedTransaction">,
   signature: string,
   network: string,
   wire: string | undefined,
