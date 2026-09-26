@@ -36,11 +36,14 @@ import { encodeVoucherMessageBytes, verifyVoucherSignature } from "../../payment
 import { SettlementCache } from "../../settlement-cache";
 import {
   assertPaymentChannelFacilitatorSigner,
-  type FacilitatorAccountInfo,
-  type FacilitatorConfirmedTransaction,
   type PaymentChannelFacilitatorSigner,
 } from "../../payment-channels/signer";
-import type { FacilitatorSigningCapabilities, FacilitatorSvmSigner } from "../../signer";
+import type {
+  FacilitatorAccountInfo,
+  FacilitatorConfirmedTransaction,
+  FacilitatorSigningCapabilities,
+  FacilitatorSvmSigner,
+} from "../../signer";
 import {
   broadcastOpen,
   getChannelDistributionHash,

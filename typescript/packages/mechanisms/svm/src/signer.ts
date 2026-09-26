@@ -147,6 +147,17 @@ export type FacilitatorSvmSigner = {
   getAddresses(): readonly Address[];
 
   /**
+   * Resolve the kit-native signer for a fee-payer address.
+   * Required by schemes that build transactions from instructions (e.g. upto);
+   * wire-level schemes such as exact omit this.
+   *
+   * @param feePayer - Fee payer address
+   * @returns Kit TransactionSigner & MessagePartialSigner for that address
+   * @throws Error if no signer exists for feePayer
+   */
+  getSigner?(feePayer: Address): FacilitatorSigningCapabilities;
+
+  /**
    * Sign a partially-signed transaction with the signer matching feePayer
    * Transaction is decoded, signed, and re-encoded internally
    *
@@ -233,6 +244,12 @@ export type FacilitatorSvmSigner = {
    * @param network - CAIP-2 network identifier
    * @returns Inner instructions from the confirmed transaction, or null if not yet indexed
    */
+  /** Confirmed transaction evidence used to attribute batch payouts. */
+  getConfirmedTransaction?(
+    signature: string,
+    network: string,
+  ): Promise<FacilitatorConfirmedTransaction | null>;
+
   getConfirmedTransactionInnerInstructions?(
     signature: string,
     network: string,
@@ -267,6 +284,88 @@ export type FacilitatorSvmSigner = {
     lookupTableAddresses: string[],
     network: string,
   ): Promise<Record<string, string[]>>;
+
+  /**
+   * Fetch one account's onchain data. Optional — required by the `upto` scheme;
+   * {@link toFacilitatorSvmSigner} provides an implementation.
+   */
+  getAccountInfo?(
+    accountAddress: string,
+    network: string,
+    options?: { commitment?: string; encoding?: string; minContextSlot?: bigint },
+  ): Promise<FacilitatorAccountInfo | null>;
+
+  /**
+   * Fetch a recent blockhash. Optional — required by the `upto` scheme;
+   * {@link toFacilitatorSvmSigner} provides an implementation.
+   */
+  getLatestBlockhash?(network: string): Promise<{
+    blockhash: string;
+    lastValidBlockHeight: bigint;
+  }>;
+
+  /**
+   * Fetch the current slot. Optional — required by the `upto` scheme;
+   * {@link toFacilitatorSvmSigner} provides an implementation.
+   */
+  getSlot?(network: string, commitment?: string): Promise<bigint>;
+
+  /**
+   * Whether a blockhash can still serve as a transaction lifetime. Optional —
+   * lets batch recovery classify a broadcast that was never confirmed as
+   * expired once its blockhash has left the validity window;
+   * {@link toFacilitatorSvmSigner} provides an implementation.
+   */
+  isBlockhashValid?(blockhash: string, network: string): Promise<boolean>;
+
+  /**
+   * Scan program accounts. Optional — required only for `upto` rent-cleanup
+   * discovery sweeps; {@link toFacilitatorSvmSigner} provides an implementation.
+   */
+  getProgramAccounts?(
+    network: string,
+    programId: string,
+    config: {
+      commitment?: string;
+      encoding?: string;
+      filters?: readonly unknown[];
+    },
+  ): Promise<readonly FacilitatorProgramAccount[]>;
+};
+
+/** Token balances from this transaction, never a later account snapshot. */
+export type FacilitatorTokenBalance = {
+  accountIndex: number;
+  mint: string;
+  owner?: string;
+  uiTokenAmount: { amount: string };
+};
+
+/** Minimal transaction metadata needed by batch payout reconciliation. */
+export type FacilitatorConfirmedTransaction = {
+  slot: bigint | number;
+  meta: {
+    err: unknown;
+    preTokenBalances?: readonly FacilitatorTokenBalance[] | null;
+    postTokenBalances?: readonly FacilitatorTokenBalance[] | null;
+  } | null;
+  transaction: { message: { accountKeys: readonly (string | { pubkey: string })[] } };
+};
+
+/** Account info returned by {@link FacilitatorSvmSigner.getAccountInfo}. */
+export type FacilitatorAccountInfo = {
+  data: [string, string] | string;
+  owner: string;
+  lamports: bigint;
+};
+
+/** One row from {@link FacilitatorSvmSigner.getProgramAccounts}. */
+export type FacilitatorProgramAccount = {
+  pubkey: Address;
+  account: {
+    data: [string, string];
+    owner: Address;
+  };
 };
 
 /**
@@ -406,7 +505,7 @@ export type FacilitatorRpcConfig =
  *
  * @param signer - The TransactionSigner (e.g., from createKeyPairSignerFromBytes)
  * @param rpcConfig - Optional RPC configuration (single RPC, per-network map, or config)
- * @returns A FacilitatorSvmSigner
+ * @returns A complete FacilitatorSvmSigner
  *
  * @example
  * ```ts
@@ -469,9 +568,16 @@ export function toFacilitatorSvmSigner(
     return createRpcClient(network as `${string}:${string}`, defaultRpcUrl);
   };
 
-  const facilitator: FacilitatorSvmSigner = {
+  return {
     getAddresses: () => {
       return [signer.address];
+    },
+
+    getSigner: (feePayer: Address) => {
+      if (feePayer !== signer.address) {
+        throw new Error(`No signer for feePayer ${feePayer}. Available: ${signer.address}`);
+      }
+      return signer;
     },
 
     signTransaction: async (transaction: string, feePayer: Address, _: string) => {
@@ -600,6 +706,20 @@ export function toFacilitatorSvmSigner(
       return { innerInstructions: value.innerInstructions ?? null };
     },
 
+    getConfirmedTransaction: async (signature, network) => {
+      const result = await getRpcForNetwork(network)
+        .getTransaction(
+          signature as never,
+          {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+            encoding: "jsonParsed",
+          } as never,
+        )
+        .send();
+      return result as unknown as FacilitatorConfirmedTransaction | null;
+    },
+
     getConfirmedTransactionInnerInstructions: async (
       signature: string,
       network: string,
@@ -673,33 +793,10 @@ export function toFacilitatorSvmSigner(
         );
       }
     },
-  };
 
-  return Object.assign(facilitator, {
-    getSigner: (feePayer: Address) => {
-      if (feePayer !== signer.address) {
-        throw new Error(`No signer for feePayer ${feePayer}. Available: ${signer.address}`);
-      }
-      return signer;
-    },
-    getConfirmedTransaction: async (signature: string, network: string) => {
-      return await getRpcForNetwork(network)
-        .getTransaction(
-          signature as never,
-          {
-            commitment: "confirmed",
-            maxSupportedTransactionVersion: 0,
-            encoding: "jsonParsed",
-          } as never,
-        )
-        .send();
-    },
-    getAccountInfo: async (
-      accountAddress: string,
-      network: string,
-      options?: { commitment?: string; encoding?: string; minContextSlot?: bigint },
-    ) => {
-      const result = await getRpcForNetwork(network)
+    getAccountInfo: async (accountAddress, network, options) => {
+      const rpc = getRpcForNetwork(network);
+      const result = await rpc
         .getAccountInfo(accountAddress as never, {
           commitment: (options?.commitment ?? "confirmed") as never,
           encoding: (options?.encoding ?? "base64") as never,
@@ -708,34 +805,35 @@ export function toFacilitatorSvmSigner(
             : {}),
         })
         .send();
-      return result.value;
+      const value = result.value as FacilitatorAccountInfo | null;
+      return value;
     },
+
     getLatestBlockhash: async (network: string) => {
-      const result = await getRpcForNetwork(network)
-        .getLatestBlockhash({ commitment: "finalized" })
-        .send();
+      const rpc = getRpcForNetwork(network);
+      const result = await rpc.getLatestBlockhash({ commitment: "finalized" }).send();
       return {
         blockhash: result.value.blockhash,
         lastValidBlockHeight: result.value.lastValidBlockHeight,
       };
     },
+
     getSlot: async (network: string, commitment = "finalized") => {
-      return await getRpcForNetwork(network)
-        .getSlot({ commitment: commitment as never })
-        .send();
+      const rpc = getRpcForNetwork(network);
+      return await rpc.getSlot({ commitment: commitment as never }).send();
     },
+
     isBlockhashValid: async (blockhash: string, network: string) => {
-      const result = await getRpcForNetwork(network)
+      const rpc = getRpcForNetwork(network);
+      const result = await rpc
         .isBlockhashValid(blockhash as never, { commitment: "confirmed" })
         .send();
       return result.value;
     },
-    getProgramAccounts: async (
-      network: string,
-      programId: string,
-      config: { commitment?: string; filters?: readonly unknown[] },
-    ) => {
-      return await getRpcForNetwork(network)
+
+    getProgramAccounts: async (network, programId, config) => {
+      const rpc = getRpcForNetwork(network);
+      return await rpc
         .getProgramAccounts(programId as Address, {
           commitment: (config.commitment ?? "confirmed") as never,
           encoding: "base64",
@@ -743,5 +841,5 @@ export function toFacilitatorSvmSigner(
         })
         .send();
     },
-  });
+  };
 }

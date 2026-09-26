@@ -306,8 +306,8 @@ export class UptoSvmScheme implements SchemeNetworkFacilitator {
    *
    * @param signer - Facilitator signer (fee payers / channel rent payers /
    *   zero-share channel payees). `getExtra` randomly selects among
-   *   `signer.getAddresses()`. Must expose the payment-channel reads
-   *   ({@link PaymentChannelFacilitatorSigner.getAccountInfo}, etc.) — typically via
+   *   `signer.getAddresses()`. Must expose the optional read RPC caps
+   *   ({@link FacilitatorSvmSigner.getAccountInfo}, etc.) — typically via
    *   {@link toFacilitatorSvmSigner}.
    * @param config - Optional channel-storage configuration
    */
