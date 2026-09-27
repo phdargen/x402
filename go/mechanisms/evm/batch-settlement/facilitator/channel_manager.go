@@ -285,6 +285,25 @@ func afterClaim(
 	return nil
 }
 
+func rowLookup(
+	ctx context.Context,
+	store storage.ChannelStorage[*FacilitatorChannel],
+	known []*FacilitatorChannel,
+) func(channelID string) (*FacilitatorChannel, error) {
+	rows := make(map[string]*FacilitatorChannel, len(known))
+	for _, row := range known {
+		if row != nil {
+			rows[strings.ToLower(row.ChannelId)] = row
+		}
+	}
+	return func(channelID string) (*FacilitatorChannel, error) {
+		if row := rows[strings.ToLower(channelID)]; row != nil {
+			return row, nil
+		}
+		return store.Get(ctx, channelID)
+	}
+}
+
 func settleTargetClaimDeltas(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
@@ -292,12 +311,7 @@ func settleTargetClaimDeltas(
 	network string,
 	known []*FacilitatorChannel,
 ) ([]storage.SettleTargetClaimDelta, error) {
-	rows := make(map[string]*FacilitatorChannel, len(known))
-	for _, row := range known {
-		if row != nil {
-			rows[strings.ToLower(row.ChannelId)] = row
-		}
-	}
+	lookup := rowLookup(ctx, store, known)
 	type aggregated struct {
 		receiver string
 		token    string
@@ -310,13 +324,9 @@ func settleTargetClaimDeltas(
 		if err != nil {
 			return nil, err
 		}
-		key := strings.ToLower(channelID)
-		stored := rows[key]
-		if stored == nil {
-			stored, err = store.Get(ctx, channelID)
-			if err != nil {
-				return nil, err
-			}
+		stored, err := lookup(channelID)
+		if err != nil {
+			return nil, err
 		}
 		oldClaimed := "0"
 		if stored != nil {
@@ -416,24 +426,16 @@ func SnapshotClaimChargeCounts(
 	known []*FacilitatorChannel,
 ) (counts []uint64, attested map[string]int, err error) {
 	attested = make(map[string]int)
-	rows := make(map[string]*FacilitatorChannel, len(known))
-	for _, row := range known {
-		if row != nil {
-			rows[strings.ToLower(row.ChannelId)] = row
-		}
-	}
+	lookup := rowLookup(ctx, store, known)
 	for _, claim := range claims {
 		channelId, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
 		if err != nil {
 			return nil, nil, err
 		}
 		key := strings.ToLower(channelId)
-		stored := rows[key]
-		if stored == nil {
-			stored, err = store.Get(ctx, channelId)
-			if err != nil {
-				return nil, nil, err
-			}
+		stored, err := lookup(channelId)
+		if err != nil {
+			return nil, nil, err
 		}
 		count := 0
 		if stored != nil {
@@ -572,17 +574,13 @@ func (m *FacilitatorChannelManager) finishClaim(results []FacilitatorClaimResult
 	return results, err
 }
 
-// Settle settles eligible receiver pairs and cleans up when pending reaches zero.
-func (m *FacilitatorChannelManager) Settle(ctx context.Context, opts *FacilitatorSettleOptions) ([]FacilitatorSettleResult, error) {
-	return m.runSettlePass(ctx, opts)
-}
-
 type receiverPendingRead struct {
 	target  storage.SettleTarget
 	pending *big.Int
 }
 
-func (m *FacilitatorChannelManager) runSettlePass(
+// Settle settles eligible receiver pairs and cleans up when pending reaches zero.
+func (m *FacilitatorChannelManager) Settle(
 	ctx context.Context,
 	opts *FacilitatorSettleOptions,
 ) ([]FacilitatorSettleResult, error) {
@@ -622,7 +620,7 @@ func (m *FacilitatorChannelManager) runSettlePass(
 			break
 		}
 	}
-	if m.settleTargetStorage != nil && len(stamp) > 0 {
+	if len(stamp) > 0 {
 		if err := m.settleTargetStorage.StampSettleTargetAttempts(ctx, stamp, now); err != nil {
 			log.Printf("batch-settlement: stamp settle targets: %v", err)
 		}
@@ -734,10 +732,6 @@ func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPe
 }
 
 func (m *FacilitatorChannelManager) syncSettleTarget(ctx context.Context, target storage.SettleTarget, pending *big.Int) {
-	if m.settleTargetStorage == nil {
-		log.Printf("batch-settlement: settle target storage missing during sync")
-		return
-	}
 	if err := m.settleTargetStorage.SyncSettleTargetFromChain(ctx, target, pending); err != nil {
 		log.Printf("batch-settlement: sync settle target: %v", err)
 	}
@@ -751,9 +745,6 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 ) ([]storage.SettleTarget, error) {
 	if budget <= 0 {
 		return nil, nil
-	}
-	if m.settleTargetStorage == nil {
-		return nil, fmt.Errorf("settle target storage is required")
 	}
 	out := make([]storage.SettleTarget, 0, budget)
 	cursor := ""
@@ -843,12 +834,10 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 	ctx context.Context,
 	target storage.SettleTarget,
 ) error {
-	if m.settleTargetStorage != nil {
-		if err := m.settleTargetStorage.DeleteSettleTarget(ctx, target); err != nil {
-			return err
-		}
+	if err := m.settleTargetStorage.DeleteSettleTarget(ctx, target); err != nil {
+		return err
 	}
-	if NormalizeRetention(m.retention) != RetentionWhenUnused {
+	if m.retention != RetentionWhenUnused {
 		return nil
 	}
 	rows, err := storage.QueryChannelsByReceiverToken(ctx, m.storage, target.Network, target.Receiver, target.Token)
@@ -901,21 +890,34 @@ func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *Fa
 
 // Refund cooperatively refunds stored channels with remaining escrow.
 func (m *FacilitatorChannelManager) Refund(ctx context.Context) ([]FacilitatorRefundResult, error) {
-	refundLimit := 100
-	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{Kind: storage.QueryKindIdleRefundable, Limit: &refundLimit}, nil)
-	if err != nil {
-		return nil, err
-	}
-	return m.refundChannels(ctx, page.Items)
-}
-
-// RefundIdleChannels refunds idle channels with a remaining escrow balance.
-func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, idleSecs int) ([]FacilitatorRefundResult, error) {
-	channels, err := m.getIdleChannelsForRefund(ctx, idleSecs)
+	channels, err := m.queryRefundable(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	return m.refundChannels(ctx, channels)
+}
+
+// RefundIdleChannels refunds idle channels with a remaining escrow balance.
+func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, idleSecs int) ([]FacilitatorRefundResult, error) {
+	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
+	channels, err := m.queryRefundable(ctx, &idleAt)
+	if err != nil {
+		return nil, err
+	}
+	return m.refundChannels(ctx, channels)
+}
+
+func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt *int64) ([]*FacilitatorChannel, error) {
+	refundLimit := 100
+	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
+		Kind:           storage.QueryKindIdleRefundable,
+		IdleAtOrBefore: idleAt,
+		Limit:          &refundLimit,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return page.Items, nil
 }
 
 // Start starts claim, settle, and refund interval jobs.
@@ -1060,75 +1062,23 @@ func (m *FacilitatorChannelManager) afterRefund(
 	if response != nil && response.Extra != nil {
 		refunded, _ = response.Extra["channelState"].(map[string]interface{})
 	}
+	attested := 0
 	if len(claims) > 0 {
 		newClaimed := refundClaimedTotal(target.TotalClaimed, claims, refunded)
 		if err := applyClaimedSettleDelta(ctx, m.settleTargetStorage, target.Network, target.ChannelConfig.Receiver, target.ChannelConfig.Token, newClaimed, target.TotalClaimed); err != nil {
 			return err
 		}
-		attested := target.ChargeCount
-		if err := storage.ApplyClaimedTotals(ctx, m.storage, claims, target.Network); err != nil {
-			return err
-		}
-		if _, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
-			if current == nil {
-				return current
-			}
-			next := current.Clone()
-			next.ChargeCount = current.ChargeCount - attested
-			if next.ChargeCount < 0 {
-				next.ChargeCount = 0
-			}
-			return next
-		}); err != nil {
-			return err
-		}
-	}
-
-	if _, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
-		if current == nil {
-			return current
-		}
-		next := current.Clone()
-		if refunded != nil {
-			if v, ok := refunded["balance"].(string); ok {
-				next.Balance = v
-			}
-			if v, ok := refunded["totalClaimed"].(string); ok {
-				next.TotalClaimed = v
-			}
-			if v, ok := refunded["refundNonce"].(string); ok {
-				if n, ok := extraNumber(v); ok {
-					next.RefundNonce = n
-				}
-			} else if n, ok := extraNumber(refunded["refundNonce"]); ok {
-				next.RefundNonce = n
-			} else {
-				next.RefundNonce = current.RefundNonce + 1
-			}
-			if n, ok := extraNumber(refunded["withdrawRequestedAt"]); ok {
-				next.WithdrawRequestedAt = n
+		for _, claim := range claims {
+			if _, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, target.Network); err != nil {
+				return err
 			}
 		}
-		return next
-	}); err != nil {
-		return err
+		attested = target.ChargeCount
 	}
 
 	held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, target.ChannelId)
 	result, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
-		if current == nil {
-			return current
-		}
-		appliedTotalClaimed := current.TotalClaimed
-		if refunded != nil {
-			if v, ok := refunded["totalClaimed"].(string); ok {
-				appliedTotalClaimed = v
-			}
-		}
-		if ShouldDeleteNeverClaimedRefundRow(m.retention, held, current, current.ChargeCount, appliedTotalClaimed) {
-			return nil
-		}
-		return current
+		return applyRefundChannel(current, claims, attested, refunded, held, m.retention)
 	})
 	if err != nil {
 		return err
@@ -1137,6 +1087,74 @@ func (m *FacilitatorChannelManager) afterRefund(
 		_ = m.delegatedAuthStore.Delete(ctx, target.ChannelId, target.Network)
 	}
 	return nil
+}
+
+func applyRefundChannel(
+	current *FacilitatorChannel,
+	claims []batchsettlement.BatchSettlementVoucherClaim,
+	attested int,
+	refunded map[string]interface{},
+	held bool,
+	retention FacilitatorRetention,
+) *FacilitatorChannel {
+	if current == nil {
+		return current
+	}
+	next := current.Clone()
+	if len(claims) > 0 {
+		for _, claim := range claims {
+			applyClaimedAmount(next, claim.TotalClaimed)
+		}
+		next.ChargeCount = current.ChargeCount - attested
+		if next.ChargeCount < 0 {
+			next.ChargeCount = 0
+		}
+	}
+	if refunded != nil {
+		if v, ok := refunded["balance"].(string); ok {
+			next.Balance = v
+		}
+		if v, ok := refunded["totalClaimed"].(string); ok {
+			next.TotalClaimed = v
+		}
+		if v, ok := refunded["refundNonce"].(string); ok {
+			if n, ok := extraNumber(v); ok {
+				next.RefundNonce = n
+			}
+		} else if n, ok := extraNumber(refunded["refundNonce"]); ok {
+			next.RefundNonce = n
+		} else {
+			next.RefundNonce = current.RefundNonce + 1
+		}
+		if n, ok := extraNumber(refunded["withdrawRequestedAt"]); ok {
+			next.WithdrawRequestedAt = n
+		}
+	}
+	appliedTotalClaimed := next.TotalClaimed
+	if refunded != nil {
+		if v, ok := refunded["totalClaimed"].(string); ok {
+			appliedTotalClaimed = v
+		}
+	}
+	if ShouldDeleteNeverClaimedRefundRow(retention, held, next, next.ChargeCount, appliedTotalClaimed) {
+		return nil
+	}
+	return next
+}
+
+func applyClaimedAmount(next *FacilitatorChannel, claimed string) {
+	claimedAmount, ok := new(big.Int).SetString(claimed, 10)
+	if !ok || claimedAmount.Sign() < 0 {
+		return
+	}
+	currentClaimed, ok := new(big.Int).SetString(next.TotalClaimed, 10)
+	if !ok || currentClaimed.Sign() < 0 {
+		return
+	}
+	if claimedAmount.Cmp(currentClaimed) <= 0 {
+		return
+	}
+	next.TotalClaimed = claimedAmount.String()
 }
 
 func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
@@ -1159,29 +1177,6 @@ func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChanne
 	claim.Voucher.Channel = channel.ChannelConfig
 	claim.Voucher.MaxClaimableAmount = channel.SignedMaxClaimable
 	return []batchsettlement.BatchSettlementVoucherClaim{claim}
-}
-
-func (m *FacilitatorChannelManager) getIdleChannelsForRefund(ctx context.Context, idleSecs int) ([]*FacilitatorChannel, error) {
-	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
-	refundLimit := 100
-	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
-		Kind:           storage.QueryKindIdleRefundable,
-		IdleAtOrBefore: &idleAt,
-		Limit:          &refundLimit,
-	}, nil)
-	if err != nil {
-		return nil, err
-	}
-	if m.lockStorage == nil {
-		return page.Items, nil
-	}
-	out := make([]*FacilitatorChannel, 0, len(page.Items))
-	for _, channel := range page.Items {
-		if !channelIsHeld(ctx, m.lockStorage, channel.ChannelId) {
-			out = append(out, channel)
-		}
-	}
-	return out, nil
 }
 
 func (m *FacilitatorChannelManager) startAutoTimerLocked(job autoJob, intervalSecs *int) {
