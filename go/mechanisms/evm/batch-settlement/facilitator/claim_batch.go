@@ -398,19 +398,9 @@ func (m *FacilitatorChannelManager) applyPreflightSettleDelta(
 		return nil
 	}
 	storedClaimed := "0"
-	var stored *FacilitatorChannel
-	for _, row := range rows {
-		if row != nil && strings.EqualFold(row.ChannelId, channelID) {
-			stored = row
-			break
-		}
-	}
-	if stored == nil {
-		loaded, err := m.storage.Get(ctx, channelID)
-		if err != nil {
-			return err
-		}
-		stored = loaded
+	stored, err := rowLookup(ctx, m.storage, rows)(channelID)
+	if err != nil {
+		return err
 	}
 	if stored != nil && stored.TotalClaimed != "" {
 		storedClaimed = stored.TotalClaimed
