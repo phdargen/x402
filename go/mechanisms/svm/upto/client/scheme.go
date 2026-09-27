@@ -123,7 +123,7 @@ func (c *UptoSvmScheme) CreatePaymentPayload(
 		OpenSlot:         openSlot,
 		GracePeriod:      channelConfig.WithdrawDelay,
 		Recipients:       channelConfig.Splits,
-		Memo:             upto.ParseExtraMemo(requirements.Extra[upto.ExtraMemo]),
+		Memo:             paymentchannels.ResolveUptoSvmMemo(requirements.Extra),
 	})
 	if err != nil {
 		return types.PaymentPayload{}, fmt.Errorf(ErrFailedToBuildOpen+": %w", err)
@@ -171,7 +171,7 @@ func (c *UptoSvmScheme) resolveTokenProgram(
 	mint solana.PublicKey,
 	requirements types.PaymentRequirements,
 ) (solana.PublicKey, error) {
-	tokenProgram, hinted, err := upto.ParseTokenProgramHint(requirements.Extra)
+	tokenProgram, hinted, err := paymentchannels.ParseTokenProgramHint(requirements.Extra)
 	if err != nil {
 		return solana.PublicKey{}, fmt.Errorf(ErrUnknownTokenProgram+": %w", err)
 	}
@@ -205,7 +205,7 @@ func (c *UptoSvmScheme) resolveBlockhash(
 		}
 	}
 
-	latest, err := rpcClient.GetLatestBlockhash(ctx, upto.BlockhashCommitment)
+	latest, err := rpcClient.GetLatestBlockhash(ctx, paymentchannels.BlockhashCommitment)
 	if err != nil {
 		return solana.Hash{}, fmt.Errorf(ErrFailedToGetLatestBlockhash+": %w", err)
 	}
@@ -222,7 +222,7 @@ func (c *UptoSvmScheme) resolveOpenSlot(
 		return slot, nil
 	}
 
-	slot, err := rpcClient.GetSlot(ctx, upto.SlotCommitment)
+	slot, err := rpcClient.GetSlot(ctx, paymentchannels.SlotCommitment)
 	if err != nil {
 		return 0, fmt.Errorf(ErrFailedToGetSlot+": %w", err)
 	}

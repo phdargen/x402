@@ -8,6 +8,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTreasuryOwnerPerNetwork(t *testing.T) {
+	assert.Equal(t, devnetTreasuryOwner, TreasuryOwner("solana-devnet"))
+	assert.Equal(t, devnetTreasuryOwner, TreasuryOwner("solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"))
+	assert.Equal(t, mainnetTreasuryOwner, TreasuryOwner("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"))
+}
+
+func TestFindATAUsesTheGivenTokenProgram(t *testing.T) {
+	owner := testKeypair(t).PublicKey()
+	mint := testKeypair(t).PublicKey()
+
+	legacy, err := FindATA(owner, mint, solana.TokenProgramID)
+	require.NoError(t, err)
+	token2022, err := FindATA(owner, mint, solana.Token2022ProgramID)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, legacy, token2022)
+
+	expectedLegacy, _, err := solana.FindAssociatedTokenAddress(owner, mint)
+	require.NoError(t, err)
+	assert.Equal(t, expectedLegacy, legacy)
+}
+
+func TestFindChannelPDAIsSeedSensitive(t *testing.T) {
+	fixture := newOpenFixture(t)
+
+	base, err := FindChannelPDA(
+		fixture.payerKey.PublicKey(), fixture.feePayer, fixture.mint, fixture.authorizer,
+		fixture.salt, fixture.openSlot,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, fixture.built.ChannelID, base)
+
+	otherSalt, err := FindChannelPDA(
+		fixture.payerKey.PublicKey(), fixture.feePayer, fixture.mint, fixture.authorizer,
+		fixture.salt+1, fixture.openSlot,
+	)
+	require.NoError(t, err)
+	assert.NotEqual(t, base, otherSalt)
+
+	otherSlot, err := FindChannelPDA(
+		fixture.payerKey.PublicKey(), fixture.feePayer, fixture.mint, fixture.authorizer,
+		fixture.salt, fixture.openSlot+1,
+	)
+	require.NoError(t, err)
+	assert.NotEqual(t, base, otherSlot)
+}
+
 func TestBuildOpenInstructionAccountLayout(t *testing.T) {
 	fixture := newOpenFixture(t)
 
@@ -165,4 +212,46 @@ func TestBuildReclaimInstruction(t *testing.T) {
 	assert.Equal(t, channel, accounts[0].PublicKey)
 	assert.Equal(t, rentPayer, accounts[1].PublicKey)
 	assert.True(t, accounts[0].IsWritable && accounts[1].IsWritable)
+}
+
+func TestDecodeChannelLayout(t *testing.T) {
+	payer := testKeypair(t).PublicKey()
+	payee := testKeypair(t).PublicKey()
+	authorizedSigner := testKeypair(t).PublicKey()
+	mint := testKeypair(t).PublicKey()
+	rentPayer := testKeypair(t).PublicKey()
+
+	data := make([]byte, ChannelAccountSize)
+	data[0] = ChannelAccountDiscriminator
+	data[3] = byte(StatusSealed)
+	copy(data[4:12], u64LE(11))
+	copy(data[12:20], u64LE(10_000))
+	copy(data[20:28], u64LE(1858))
+	copy(data[52:56], u32LE(3600))
+	copy(data[56:88], make([]byte, 32))
+	copy(data[88:120], payer.Bytes())
+	copy(data[120:152], payee.Bytes())
+	copy(data[152:184], authorizedSigner.Bytes())
+	copy(data[184:216], mint.Bytes())
+	copy(data[216:248], rentPayer.Bytes())
+	copy(data[248:256], u64LE(341_000_000))
+
+	channel, err := DecodeChannel(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, StatusSealed, channel.Status)
+	assert.Equal(t, uint64(11), channel.Salt)
+	assert.Equal(t, uint64(10_000), channel.Deposit)
+	assert.Equal(t, uint64(1858), channel.Settled)
+	assert.Equal(t, uint32(3600), channel.GracePeriod)
+	assert.Equal(t, payer, channel.Payer)
+	assert.Equal(t, payee, channel.Payee)
+	assert.Equal(t, authorizedSigner, channel.AuthorizedSigner)
+	assert.Equal(t, mint, channel.Mint)
+	assert.Equal(t, rentPayer, channel.RentPayer)
+	assert.Equal(t, uint64(341_000_000), channel.OpenSlot)
+
+	data[0] = 0
+	_, err = DecodeChannel(data)
+	require.ErrorContains(t, err, "not a payment channel")
 }

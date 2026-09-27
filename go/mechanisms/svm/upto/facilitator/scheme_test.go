@@ -1143,7 +1143,7 @@ func TestClaimSettleDoesNotCacheRejectedRequests(t *testing.T) {
 	assert.True(t, response.Success)
 }
 
-func TestClaimSettleReleasesTheCacheOnBroadcastFailure(t *testing.T) {
+func TestClaimSettleKeepsTheCacheWhenBroadcastIsUnconfirmed(t *testing.T) {
 	signer := newMockSigner(t, 1)
 	signer.sendErr = errors.New("node is behind")
 	stub := newStubRPC(t)
@@ -1154,14 +1154,15 @@ func TestClaimSettleReleasesTheCacheOnBroadcastFailure(t *testing.T) {
 	_, err := scheme.Settle(
 		context.Background(), fixture.claimPayload(t, 1858), fixture.claimRequirements(1858), nil,
 	)
-	assert.Equal(t, ErrTransactionFailed, settleErrorReason(t, err))
+	assert.Equal(t, ErrSettlementPending, settleErrorReason(t, err))
 
 	signer.sendErr = nil
 	response, err := scheme.Settle(
 		context.Background(), fixture.claimPayload(t, 1858), fixture.claimRequirements(1858), nil,
 	)
-	require.NoError(t, err, "a released cache entry lets the retry proceed")
+	require.NoError(t, err, "the retry reconciles the recorded signature instead of broadcasting again")
 	assert.True(t, response.Success)
+	assert.Empty(t, signer.sentTransactions())
 }
 
 func TestDepositCacheDoesNotBlockTheLaterClaim(t *testing.T) {

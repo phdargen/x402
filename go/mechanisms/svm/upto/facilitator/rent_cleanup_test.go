@@ -403,34 +403,6 @@ func TestCleanupBudgetsTheScanAndReclaimsSeparately(t *testing.T) {
 	})))
 
 	assert.Len(t, harness.reclaims, 4, "reclaims draw on the per-signer budget, not the scan budget")
-	assert.Empty(t, harness.manager.scanCursor, "classifying a record costs no scan budget")
-}
-
-// orderForScan resumes a budget-limited backlog from where the previous pass
-// stopped, so a backlog bigger than MaxTxsPerRun eventually reaches every
-// record instead of only ever reprocessing the same earliest ones. Storage
-// promises no ordering, so the manager sorts first: otherwise the cursor would
-// mean something different on every ChannelStorage implementation.
-func TestOrderForScan(t *testing.T) {
-	sorted := []ChannelRecord{{ChannelID: "a"}, {ChannelID: "b"}, {ChannelID: "c"}}
-	unordered := []ChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}}
-
-	assert.Equal(t, sorted, orderForScan(unordered, ""), "no cursor scans from the start, in order")
-	assert.Equal(t,
-		[]ChannelRecord{{ChannelID: "b"}, {ChannelID: "c"}, {ChannelID: "a"}},
-		orderForScan(unordered, "b"),
-	)
-	assert.Equal(t,
-		[]ChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
-		orderForScan(unordered, "c"),
-	)
-	assert.Equal(t, sorted, orderForScan(unordered, "gone"),
-		"a cursor no longer present scans from the start")
-	assert.Equal(t,
-		[]ChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
-		unordered,
-		"the caller's slice is left alone",
-	)
 }
 
 // TestCleanupResumesScanningFromTheCursorAfterTheBudgetRunsOut proves the
@@ -451,16 +423,15 @@ func TestCleanupResumesScanningFromTheCursorAfterTheBudgetRunsOut(t *testing.T) 
 		MaxTxsPerRun: 1,
 	})))
 	require.Len(t, harness.closes, 1)
-	assert.Contains(t, []string{first.ChannelID, second.ChannelID}, harness.manager.scanCursor)
-	assert.NotEqual(t, harness.closes[0].ChannelID, harness.manager.scanCursor,
-		"the cursor points at the unprocessed record, not the one just closed")
-	cursorAfterFirstPass := harness.manager.scanCursor
+	unprocessed := second.ChannelID
+	if harness.closes[0].ChannelID == second.ChannelID {
+		unprocessed = first.ChannelID
+	}
 
 	require.NoError(t, harness.manager.Cleanup(context.Background(), harness.options(CleanupOptions{})))
-	require.True(t, len(harness.closes) >= 2)
-	assert.Equal(t, cursorAfterFirstPass, harness.closes[1].ChannelID,
-		"the second pass acts on the record the cursor pointed at first")
-	assert.Empty(t, harness.manager.scanCursor, "a pass that scans every remaining record clears the cursor")
+	require.GreaterOrEqual(t, len(harness.closes), 2)
+	assert.Equal(t, unprocessed, harness.closes[1].ChannelID,
+		"the second pass acts on the record the first pass left unprocessed")
 }
 
 func TestCleanupCapsClosesPerRun(t *testing.T) {

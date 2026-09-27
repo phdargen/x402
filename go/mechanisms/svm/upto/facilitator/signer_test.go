@@ -12,7 +12,7 @@ import (
 )
 
 // schemeOnlySigner implements every UptoFacilitatorSigner method and omits
-// GetProgramAccounts, so construction succeeds and Discover panics.
+// GetProgramAccounts, so construction succeeds and Discover reports the gap.
 type schemeOnlySigner struct{}
 
 func (schemeOnlySigner) GetAddresses(context.Context, string) []solana.PublicKey {
@@ -68,7 +68,6 @@ func TestDiscoverRequiresGetProgramAccounts(t *testing.T) {
 		Storage: NewInMemoryChannelStorage(),
 		Network: testNetwork,
 	})
-	assert.PanicsWithValue(t, "RentCleanupManager.Discover requires GetProgramAccounts on the signer", func() {
-		_ = manager.Discover(context.Background(), DiscoveryOptions{})
-	})
+	err := manager.Discover(context.Background(), DiscoveryOptions{})
+	assert.EqualError(t, err, "RentCleanupManager.Discover requires GetProgramAccounts on the signer")
 }
