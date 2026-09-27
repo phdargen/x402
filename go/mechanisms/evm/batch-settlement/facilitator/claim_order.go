@@ -3,10 +3,11 @@ package facilitator
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 )
@@ -25,7 +26,7 @@ type claimSortKey struct {
 	unclaimed  *big.Int
 }
 
-func reportClaimError(opts *FacilitatorClaimOptions, err error, channelID string) {
+func reportClaimError(logger *slog.Logger, opts *FacilitatorClaimOptions, err error, channelID string) {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
@@ -34,13 +35,13 @@ func reportClaimError(opts *FacilitatorClaimOptions, err error, channelID string
 		return
 	}
 	if channelID != "" {
-		log.Printf("batch-settlement: claim channel %s: %v", channelID, err)
+		logger.Error("batch-settlement: claim channel", "channel_id", channelID, "error", err)
 		return
 	}
-	log.Printf("batch-settlement: claim: %v", err)
+	logger.Error("batch-settlement: claim", "error", err)
 }
 
-func reportSettleError(opts *FacilitatorSettleOptions, err error, target *storage.SettleTarget) {
+func reportSettleError(logger *slog.Logger, opts *FacilitatorSettleOptions, err error, target *storage.SettleTarget) {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
@@ -49,10 +50,21 @@ func reportSettleError(opts *FacilitatorSettleOptions, err error, target *storag
 		return
 	}
 	if target != nil {
-		log.Printf("batch-settlement: settle %s %s: %v", target.Receiver, target.Token, err)
+		logger.Error("batch-settlement: settle", "receiver", target.Receiver, "token", target.Token, "network", target.Network, "error", err)
 		return
 	}
-	log.Printf("batch-settlement: settle: %v", err)
+	logger.Error("batch-settlement: settle", "error", err)
+}
+
+func reportRefundError(logger *slog.Logger, onError func(error, string), err error, channelID string) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if onError != nil {
+		onError(err, channelID)
+		return
+	}
+	logger.Error("batch-settlement: refund channel", "channel_id", channelID, "error", err)
 }
 
 // sortClaimRows orders withdraw-pending rows first (earliest request), then
@@ -111,104 +123,64 @@ func (m *FacilitatorChannelManager) loadClaimRows(
 	opts *FacilitatorClaimOptions,
 	maxClaimsPerBatch int,
 ) ([]*FacilitatorChannel, error) {
-	filter, capacity := buildClaimQuery(opts, maxClaimsPerBatch)
-	page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
+	capacity := claimCapacity(opts, maxClaimsPerBatch)
+	query := m.claimRowQuery(ctx, opts)
+	if opts != nil && opts.SelectClaimRows != nil {
+		return opts.SelectClaimRows(ctx, query, capacity)
+	}
+	limit := maxClaimsPerBatch
+	if capacity > 0 {
+		limit = capacity
+	}
+	filter := storage.ChannelQuery{Limit: &limit}
+	if opts != nil {
+		filter.UnclaimedDesc = opts.UnclaimedDesc
+	}
+	items, err := query(filter)
 	if err != nil {
 		return nil, err
 	}
-	items := page.Items
-	reserved := map[string]struct{}{}
 	if capacity > 0 && len(items) > capacity {
-		if opts != nil && opts.OldestFirst {
-			items, reserved, err = m.fillClaimOverflow(ctx, filter, items, capacity)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			items = items[:capacity]
-		}
+		items = items[:capacity]
 	}
-	sortClaimRows(items, reserved)
+	sortClaimRows(items, nil)
 	return items, nil
 }
 
-// fillClaimOverflow keeps every withdraw-pending row, reserves capacity/5 of the
-// oldest idle rows from the probe, and fills the rest from an unclaimed-desc query.
-func (m *FacilitatorChannelManager) fillClaimOverflow(
+func claimCapacity(opts *FacilitatorClaimOptions, maxClaimsPerBatch int) int {
+	if opts != nil && opts.MaxTxsPerRun > 0 {
+		return opts.MaxTxsPerRun * maxClaimsPerBatch
+	}
+	return 0
+}
+
+func (m *FacilitatorChannelManager) claimRowQuery(
 	ctx context.Context,
-	filter storage.ChannelQuery,
-	probe []*FacilitatorChannel,
-	capacity int,
-) ([]*FacilitatorChannel, map[string]struct{}, error) {
-	pending := make([]*FacilitatorChannel, 0)
-	idle := make([]*FacilitatorChannel, 0)
-	for _, row := range probe {
-		if row == nil {
-			continue
+	opts *FacilitatorClaimOptions,
+) func(storage.ChannelQuery) ([]*FacilitatorChannel, error) {
+	return func(q storage.ChannelQuery) ([]*FacilitatorChannel, error) {
+		filter := storage.ChannelQuery{
+			Kind:          storage.QueryKindClaimable,
+			Limit:         q.Limit,
+			Cursor:        q.Cursor,
+			Network:       q.Network,
+			UnclaimedDesc: q.UnclaimedDesc,
+			OldestFirst:   q.OldestFirst,
 		}
-		if row.WithdrawRequestedAt > 0 {
-			pending = append(pending, row)
-			continue
+		if opts != nil {
+			if opts.IdleSecs != nil {
+				idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
+				filter.IdleAtOrBefore = &idleAt
+			}
+			filter.MinUnclaimed = opts.MinUnclaimed
 		}
-		idle = append(idle, row)
-	}
-	sort.SliceStable(idle, func(i, j int) bool {
-		return idle[i].LastRequestTimestamp < idle[j].LastRequestTimestamp
-	})
-	reserveN := capacity / 5
-	if reserveN > len(idle) {
-		reserveN = len(idle)
-	}
-	reservedRows := idle[:reserveN]
-	reserved := make(map[string]struct{}, reserveN)
-	selected := make([]*FacilitatorChannel, 0, capacity)
-	seen := make(map[string]struct{}, capacity)
-	for _, row := range pending {
-		id := strings.ToLower(row.ChannelId)
-		if _, ok := seen[id]; ok {
-			continue
+		page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
+		if err != nil {
+			return nil, err
 		}
-		seen[id] = struct{}{}
-		selected = append(selected, row)
-	}
-	for _, row := range reservedRows {
-		id := strings.ToLower(row.ChannelId)
-		reserved[id] = struct{}{}
-		if _, ok := seen[id]; ok {
-			continue
+		if page == nil {
+			return nil, nil
 		}
-		seen[id] = struct{}{}
-		selected = append(selected, row)
+		return page.Items, nil
 	}
-	fill := capacity - len(selected)
-	if fill <= 0 {
-		return selected, reserved, nil
-	}
-	filter.UnclaimedDesc = true
-	filter.OldestFirst = false
-	limit := capacity
-	filter.Limit = &limit
-	page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	if page == nil {
-		return selected, reserved, nil
-	}
-	for _, row := range page.Items {
-		if row == nil {
-			continue
-		}
-		id := strings.ToLower(row.ChannelId)
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		selected = append(selected, row)
-		fill--
-		if fill == 0 {
-			break
-		}
-	}
-	return selected, reserved, nil
 }

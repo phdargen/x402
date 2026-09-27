@@ -91,14 +91,14 @@ func TestAfterClaim_DoesNotDeleteWhenFullyClaimed(t *testing.T) {
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, RetentionWhenUnused, targets); err != nil {
+	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)
 	if err != nil || got == nil {
 		t.Fatalf("row deleted: %v", err)
 	}
-	page, err := targets.SettleQuery(context.Background(), storage.SettleQuery{Network: afterClaimNetwork, Limit: intPtr(10)})
+	page, err := targets.ListSettleTargets(context.Background(), storage.SettleQuery{Network: afterClaimNetwork, Limit: intPtr(10)})
 	if err != nil || len(page.Items) != 1 {
 		t.Fatalf("settle target upsert: %v items=%d", err, len(page.Items))
 	}
@@ -111,7 +111,7 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	if err := AfterClaim(context.Background(), store, store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), nil, "", targets); err != nil {
+	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)
@@ -186,12 +186,12 @@ type orderLogTargets struct {
 	amounts []string
 }
 
-func (s *orderLogTargets) ApplySettleTargetClaimDelta(ctx context.Context, delta storage.SettleTargetClaimDelta) error {
+func (s *orderLogTargets) RecordClaimed(ctx context.Context, delta storage.SettleTargetClaimDelta) error {
 	*s.log = append(*s.log, "target")
 	if delta.Amount != nil {
 		s.amounts = append(s.amounts, delta.Amount.String())
 	}
-	return s.InMemorySettleTargetStorage.ApplySettleTargetClaimDelta(ctx, delta)
+	return s.InMemorySettleTargetStorage.RecordClaimed(ctx, delta)
 }
 
 func seedChannel(store storage.ChannelStorage[*FacilitatorChannel], channel *FacilitatorChannel) error {

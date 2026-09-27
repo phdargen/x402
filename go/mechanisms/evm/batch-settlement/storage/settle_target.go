@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"math"
 	"math/big"
 	"sort"
 	"strconv"
@@ -13,41 +12,6 @@ import (
 
 const defaultSettleTargetPageSize = 100
 
-// SettleTargetPageCursor encodes lastAttemptAt for settle-target paging.
-type SettleTargetPageCursor struct {
-	LastAttemptAt int64
-	Receiver      string
-	Token         string
-}
-
-// EncodeSettleTargetCursor serializes paging state for settle targets.
-func EncodeSettleTargetCursor(c SettleTargetPageCursor) string {
-	if c.LastAttemptAt == 0 && c.Receiver == "" && c.Token == "" {
-		return ""
-	}
-	return strconv.FormatInt(c.LastAttemptAt, 10) + "|" + strings.ToLower(c.Receiver) + "|" + strings.ToLower(c.Token)
-}
-
-// DecodeSettleTargetCursor parses paging state for settle targets.
-func DecodeSettleTargetCursor(raw string) (SettleTargetPageCursor, bool) {
-	if raw == "" {
-		return SettleTargetPageCursor{}, true
-	}
-	parts := strings.SplitN(raw, "|", 3)
-	if len(parts) != 3 {
-		return SettleTargetPageCursor{}, false
-	}
-	at, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return SettleTargetPageCursor{}, false
-	}
-	return SettleTargetPageCursor{
-		LastAttemptAt: at,
-		Receiver:      parts[1],
-		Token:         parts[2],
-	}, true
-}
-
 // SettleTargetClaimDelta is the claim amount added to a receiver pair.
 type SettleTargetClaimDelta struct {
 	Network  string
@@ -56,17 +20,29 @@ type SettleTargetClaimDelta struct {
 	Amount   *big.Int
 }
 
-// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
-// SettleQuery returns pendingAmount > MinPending (nil means > 0). Sync deletes non-positive pending.
-type SettleTargetStorage interface {
-	SettleQuery(ctx context.Context, filter SettleQuery) (*QueryPage[SettleTarget], error)
-	ApplySettleTargetClaimDelta(ctx context.Context, delta SettleTargetClaimDelta) error
-	DeleteSettleTarget(ctx context.Context, target SettleTarget) error
-	StampSettleTargetAttempts(ctx context.Context, targets []SettleTarget, atMillis int64) error
-	SyncSettleTargetFromChain(ctx context.Context, target SettleTarget, pending *big.Int) error
+// SettleTargetObservation is one onchain pending read for a claimed pair.
+type SettleTargetObservation struct {
+	Target   SettleTarget
+	Pending  *big.Int
+	AtMillis int64
 }
 
-// InMemorySettleTargetStorage is a process-local cache. Each row is keyed by its own network.
+// SettleTargetStorage tracks claimed (network, receiver, token) pairs.
+// ListSettleTargets may treat SettleQuery.MinPending as a filter hint.
+type SettleTargetStorage interface {
+	RecordClaimed(ctx context.Context, delta SettleTargetClaimDelta) error
+	ListSettleTargets(ctx context.Context, q SettleQuery) (*QueryPage[SettleTarget], error)
+	RemoveSettleTarget(ctx context.Context, target SettleTarget) error
+}
+
+// SettleTargetObserver applies onchain pending after a settle read.
+// Stores that do not implement it are left unchanged.
+type SettleTargetObserver interface {
+	ObserveSettlePending(ctx context.Context, obs []SettleTargetObservation) error
+}
+
+// InMemorySettleTargetStorage is a process-local cache keyed by network, receiver, and token.
+// Pending amounts keep full uint256 precision. Pass it explicitly; nil manager config derives targets from channels.
 type InMemorySettleTargetStorage struct {
 	mu      sync.Mutex
 	entries map[string]*inMemorySettleTargetEntry
@@ -76,11 +52,12 @@ type inMemorySettleTargetEntry struct {
 	network       string
 	receiver      string
 	token         string
-	pendingAmount int64
+	pendingAmount *big.Int
 	lastAttemptAt int64
 }
 
 var _ SettleTargetStorage = (*InMemorySettleTargetStorage)(nil)
+var _ SettleTargetObserver = (*InMemorySettleTargetStorage)(nil)
 
 func NewInMemorySettleTargetStorage() *InMemorySettleTargetStorage {
 	return &InMemorySettleTargetStorage{
@@ -92,17 +69,13 @@ func settleTargetKey(network, receiver, token string) string {
 	return strings.ToLower(network) + ":" + strings.ToLower(receiver) + ":" + strings.ToLower(token)
 }
 
-func (s *InMemorySettleTargetStorage) SettleQuery(
+func (s *InMemorySettleTargetStorage) ListSettleTargets(
 	_ context.Context,
 	filter SettleQuery,
 ) (*QueryPage[SettleTarget], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	type row struct {
-		target SettleTarget
-		at     int64
-	}
-	rows := make([]row, 0, len(s.entries))
+	rows := make([]settleCursorRow, 0, len(s.entries))
 	for _, entry := range s.entries {
 		if !pendingAboveMin(entry.pendingAmount, filter.MinPending) {
 			continue
@@ -110,7 +83,7 @@ func (s *InMemorySettleTargetStorage) SettleQuery(
 		if filter.Network != "" && !strings.EqualFold(entry.network, filter.Network) {
 			continue
 		}
-		rows = append(rows, row{
+		rows = append(rows, settleCursorRow{
 			target: SettleTarget{
 				Network:  entry.network,
 				Receiver: entry.receiver,
@@ -128,30 +101,10 @@ func (s *InMemorySettleTargetStorage) SettleQuery(
 		}
 		return rows[i].target.Token < rows[j].target.Token
 	})
-	cursor, ok := DecodeSettleTargetCursor(filter.Cursor)
-	if !ok {
+	if _, _, _, ok := decodeSettleTargetCursor(filter.Cursor); !ok {
 		return &QueryPage[SettleTarget]{Items: []SettleTarget{}}, nil
 	}
-	start := 0
-	if cursor.LastAttemptAt != 0 || cursor.Receiver != "" || cursor.Token != "" {
-		for i, row := range rows {
-			if row.at > cursor.LastAttemptAt {
-				start = i
-				break
-			}
-			if row.at == cursor.LastAttemptAt {
-				ki := row.target.Receiver + ":" + row.target.Token
-				ck := strings.ToLower(cursor.Receiver) + ":" + strings.ToLower(cursor.Token)
-				if ki > ck {
-					start = i
-					break
-				}
-			}
-			if i == len(rows)-1 {
-				start = len(rows)
-			}
-		}
-	}
+	start := settleTargetCursorIndex(rows, filter.Cursor)
 	limit := settleQueryLimit(filter.Limit)
 	end := start + limit
 	if end > len(rows) {
@@ -164,11 +117,7 @@ func (s *InMemorySettleTargetStorage) SettleQuery(
 	out := &QueryPage[SettleTarget]{Items: items}
 	if end < len(rows) && len(items) > 0 {
 		last := rows[end-1]
-		out.Cursor = EncodeSettleTargetCursor(SettleTargetPageCursor{
-			LastAttemptAt: last.at,
-			Receiver:      last.target.Receiver,
-			Token:         last.target.Token,
-		})
+		out.Cursor = encodeSettleTargetCursor(last.at, last.target.Receiver, last.target.Token)
 	}
 	return out, nil
 }
@@ -180,7 +129,7 @@ func settleQueryLimit(limit *int) int {
 	return *limit
 }
 
-func (s *InMemorySettleTargetStorage) ApplySettleTargetClaimDelta(
+func (s *InMemorySettleTargetStorage) RecordClaimed(
 	_ context.Context,
 	delta SettleTargetClaimDelta,
 ) error {
@@ -197,94 +146,99 @@ func (s *InMemorySettleTargetStorage) ApplySettleTargetClaimDelta(
 			network:       delta.Network,
 			receiver:      strings.ToLower(delta.Receiver),
 			token:         strings.ToLower(delta.Token),
+			pendingAmount: new(big.Int),
 			lastAttemptAt: now,
 		}
 		s.entries[key] = entry
 	}
-	entry.pendingAmount = saturateAddInt64(entry.pendingAmount, delta.Amount)
+	if entry.pendingAmount == nil {
+		entry.pendingAmount = new(big.Int)
+	}
+	entry.pendingAmount = new(big.Int).Add(entry.pendingAmount, delta.Amount)
 	return nil
 }
 
-func (s *InMemorySettleTargetStorage) DeleteSettleTarget(_ context.Context, target SettleTarget) error {
+func (s *InMemorySettleTargetStorage) RemoveSettleTarget(_ context.Context, target SettleTarget) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.entries, settleTargetKey(target.Network, target.Receiver, target.Token))
 	return nil
 }
 
-func (s *InMemorySettleTargetStorage) StampSettleTargetAttempts(_ context.Context, targets []SettleTarget, atMillis int64) error {
+func (s *InMemorySettleTargetStorage) ObserveSettlePending(_ context.Context, obs []SettleTargetObservation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, target := range targets {
-		entry := s.entries[settleTargetKey(target.Network, target.Receiver, target.Token)]
-		if entry != nil {
-			entry.lastAttemptAt = atMillis
+	for _, item := range obs {
+		key := settleTargetKey(item.Target.Network, item.Target.Receiver, item.Target.Token)
+		if item.Pending == nil || item.Pending.Sign() <= 0 {
+			delete(s.entries, key)
+			continue
 		}
+		entry := s.entries[key]
+		if entry == nil {
+			entry = &inMemorySettleTargetEntry{
+				network:  item.Target.Network,
+				receiver: strings.ToLower(item.Target.Receiver),
+				token:    strings.ToLower(item.Target.Token),
+			}
+			s.entries[key] = entry
+		}
+		entry.pendingAmount = new(big.Int).Set(item.Pending)
+		entry.lastAttemptAt = item.AtMillis
 	}
 	return nil
 }
 
-func (s *InMemorySettleTargetStorage) SyncSettleTargetFromChain(
-	_ context.Context,
-	target SettleTarget,
-	pending *big.Int,
-) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := settleTargetKey(target.Network, target.Receiver, target.Token)
-	entry := s.entries[key]
+func pendingAboveMin(pending, minPending *big.Int) bool {
 	if pending == nil || pending.Sign() <= 0 {
-		delete(s.entries, key)
-		return nil
-	}
-	if entry == nil {
-		entry = &inMemorySettleTargetEntry{
-			network:  target.Network,
-			receiver: strings.ToLower(target.Receiver),
-			token:    strings.ToLower(target.Token),
-		}
-		s.entries[key] = entry
-	}
-	entry.pendingAmount = SaturatedInt64(pending)
-	entry.lastAttemptAt = time.Now().UnixMilli()
-	return nil
-}
-
-func saturateAddInt64(current int64, delta *big.Int) int64 {
-	if delta == nil || delta.Sign() <= 0 {
-		return current
-	}
-	if !delta.IsInt64() {
-		return math.MaxInt64
-	}
-	add := delta.Int64()
-	if current > math.MaxInt64-add {
-		return math.MaxInt64
-	}
-	return current + add
-}
-
-// SaturatedInt64 converts a non-negative amount to int64, saturating at math.MaxInt64.
-func SaturatedInt64(v *big.Int) int64 {
-	if v == nil || v.Sign() <= 0 {
-		return 0
-	}
-	if !v.IsInt64() {
-		return math.MaxInt64
-	}
-	return v.Int64()
-}
-
-// pendingAboveMin reports pending > minPending. A threshold above MaxInt64 matches nothing.
-func pendingAboveMin(pending int64, minPending *big.Int) bool {
-	if pending <= 0 {
 		return false
 	}
 	if minPending == nil {
 		return true
 	}
-	if !minPending.IsInt64() {
-		return false
+	return pending.Cmp(minPending) > 0
+}
+
+type settleCursorRow struct {
+	target SettleTarget
+	at     int64
+}
+
+func settleTargetCursorIndex(rows []settleCursorRow, raw string) int {
+	at, receiver, token, ok := decodeSettleTargetCursor(raw)
+	if !ok || (at == 0 && receiver == "" && token == "") {
+		return 0
 	}
-	return pending > minPending.Int64()
+	for i, row := range rows {
+		if row.at > at {
+			return i
+		}
+		if row.at == at {
+			ki := row.target.Receiver + ":" + row.target.Token
+			ck := receiver + ":" + token
+			if ki > ck {
+				return i
+			}
+		}
+	}
+	return len(rows)
+}
+
+func encodeSettleTargetCursor(at int64, receiver, token string) string {
+	return strconv.FormatInt(at, 10) + "|" + strings.ToLower(receiver) + "|" + strings.ToLower(token)
+}
+
+func decodeSettleTargetCursor(raw string) (int64, string, string, bool) {
+	if raw == "" {
+		return 0, "", "", true
+	}
+	parts := strings.SplitN(raw, "|", 3)
+	if len(parts) != 3 {
+		return 0, "", "", false
+	}
+	at, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, "", "", false
+	}
+	return at, strings.ToLower(parts[1]), strings.ToLower(parts[2]), true
 }

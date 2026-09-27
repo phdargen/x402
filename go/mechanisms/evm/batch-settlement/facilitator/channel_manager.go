@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"strings"
 
@@ -103,9 +103,11 @@ type FacilitatorChannelManagerConfig struct {
 	Retention           FacilitatorRetention
 	Context             *x402.FacilitatorContext
 	DelegatedAuthStore  storage.DelegatedAuthStore
-	// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
-	// Nil defaults to an in-memory cache.
+	// SettleTargetStorage tracks claimed (network, receiver, token) pairs.
+	// Nil derives pairs from channel rows with totalClaimed > 0.
 	SettleTargetStorage storage.SettleTargetStorage
+	// Logger receives facilitator events. Nil uses slog.Default().
+	Logger *slog.Logger
 }
 
 // FacilitatorClaimOptions is optional batching and idle filter for Claim.
@@ -117,14 +119,22 @@ type FacilitatorClaimOptions struct {
 	MinUnclaimed *string
 	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
 	UnclaimedDesc bool
-	// MaxTxsPerRun caps claim transactions per run. With OldestFirst, the query
-	// limit is MaxTxsPerRun * MaxClaimsPerBatch and overflow re-queries UnclaimedDesc.
+	// MaxTxsPerRun caps claim transactions per run. The default selector reads
+	// at most MaxTxsPerRun * MaxClaimsPerBatch rows.
 	MaxTxsPerRun int
-	// OldestFirst selects claimable rows oldest lastRequestTimestamp first.
-	OldestFirst bool
+	// SelectClaimRows overrides claim selection. Nil queries up to capacity,
+	// then orders withdraw-pending rows ahead of the highest unclaimed.
+	SelectClaimRows func(ctx context.Context, query func(storage.ChannelQuery) ([]*FacilitatorChannel, error), capacity int) ([]*FacilitatorChannel, error)
 	// OnError receives a batch failure. channelID is empty for a batch-level
 	// failure and set for a row isolated by bisect. Nil logs the error.
 	OnError func(err error, channelID string)
+}
+
+// FacilitatorRefundOptions bounds one idle-refund pass. IdleSecs must be > 0.
+type FacilitatorRefundOptions struct {
+	IdleSecs int
+	Limit    int
+	OnError  func(err error, channelID string)
 }
 
 // FacilitatorSettleOptions is optional batching and pending filters for Settle.
@@ -210,17 +220,11 @@ func channelIsHeld(ctx context.Context, lock storage.ChannelLockStorage, channel
 func AfterClaim(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
-	lockStorage storage.ChannelLockStorage,
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	network string,
 	attested map[string]int,
-	authStore storage.DelegatedAuthStore,
-	retention FacilitatorRetention,
 	targetStore storage.SettleTargetStorage,
 ) error {
-	_ = lockStorage
-	_ = authStore
-	_ = NormalizeRetention(retention)
 	return afterClaim(ctx, store, claims, network, attested, targetStore, nil)
 }
 
@@ -244,7 +248,7 @@ func afterClaim(
 			return fmt.Errorf("settle target storage is required")
 		}
 		for _, delta := range deltas {
-			if err := targetStore.ApplySettleTargetClaimDelta(ctx, delta); err != nil {
+			if err := targetStore.RecordClaimed(ctx, delta); err != nil {
 				return err
 			}
 		}
@@ -390,7 +394,7 @@ func applyClaimedSettleDelta(
 	if targets == nil {
 		return fmt.Errorf("settle target storage is required")
 	}
-	return targets.ApplySettleTargetClaimDelta(ctx, storage.SettleTargetClaimDelta{
+	return targets.RecordClaimed(ctx, storage.SettleTargetClaimDelta{
 		Network:  network,
 		Receiver: receiver,
 		Token:    token,
@@ -459,6 +463,7 @@ type FacilitatorChannelManager struct {
 	context             *x402.FacilitatorContext
 	delegatedAuthStore  storage.DelegatedAuthStore
 	settleTargetStorage storage.SettleTargetStorage
+	logger              *slog.Logger
 
 	mu            sync.Mutex
 	timers        map[autoJob]*time.Ticker
@@ -486,7 +491,11 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 	}
 	settleTargets := config.SettleTargetStorage
 	if settleTargets == nil {
-		settleTargets = storage.NewInMemorySettleTargetStorage()
+		settleTargets = storage.NewChannelSettleTargets(config.Storage)
+	}
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 	return &FacilitatorChannelManager{
 		storage:             config.Storage,
@@ -499,6 +508,7 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 		context:             config.Context,
 		delegatedAuthStore:  config.DelegatedAuthStore,
 		settleTargetStorage: settleTargets,
+		logger:              logger,
 		timers:              make(map[autoJob]*time.Ticker),
 		stopChans:           make(map[autoJob]chan struct{}),
 		pendingJobs:         make(map[autoJob]struct{}),
@@ -533,7 +543,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 		txCount := 0
 		for i := 0; i < len(claims); i += maxClaimsPerBatch {
 			if err := ctx.Err(); err != nil {
-				return m.finishClaim(results, err)
+				return results, err
 			}
 			if maxTxsPerRun > 0 && txCount >= maxTxsPerRun {
 				break
@@ -545,15 +555,15 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 			batchResults, err := m.claimSlice(ctx, network, claims[i:end], group, opts)
 			if err != nil {
 				if ctx.Err() != nil {
-					return m.finishClaim(results, ctx.Err())
+					return results, ctx.Err()
 				}
 				var batchErr *batchClaimError
 				if errors.As(err, &batchErr) {
-					reportClaimError(opts, batchErr.err, "")
+					reportClaimError(m.logger, opts, batchErr.err, "")
 					txCount++
 					continue
 				}
-				return m.finishClaim(results, err)
+				return results, err
 			}
 			if len(batchResults) == 0 {
 				continue
@@ -562,16 +572,7 @@ func (m *FacilitatorChannelManager) Claim(ctx context.Context, opts *Facilitator
 			results = append(results, batchResults...)
 		}
 	}
-	return m.finishClaim(results, nil)
-}
-
-func (m *FacilitatorChannelManager) finishClaim(results []FacilitatorClaimResult, err error) ([]FacilitatorClaimResult, error) {
-	if len(results) > 0 {
-		m.mu.Lock()
-		m.pendingSettle = true
-		m.mu.Unlock()
-	}
-	return results, err
+	return results, nil
 }
 
 type receiverPendingRead struct {
@@ -591,7 +592,6 @@ func (m *FacilitatorChannelManager) Settle(
 		return nil, err
 	}
 	if len(targets) == 0 {
-		m.clearPendingSettle()
 		return nil, nil
 	}
 
@@ -601,18 +601,17 @@ func (m *FacilitatorChannelManager) Settle(
 	}
 	toSettle := make([]storage.SettleTarget, 0, receiverBudget)
 	now := time.Now().UnixMilli()
-	stamp := make([]storage.SettleTarget, 0, len(reads))
+	visited := make([]receiverPendingRead, 0, len(reads))
 	for _, row := range reads {
-		stamp = append(stamp, row.target)
+		visited = append(visited, row)
 		if row.pending.Sign() == 0 {
 			if err := m.cleanupSettledPair(ctx, row.target); err != nil {
 				target := row.target
-				reportSettleError(opts, err, &target)
+				reportSettleError(m.logger, opts, err, &target)
 			}
 			continue
 		}
 		if minPending != nil && row.pending.Cmp(minPending) <= 0 {
-			m.syncSettleTarget(ctx, row.target, row.pending)
 			continue
 		}
 		toSettle = append(toSettle, row.target)
@@ -620,13 +619,8 @@ func (m *FacilitatorChannelManager) Settle(
 			break
 		}
 	}
-	if len(stamp) > 0 {
-		if err := m.settleTargetStorage.StampSettleTargetAttempts(ctx, stamp, now); err != nil {
-			log.Printf("batch-settlement: stamp settle targets: %v", err)
-		}
-	}
+	m.observeSettlePending(ctx, visited, now)
 	if len(toSettle) == 0 {
-		m.clearPendingSettle()
 		return nil, nil
 	}
 
@@ -663,10 +657,10 @@ func (m *FacilitatorChannelManager) Settle(
 				if ctx.Err() != nil {
 					return results, ctx.Err()
 				}
-				reportSettleError(opts, err, nil)
+				reportSettleError(m.logger, opts, err, nil)
 				continue
 			}
-			submissions, skipped, err := submitSettleMulticall(ctx, m.signer, x402.Network(network), batch, dataSuffix)
+			submissions, skipped, err := submitSettleMulticall(ctx, m.logger, m.signer, x402.Network(network), batch, dataSuffix)
 			for _, skip := range skipped {
 				target := skip.target
 				if opts != nil && opts.OnError != nil {
@@ -680,7 +674,7 @@ func (m *FacilitatorChannelManager) Settle(
 				if ctx.Err() != nil {
 					return results, ctx.Err()
 				}
-				reportSettleError(opts, err, nil)
+				reportSettleError(m.logger, opts, err, nil)
 				continue
 			}
 			if len(submissions) > 0 {
@@ -693,18 +687,35 @@ func (m *FacilitatorChannelManager) Settle(
 	if err != nil {
 		return results, err
 	}
+	m.observeSettlePending(ctx, confirm, time.Now().UnixMilli())
 	for _, row := range confirm {
 		if row.pending.Sign() != 0 {
-			m.syncSettleTarget(ctx, row.target, row.pending)
 			continue
 		}
 		if err := m.cleanupSettledPair(ctx, row.target); err != nil {
 			target := row.target
-			reportSettleError(opts, err, &target)
+			reportSettleError(m.logger, opts, err, &target)
 		}
 	}
-	m.clearPendingSettle()
 	return results, nil
+}
+
+func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, reads []receiverPendingRead, atMillis int64) {
+	observer, ok := m.settleTargetStorage.(storage.SettleTargetObserver)
+	if !ok || len(reads) == 0 {
+		return
+	}
+	obs := make([]storage.SettleTargetObservation, 0, len(reads))
+	for _, row := range reads {
+		obs = append(obs, storage.SettleTargetObservation{
+			Target:   row.target,
+			Pending:  row.pending,
+			AtMillis: atMillis,
+		})
+	}
+	if err := observer.ObserveSettlePending(ctx, obs); err != nil {
+		m.logger.Warn("batch-settlement: observe settle pending", "error", err)
+	}
 }
 
 func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPerRun, pageSize int, minPending *big.Int) {
@@ -731,12 +742,6 @@ func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPe
 	return maxSettlesPerTx, maxTxsPerRun, pageSize, minPending
 }
 
-func (m *FacilitatorChannelManager) syncSettleTarget(ctx context.Context, target storage.SettleTarget, pending *big.Int) {
-	if err := m.settleTargetStorage.SyncSettleTargetFromChain(ctx, target, pending); err != nil {
-		log.Printf("batch-settlement: sync settle target: %v", err)
-	}
-}
-
 func (m *FacilitatorChannelManager) collectSettleTargetPages(
 	ctx context.Context,
 	pageSize int,
@@ -753,7 +758,7 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 		if budget-len(out) < limit {
 			limit = budget - len(out)
 		}
-		page, err := m.settleTargetStorage.SettleQuery(ctx, storage.SettleQuery{
+		page, err := m.settleTargetStorage.ListSettleTargets(ctx, storage.SettleQuery{
 			Limit:      &limit,
 			Cursor:     cursor,
 			MinPending: minPending,
@@ -797,12 +802,12 @@ func (m *FacilitatorChannelManager) readReceiverPending(
 	out := make([]receiverPendingRead, 0, len(targets))
 	for i, target := range targets {
 		if !results[i].Success() {
-			log.Printf("batch-settlement: settle receiver read failed for %s %s on %s", target.Receiver, target.Token, target.Network)
+			m.logger.Warn("batch-settlement: settle receiver read failed", "receiver", target.Receiver, "token", target.Token, "network", target.Network)
 			continue
 		}
 		totalClaimed, totalSettled, parseErr := parseReceiversMulticallResult(results[i].Result)
 		if parseErr != nil {
-			log.Printf("batch-settlement: settle receiver read failed for %s %s on %s", target.Receiver, target.Token, target.Network)
+			m.logger.Warn("batch-settlement: settle receiver read failed", "receiver", target.Receiver, "token", target.Token, "network", target.Network, "error", parseErr)
 			continue
 		}
 		pending := new(big.Int).Sub(totalClaimed, totalSettled)
@@ -834,7 +839,7 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 	ctx context.Context,
 	target storage.SettleTarget,
 ) error {
-	if err := m.settleTargetStorage.DeleteSettleTarget(ctx, target); err != nil {
+	if err := m.settleTargetStorage.RemoveSettleTarget(ctx, target); err != nil {
 		return err
 	}
 	if m.retention != RetentionWhenUnused {
@@ -869,12 +874,6 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 	return nil
 }
 
-func (m *FacilitatorChannelManager) clearPendingSettle() {
-	m.mu.Lock()
-	m.pendingSettle = false
-	m.mu.Unlock()
-}
-
 // ClaimAndSettle claims eligible vouchers then settles.
 func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *FacilitatorClaimOptions) (claims []FacilitatorClaimResult, settle []FacilitatorSettleResult, err error) {
 	claims, claimErr := m.Claim(ctx, opts)
@@ -888,31 +887,28 @@ func (m *FacilitatorChannelManager) ClaimAndSettle(ctx context.Context, opts *Fa
 	return claims, settle, claimErr
 }
 
-// Refund cooperatively refunds stored channels with remaining escrow.
-func (m *FacilitatorChannelManager) Refund(ctx context.Context) ([]FacilitatorRefundResult, error) {
-	channels, err := m.queryRefundable(ctx, nil)
+// RefundIdleChannels refunds idle channels that still hold escrow.
+// A failure on one channel is reported through OnError and the pass continues.
+func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, opts FacilitatorRefundOptions) ([]FacilitatorRefundResult, error) {
+	if opts.IdleSecs <= 0 {
+		return nil, fmt.Errorf("refund idleSecs must be greater than 0")
+	}
+	idleAt := time.Now().UnixMilli() - int64(opts.IdleSecs)*1000
+	channels, err := m.queryRefundable(ctx, &idleAt, opts.Limit)
 	if err != nil {
 		return nil, err
 	}
-	return m.refundChannels(ctx, channels)
+	return m.refundChannels(ctx, channels, opts.OnError)
 }
 
-// RefundIdleChannels refunds idle channels with a remaining escrow balance.
-func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, idleSecs int) ([]FacilitatorRefundResult, error) {
-	idleAt := time.Now().UnixMilli() - int64(idleSecs)*1000
-	channels, err := m.queryRefundable(ctx, &idleAt)
-	if err != nil {
-		return nil, err
+func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt *int64, limit int) ([]*FacilitatorChannel, error) {
+	if limit <= 0 {
+		limit = 100
 	}
-	return m.refundChannels(ctx, channels)
-}
-
-func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt *int64) ([]*FacilitatorChannel, error) {
-	refundLimit := 100
 	page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
 		Kind:           storage.QueryKindIdleRefundable,
 		IdleAtOrBefore: idleAt,
-		Limit:          &refundLimit,
+		Limit:          &limit,
 	}, nil)
 	if err != nil {
 		return nil, err
@@ -920,55 +916,25 @@ func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt 
 	return page.Items, nil
 }
 
-// Start starts claim, settle, and refund interval jobs.
-func (m *FacilitatorChannelManager) Start(config FacilitatorAutoConfig) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.running {
-		return
-	}
-	m.running = true
-	m.autoConfig = config
-	m.startAutoTimerLocked(autoJobClaim, config.ClaimIntervalSecs)
-	m.startAutoTimerLocked(autoJobSettle, config.SettleIntervalSecs)
-	m.startAutoTimerLocked(autoJobRefund, config.RefundIntervalSecs)
-}
-
-// Stop stops the interval loop. When flush is true, run ClaimAndSettle before returning.
-func (m *FacilitatorChannelManager) Stop(ctx context.Context, flush bool) error {
-	m.mu.Lock()
-	m.running = false
-	for _, ticker := range m.timers {
-		ticker.Stop()
-	}
-	for _, ch := range m.stopChans {
-		close(ch)
-	}
-	m.timers = make(map[autoJob]*time.Ticker)
-	m.stopChans = make(map[autoJob]chan struct{})
-	m.pendingJobs = make(map[autoJob]struct{})
-	cfg := m.autoConfig
-	m.mu.Unlock()
-	if flush {
-		opts := &FacilitatorClaimOptions{}
-		if cfg.MaxClaimsPerBatch > 0 {
-			opts.MaxClaimsPerBatch = cfg.MaxClaimsPerBatch
-		}
-		_, _, err := m.ClaimAndSettle(ctx, opts)
-		return err
-	}
-	return nil
-}
-
-func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels []*FacilitatorChannel) ([]FacilitatorRefundResult, error) {
+func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels []*FacilitatorChannel, onError func(error, string)) ([]FacilitatorRefundResult, error) {
 	results := make([]FacilitatorRefundResult, 0)
 	for _, channel := range channels {
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
+		if channel == nil {
+			continue
+		}
 		if m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channel.ChannelId) {
 			continue
 		}
 		result, err := m.refundChannel(ctx, channel)
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return results, ctx.Err()
+			}
+			reportRefundError(m.logger, onError, err, channel.ChannelId)
+			continue
 		}
 		if result != nil {
 			results = append(results, *result)
@@ -1177,198 +1143,6 @@ func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChanne
 	claim.Voucher.Channel = channel.ChannelConfig
 	claim.Voucher.MaxClaimableAmount = channel.SignedMaxClaimable
 	return []batchsettlement.BatchSettlementVoucherClaim{claim}
-}
-
-func (m *FacilitatorChannelManager) startAutoTimerLocked(job autoJob, intervalSecs *int) {
-	if intervalSecs == nil {
-		return
-	}
-	ticker := time.NewTicker(time.Duration(*intervalSecs) * time.Second)
-	stop := make(chan struct{})
-	m.timers[job] = ticker
-	m.stopChans[job] = stop
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				m.enqueueJob(job)
-			case <-stop:
-				return
-			}
-		}
-	}()
-}
-
-func (m *FacilitatorChannelManager) enqueueJob(job autoJob) {
-	m.mu.Lock()
-	if !m.running {
-		m.mu.Unlock()
-		return
-	}
-	m.pendingJobs[job] = struct{}{}
-	draining := m.drainingJobs
-	m.mu.Unlock()
-	if !draining {
-		go m.drainJobs()
-	}
-}
-
-func (m *FacilitatorChannelManager) drainJobs() {
-	m.mu.Lock()
-	if m.drainingJobs {
-		m.mu.Unlock()
-		return
-	}
-	m.drainingJobs = true
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		m.drainingJobs = false
-		m.mu.Unlock()
-	}()
-
-	for {
-		m.mu.Lock()
-		if !m.running || len(m.pendingJobs) == 0 {
-			m.mu.Unlock()
-			return
-		}
-		job := m.nextPendingJobLocked()
-		if job == "" {
-			m.mu.Unlock()
-			return
-		}
-		delete(m.pendingJobs, job)
-		m.mu.Unlock()
-		m.runAutoJob(job)
-	}
-}
-
-func (m *FacilitatorChannelManager) nextPendingJobLocked() autoJob {
-	for _, job := range autoJobPriority {
-		if _, ok := m.pendingJobs[job]; ok {
-			return job
-		}
-	}
-	return ""
-}
-
-func (m *FacilitatorChannelManager) runAutoJob(job autoJob) {
-	switch job {
-	case autoJobClaim:
-		m.runClaimJob()
-	case autoJobSettle:
-		m.runSettleJob()
-	case autoJobRefund:
-		m.runRefundJob()
-	default:
-		panic("unhandled auto job: " + string(job))
-	}
-}
-
-func (m *FacilitatorChannelManager) runClaimJob() {
-	m.mu.Lock()
-	cfg := m.autoConfig
-	m.mu.Unlock()
-	opts := &FacilitatorClaimOptions{}
-	if cfg.MaxClaimsPerBatch > 0 {
-		opts.MaxClaimsPerBatch = cfg.MaxClaimsPerBatch
-	}
-	if cfg.OnError != nil {
-		onErr := cfg.OnError
-		opts.OnError = func(err error, _ string) { onErr(err) }
-	}
-	results, err := m.Claim(context.Background(), opts)
-	if cfg.OnClaim != nil {
-		for _, result := range results {
-			cfg.OnClaim(result)
-		}
-	}
-	if err != nil && cfg.OnError != nil {
-		cfg.OnError(err)
-	}
-}
-
-func (m *FacilitatorChannelManager) runSettleJob() {
-	m.mu.Lock()
-	pending := m.pendingSettle
-	cfg := m.autoConfig
-	m.mu.Unlock()
-	if !pending {
-		return
-	}
-	opts := &FacilitatorSettleOptions{}
-	if cfg.OnError != nil {
-		onErr := cfg.OnError
-		opts.OnError = func(err error, _ *storage.SettleTarget) { onErr(err) }
-	}
-	results, err := m.Settle(context.Background(), opts)
-	if err != nil {
-		if cfg.OnError != nil {
-			cfg.OnError(err)
-		}
-		return
-	}
-	if cfg.OnSettle != nil {
-		for _, result := range results {
-			cfg.OnSettle(result)
-		}
-	}
-}
-
-func buildClaimQuery(opts *FacilitatorClaimOptions, maxClaimsPerBatch int) (storage.ChannelQuery, int) {
-	filter := storage.ChannelQuery{Kind: storage.QueryKindClaimable}
-	capacity := 0
-	limit := maxClaimsPerBatch
-	if opts != nil && opts.MaxTxsPerRun > 0 {
-		capacity = opts.MaxTxsPerRun * maxClaimsPerBatch
-		if opts.OldestFirst {
-			probe := capacity + 1
-			limit = probe
-		} else {
-			limit = capacity
-		}
-	}
-	filter.Limit = &limit
-	if opts != nil {
-		if opts.IdleSecs != nil {
-			idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
-			filter.IdleAtOrBefore = &idleAt
-		}
-		filter.MinUnclaimed = opts.MinUnclaimed
-		filter.UnclaimedDesc = opts.UnclaimedDesc
-		if opts.OldestFirst && opts.MaxTxsPerRun > 0 {
-			filter.OldestFirst = true
-			filter.UnclaimedDesc = false
-		}
-	}
-	return filter, capacity
-}
-
-func (m *FacilitatorChannelManager) runRefundJob() {
-	m.mu.Lock()
-	cfg := m.autoConfig
-	m.mu.Unlock()
-	var (
-		results []FacilitatorRefundResult
-		err     error
-	)
-	if cfg.RefundIdleSecs != nil {
-		results, err = m.RefundIdleChannels(context.Background(), *cfg.RefundIdleSecs)
-	} else {
-		results, err = m.Refund(context.Background())
-	}
-	if err != nil {
-		if cfg.OnError != nil {
-			cfg.OnError(err)
-		}
-		return
-	}
-	if cfg.OnRefund != nil {
-		for _, result := range results {
-			cfg.OnRefund(result)
-		}
-	}
 }
 
 func (m *FacilitatorChannelManager) resolveBuilderSuffix(

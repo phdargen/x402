@@ -3,7 +3,7 @@ package facilitator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"strings"
 
@@ -188,7 +188,7 @@ func ExecuteSettleBatch(
 	targets []storage.SettleTarget,
 	dataSuffix []byte,
 ) ([]FacilitatorSettleResult, error) {
-	submissions, _, err := submitSettleMulticall(ctx, signer, network, targets, dataSuffix)
+	submissions, _, err := submitSettleMulticall(ctx, slog.Default(), signer, network, targets, dataSuffix)
 	results, _ := settleResultsFromSubmissions(string(network), submissions)
 	return results, err
 }
@@ -222,6 +222,7 @@ func settleResultsFromSubmissions(network string, submissions []settleMulticallS
 
 func submitSettleMulticall(
 	ctx context.Context,
+	logger *slog.Logger,
 	signer evm.FacilitatorEvmSigner,
 	network x402.Network,
 	targets []storage.SettleTarget,
@@ -229,6 +230,9 @@ func submitSettleMulticall(
 ) ([]settleMulticallSubmission, []skippedSettleTarget, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	if len(targets) == 0 {
 		return nil, nil, nil
@@ -251,19 +255,23 @@ func submitSettleMulticall(
 		if len(targets) == 1 {
 			skipErr := x402.NewSettleError(ErrSettleSimulationFailed, "", network, "",
 				fmt.Sprintf("settle simulation failed: %s", evm.TruncateErrorMessage(simErr.Error())))
-			log.Printf("batch-settlement: skipping settle for %s %s on %s after simulation failure: %v",
-				targets[0].Receiver, targets[0].Token, network, skipErr)
+			logger.Warn("batch-settlement: skipping settle after simulation failure",
+				"receiver", targets[0].Receiver,
+				"token", targets[0].Token,
+				"network", string(network),
+				"error", skipErr,
+			)
 			return nil, []skippedSettleTarget{{target: targets[0], err: skipErr}}, nil
 		}
 		mid := len(targets) / 2
 		if mid < 1 {
 			mid = 1
 		}
-		left, leftSkipped, err := submitSettleMulticall(ctx, signer, network, targets[:mid], dataSuffix)
+		left, leftSkipped, err := submitSettleMulticall(ctx, logger, signer, network, targets[:mid], dataSuffix)
 		if err != nil {
 			return left, leftSkipped, err
 		}
-		right, rightSkipped, err := submitSettleMulticall(ctx, signer, network, targets[mid:], dataSuffix)
+		right, rightSkipped, err := submitSettleMulticall(ctx, logger, signer, network, targets[mid:], dataSuffix)
 		if err != nil {
 			return append(left, right...), append(leftSkipped, rightSkipped...), err
 		}

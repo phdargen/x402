@@ -3,6 +3,7 @@ package facilitator
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
@@ -27,6 +28,8 @@ type BatchSettlementEvmSchemeConfig struct {
 	DelegatedAuthStore    storage.DelegatedAuthStore
 	SubmitMode            SubmitMode
 	AuthorizerSubmitter   evm.FacilitatorEvmSigner
+	// Logger receives facilitator events. Nil uses slog.Default().
+	Logger *slog.Logger
 }
 
 type voucherStoreRuntime struct {
@@ -49,6 +52,7 @@ type BatchSettlementEvmScheme struct {
 	voucherStore          *voucherStoreRuntime
 	resolveCallerIdentity ResolveCallerIdentity
 	delegatedAuthStore    storage.DelegatedAuthStore
+	logger                *slog.Logger
 }
 
 // NewBatchSettlementEvmScheme creates a new batch settlement facilitator scheme.
@@ -99,6 +103,7 @@ func NewBatchSettlementEvmSchemeWithConfig(
 		} else {
 			s.delegatedAuthStore = config.DelegatedAuthStore
 		}
+		s.logger = config.Logger
 		if config.VoucherStore != nil {
 			lockStorage := config.VoucherStore.LockStorage
 			if lockStorage == nil && storage.IsChannelLockStorage(config.VoucherStore.Storage) {
@@ -113,7 +118,7 @@ func NewBatchSettlementEvmSchemeWithConfig(
 			}
 			settleTargets := config.VoucherStore.SettleTargetStorage
 			if settleTargets == nil {
-				settleTargets = storage.NewInMemorySettleTargetStorage()
+				settleTargets = storage.NewChannelSettleTargets(config.VoucherStore.Storage)
 			}
 			s.voucherStore = &voucherStoreRuntime{
 				storage:             config.VoucherStore.Storage,
@@ -299,7 +304,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, err
 		}
 		if settled.Success && attested != nil && f.voucherStore != nil {
-			if afterErr := AfterClaim(ctx, f.voucherStore.storage, f.voucherStore.lockStorage, claimPayload.Claims, requirements.Network, attested, f.delegatedAuthStore, f.voucherStore.retention, f.voucherStore.settleTargetStorage); afterErr != nil {
+			if afterErr := AfterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, attested, f.voucherStore.settleTargetStorage); afterErr != nil {
 				return nil, afterErr
 			}
 		}
@@ -356,6 +361,7 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		DelegatedAuthStore:  f.delegatedAuthStore,
 		Retention:           f.voucherStore.retention,
 		SettleTargetStorage: f.voucherStore.settleTargetStorage,
+		Logger:              f.logger,
 	})
 }
 

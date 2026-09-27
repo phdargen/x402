@@ -3,7 +3,6 @@ package facilitator
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/big"
 	"strings"
 	"time"
@@ -60,7 +59,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 ) ([]batchsettlement.BatchSettlementVoucherClaim, error) {
 	filtered, skipped := m.filterClaimAuthorizer(claims)
 	if skipped > 0 {
-		log.Printf("batch-settlement: skipped %d claims on %s with a different receiverAuthorizer", skipped, network)
+		m.logger.Info("batch-settlement: skipped claims with a different receiverAuthorizer", "skipped", skipped, "network", network)
 	}
 	if len(filtered) == 0 {
 		return nil, nil
@@ -93,7 +92,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 			continue
 		}
 		if view.balance.Cmp(view.totalClaimed) <= 0 {
-			log.Printf("batch-settlement: drained channel %s on %s", channelID, network)
+			m.logger.Info("batch-settlement: drained channel", "channel_id", channelID, "network", network)
 			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, rows); err != nil {
 				return nil, err
 			}
@@ -180,17 +179,17 @@ func (m *FacilitatorChannelManager) readClaimChannels(
 		channelResult := results[i*2]
 		withdrawResult := results[i*2+1]
 		if !channelResult.Success() || !withdrawResult.Success() {
-			log.Printf("batch-settlement: claim preflight failed for channel %s on %s", item.key, network)
+			m.logger.Warn("batch-settlement: claim preflight failed", "channel_id", item.key, "network", network)
 			continue
 		}
 		balance, totalClaimed, err := parseChannelsResult(channelResult.Result)
 		if err != nil {
-			log.Printf("batch-settlement: claim preflight failed for channel %s on %s", item.key, network)
+			m.logger.Warn("batch-settlement: claim preflight failed", "channel_id", item.key, "network", network)
 			continue
 		}
 		withdrawAt, err := parsePendingWithdrawAt(withdrawResult.Result)
 		if err != nil {
-			log.Printf("batch-settlement: claim preflight failed for channel %s on %s", item.key, network)
+			m.logger.Warn("batch-settlement: claim preflight failed", "channel_id", item.key, "network", network)
 			continue
 		}
 		out[item.key] = claimChannelView{
@@ -232,7 +231,7 @@ func (m *FacilitatorChannelManager) readMulticall(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		log.Printf("batch-settlement: multicall attempt %d failed on %s", attempt+1, network)
+		m.logger.Warn("batch-settlement: multicall attempt failed", "attempt", attempt+1, "network", network, "error", err)
 	}
 	return nil, last
 }
@@ -311,7 +310,7 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 				return nil, idErr
 			}
 			simErr := fmt.Errorf("claim simulation failed for channel %s on %s", channelID, network)
-			reportClaimError(opts, simErr, channelID)
+			reportClaimError(m.logger, opts, simErr, channelID)
 			if syncErr := m.resyncFailedClaim(ctx, channelID); syncErr != nil {
 				return nil, syncErr
 			}
