@@ -85,11 +85,7 @@ func claimSortKeyFor(row *FacilitatorChannel, reserved map[string]struct{}) clai
 	}
 	unclaimed := new(big.Int)
 	if row != nil {
-		charged, chargedOk := storage.ParseUint256(row.ChargedCumulativeAmount)
-		claimed, claimedOk := storage.ParseUint256(row.TotalClaimed)
-		if chargedOk && claimedOk && charged.Cmp(claimed) > 0 {
-			unclaimed = new(big.Int).Sub(charged, claimed)
-		}
+		unclaimed = storage.UnclaimedAmount(row.Base())
 	}
 	return claimSortKey{class: claimSortUnclaimed, unclaimed: unclaimed}
 }

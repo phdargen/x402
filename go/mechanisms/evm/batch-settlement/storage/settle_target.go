@@ -245,7 +245,7 @@ func (s *InMemorySettleTargetStorage) SyncSettleTargetFromChain(
 		}
 		s.entries[key] = entry
 	}
-	entry.pendingAmount = bigIntToSaturatedInt64(pending)
+	entry.pendingAmount = SaturatedInt64(pending)
 	entry.lastAttemptAt = time.Now().UnixMilli()
 	return nil
 }
@@ -264,7 +264,8 @@ func saturateAddInt64(current int64, delta *big.Int) int64 {
 	return current + add
 }
 
-func bigIntToSaturatedInt64(v *big.Int) int64 {
+// SaturatedInt64 converts a non-negative amount to int64, saturating at math.MaxInt64.
+func SaturatedInt64(v *big.Int) int64 {
 	if v == nil || v.Sign() <= 0 {
 		return 0
 	}
