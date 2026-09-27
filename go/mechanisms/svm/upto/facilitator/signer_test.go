@@ -23,7 +23,7 @@ func (schemeOnlySigner) SignTransaction(context.Context, *solana.Transaction, so
 	return nil
 }
 
-func (schemeOnlySigner) SimulateTransaction(context.Context, *solana.Transaction, string) error {
+func (schemeOnlySigner) SimulateTransaction(context.Context, *solana.Transaction, string, *svm.FacilitatorSimulateTransactionOptions) error {
 	return nil
 }
 
@@ -45,10 +45,6 @@ func (schemeOnlySigner) GetLatestBlockhash(context.Context, string) (solana.Hash
 
 func (schemeOnlySigner) GetSlot(context.Context, string, rpc.CommitmentType) (uint64, error) {
 	return 0, nil
-}
-
-func (schemeOnlySigner) SimulateTransactionWithOpts(context.Context, *solana.Transaction, string, *rpc.SimulateTransactionOpts) error {
-	return nil
 }
 
 var (

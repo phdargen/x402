@@ -6,6 +6,8 @@ import (
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
 func TestTreasuryOwnerPerNetwork(t *testing.T) {
@@ -65,12 +67,15 @@ func TestBuildOpenInstructionAccountLayout(t *testing.T) {
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorizer,
 		TokenProgram:     fixture.tokenProgram,
-		Args: OpenArgs{
+		Args: generated.OpenArgs{
 			Salt:        fixture.salt,
 			Deposit:     fixture.deposit,
 			GracePeriod: fixture.graceSeconds,
 			OpenSlot:    fixture.openSlot,
-			Recipients:  []Split{{Recipient: fixture.payTo.String(), BPS: BasisPointsDenominator}},
+			Recipients: []generated.DistributionEntry{{
+				Recipient: fixture.payTo,
+				Bps:       BasisPointsDenominator,
+			}},
 		},
 	})
 	require.NoError(t, err)
@@ -106,33 +111,54 @@ func TestBuildOpenInstructionAccountLayout(t *testing.T) {
 
 	data, err := instruction.Data()
 	require.NoError(t, err)
-	assert.Equal(t, OpenDiscriminator, data[0])
+	assert.Equal(t, uint8(generated.OpenDiscriminator), data[0])
 	args, err := DecodeOpenArgs(data[1:])
 	require.NoError(t, err)
 	assert.Equal(t, fixture.deposit, args.Deposit)
 	assert.Equal(t, fixture.salt, args.Salt)
 }
 
-func TestBuildSettleAndSealInstruction(t *testing.T) {
+func TestBuildSettleAndSealInstructions(t *testing.T) {
 	channel := testKeypair(t).PublicKey()
 	payee := testKeypair(t).PublicKey()
+	signature := solana.Signature{1}
 
 	tests := []struct {
 		name       string
-		hasVoucher bool
+		voucher    *SettleVoucher
 		wantFlag   byte
+		wantCount  int
+		settleSlot int
 	}{
-		{name: "with voucher", hasVoucher: true, wantFlag: 1},
-		{name: "without voucher", hasVoucher: false, wantFlag: 0},
+		{name: "without voucher", wantFlag: 0, wantCount: 1, settleSlot: 0},
+		{
+			name: "with voucher",
+			voucher: &SettleVoucher{
+				AuthorizedSigner: payee,
+				SignatureBase58:  signature.String(),
+				CumulativeAmount: 1,
+				ExpiresAt:        2,
+			},
+			wantFlag:   1,
+			wantCount:  2,
+			settleSlot: 1,
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			instruction := BuildSettleAndSealInstruction(channel, payee, test.hasVoucher)
+			instructions, err := BuildSettleAndSealInstructions(SettleAndSealBuildArgs{
+				ChannelID: channel,
+				Payee:     payee,
+				Voucher:   test.voucher,
+			})
+			require.NoError(t, err)
+			require.Len(t, instructions, test.wantCount)
 
+			instruction := instructions[test.settleSlot]
 			data, err := instruction.Data()
 			require.NoError(t, err)
-			assert.Equal(t, []byte{SettleAndSealDiscriminator, test.wantFlag}, data)
+			assert.Equal(t, []byte{uint8(generated.SettleAndSealDiscriminator), test.wantFlag}, data)
 
 			accounts := instruction.Accounts()
 			require.Len(t, accounts, 3)
@@ -178,7 +204,7 @@ func TestBuildDistributeInstructionAppendsRecipientAccounts(t *testing.T) {
 
 	data, err := instruction.Data()
 	require.NoError(t, err)
-	assert.Equal(t, DistributeDiscriminator, data[0])
+	assert.Equal(t, uint8(generated.DistributeDiscriminator), data[0])
 	assert.Equal(t, u32LE(1), data[1:5])
 	assert.Equal(t, payTo.Bytes(), data[5:37])
 	assert.Equal(t, u16LE(BasisPointsDenominator), data[37:39])
@@ -205,7 +231,7 @@ func TestBuildReclaimInstruction(t *testing.T) {
 
 	data, err := instruction.Data()
 	require.NoError(t, err)
-	assert.Equal(t, []byte{ReclaimDiscriminator}, data)
+	assert.Equal(t, []byte{uint8(generated.ReclaimDiscriminator)}, data)
 
 	accounts := instruction.Accounts()
 	require.Len(t, accounts, 2)
@@ -222,8 +248,8 @@ func TestDecodeChannelLayout(t *testing.T) {
 	rentPayer := testKeypair(t).PublicKey()
 
 	data := make([]byte, ChannelAccountSize)
-	data[0] = ChannelAccountDiscriminator
-	data[3] = byte(StatusSealed)
+	data[0] = uint8(generated.AccountDiscriminator_Channel)
+	data[3] = byte(generated.ChannelStatus_Sealed)
 	copy(data[4:12], u64LE(11))
 	copy(data[12:20], u64LE(10_000))
 	copy(data[20:28], u64LE(1858))
@@ -239,10 +265,10 @@ func TestDecodeChannelLayout(t *testing.T) {
 	channel, err := DecodeChannel(data)
 	require.NoError(t, err)
 
-	assert.Equal(t, StatusSealed, channel.Status)
+	assert.Equal(t, generated.ChannelStatus_Sealed, generated.ChannelStatus(channel.Status))
 	assert.Equal(t, uint64(11), channel.Salt)
 	assert.Equal(t, uint64(10_000), channel.Deposit)
-	assert.Equal(t, uint64(1858), channel.Settled)
+	assert.Equal(t, uint64(1858), channel.Settlement.Settled)
 	assert.Equal(t, uint32(3600), channel.GracePeriod)
 	assert.Equal(t, payer, channel.Payer)
 	assert.Equal(t, payee, channel.Payee)

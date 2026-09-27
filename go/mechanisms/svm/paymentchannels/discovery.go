@@ -13,11 +13,8 @@ import (
 const (
 	// ChannelAccountSize is the fixed byte length of the channel account layout
 	// this scheme targets. Discovery filters on it via getProgramAccounts.
+	// Byte 0 is the account discriminator; 0 is reserved for uninitialized accounts.
 	ChannelAccountSize = 256
-
-	// ChannelAccountDiscriminator is AccountDiscriminator::Channel. Byte 0 is
-	// reserved for uninitialized accounts.
-	ChannelAccountDiscriminator uint8 = uint8(generated.AccountDiscriminator_Channel)
 
 	// Field offsets into the account layout, past the fixed-width scalar
 	// prefix. Also usable as getProgramAccounts memcmp offsets.
@@ -33,7 +30,7 @@ const (
 // independent of any offchain metadata store.
 type DiscoveredChannel struct {
 	ChannelID solana.PublicKey
-	Channel   Channel
+	Channel   generated.Channel
 }
 
 // ProgramAccountsQuerier lists onchain program accounts. Facilitator signers
@@ -127,7 +124,7 @@ func DiscoverChannelsByRentPayer(
 // could theoretically be tricked into returning: the wrong owner, an
 // undersized or malformed account, or a PDA that does not rederive to the
 // address the account was found at.
-func validateDiscoveredAccount(pubkey, owner solana.PublicKey, data []byte, program solana.PublicKey) (*Channel, bool) {
+func validateDiscoveredAccount(pubkey, owner solana.PublicKey, data []byte, program solana.PublicKey) (*generated.Channel, bool) {
 	if !owner.Equals(program) {
 		return nil, false
 	}

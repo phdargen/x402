@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
 func TestVerifyOpenTransactionAcceptsBuiltOpen(t *testing.T) {
@@ -100,7 +101,7 @@ func TestBuildOpenTransactionHonorsComputeBudgetOverridesAndOptOut(t *testing.T)
 	bareArgs.ComputeUnitPriceMicroLamports = &zeroPrice
 	bare, err := BuildOpenTransaction(bareArgs)
 	require.NoError(t, err)
-	assert.Equal(t, OpenDiscriminator, bare.Transaction.Message.Instructions[0].Data[0],
+	assert.Equal(t, uint8(generated.OpenDiscriminator), bare.Transaction.Message.Instructions[0].Data[0],
 		"a zero limit and price omit the ComputeBudget prefix entirely")
 }
 
@@ -700,17 +701,19 @@ func TestVerifyOpenTransactionRejectsForgedPayerSignature(t *testing.T) {
 }
 
 func TestOpenArgsRoundTrip(t *testing.T) {
-	recipient := testKeypair(t).PublicKey().String()
-	args := OpenArgs{
+	recipient := testKeypair(t).PublicKey()
+	args := generated.OpenArgs{
 		Salt:        7,
 		Deposit:     123456,
 		GracePeriod: 900,
 		OpenSlot:    999,
-		Recipients:  []Split{{Recipient: recipient, BPS: BasisPointsDenominator}},
+		Recipients: []generated.DistributionEntry{{
+			Recipient: recipient,
+			Bps:       BasisPointsDenominator,
+		}},
 	}
 
-	encoded, err := EncodeOpenArgs(args)
-	require.NoError(t, err)
+	encoded := mustBorshEncode(t, args)
 	decoded, err := DecodeOpenArgs(encoded)
 	require.NoError(t, err)
 	assert.Equal(t, args, decoded)

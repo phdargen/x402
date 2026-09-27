@@ -1,7 +1,6 @@
 package paymentchannels
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
@@ -17,67 +16,43 @@ import (
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
-// OpenArgs are the borsh-encoded arguments of the open instruction.
-type OpenArgs struct {
-	Salt        uint64
-	Deposit     uint64
-	GracePeriod uint32
-	OpenSlot    uint64
-	Recipients  []Split
-}
-
-// EncodeOpenArgs serializes the open arguments in program (borsh) order.
-func EncodeOpenArgs(args OpenArgs) ([]byte, error) {
-	encoded, err := generatedOpenArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-	if err := ag_binary.NewBorshEncoder(&buf).Encode(encoded); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
 // DecodeOpenArgs deserializes open arguments, rejecting truncated data and
 // trailing bytes so a client cannot smuggle extra payload past the verifier.
-func DecodeOpenArgs(data []byte) (OpenArgs, error) {
+func DecodeOpenArgs(data []byte) (generated.OpenArgs, error) {
 	decoder := ag_binary.NewBorshDecoder(data)
 	var decoded generated.OpenArgs
 	if err := decoder.Decode(&decoded); err != nil {
-		return OpenArgs{}, fmt.Errorf("open args truncated: %d bytes", len(data))
+		return generated.OpenArgs{}, fmt.Errorf("open args truncated: %d bytes", len(data))
 	}
-	if left := decoder.Remaining(); left != 0 {
-		return OpenArgs{}, fmt.Errorf(
+	if decoder.Remaining() != 0 {
+		return generated.OpenArgs{}, fmt.Errorf(
 			"open args recipient section is %d bytes, expected %d for %d recipients",
 			len(data), uint64(len(decoded.Recipients))*34, len(decoded.Recipients),
 		)
 	}
-	recipients := make([]Split, 0, len(decoded.Recipients))
-	for _, entry := range decoded.Recipients {
-		recipients = append(recipients, Split{Recipient: entry.Recipient.String(), BPS: entry.Bps})
-	}
-	return OpenArgs{
-		Salt:        decoded.Salt,
-		Deposit:     decoded.Deposit,
-		GracePeriod: decoded.GracePeriod,
-		OpenSlot:    decoded.OpenSlot,
-		Recipients:  recipients,
-	}, nil
+	return decoded, nil
 }
 
-func generatedOpenArgs(args OpenArgs) (generated.OpenArgs, error) {
-	entries, err := distributionEntries(args.Recipients)
+func openArgsFromSplits(salt, deposit uint64, gracePeriod uint32, openSlot uint64, recipients []Split) (generated.OpenArgs, error) {
+	entries, err := distributionEntries(recipients)
 	if err != nil {
 		return generated.OpenArgs{}, err
 	}
 	return generated.OpenArgs{
-		Salt:        args.Salt,
-		Deposit:     args.Deposit,
-		GracePeriod: args.GracePeriod,
-		OpenSlot:    args.OpenSlot,
+		Salt:        salt,
+		Deposit:     deposit,
+		GracePeriod: gracePeriod,
+		OpenSlot:    openSlot,
 		Recipients:  entries,
 	}, nil
+}
+
+func splitsFromEntries(entries []generated.DistributionEntry) []Split {
+	splits := make([]Split, len(entries))
+	for i, entry := range entries {
+		splits[i] = Split{Recipient: entry.Recipient.String(), BPS: entry.Bps}
+	}
+	return splits
 }
 
 // OpenInstructionArgs are the accounts and data needed to build open.
@@ -88,7 +63,7 @@ type OpenInstructionArgs struct {
 	Mint             solana.PublicKey
 	AuthorizedSigner solana.PublicKey
 	TokenProgram     solana.PublicKey
-	Args             OpenArgs
+	Args             generated.OpenArgs
 	// Program overrides the payment-channels program id. The zero key uses ProgramID.
 	Program solana.PublicKey
 }
@@ -117,13 +92,8 @@ func BuildOpenInstruction(args OpenInstructionArgs) (solana.Instruction, solana.
 	if err != nil {
 		return nil, solana.PublicKey{}, err
 	}
-	openArgs, err := generatedOpenArgs(args.Args)
-	if err != nil {
-		return nil, solana.PublicKey{}, err
-	}
-
 	instruction, err := generated.NewOpenInstructionBuilder().
-		SetOpenArgs(openArgs).
+		SetOpenArgs(args.Args).
 		SetPayerAccount(args.Payer).
 		SetRentPayerAccount(args.RentPayer).
 		SetPayeeAccount(args.Payee).
@@ -207,6 +177,10 @@ func BuildOpenTransaction(args BuildOpenArgs) (*BuiltOpen, error) {
 		return nil, err
 	}
 
+	openArgs, err := openArgsFromSplits(salt, args.Deposit, args.GracePeriod, args.OpenSlot, args.Recipients)
+	if err != nil {
+		return nil, err
+	}
 	openIx, channelID, err := BuildOpenInstruction(OpenInstructionArgs{
 		Payer:            args.Payer,
 		RentPayer:        args.FeePayer,
@@ -214,13 +188,7 @@ func BuildOpenTransaction(args BuildOpenArgs) (*BuiltOpen, error) {
 		Mint:             args.Mint,
 		AuthorizedSigner: args.AuthorizedSigner,
 		TokenProgram:     args.TokenProgram,
-		Args: OpenArgs{
-			Salt:        salt,
-			Deposit:     args.Deposit,
-			GracePeriod: args.GracePeriod,
-			OpenSlot:    args.OpenSlot,
-			Recipients:  args.Recipients,
-		},
+		Args:             openArgs,
 	})
 	if err != nil {
 		return nil, err
@@ -665,7 +633,7 @@ func VerifyOpenTransaction(transactionBase64 string, expected VerifyOpenExpected
 		return nil, fmt.Errorf("verifyOpenTransaction: address lookup tables are not permitted in an open transaction")
 	}
 
-	openIx, err := findCanonicalOpenInstruction(message, expected, ProgramID, OpenDiscriminator, "open")
+	openIx, err := findCanonicalOpenInstruction(message, expected, ProgramID, uint8(generated.OpenDiscriminator), "open")
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +842,7 @@ func verifyOpenAccountsAndArgs(
 		GracePeriod: args.GracePeriod,
 		OpenSlot:    args.OpenSlot,
 		Salt:        args.Salt,
-		Recipients:  args.Recipients,
+		Recipients:  splitsFromEntries(args.Recipients),
 	}, nil
 }
 
@@ -927,7 +895,7 @@ func verifyOpenPrivileges(
 }
 
 // verifyOpenArgs binds the decoded open arguments to the challenge.
-func verifyOpenArgs(args OpenArgs, expected VerifyOpenExpected) error {
+func verifyOpenArgs(args generated.OpenArgs, expected VerifyOpenExpected) error {
 	if args.Deposit == 0 {
 		return fmt.Errorf("verifyOpenTransaction: deposit must be greater than zero")
 	}
@@ -961,14 +929,15 @@ func verifyOpenArgs(args OpenArgs, expected VerifyOpenExpected) error {
 			)
 		}
 	}
-	if len(args.Recipients) != len(expected.Recipients) {
+	gotRecipients := splitsFromEntries(args.Recipients)
+	if len(gotRecipients) != len(expected.Recipients) {
 		return fmt.Errorf(
 			"verifyOpenTransaction: expected %d distribution recipients, found %d",
-			len(expected.Recipients), len(args.Recipients),
+			len(expected.Recipients), len(gotRecipients),
 		)
 	}
 	for i, want := range expected.Recipients {
-		got := args.Recipients[i]
+		got := gotRecipients[i]
 		if got.Recipient != want.Recipient {
 			return fmt.Errorf(
 				"verifyOpenTransaction: distribution recipient %s != expected %s at index %d",

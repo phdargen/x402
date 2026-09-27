@@ -29,12 +29,6 @@ type PaymentChannelFacilitatorSigner interface {
 	) (*rpc.GetAccountInfoResult, error)
 	GetLatestBlockhash(ctx context.Context, network string) (solana.Hash, uint64, error)
 	GetSlot(ctx context.Context, network string, commitment rpc.CommitmentType) (uint64, error)
-	SimulateTransactionWithOpts(
-		ctx context.Context,
-		tx *solana.Transaction,
-		network string,
-		opts *rpc.SimulateTransactionOpts,
-	) error
 }
 
 // AssertPaymentChannelFacilitatorSigner checks that signer exposes every cap
@@ -49,9 +43,6 @@ func AssertPaymentChannelFacilitatorSigner(signer svm.FacilitatorSvmSigner, labe
 	type slotGetter interface {
 		GetSlot(context.Context, string, rpc.CommitmentType) (uint64, error)
 	}
-	type simWithOpts interface {
-		SimulateTransactionWithOpts(context.Context, *solana.Transaction, string, *rpc.SimulateTransactionOpts) error
-	}
 
 	if _, ok := signer.(accountInfoGetter); !ok {
 		panic(fmt.Sprintf("%s requires GetAccountInfo on the signer", label))
@@ -61,9 +52,6 @@ func AssertPaymentChannelFacilitatorSigner(signer svm.FacilitatorSvmSigner, labe
 	}
 	if _, ok := signer.(slotGetter); !ok {
 		panic(fmt.Sprintf("%s requires GetSlot on the signer", label))
-	}
-	if _, ok := signer.(simWithOpts); !ok {
-		panic(fmt.Sprintf("%s requires SimulateTransactionWithOpts on the signer", label))
 	}
 	return signer.(PaymentChannelFacilitatorSigner)
 }

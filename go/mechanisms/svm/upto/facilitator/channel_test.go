@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
 // Pins the exact schedule, so a change back to `backoffStep << (attempt-1)` fails here.
@@ -161,14 +162,14 @@ func TestVerifyOpenChannelAccountRejectsEveryUnboundTerm(t *testing.T) {
 		{
 			name: "channel already sealed",
 			mutate: func(account *channelAccount, _ *paymentchannels.ExpectedOpenChannel) {
-				account.Status = paymentchannels.StatusSealed
+				account.Status = generated.ChannelStatus_Sealed
 			},
 			wantError: "is not open",
 		},
 		{
 			name: "channel closing",
 			mutate: func(account *channelAccount, _ *paymentchannels.ExpectedOpenChannel) {
-				account.Status = paymentchannels.StatusClosing
+				account.Status = generated.ChannelStatus_Closing
 			},
 			wantError: "is not open",
 		},
@@ -300,7 +301,7 @@ func TestBuildSettleAndDistributeCarriesTheVoucherPrecompile(t *testing.T) {
 
 		seal, err := instructions[1].Data()
 		require.NoError(t, err)
-		assert.Equal(t, []byte{paymentchannels.SettleAndSealDiscriminator, 1}, seal,
+		assert.Equal(t, []byte{uint8(generated.SettleAndSealDiscriminator), 1}, seal,
 			"settle_and_seal must read the voucher from the preceding instruction")
 	})
 
@@ -311,7 +312,7 @@ func TestBuildSettleAndDistributeCarriesTheVoucherPrecompile(t *testing.T) {
 
 		seal, err := instructions[0].Data()
 		require.NoError(t, err)
-		assert.Equal(t, []byte{paymentchannels.SettleAndSealDiscriminator, 0}, seal)
+		assert.Equal(t, []byte{uint8(generated.SettleAndSealDiscriminator), 0}, seal)
 	})
 
 	t.Run("malformed voucher signature", func(t *testing.T) {

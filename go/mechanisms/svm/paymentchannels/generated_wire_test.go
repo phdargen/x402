@@ -17,31 +17,20 @@ import (
 
 func TestGeneratedOpenArgsRoundTrip(t *testing.T) {
 	recipient := testKeypair(t).PublicKey()
-	handwritten := OpenArgs{
+	args := generated.OpenArgs{
 		Salt:        7,
 		Deposit:     123456,
 		GracePeriod: 900,
 		OpenSlot:    999,
-		Recipients:  []Split{{Recipient: recipient.String(), BPS: BasisPointsDenominator}},
-	}
-	encoded, err := EncodeOpenArgs(handwritten)
-	require.NoError(t, err)
-
-	args := generated.OpenArgs{
-		Salt:        handwritten.Salt,
-		Deposit:     handwritten.Deposit,
-		GracePeriod: handwritten.GracePeriod,
-		OpenSlot:    handwritten.OpenSlot,
 		Recipients: []generated.DistributionEntry{{
 			Recipient: recipient,
 			Bps:       BasisPointsDenominator,
 		}},
 	}
-	got := mustBorshEncode(t, args)
-	assert.Equal(t, encoded, got)
+	encoded := mustBorshEncode(t, args)
 
-	var decoded generated.OpenArgs
-	require.NoError(t, ag_binary.NewBorshDecoder(got).Decode(&decoded))
+	decoded, err := DecodeOpenArgs(encoded)
+	require.NoError(t, err)
 	assert.Equal(t, args, decoded)
 }
 
@@ -54,12 +43,15 @@ func TestGeneratedOpenInstructionMatchesLayout(t *testing.T) {
 		Mint:             fixture.mint,
 		AuthorizedSigner: fixture.authorizer,
 		TokenProgram:     fixture.tokenProgram,
-		Args: OpenArgs{
+		Args: generated.OpenArgs{
 			Salt:        fixture.salt,
 			Deposit:     fixture.deposit,
 			GracePeriod: fixture.graceSeconds,
 			OpenSlot:    fixture.openSlot,
-			Recipients:  []Split{{Recipient: fixture.payTo.String(), BPS: BasisPointsDenominator}},
+			Recipients: []generated.DistributionEntry{{
+				Recipient: fixture.payTo,
+				Bps:       BasisPointsDenominator,
+			}},
 		},
 	})
 	require.NoError(t, err)
@@ -118,7 +110,19 @@ func TestGeneratedOpenInstructionMatchesLayout(t *testing.T) {
 func TestGeneratedSettleAndSealAndDistributeMatchLayout(t *testing.T) {
 	channel := testKeypair(t).PublicKey()
 	payee := testKeypair(t).PublicKey()
-	handwritten := BuildSettleAndSealInstruction(channel, payee, true)
+	signature := solana.Signature{1}
+	built, err := BuildSettleAndSealInstructions(SettleAndSealBuildArgs{
+		ChannelID: channel,
+		Payee:     payee,
+		Voucher: &SettleVoucher{
+			AuthorizedSigner: payee,
+			SignatureBase58:  signature.String(),
+			CumulativeAmount: 1,
+			ExpiresAt:        2,
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, built, 2)
 	instruction := generated.NewSettleAndSealInstructionBuilder().
 		SetPayeeAccount(payee).
 		SetChannelAccount(channel).
@@ -126,12 +130,12 @@ func TestGeneratedSettleAndSealAndDistributeMatchLayout(t *testing.T) {
 		SetSettleAndSealArgs(generated.SettleAndSealArgs{HasVoucher: 1}).
 		Build()
 
-	want, err := handwritten.Data()
+	want, err := built[1].Data()
 	require.NoError(t, err)
 	got, err := instruction.Data()
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
-	assertSameAccountMetas(t, handwritten.Accounts(), instruction.Accounts())
+	assertSameAccountMetas(t, built[1].Accounts(), instruction.Accounts())
 
 	mint := testKeypair(t).PublicKey()
 	payer := testKeypair(t).PublicKey()
@@ -196,8 +200,8 @@ func TestGeneratedChannelLayoutMatchesDecoder(t *testing.T) {
 	rentPayer := testKeypair(t).PublicKey()
 
 	data := make([]byte, ChannelAccountSize)
-	data[0] = ChannelAccountDiscriminator
-	data[3] = byte(StatusSealed)
+	data[0] = uint8(generated.AccountDiscriminator_Channel)
+	data[3] = byte(generated.ChannelStatus_Sealed)
 	copy(data[4:12], u64LE(11))
 	copy(data[12:20], u64LE(10_000))
 	copy(data[20:28], u64LE(1858))
@@ -215,11 +219,10 @@ func TestGeneratedChannelLayoutMatchesDecoder(t *testing.T) {
 	var decoded generated.Channel
 	require.NoError(t, ag_binary.NewBorshDecoder(data).Decode(&decoded))
 	assert.Equal(t, channel.Discriminator, decoded.Discriminator)
-	assert.Equal(t, uint8(channel.Status), decoded.Status)
+	assert.Equal(t, channel.Status, decoded.Status)
 	assert.Equal(t, channel.Salt, decoded.Salt)
 	assert.Equal(t, channel.Deposit, decoded.Deposit)
-	assert.Equal(t, channel.Settled, decoded.Settlement.Settled)
-	assert.Equal(t, channel.PayoutWatermark, decoded.Settlement.PayoutWatermark)
+	assert.Equal(t, channel.Settlement, decoded.Settlement)
 	assert.Equal(t, channel.GracePeriod, decoded.GracePeriod)
 	assert.Equal(t, channel.Payer, decoded.Payer)
 	assert.Equal(t, channel.Payee, decoded.Payee)

@@ -16,6 +16,7 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/upto"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
@@ -908,7 +909,7 @@ func TestClaimSettleRejectsAnUnboundChannel(t *testing.T) {
 			name: "channel already sealed",
 			account: func(f *paymentFixture) *channelAccount {
 				account := f.openChannel()
-				account.Status = paymentchannels.StatusSealed
+				account.Status = generated.ChannelStatus_Sealed
 				return &account
 			},
 		},

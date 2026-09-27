@@ -20,12 +20,6 @@ const (
 	// It is a network/SDK constant and must never be negotiated over the wire.
 	ProgramIDBase58 = "CHNLxYvVA28MJP9PrFuDXccuoGXAx7jBacfLEkahyGsX"
 
-	// Instruction discriminators (first data byte) of the payment-channels program.
-	OpenDiscriminator          uint8 = 1
-	SettleAndSealDiscriminator uint8 = 4
-	DistributeDiscriminator    uint8 = 7
-	ReclaimDiscriminator       uint8 = 9
-
 	// Instruction discriminators (first data byte) of the ComputeBudget program.
 	ComputeBudgetSetUnitLimit uint8 = 2
 	ComputeBudgetSetUnitPrice uint8 = 3
@@ -100,60 +94,26 @@ type Split struct {
 	BPS       uint16
 }
 
-// ChannelStatus mirrors the onchain Channel.status values.
-type ChannelStatus uint8
-
-// Onchain channel lifecycle states. Numeric values match the program:
-// Open=0, Sealed=1, Closing=2, Distributed=3.
-const (
-	StatusOpen        ChannelStatus = ChannelStatus(generated.ChannelStatus_Open)
-	StatusSealed      ChannelStatus = ChannelStatus(generated.ChannelStatus_Sealed)
-	StatusClosing     ChannelStatus = ChannelStatus(generated.ChannelStatus_Closing)
-	StatusDistributed ChannelStatus = ChannelStatus(generated.ChannelStatus_Distributed)
-)
-
-// String renders the channel status for logs and errors.
-func (s ChannelStatus) String() string {
-	switch s {
-	case StatusOpen:
+// ChannelStatusString renders a channel status for logs and errors.
+func ChannelStatusString(status generated.ChannelStatus) string {
+	switch status {
+	case generated.ChannelStatus_Open:
 		return "Open"
-	case StatusSealed:
+	case generated.ChannelStatus_Sealed:
 		return "Sealed"
-	case StatusClosing:
+	case generated.ChannelStatus_Closing:
 		return "Closing"
-	case StatusDistributed:
+	case generated.ChannelStatus_Distributed:
 		return "Distributed"
 	default:
-		return fmt.Sprintf("Unknown(%d)", uint8(s))
+		return fmt.Sprintf("Unknown(%d)", uint8(status))
 	}
-}
-
-// Channel is the decoded onchain channel account.
-type Channel struct {
-	Discriminator    uint8
-	Version          uint8
-	Bump             uint8
-	Status           ChannelStatus
-	Salt             uint64
-	Deposit          uint64
-	Settled          uint64
-	PayoutWatermark  uint64
-	ClosureStartedAt int64
-	PayerWithdrawnAt int64
-	GracePeriod      uint32
-	DistributionHash [32]byte
-	Payer            solana.PublicKey
-	Payee            solana.PublicKey
-	AuthorizedSigner solana.PublicKey
-	Mint             solana.PublicKey
-	RentPayer        solana.PublicKey
-	OpenSlot         uint64
 }
 
 // DecodeChannel decodes a channel account through the generated layout.
 // Accounts shorter than the supported layout are rejected rather than
 // zero-filled; the byte offsets are only valid for this channel-account version.
-func DecodeChannel(data []byte) (*Channel, error) {
+func DecodeChannel(data []byte) (*generated.Channel, error) {
 	if len(data) < ChannelAccountSize {
 		return nil, fmt.Errorf("channel account is %d bytes, expected at least %d", len(data), ChannelAccountSize)
 	}
@@ -164,26 +124,7 @@ func DecodeChannel(data []byte) (*Channel, error) {
 	if decoded.Discriminator != uint8(generated.AccountDiscriminator_Channel) {
 		return nil, fmt.Errorf("account discriminator %d is not a payment channel", decoded.Discriminator)
 	}
-	return &Channel{
-		Discriminator:    decoded.Discriminator,
-		Version:          decoded.Version,
-		Bump:             decoded.Bump,
-		Status:           ChannelStatus(decoded.Status),
-		Salt:             decoded.Salt,
-		Deposit:          decoded.Deposit,
-		Settled:          decoded.Settlement.Settled,
-		PayoutWatermark:  decoded.Settlement.PayoutWatermark,
-		ClosureStartedAt: decoded.ClosureStartedAt,
-		PayerWithdrawnAt: decoded.PayerWithdrawnAt,
-		GracePeriod:      decoded.GracePeriod,
-		DistributionHash: decoded.DistributionHash,
-		Payer:            decoded.Payer,
-		Payee:            decoded.Payee,
-		AuthorizedSigner: decoded.AuthorizedSigner,
-		Mint:             decoded.Mint,
-		RentPayer:        decoded.RentPayer,
-		OpenSlot:         decoded.OpenSlot,
-	}, nil
+	return &decoded, nil
 }
 
 // TreasuryOwner returns the payment-channels treasury owner for the program
@@ -275,26 +216,6 @@ func BuildSettleAndSealInstructions(args SettleAndSealBuildArgs) ([]solana.Instr
 		return nil, err
 	}
 	return append(instructions, instruction), nil
-}
-
-// BuildSettleAndSealInstruction builds the payee-signed cooperative close.
-// When hasVoucher is true, an Ed25519 precompile instruction carrying the
-// voucher must immediately precede it in the transaction.
-func BuildSettleAndSealInstruction(channel, payee solana.PublicKey, hasVoucher bool) solana.Instruction {
-	flag := uint8(0)
-	if hasVoucher {
-		flag = 1
-	}
-	instruction, err := generated.NewSettleAndSealInstructionBuilder().
-		SetPayeeAccount(payee).
-		SetChannelAccount(channel).
-		SetInstructionsSysvarAccount(InstructionsSysvar).
-		SetSettleAndSealArgs(generated.SettleAndSealArgs{HasVoucher: flag}).
-		ValidateAndBuild()
-	if err != nil {
-		panic(err)
-	}
-	return instruction
 }
 
 // BuildSealInstruction builds the permissionless seal for a Closing channel

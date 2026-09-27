@@ -216,7 +216,8 @@ type FacilitatorSvmSigner interface {
 	// SimulateTransaction simulates a transaction to verify it would succeed.
 	// Does not verify signatures (RPC sigVerify is off). Callers must verify
 	// required signatures themselves; the fee-payer slot may be empty.
-	SimulateTransaction(ctx context.Context, tx *solana.Transaction, network string) error
+	// Nil opts also keep replaceRecentBlockhash off.
+	SimulateTransaction(ctx context.Context, tx *solana.Transaction, network string, opts *FacilitatorSimulateTransactionOptions) error
 
 	// SendTransaction sends a signed transaction to the network
 	// Returns transaction signature or error if send fails
@@ -229,11 +230,34 @@ type FacilitatorSvmSigner interface {
 
 // FacilitatorSimulateTransactionOptions configures facilitator transaction
 // simulation. Nil pointer fields use RPC defaults (sigVerify off,
-// replaceRecentBlockhash off).
+// replaceRecentBlockhash off, commitment confirmed).
 type FacilitatorSimulateTransactionOptions struct {
 	SigVerify              *bool
 	ReplaceRecentBlockhash *bool
 	Commitment             rpc.CommitmentType
+}
+
+// SimulationRPCOpts maps facilitator simulation options onto the Solana RPC
+// client. A nil options value keeps the facilitator defaults.
+func SimulationRPCOpts(opts *FacilitatorSimulateTransactionOptions) *rpc.SimulateTransactionOpts {
+	rpcOpts := &rpc.SimulateTransactionOpts{
+		SigVerify:              false,
+		ReplaceRecentBlockhash: false,
+		Commitment:             DefaultCommitment,
+	}
+	if opts == nil {
+		return rpcOpts
+	}
+	if opts.SigVerify != nil {
+		rpcOpts.SigVerify = *opts.SigVerify
+	}
+	if opts.ReplaceRecentBlockhash != nil {
+		rpcOpts.ReplaceRecentBlockhash = *opts.ReplaceRecentBlockhash
+	}
+	if opts.Commitment != "" {
+		rpcOpts.Commitment = opts.Commitment
+	}
+	return rpcOpts
 }
 
 // FacilitatorAccountInfo is the account shape returned by GetAccountInfo on

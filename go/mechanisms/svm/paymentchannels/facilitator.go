@@ -13,6 +13,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
 // simPlaceholderBlockhash is compiled into deposit composite sims; the RPC
@@ -148,14 +149,15 @@ func FetchAndVerifyOpenChannel(
 // in the submitted open. The onchain account is the source of truth for settlement.
 func VerifyOpenChannelAccount(
 	channelID solana.PublicKey,
-	channel *Channel,
+	channel *generated.Channel,
 	expected ExpectedOpenChannel,
 ) (*VerifiedOpenChannel, error) {
-	if channel.Discriminator != ChannelAccountDiscriminator {
+	if channel.Discriminator != uint8(generated.AccountDiscriminator_Channel) {
 		return nil, fmt.Errorf("channel %s has an invalid account discriminator", channelID)
 	}
-	if channel.Status != StatusOpen {
-		return nil, fmt.Errorf("channel %s is not open (status %s)", channelID, channel.Status)
+	status := generated.ChannelStatus(channel.Status)
+	if status != generated.ChannelStatus_Open {
+		return nil, fmt.Errorf("channel %s is not open (status %s)", channelID, ChannelStatusString(status))
 	}
 
 	bindings := []struct {
@@ -349,9 +351,9 @@ func SimulateOpenSettleDistribute(
 	if err != nil {
 		return err
 	}
-	err = signer.SimulateTransactionWithOpts(ctx, tx, channel.Network, &rpc.SimulateTransactionOpts{
-		SigVerify:              false,
-		ReplaceRecentBlockhash: true,
+	replaceRecentBlockhash := true
+	err = signer.SimulateTransaction(ctx, tx, channel.Network, &svm.FacilitatorSimulateTransactionOptions{
+		ReplaceRecentBlockhash: &replaceRecentBlockhash,
 		Commitment:             StateCommitment,
 	})
 	if err != nil {
@@ -375,7 +377,7 @@ type SubmitSettleOptions struct {
 // ChannelSubmitSigner is the subset of a facilitator signer a channel submission needs.
 type ChannelSubmitSigner interface {
 	GetLatestBlockhash(ctx context.Context, network string) (solana.Hash, uint64, error)
-	SimulateTransaction(ctx context.Context, tx *solana.Transaction, network string) error
+	SimulateTransaction(ctx context.Context, tx *solana.Transaction, network string, opts *svm.FacilitatorSimulateTransactionOptions) error
 	SendTransaction(ctx context.Context, tx *solana.Transaction, network string) (solana.Signature, error)
 	ConfirmTransaction(ctx context.Context, signature solana.Signature, network string) error
 	SignTransaction(ctx context.Context, tx *solana.Transaction, feePayer solana.PublicKey, network string) error
@@ -456,7 +458,7 @@ func SubmitChannelTransactionWithSigner(
 	if err != nil {
 		return "", err
 	}
-	if err := signer.SimulateTransaction(ctx, tx, network); err != nil {
+	if err := signer.SimulateTransaction(ctx, tx, network, nil); err != nil {
 		return "", &ChannelSimulationError{Err: err}
 	}
 	return submitSignedTransaction(ctx, tx, opts, func(tx *solana.Transaction) (solana.Signature, error) {
@@ -516,12 +518,7 @@ func GetChannelDistributionHash(splits []Split) ([32]byte, error) {
 	return out, nil
 }
 
-// DistributionHash is the historical name of GetChannelDistributionHash.
-func DistributionHash(splits []Split) ([32]byte, error) {
-	return GetChannelDistributionHash(splits)
-}
-
-func fetchChannelAccount(ctx context.Context, rpcClient ChannelRPC, channelID solana.PublicKey) (*Channel, bool, error) {
+func fetchChannelAccount(ctx context.Context, rpcClient ChannelRPC, channelID solana.PublicKey) (*generated.Channel, bool, error) {
 	account, err := getChannelAccount(ctx, rpcClient, channelID)
 	if err != nil {
 		if errors.Is(err, rpc.ErrNotFound) {

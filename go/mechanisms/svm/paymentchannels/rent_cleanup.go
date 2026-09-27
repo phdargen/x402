@@ -13,6 +13,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels/generated"
 )
 
 const (
@@ -380,15 +381,16 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 			continue
 		}
 
-		if channel.Status == StatusClosing && !m.sealClosingChannels {
+		status := generated.ChannelStatus(channel.Status)
+		if status == generated.ChannelStatus_Closing && !m.sealClosingChannels {
 			continue
 		}
-		switch channel.Status {
-		case StatusOpen, StatusClosing, StatusSealed:
-			if channel.Status == StatusOpen && !openChannelDue(m.abandonPolicy, record, now, opts.AbandonGraceSecs, maxIdleSecs) {
+		switch status {
+		case generated.ChannelStatus_Open, generated.ChannelStatus_Closing, generated.ChannelStatus_Sealed:
+			if status == generated.ChannelStatus_Open && !openChannelDue(m.abandonPolicy, record, now, opts.AbandonGraceSecs, maxIdleSecs) {
 				continue
 			}
-			if channel.Status == StatusClosing && now < channel.ClosureStartedAt+int64(channel.GracePeriod) {
+			if status == generated.ChannelStatus_Closing && now < channel.ClosureStartedAt+int64(channel.GracePeriod) {
 				continue
 			}
 			if closesUsed >= opts.MaxClosesPerRun {
@@ -409,12 +411,12 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 				opts.OnClose(RentCleanupCloseResult{
 					ChannelID:   record.ChannelID,
 					Transaction: signature,
-					Action:      closeAction(channel.Status),
+					Action:      closeAction(status),
 				})
 			}
 			m.deleteIfGone(ctx, rpcClient, channelID, record.ChannelID, opts)
 
-		case StatusDistributed:
+		case generated.ChannelStatus_Distributed:
 			slot, err := m.currentSlot(ctx, &currentSlot)
 			if err != nil {
 				opts.reportError(err, record.ChannelID)
@@ -428,7 +430,7 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 			}
 
 		default:
-			opts.reportError(fmt.Errorf("channel %s has unrecognized status %s", record.ChannelID, channel.Status), record.ChannelID)
+			opts.reportError(fmt.Errorf("channel %s has unrecognized status %s", record.ChannelID, ChannelStatusString(status)), record.ChannelID)
 		}
 	}
 
@@ -480,7 +482,7 @@ func (m *PaymentChannelRentCleanupManager) Discover(ctx context.Context, opts Re
 				continue
 			}
 			known[id] = struct{}{}
-			if channel.Channel.Status != StatusDistributed {
+			if generated.ChannelStatus(channel.Channel.Status) != generated.ChannelStatus_Distributed {
 				continue
 			}
 			if slot <= channel.Channel.OpenSlot+OpenSlotWindow {
@@ -571,11 +573,11 @@ func openChannelDue(policy OpenAbandonPolicy, record RentCleanupChannelRecord, n
 	}
 }
 
-func closeAction(status ChannelStatus) RentCleanupCloseAction {
+func closeAction(status generated.ChannelStatus) RentCleanupCloseAction {
 	switch status {
-	case StatusOpen:
+	case generated.ChannelStatus_Open:
 		return RentCleanupCloseAbandon
-	case StatusClosing:
+	case generated.ChannelStatus_Closing:
 		return RentCleanupCloseForced
 	default:
 		return RentCleanupCloseDistribute
@@ -585,7 +587,7 @@ func closeAction(status ChannelStatus) RentCleanupCloseAction {
 func (m *PaymentChannelRentCleanupManager) submitCloseOrDistribute(
 	ctx context.Context,
 	record RentCleanupChannelRecord,
-	channel *Channel,
+	channel *generated.Channel,
 	channelID solana.PublicKey,
 ) (string, error) {
 	feePayer, err := m.resolveFeePayer(ctx, channel.Payee)
@@ -611,14 +613,14 @@ func (m *PaymentChannelRentCleanupManager) submitCloseOrDistribute(
 	}
 
 	var instructions []solana.Instruction
-	switch channel.Status {
-	case StatusOpen:
+	switch generated.ChannelStatus(channel.Status) {
+	case generated.ChannelStatus_Open:
 		settle, err := BuildSettleAndSealInstructions(SettleAndSealBuildArgs{ChannelID: channelID, Payee: channel.Payee})
 		if err != nil {
 			return "", err
 		}
 		instructions = append(settle, distribute)
-	case StatusClosing:
+	case generated.ChannelStatus_Closing:
 		instructions = []solana.Instruction{BuildSealInstruction(channelID), distribute}
 	default:
 		instructions = []solana.Instruction{distribute}
@@ -737,7 +739,7 @@ func (m *PaymentChannelRentCleanupManager) refreshReclaimBatch(
 			}
 			continue
 		}
-		if channel.Status != StatusDistributed {
+		if generated.ChannelStatus(channel.Status) != generated.ChannelStatus_Distributed {
 			continue
 		}
 		live = append(live, reclaimCandidate{channelID: candidate.channelID, rentPayer: channel.RentPayer})
