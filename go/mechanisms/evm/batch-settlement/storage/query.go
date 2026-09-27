@@ -140,7 +140,7 @@ func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 				return pendingA < pendingB
 			}
 			if filter.UnclaimedDesc {
-				return unclaimedValue(a.Base()).Cmp(unclaimedValue(b.Base())) > 0
+				return UnclaimedAmount(a.Base()).Cmp(UnclaimedAmount(b.Base())) > 0
 			}
 			if filter.OldestFirst {
 				baseA := a.Base()
@@ -256,9 +256,12 @@ func matchesUnclaimedThreshold(charged, claimed *big.Int, minUnclaimed string) b
 	return new(big.Int).Sub(charged, claimed).Cmp(threshold) >= 0
 }
 
-// unclaimedValue returns charged-claimed, or zero when corrupt. Ordering
-// helper for already-matched rows only.
-func unclaimedValue(channel *Channel) *big.Int {
+// UnclaimedAmount returns charged-claimed, or zero when the row is missing,
+// corrupt, or already fully claimed.
+func UnclaimedAmount(channel *Channel) *big.Int {
+	if channel == nil {
+		return new(big.Int)
+	}
 	charged, chargedOk := ParseUint256(channel.ChargedCumulativeAmount)
 	claimed, claimedOk := ParseUint256(channel.TotalClaimed)
 	if !chargedOk || !claimedOk {
