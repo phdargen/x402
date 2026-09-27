@@ -521,24 +521,16 @@ type recordingSettleTargets struct {
 	items []storage.SettleTarget
 }
 
-func (s *recordingSettleTargets) SettleQuery(context.Context, storage.SettleQuery) (*storage.QueryPage[storage.SettleTarget], error) {
+func (s *recordingSettleTargets) ListSettleTargets(context.Context, storage.SettleQuery) (*storage.QueryPage[storage.SettleTarget], error) {
 	s.calls++
 	return &storage.QueryPage[storage.SettleTarget]{Items: s.items}, nil
 }
 
-func (s *recordingSettleTargets) ApplySettleTargetClaimDelta(context.Context, storage.SettleTargetClaimDelta) error {
+func (s *recordingSettleTargets) RecordClaimed(context.Context, storage.SettleTargetClaimDelta) error {
 	return nil
 }
 
-func (s *recordingSettleTargets) DeleteSettleTarget(context.Context, storage.SettleTarget) error {
-	return nil
-}
-
-func (s *recordingSettleTargets) StampSettleTargetAttempts(context.Context, []storage.SettleTarget, int64) error {
-	return nil
-}
-
-func (s *recordingSettleTargets) SyncSettleTargetFromChain(context.Context, storage.SettleTarget, *big.Int) error {
+func (s *recordingSettleTargets) RemoveSettleTarget(context.Context, storage.SettleTarget) error {
 	return nil
 }
 
