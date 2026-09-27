@@ -38,7 +38,8 @@ type ChannelQuery struct {
 	Cursor      string
 }
 
-// SettleQuery filters distinct claimed (network, receiver, token) tuples.
+// SettleQuery pages claimed (network, receiver, token) pairs.
+// MinPending is a hint; the settle pass re-reads pending onchain.
 type SettleQuery struct {
 	Network    string
 	Limit      *int

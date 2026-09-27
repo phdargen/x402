@@ -62,8 +62,8 @@ type ResolveCallerIdentity func(ctx DelegatedSettleContext) (string, error)
 type VoucherStoreConfig struct {
 	Storage     storage.ChannelStorage[*FacilitatorChannel]
 	LockStorage storage.ChannelLockStorage
-	// SettleTargetStorage caches claimed-but-unsettled (network, receiver, token) pairs.
-	// Nil defaults to an in-memory cache.
+	// SettleTargetStorage tracks claimed (network, receiver, token) pairs.
+	// Nil derives pairs from channel rows with totalClaimed > 0.
 	SettleTargetStorage storage.SettleTargetStorage
 	WithdrawDelay       int
 	// OnchainStateTtlMs is the cached onchain accept window. nil derives from

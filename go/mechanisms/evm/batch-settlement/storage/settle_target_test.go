@@ -31,9 +31,19 @@ func TestInMemorySettleTargetStorage_ClaimDelta(t *testing.T) {
 
 	huge := new(big.Int).Add(big.NewInt(math.MaxInt64), big.NewInt(1))
 	over := NewInMemorySettleTargetStorage()
-	applySettleDelta(t, over, settleAddr(3), settleAddr(4), math.MaxInt64)
+	if err := over.RecordClaimed(context.Background(), SettleTargetClaimDelta{
+		Network:  settleTargetTestNetwork,
+		Receiver: settleAddr(3),
+		Token:    settleAddr(4),
+		Amount:   huge,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if got := querySettleTargets(t, over, settleTargetTestNetwork, nil, huge); len(got) != 0 {
-		t.Fatalf("minPending above MaxInt64 must match nothing: %+v", got)
+		t.Fatalf("pending equal to minPending must not match: %+v", got)
+	}
+	if got := querySettleTargets(t, over, settleTargetTestNetwork, nil, big.NewInt(math.MaxInt64)); len(got) != 1 {
+		t.Fatalf("full-precision pending above MaxInt64: %+v", got)
 	}
 }
 
@@ -48,7 +58,7 @@ func TestInMemorySettleTargetStorage_ConcurrentDeltas(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errCh <- store.ApplySettleTargetClaimDelta(context.Background(), SettleTargetClaimDelta{
+			errCh <- store.RecordClaimed(context.Background(), SettleTargetClaimDelta{
 				Network:  settleTargetTestNetwork,
 				Receiver: recv,
 				Token:    token,
@@ -105,7 +115,7 @@ func TestInMemorySettleTargetStorage_SettleQuery(t *testing.T) {
 	if len(first) != 2 || first[0].Receiver != settleAddr(1) || first[1].Receiver != settleAddr(2) {
 		t.Fatalf("first page = %+v", first)
 	}
-	page, err := store.SettleQuery(context.Background(), SettleQuery{Network: settleTargetTestNetwork, Limit: &limit})
+	page, err := store.ListSettleTargets(context.Background(), SettleQuery{Network: settleTargetTestNetwork, Limit: &limit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +134,7 @@ func TestInMemorySettleTargetStorage_SettleQuery(t *testing.T) {
 	if got := querySettleTargets(t, store, other, nil, nil); len(got) != 0 {
 		t.Fatalf("other network = %+v", got)
 	}
-	if err := store.ApplySettleTargetClaimDelta(context.Background(), SettleTargetClaimDelta{
+	if err := store.RecordClaimed(context.Background(), SettleTargetClaimDelta{
 		Network:  other,
 		Receiver: settleAddr(9),
 		Token:    settleAddr(9),
@@ -203,7 +213,7 @@ func TestInMemorySettleTargetStorage_SyncFromChain(t *testing.T) {
 
 func TestInMemorySettleTargetStorage_DeleteMissing(t *testing.T) {
 	store := NewInMemorySettleTargetStorage()
-	if err := store.DeleteSettleTarget(context.Background(), SettleTarget{
+	if err := store.RemoveSettleTarget(context.Background(), SettleTarget{
 		Network:  settleTargetTestNetwork,
 		Receiver: settleAddr(1),
 		Token:    settleAddr(2),
@@ -214,7 +224,7 @@ func TestInMemorySettleTargetStorage_DeleteMissing(t *testing.T) {
 
 func applySettleDelta(t *testing.T, store SettleTargetStorage, receiver, token string, amount int64) {
 	t.Helper()
-	if err := store.ApplySettleTargetClaimDelta(context.Background(), SettleTargetClaimDelta{
+	if err := store.RecordClaimed(context.Background(), SettleTargetClaimDelta{
 		Network:  settleTargetTestNetwork,
 		Receiver: receiver,
 		Token:    token,
@@ -224,23 +234,35 @@ func applySettleDelta(t *testing.T, store SettleTargetStorage, receiver, token s
 	}
 }
 
-func stampSettleTargets(t *testing.T, store SettleTargetStorage, targets []SettleTarget, at int64) {
+func stampSettleTargets(t *testing.T, store *InMemorySettleTargetStorage, targets []SettleTarget, at int64) {
 	t.Helper()
-	if err := store.StampSettleTargetAttempts(context.Background(), targets, at); err != nil {
+	obs := make([]SettleTargetObservation, 0, len(targets))
+	for _, target := range targets {
+		obs = append(obs, SettleTargetObservation{
+			Target:   target,
+			Pending:  big.NewInt(1),
+			AtMillis: at,
+		})
+	}
+	if err := store.ObserveSettlePending(context.Background(), obs); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func syncSettleTarget(t *testing.T, store SettleTargetStorage, target SettleTarget, pending int64) {
+func syncSettleTarget(t *testing.T, store *InMemorySettleTargetStorage, target SettleTarget, pending int64) {
 	t.Helper()
-	if err := store.SyncSettleTargetFromChain(context.Background(), target, big.NewInt(pending)); err != nil {
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:   target,
+		Pending:  big.NewInt(pending),
+		AtMillis: 1,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func querySettleTargets(t *testing.T, store SettleTargetStorage, network string, limit *int, minPending *big.Int) []SettleTarget {
 	t.Helper()
-	page, err := store.SettleQuery(context.Background(), SettleQuery{
+	page, err := store.ListSettleTargets(context.Background(), SettleQuery{
 		Network:    network,
 		Limit:      limit,
 		MinPending: minPending,
@@ -256,7 +278,7 @@ func querySettleTargets(t *testing.T, store SettleTargetStorage, network string,
 
 func querySettleTargetsCursor(t *testing.T, store SettleTargetStorage, limit *int, cursor string) []SettleTarget {
 	t.Helper()
-	page, err := store.SettleQuery(context.Background(), SettleQuery{
+	page, err := store.ListSettleTargets(context.Background(), SettleQuery{
 		Network: settleTargetTestNetwork,
 		Limit:   limit,
 		Cursor:  cursor,

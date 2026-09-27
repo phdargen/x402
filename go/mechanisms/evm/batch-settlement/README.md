@@ -311,7 +311,8 @@ scheme, err := facilitator.NewBatchSettlementEvmSchemeWithConfig(evmSigner, auth
             Directory: "./voucher-store",
         }),
         // LockStorage is inferred when storage implements ChannelLockStorage.
-        // WithdrawDelay defaults to 900. Nil SettleTargetStorage uses storage.NewInMemorySettleTargetStorage().
+        // WithdrawDelay defaults to 900. Nil SettleTargetStorage derives pairs from channel rows with totalClaimed > 0.
+        // Logger nil uses slog.Default(). The Start loop is for single-process dev use.
     },
     ResolveCallerIdentity: resolveCallerIdentity,
 })
