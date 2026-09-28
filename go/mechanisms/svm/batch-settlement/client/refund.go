@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,10 @@ import (
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
+
+// ErrNoBatchChannelToRefund means this scheme has no open batch-settlement channel
+// for the route (for example EVM-only payments in a dual-network client).
+var ErrNoBatchChannelToRefund = errors.New("no batch-settlement channel to refund")
 
 // HTTPDoer performs one HTTP request. *http.Client implements it.
 type HTTPDoer interface {
@@ -81,6 +86,15 @@ func AlignRefundRequirements(
 	extra[batchsettlement.ExtraVoucherSigner] = batchsettlement.VoucherSignerClient
 	probed.Extra = extra
 	return probed
+}
+
+// ClientSignedRefundRequirements strips server-signed probe fields so refund
+// discovery and "no channel" checks are not blocked by serverSignedChannelsPolicy
+// when this wallet never opened a server-signed channel on the route.
+func ClientSignedRefundRequirements(probed types.PaymentRequirements) types.PaymentRequirements {
+	return AlignRefundRequirements(probed, batchsettlement.BatchChannelConfig{
+		VoucherSigner: batchsettlement.VoucherSignerClient,
+	})
 }
 
 // SelectRefundAccept picks the advertised accept that matches the channel being closed.

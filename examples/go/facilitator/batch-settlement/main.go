@@ -40,6 +40,7 @@ func main() {
 	svmPrivateKey := strings.TrimSpace(os.Getenv("SVM_PRIVATE_KEY"))
 	evmRPCURL := envOr("EVM_RPC_URL", "https://sepolia.base.org")
 	svmRPCURL := strings.TrimSpace(os.Getenv("SVM_RPC_URL"))
+	svmArchiveRPCURL := strings.TrimSpace(os.Getenv("SVM_ARCHIVE_RPC_URL"))
 
 	if evmPrivateKey == "" && svmPrivateKey == "" {
 		fmt.Println("❌ At least one of EVM_PRIVATE_KEY or SVM_PRIVATE_KEY is required")
@@ -52,28 +53,32 @@ func main() {
 	channelStorage := paymentchannels.NewInMemoryPaymentChannelStorage()
 
 	facilitator := x402.Newx402Facilitator()
-	facilitator.OnBeforeVerify(func(ctx x402.FacilitatorVerifyContext) (*x402.FacilitatorBeforeHookResult, error) {
-		fmt.Println("Before verify", ctx)
-		return nil, nil
-	})
 	facilitator.OnAfterVerify(func(ctx x402.FacilitatorVerifyResultContext) error {
-		fmt.Println("After verify", ctx)
+		if ctx.Result == nil {
+			return nil
+		}
+		if ctx.Result.IsValid {
+			fmt.Printf("✅ Verified payer=%s network=%s\n", ctx.Result.Payer, ctx.Payload.GetNetwork())
+			return nil
+		}
+		fmt.Printf("❌ Verify failed payer=%s network=%s reason=%s message=%s\n",
+			ctx.Result.Payer, ctx.Payload.GetNetwork(), ctx.Result.InvalidReason, ctx.Result.InvalidMessage)
 		return nil
 	})
-	facilitator.OnVerifyFailure(func(ctx x402.FacilitatorVerifyFailureContext) (*x402.FacilitatorVerifyFailureHookResult, error) {
-		fmt.Println("Verify failure", ctx)
-		return nil, nil
-	})
-	facilitator.OnBeforeSettle(func(ctx x402.FacilitatorSettleContext) (*x402.FacilitatorBeforeHookResult, error) {
-		fmt.Println("Before settle", ctx)
-		return nil, nil
-	})
 	facilitator.OnAfterSettle(func(ctx x402.FacilitatorSettleResultContext) error {
-		fmt.Println("After settle", ctx)
+		if ctx.Result == nil {
+			return nil
+		}
+		if ctx.Result.Success {
+			fmt.Printf("🎉 Settled network=%s tx=%s\n", ctx.Result.Network, ctx.Result.Transaction)
+			return nil
+		}
+		fmt.Printf("⏳ Settle incomplete network=%s reason=%s tx=%s\n",
+			ctx.Result.Network, ctx.Result.ErrorReason, ctx.Result.Transaction)
 		return nil
 	})
 	facilitator.OnSettleFailure(func(ctx x402.FacilitatorSettleFailureContext) (*x402.FacilitatorSettleFailureHookResult, error) {
-		fmt.Println("Settle failure", ctx)
+		fmt.Printf("❌ Settle error: %v\n", ctx.Error)
 		return nil, nil
 	})
 
@@ -127,10 +132,17 @@ func main() {
 
 		fmt.Printf("SVM Facilitator account: %s\n", svmSigner.GetAddresses(context.Background(), svmNetwork)[0])
 
-		scheme := batchsvmfac.NewBatchSvmScheme(context.Background(), svmSigner, &batchsvmfac.Config{
+		svmConfig := &batchsvmfac.Config{
 			ChannelStorage:          channelStorage,
 			ReceiverAuthorizerStore: batchsvmfac.NewInMemoryReceiverAuthorizerStore(),
-		})
+		}
+		if svmArchiveRPCURL != "" {
+			svmConfig.ReceiverBindingHistoryReader = batchsvmfac.NewReceiverBindingHistoryReader(map[string]string{
+				svmNetwork: svmArchiveRPCURL,
+			})
+			fmt.Printf("SVM batch-settlement binding history RPC: %s\n", svmArchiveRPCURL)
+		}
+		scheme := batchsvmfac.NewBatchSvmScheme(context.Background(), svmSigner, svmConfig)
 		facilitator.Register([]x402.Network{svmNetwork}, scheme)
 
 		rentCleanup = scheme.CreateRentCleanupManager(x402.Network(svmNetwork))

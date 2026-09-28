@@ -39,6 +39,7 @@ func TestBatchClientLifecycle(t *testing.T) {
 	t.Run("validates client terms and configuration boundaries", testValidatesTerms)
 	t.Run("builds a refund from a cached channel and rejects a missing one", testRefundFromCache)
 	t.Run("refunds a client-signed channel when the probe lists server-signed first", testRefundServerFirst)
+	t.Run("reports no channel when the probe is server-signed and nothing is open", testRefundNoChannelServerProbe)
 }
 
 func testServerVoucherRestart(t *testing.T, restart bool) {
@@ -532,7 +533,7 @@ func testRefundFromCache(t *testing.T) {
 
 	missing := h.scheme(t, &BatchSvmClientConfig{})
 	_, err = missing.CreateRefundPayload(context.Background(), 2, req, RefundPayloadOptions{})
-	require.ErrorContains(t, err, "no batch-settlement channel")
+	require.ErrorIs(t, err, ErrNoBatchChannelToRefund)
 }
 
 func testRefundServerFirst(t *testing.T) {
@@ -558,6 +559,19 @@ func testRefundServerFirst(t *testing.T) {
 	require.Equal(t, "refund", cooperative.Payload["type"])
 	require.Equal(t, svm.USDCMainnetAddress, nestedString(t, cooperative.Payload, "voucher", "channelId"))
 	require.Equal(t, "1000", nestedString(t, cooperative.Payload, "voucher", "maxClaimableAmount"))
+}
+
+func testRefundNoChannelServerProbe(t *testing.T) {
+	h := newHarness(t)
+	operator := newKey(t)
+	scheme := h.scheme(t, &BatchSvmClientConfig{})
+	probe := h.requirements("", map[string]any{
+		batchsettlement.ExtraOperator:      operator.Address().String(),
+		batchsettlement.ExtraVoucherSigner: batchsettlement.VoucherSignerServer,
+	})
+	_, err := scheme.CreateRefundPayload(context.Background(), 2, probe, RefundPayloadOptions{})
+	require.ErrorContains(t, err, "no batch-settlement channel")
+	require.ErrorIs(t, err, ErrNoBatchChannelToRefund)
 }
 
 func (h *harness) clientConfig() batchsettlement.BatchChannelConfig {

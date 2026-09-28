@@ -534,6 +534,11 @@ func (f *BatchSvmScheme) readChannel(ctx context.Context, network, channelID str
 			Commitment:     paymentchannels.StateCommitment,
 			MinContextSlot: minSlot,
 		})
+		// solana-go turns a null account into ErrNotFound. A channel that has
+		// not been opened yet is absent
+		if errors.Is(err, rpc.ErrNotFound) {
+			return nil, nil
+		}
 		if err == nil {
 			break
 		}

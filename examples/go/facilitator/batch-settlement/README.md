@@ -30,6 +30,7 @@ Listens on `http://localhost:4022` by default (`PORT` overrides). Env keys match
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | Optional EVM receiver authorizer for delegated claim/refund |
 | `EVM_RPC_URL` | Default `https://sepolia.base.org` |
 | `SVM_RPC_URL` | Solana RPC (default devnet public endpoint when unset) |
+| `SVM_ARCHIVE_RPC_URL` | Optional full-history RPC that recovers the receiver-authorizer binding after a restart |
 | `RENT_CLEANUP_INTERVAL_SECS` | SVM rent cleanup tick interval (default `30`) |
 | `RENT_CLEANUP_ABANDON_GRACE_SECS` | SVM abandon grace after voucher expiry (default `120`) |
 | `PORT` | Listen port (default `4022`) |

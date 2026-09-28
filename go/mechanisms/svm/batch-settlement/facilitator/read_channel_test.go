@@ -54,6 +54,19 @@ func TestBatchSettlementChannelReadsUnderAConfirmationSlotFloor(t *testing.T) {
 		assert.Len(t, signer.calls(), ChannelReadAttempts)
 	})
 
+	t.Run("treats a missing account as no channel", func(t *testing.T) {
+		signer := &rejectingAccountSigner{
+			scriptedSigner: newScriptedSigner(t, 1),
+			always:         rpc.ErrNotFound,
+		}
+		scheme := newReadScheme(signer)
+
+		channel, err := scheme.readChannel(context.Background(), network, signer.feePayer().String())
+		require.NoError(t, err)
+		assert.Nil(t, channel)
+		assert.Len(t, signer.calls(), 1)
+	})
+
 	t.Run("surfaces a read error at once when no slot floor is in effect", func(t *testing.T) {
 		signer := &rejectingAccountSigner{
 			scriptedSigner: newScriptedSigner(t, 1),

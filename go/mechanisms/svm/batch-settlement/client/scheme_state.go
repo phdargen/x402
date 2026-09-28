@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -105,31 +106,12 @@ func (s *BatchSvmScheme) createRefundPayload(
 	options RefundPayloadOptions,
 ) (types.PaymentPayload, error) {
 	cached := s.findCachedChannelForRoute(requirements)
-	lookup := requirements
-	if cached != nil {
-		lookup = AlignRefundRequirements(requirements, cached.tracker.ChannelConfig)
-	}
-	terms, err := s.resolveRefundTerms(ctx, lookup, cached)
-	if err != nil {
-		return types.PaymentPayload{}, err
-	}
-	key := s.channelKey(lookup, terms.feePayer, terms.withdrawDelay)
-	existing, err := s.loadChannel(key)
+	existing, lookup, terms, err := s.locateRefundChannel(ctx, requirements, cached)
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
 	if existing == nil {
-		existing = cached
-	}
-	if existing == nil {
-		discovered, err := s.discoverChannel(ctx, lookup, terms)
-		if err != nil {
-			return types.PaymentPayload{}, err
-		}
-		existing = discovered
-	}
-	if existing == nil {
-		return types.PaymentPayload{}, fmt.Errorf("no batch-settlement channel to refund")
+		return types.PaymentPayload{}, ErrNoBatchChannelToRefund
 	}
 	var blockhash *solana.Hash
 	if options.WithTransaction {
@@ -175,6 +157,87 @@ func (s *BatchSvmScheme) createRefundPayload(
 		return types.PaymentPayload{}, err
 	}
 	return types.PaymentPayload{X402Version: x402Version, Payload: body}, nil
+}
+
+func (s *BatchSvmScheme) locateRefundChannel(
+	ctx context.Context,
+	requirements types.PaymentRequirements,
+	cached *openChannel,
+) (*openChannel, types.PaymentRequirements, resolvedTerms, error) {
+	lookup := requirements
+	if cached != nil {
+		lookup = AlignRefundRequirements(requirements, cached.tracker.ChannelConfig)
+	}
+
+	searchLookup := lookup
+	if cached == nil && voucherSignerOf(searchLookup.Extra) == batchsettlement.VoucherSignerServer {
+		searchLookup = ClientSignedRefundRequirements(searchLookup)
+	}
+
+	terms, err := s.resolveRefundTerms(ctx, searchLookup, cached)
+	if err != nil {
+		return nil, lookup, resolvedTerms{}, err
+	}
+
+	existing, err := s.loadRefundChannel(ctx, searchLookup, terms, cached)
+	if err != nil {
+		return nil, lookup, resolvedTerms{}, err
+	}
+	if existing != nil {
+		if cached == nil {
+			lookup = AlignRefundRequirements(requirements, existing.tracker.ChannelConfig)
+			terms, err = s.resolveRefundTerms(ctx, lookup, existing)
+			if err != nil {
+				return nil, lookup, resolvedTerms{}, err
+			}
+		}
+		return existing, lookup, terms, nil
+	}
+
+	if cached == nil && voucherSignerOf(requirements.Extra) == batchsettlement.VoucherSignerServer {
+		serverTerms, serverErr := s.resolveTerms(ctx, requirements)
+		if serverErr != nil {
+			var untrusted *UntrustedOperatorError
+			if errors.As(serverErr, &untrusted) {
+				return nil, lookup, terms, nil
+			}
+			return nil, lookup, resolvedTerms{}, serverErr
+		}
+		discovered, discoverErr := s.discoverChannel(ctx, requirements, serverTerms)
+		if discoverErr != nil {
+			return nil, lookup, resolvedTerms{}, discoverErr
+		}
+		if discovered != nil {
+			lookup = AlignRefundRequirements(requirements, discovered.tracker.ChannelConfig)
+			terms, err = s.resolveRefundTerms(ctx, lookup, discovered)
+			if err != nil {
+				return nil, lookup, resolvedTerms{}, err
+			}
+			return discovered, lookup, terms, nil
+		}
+	}
+
+	return nil, lookup, terms, nil
+}
+
+func (s *BatchSvmScheme) loadRefundChannel(
+	ctx context.Context,
+	lookup types.PaymentRequirements,
+	terms resolvedTerms,
+	cached *openChannel,
+) (*openChannel, error) {
+	key := s.channelKey(lookup, terms.feePayer, terms.withdrawDelay)
+	existing, err := s.loadChannel(key)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		existing = cached
+	}
+	if existing == nil {
+		return s.discoverChannel(ctx, lookup, terms)
+	}
+	return existing, nil
 }
 
 func (s *BatchSvmScheme) resolveDepositAmount(
