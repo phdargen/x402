@@ -311,7 +311,8 @@ func resolveOpenComputeBudget(computeUnitLimit *uint32, computeUnitPriceMicroLam
 
 // FindChannelPDA derives the channel program-derived address for the given
 // open parameters. Seeds are "channel", payer, payee, mint, authorizedSigner,
-// u64le(salt), u64le(openSlot).
+// u64le(salt), u64le(openSlot). Results are memoized in a bounded LRU cache
+// (see maxChannelPDACacheEntries).
 func FindChannelPDA(
 	payer, payee, mint, authorizedSigner solana.PublicKey,
 	salt, openSlot uint64,
@@ -323,19 +324,16 @@ func findChannelPDA(
 	program, payer, payee, mint, authorizedSigner solana.PublicKey,
 	salt, openSlot uint64,
 ) (solana.PublicKey, error) {
-	seeds := [][]byte{
-		[]byte("channel"),
-		payer.Bytes(),
-		payee.Bytes(),
-		mint.Bytes(),
-		authorizedSigner.Bytes(),
-		u64LE(salt),
-		u64LE(openSlot),
+	seeds := channelPDASeeds(payer, payee, mint, authorizedSigner, salt, openSlot)
+	key := channelPDACacheKey(program, seeds)
+	if pda, ok := globalChannelPDACache.lookup(key); ok {
+		return pda, nil
 	}
-	pda, _, err := solana.FindProgramAddress(seeds, program)
+	pda, _, err := findProgramDerivedAddress(seeds, program)
 	if err != nil {
 		return solana.PublicKey{}, fmt.Errorf("failed to derive channel PDA: %w", err)
 	}
+	globalChannelPDACache.store(key, pda)
 	return pda, nil
 }
 
