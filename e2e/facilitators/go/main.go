@@ -43,6 +43,7 @@ import (
 	svmmech "github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	svm "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/facilitator"
 	svmv1 "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/v1/facilitator"
+	batchsvmfac "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement/facilitator"
 	uptosvm "github.com/x402-foundation/x402/go/v2/mechanisms/svm/upto/facilitator"
 	x402types "github.com/x402-foundation/x402/go/v2/types"
 )
@@ -982,6 +983,29 @@ func getV1EvmNetwork(network string) string {
 	}
 }
 
+func buildSvmBatchFacilitatorConfig(svmNetwork, archiveRpcURL string) *batchsvmfac.Config {
+	bindingStore := strings.TrimSpace(strings.ToLower(os.Getenv("FACILITATOR_SVM_BATCH_BINDING_STORE")))
+	useInMemoryStore := bindingStore == "" ||
+		bindingStore == "memory" ||
+		bindingStore == "inmemory" ||
+		bindingStore == "true" ||
+		bindingStore == "1"
+
+	cfg := &batchsvmfac.Config{}
+	if useInMemoryStore {
+		cfg.ReceiverAuthorizerStore = batchsvmfac.NewInMemoryReceiverAuthorizerStore()
+	}
+	if archiveRpcURL != "" {
+		cfg.ReceiverBindingHistoryReader = batchsvmfac.NewReceiverBindingHistoryReader(map[string]string{
+			svmNetwork: archiveRpcURL,
+		})
+		log.Printf("SVM batch-settlement binding history RPC: %s", archiveRpcURL)
+	} else if !useInMemoryStore {
+		log.Printf("SVM batch-settlement: in-memory receiver binding store disabled; using signer RPC history reads")
+	}
+	return cfg
+}
+
 func getV1SvmNetwork(network string) string {
 	switch network {
 	case "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp":
@@ -1071,6 +1095,15 @@ func main() {
 		facilitator.Register(
 			[]x402.Network{x402.Network(svmNetwork)},
 			uptosvm.NewUptoSvmScheme(svmSigner, nil),
+		)
+		archiveRpcURL := strings.TrimSpace(os.Getenv("SVM_ARCHIVE_RPC_URL"))
+		facilitator.Register(
+			[]x402.Network{x402.Network(svmNetwork)},
+			batchsvmfac.NewBatchSvmScheme(
+				context.Background(),
+				svmSigner,
+				buildSvmBatchFacilitatorConfig(svmNetwork, archiveRpcURL),
+			),
 		)
 		facilitator.RegisterV1(
 			[]x402.Network{x402.Network(getV1SvmNetwork(svmNetwork))},

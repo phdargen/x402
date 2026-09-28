@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -424,10 +423,10 @@ func SubmitSettle(
 	if err != nil {
 		return "", err
 	}
-	signature, err := submitSignedTransaction(ctx, tx, opts, func(tx *solana.Transaction) (solana.Signature, error) {
+	signature, err := submitSignedTransaction(tx, opts, func(tx *solana.Transaction) (solana.Signature, error) {
 		return client.SendTransaction(ctx, tx)
 	}, func(signature solana.Signature) error {
-		return ConfirmSignature(ctx, client, signature, 30*time.Second)
+		return ConfirmSignature(ctx, client, signature, 30*time.Second, false)
 	})
 	return signature, err
 }
@@ -461,7 +460,7 @@ func SubmitChannelTransactionWithSigner(
 	if err := signer.SimulateTransaction(ctx, tx, network, nil); err != nil {
 		return "", &ChannelSimulationError{Err: err}
 	}
-	return submitSignedTransaction(ctx, tx, opts, func(tx *solana.Transaction) (solana.Signature, error) {
+	return submitSignedTransaction(tx, opts, func(tx *solana.Transaction) (solana.Signature, error) {
 		return signer.SendTransaction(ctx, tx, network)
 	}, func(signature solana.Signature) error {
 		return signer.ConfirmTransaction(ctx, signature, network)
@@ -469,18 +468,23 @@ func SubmitChannelTransactionWithSigner(
 }
 
 // ConfirmSignature polls getSignatureStatuses until the signature reaches at
-// least confirmed, or timeout elapses.
-func ConfirmSignature(ctx context.Context, client *rpc.Client, signature solana.Signature, timeout time.Duration) error {
+// least confirmed, or timeout elapses. searchTransactionHistory is sent only
+// on the first lookup; later polls use the recent-status cache.
+func ConfirmSignature(ctx context.Context, client *rpc.Client, signature solana.Signature, timeout time.Duration, searchTransactionHistory bool) error {
 	deadline := time.Now().Add(timeout)
+	search := searchTransactionHistory
 	for {
-		statuses, err := client.GetSignatureStatuses(ctx, false, signature)
+		statuses, err := client.GetSignatureStatuses(ctx, search, signature)
+		search = false
 		if err != nil {
 			return err
 		}
 		if statuses != nil && len(statuses.Value) > 0 && statuses.Value[0] != nil {
 			status := statuses.Value[0]
 			if status.Err != nil {
-				return fmt.Errorf("tx %s failed onchain: %v", signature, status.Err)
+				return &svm.TransactionOnchainFailureError{
+					Message: fmt.Sprintf("tx %s failed onchain: %v", signature, status.Err),
+				}
 			}
 			level := status.ConfirmationStatus
 			if level == "" || level == rpc.ConfirmationStatusConfirmed || level == rpc.ConfirmationStatusFinalized {
@@ -623,7 +627,6 @@ func buildSignedTransaction(
 }
 
 func submitSignedTransaction(
-	ctx context.Context,
 	tx *solana.Transaction,
 	opts SubmitSettleOptions,
 	send func(*solana.Transaction) (solana.Signature, error),
@@ -659,7 +662,8 @@ func submitSignedTransaction(
 		if errors.As(err, &timeout) {
 			return "", err
 		}
-		if strings.Contains(err.Error(), "failed onchain") {
+		var onchain *svm.TransactionOnchainFailureError
+		if errors.As(err, &onchain) {
 			return "", err
 		}
 		return "", &SettlementConfirmationTimeoutError{Signature: signature}

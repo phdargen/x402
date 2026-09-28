@@ -5,7 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
+	"regexp"
+	"strconv"
 	"strings"
 
 	ag_binary "github.com/gagliardetto/binary"
@@ -1225,4 +1230,74 @@ func isWritableIndex(message *solana.Message, index int) bool {
 	}
 	numAccounts := len(message.AccountKeys)
 	return index-numRequired < numAccounts-numRequired-int(message.Header.NumReadonlyUnsignedAccounts)
+}
+
+var unsignedDecimal = regexp.MustCompile(`^\d+$`)
+
+// ParseU64 parses a bigint, safe integer, or digit string into a u64.
+func ParseU64(value any, name string) (uint64, error) {
+	const maxSafe = int64(1<<53 - 1)
+	switch typed := value.(type) {
+	case uint64:
+		return typed, nil
+	case uint32:
+		return uint64(typed), nil
+	case uint:
+		return uint64(typed), nil
+	case int:
+		return parseSignedU64(int64(typed), name)
+	case int32:
+		return parseSignedU64(int64(typed), name)
+	case int64:
+		return parseSignedU64(typed, name)
+	case *big.Int:
+		return parseBigU64(typed, name)
+	case big.Int:
+		return parseBigU64(&typed, name)
+	case float64:
+		if math.Trunc(typed) != typed || typed > float64(maxSafe) || typed < -float64(maxSafe) {
+			return 0, fmt.Errorf("%s must be a safe integer", name)
+		}
+		return parseSignedU64(int64(typed), name)
+	case float32:
+		widened := float64(typed)
+		if math.Trunc(widened) != widened || widened > float64(maxSafe) || widened < -float64(maxSafe) {
+			return 0, fmt.Errorf("%s must be a safe integer", name)
+		}
+		return parseSignedU64(int64(widened), name)
+	case string:
+		if !unsignedDecimal.MatchString(typed) {
+			return 0, fmt.Errorf("%s must be an unsigned integer", name)
+		}
+		parsed, err := strconv.ParseUint(typed, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must fit in u64", name)
+		}
+		return parsed, nil
+	case json.Number:
+		if !unsignedDecimal.MatchString(typed.String()) {
+			return 0, fmt.Errorf("%s must be an unsigned integer", name)
+		}
+		parsed, err := strconv.ParseUint(typed.String(), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s must fit in u64", name)
+		}
+		return parsed, nil
+	default:
+		return 0, fmt.Errorf("%s must be an unsigned integer", name)
+	}
+}
+
+func parseSignedU64(value int64, name string) (uint64, error) {
+	if value < 0 {
+		return 0, fmt.Errorf("%s must fit in u64", name)
+	}
+	return uint64(value), nil
+}
+
+func parseBigU64(value *big.Int, name string) (uint64, error) {
+	if value == nil || value.Sign() < 0 || !value.IsUint64() {
+		return 0, fmt.Errorf("%s must fit in u64", name)
+	}
+	return value.Uint64(), nil
 }

@@ -312,7 +312,7 @@ func (m *PaymentChannelRentCleanupManager) runTicker(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := run(); err != nil {
+			if err := run(); err != nil && ctx.Err() == nil {
 				reportError(err, "")
 			}
 		}
@@ -619,7 +619,7 @@ func (m *PaymentChannelRentCleanupManager) submitCloseOrDistribute(
 		if err != nil {
 			return "", err
 		}
-		instructions = append(settle, distribute)
+		instructions = append(append([]solana.Instruction(nil), settle...), distribute)
 	case generated.ChannelStatus_Closing:
 		instructions = []solana.Instruction{BuildSealInstruction(channelID), distribute}
 	default:

@@ -8,9 +8,7 @@ import (
 	"strconv"
 
 	solana "github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/rpc"
 
-	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
@@ -88,19 +86,6 @@ func ResolvePaymentChannelConfig(requirements types.PaymentRequirements) (*Payme
 			{Recipient: requirements.PayTo, BPS: paymentchannels.BasisPointsDenominator},
 		},
 	}, nil
-}
-
-// NewRPCClient dials the configured endpoint, falling back to the network's
-// default when no override is set.
-func NewRPCClient(network, rpcURL string) (*rpc.Client, error) {
-	if rpcURL != "" {
-		return rpc.New(rpcURL), nil
-	}
-	config, err := svm.GetNetworkConfig(network)
-	if err != nil {
-		return nil, err
-	}
-	return rpc.New(config.RPCURL), nil
 }
 
 // ParseTokenProgramHint reads and validates `extra.tokenProgram`. The second
