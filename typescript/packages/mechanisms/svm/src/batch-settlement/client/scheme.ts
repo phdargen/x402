@@ -966,16 +966,12 @@ export class BatchSvmScheme implements SchemeNetworkClient {
       ? this.requirementsForRefund(requirements, cached)
       : requirements;
     let searchLookup = lookupRequirements;
-    if (
-      !cached &&
-      (searchLookup.extra?.voucherSigner ?? "client") === "server"
-    ) {
+    if (!cached && (searchLookup.extra?.voucherSigner ?? "client") === "server") {
       searchLookup = clientSignedRefundRequirements(searchLookup);
     }
 
     let terms = await this.resolveRefundTerms(searchLookup, cached);
-    let existing =
-      (await this.loadRefundChannel(searchLookup, terms, cached)) ?? undefined;
+    let existing = (await this.loadRefundChannel(searchLookup, terms, cached)) ?? undefined;
     if (existing) {
       if (!cached) {
         lookupRequirements = this.requirementsForRefund(requirements, existing);
