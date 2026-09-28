@@ -62,7 +62,7 @@ func TestNewUptoSvmSchemeAllowsSignerWithoutGetProgramAccounts(t *testing.T) {
 func TestDiscoverRequiresGetProgramAccounts(t *testing.T) {
 	manager := NewRentCleanupManager(RentCleanupConfig{
 		Signer:  schemeOnlySigner{},
-		Storage: NewInMemoryChannelStorage(),
+		Storage: paymentchannels.NewInMemoryPaymentChannelStorage(),
 		Network: testNetwork,
 	})
 	err := manager.Discover(context.Background(), DiscoveryOptions{})

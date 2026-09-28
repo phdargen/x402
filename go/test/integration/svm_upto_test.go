@@ -546,7 +546,7 @@ func TestSVMIntegrationV2Upto(t *testing.T) {
 			t.Fatalf("Failed to settle payment: %v", err)
 		}
 
-		records, err := stack.facilitator.ChannelStorage().List(ctx)
+		records, err := stack.facilitator.ChannelStorage().List(ctx, string(svm.SolanaDevnetCAIP2))
 		if err != nil {
 			t.Fatalf("Failed to list stored channels: %v", err)
 		}
@@ -569,7 +569,7 @@ func TestSVMIntegrationV2Upto(t *testing.T) {
 			t.Fatalf("Rent cleanup failed: %v", err)
 		}
 
-		after, err := stack.facilitator.ChannelStorage().List(ctx)
+		after, err := stack.facilitator.ChannelStorage().List(ctx, string(svm.SolanaDevnetCAIP2))
 		if err != nil {
 			t.Fatalf("Failed to list stored channels: %v", err)
 		}

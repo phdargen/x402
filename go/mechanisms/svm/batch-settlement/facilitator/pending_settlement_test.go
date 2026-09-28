@@ -24,15 +24,14 @@ func TestBatchSettlementPendingSettlement(t *testing.T) {
 		t.Helper()
 		signer := &confirmingSigner{scriptedSigner: newScriptedSigner(t, 1), slot: 432}
 		return NewBatchSvmScheme(context.Background(), signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  store,
+			PendingSettlementStore: store,
 		})
 	}
 
 	for _, kind := range []string{"redemption", "open"} {
 		t.Run("does not repeat the successful confirmation RPC for "+kind, func(t *testing.T) {
 			signer := &confirmingSigner{scriptedSigner: newScriptedSigner(t, 1), slot: 432}
-			scheme := NewBatchSvmScheme(context.Background(), signer, &Config{ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore()})
+			scheme := NewBatchSvmScheme(context.Background(), signer, nil)
 			instruction := solana.NewInstruction(
 				solana.MustPublicKeyFromBase58(svm.MemoProgramAddress),
 				nil,
@@ -111,8 +110,7 @@ func TestBatchSettlementPendingSettlement(t *testing.T) {
 		var recordDuringConfirm string
 		signer.confirmErr = nil
 		scheme := NewBatchSvmScheme(context.Background(), signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  store,
+			PendingSettlementStore: store,
 		})
 		wrapped := &storeWatchSigner{confirmingSigner: signer, store: store, key: key, seen: &recordDuringConfirm}
 		scheme.raw = wrapped

@@ -133,8 +133,7 @@ func main() {
 		fmt.Printf("SVM Facilitator account: %s\n", svmSigner.GetAddresses(context.Background(), svmNetwork)[0])
 
 		svmConfig := &batchsvmfac.Config{
-			ChannelStorage:          channelStorage,
-			ReceiverAuthorizerStore: batchsvmfac.NewInMemoryReceiverAuthorizerStore(),
+			ChannelStorage: channelStorage,
 		}
 		if svmArchiveRPCURL != "" {
 			svmConfig.ReceiverBindingHistoryReader = batchsvmfac.NewReceiverBindingHistoryReader(map[string]string{

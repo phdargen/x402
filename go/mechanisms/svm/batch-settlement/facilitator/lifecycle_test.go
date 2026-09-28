@@ -135,10 +135,15 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		if cfg == nil {
 			cfg = &Config{}
 		}
-		if cfg.ReceiverAuthorizerStore == nil {
-			cfg.ReceiverAuthorizerStore = NewInMemoryReceiverAuthorizerStore()
-		}
 		return NewBatchSvmScheme(ctx, signer, cfg)
+	}
+
+	recordReceiverBinding := func(t *testing.T, storage paymentchannels.PaymentChannelStorage, network, channelID, authorizer string) {
+		t.Helper()
+		_, err := storage.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
+			Network: network, ChannelID: channelID, ReceiverAuthorizer: authorizer, LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 	}
 
 	defaultTerms := BatchTerms{
@@ -169,14 +174,12 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 
 	t.Run("requires a usable managed signer", func(t *testing.T) {
 		require.Panics(t, func() {
-			NewBatchSvmScheme(ctx, addressesOnlySigner{addrs: []solana.PublicKey{feePayerKey.PublicKey()}}, &Config{
-				ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			})
+			NewBatchSvmScheme(ctx, addressesOnlySigner{addrs: []solana.PublicKey{feePayerKey.PublicKey()}}, nil)
 		})
 		require.Panics(t, func() {
 			s := newScriptedSigner(t, 1)
 			s.keys = nil
-			NewBatchSvmScheme(ctx, s, &Config{ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore()})
+			NewBatchSvmScheme(ctx, s, nil)
 		})
 	})
 
@@ -218,9 +221,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 
 	t.Run("requires account reads for settlement-path preflight", func(t *testing.T) {
 		require.Panics(t, func() {
-			NewBatchSvmScheme(ctx, noAccountSigner{inner: newScriptedSigner(t, 1)}, &Config{
-				ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			})
+			NewBatchSvmScheme(ctx, noAccountSigner{inner: newScriptedSigner(t, 1)}, nil)
 		})
 	})
 
@@ -356,9 +357,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		}
 
 		require.Panics(t, func() {
-			NewBatchSvmScheme(ctx, noAccountSigner{inner: newScriptedSigner(t, 1)}, &Config{
-				ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			})
+			NewBatchSvmScheme(ctx, noAccountSigner{inner: newScriptedSigner(t, 1)}, nil)
 		})
 		missingMint := newScheme(t, newSigner(t, func(s *lifecycleSigner) { s.exist = false }), nil)
 		require.ErrorContains(t, resolve(missingMint, channelConfig, requirements()), batchsettlement.ErrTokenProgram)
@@ -485,11 +484,9 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		operatorKey := mustKey(t)
 		operator, err := batchclient.NewPrivateKeySigner(operatorKey.String())
 		require.NoError(t, err)
-		store := NewInMemoryReceiverAuthorizerStore()
-		require.NoError(t, store.Bind(ctx, ReceiverAuthorizerBinding{
-			ChannelID: channelID, Network: network, ReceiverAuthorizer: receiverAuthorizerAddr,
-		}))
-		scheme := newScheme(t, newSigner(t), &Config{ReceiverAuthorizerStore: store})
+		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
+		recordReceiverBinding(t, storage, network, channelID, receiverAuthorizerAddr)
+		scheme := newScheme(t, newSigner(t), &Config{ChannelStorage: storage})
 		serverConfig := channelConfig
 		serverConfig.PayerAuthorizer = operator.Address().String()
 		serverConfig.VoucherSigner = batchsettlement.VoucherSignerServer
@@ -690,8 +687,8 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 	})
 
 	t.Run("validates real open, voucher, and refund transactions", func(t *testing.T) {
-		store := NewInMemoryReceiverAuthorizerStore()
-		scheme := newScheme(t, newSigner(t), &Config{ReceiverAuthorizerStore: store})
+		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
+		scheme := newScheme(t, newSigner(t), &Config{ChannelStorage: storage})
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) { return nil, nil }
 		req := requirements()
 		result, err := scheme.Verify(ctx, payment(actualDeposit, req), req, nil)
@@ -699,9 +696,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.True(t, result.IsValid)
 		require.Equal(t, actualChannelID, result.Extra["channelId"])
 
-		require.NoError(t, store.Bind(ctx, ReceiverAuthorizerBinding{
-			ChannelID: actualChannelID, Network: network, ReceiverAuthorizer: receiverAuthorizerAddr,
-		}))
+		recordReceiverBinding(t, storage, network, actualChannelID, receiverAuthorizerAddr)
 		voucherPayment := batchsettlement.BatchVoucherPayload{
 			Type: batchsettlement.PayloadTypeVoucher, ChannelConfig: actualDeposit.ChannelConfig, Voucher: *actualDeposit.Voucher,
 		}
@@ -752,7 +747,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		}
 		require.True(t, verifyRefund(refund).IsValid)
 
-		require.NoError(t, store.Delete(ctx, network, actualChannelID))
+		require.NoError(t, storage.Delete(ctx, network, actualChannelID))
 		unbound := verifyRefund(refund)
 		require.False(t, unbound.IsValid)
 		require.Equal(t, batchsettlement.ErrReceiverBindingUnavailable, unbound.InvalidReason)
@@ -858,7 +853,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 				c.Settlement = generated.SettlementWatermarks{Settled: 1_000}
 			}), nil
 		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
 		scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 			return durableResult{OK: true, Signature: "claim"}, nil
 		}
@@ -889,8 +883,8 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			}
 			return nil
 		}
-		store := NewInMemoryReceiverAuthorizerStore()
-		scheme := newScheme(t, facilitatorSigner, &Config{ReceiverAuthorizerStore: store})
+		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
+		scheme := newScheme(t, facilitatorSigner, &Config{ChannelStorage: storage})
 		voucher, err := batchclient.SignBatchVoucher(ctx, payer, channelID, 1_000, 0)
 		require.NoError(t, err)
 		deposit := batchsettlement.ParsedBatchPayload{
@@ -925,7 +919,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			}, nil
 		}
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) { return nil, nil }
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
 		scheme.hooks.broadcastDurably = func(context.Context, string, string, string, func(func(string, string) error) (string, error)) (durableResult, error) {
 			return durableResult{OK: true, Signature: fixedSigStr}, nil
 		}
@@ -965,9 +958,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 
 		refund := batchsettlement.BatchRefundPayload{Type: batchsettlement.PayloadTypeRefund, ChannelConfig: channelConfig, Voucher: &voucher}
 		hookChannelID(scheme, channelID)
-		require.NoError(t, store.Bind(ctx, ReceiverAuthorizerBinding{
-			ChannelID: channelID, Network: network, ReceiverAuthorizer: receiverAuthorizerAddr,
-		}))
+		recordReceiverBinding(t, storage, network, channelID, receiverAuthorizerAddr)
 		scheme.hooks.sealDependencies = func() SealDependencies {
 			deps := scheme.defaultSealDependencies()
 			deps.PrepareRefund = func(context.Context, batchsettlement.BatchRefundPayload, types.PaymentRequirements, RefundLimits, any) (PreparedRefund, error) {
@@ -995,7 +986,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, int64(20), state.WithdrawRequestedAt)
 
-		require.NoError(t, store.Delete(ctx, network, channelID))
+		require.NoError(t, storage.Delete(ctx, network, channelID))
 		blockhash := solana.MustHashFromBase58(svm.USDCMainnetAddress)
 		fallback, err := batchclient.BuildRefundPayload(ctx, batchclient.BuildRefundArgs{
 			Blockhash: &blockhash, ChannelConfig: channelConfig, ChannelID: channelID,
@@ -1137,12 +1128,11 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		_, err = classified.settleDeposit(ctx, topUpPayload, req, nil)
 		require.ErrorContains(t, err, batchsettlement.ErrSettlementSimulation+": missing treasury ATA")
 
-		indexing := newScheme(t, newSigner(t), nil)
+		indexStorage := newActivityRecordingStorage()
+		indexStorage.activityErr = errors.New("storage unavailable")
+		indexing := newScheme(t, newSigner(t), &Config{ChannelStorage: indexStorage})
 		indexing.hooks.validateDeposit = simulation.hooks.validateDeposit
 		indexing.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) { return nil, nil }
-		indexing.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			return errors.New("storage unavailable")
-		}
 		_, err = indexing.settleDeposit(ctx, topUpPayload, req, nil)
 		require.ErrorContains(t, err, "storage unavailable")
 		_, held = indexing.settlementCache.Entries()[topKey]
@@ -1150,7 +1140,8 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 	})
 
 	t.Run("prepares and confirms a voucher claim batch", func(t *testing.T) {
-		scheme := newScheme(t, newSigner(t), nil)
+		storage := newActivityRecordingStorage()
+		scheme := newScheme(t, newSigner(t), &Config{ChannelStorage: storage})
 		hookTerms(scheme, defaultTerms)
 		hookChannelID(scheme, channelID)
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) { return channel(), nil }
@@ -1158,11 +1149,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			return channel(func(c *generated.Channel) {
 				c.Settlement = generated.SettlementWatermarks{Settled: 1_000}
 			}), nil
-		}
-		var tracked int
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			tracked++
-			return nil
 		}
 		var submitted int
 		scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
@@ -1188,7 +1174,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		accepts, ok := result.Extra["accepts"].([]any)
 		require.True(t, ok)
 		require.Len(t, accepts, 1)
-		require.Equal(t, 1, tracked)
+		require.Equal(t, int32(1), storage.activityCalls.Load())
 		require.Equal(t, 1, submitted)
 	})
 
@@ -1220,7 +1206,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 					c.Settlement = generated.SettlementWatermarks{Settled: 1_000}
 				}), nil
 			}
-			scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
 			scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 				return durableResult{OK: true, Signature: fixedSigStr}, nil
 			}
@@ -1295,7 +1280,8 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 				return lifecyclePayoutEvidence(t, channelID, receiver, mint, "200", "1000"), nil
 			},
 		}
-		scheme := newScheme(t, signer, nil)
+		storage := newActivityRecordingStorage()
+		scheme := newScheme(t, signer, &Config{ChannelStorage: storage})
 		hookTerms(scheme, defaultTerms)
 		hookChannelID(scheme, channelID)
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
@@ -1309,11 +1295,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 			return durableResult{OK: true, Signature: fixedSigStr}, nil
 		}
-		var tracked []paymentchannels.PaymentChannelRecord
-		scheme.hooks.trackChannel = func(_ context.Context, record paymentchannels.PaymentChannelRecord) error {
-			tracked = append(tracked, record)
-			return nil
-		}
 		skipWait(scheme)
 		payload := batchsettlement.BatchSettlePayload{
 			Type: batchsettlement.PayloadTypeSettle,
@@ -1326,14 +1307,13 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.True(t, result.Success)
 		require.Equal(t, "800", result.Amount)
 		require.Equal(t, fixedSigStr, result.Transaction)
-		require.Len(t, tracked, 1)
-		require.Equal(t, channelID, tracked[0].ChannelID)
-		require.Equal(t, int64(0), tracked[0].ExpiresAt)
-		require.Equal(t, network, tracked[0].Network)
-		require.Equal(t, receiver, tracked[0].PayTo)
-		require.Equal(t, svm.TokenProgramAddress, tracked[0].TokenProgram)
+		require.Len(t, storage.activityRecords, 1)
+		require.Equal(t, channelID, storage.activityRecords[0].ChannelID)
+		require.Equal(t, int64(0), storage.activityRecords[0].ExpiresAt)
+		require.Equal(t, network, storage.activityRecords[0].Network)
+		require.Equal(t, receiver, storage.activityRecords[0].PayTo)
+		require.Equal(t, svm.TokenProgramAddress, storage.activityRecords[0].TokenProgram)
 
-		tracked = nil
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(c *generated.Channel) {
 				c.Settlement = generated.SettlementWatermarks{PayoutWatermark: 200, Settled: 1_000}
@@ -1344,7 +1324,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.True(t, result.Success)
 		require.Equal(t, "800", result.Amount)
 		require.Equal(t, fixedSigStr, result.Transaction)
-		require.Empty(t, tracked)
+		require.Equal(t, int32(2), storage.activityCalls.Load())
 	})
 
 	t.Run("rejects invalid distribution batches at each lifecycle boundary", func(t *testing.T) {
@@ -1378,7 +1358,6 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 				return durableResult{OK: true, Signature: fixedSigStr}, nil
 			}
-			scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
 			skipWait(scheme)
 			return scheme
 		}
@@ -1450,8 +1429,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		}
 		recoveringSigner := &confirmingSigner{scriptedSigner: newSigner(t).scriptedSigner, slot: 1}
 		recovering := newScheme(t, recoveringSigner, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  pendingStore,
+			PendingSettlementStore: pendingStore,
 		})
 		result, err := recovering.broadcastDurably(ctx, "key", network, payer.Address().String(), func(func(string, string) error) (string, error) {
 			t.Fatal("should not broadcast")
@@ -1498,8 +1476,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			scriptedSigner: terminalInner.scriptedSigner,
 			err:            &svm.TransactionOnchainFailureError{Message: "failed"},
 		}, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  terminalStore,
+			PendingSettlementStore: terminalStore,
 		})
 		terminalResult, err := terminal.broadcastDurably(ctx, "terminal", network, payer.Address().String(), func(func(string, string) error) (string, error) {
 			t.Fatal("should not broadcast")
@@ -1524,8 +1501,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 			scriptedSigner: newSigner(t).scriptedSigner,
 			err:            errors.New("timeout"),
 		}, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  retryStore,
+			PendingSettlementStore: retryStore,
 		})
 		retryResult, err := retry.broadcastDurably(ctx, "retry", network, payer.Address().String(), func(func(string, string) error) (string, error) {
 			t.Fatal("should not broadcast")

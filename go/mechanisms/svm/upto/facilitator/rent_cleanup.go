@@ -169,7 +169,7 @@ type StartConfig struct {
 // RentCleanupConfig configures a rent cleanup manager for one network.
 type RentCleanupConfig struct {
 	Signer  paymentchannels.PaymentChannelFacilitatorSigner
-	Storage ChannelStorage
+	Storage paymentchannels.PaymentChannelStorage
 	Network string
 
 	// ComputeUnitPriceMicroLamports is the SetComputeUnitPrice (microlamports
@@ -192,8 +192,7 @@ type RentCleanupConfig struct {
 // Open channels close at expiresAt plus a grace period. Closing channels are
 // left alone: upto does not seal them.
 type RentCleanupManager struct {
-	inner   *paymentchannels.PaymentChannelRentCleanupManager
-	storage ChannelStorage
+	inner *paymentchannels.PaymentChannelRentCleanupManager
 }
 
 // NewRentCleanupManager creates a rent cleanup manager. It does not start
@@ -201,10 +200,9 @@ type RentCleanupManager struct {
 func NewRentCleanupManager(config RentCleanupConfig) *RentCleanupManager {
 	sealClosingChannels := false
 	return &RentCleanupManager{
-		storage: config.Storage,
 		inner: paymentchannels.NewPaymentChannelRentCleanupManager(paymentchannels.PaymentChannelRentCleanupConfig{
 			Signer:                        config.Signer,
-			Storage:                       channelStorageAdapter{storage: config.Storage},
+			Storage:                       config.Storage,
 			Network:                       config.Network,
 			ComputeUnitPriceMicroLamports: config.ComputeUnitPriceMicroLamports,
 			SettleComputeUnitLimit:        config.SettleComputeUnitLimit,
@@ -249,45 +247,4 @@ func (m *RentCleanupManager) Cleanup(ctx context.Context, opts CleanupOptions) e
 // storage does not know about and adds them, so Cleanup reclaims them later.
 func (m *RentCleanupManager) Discover(ctx context.Context, opts DiscoveryOptions) error {
 	return m.inner.Discover(ctx, opts.toShared())
-}
-
-// channelStorageAdapter presents upto ChannelStorage as the record shape the
-// shared rent-cleanup worker lists, writes, and deletes. upto records have no
-// LastActivityAt; the expiry policy does not read it.
-type channelStorageAdapter struct {
-	storage ChannelStorage
-}
-
-func (a channelStorageAdapter) List(ctx context.Context) ([]paymentchannels.RentCleanupChannelRecord, error) {
-	records, err := a.storage.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]paymentchannels.RentCleanupChannelRecord, len(records))
-	for i, record := range records {
-		out[i] = paymentchannels.RentCleanupChannelRecord{
-			ChannelID:    record.ChannelID,
-			PayTo:        record.PayTo,
-			TokenProgram: record.TokenProgram,
-			FirstSeenAt:  record.FirstSeenAt,
-			ExpiresAt:    record.ExpiresAt,
-			Network:      record.Network,
-		}
-	}
-	return out, nil
-}
-
-func (a channelStorageAdapter) Upsert(ctx context.Context, record paymentchannels.RentCleanupChannelRecord) error {
-	return a.storage.Upsert(ctx, ChannelRecord{
-		ChannelID:    record.ChannelID,
-		PayTo:        record.PayTo,
-		TokenProgram: record.TokenProgram,
-		FirstSeenAt:  record.FirstSeenAt,
-		ExpiresAt:    record.ExpiresAt,
-		Network:      record.Network,
-	})
-}
-
-func (a channelStorageAdapter) Delete(ctx context.Context, channelID string) error {
-	return a.storage.Delete(ctx, channelID)
 }

@@ -3,6 +3,7 @@ package facilitator
 import (
 	"context"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/stretchr/testify/assert"
@@ -100,23 +101,20 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 		return wire, built.ChannelID.String()
 	}
 
-	t.Run("rejects a facilitator with neither a store nor a history reader", func(t *testing.T) {
+	t.Run("constructs with default channel storage and validates history reader shape", func(t *testing.T) {
 		signer := newScriptedSigner(t, 1)
-		assert.PanicsWithError(t, "BatchSvmScheme requires a receiverAuthorizerStore or a receiverBindingHistoryReader", func() {
-			NewBatchSvmScheme(context.Background(), signer, nil)
-		})
+		scheme := NewBatchSvmScheme(context.Background(), signer, nil)
+		require.NotNil(t, scheme.GetChannelStorage())
 		historySigner := &historyCapableSigner{scriptedSigner: newScriptedSigner(t, 1)}
-		assert.PanicsWithError(t, "BatchSvmScheme requires a receiverAuthorizerStore or a receiverBindingHistoryReader", func() {
-			NewBatchSvmScheme(context.Background(), historySigner, nil)
+		withHistory := NewBatchSvmScheme(context.Background(), historySigner, &Config{
+			ReceiverBindingHistoryReader: historySigner,
 		})
-		assert.PanicsWithError(t, "receiverBindingHistoryReader must implement getSignaturesForAddress and getTransaction", func() {
-			NewBatchSvmScheme(context.Background(), signer, &Config{ReceiverBindingHistoryReader: sigsOnly{}})
-		})
+		require.NotNil(t, withHistory.GetChannelStorage())
 	})
 
 	t.Run("resolves an open from history, skips a failed transaction, and writes the store back", func(t *testing.T) {
 		wire, channelID := openWire(t)
-		store := NewInMemoryReceiverAuthorizerStore()
+		store := paymentchannels.NewInMemoryPaymentChannelStorage()
 		var fetched []string
 		history := &scriptHistory{
 			signatures: func(before *string) []ReceiverBindingHistorySignature {
@@ -139,9 +137,9 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 				return wire
 			},
 		}
-		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, channelID)
+		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, channelID, nil)
 		require.NoError(t, err)
-		assert.Equal(t, server.PublicKey().String(), got)
+		assert.Equal(t, server.PublicKey().String(), got.ReceiverAuthorizer)
 		assert.Equal(t, []string{"the-open"}, fetched)
 		stored, err := store.Get(context.Background(), network, channelID)
 		require.NoError(t, err)
@@ -157,7 +155,7 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 		missingWire, missingID := missing, ""
 		_ = missingWire
 		wire := missing
-		store := NewInMemoryReceiverAuthorizerStore()
+		store := paymentchannels.NewInMemoryPaymentChannelStorage()
 		history := &scriptHistory{
 			signatures: func(*string) []ReceiverBindingHistorySignature {
 				return []ReceiverBindingHistorySignature{{Signature: "only"}}
@@ -165,13 +163,13 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 			transaction: func(string) string { return wire },
 		}
 		builtMissing := missingBindingChannel(t, payer, feePayer)
-		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, builtMissing)
+		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, builtMissing, nil)
 		require.NoError(t, err)
-		assert.Empty(t, got)
+		assert.Empty(t, got.ReceiverAuthorizer)
 		wire = doubled
-		got, err = ReadReceiverAuthorizer(context.Background(), store, history, network, doubledID)
+		got, err = ReadReceiverAuthorizer(context.Background(), store, history, network, doubledID, nil)
 		require.NoError(t, err)
-		assert.Empty(t, got)
+		assert.Empty(t, got.ReceiverAuthorizer)
 		stored, err := store.Get(context.Background(), network, builtMissing)
 		require.NoError(t, err)
 		assert.Nil(t, stored)
@@ -182,20 +180,21 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 	})
 
 	t.Run("returns a store hit without consulting history", func(t *testing.T) {
-		store := NewInMemoryReceiverAuthorizerStore()
+		store := paymentchannels.NewInMemoryPaymentChannelStorage()
 		const channelID = "stored-channel"
-		require.NoError(t, store.Bind(context.Background(), ReceiverAuthorizerBinding{
-			Network: network, ChannelID: channelID, ReceiverAuthorizer: server.PublicKey().String(),
-		}))
+		_, err := store.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+			Network: network, ChannelID: channelID, ReceiverAuthorizer: server.PublicKey().String(), LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 		history := &scriptHistory{
 			signatures: func(*string) []ReceiverBindingHistorySignature {
 				t.Fatal("history should not run")
 				return nil
 			},
 		}
-		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, channelID)
+		got, err := ReadReceiverAuthorizer(context.Background(), store, history, network, channelID, nil)
 		require.NoError(t, err)
-		assert.Equal(t, server.PublicKey().String(), got)
+		assert.Equal(t, server.PublicKey().String(), got.ReceiverAuthorizer)
 		assert.Zero(t, history.signatureCalls)
 	})
 
@@ -207,20 +206,19 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 			},
 			transaction: func(string) string { return wire },
 		}
-		_, err := ReadReceiverAuthorizer(context.Background(), conflictStore{}, history, network, channelID)
+		_, err := ReadReceiverAuthorizer(context.Background(), &conflictStorage{inner: paymentchannels.NewInMemoryPaymentChannelStorage()}, history, network, channelID, nil)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, batchsettlement.ErrReceiverAuthorizerMismatch)
-		_, err = ReadReceiverAuthorizer(context.Background(), diskFullStore{}, history, network, channelID)
+		_, err = ReadReceiverAuthorizer(context.Background(), diskFullStorage{}, history, network, channelID, nil)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "disk full")
 	})
 
-	t.Run("validates binding-source and delegated-auth configuration", func(t *testing.T) {
+	t.Run("validates delegated-auth configuration", func(t *testing.T) {
 		got, err := AssertDelegatedReceiverAuth(nil)
 		require.NoError(t, err)
 		assert.Nil(t, got)
 		delegated := &DelegatedReceiverAuth{
-			IdentityStore:         NewInMemoryDelegatedAuthStore(),
 			ReceiverAuthorizer:    server.PublicKey().String(),
 			ResolveCallerIdentity: func(context.Context, DelegatedSettleContext) (string, error) { return "caller", nil },
 		}
@@ -234,24 +232,16 @@ func TestBatchSettlementBindingSource(t *testing.T) {
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "receiverAuthorizer address")
 
-		badStore := *delegated
-		badStore.IdentityStore = bindOnly{}
-		_, err = AssertDelegatedReceiverAuth(&badStore)
+		badResolver := *delegated
+		badResolver.ResolveCallerIdentity = nil
+		_, err = AssertDelegatedReceiverAuth(&badResolver)
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "identityStore must implement")
-
-		err = AssertBindingSource(BindingSourceConfig{ReceiverAuthorizerStore: bindOnly{}})
-		require.Error(t, err)
-		assert.ErrorContains(t, err, "receiverAuthorizerStore must implement")
-		err = AssertBindingSource(BindingSourceConfig{ReceiverBindingHistoryReader: sigsOnly{}})
-		require.Error(t, err)
-		assert.ErrorContains(t, err, "receiverBindingHistoryReader must implement")
+		assert.ErrorContains(t, err, "resolveCallerIdentity")
 	})
 
 	t.Run("resolves delegated identity and recognizes the delegated authorizer key", func(t *testing.T) {
 		var next func() (string, error)
 		delegated := &DelegatedReceiverAuth{
-			IdentityStore:      NewInMemoryDelegatedAuthStore(),
 			ReceiverAuthorizer: server.PublicKey().String(),
 			ResolveCallerIdentity: func(context.Context, DelegatedSettleContext) (string, error) {
 				return next()
@@ -349,32 +339,61 @@ func (historyCapableSigner) GetTransaction(context.Context, string, string) (str
 	return "", nil
 }
 
-type sigsOnly struct{}
+type conflictStorage struct {
+	inner *paymentchannels.InMemoryPaymentChannelStorage
+}
 
-func (sigsOnly) GetSignaturesForAddress(context.Context, string, string, *string, *int) ([]ReceiverBindingHistorySignature, error) {
+func (c *conflictStorage) RecordOpen(ctx context.Context, record paymentchannels.PaymentChannelRecord) (paymentchannels.PaymentChannelOpenWrite, error) {
+	_, err := c.inner.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
+		Network: record.Network, ChannelID: record.ChannelID,
+		ReceiverAuthorizer: "other-authorizer", LastActivityAt: time.Now(),
+	})
+	if err != nil {
+		return paymentchannels.PaymentChannelOpenWrite{}, err
+	}
+	return c.inner.RecordOpen(ctx, record)
+}
+
+func (c *conflictStorage) RevertOpen(ctx context.Context, write paymentchannels.PaymentChannelOpenWrite) error {
+	return c.inner.RevertOpen(ctx, write)
+}
+
+func (c *conflictStorage) RecordActivity(ctx context.Context, records ...paymentchannels.PaymentChannelRecord) error {
+	return c.inner.RecordActivity(ctx, records...)
+}
+
+func (c *conflictStorage) Get(ctx context.Context, network, channelID string) (*paymentchannels.PaymentChannelRecord, error) {
+	return c.inner.Get(ctx, network, channelID)
+}
+
+func (c *conflictStorage) List(ctx context.Context, network string) ([]paymentchannels.PaymentChannelRecord, error) {
+	return c.inner.List(ctx, network)
+}
+
+func (c *conflictStorage) Delete(ctx context.Context, network, channelID string) error {
+	return c.inner.Delete(ctx, network, channelID)
+}
+
+type diskFullStorage struct{}
+
+func (diskFullStorage) RecordOpen(context.Context, paymentchannels.PaymentChannelRecord) (paymentchannels.PaymentChannelOpenWrite, error) {
+	return paymentchannels.PaymentChannelOpenWrite{}, errString("disk full")
+}
+
+func (diskFullStorage) RevertOpen(context.Context, paymentchannels.PaymentChannelOpenWrite) error {
+	return nil
+}
+
+func (diskFullStorage) RecordActivity(context.Context, ...paymentchannels.PaymentChannelRecord) error {
+	return nil
+}
+
+func (diskFullStorage) Get(context.Context, string, string) (*paymentchannels.PaymentChannelRecord, error) {
 	return nil, nil
 }
 
-type bindOnly struct{}
-
-func (bindOnly) Bind(context.Context, ReceiverAuthorizerBinding) error { return nil }
-
-type conflictStore struct{}
-
-func (conflictStore) Bind(context.Context, ReceiverAuthorizerBinding) error {
-	return ErrReceiverAuthorizerConflict
-}
-func (conflictStore) Get(context.Context, string, string) (*ReceiverAuthorizerBinding, error) {
+func (diskFullStorage) List(context.Context, string) ([]paymentchannels.PaymentChannelRecord, error) {
 	return nil, nil
 }
-func (conflictStore) Delete(context.Context, string, string) error { return nil }
 
-type diskFullStore struct{}
-
-func (diskFullStore) Bind(context.Context, ReceiverAuthorizerBinding) error {
-	return errString("disk full")
-}
-func (diskFullStore) Get(context.Context, string, string) (*ReceiverAuthorizerBinding, error) {
-	return nil, nil
-}
-func (diskFullStore) Delete(context.Context, string, string) error { return nil }
+func (diskFullStorage) Delete(context.Context, string, string) error { return nil }

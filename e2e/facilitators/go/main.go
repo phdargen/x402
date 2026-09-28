@@ -992,16 +992,13 @@ func buildSvmBatchFacilitatorConfig(svmNetwork, archiveRpcURL string) *batchsvmf
 		bindingStore == "1"
 
 	cfg := &batchsvmfac.Config{}
-	if useInMemoryStore {
-		cfg.ReceiverAuthorizerStore = batchsvmfac.NewInMemoryReceiverAuthorizerStore()
-	}
 	if archiveRpcURL != "" {
 		cfg.ReceiverBindingHistoryReader = batchsvmfac.NewReceiverBindingHistoryReader(map[string]string{
 			svmNetwork: archiveRpcURL,
 		})
 		log.Printf("SVM batch-settlement binding history RPC: %s", archiveRpcURL)
 	} else if !useInMemoryStore {
-		log.Printf("SVM batch-settlement: in-memory receiver binding store disabled; using signer RPC history reads")
+		log.Printf("SVM batch-settlement: FACILITATOR_SVM_BATCH_BINDING_STORE=none; receiver bindings fall back to RPC history when not on the channel row")
 	}
 	return cfg
 }

@@ -23,7 +23,7 @@ type cleanupHarness struct {
 	t       *testing.T
 	signer  *mockSigner
 	stub    *stubRPC
-	storage *InMemoryChannelStorage
+	storage *paymentchannels.InMemoryPaymentChannelStorage
 	manager *RentCleanupManager
 
 	payer solana.PublicKey
@@ -52,7 +52,7 @@ func newCleanupHarness(t *testing.T) *cleanupHarness {
 		t:       t,
 		signer:  signer,
 		stub:    newStubRPC(t),
-		storage: NewInMemoryChannelStorage(),
+		storage: paymentchannels.NewInMemoryPaymentChannelStorage(),
 		payer:   payer.PublicKey(),
 		payTo:   payTo.PublicKey(),
 	}
@@ -87,7 +87,7 @@ func (h *cleanupHarness) options(opts CleanupOptions) CleanupOptions {
 }
 
 // seedRecord stores a channel record and publishes its live account.
-func (h *cleanupHarness) seedRecord(record ChannelRecord, account channelAccount) ChannelRecord {
+func (h *cleanupHarness) seedRecord(record paymentchannels.PaymentChannelRecord, account channelAccount) paymentchannels.PaymentChannelRecord {
 	h.t.Helper()
 
 	if record.ChannelID == "" {
@@ -101,10 +101,11 @@ func (h *cleanupHarness) seedRecord(record ChannelRecord, account channelAccount
 	if record.Network == "" {
 		record.Network = testNetwork
 	}
-	if record.FirstSeenAt.IsZero() {
-		record.FirstSeenAt = time.Now().Add(-2 * time.Hour)
+	if record.LastActivityAt.IsZero() {
+		record.LastActivityAt = time.Now().Add(-2 * time.Hour)
 	}
-	require.NoError(h.t, h.storage.Upsert(context.Background(), record))
+	_, err := h.storage.RecordOpen(context.Background(), record)
+	require.NoError(h.t, err)
 	h.stub.setAccount(record.ChannelID, account.encode(h.t))
 	return record
 }
@@ -128,7 +129,7 @@ func (h *cleanupHarness) channel(status generated.ChannelStatus, openSlot uint64
 
 func (h *cleanupHarness) exists(channelID string) bool {
 	h.t.Helper()
-	record, err := h.storage.Get(context.Background(), channelID)
+	record, err := h.storage.Get(context.Background(), testNetwork, channelID)
 	require.NoError(h.t, err)
 	return record != nil
 }
@@ -181,10 +182,10 @@ func (h *cleanupHarness) closeAccountOnSend(channelID string) {
 
 func TestCleanupDefersOpenChannelsUntilExpiryPlusGrace(t *testing.T) {
 	tests := []struct {
-		name        string
-		expiresIn   int64
-		firstSeenAt time.Time
-		wantClose   bool
+		name           string
+		expiresIn      int64
+		lastActivityAt time.Time
+		wantClose      bool
 	}{
 		{
 			name:      "before expiry",
@@ -192,10 +193,10 @@ func TestCleanupDefersOpenChannelsUntilExpiryPlusGrace(t *testing.T) {
 			wantClose: false,
 		},
 		{
-			name:        "before expiry even when first seen long ago",
-			expiresIn:   300,
-			firstSeenAt: time.Now().Add(-2 * time.Hour),
-			wantClose:   false,
+			name:           "before expiry even when idle long ago",
+			expiresIn:      300,
+			lastActivityAt: time.Now().Add(-2 * time.Hour),
+			wantClose:      false,
 		},
 		{
 			name:      "inside the grace period",
@@ -213,10 +214,10 @@ func TestCleanupDefersOpenChannelsUntilExpiryPlusGrace(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newCleanupHarness(t)
 			record := harness.seedRecord(
-				ChannelRecord{
-					PayTo:       harness.payTo.String(),
-					ExpiresAt:   time.Now().Unix() + test.expiresIn,
-					FirstSeenAt: test.firstSeenAt,
+				paymentchannels.PaymentChannelRecord{
+					PayTo:          harness.payTo.String(),
+					ExpiresAt:      time.Now().Unix() + test.expiresIn,
+					LastActivityAt: test.lastActivityAt,
 				},
 				harness.channel(generated.ChannelStatus_Open, testSlot),
 			)
@@ -252,7 +253,7 @@ func TestCleanupDefersOpenChannelsUntilExpiryPlusGrace(t *testing.T) {
 func TestCleanupDistributesSealedChannels(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() + 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() + 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	harness.closeAccountOnSend(record.ChannelID)
@@ -272,7 +273,7 @@ func TestCleanupDistributesSealedChannels(t *testing.T) {
 func TestCleanupDefersClosingChannels(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Closing, testSlot),
 	)
 
@@ -287,7 +288,7 @@ func TestCleanupDefersClosingChannels(t *testing.T) {
 func TestCleanupDropsRecordsWhoseChannelIsGone(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Open, testSlot),
 	)
 	harness.stub.deleteAccount(record.ChannelID)
@@ -302,7 +303,7 @@ func TestCleanupDefersReclaimUntilTheOpenSlotGate(t *testing.T) {
 	harness := newCleanupHarness(t)
 	// The reclaim gate needs currentSlot > openSlot + OpenSlotWindow.
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Distributed, testSlot-10),
 	)
 
@@ -317,11 +318,11 @@ func TestCleanupBatchReclaimsDistributedChannels(t *testing.T) {
 	harness := newCleanupHarness(t)
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	first := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, openSlot),
 	)
 	second := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, openSlot),
 	)
 
@@ -353,7 +354,7 @@ func TestCleanupUsesTheConfiguredSettleComputeBudget(t *testing.T) {
 		ComputeUnitPriceMicroLamports: &price,
 	})
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() + 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() + 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	harness.closeAccountOnSend(record.ChannelID)
@@ -369,7 +370,7 @@ func TestCleanupRespectsReclaimBatchCaps(t *testing.T) {
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	for i := 0; i < 3; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String()},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 			harness.channel(generated.ChannelStatus_Distributed, openSlot),
 		)
 	}
@@ -392,7 +393,7 @@ func TestCleanupBudgetsTheScanAndReclaimsSeparately(t *testing.T) {
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	for i := 0; i < 4; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String()},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 			harness.channel(generated.ChannelStatus_Distributed, openSlot),
 		)
 	}
@@ -412,11 +413,11 @@ func TestCleanupBudgetsTheScanAndReclaimsSeparately(t *testing.T) {
 func TestCleanupResumesScanningFromTheCursorAfterTheBudgetRunsOut(t *testing.T) {
 	harness := newCleanupHarness(t)
 	first := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	second := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 
@@ -439,7 +440,7 @@ func TestCleanupCapsClosesPerRun(t *testing.T) {
 	harness := newCleanupHarness(t)
 	for i := 0; i < 3; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 			harness.channel(generated.ChannelStatus_Sealed, testSlot),
 		)
 	}
@@ -456,7 +457,7 @@ func TestCleanupSkipsChannelsThatChangedSinceTheListingPass(t *testing.T) {
 	harness := newCleanupHarness(t)
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, openSlot),
 	)
 	// A concurrent settle closed the account between listing and reclaim.
@@ -476,7 +477,7 @@ func TestCleanupSurfacesUnusableRecords(t *testing.T) {
 	tests := []struct {
 		name        string
 		omitPayTo   bool
-		record      ChannelRecord
+		record      paymentchannels.PaymentChannelRecord
 		mutate      func(account *channelAccount)
 		wantMessage string
 	}{
@@ -487,7 +488,7 @@ func TestCleanupSurfacesUnusableRecords(t *testing.T) {
 		},
 		{
 			name:        "invalid stored token program",
-			record:      ChannelRecord{TokenProgram: "not-base58"},
+			record:      paymentchannels.PaymentChannelRecord{TokenProgram: "not-base58"},
 			wantMessage: "invalid stored tokenProgram",
 		},
 		{
@@ -529,7 +530,7 @@ func TestCleanupSurfacesUnusableRecords(t *testing.T) {
 func TestCleanupIgnoresRecordsFromOtherNetworks(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{
+		paymentchannels.PaymentChannelRecord{
 			PayTo:     harness.payTo.String(),
 			ExpiresAt: time.Now().Unix() - 3600,
 			Network:   "solana",
@@ -541,14 +542,16 @@ func TestCleanupIgnoresRecordsFromOtherNetworks(t *testing.T) {
 
 	assert.Empty(t, harness.closes)
 	assert.Empty(t, harness.signer.sentTransactions())
-	assert.True(t, harness.exists(record.ChannelID))
+	stored, err := harness.storage.Get(context.Background(), "solana", record.ChannelID)
+	require.NoError(t, err)
+	assert.NotNil(t, stored, "the other-network row stays in storage")
 }
 
 func TestCleanupReportsBroadcastFailures(t *testing.T) {
 	harness := newCleanupHarness(t)
 	harness.signer.sendErr = assert.AnError
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 
@@ -578,7 +581,7 @@ func TestCleanupAbandonCloseBoundaryIsExact(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newCleanupHarness(t)
 			record := harness.seedRecord(
-				ChannelRecord{
+				paymentchannels.PaymentChannelRecord{
 					PayTo:     harness.payTo.String(),
 					ExpiresAt: time.Now().Unix() - grace + test.offset,
 				},
@@ -611,7 +614,7 @@ func TestCleanupReclaimGateBoundaryIsExact(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newCleanupHarness(t)
 			record := harness.seedRecord(
-				ChannelRecord{PayTo: harness.payTo.String()},
+				paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 				harness.channel(generated.ChannelStatus_Distributed, test.openSlot),
 			)
 
@@ -628,7 +631,7 @@ func TestCleanupSplitsReclaimsAcrossTransactions(t *testing.T) {
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	for i := 0; i < 5; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String()},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 			harness.channel(generated.ChannelStatus_Distributed, openSlot),
 		)
 	}
@@ -654,12 +657,12 @@ func TestCleanupStillReclaimsWhenTheCloseBudgetIsSpent(t *testing.T) {
 	harness := newCleanupHarness(t)
 	for i := 0; i < 2; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 			harness.channel(generated.ChannelStatus_Sealed, testSlot),
 		)
 	}
 	distributed := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, testSlot-paymentchannels.OpenSlotWindow-1),
 	)
 
@@ -677,7 +680,7 @@ func TestCleanupContinuesAfterAFailedClose(t *testing.T) {
 	harness.signer.failNextSends = 1
 	for i := 0; i < 2; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 			harness.channel(generated.ChannelStatus_Sealed, testSlot),
 		)
 	}
@@ -692,7 +695,7 @@ func TestCleanupRetriesAReclaimThatFailedToBroadcast(t *testing.T) {
 	harness := newCleanupHarness(t)
 	harness.signer.sendErr = assert.AnError
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, testSlot-paymentchannels.OpenSlotWindow-1),
 	)
 
@@ -718,7 +721,7 @@ func TestCleanupReportsEveryChannelInAFailedReclaimBatch(t *testing.T) {
 	var seeded []string
 	for i := 0; i < 3; i++ {
 		record := harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String()},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 			harness.channel(generated.ChannelStatus_Distributed, openSlot),
 		)
 		seeded = append(seeded, record.ChannelID)
@@ -736,7 +739,7 @@ func TestCleanupStopsOnACanceledContext(t *testing.T) {
 	harness := newCleanupHarness(t)
 	for i := 0; i < 3; i++ {
 		harness.seedRecord(
-			ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+			paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 			harness.channel(generated.ChannelStatus_Sealed, testSlot),
 		)
 	}
@@ -757,7 +760,7 @@ func TestCleanupReportsAnUnrecognizedChannelStatus(t *testing.T) {
 	account := harness.channel(generated.ChannelStatus_Open, testSlot)
 	account.Status = generated.ChannelStatus(99)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		account,
 	)
 
@@ -771,13 +774,15 @@ func TestCleanupReportsAnUnrecognizedChannelStatus(t *testing.T) {
 
 func TestCleanupContinuesPastAnUnparseableRecord(t *testing.T) {
 	harness := newCleanupHarness(t)
-	require.NoError(t, harness.storage.Upsert(context.Background(), ChannelRecord{
-		ChannelID: "not-a-channel-id",
-		PayTo:     harness.payTo.String(),
-		Network:   testNetwork,
-	}))
+	_, err := harness.storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+		ChannelID:      "not-a-channel-id",
+		PayTo:          harness.payTo.String(),
+		Network:        testNetwork,
+		LastActivityAt: time.Now(),
+	})
+	require.NoError(t, err)
 	harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 
@@ -805,7 +810,7 @@ func TestCleanupPropagatesAStorageListFailure(t *testing.T) {
 func TestCleanupRunsPassesSerially(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	harness.closeAccountOnSend(record.ChannelID)
@@ -827,7 +832,7 @@ func TestCleanupRunsPassesSerially(t *testing.T) {
 func TestStartRunsCleanupOnAnIntervalUntilStopped(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	harness.closeAccountOnSend(record.ChannelID)
@@ -866,7 +871,7 @@ func TestStartRunsCleanupOnAnIntervalUntilStopped(t *testing.T) {
 func TestStopWaitsForTheInFlightPass(t *testing.T) {
 	harness := newCleanupHarness(t)
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String(), ExpiresAt: time.Now().Unix() - 3600},
 		harness.channel(generated.ChannelStatus_Sealed, testSlot),
 	)
 	harness.closeAccountOnSend(record.ChannelID)
@@ -964,7 +969,7 @@ func TestStartLeavesDiscoveryOffWithoutAnInterval(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	harness.manager.Stop()
 
-	stored, err := harness.storage.List(context.Background())
+	stored, err := harness.storage.List(context.Background(), testNetwork)
 	require.NoError(t, err)
 	assert.Empty(t, stored, "cleanup alone never learns about untracked channels")
 }
@@ -1056,7 +1061,7 @@ func TestDiscoverAddsUntrackedDistributedChannelsToStorage(t *testing.T) {
 	require.NoError(t, harness.manager.Discover(context.Background(), harness.discoveryOptions()))
 
 	assert.Equal(t, []string{pda.String()}, harness.discovered)
-	record, err := harness.storage.Get(context.Background(), pda.String())
+	record, err := harness.storage.Get(context.Background(), testNetwork, pda.String())
 	require.NoError(t, err)
 	require.NotNil(t, record)
 	// Only what the chain proves: the Open/Sealed metadata stays empty, which
@@ -1090,7 +1095,7 @@ func TestDiscoverIgnoresNonDistributedChannels(t *testing.T) {
 	require.NoError(t, harness.manager.Discover(context.Background(), harness.discoveryOptions()))
 
 	assert.Empty(t, harness.discovered)
-	stored, err := harness.storage.List(context.Background())
+	stored, err := harness.storage.List(context.Background(), testNetwork)
 	require.NoError(t, err)
 	assert.Empty(t, stored)
 }
@@ -1102,7 +1107,7 @@ func TestDiscoverIgnoresChannelsInsideTheOpenSlotWindow(t *testing.T) {
 	require.NoError(t, harness.manager.Discover(context.Background(), harness.discoveryOptions()))
 
 	assert.Empty(t, harness.discovered)
-	stored, err := harness.storage.List(context.Background())
+	stored, err := harness.storage.List(context.Background(), testNetwork)
 	require.NoError(t, err)
 	assert.Empty(t, stored)
 }
@@ -1115,14 +1120,14 @@ func TestDiscoverNeverOverwritesATrackedChannel(t *testing.T) {
 	// The seeded account carries the managed signer as rent payer, so the
 	// sweep finds it: it must recognize the id as already tracked.
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, openSlot),
 	)
 
 	require.NoError(t, harness.manager.Discover(context.Background(), harness.discoveryOptions()))
 
 	assert.Empty(t, harness.discovered)
-	stored, err := harness.storage.Get(context.Background(), record.ChannelID)
+	stored, err := harness.storage.Get(context.Background(), testNetwork, record.ChannelID)
 	require.NoError(t, err)
 	require.NotNil(t, stored)
 	assert.Equal(t, harness.payTo.String(), stored.PayTo)
@@ -1144,11 +1149,11 @@ func TestSubmitReclaimBatchesRunsRentPayerGroupsConcurrently(t *testing.T) {
 
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	first := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channelFor(generated.ChannelStatus_Distributed, openSlot, signer.keys[0].PublicKey()),
 	)
 	second := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channelFor(generated.ChannelStatus_Distributed, openSlot, signer.keys[1].PublicKey()),
 	)
 
@@ -1207,7 +1212,7 @@ func TestSubmitReclaimBatchesBudgetsEachRentPayerGroupIndependently(t *testing.T
 	for _, key := range signer.keys {
 		for i := 0; i < 3; i++ {
 			harness.seedRecord(
-				ChannelRecord{PayTo: harness.payTo.String()},
+				paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 				harness.channelFor(generated.ChannelStatus_Distributed, openSlot, key.PublicKey()),
 			)
 		}
@@ -1234,7 +1239,7 @@ func TestCleanupAndDiscoverPreferAnInjectedRPCClient(t *testing.T) {
 
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	record := harness.seedRecord(
-		ChannelRecord{PayTo: harness.payTo.String()},
+		paymentchannels.PaymentChannelRecord{PayTo: harness.payTo.String()},
 		harness.channel(generated.ChannelStatus_Distributed, openSlot),
 	)
 	pda := harness.discoveredChannel(generated.ChannelStatus_Distributed, openSlot, harness.signer.feePayer())

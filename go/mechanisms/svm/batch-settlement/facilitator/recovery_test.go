@@ -139,21 +139,12 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			}},
 		}
 	}
-	type recoveryCounters struct {
-		trackChannel atomic.Int32
-	}
-	configure := func(scheme *BatchSvmScheme, counters *recoveryCounters) {
+	configure := func(scheme *BatchSvmScheme) {
 		scheme.hooks.resolveTerms = func(context.Context, batchsettlement.BatchChannelConfig, types.PaymentRequirements, VoucherModeBinding) (BatchTerms, error) {
 			return terms, nil
 		}
 		scheme.hooks.deriveChannelID = func(context.Context, batchsettlement.BatchChannelConfig, string) (string, error) {
 			return channelID, nil
-		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			if counters != nil {
-				counters.trackChannel.Add(1)
-			}
-			return nil
 		}
 		scheme.hooks.distributeInstruction = func(context.Context, string, *generated.Channel, BatchTerms, types.PaymentRequirements) (solana.Instruction, error) {
 			return solana.NewInstruction(solana.MustPublicKeyFromBase58(receiver), nil, []byte{7}), nil
@@ -170,7 +161,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 	}
 	newScheme := func(t *testing.T, signer svm.FacilitatorSvmSigner, store PendingSettlementStore, onDist OnDistributionConfirmed) *BatchSvmScheme {
 		t.Helper()
-		cfg := &Config{ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore()}
+		cfg := &Config{}
 		if store != nil {
 			cfg.PendingSettlementStore = store
 		}
@@ -212,10 +203,11 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		store := x402.NewInMemoryPendingSettlementStore()
 		require.NoError(t, store.Set(context.Background(), "batch:claim:"+network+":"+channelID+":1000:completed", tx))
 		for attempt := 0; attempt < 2; attempt++ {
-			counters := &recoveryCounters{}
+			storage := newActivityRecordingStorage()
 			signer := confirming(t, 0, nil)
 			scheme := newScheme(t, signer, store, nil)
-			configure(scheme, counters)
+			scheme.channelStorage = storage
+			configure(scheme)
 			var readCalls, submitCalls atomic.Int32
 			scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 				readCalls.Add(1)
@@ -229,7 +221,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, response.Success)
 			require.Equal(t, tx, response.Transaction)
-			require.Zero(t, counters.trackChannel.Load())
+			require.Zero(t, storage.activityCalls.Load())
 			require.Zero(t, readCalls.Load())
 			require.Empty(t, signer.accountCalls())
 			require.Empty(t, signer.confirmCalls())
@@ -246,7 +238,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), "batch:transaction:"+network+":"+signature.String()+":wire", wire))
 		signer := confirming(t, 123, nil)
 		scheme := newScheme(t, signer, store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(ch *generated.Channel) {
 				ch.Settlement = generated.SettlementWatermarks{Settled: 1000}
@@ -295,7 +287,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		scheme := newScheme(t, signer, store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		scheme.hooks.waitForChannelRead = func(int) error { return nil }
 		payload := claimPayload(t, 1000)
 		response, err := scheme.settleClaims(context.Background(), payload, requirements)
@@ -321,7 +313,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), "batch:transaction:"+network+":"+signature.String()+":wire", wire))
 		signer := confirming(t, 0, errors.New("history unavailable"))
 		scheme := newScheme(t, signer, store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		var submitCalls atomic.Int32
 		scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 			submitCalls.Add(1)
@@ -351,7 +343,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 
 	t.Run("retries a stale claim read after confirmation", func(t *testing.T) {
 		scheme := newScheme(t, confirming(t, 0, nil), nil, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		var reads atomic.Int32
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			n := reads.Add(1)
@@ -391,7 +383,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), key, tx))
 		recoveringSigner := confirming(t, 1, nil)
 		recovering := newScheme(t, recoveringSigner, store, nil)
-		configure(recovering, nil)
+		configure(recovering)
 		recovering.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(ch *generated.Channel) {
 				ch.Settlement = generated.SettlementWatermarks{Settled: 1_000}
@@ -417,7 +409,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.Equal(t, tx, completed)
 
 		restarted := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(restarted, nil)
+		configure(restarted)
 		var restartedReads, restartedSubmits atomic.Int32
 		restarted.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			restartedReads.Add(1)
@@ -435,7 +427,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.Zero(t, restartedSubmits.Load())
 
 		unrelated := newScheme(t, confirming(t, 0, nil), nil, nil)
-		configure(unrelated, nil)
+		configure(unrelated)
 		unrelated.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(ch *generated.Channel) {
 				ch.Settlement = generated.SettlementWatermarks{Settled: 2_000}
@@ -468,8 +460,8 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		}
 		first := newScheme(t, transport, store, nil)
 		second := newScheme(t, transport, store, nil)
-		configure(first, nil)
-		configure(second, nil)
+		configure(first)
+		configure(second)
 		payload := batchsettlement.BatchSettlePayload{
 			Type:     batchsettlement.PayloadTypeSettle,
 			Channels: []batchsettlement.BatchSettleChannel{{ChannelID: channelID, ChannelConfig: channelConfig}},
@@ -497,7 +489,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		store := NewInMemoryPendingSettlementStore()
 		require.NoError(t, store.Set(context.Background(), "key", "successor"))
 		scheme := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		incomplete, err := scheme.completeOrPending(context.Background(), "key", tx, network, payer.PublicKey().String())
 		require.NoError(t, err)
 		require.Nil(t, incomplete)
@@ -524,7 +516,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		first := newScheme(t, firstSigner, store, nil)
-		configure(first, nil)
+		configure(first)
 		var firstSubmits atomic.Int32
 		first.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 			firstSubmits.Add(1)
@@ -546,7 +538,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.False(t, ok)
 
 		restarted := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(restarted, nil)
+		configure(restarted)
 		var restartedSubmits atomic.Int32
 		restarted.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(ch *generated.Channel) {
@@ -605,7 +597,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		scheme := newScheme(t, transport, nil, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return channel(func(ch *generated.Channel) {
 				ch.Settlement = generated.SettlementWatermarks{PayoutWatermark: 200, Settled: 1000}
@@ -645,7 +637,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		scheme := newScheme(t, signer, store, record)
-		configure(scheme, nil)
+		configure(scheme)
 		payload := batchsettlement.BatchSettlePayload{
 			Type:     batchsettlement.PayloadTypeSettle,
 			Channels: []batchsettlement.BatchSettleChannel{{ChannelID: channelID, ChannelConfig: channelConfig}},
@@ -683,7 +675,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		store := x402.NewInMemoryPendingSettlementStore()
 		require.NoError(t, store.Set(context.Background(), key, tx))
 		recovering := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(recovering, nil)
+		configure(recovering)
 		stubPrepareRefund(recovering)
 		var recoveryReads atomic.Int32
 		recovering.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
@@ -706,7 +698,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.Equal(t, int32(2), recoveryReads.Load())
 
 		completedReplay := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(completedReplay, nil)
+		configure(completedReplay)
 		stubPrepareRefund(completedReplay)
 		var completedReads atomic.Int32
 		completedReplay.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
@@ -726,7 +718,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.Equal(t, int32(2), completedReads.Load())
 
 		restarted := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(restarted, nil)
+		configure(restarted)
 		stubPrepareRefund(restarted)
 		restarted.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return nil, nil
@@ -765,7 +757,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		scheme := newScheme(t, transport, store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		scheme.hooks.waitForChannelRead = func(int) error { return nil }
 		scheme.hooks.reconcileBroadcast = func(context.Context, string, string, string, string) (durableResult, error) {
 			return durableResult{OK: true, Signature: tx}, nil
@@ -810,7 +802,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), "batch:distribute:"+network+":"+mint+":"+receiver+":"+channelID, tx))
 		require.NoError(t, store.Set(context.Background(), "batch:refund:"+network+":"+channelID+":signed-close", tx))
 		scheme := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		failure := &x402.SettleResponse{
 			ErrorReason: "transaction_failed",
 			Network:     x402.Network(network),
@@ -857,7 +849,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			},
 		}
 		scheme := newScheme(t, transport, store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		var fetchCalls atomic.Int32
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			switch fetchCalls.Add(1) {
@@ -902,7 +894,7 @@ func TestBatchSettlementOutcomeRecovery(t *testing.T) {
 			deleteErr: errors.New("delete unavailable"),
 		}
 		scheme := newScheme(t, confirming(t, 0, nil), store, nil)
-		configure(scheme, nil)
+		configure(scheme)
 		pending, err := scheme.completeOrPending(context.Background(), "key", tx, network, payer.PublicKey().String())
 		require.NoError(t, err)
 		require.Equal(t, x402.ErrSettlementPending, pending.ErrorReason)

@@ -43,6 +43,11 @@ const (
 
 	// DefaultMaxClosesPerRun caps the seal/distribute transactions per run.
 	DefaultMaxClosesPerRun = 10
+
+	// OpenIndexGraceSecs is how long a missing account keeps its index row.
+	// Longer than a blockhash lifetime, so cleanup does not drop an open that
+	// is still pending.
+	OpenIndexGraceSecs int64 = 300
 )
 
 // OpenAbandonPolicy selects how an Open channel becomes an abandon candidate.
@@ -68,24 +73,6 @@ func AssertMaxIdleSecs(value *int64) (int64, error) {
 		return 0, fmt.Errorf("maxIdleSecs must be a non-negative integer number of seconds")
 	}
 	return *value, nil
-}
-
-// RentCleanupChannelRecord is the stored facts one cleanup pass reads.
-type RentCleanupChannelRecord struct {
-	ChannelID      string
-	PayTo          string
-	TokenProgram   string
-	FirstSeenAt    time.Time
-	ExpiresAt      int64
-	LastActivityAt time.Time
-	Network        string
-}
-
-// RentCleanupChannelStorage lists, updates, and deletes cleanup records.
-type RentCleanupChannelStorage interface {
-	List(ctx context.Context) ([]RentCleanupChannelRecord, error)
-	Upsert(ctx context.Context, record RentCleanupChannelRecord) error
-	Delete(ctx context.Context, channelID string) error
 }
 
 // RentCleanupCloseAction describes which cleanup path closed a channel.
@@ -193,7 +180,7 @@ func (c RentCleanupStartConfig) discoveryOptions() RentDiscoveryOptions {
 // PaymentChannelRentCleanupConfig configures a rent cleanup manager for one network.
 type PaymentChannelRentCleanupConfig struct {
 	Signer                        svm.FacilitatorSvmSigner
-	Storage                       RentCleanupChannelStorage
+	Storage                       PaymentChannelStorage
 	Network                       string
 	ComputeUnitPriceMicroLamports *uint64
 	SettleComputeUnitLimit        *uint32
@@ -208,7 +195,7 @@ type PaymentChannelRentCleanupConfig struct {
 // payment channels on one network.
 type PaymentChannelRentCleanupManager struct {
 	signer                        PaymentChannelFacilitatorSigner
-	storage                       RentCleanupChannelStorage
+	storage                       PaymentChannelStorage
 	network                       string
 	computeUnitPriceMicroLamports *uint64
 	settleComputeUnitLimit        *uint32
@@ -341,7 +328,7 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 	defer m.passMu.Unlock()
 
 	opts, maxIdleSecs := opts.withDefaults(m.maxIdleSecs)
-	records, err := m.storage.List(ctx)
+	records, err := m.storage.List(ctx, m.network)
 	if err != nil {
 		return fmt.Errorf("failed to list stored channels: %w", err)
 	}
@@ -376,7 +363,7 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 			continue
 		}
 		if !exists {
-			if err := m.storage.Delete(ctx, record.ChannelID); err != nil {
+			if err := m.deleteIfPastOpenGrace(ctx, record); err != nil {
 				opts.reportError(err, record.ChannelID)
 			}
 			continue
@@ -452,7 +439,7 @@ func (m *PaymentChannelRentCleanupManager) Discover(ctx context.Context, opts Re
 		return fmt.Errorf("%s.Discover requires GetProgramAccounts on the signer", m.label)
 	}
 	querier := signerProgramAccounts{signer: getter, network: m.network}
-	records, err := m.storage.List(ctx)
+	records, err := m.storage.List(ctx, m.network)
 	if err != nil {
 		return fmt.Errorf("failed to list stored channels: %w", err)
 	}
@@ -489,9 +476,8 @@ func (m *PaymentChannelRentCleanupManager) Discover(ctx context.Context, opts Re
 			if slot <= channel.Channel.OpenSlot+OpenSlotWindow {
 				continue
 			}
-			if err := m.storage.Upsert(ctx, RentCleanupChannelRecord{
+			if err := m.storage.RecordActivity(ctx, PaymentChannelRecord{
 				ChannelID:      id,
-				FirstSeenAt:    now,
 				LastActivityAt: now,
 				Network:        m.network,
 			}); err != nil {
@@ -535,8 +521,8 @@ type reclaimCandidate struct {
 	rentPayer solana.PublicKey
 }
 
-func orderRentCleanupScan(records []RentCleanupChannelRecord, cursor string) []RentCleanupChannelRecord {
-	sorted := make([]RentCleanupChannelRecord, len(records))
+func orderRentCleanupScan(records []PaymentChannelRecord, cursor string) []PaymentChannelRecord {
+	sorted := make([]PaymentChannelRecord, len(records))
 	copy(sorted, records)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ChannelID < sorted[j].ChannelID })
 	if cursor == "" {
@@ -544,7 +530,7 @@ func orderRentCleanupScan(records []RentCleanupChannelRecord, cursor string) []R
 	}
 	for i, record := range sorted {
 		if record.ChannelID == cursor {
-			rotated := make([]RentCleanupChannelRecord, 0, len(sorted))
+			rotated := make([]PaymentChannelRecord, 0, len(sorted))
 			rotated = append(rotated, sorted[i:]...)
 			rotated = append(rotated, sorted[:i]...)
 			return rotated
@@ -553,7 +539,7 @@ func orderRentCleanupScan(records []RentCleanupChannelRecord, cursor string) []R
 	return sorted
 }
 
-func openChannelDue(policy OpenAbandonPolicy, record RentCleanupChannelRecord, nowSecs, abandonGraceSecs, maxIdleSecs int64) bool {
+func openChannelDue(policy OpenAbandonPolicy, record PaymentChannelRecord, nowSecs, abandonGraceSecs, maxIdleSecs int64) bool {
 	switch policy {
 	case OpenAbandonPolicyExpiry:
 		return nowSecs >= record.ExpiresAt+abandonGraceSecs
@@ -564,11 +550,7 @@ func openChannelDue(policy OpenAbandonPolicy, record RentCleanupChannelRecord, n
 		if maxIdleSecs <= 0 {
 			return false
 		}
-		idleSince := record.LastActivityAt
-		if idleSince.IsZero() {
-			idleSince = record.FirstSeenAt
-		}
-		return nowSecs >= idleSince.Unix()+maxIdleSecs
+		return nowSecs >= record.LastActivityAt.Unix()+maxIdleSecs
 	default:
 		return false
 	}
@@ -587,7 +569,7 @@ func closeAction(status generated.ChannelStatus) RentCleanupCloseAction {
 
 func (m *PaymentChannelRentCleanupManager) submitCloseOrDistribute(
 	ctx context.Context,
-	record RentCleanupChannelRecord,
+	record PaymentChannelRecord,
 	channel *generated.Channel,
 	channelID solana.PublicKey,
 ) (string, error) {
@@ -714,7 +696,7 @@ func (m *PaymentChannelRentCleanupManager) submitReclaimGroup(
 			opts.OnReclaim(RentCleanupReclaimResult{ChannelIDs: channelIDs, Transaction: signature})
 		}
 		for _, channelID := range channelIDs {
-			if err := m.storage.Delete(ctx, channelID); err != nil {
+			if err := m.storage.Delete(ctx, m.network, channelID); err != nil {
 				opts.reportError(err, channelID)
 			}
 		}
@@ -735,7 +717,7 @@ func (m *PaymentChannelRentCleanupManager) refreshReclaimBatch(
 			continue
 		}
 		if !exists {
-			if err := m.storage.Delete(ctx, candidate.channelID.String()); err != nil {
+			if err := m.storage.Delete(ctx, m.network, candidate.channelID.String()); err != nil {
 				opts.reportError(err, candidate.channelID.String())
 			}
 			continue
@@ -763,9 +745,19 @@ func (m *PaymentChannelRentCleanupManager) deleteIfGone(
 	if exists {
 		return
 	}
-	if err := m.storage.Delete(ctx, storedID); err != nil {
+	if err := m.storage.Delete(ctx, m.network, storedID); err != nil {
 		opts.reportError(err, storedID)
 	}
+}
+
+// deleteIfPastOpenGrace drops an index row whose account is missing, once the
+// open grace has elapsed. A pending open is kept so a later confirmation still
+// has its row.
+func (m *PaymentChannelRentCleanupManager) deleteIfPastOpenGrace(ctx context.Context, record PaymentChannelRecord) error {
+	if time.Now().Before(record.LastActivityAt.Add(time.Duration(OpenIndexGraceSecs) * time.Second)) {
+		return nil
+	}
+	return m.storage.Delete(ctx, record.Network, record.ChannelID)
 }
 
 func (m *PaymentChannelRentCleanupManager) resolveFeePayer(ctx context.Context, address solana.PublicKey) (solana.PublicKey, error) {

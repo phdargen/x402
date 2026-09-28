@@ -143,21 +143,18 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 	}
 
 	type delegatedFixture struct {
-		bindings   *InMemoryReceiverAuthorizerStore
-		identities *InMemoryDelegatedAuthStore
-		scheme     *BatchSvmScheme
-		signer     *tokenOwnerSigner
+		storage paymentchannels.PaymentChannelStorage
+		scheme  *BatchSvmScheme
+		signer  *tokenOwnerSigner
 	}
 
 	delegatedScheme := func(identity string, delegate bool) *delegatedFixture {
-		identities := NewInMemoryDelegatedAuthStore()
-		bindings := NewInMemoryReceiverAuthorizerStore()
+		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
 		signer := newTokenOwnerSigner(feeKey)
-		cfg := &Config{ReceiverAuthorizerStore: bindings}
+		cfg := &Config{ChannelStorage: storage}
 		if delegate {
 			cfg.DelegatedReceiverAuth = &DelegatedReceiverAuth{
 				ReceiverAuthorizer: server.PublicKey().String(),
-				IdentityStore:      identities,
 				ResolveCallerIdentity: func(context.Context, DelegatedSettleContext) (string, error) {
 					return identity, nil
 				},
@@ -165,8 +162,7 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 		}
 		scheme := NewBatchSvmScheme(ctx, signer, cfg)
 		scheme.now = func() int64 { return delegatedNow }
-		fixture := &delegatedFixture{bindings: bindings, identities: identities, scheme: scheme, signer: signer}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
+		fixture := &delegatedFixture{storage: storage, scheme: scheme, signer: signer}
 		return fixture
 	}
 
@@ -185,9 +181,6 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 		}
 		fixture.scheme.hooks.submitRedemption = func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error) {
 			return durableResult{OK: true, Signature: delegatedSig}, nil
-		}
-		fixture.scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			return nil
 		}
 		fixture.scheme.hooks.sealDependencies = func() SealDependencies {
 			deps := fixture.scheme.defaultSealDependencies()
@@ -233,7 +226,7 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 		require.True(t, response.Success, "%+v", response)
 		require.NotEmpty(t, response.Transaction)
 
-		bound, err := fixture.identities.Get(ctx, network, opened.ChannelID)
+		bound, err := fixture.storage.Get(ctx, network, opened.ChannelID)
 		require.NoError(t, err)
 		require.NotNil(t, bound)
 		require.Equal(t, delegatedCaller, bound.CallerIdentity)
@@ -253,7 +246,7 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 		require.Equal(t, batchsettlement.ErrDelegatedUnauthenticated, response.ErrorReason)
 		require.Equal(t, sendsBefore, len(fixture.signer.sentTransactions()))
 
-		bound, err := fixture.identities.Get(ctx, network, opened.ChannelID)
+		bound, err := fixture.storage.Get(ctx, network, opened.ChannelID)
 		require.NoError(t, err)
 		require.Nil(t, bound)
 	})
@@ -261,12 +254,11 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 	t.Run("seals and refunds a matching caller without closeAuthorization", func(t *testing.T) {
 		opened := buildOpen(t, 125)
 		fixture := delegatedScheme(delegatedCaller, true)
-		require.NoError(t, fixture.bindings.Bind(ctx, ReceiverAuthorizerBinding{
+		_, err := fixture.storage.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
 			ChannelID: opened.ChannelID, Network: network, ReceiverAuthorizer: server.PublicKey().String(),
-		}))
-		require.NoError(t, fixture.identities.Bind(ctx, DelegatedAuthBinding{
-			CallerIdentity: delegatedCaller, ChannelID: opened.ChannelID, Network: network,
-		}))
+			CallerIdentity: delegatedCaller, LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 		live := channelOf(opened.Payload.ChannelConfig, generated.ChannelStatus_Closing, delegatedNow-60)
 		stubClose(fixture, opened.ChannelID, live)
 
@@ -295,12 +287,11 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 	t.Run("rejects a delegated close whose caller does not match, and a facilitator that does not delegate", func(t *testing.T) {
 		opened := buildOpen(t, 126)
 		mismatched := delegatedScheme("someone-else", true)
-		require.NoError(t, mismatched.bindings.Bind(ctx, ReceiverAuthorizerBinding{
+		_, err := mismatched.storage.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
 			ChannelID: opened.ChannelID, Network: network, ReceiverAuthorizer: server.PublicKey().String(),
-		}))
-		require.NoError(t, mismatched.identities.Bind(ctx, DelegatedAuthBinding{
-			CallerIdentity: delegatedCaller, ChannelID: opened.ChannelID, Network: network,
-		}))
+			CallerIdentity: delegatedCaller, LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 		stubClose(mismatched, opened.ChannelID, channelOf(opened.Payload.ChannelConfig, generated.ChannelStatus_Closing, delegatedNow-60))
 		voucher := signedVoucher(t, opened.ChannelID, 1_000)
 		seal := batchsettlement.BatchSealPayload{
@@ -315,68 +306,76 @@ func TestBatchSettlementDelegatedReceiverAuthorization(t *testing.T) {
 		require.Equal(t, batchsettlement.ErrDelegatedUnauthenticated, response.ErrorReason)
 
 		plain := delegatedScheme(delegatedCaller, false)
-		require.NoError(t, plain.bindings.Bind(ctx, ReceiverAuthorizerBinding{
+		_, err = plain.storage.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
 			ChannelID: opened.ChannelID, Network: network, ReceiverAuthorizer: server.PublicKey().String(),
-		}))
+			LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 		stubClose(plain, opened.ChannelID, channelOf(opened.Payload.ChannelConfig, generated.ChannelStatus_Closing, delegatedNow-60))
 		response = settle(t, plain.scheme, seal, req)
 		require.False(t, response.Success)
 		require.Equal(t, batchsettlement.ErrCloseAuthorization, response.ErrorReason)
 	})
 
-	t.Run("InMemoryBatchDelegatedAuthStore bind is first-writer-wins", func(t *testing.T) {
-		store := NewInMemoryDelegatedAuthStore()
-		binding := DelegatedAuthBinding{
+	t.Run("channel storage keeps the first caller identity for a channel", func(t *testing.T) {
+		store := paymentchannels.NewInMemoryPaymentChannelStorage()
+		channelID := payer.Address().String()
+		first := paymentchannels.PaymentChannelRecord{
 			CallerIdentity: delegatedCaller,
-			ChannelID:      payer.Address().String(),
+			ChannelID:      channelID,
 			Network:        network,
+			LastActivityAt: time.Now(),
 		}
-		require.NoError(t, store.Bind(ctx, binding))
-		require.NoError(t, store.Bind(ctx, binding))
-		err := store.Bind(ctx, DelegatedAuthBinding{
+		_, err := store.RecordOpen(ctx, first)
+		require.NoError(t, err)
+		_, err = store.RecordOpen(ctx, first)
+		require.NoError(t, err)
+		conflict, err := store.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
 			CallerIdentity: "other",
-			ChannelID:      payer.Address().String(),
+			ChannelID:      channelID,
 			Network:        network,
+			LastActivityAt: time.Now(),
 		})
-		require.ErrorIs(t, err, ErrDelegatedAuthIdentityConflict)
-		got, err := store.Get(ctx, network, payer.Address().String())
+		require.NoError(t, err)
+		require.ErrorIs(t, paymentchannels.CheckOpenBindings(paymentchannels.PaymentChannelRecord{
+			CallerIdentity: "other", ChannelID: channelID, Network: network,
+		}, conflict.Record), paymentchannels.ErrCallerIdentityConflict)
+		got, err := store.Get(ctx, network, channelID)
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		require.Equal(t, delegatedCaller, got.CallerIdentity)
-		require.NoError(t, store.Delete(ctx, network, payer.Address().String()))
-		got, err = store.Get(ctx, network, payer.Address().String())
+		require.NoError(t, store.Delete(ctx, network, channelID))
+		got, err = store.Get(ctx, network, channelID)
 		require.NoError(t, err)
 		require.Nil(t, got)
 	})
 
 	t.Run("drops the caller identity when rent cleanup deletes the channel", func(t *testing.T) {
-		identities := NewInMemoryDelegatedAuthStore()
+		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
 		signer := newScriptedSigner(t, 1)
 		scheme := NewBatchSvmScheme(ctx, signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
+			ChannelStorage: storage,
 			DelegatedReceiverAuth: &DelegatedReceiverAuth{
 				ReceiverAuthorizer: server.PublicKey().String(),
-				IdentityStore:      identities,
 				ResolveCallerIdentity: func(context.Context, DelegatedSettleContext) (string, error) {
 					return delegatedCaller, nil
 				},
 			},
 		})
 		channelID := payer.Address().String()
-		require.NoError(t, identities.Bind(ctx, DelegatedAuthBinding{
-			CallerIdentity: delegatedCaller, ChannelID: channelID, Network: network,
-		}))
-		require.NoError(t, scheme.GetChannelStorage().Upsert(ctx, paymentchannels.PaymentChannelRecord{
-			ChannelID:    channelID,
-			PayTo:        svm.USDCMainnetAddress,
-			TokenProgram: svm.TokenProgramAddress,
-			FirstSeenAt:  time.Now().Add(-10 * time.Second),
-			ExpiresAt:    4_102_444_800,
-			Network:      network,
-		}))
+		_, err := scheme.GetChannelStorage().RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
+			ChannelID:      channelID,
+			PayTo:          svm.USDCMainnetAddress,
+			TokenProgram:   svm.TokenProgramAddress,
+			LastActivityAt: time.Now().Add(-time.Duration(paymentchannels.OpenIndexGraceSecs+1) * time.Second),
+			ExpiresAt:      4_102_444_800,
+			Network:        network,
+			CallerIdentity: delegatedCaller,
+		})
+		require.NoError(t, err)
 		manager := scheme.CreateRentCleanupManager(x402.Network(network))
 		require.NoError(t, manager.Cleanup(ctx, CleanupOptions{}))
-		got, err := identities.Get(ctx, network, channelID)
+		got, err := storage.Get(ctx, network, channelID)
 		require.NoError(t, err)
 		require.Nil(t, got)
 	})

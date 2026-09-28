@@ -46,8 +46,7 @@ func TestExpiryOfABroadcastThatWasNeverConfirmed(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), key, signature.String()))
 		require.NoError(t, store.Set(context.Background(), wireKey, wire))
 		scheme := NewBatchSvmScheme(context.Background(), signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  store,
+			PendingSettlementStore: store,
 		})
 		return scheme, store
 	}
@@ -188,8 +187,7 @@ func TestAmbiguousPayoutAttribution(t *testing.T) {
 		require.NoError(t, store.Set(context.Background(), key, signature.String()))
 		var recorded int
 		scheme := NewBatchSvmScheme(context.Background(), signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  store,
+			PendingSettlementStore: store,
 			OnDistributionConfirmed: func(context.Context, *x402.SettleResponse, types.PaymentRequirements) error {
 				recorded++
 				return nil
@@ -202,7 +200,6 @@ func TestAmbiguousPayoutAttribution(t *testing.T) {
 		scheme.hooks.deriveChannelID = func(context.Context, batchsettlement.BatchChannelConfig, string) (string, error) {
 			return channelID, nil
 		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error { return nil }
 		requirements := types.PaymentRequirements{
 			Amount: "1000", Asset: svm.USDCDevnetAddress, Network: network, PayTo: payTo, Scheme: batchsettlement.Scheme,
 			MaxTimeoutSeconds: 300,
@@ -266,8 +263,7 @@ func TestWireRecords(t *testing.T) {
 		inner := newScriptedSigner(t, 1)
 		inner.keys[0] = feePayer
 		scheme := NewBatchSvmScheme(context.Background(), inner, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			PendingSettlementStore:  store,
+			PendingSettlementStore: store,
 		})
 		scheme.hooks.reconcileBroadcast = func(context.Context, string, string, string, string) (durableResult, error) {
 			return durableResult{OK: true, Signature: "other-signature"}, nil

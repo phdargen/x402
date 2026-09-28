@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/big"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/stretchr/testify/assert"
@@ -98,23 +99,23 @@ func TestBatchSettlementSeal(t *testing.T) {
 	const signature = "signature"
 	type sealFixture struct {
 		scheme  *BatchSvmScheme
-		store   *InMemoryReceiverAuthorizerStore
+		storage *activityRecordingStorage
 		submits []submitCall
-		tracked int
 	}
 	facilitator := func(t *testing.T, channel *generated.Channel, bound bool) *sealFixture {
 		t.Helper()
 		if channel == nil {
 			channel = live(nil)
 		}
-		store := NewInMemoryReceiverAuthorizerStore()
+		storage := newActivityRecordingStorage()
 		if bound {
-			require.NoError(t, store.Bind(context.Background(), ReceiverAuthorizerBinding{
-				Network: network, ChannelID: channelID, ReceiverAuthorizer: authorizer.PublicKey().String(),
-			}))
+			_, err := storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+				Network: network, ChannelID: channelID, ReceiverAuthorizer: authorizer.PublicKey().String(), LastActivityAt: time.Now(),
+			})
+			require.NoError(t, err)
 		}
-		fixture := &sealFixture{store: store}
-		scheme := NewBatchSvmScheme(context.Background(), newScriptedSigner(t, 1), &Config{ReceiverAuthorizerStore: store})
+		fixture := &sealFixture{storage: storage}
+		scheme := NewBatchSvmScheme(context.Background(), newScriptedSigner(t, 1), &Config{ChannelStorage: storage})
 		terms := BatchTerms{
 			FeePayer:           feePayer.PublicKey().String(),
 			ReceiverAuthorizer: authorizer.PublicKey().String(),
@@ -140,10 +141,6 @@ func TestBatchSettlementSeal(t *testing.T) {
 		scheme.hooks.submitRedemption = func(_ context.Context, fee, net string, instructions []solana.Instruction, key, payer string) (durableResult, error) {
 			fixture.submits = append(fixture.submits, submitCall{fee, net, instructions, key, payer})
 			return durableResult{OK: true, Signature: signature}, nil
-		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			fixture.tracked++
-			return nil
 		}
 		scheme.hooks.sealDependencies = func() SealDependencies {
 			deps := scheme.defaultSealDependencies()
@@ -217,7 +214,6 @@ func TestBatchSettlementSeal(t *testing.T) {
 		assert.Equal(t, network, fixture.submits[0].network)
 		assert.Len(t, fixture.submits[0].instructions, 3)
 		assert.Equal(t, "batch:seal:"+network+":"+channelID+":3000", fixture.submits[0].key)
-		assert.Equal(t, 1, fixture.tracked)
 
 		again := settle(t, fixture.scheme, sealPayload(t, 3_000))
 		assert.True(t, again.Success)
@@ -297,9 +293,10 @@ func TestBatchSettlementSeal(t *testing.T) {
 		assert.Equal(t, batchsettlement.ErrReceiverBindingUnavailable, response.ErrorReason)
 
 		rebound := facilitator(t, nil, false)
-		require.NoError(t, rebound.store.Bind(context.Background(), ReceiverAuthorizerBinding{
-			Network: network, ChannelID: channelID, ReceiverAuthorizer: payer.PublicKey().String(),
-		}))
+		_, err = rebound.storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+			Network: network, ChannelID: channelID, ReceiverAuthorizer: payer.PublicKey().String(), LastActivityAt: time.Now(),
+		})
+		require.NoError(t, err)
 		response = settle(t, rebound.scheme, payload)
 		assert.False(t, response.Success)
 		assert.Equal(t, batchsettlement.ErrReceiverAuthorizerMismatch, response.ErrorReason)

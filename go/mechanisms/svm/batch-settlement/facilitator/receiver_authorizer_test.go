@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	solana "github.com/gagliardetto/solana-go"
 	"github.com/stretchr/testify/require"
@@ -22,20 +23,32 @@ import (
 const receiverAuthorizerOpenSlot uint64 = 123
 
 type countingGetStore struct {
-	inner *InMemoryReceiverAuthorizerStore
+	inner *paymentchannels.InMemoryPaymentChannelStorage
 	mu    sync.Mutex
 	gets  int
 }
 
-func (s *countingGetStore) Bind(ctx context.Context, binding ReceiverAuthorizerBinding) error {
-	return s.inner.Bind(ctx, binding)
+func (s *countingGetStore) RecordOpen(ctx context.Context, record paymentchannels.PaymentChannelRecord) (paymentchannels.PaymentChannelOpenWrite, error) {
+	return s.inner.RecordOpen(ctx, record)
 }
 
-func (s *countingGetStore) Get(ctx context.Context, network, channelID string) (*ReceiverAuthorizerBinding, error) {
+func (s *countingGetStore) RevertOpen(ctx context.Context, write paymentchannels.PaymentChannelOpenWrite) error {
+	return s.inner.RevertOpen(ctx, write)
+}
+
+func (s *countingGetStore) RecordActivity(ctx context.Context, records ...paymentchannels.PaymentChannelRecord) error {
+	return s.inner.RecordActivity(ctx, records...)
+}
+
+func (s *countingGetStore) Get(ctx context.Context, network, channelID string) (*paymentchannels.PaymentChannelRecord, error) {
 	s.mu.Lock()
 	s.gets++
 	s.mu.Unlock()
 	return s.inner.Get(ctx, network, channelID)
+}
+
+func (s *countingGetStore) List(ctx context.Context, network string) ([]paymentchannels.PaymentChannelRecord, error) {
+	return s.inner.List(ctx, network)
 }
 
 func (s *countingGetStore) Delete(ctx context.Context, network, channelID string) error {
@@ -54,39 +67,35 @@ func (s *countingGetStore) resetGets() {
 	s.mu.Unlock()
 }
 
-type failingBindStore struct {
-	inner   *InMemoryReceiverAuthorizerStore
-	bindErr error
+type failingRecordOpenStore struct {
+	inner   *paymentchannels.InMemoryPaymentChannelStorage
+	openErr error
 }
 
-func (s *failingBindStore) Bind(ctx context.Context, binding ReceiverAuthorizerBinding) error {
-	if s.bindErr != nil {
-		return s.bindErr
+func (s *failingRecordOpenStore) RecordOpen(ctx context.Context, record paymentchannels.PaymentChannelRecord) (paymentchannels.PaymentChannelOpenWrite, error) {
+	if s.openErr != nil {
+		return paymentchannels.PaymentChannelOpenWrite{}, s.openErr
 	}
-	return s.inner.Bind(ctx, binding)
+	return s.inner.RecordOpen(ctx, record)
 }
 
-func (s *failingBindStore) Get(ctx context.Context, network, channelID string) (*ReceiverAuthorizerBinding, error) {
+func (s *failingRecordOpenStore) RevertOpen(ctx context.Context, write paymentchannels.PaymentChannelOpenWrite) error {
+	return s.inner.RevertOpen(ctx, write)
+}
+
+func (s *failingRecordOpenStore) RecordActivity(ctx context.Context, records ...paymentchannels.PaymentChannelRecord) error {
+	return s.inner.RecordActivity(ctx, records...)
+}
+
+func (s *failingRecordOpenStore) Get(ctx context.Context, network, channelID string) (*paymentchannels.PaymentChannelRecord, error) {
 	return s.inner.Get(ctx, network, channelID)
 }
 
-func (s *failingBindStore) Delete(ctx context.Context, network, channelID string) error {
-	return s.inner.Delete(ctx, network, channelID)
+func (s *failingRecordOpenStore) List(ctx context.Context, network string) ([]paymentchannels.PaymentChannelRecord, error) {
+	return s.inner.List(ctx, network)
 }
 
-type unreadStore struct {
-	inner *InMemoryReceiverAuthorizerStore
-}
-
-func (s *unreadStore) Bind(ctx context.Context, binding ReceiverAuthorizerBinding) error {
-	return s.inner.Bind(ctx, binding)
-}
-
-func (s *unreadStore) Get(context.Context, string, string) (*ReceiverAuthorizerBinding, error) {
-	return nil, nil
-}
-
-func (s *unreadStore) Delete(ctx context.Context, network, channelID string) error {
+func (s *failingRecordOpenStore) Delete(ctx context.Context, network, channelID string) error {
 	return s.inner.Delete(ctx, network, channelID)
 }
 
@@ -220,11 +229,11 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 		signer *tokenOwnerSigner
 	}
 
-	facilitatorFor := func(store ReceiverAuthorizerStore, history ReceiverBindingHistoryReader) *openFacilitator {
+	facilitatorFor := func(storage paymentchannels.PaymentChannelStorage, history ReceiverBindingHistoryReader) *openFacilitator {
 		signer := newTokenOwnerSigner(feeKey)
 		cfg := &Config{}
-		if store != nil {
-			cfg.ReceiverAuthorizerStore = store
+		if storage != nil {
+			cfg.ChannelStorage = storage
 		}
 		if history != nil {
 			cfg.ReceiverBindingHistoryReader = history
@@ -237,9 +246,6 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return liveChannel(), nil
 		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			return nil
-		}
 		return fixture
 	}
 
@@ -251,23 +257,31 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 	}
 
 	t.Run("keeps the first binding for a channel and refuses a different key", func(t *testing.T) {
-		store := NewInMemoryReceiverAuthorizerStore()
-		binding := ReceiverAuthorizerBinding{
+		store := paymentchannels.NewInMemoryPaymentChannelStorage()
+		first := paymentchannels.PaymentChannelRecord{
 			ChannelID:          svm.USDCMainnetAddress,
 			Network:            network,
 			ReceiverAuthorizer: server.PublicKey().String(),
+			LastActivityAt:     time.Now(),
 		}
-		require.NoError(t, store.Bind(ctx, binding))
-		require.NoError(t, store.Bind(ctx, binding))
-		err := store.Bind(ctx, ReceiverAuthorizerBinding{
+		_, err := store.RecordOpen(ctx, first)
+		require.NoError(t, err)
+		_, err = store.RecordOpen(ctx, first)
+		require.NoError(t, err)
+		conflict, err := store.RecordOpen(ctx, paymentchannels.PaymentChannelRecord{
 			ChannelID:          svm.USDCMainnetAddress,
 			Network:            network,
 			ReceiverAuthorizer: payer.Address().String(),
+			LastActivityAt:     time.Now(),
 		})
-		require.ErrorIs(t, err, ErrReceiverAuthorizerConflict)
+		require.NoError(t, err)
+		require.ErrorIs(t, paymentchannels.CheckOpenBindings(paymentchannels.PaymentChannelRecord{
+			ChannelID: svm.USDCMainnetAddress, Network: network, ReceiverAuthorizer: payer.Address().String(),
+		}, conflict.Record), paymentchannels.ErrReceiverAuthorizerConflict)
 		got, err := store.Get(ctx, network, svm.USDCMainnetAddress)
 		require.NoError(t, err)
-		require.Equal(t, &binding, got)
+		require.NotNil(t, got)
+		require.Equal(t, server.PublicKey().String(), got.ReceiverAuthorizer)
 		other, err := store.Get(ctx, "solana:other", svm.USDCMainnetAddress)
 		require.NoError(t, err)
 		require.Nil(t, other)
@@ -359,19 +373,15 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 	})
 
 	t.Run("refuses a channel the payer bound to its own key when the server's key is advertised", func(t *testing.T) {
-		store := &countingGetStore{inner: NewInMemoryReceiverAuthorizerStore()}
+		store := &countingGetStore{inner: paymentchannels.NewInMemoryPaymentChannelStorage()}
 		signer := newTokenOwnerSigner(feeKey)
-		scheme := NewBatchSvmScheme(ctx, signer, &Config{ReceiverAuthorizerStore: store})
+		scheme := NewBatchSvmScheme(ctx, signer, &Config{ChannelStorage: store})
 		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return nil, nil
 		}
 		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
 			return liveChannel(), nil
 		}
-		scheme.hooks.trackChannel = func(context.Context, paymentchannels.PaymentChannelRecord) error {
-			return nil
-		}
-
 		built, err := batchclient.BuildDepositPayload(ctx, batchclient.BuildDepositArgs{
 			Payer:              payer,
 			Receiver:           svm.USDCMainnetAddress,
@@ -444,24 +454,17 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 		require.Equal(t, batchsettlement.ErrReceiverAuthorizerMismatch, verify.InvalidReason)
 	})
 
-	t.Run("broadcasts an open only after a store-only bind reads back", func(t *testing.T) {
+	t.Run("broadcasts an open only after channel storage accepts the write", func(t *testing.T) {
 		channelID, payment, req := openedDeposit(t)
 
-		down := &failingBindStore{inner: NewInMemoryReceiverAuthorizerStore(), bindErr: errors.New("store down")}
+		down := &failingRecordOpenStore{inner: paymentchannels.NewInMemoryPaymentChannelStorage(), openErr: errors.New("store down")}
 		failed := facilitatorFor(down, nil)
 		response := settle(t, failed.scheme, payment, req)
 		require.False(t, response.Success)
 		require.Equal(t, "transaction_failed", response.ErrorReason)
 		require.Empty(t, failed.signer.sentTransactions())
 
-		unread := &unreadStore{inner: NewInMemoryReceiverAuthorizerStore()}
-		missing := facilitatorFor(unread, nil)
-		response = settle(t, missing.scheme, payment, req)
-		require.False(t, response.Success)
-		require.Equal(t, batchsettlement.ErrReceiverBindingUnavailable, response.ErrorReason)
-		require.Empty(t, missing.signer.sentTransactions())
-
-		stored := NewInMemoryReceiverAuthorizerStore()
+		stored := paymentchannels.NewInMemoryPaymentChannelStorage()
 		opened := facilitatorFor(stored, nil)
 		response = settle(t, opened.scheme, payment, req)
 		require.True(t, response.Success)
@@ -473,24 +476,21 @@ func TestBatchSettlementReceiverAuthorizerBinding(t *testing.T) {
 		require.Equal(t, payer.Address().String(), bound.ReceiverAuthorizer)
 	})
 
-	t.Run("still broadcasts when a store write fails and history is configured", func(t *testing.T) {
-		channelID, payment, req := openedDeposit(t)
-		store := &failingBindStore{inner: NewInMemoryReceiverAuthorizerStore(), bindErr: errors.New("store down")}
+	t.Run("does not broadcast when channel storage write fails even with history configured", func(t *testing.T) {
+		_, payment, req := openedDeposit(t)
+		store := &failingRecordOpenStore{inner: paymentchannels.NewInMemoryPaymentChannelStorage(), openErr: errors.New("store down")}
 		history := &scriptHistory{
 			signatures:  func(*string) []ReceiverBindingHistorySignature { return nil },
 			transaction: func(string) string { return "" },
 		}
 		fixture := facilitatorFor(store, history)
 		response := settle(t, fixture.scheme, payment, req)
-		require.True(t, response.Success)
-		require.NotEmpty(t, response.Transaction)
-		require.Len(t, fixture.signer.sentTransactions(), 1)
-		bound, err := store.inner.Get(ctx, network, channelID)
-		require.NoError(t, err)
-		require.Nil(t, bound)
+		require.False(t, response.Success)
+		require.Equal(t, "transaction_failed", response.ErrorReason)
+		require.Empty(t, fixture.signer.sentTransactions())
 	})
 
-	t.Run("skips the bind when only a history reader is configured", func(t *testing.T) {
+	t.Run("opens with default storage when only a history reader is configured", func(t *testing.T) {
 		_, payment, req := openedDeposit(t)
 		history := &scriptHistory{
 			signatures:  func(*string) []ReceiverBindingHistorySignature { return nil },

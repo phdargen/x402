@@ -146,11 +146,11 @@ manager, err := scheme.CreateChannelManager(facilitatorClient, requirements, bat
 
 ```go
 scheme := batchfacilitator.NewBatchSvmScheme(context.Background(), svmSigner, &batchfacilitator.Config{
-    ChannelStorage:          storage,
-    ReceiverAuthorizerStore: batchfacilitator.NewInMemoryReceiverAuthorizerStore(),
+    ChannelStorage: storage, // paymentchannels.PaymentChannelStorage; nil defaults to in-memory
     // Optional delegated closes. ReceiverAuthorizer is an address this
     // facilitator does not sign with. A channel bound to that address
     // authenticates seal and cooperative refund by caller identity.
+    // The identity from ResolveCallerIdentity is stored on the channel row.
     // DelegatedReceiverAuth: &batchfacilitator.DelegatedReceiverAuth{...},
 })
 facilitator.Register([]x402.Network{svm.SolanaDevnetCAIP2}, scheme)
@@ -158,7 +158,7 @@ facilitator.Register([]x402.Network{svm.SolanaDevnetCAIP2}, scheme)
 cleanup := scheme.CreateRentCleanupManager(svm.SolanaDevnetCAIP2)
 ```
 
-Configure `ReceiverAuthorizerStore`, `ReceiverBindingHistoryReader`, or both. A store-only facilitator binds the receiver authorizer and reads it back before broadcasting an open, and does not broadcast if that write fails. When both are set, a failed store write still broadcasts the open. The binding is checked on cooperative seal and refund only.
+`ChannelStorage` defaults to an in-memory store. The same channel row holds the lifecycle index, the receiver-authorizer binding, and the delegated caller identity. Opens, top-ups, claims, and distributions record that row before broadcast and do not send if the write fails. A failed open reverts a row that call created; activity writes are kept. `ReceiverBindingHistoryReader` is an optional fallback for a row with no binding, used only when set here. A binding read from history is written back when the row is absent. `DelegatedReceiverAuth` requires `ResolveCallerIdentity`; that identity is stored on the channel row.
 
 `GetExtra` advertises `feePayer` and, when idle cleanup is enabled, `maxIdleSecs`. It advertises `receiverAuthorizer` only when `DelegatedReceiverAuth` is set. `withdrawDelay` comes from the server. Production deployments should use a durable pending-settlement store and shared channel storage when running multiple replicas.
 

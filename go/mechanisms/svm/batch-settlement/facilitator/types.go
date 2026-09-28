@@ -35,6 +35,36 @@ const (
 	VoucherModePayload      VoucherModeBinding = "payload"
 )
 
+// DelegatedSettleStep is the settle phase passed to ResolveCallerIdentity.
+type DelegatedSettleStep string
+
+const (
+	DelegatedStepDeposit DelegatedSettleStep = "deposit"
+	DelegatedStepSeal    DelegatedSettleStep = "seal"
+	DelegatedStepRefund  DelegatedSettleStep = "refund"
+)
+
+// DelegatedSettleContext is passed to DelegatedReceiverAuth.ResolveCallerIdentity.
+type DelegatedSettleContext struct {
+	Step               DelegatedSettleStep
+	ChannelID          string
+	Network            string
+	Payer              string
+	FacilitatorContext any
+}
+
+// DelegatedReceiverAuth opts the facilitator into signing closes for a caller identity.
+// Advertised as /supported extra.receiverAuthorizer. The facilitator records the
+// caller's identity on the channel row at open and requires the same identity to
+// seal or cooperatively refund, so those closes carry no CloseAuthorization.
+// Offering this mode requires ResolveCallerIdentity. The identity is written on
+// the channel row and is not onchain. A lost row fails closed.
+type DelegatedReceiverAuth struct {
+	// ReceiverAuthorizer is advertised as /supported extra.receiverAuthorizer and bound into delegated channels.
+	ReceiverAuthorizer    string
+	ResolveCallerIdentity func(context.Context, DelegatedSettleContext) (string, error)
+}
+
 // BatchTerms are the terms resolved from a channel config and the facilitator's fee payer.
 type BatchTerms struct {
 	FeePayer           string
@@ -98,12 +128,6 @@ type ReceiverBindingHistoryReader interface {
 	) ([]ReceiverBindingHistorySignature, error)
 	// GetTransaction returns confirmed transaction bytes, or "" when the signature is unknown.
 	GetTransaction(ctx context.Context, network, signature string) (string, error)
-}
-
-// BindingSourceConfig is the two places a facilitator may read a receiver-authorizer binding.
-type BindingSourceConfig struct {
-	ReceiverAuthorizerStore      any
-	ReceiverBindingHistoryReader any
 }
 
 // OnDistributionConfirmed runs before a payout is marked complete. Implementations must deduplicate by transaction.

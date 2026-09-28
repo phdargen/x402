@@ -57,7 +57,7 @@ func NewBatchSvmRentCleanupManager(config RentCleanupConfig) *BatchSvmRentCleanu
 	return &BatchSvmRentCleanupManager{
 		inner: paymentchannels.NewPaymentChannelRentCleanupManager(paymentchannels.PaymentChannelRentCleanupConfig{
 			Signer:                        config.Signer,
-			Storage:                       channelStorageAdapter{storage: config.Storage},
+			Storage:                       config.Storage,
 			Network:                       config.Network,
 			ComputeUnitPriceMicroLamports: config.ComputeUnitPriceMicroLamports,
 			SettleComputeUnitLimit:        config.SettleComputeUnitLimit,
@@ -86,28 +86,4 @@ func (m *BatchSvmRentCleanupManager) Cleanup(ctx context.Context, opts CleanupOp
 // Discover finds Distributed channels this facilitator paid rent for that storage does not know about.
 func (m *BatchSvmRentCleanupManager) Discover(ctx context.Context, opts DiscoveryOptions) error {
 	return m.inner.Discover(ctx, opts)
-}
-
-type channelStorageAdapter struct {
-	storage paymentchannels.PaymentChannelStorage
-}
-
-func (a channelStorageAdapter) List(ctx context.Context) ([]paymentchannels.RentCleanupChannelRecord, error) {
-	records, err := a.storage.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]paymentchannels.RentCleanupChannelRecord, len(records))
-	for i, record := range records {
-		out[i] = paymentchannels.RentCleanupChannelRecord(record)
-	}
-	return out, nil
-}
-
-func (a channelStorageAdapter) Upsert(ctx context.Context, record paymentchannels.RentCleanupChannelRecord) error {
-	return a.storage.Upsert(ctx, paymentchannels.PaymentChannelRecord(record))
-}
-
-func (a channelStorageAdapter) Delete(ctx context.Context, channelID string) error {
-	return a.storage.Delete(ctx, channelID)
 }

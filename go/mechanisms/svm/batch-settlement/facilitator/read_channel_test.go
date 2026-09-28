@@ -85,7 +85,7 @@ func TestBatchSettlementChannelReadsUnderAConfirmationSlotFloor(t *testing.T) {
 }
 
 func newReadScheme(signer *rejectingAccountSigner) *BatchSvmScheme {
-	scheme := NewBatchSvmScheme(context.Background(), signer, &Config{ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore()})
+	scheme := NewBatchSvmScheme(context.Background(), signer, nil)
 	scheme.hooks.waitForChannelRead = func(int) error { return nil }
 	return scheme
 }

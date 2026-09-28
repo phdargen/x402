@@ -108,9 +108,7 @@ func (env *batchSvmEnv) pipeline(
 ) *batchSvmPipeline {
 	t.Helper()
 	withdrawDelay := batchIntegrationWithdrawDelay
-	batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{
-		ReceiverAuthorizerStore: batchfacilitator.NewInMemoryReceiverAuthorizerStore(),
-	})
+	batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{})
 	facilitator := x402.Newx402Facilitator()
 	facilitator.Register([]x402.Network{svm.SolanaDevnetCAIP2}, batchFac)
 
@@ -577,9 +575,7 @@ func TestSVMIntegrationBatchSettlement(t *testing.T) {
 		}
 		store := batchserver.NewMemoryChannelStore()
 		withdrawDelay := batchIntegrationWithdrawDelay
-		batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{
-			ReceiverAuthorizerStore: batchfacilitator.NewInMemoryReceiverAuthorizerStore(),
-		})
+		batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{})
 		facilitator := x402.Newx402Facilitator()
 		facilitator.Register([]x402.Network{svm.SolanaDevnetCAIP2}, batchFac)
 		serverScheme := batchserver.NewBatchSvmScheme(&batchserver.Config{
@@ -713,9 +709,7 @@ func TestSVMIntegrationBatchSettlementOperatorSigning(t *testing.T) {
 
 	store := batchserver.NewMemoryChannelStore()
 	withdrawDelay := batchIntegrationWithdrawDelay
-	batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{
-		ReceiverAuthorizerStore: batchfacilitator.NewInMemoryReceiverAuthorizerStore(),
-	})
+	batchFac := batchfacilitator.NewBatchSvmScheme(ctx, env.facSigner, &batchfacilitator.Config{})
 	facilitator := x402.Newx402Facilitator()
 	facilitator.Register([]x402.Network{svm.SolanaDevnetCAIP2}, batchFac)
 	serverScheme := batchserver.NewBatchSvmScheme(&batchserver.Config{

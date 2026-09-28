@@ -24,16 +24,28 @@ import (
 
 // Config is the optional configuration of the batch-settlement SVM facilitator.
 type Config struct {
-	PendingSettlementStore       PendingSettlementStore
-	OnDistributionConfirmed      OnDistributionConfirmed
-	ChannelStorage               paymentchannels.PaymentChannelStorage
-	MaxIdleSecs                  *int64
-	MaxPriorityFeeMicroLamports  *uint64
-	MaxComputeUnits              *uint32
-	MaxRequiredSignatures        *int
-	ReceiverAuthorizerStore      any
-	ReceiverBindingHistoryReader any
-	DelegatedReceiverAuth        *DelegatedReceiverAuth
+	PendingSettlementStore  PendingSettlementStore
+	OnDistributionConfirmed OnDistributionConfirmed
+	// ChannelStorage is the one channel store for every use case: the lifecycle
+	// index, the receiver-authorizer binding, the delegated caller identity,
+	// and rent cleanup. Unset uses one in-memory instance of this same store.
+	// Opens and activity are written here before broadcast. A failed write
+	// does not broadcast the transaction.
+	ChannelStorage              paymentchannels.PaymentChannelStorage
+	OnStorageError              paymentchannels.OnStorageError
+	MaxIdleSecs                 *int64
+	MaxPriorityFeeMicroLamports *uint64
+	MaxComputeUnits             *uint32
+	MaxRequiredSignatures       *int
+	// ReceiverBindingHistoryReader is the optional archive-RPC fallback for a
+	// channel row with no receiver-authorizer binding. A binding read from
+	// history is written back when the row is absent. Nil leaves history off;
+	// the facilitator does not adopt a reader from the signer.
+	ReceiverBindingHistoryReader ReceiverBindingHistoryReader
+	// DelegatedReceiverAuth opts in to facilitator-delegated closes. Advertised
+	// only when ResolveCallerIdentity is set. The identity is written on
+	// ChannelStorage, the same store as every other channel write.
+	DelegatedReceiverAuth *DelegatedReceiverAuth
 }
 
 type schemeHooks struct {
@@ -43,7 +55,6 @@ type schemeHooks struct {
 	readChannel           func(context.Context, string, string) (*generated.Channel, error)
 	distributeInstruction func(context.Context, string, *generated.Channel, BatchTerms, types.PaymentRequirements) (solana.Instruction, error)
 	submitRedemption      func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error)
-	trackChannel          func(context.Context, paymentchannels.PaymentChannelRecord) error
 	reconcileBroadcast    func(context.Context, string, string, string, string) (durableResult, error)
 	waitForChannelRead    func(int) error
 	sealDependencies      func() SealDependencies
@@ -60,7 +71,6 @@ type BatchSvmScheme struct {
 	pendingStore    PendingSettlementStore
 	settlementCache *svm.SettlementCache
 	maxIdleSecs     int64
-	authorizers     ReceiverAuthorizerStore
 	history         ReceiverBindingHistoryReader
 	delegated       *DelegatedReceiverAuth
 
@@ -71,7 +81,7 @@ type BatchSvmScheme struct {
 }
 
 // NewBatchSvmScheme creates a batch-settlement facilitator. It panics when the
-// signer or binding source cannot settle.
+// signer cannot settle, delegated auth is incomplete, or the idle window is invalid.
 func NewBatchSvmScheme(ctx context.Context, signer svm.FacilitatorSvmSigner, config *Config) *BatchSvmScheme {
 	if config == nil {
 		config = &Config{}
@@ -79,12 +89,6 @@ func NewBatchSvmScheme(ctx context.Context, signer svm.FacilitatorSvmSigner, con
 	raw := paymentchannels.AssertPaymentChannelFacilitatorSigner(signer, "BatchSvmScheme")
 	if len(raw.GetAddresses(ctx, "")) == 0 {
 		panic("BatchSvmScheme requires at least one fee payer signer")
-	}
-	if err := AssertBindingSource(BindingSourceConfig{
-		ReceiverAuthorizerStore:      config.ReceiverAuthorizerStore,
-		ReceiverBindingHistoryReader: config.ReceiverBindingHistoryReader,
-	}); err != nil {
-		panic(err)
 	}
 	delegated, err := AssertDelegatedReceiverAuth(config.DelegatedReceiverAuth)
 	if err != nil {
@@ -94,31 +98,21 @@ func NewBatchSvmScheme(ctx context.Context, signer svm.FacilitatorSvmSigner, con
 	if err != nil {
 		panic(err)
 	}
-	storage := config.ChannelStorage
-	if storage == nil {
-		storage = paymentchannels.NewInMemoryPaymentChannelStorage()
+	if config.ChannelStorage == nil {
+		config.ChannelStorage = paymentchannels.NewInMemoryPaymentChannelStorage()
 	}
 	pending := config.PendingSettlementStore
 	if pending == nil {
 		pending = NewInMemoryPendingSettlementStore()
 	}
-	var authorizers ReceiverAuthorizerStore
-	if config.ReceiverAuthorizerStore != nil {
-		authorizers = config.ReceiverAuthorizerStore.(ReceiverAuthorizerStore)
-	}
-	var history ReceiverBindingHistoryReader
-	if config.ReceiverBindingHistoryReader != nil {
-		history = config.ReceiverBindingHistoryReader.(ReceiverBindingHistoryReader)
-	}
 	scheme := &BatchSvmScheme{
 		config:            *config,
 		raw:               raw,
-		channelStorage:    storage,
+		channelStorage:    config.ChannelStorage,
 		pendingStore:      pending,
 		settlementCache:   svm.NewSettlementCache(),
 		maxIdleSecs:       idle,
-		authorizers:       authorizers,
-		history:           history,
+		history:           config.ReceiverBindingHistoryReader,
 		delegated:         delegated,
 		confirmationSlots: map[string]uint64{},
 		now:               func() int64 { return time.Now().Unix() },
@@ -166,30 +160,13 @@ func (f *BatchSvmScheme) GetChannelStorage() paymentchannels.PaymentChannelStora
 }
 
 // CreateRentCleanupManager returns a manager bound to this scheme's storage.
-// Deleting a channel also drops its receiver-authorizer and delegated-identity rows.
 func (f *BatchSvmScheme) CreateRentCleanupManager(network x402.Network) *BatchSvmRentCleanupManager {
 	idle := f.maxIdleSecs
 	return NewBatchSvmRentCleanupManager(RentCleanupConfig{
 		Signer:      f.raw,
 		Network:     string(network),
 		MaxIdleSecs: &idle,
-		Storage: deletingStorage{
-			inner: f.channelStorage,
-			extra: func(ctx context.Context, channelID string) error {
-				if f.authorizers != nil {
-					if err := f.authorizers.Delete(ctx, string(network), channelID); err != nil {
-						return err
-					}
-				}
-				if f.delegated != nil {
-					store := f.delegated.IdentityStore.(DelegatedAuthStore)
-					if err := store.Delete(ctx, string(network), channelID); err != nil {
-						return err
-					}
-				}
-				return nil
-			},
-		},
+		Storage:     f.channelStorage,
 	})
 }
 
@@ -849,16 +826,6 @@ func (f *BatchSvmScheme) distributeInstruction(ctx context.Context, channelID st
 	})
 }
 
-func (f *BatchSvmScheme) trackChannel(ctx context.Context, record paymentchannels.PaymentChannelRecord) error {
-	if f.hooks.trackChannel != nil {
-		return f.hooks.trackChannel(ctx, record)
-	}
-	now := time.Now()
-	record.FirstSeenAt = now
-	record.LastActivityAt = now
-	return f.channelStorage.Upsert(ctx, record)
-}
-
 func (f *BatchSvmScheme) sealDependencies() SealDependencies {
 	if f.hooks.sealDependencies != nil {
 		return f.hooks.sealDependencies()
@@ -870,15 +837,12 @@ func (f *BatchSvmScheme) defaultSealDependencies() SealDependencies {
 	return SealDependencies{
 		PendingStore: f.pendingStore,
 		ResolveTerms: f.resolveTerms,
-		ResolveReceiverAuthorizer: func(ctx context.Context, network, channelID string) (string, error) {
-			return ReadReceiverAuthorizer(ctx, f.authorizers, f.history, network, channelID)
+		ReadBinding: func(ctx context.Context, network, channelID string) (ChannelBinding, error) {
+			return ReadReceiverAuthorizer(ctx, f.channelStorage, f.history, network, channelID, nil)
 		},
 		IsDelegatedAuthorizer: func(bound string) bool { return IsDelegatedAuthorizer(f.delegated, bound) },
 		ResolveDelegatedIdentity: func(ctx context.Context, settle DelegatedSettleContext) (string, error) {
 			return ResolveDelegatedIdentity(ctx, f.delegated, settle)
-		},
-		GetDelegatedCallerIdentity: func(ctx context.Context, network, channelID string) (string, error) {
-			return StoredDelegatedIdentity(ctx, f.delegated, network, channelID)
 		},
 		DeriveChannelID:       f.deriveChannelID,
 		FetchChannel:          f.fetchChannel,
@@ -887,7 +851,6 @@ func (f *BatchSvmScheme) defaultSealDependencies() SealDependencies {
 		DistributeInstruction: f.distributeInstruction,
 		SubmitRedemption:      f.submitRedemption,
 		CompleteOrPending:     f.completeOrPending,
-		TrackChannel:          f.trackChannel,
 		NowSeconds:            f.now,
 		SettlementCache:       f.settlementCache,
 	}
@@ -897,34 +860,6 @@ func (f *BatchSvmScheme) assertServerModeProof(payload batchsettlement.ParsedBat
 	return AssertServerModeProof(payload, channelID, requirements, bound, f.now())
 }
 
-func (f *BatchSvmScheme) bindReceiverAuthorizer(ctx context.Context, channelID, network, receiverAuthorizer string) error {
-	if f.authorizers == nil {
-		return nil
-	}
-	err := f.authorizers.Bind(ctx, ReceiverAuthorizerBinding{
-		Network:            network,
-		ChannelID:          channelID,
-		ReceiverAuthorizer: receiverAuthorizer,
-	})
-	if err != nil {
-		if f.history != nil {
-			return nil
-		}
-		return err
-	}
-	if f.history != nil {
-		return nil
-	}
-	stored, err := f.authorizers.Get(ctx, network, channelID)
-	if err != nil {
-		return err
-	}
-	if stored == nil || stored.ReceiverAuthorizer != receiverAuthorizer {
-		return fmt.Errorf("%s: receiver authorizer was not stored for %s", batchsettlement.ErrReceiverBindingUnavailable, channelID)
-	}
-	return nil
-}
-
 type recordingSigner struct {
 	paymentchannels.PaymentChannelFacilitatorSigner
 	scheme *BatchSvmScheme
@@ -932,33 +867,6 @@ type recordingSigner struct {
 
 func (s *recordingSigner) ConfirmTransaction(ctx context.Context, signature solana.Signature, network string) error {
 	return s.scheme.observeConfirmation(ctx, signature, network, nil)
-}
-
-type deletingStorage struct {
-	inner paymentchannels.PaymentChannelStorage
-	extra func(context.Context, string) error
-}
-
-func (s deletingStorage) Get(ctx context.Context, channelID string) (*paymentchannels.PaymentChannelRecord, error) {
-	return s.inner.Get(ctx, channelID)
-}
-
-func (s deletingStorage) List(ctx context.Context) ([]paymentchannels.PaymentChannelRecord, error) {
-	return s.inner.List(ctx)
-}
-
-func (s deletingStorage) Upsert(ctx context.Context, record paymentchannels.PaymentChannelRecord) error {
-	return s.inner.Upsert(ctx, record)
-}
-
-func (s deletingStorage) Delete(ctx context.Context, channelID string) error {
-	if err := s.inner.Delete(ctx, channelID); err != nil {
-		return err
-	}
-	if s.extra != nil {
-		return s.extra(ctx, channelID)
-	}
-	return nil
 }
 
 type signerProgramQuerier struct {

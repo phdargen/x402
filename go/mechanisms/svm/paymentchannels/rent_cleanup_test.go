@@ -12,22 +12,22 @@ import (
 // promises no ordering, so the manager sorts first: otherwise the cursor would
 // mean something different on every storage implementation.
 func TestOrderRentCleanupScan(t *testing.T) {
-	sorted := []RentCleanupChannelRecord{{ChannelID: "a"}, {ChannelID: "b"}, {ChannelID: "c"}}
-	unordered := []RentCleanupChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}}
+	sorted := []PaymentChannelRecord{{ChannelID: "a"}, {ChannelID: "b"}, {ChannelID: "c"}}
+	unordered := []PaymentChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}}
 
 	assert.Equal(t, sorted, orderRentCleanupScan(unordered, ""), "no cursor scans from the start, in order")
 	assert.Equal(t,
-		[]RentCleanupChannelRecord{{ChannelID: "b"}, {ChannelID: "c"}, {ChannelID: "a"}},
+		[]PaymentChannelRecord{{ChannelID: "b"}, {ChannelID: "c"}, {ChannelID: "a"}},
 		orderRentCleanupScan(unordered, "b"),
 	)
 	assert.Equal(t,
-		[]RentCleanupChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
+		[]PaymentChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
 		orderRentCleanupScan(unordered, "c"),
 	)
 	assert.Equal(t, sorted, orderRentCleanupScan(unordered, "gone"),
 		"a cursor no longer present scans from the start")
 	assert.Equal(t,
-		[]RentCleanupChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
+		[]PaymentChannelRecord{{ChannelID: "c"}, {ChannelID: "a"}, {ChannelID: "b"}},
 		unordered,
 		"the caller's slice is left alone",
 	)

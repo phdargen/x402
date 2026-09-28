@@ -39,35 +39,37 @@ func TestBatchChannelStorageAndSchemeWiring(t *testing.T) {
 	network := string(svm.SolanaDevnetCAIP2)
 	const farFuture int64 = 4_102_444_800
 
-	t.Run("upserts on verify success, retains after settle, deletes when PDA gone", func(t *testing.T) {
+	t.Run("records on verify success, retains after settle, deletes when PDA gone", func(t *testing.T) {
 		signer, stub := newRPCSigner(t, 1)
 		storage := paymentchannels.NewInMemoryPaymentChannelStorage()
 		scheme := NewBatchSvmScheme(context.Background(), signer, &Config{
-			ReceiverAuthorizerStore: NewInMemoryReceiverAuthorizerStore(),
-			ChannelStorage:          storage,
+			ChannelStorage: storage,
 		})
 		channelID := mustKey(t).PublicKey().String()
 		record := paymentchannels.PaymentChannelRecord{
 			ChannelID: channelID, PayTo: mustKey(t).PublicKey().String(), TokenProgram: svm.TokenProgramAddress,
-			FirstSeenAt: time.Now().Add(-10 * time.Second), ExpiresAt: farFuture, Network: network,
+			LastActivityAt: time.Now().Add(-time.Duration(paymentchannels.OpenIndexGraceSecs+1) * time.Second),
+			ExpiresAt:      farFuture,
+			Network:        network,
 		}
-		require.NoError(t, storage.Upsert(context.Background(), record))
-		got, err := storage.Get(context.Background(), channelID)
+		_, err := storage.RecordOpen(context.Background(), record)
+		require.NoError(t, err)
+		got, err := storage.Get(context.Background(), network, channelID)
 		require.NoError(t, err)
 		assert.Equal(t, record.PayTo, got.PayTo)
 		assert.Equal(t, svm.TokenProgramAddress, got.TokenProgram)
-		firstSeen := got.FirstSeenAt
-		record.FirstSeenAt = time.Now()
+		firstActivity := got.LastActivityAt
 		record.ExpiresAt = farFuture - 100
-		require.NoError(t, storage.Upsert(context.Background(), record))
-		got, err = storage.Get(context.Background(), channelID)
+		_, err = storage.RecordOpen(context.Background(), record)
 		require.NoError(t, err)
-		assert.True(t, got.FirstSeenAt.Equal(firstSeen))
+		got, err = storage.Get(context.Background(), network, channelID)
+		require.NoError(t, err)
+		assert.True(t, got.LastActivityAt.After(firstActivity) || got.LastActivityAt.Equal(firstActivity))
 		assert.Equal(t, farFuture, got.ExpiresAt)
 		_ = stub
 		manager := scheme.CreateRentCleanupManager(svm.SolanaDevnetCAIP2)
 		require.NoError(t, manager.Cleanup(context.Background(), CleanupOptions{}))
-		got, err = storage.Get(context.Background(), channelID)
+		got, err = storage.Get(context.Background(), network, channelID)
 		require.NoError(t, err)
 		assert.Nil(t, got)
 	})
@@ -529,7 +531,7 @@ func TestBatchSvmRentCleanupManagerOnchainDiscovery(t *testing.T) {
 			ids = append(ids, result.ChannelIDs...)
 		}}))
 		assert.Equal(t, []string{pda.String()}, ids)
-		got, err := h.storage.Get(context.Background(), pda.String())
+		got, err := h.storage.Get(context.Background(), network, pda.String())
 		require.NoError(t, err)
 		require.NotNil(t, got)
 		assert.Equal(t, pda.String(), got.ChannelID)
@@ -557,7 +559,7 @@ func TestBatchSvmRentCleanupManagerOnchainDiscovery(t *testing.T) {
 		var discovered int
 		require.NoError(t, h.manager.Discover(context.Background(), DiscoveryOptions{OnDiscover: func(DiscoveryResult) { discovered++ }}))
 		assert.Zero(t, discovered)
-		records, err := h.storage.List(context.Background())
+		records, err := h.storage.List(context.Background(), string(svm.SolanaDevnetCAIP2))
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	})
@@ -567,7 +569,7 @@ func TestBatchSvmRentCleanupManagerOnchainDiscovery(t *testing.T) {
 		h.stub.slot = openSlot + paymentchannels.OpenSlotWindow
 		h.discovered(generated.ChannelStatus_Distributed, openSlot, h.signer.feePayer())
 		require.NoError(t, h.manager.Discover(context.Background(), DiscoveryOptions{}))
-		records, err := h.storage.List(context.Background())
+		records, err := h.storage.List(context.Background(), string(svm.SolanaDevnetCAIP2))
 		require.NoError(t, err)
 		assert.Empty(t, records)
 	})
@@ -575,14 +577,15 @@ func TestBatchSvmRentCleanupManagerOnchainDiscovery(t *testing.T) {
 	t.Run("never overwrites a channel already tracked in storage", func(t *testing.T) {
 		h := newDiscoveryHarness(t, 1)
 		pda := h.discovered(generated.ChannelStatus_Distributed, openSlot, h.signer.feePayer())
-		require.NoError(t, h.storage.Upsert(context.Background(), paymentchannels.PaymentChannelRecord{
-			ChannelID: pda.String(), ExpiresAt: farFuture, FirstSeenAt: time.Now(), Network: network,
+		_, err := h.storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+			ChannelID: pda.String(), ExpiresAt: farFuture, LastActivityAt: time.Now(), Network: network,
 			PayTo: h.payer.String(), TokenProgram: svm.TokenProgramAddress,
-		}))
+		})
+		require.NoError(t, err)
 		var discovered int
 		require.NoError(t, h.manager.Discover(context.Background(), DiscoveryOptions{OnDiscover: func(DiscoveryResult) { discovered++ }}))
 		assert.Zero(t, discovered)
-		got, err := h.storage.Get(context.Background(), pda.String())
+		got, err := h.storage.Get(context.Background(), network, pda.String())
 		require.NoError(t, err)
 		assert.Equal(t, h.payer.String(), got.PayTo)
 		assert.Equal(t, svm.TokenProgramAddress, got.TokenProgram)
@@ -631,9 +634,10 @@ func TestBatchSvmRentCleanupManagerConcurrentSignerGroups(t *testing.T) {
 		payTo := mustKey(t).PublicKey().String()
 		for _, rentPayer := range signer.GetAddresses(context.Background(), "") {
 			id := mustKey(t).PublicKey().String()
-			require.NoError(t, storage.Upsert(context.Background(), paymentchannels.PaymentChannelRecord{
-				ChannelID: id, PayTo: payTo, TokenProgram: svm.TokenProgramAddress, FirstSeenAt: time.Now(), ExpiresAt: 4_102_444_800, Network: network,
-			}))
+			_, err := storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+				ChannelID: id, PayTo: payTo, TokenProgram: svm.TokenProgramAddress, LastActivityAt: time.Now(), ExpiresAt: 4_102_444_800, Network: network,
+			})
+			require.NoError(t, err)
 			stub.setAccount(id, channelAccount{
 				Status: generated.ChannelStatus_Distributed, OpenSlot: openSlot, Payer: payer, Payee: rentPayer, RentPayer: rentPayer,
 				Mint:   solana.MustPublicKeyFromBase58(svm.USDCDevnetAddress),
@@ -672,9 +676,10 @@ func TestBatchSvmRentCleanupManagerConcurrentSignerGroups(t *testing.T) {
 		for _, rentPayer := range rentPayers {
 			for i := 0; i < 3; i++ {
 				id := mustKey(t).PublicKey().String()
-				require.NoError(t, storage.Upsert(context.Background(), paymentchannels.PaymentChannelRecord{
-					ChannelID: id, PayTo: payTo, TokenProgram: svm.TokenProgramAddress, FirstSeenAt: time.Now(), ExpiresAt: 4_102_444_800, Network: network,
-				}))
+				_, err := storage.RecordOpen(context.Background(), paymentchannels.PaymentChannelRecord{
+					ChannelID: id, PayTo: payTo, TokenProgram: svm.TokenProgramAddress, LastActivityAt: time.Now(), ExpiresAt: 4_102_444_800, Network: network,
+				})
+				require.NoError(t, err)
 				stub.setAccount(id, channelAccount{
 					Status: generated.ChannelStatus_Distributed, OpenSlot: openSlot, Payer: payer, Payee: rentPayer, RentPayer: rentPayer,
 					Mint:   solana.MustPublicKeyFromBase58(svm.USDCDevnetAddress),
@@ -723,8 +728,12 @@ func (h *cleanupHarness) seed(seed channelSeed) paymentchannels.PaymentChannelRe
 	if seed.grace == 0 {
 		seed.grace = 900
 	}
-	if seed.firstSeen.IsZero() {
-		seed.firstSeen = time.Now().Add(-2 * time.Hour)
+	if seed.lastActivity.IsZero() {
+		if !seed.firstSeen.IsZero() {
+			seed.lastActivity = seed.firstSeen
+		} else {
+			seed.lastActivity = time.Now().Add(-2 * time.Hour)
+		}
 	}
 	payee := h.signer.feePayer()
 	if !seed.payee.IsZero() {
@@ -736,14 +745,15 @@ func (h *cleanupHarness) seed(seed channelSeed) paymentchannels.PaymentChannelRe
 	}
 	record := paymentchannels.PaymentChannelRecord{
 		ChannelID: mustKey(h.t).PublicKey().String(), PayTo: h.payTo.String(), TokenProgram: svm.TokenProgramAddress,
-		FirstSeenAt: seed.firstSeen, LastActivityAt: seed.lastActivity, ExpiresAt: seed.expiresAt, Network: string(svm.SolanaDevnetCAIP2),
+		LastActivityAt: seed.lastActivity, ExpiresAt: seed.expiresAt, Network: string(svm.SolanaDevnetCAIP2),
 	}
 	if seed.payTo == " " {
 		record.PayTo = ""
 	} else if seed.payTo != "" {
 		record.PayTo = seed.payTo
 	}
-	require.NoError(h.t, h.storage.Upsert(context.Background(), record))
+	_, err := h.storage.RecordOpen(context.Background(), record)
+	require.NoError(h.t, err)
 	h.stub.setAccount(record.ChannelID, channelAccount{
 		Status: seed.status, Deposit: 10_000, GracePeriod: seed.grace, ClosureStartedAt: seed.closureStartedAt,
 		Payer: h.payer, Payee: payee, RentPayer: rentPayer, Mint: solana.MustPublicKeyFromBase58(svm.USDCDevnetAddress),
@@ -759,14 +769,14 @@ func (h *cleanupHarness) deleteOnSend(channelID string) {
 
 func (h *cleanupHarness) exists(channelID string) bool {
 	h.t.Helper()
-	record, err := h.storage.Get(context.Background(), channelID)
+	record, err := h.storage.Get(context.Background(), string(svm.SolanaDevnetCAIP2), channelID)
 	require.NoError(h.t, err)
 	return record != nil
 }
 
 func (h *cleanupHarness) only() paymentchannels.PaymentChannelRecord {
 	h.t.Helper()
-	records, err := h.storage.List(context.Background())
+	records, err := h.storage.List(context.Background(), string(svm.SolanaDevnetCAIP2))
 	require.NoError(h.t, err)
 	require.Len(h.t, records, 1)
 	return records[0]
@@ -808,8 +818,8 @@ type reverseStorage struct {
 	*paymentchannels.InMemoryPaymentChannelStorage
 }
 
-func (s reverseStorage) List(ctx context.Context) ([]paymentchannels.PaymentChannelRecord, error) {
-	records, err := s.InMemoryPaymentChannelStorage.List(ctx)
+func (s reverseStorage) List(ctx context.Context, network string) ([]paymentchannels.PaymentChannelRecord, error) {
+	records, err := s.InMemoryPaymentChannelStorage.List(ctx, network)
 	if err != nil {
 		return nil, err
 	}

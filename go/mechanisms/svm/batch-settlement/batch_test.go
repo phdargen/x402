@@ -504,7 +504,6 @@ func newFacilitator(t *testing.T, ctx context.Context, feePayer *batchclient.Pri
 	key, ok := signerKeys[feePayer.Address().String()]
 	require.True(t, ok)
 	return batchfacilitator.NewBatchSvmScheme(ctx, stubFacilitatorSigner{key: key}, &batchfacilitator.Config{
-		ReceiverAuthorizerStore: batchfacilitator.NewInMemoryReceiverAuthorizerStore(),
-		MaxIdleSecs:             idle,
+		MaxIdleSecs: idle,
 	})
 }

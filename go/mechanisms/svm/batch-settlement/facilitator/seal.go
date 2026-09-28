@@ -37,22 +37,20 @@ type PreparedRefund struct {
 
 // SealDependencies are the scheme internals the seal path borrows.
 type SealDependencies struct {
-	PendingStore               PendingSettlementStore
-	ResolveTerms               func(context.Context, batchsettlement.BatchChannelConfig, types.PaymentRequirements, VoucherModeBinding) (BatchTerms, error)
-	ResolveReceiverAuthorizer  func(context.Context, string, string) (string, error)
-	IsDelegatedAuthorizer      func(string) bool
-	ResolveDelegatedIdentity   func(context.Context, DelegatedSettleContext) (string, error)
-	GetDelegatedCallerIdentity func(context.Context, string, string) (string, error)
-	DeriveChannelID            func(context.Context, batchsettlement.BatchChannelConfig, string) (string, error)
-	FetchChannel               func(context.Context, string, string) (*generated.Channel, error)
-	ReadChannel                func(context.Context, string, string) (*generated.Channel, error)
-	AssertClaimChannel         func(*generated.Channel, batchsettlement.BatchChannelConfig, BatchTerms, types.PaymentRequirements, []generated.ChannelStatus) error
-	DistributeInstruction      func(context.Context, string, *generated.Channel, BatchTerms, types.PaymentRequirements) (solana.Instruction, error)
-	SubmitRedemption           func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error)
-	CompleteOrPending          func(context.Context, string, string, string, string) (*x402.SettleResponse, error)
-	TrackChannel               func(context.Context, paymentchannels.PaymentChannelRecord) error
-	NowSeconds                 func() int64
-	SettlementCache            interface{ IsDuplicate(string) bool }
+	PendingStore             PendingSettlementStore
+	ResolveTerms             func(context.Context, batchsettlement.BatchChannelConfig, types.PaymentRequirements, VoucherModeBinding) (BatchTerms, error)
+	ReadBinding              func(context.Context, string, string) (ChannelBinding, error)
+	IsDelegatedAuthorizer    func(string) bool
+	ResolveDelegatedIdentity func(context.Context, DelegatedSettleContext) (string, error)
+	DeriveChannelID          func(context.Context, batchsettlement.BatchChannelConfig, string) (string, error)
+	FetchChannel             func(context.Context, string, string) (*generated.Channel, error)
+	ReadChannel              func(context.Context, string, string) (*generated.Channel, error)
+	AssertClaimChannel       func(*generated.Channel, batchsettlement.BatchChannelConfig, BatchTerms, types.PaymentRequirements, []generated.ChannelStatus) error
+	DistributeInstruction    func(context.Context, string, *generated.Channel, BatchTerms, types.PaymentRequirements) (solana.Instruction, error)
+	SubmitRedemption         func(context.Context, string, string, []solana.Instruction, string, string) (durableResult, error)
+	CompleteOrPending        func(context.Context, string, string, string, string) (*x402.SettleResponse, error)
+	NowSeconds               func() int64
+	SettlementCache          interface{ IsDuplicate(string) bool }
 	// PrepareRefund, when set, replaces PrepareRefund on the refund settle path.
 	PrepareRefund func(context.Context, batchsettlement.BatchRefundPayload, types.PaymentRequirements, RefundLimits, any) (PreparedRefund, error)
 }
@@ -201,15 +199,6 @@ func SettleSeal(
 	if err := deps.PendingStore.Set(ctx, key+":result", string(encoded)); err != nil {
 		return nil, err
 	}
-	if err := deps.TrackChannel(ctx, paymentchannels.PaymentChannelRecord{
-		ChannelID:    channelID,
-		ExpiresAt:    batchsettlement.ClientVoucherExpiresAt,
-		Network:      network,
-		PayTo:        requirements.PayTo,
-		TokenProgram: terms.TokenProgram,
-	}); err != nil {
-		return nil, err
-	}
 	return sealed, nil
 }
 
@@ -248,10 +237,11 @@ func PrepareRefund(
 	if channel != nil && (cumulative < channel.Settlement.Settled || cumulative > channel.Deposit) {
 		return PreparedRefund{}, fmt.Errorf("%s: refund voucher must lie within settled and deposit", batchsettlement.ErrCumulativeAmountMismatch)
 	}
-	bound, err := deps.ResolveReceiverAuthorizer(ctx, requirements.Network, channelID)
+	binding, err := deps.ReadBinding(ctx, requirements.Network, channelID)
 	if err != nil {
 		return PreparedRefund{}, err
 	}
+	bound := binding.ReceiverAuthorizer
 	if bound != "" {
 		if _, err := RequireReceiverAuthorizer(bound, terms.ReceiverAuthorizer, channelID); err != nil {
 			return PreparedRefund{}, err
@@ -375,11 +365,11 @@ func authenticateServer(
 	intent CloseIntent,
 	facilitatorContext any,
 ) error {
-	resolved, err := deps.ResolveReceiverAuthorizer(ctx, requirements.Network, channelID)
+	binding, err := deps.ReadBinding(ctx, requirements.Network, channelID)
 	if err != nil {
 		return err
 	}
-	bound, err := RequireReceiverAuthorizer(resolved, terms.ReceiverAuthorizer, channelID)
+	bound, err := RequireReceiverAuthorizer(binding.ReceiverAuthorizer, terms.ReceiverAuthorizer, channelID)
 	if err != nil {
 		return err
 	}
@@ -398,11 +388,7 @@ func authenticateServer(
 		if err != nil {
 			return err
 		}
-		stored, err := deps.GetDelegatedCallerIdentity(ctx, requirements.Network, channelID)
-		if err != nil {
-			return err
-		}
-		if identity == "" || identity != stored {
+		if identity == "" || identity != binding.CallerIdentity {
 			return fmt.Errorf("%s: caller identity does not match the channel binding", batchsettlement.ErrDelegatedUnauthenticated)
 		}
 		return nil

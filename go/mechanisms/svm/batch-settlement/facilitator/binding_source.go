@@ -4,29 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
-
-// AssertBindingSource requires a store or an explicit history reader, and rejects a value that lacks its methods.
-func AssertBindingSource(config BindingSourceConfig) error {
-	if config.ReceiverAuthorizerStore != nil {
-		if _, ok := config.ReceiverAuthorizerStore.(ReceiverAuthorizerStore); !ok {
-			return errors.New("receiverAuthorizerStore must implement bind, get, and delete")
-		}
-	}
-	if config.ReceiverBindingHistoryReader != nil {
-		if _, ok := config.ReceiverBindingHistoryReader.(ReceiverBindingHistoryReader); !ok {
-			return errors.New("receiverBindingHistoryReader must implement getSignaturesForAddress and getTransaction")
-		}
-	}
-	if config.ReceiverAuthorizerStore == nil && config.ReceiverBindingHistoryReader == nil {
-		return errors.New("BatchSvmScheme requires a receiverAuthorizerStore or a receiverBindingHistoryReader")
-	}
-	return nil
-}
 
 // AssertDelegatedReceiverAuth requires the delegated-auth callbacks when the option is set.
 func AssertDelegatedReceiverAuth(delegated *DelegatedReceiverAuth) (*DelegatedReceiverAuth, error) {
@@ -36,50 +20,70 @@ func AssertDelegatedReceiverAuth(delegated *DelegatedReceiverAuth) (*DelegatedRe
 	if !svm.ValidateSolanaAddress(delegated.ReceiverAuthorizer) || delegated.ResolveCallerIdentity == nil {
 		return nil, errors.New("delegatedReceiverAuth requires a receiverAuthorizer address and resolveCallerIdentity")
 	}
-	if _, ok := delegated.IdentityStore.(DelegatedAuthStore); !ok {
-		return nil, errors.New("delegatedReceiverAuth.identityStore must implement bind, get, and delete")
-	}
 	return delegated, nil
 }
 
-// ReadReceiverAuthorizer returns the receiver authorizer bound to a channel.
-// A store hit is not re-read. A history read is written back when a store is configured.
+// ChannelBinding is the receiver authorizer and caller identity read from one
+// channel row, then history.
+type ChannelBinding struct {
+	// ReceiverAuthorizer is empty when no binding is stored or recoverable.
+	ReceiverAuthorizer string
+	CallerIdentity     string
+}
+
+// ReadReceiverAuthorizer returns the receiver authorizer bound to a channel:
+// the channel row, then the open transaction. A stored key is not re-read. A
+// history read is written back with RecordOpen when the row is absent. An
+// empty stored key is a miss: discovery indexes a channel without the binding
+// memo. loaded, when set, is a row already read so seal and refund do not get twice.
 func ReadReceiverAuthorizer(
 	ctx context.Context,
-	store ReceiverAuthorizerStore,
+	storage paymentchannels.PaymentChannelStorage,
 	history ReceiverBindingHistoryReader,
 	network, channelID string,
-) (string, error) {
-	if store != nil {
-		stored, err := store.Get(ctx, network, channelID)
+	loaded *paymentchannels.PaymentChannelRecord,
+) (ChannelBinding, error) {
+	record := loaded
+	if record == nil {
+		stored, err := storage.Get(ctx, network, channelID)
 		if err != nil {
-			return "", err
+			return ChannelBinding{}, err
 		}
-		if stored != nil {
-			return stored.ReceiverAuthorizer, nil
+		record = stored
+	}
+	callerIdentity := ""
+	if record != nil {
+		callerIdentity = record.CallerIdentity
+		if record.ReceiverAuthorizer != "" {
+			return ChannelBinding{ReceiverAuthorizer: record.ReceiverAuthorizer, CallerIdentity: callerIdentity}, nil
 		}
 	}
 	if history == nil {
-		return "", nil
+		return ChannelBinding{CallerIdentity: callerIdentity}, nil
 	}
 	fromHistory, err := readBindingFromHistory(ctx, history, network, channelID)
 	if err != nil || fromHistory == "" {
-		return "", err
+		return ChannelBinding{CallerIdentity: callerIdentity}, err
 	}
-	if store != nil {
-		err := store.Bind(ctx, ReceiverAuthorizerBinding{
+	if record == nil {
+		requested := paymentchannels.PaymentChannelRecord{
 			Network:            network,
 			ChannelID:          channelID,
+			LastActivityAt:     time.Now(),
 			ReceiverAuthorizer: fromHistory,
-		})
+		}
+		write, err := storage.RecordOpen(ctx, requested)
 		if err != nil {
-			if errors.Is(err, ErrReceiverAuthorizerConflict) {
-				return "", fmt.Errorf("%s: %s", batchsettlement.ErrReceiverAuthorizerMismatch, err.Error())
+			return ChannelBinding{}, err
+		}
+		if err := paymentchannels.CheckOpenBindings(requested, write.Record); err != nil {
+			if errors.Is(err, paymentchannels.ErrReceiverAuthorizerConflict) || errors.Is(err, paymentchannels.ErrCallerIdentityConflict) {
+				return ChannelBinding{}, fmt.Errorf("%s: %s", batchsettlement.ErrReceiverAuthorizerMismatch, err.Error())
 			}
-			return "", err
+			return ChannelBinding{}, err
 		}
 	}
-	return fromHistory, nil
+	return ChannelBinding{ReceiverAuthorizer: fromHistory, CallerIdentity: callerIdentity}, nil
 }
 
 // DelegatedIdentityForOpen returns the caller identity required before a delegated open is broadcast.
@@ -127,20 +131,15 @@ func ResolveDelegatedIdentity(ctx context.Context, delegated *DelegatedReceiverA
 	return identity, nil
 }
 
-// StoredDelegatedIdentity returns the identity recorded for a delegated channel.
-func StoredDelegatedIdentity(ctx context.Context, delegated *DelegatedReceiverAuth, network, channelID string) (string, error) {
-	if delegated == nil {
-		return "", nil
+// RequireReceiverAuthorizer requires the stored binding to be the advertised key.
+func RequireReceiverAuthorizer(bound, advertised, channelID string) (string, error) {
+	if bound == "" {
+		return "", fmt.Errorf("%s: no receiver authorizer is bound to %s", batchsettlement.ErrReceiverBindingUnavailable, channelID)
 	}
-	store, ok := delegated.IdentityStore.(DelegatedAuthStore)
-	if !ok || store == nil {
-		return "", nil
+	if bound != advertised {
+		return "", fmt.Errorf("%s: advertised key is not the channel's binding", batchsettlement.ErrReceiverAuthorizerMismatch)
 	}
-	stored, err := store.Get(ctx, network, channelID)
-	if err != nil || stored == nil {
-		return "", err
-	}
-	return stored.CallerIdentity, nil
+	return bound, nil
 }
 
 // CalculateDistributionAmount sums the still-undistributed settled amount across channels.

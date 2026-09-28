@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	solana "github.com/gagliardetto/solana-go"
@@ -34,6 +35,47 @@ func (s ed25519Signer) SignMessage(_ context.Context, message []byte) ([]byte, e
 	out := make([]byte, len(signature))
 	copy(out, signature[:])
 	return out, nil
+}
+
+// activityRecordingStorage wraps channel storage for tests that observe activity writes.
+type activityRecordingStorage struct {
+	inner           *paymentchannels.InMemoryPaymentChannelStorage
+	activityErr     error
+	activityCalls   atomic.Int32
+	activityRecords []paymentchannels.PaymentChannelRecord
+}
+
+func newActivityRecordingStorage() *activityRecordingStorage {
+	return &activityRecordingStorage{inner: paymentchannels.NewInMemoryPaymentChannelStorage()}
+}
+
+func (s *activityRecordingStorage) RecordOpen(ctx context.Context, record paymentchannels.PaymentChannelRecord) (paymentchannels.PaymentChannelOpenWrite, error) {
+	return s.inner.RecordOpen(ctx, record)
+}
+
+func (s *activityRecordingStorage) RevertOpen(ctx context.Context, write paymentchannels.PaymentChannelOpenWrite) error {
+	return s.inner.RevertOpen(ctx, write)
+}
+
+func (s *activityRecordingStorage) RecordActivity(ctx context.Context, records ...paymentchannels.PaymentChannelRecord) error {
+	if s.activityErr != nil {
+		return s.activityErr
+	}
+	s.activityCalls.Add(1)
+	s.activityRecords = append(s.activityRecords, records...)
+	return s.inner.RecordActivity(ctx, records...)
+}
+
+func (s *activityRecordingStorage) Get(ctx context.Context, network, channelID string) (*paymentchannels.PaymentChannelRecord, error) {
+	return s.inner.Get(ctx, network, channelID)
+}
+
+func (s *activityRecordingStorage) List(ctx context.Context, network string) ([]paymentchannels.PaymentChannelRecord, error) {
+	return s.inner.List(ctx, network)
+}
+
+func (s *activityRecordingStorage) Delete(ctx context.Context, network, channelID string) error {
+	return s.inner.Delete(ctx, network, channelID)
 }
 
 func mustKey(t *testing.T) solana.PrivateKey {
