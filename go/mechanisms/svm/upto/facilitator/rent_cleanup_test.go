@@ -336,7 +336,7 @@ func TestCleanupBatchReclaimsDistributedChannels(t *testing.T) {
 		assert.Equal(t, uint8(generated.ReclaimDiscriminator), instruction[0])
 	}
 	// Reclaim batches carry a per-channel compute-unit limit (base + 2 x per-channel).
-	assert.Equal(t, ReclaimComputeUnitBase+2*ReclaimComputeUnitPerChannel, harness.sentComputeUnitLimit(0))
+	assert.Equal(t, paymentchannels.ReclaimComputeUnitBase+2*paymentchannels.ReclaimComputeUnitPerChannel, harness.sentComputeUnitLimit(0))
 	assert.False(t, harness.exists(first.ChannelID))
 	assert.False(t, harness.exists(second.ChannelID))
 }

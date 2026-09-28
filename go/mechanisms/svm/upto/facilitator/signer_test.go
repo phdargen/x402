@@ -9,9 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 )
 
-// schemeOnlySigner implements every UptoFacilitatorSigner method and omits
+// schemeOnlySigner implements every PaymentChannelFacilitatorSigner method and omits
 // GetProgramAccounts, so construction succeeds and Discover reports the gap.
 type schemeOnlySigner struct{}
 
@@ -48,8 +49,8 @@ func (schemeOnlySigner) GetSlot(context.Context, string, rpc.CommitmentType) (ui
 }
 
 var (
-	_ svm.FacilitatorSvmSigner = schemeOnlySigner{}
-	_ UptoFacilitatorSigner    = schemeOnlySigner{}
+	_ svm.FacilitatorSvmSigner                        = schemeOnlySigner{}
+	_ paymentchannels.PaymentChannelFacilitatorSigner = schemeOnlySigner{}
 )
 
 func TestNewUptoSvmSchemeAllowsSignerWithoutGetProgramAccounts(t *testing.T) {

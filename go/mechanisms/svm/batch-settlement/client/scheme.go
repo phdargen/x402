@@ -134,10 +134,10 @@ func (s *BatchSvmScheme) OnPaymentCreationFailure(
 		return nil, nil
 	}
 	refused, ok := failure.SelectedRequirements.(types.PaymentRequirements)
-	if !ok || !digits(refused.Amount) {
+	if !ok || !batchsettlement.IsDigits(refused.Amount) {
 		return nil, nil
 	}
-	refusedAmount, parseErr := parseU64(refused.Amount, "amount")
+	refusedAmount, parseErr := paymentchannels.ParseU64(refused.Amount, "amount")
 	if parseErr != nil {
 		return nil, nil //nolint:nilerr // malformed refused amount: no fallback hook
 	}
@@ -150,10 +150,10 @@ func (s *BatchSvmScheme) OnPaymentCreationFailure(
 		if voucherSignerOf(accept.Extra) != batchsettlement.VoucherSignerClient {
 			continue
 		}
-		if !digits(accept.Amount) {
+		if !batchsettlement.IsDigits(accept.Amount) {
 			continue
 		}
-		amount, err := parseU64(accept.Amount, "amount")
+		amount, err := paymentchannels.ParseU64(accept.Amount, "amount")
 		if err != nil || amount > refusedAmount {
 			continue
 		}
@@ -202,7 +202,7 @@ func (s *BatchSvmScheme) createPaymentPayload(
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
-	charge, err := parseU64(requirements.Amount, "amount")
+	charge, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
@@ -229,20 +229,20 @@ func (s *BatchSvmScheme) createPaymentPayload(
 	if existing != nil {
 		reserved := uint64(0)
 		for _, candidate := range channelPending {
-			amount, err := parseU64(candidate.amount, "pending amount")
+			amount, err := paymentchannels.ParseU64(candidate.amount, "pending amount")
 			if err != nil {
 				return types.PaymentPayload{}, err
 			}
-			reserved, err = addU64(reserved, amount)
+			reserved, err = batchsettlement.AddU64Checked(reserved, amount)
 			if err != nil {
 				return types.PaymentPayload{}, err
 			}
 		}
-		cumulative, err := addU64(existing.tracker.Cumulative(), reserved)
+		cumulative, err := batchsettlement.AddU64Checked(existing.tracker.Cumulative(), reserved)
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
-		cumulative, err = addU64(cumulative, charge)
+		cumulative, err = batchsettlement.AddU64Checked(cumulative, charge)
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
@@ -252,7 +252,7 @@ func (s *BatchSvmScheme) createPaymentPayload(
 		if len(channelPending) > 0 {
 			return types.PaymentPayload{}, fmt.Errorf("batch-settlement channel has insufficient unreserved capacity")
 		}
-		shortfall, ok := subU64(cumulative, existing.deposit)
+		shortfall, ok := batchsettlement.SubU64(cumulative, existing.deposit)
 		if !ok {
 			return types.PaymentPayload{}, fmt.Errorf("batch-settlement amount overflow")
 		}
@@ -300,7 +300,7 @@ func (s *BatchSvmScheme) createPaymentPayload(
 		if err := s.signer.SignTransaction(ctx, topUp.Transaction); err != nil {
 			return types.PaymentPayload{}, err
 		}
-		encoded, err := encodeTransaction(topUp.Transaction)
+		encoded, err := svm.EncodeTransaction(topUp.Transaction)
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
@@ -313,13 +313,13 @@ func (s *BatchSvmScheme) createPaymentPayload(
 			ChannelConfig: existing.tracker.ChannelConfig,
 			Voucher:       credential.voucher,
 			Authorization: credential.authorization,
-			Deposit:       batchsettlement.BatchDeposit{Amount: formatU64(topUpAmount), Transaction: encoded},
+			Deposit:       batchsettlement.BatchDeposit{Amount: batchsettlement.FormatU64(topUpAmount), Transaction: encoded},
 		}
-		body, err := toPayloadMap(depositPayload)
+		body, err := batchsettlement.WireMap(depositPayload)
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
-		nextDeposit, err := addU64(existing.deposit, topUpAmount)
+		nextDeposit, err := batchsettlement.AddU64Checked(existing.deposit, topUpAmount)
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
@@ -353,7 +353,7 @@ func (s *BatchSvmScheme) createPaymentPayload(
 	}
 
 	if s.config.DepositAmount != nil {
-		configured, err := parseU64(s.config.DepositAmount, "depositAmount")
+		configured, err := paymentchannels.ParseU64(s.config.DepositAmount, "depositAmount")
 		if err != nil {
 			return types.PaymentPayload{}, err
 		}
@@ -408,7 +408,7 @@ func (s *BatchSvmScheme) createPaymentPayload(
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}
-	body, err := toPayloadMap(built.Payload)
+	body, err := batchsettlement.WireMap(built.Payload)
 	if err != nil {
 		return types.PaymentPayload{}, err
 	}

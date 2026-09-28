@@ -380,7 +380,7 @@ func testHydrate(t *testing.T) {
 
 	voucher, err := NewBatchChannelTracker(svm.USDCMainnetAddress, config, h.payer, 0).PreviewVoucher(context.Background(), 1000)
 	require.NoError(t, err)
-	body, err := toPayloadMap(batchsettlement.BatchVoucherPayload{
+	body, err := batchsettlement.WireMap(batchsettlement.BatchVoucherPayload{
 		Type:          batchsettlement.PayloadTypeVoucher,
 		ChannelConfig: config,
 		Voucher:       voucher,

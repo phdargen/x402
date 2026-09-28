@@ -152,11 +152,15 @@ func (o RentCleanupOptions) withDefaults(configuredIdle *int64) (RentCleanupOpti
 	return o, resolved
 }
 
-func (o RentCleanupOptions) reportError(err error, channelID string) {
-	if o.OnError == nil || errors.Is(err, context.Canceled) {
+func reportRentError(onError func(error, string), err error, channelID string) {
+	if onError == nil || errors.Is(err, context.Canceled) {
 		return
 	}
-	o.OnError(err, channelID)
+	onError(err, channelID)
+}
+
+func (o RentCleanupOptions) reportError(err error, channelID string) {
+	reportRentError(o.OnError, err, channelID)
 }
 
 // RentDiscoveryResult reports the channels one discovery sweep added to storage.
@@ -171,10 +175,7 @@ type RentDiscoveryOptions struct {
 }
 
 func (o RentDiscoveryOptions) reportError(err error, channelID string) {
-	if o.OnError == nil || errors.Is(err, context.Canceled) {
-		return
-	}
-	o.OnError(err, channelID)
+	reportRentError(o.OnError, err, channelID)
 }
 
 // RentCleanupStartConfig configures the interval runners.

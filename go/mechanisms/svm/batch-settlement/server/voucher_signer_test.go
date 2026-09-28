@@ -884,7 +884,7 @@ func newVoucherSigner(t *testing.T) *batchclient.PrivateKeySigner {
 
 func mustPayloadMap(t *testing.T, value any) map[string]any {
 	t.Helper()
-	body, err := structToMap(value)
+	body, err := batchsettlement.WireMap(value)
 	require.NoError(t, err)
 	return body
 }

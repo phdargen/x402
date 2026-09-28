@@ -77,7 +77,7 @@ type Config struct {
 	// SettleComputeUnitLimit is the SetComputeUnitLimit for
 	// facilitator-submitted settlement transactions (claim, zero-charge
 	// cancel, and rent-cleanup close/distribute). The default
-	// (DefaultSettleComputeUnitLimit, 100k) assumes standard SPL Token
+	// (paymentchannels.DefaultSettleComputeUnitLimit, 100k) assumes standard SPL Token
 	// settlement with a single-recipient distribution; raise it for
 	// compute-heavy Token-2022 extension mints or unusually large
 	// distributions. Reclaim batches size themselves per channel and are
@@ -102,12 +102,12 @@ type Config struct {
 
 	// ChannelReadMaxAttempts caps how many times settle re-reads a channel
 	// account that a confirmed open has not made visible yet. Unset defaults to
-	// DefaultChannelReadMaxAttempts.
+	// paymentchannels.DefaultChannelReadMaxAttempts.
 	ChannelReadMaxAttempts *int
 
 	// ChannelReadBackoffStep is the linear backoff step between those re-reads:
 	// attempt N waits N * step, totalling step * (attempts-1) * attempts / 2.
-	// Unset defaults to DefaultChannelReadBackoffStep. Raise either field to
+	// Unset defaults to paymentchannels.DefaultChannelReadBackoffStep. Raise either field to
 	// widen the budget on a provider with slower replica convergence.
 	ChannelReadBackoffStep *time.Duration
 }
@@ -153,7 +153,7 @@ type ResolveCallerIdentity func(ctx DelegatedSettleContext) (string, error)
 // when the server delegates and the caller identity matches the deposit-time
 // binding.
 type UptoSvmScheme struct {
-	signer                UptoFacilitatorSigner
+	signer                paymentchannels.PaymentChannelFacilitatorSigner
 	config                Config
 	channelStorage        ChannelStorage
 	settlementCache       *svm.SettlementCache
@@ -761,7 +761,7 @@ func (f *UptoSvmScheme) settleClaim(
 		VoucherSignature: voucherSignature,
 	}, &prefetchedHash)
 	if err != nil {
-		var simErr *SettlementSimulationError
+		var simErr *paymentchannels.ChannelSimulationError
 		if errors.As(err, &simErr) {
 			f.settlementCache.Delete(settlementKey)
 			return nil, x402.NewSettleError(ErrSettlementSimulation, uptoPayload.From, network, "", simErr.Error())

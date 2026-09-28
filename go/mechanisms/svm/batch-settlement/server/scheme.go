@@ -262,7 +262,7 @@ func (s *BatchSvmScheme) IsServerSigned(requirements types.PaymentRequirements) 
 
 // ResolveMinDepositHint returns the deposit target advertised for one request.
 func (s *BatchSvmScheme) ResolveMinDepositHint(requirements types.PaymentRequirements) (string, error) {
-	amount, err := batchsettlement.AmountToU64(requirements.Amount, "amount")
+	amount, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 	if err != nil {
 		return "", err
 	}
@@ -313,7 +313,7 @@ func (s *BatchSvmScheme) ResolveMinDepositHint(requirements types.PaymentRequire
 		if serverSigned {
 			multiplier = defaultServerSignedMinDepositMultiplier
 		}
-		product, ok := mulU64(amount, multiplier)
+		product, ok := batchsettlement.MulU64(amount, multiplier)
 		if !ok {
 			return "", errors.New("minDeposit overflow")
 		}
@@ -342,7 +342,7 @@ func (s *BatchSvmScheme) CreateChannelManager(
 		options.ReceiverAuthorizer = s.config.ReceiverAuthorizer
 	}
 	options.Settle = func(ctx context.Context, request RedemptionRequest, accepted types.PaymentRequirements) (*x402.SettleResponse, error) {
-		payloadMap, err := structToMap(request.Payload)
+		payloadMap, err := batchsettlement.WireMap(request.Payload)
 		if err != nil {
 			return nil, err
 		}
@@ -419,7 +419,7 @@ func (s *BatchSvmScheme) EnrichSettlementPayload(ctx x402.SettleContext) (map[st
 		var voucher batchsettlement.BatchVoucher
 		switch {
 		case parsed.Voucher != nil:
-			amount, err := batchsettlement.AmountToU64(parsed.Voucher.MaxClaimableAmount, "maxClaimableAmount")
+			amount, err := paymentchannels.ParseU64(parsed.Voucher.MaxClaimableAmount, "maxClaimableAmount")
 			if err != nil {
 				return ChannelState{}, err
 			}
@@ -469,14 +469,14 @@ func (s *BatchSvmScheme) EnrichSettlementPayload(ctx x402.SettleContext) (map[st
 	}
 	out := map[string]any{}
 	if injected != nil {
-		encoded, err := structToMap(injected)
+		encoded, err := batchsettlement.WireMap(injected)
 		if err != nil {
 			return nil, err
 		}
 		out["voucher"] = encoded
 	}
 	if closeAuthorization != nil {
-		encoded, err := structToMap(closeAuthorization)
+		encoded, err := batchsettlement.WireMap(closeAuthorization)
 		if err != nil {
 			return nil, err
 		}
@@ -599,7 +599,7 @@ func (s *BatchSvmScheme) trackProof(
 	if err != nil {
 		return err
 	}
-	amount, err := batchsettlement.AmountToU64(requirements.Amount, "amount")
+	amount, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 	if err != nil {
 		return err
 	}
@@ -617,14 +617,14 @@ func (s *BatchSvmScheme) trackProof(
 	if state != nil {
 		charged = state.ChargedCumulativeAmount
 	}
-	expected, ok := addU64(charged, amount)
+	expected, ok := batchsettlement.AddU64(charged, amount)
 	if !ok {
 		return errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 	}
 	topUp := parsed.Type == batchsettlement.PayloadTypeDeposit && state != nil
 	switch proof.Signer {
 	case batchsettlement.VoucherSignerClient:
-		submitted, err := batchsettlement.AmountToU64(proof.Voucher.MaxClaimableAmount, "maxClaimableAmount")
+		submitted, err := paymentchannels.ParseU64(proof.Voucher.MaxClaimableAmount, "maxClaimableAmount")
 		if err != nil {
 			return err
 		}
@@ -680,7 +680,7 @@ func (s *BatchSvmScheme) trackRefund(
 	if parsed.Voucher == nil {
 		return errors.New(batchsettlement.ErrVoucherSignature)
 	}
-	submitted, err := batchsettlement.AmountToU64(parsed.Voucher.MaxClaimableAmount, "maxClaimableAmount")
+	submitted, err := paymentchannels.ParseU64(parsed.Voucher.MaxClaimableAmount, "maxClaimableAmount")
 	if err != nil {
 		return err
 	}
@@ -910,7 +910,7 @@ func (s *BatchSvmScheme) charge(
 	requirements types.PaymentRequirements,
 	patch ...func(ChannelState) ChannelState,
 ) (*ChannelState, error) {
-	actual, err := batchsettlement.AmountToU64(requirements.Amount, "amount")
+	actual, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 	if err != nil {
 		return nil, err
 	}
@@ -949,7 +949,7 @@ func (s *BatchSvmScheme) commitCharge(
 		if actual > reservation.Ceiling {
 			return ChannelState{}, errors.New(batchsettlement.ErrCumulativeAmountMismatch)
 		}
-		cumulative, ok := addU64(current.ChargedCumulativeAmount, actual)
+		cumulative, ok := batchsettlement.AddU64(current.ChargedCumulativeAmount, actual)
 		if !ok {
 			return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 		}
@@ -973,7 +973,7 @@ func (s *BatchSvmScheme) commitCharge(
 		for _, apply := range patch {
 			next = apply(next)
 		}
-		amount, err := batchsettlement.AmountToU64(voucher.MaxClaimableAmount, "maxClaimableAmount")
+		amount, err := paymentchannels.ParseU64(voucher.MaxClaimableAmount, "maxClaimableAmount")
 		if err != nil {
 			return ChannelState{}, err
 		}
@@ -1109,7 +1109,7 @@ func (s *BatchSvmScheme) validatePayload(raw map[string]any, requirements types.
 		return "", err
 	}
 	if parsed.Type == batchsettlement.PayloadTypeDeposit && s.config.EnforceMinDeposit && parsed.Deposit != nil {
-		deposited, err := batchsettlement.AmountToU64(parsed.Deposit.Amount, "deposit.amount")
+		deposited, err := paymentchannels.ParseU64(parsed.Deposit.Amount, "deposit.amount")
 		if err != nil {
 			return "", err
 		}
@@ -1117,7 +1117,7 @@ func (s *BatchSvmScheme) validatePayload(raw map[string]any, requirements types.
 		if err != nil {
 			return "", err
 		}
-		minimum, err := batchsettlement.AmountToU64(hint, "minDeposit")
+		minimum, err := paymentchannels.ParseU64(hint, "minDeposit")
 		if err != nil {
 			return "", err
 		}
@@ -1165,7 +1165,7 @@ func (s *BatchSvmScheme) assertSignedVoucher(voucher batchsettlement.BatchVouche
 	if voucher.ExpiresAt != 0 {
 		return errors.New(batchsettlement.ErrVoucherExpiry)
 	}
-	amount, err := batchsettlement.AmountToU64(voucher.MaxClaimableAmount, "maxClaimableAmount")
+	amount, err := paymentchannels.ParseU64(voucher.MaxClaimableAmount, "maxClaimableAmount")
 	if err != nil {
 		return errors.New(batchsettlement.ErrVoucherSignature)
 	}
@@ -1221,7 +1221,7 @@ func (s *BatchSvmScheme) verifyDepositOpen(parsed batchsettlement.ParsedBatchPay
 	if err != nil {
 		return fmt.Errorf("%s: %s", batchsettlement.ErrSetupTransaction, err.Error())
 	}
-	amount, err := batchsettlement.AmountToU64(parsed.Deposit.Amount, "deposit.amount")
+	amount, err := paymentchannels.ParseU64(parsed.Deposit.Amount, "deposit.amount")
 	if err != nil {
 		return err
 	}
@@ -1278,15 +1278,15 @@ func (s *BatchSvmScheme) absorbSnapshot(
 		if state == nil {
 			return fmt.Errorf("%s: channel state unavailable", batchsettlement.ErrChannelState)
 		}
-		submitted, err := batchsettlement.AmountToU64(request.Proof.Voucher.MaxClaimableAmount, "maxClaimableAmount")
+		submitted, err := paymentchannels.ParseU64(request.Proof.Voucher.MaxClaimableAmount, "maxClaimableAmount")
 		if err != nil {
 			return err
 		}
-		amount, err := batchsettlement.AmountToU64(requirements.Amount, "amount")
+		amount, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 		if err != nil {
 			return err
 		}
-		expected, ok := addU64(state.ChargedCumulativeAmount, amount)
+		expected, ok := batchsettlement.AddU64(state.ChargedCumulativeAmount, amount)
 		if !ok || submitted != expected {
 			return fmt.Errorf("%s: voucher authorizes %d, expected %d", batchsettlement.ErrCumulativeAmountMismatch, submitted, expected)
 		}
@@ -1301,7 +1301,7 @@ func (s *BatchSvmScheme) reserveChannel(
 	pendingID string,
 	expiresAt int64,
 ) error {
-	amount, err := batchsettlement.AmountToU64(requirements.Amount, "amount")
+	amount, err := paymentchannels.ParseU64(requirements.Amount, "amount")
 	if err != nil {
 		return err
 	}
@@ -1344,7 +1344,7 @@ func (s *BatchSvmScheme) reserveChannel(
 			if request.Cumulative != nil {
 				maxClaimable = *request.Cumulative
 			} else {
-				sum, ok := addU64(state.ChargedCumulativeAmount, amount)
+				sum, ok := batchsettlement.AddU64(state.ChargedCumulativeAmount, amount)
 				if !ok {
 					return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 				}
@@ -1353,7 +1353,7 @@ func (s *BatchSvmScheme) reserveChannel(
 		}
 		var reservedCeilings uint64
 		for _, reservation := range reservations {
-			sum, ok := addU64(reservedCeilings, reservation.Ceiling)
+			sum, ok := batchsettlement.AddU64(reservedCeilings, reservation.Ceiling)
 			if !ok {
 				return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 			}
@@ -1365,21 +1365,21 @@ func (s *BatchSvmScheme) reserveChannel(
 		}
 		deposit := state.Deposit
 		if parsed.Type == batchsettlement.PayloadTypeDeposit && request.TopUp && parsed.Deposit != nil {
-			topUp, err := batchsettlement.AmountToU64(parsed.Deposit.Amount, "deposit.amount")
+			topUp, err := paymentchannels.ParseU64(parsed.Deposit.Amount, "deposit.amount")
 			if err != nil {
 				return ChannelState{}, err
 			}
-			sum, ok := addU64(state.Deposit, topUp)
+			sum, ok := batchsettlement.AddU64(state.Deposit, topUp)
 			if !ok {
 				return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 			}
 			deposit = sum
 		}
-		projected, ok := addU64(state.ChargedCumulativeAmount, reservedCeilings)
+		projected, ok := batchsettlement.AddU64(state.ChargedCumulativeAmount, reservedCeilings)
 		if !ok {
 			return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 		}
-		projected, ok = addU64(projected, ceiling)
+		projected, ok = batchsettlement.AddU64(projected, ceiling)
 		if !ok || maxClaimable > deposit || projected > deposit {
 			return ChannelState{}, errors.New(batchsettlement.ErrCumulativeExceedsDeposit)
 		}
@@ -1565,6 +1565,33 @@ func (s *BatchSvmScheme) nextSequence() uint64 {
 	return s.sequence
 }
 
+func extraString(extra map[string]any, field string) string {
+	if extra == nil {
+		return ""
+	}
+	text, _ := extra[field].(string)
+	return text
+}
+
+func asRequirementInt(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case float64:
+		if typed != float64(int64(typed)) {
+			return 0, false
+		}
+		return int64(typed), true
+	case json.Number:
+		parsed, err := typed.Int64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
 func abort(err error) *x402.BeforeHookResult {
 	return &x402.BeforeHookResult{Abort: true, Reason: classifyError(err), Message: errString(err)}
 }
@@ -1639,7 +1666,7 @@ func deriveChannelID(config batchsettlement.BatchChannelConfig, feePayer string)
 	if err != nil {
 		return "", err
 	}
-	salt, err := batchsettlement.AmountToU64(config.Salt, "salt")
+	salt, err := paymentchannels.ParseU64(config.Salt, "salt")
 	if err != nil {
 		return "", err
 	}
@@ -1657,11 +1684,11 @@ func provisionalState(parsed batchsettlement.ParsedBatchPayload, requirements ty
 	if parsed.Type != batchsettlement.PayloadTypeDeposit || parsed.Deposit == nil {
 		return ChannelState{}, errors.New(batchsettlement.ErrChannelState)
 	}
-	deposit, err := batchsettlement.AmountToU64(parsed.Deposit.Amount, "deposit.amount")
+	deposit, err := paymentchannels.ParseU64(parsed.Deposit.Amount, "deposit.amount")
 	if err != nil {
 		return ChannelState{}, err
 	}
-	salt, err := batchsettlement.AmountToU64(parsed.ChannelConfig.Salt, "salt")
+	salt, err := paymentchannels.ParseU64(parsed.ChannelConfig.Salt, "salt")
 	if err != nil {
 		return ChannelState{}, err
 	}
@@ -1689,7 +1716,7 @@ func recoveredState(
 	channelID string,
 	snapshot VerifiedChannelState,
 ) (ChannelState, error) {
-	salt, err := batchsettlement.AmountToU64(parsed.ChannelConfig.Salt, "salt")
+	salt, err := paymentchannels.ParseU64(parsed.ChannelConfig.Salt, "salt")
 	if err != nil {
 		return ChannelState{}, err
 	}
@@ -1821,16 +1848,22 @@ func readVerifiedChannelState(result *x402.VerifyResponse) (VerifiedChannelState
 	if result == nil || result.Extra == nil {
 		return VerifiedChannelState{}, false
 	}
-	total, ok := digitsU64(result.Extra["totalClaimed"])
+	totalText, ok := result.Extra["totalClaimed"].(string)
 	if !ok {
+		return VerifiedChannelState{}, false
+	}
+	total, err := paymentchannels.ParseU64(totalText, "totalClaimed")
+	if err != nil {
 		return VerifiedChannelState{}, false
 	}
 	snapshot := VerifiedChannelState{TotalClaimed: total}
 	if id, ok := result.Extra["channelId"].(string); ok {
 		snapshot.ChannelID = &id
 	}
-	if balance, ok := digitsU64(result.Extra["balance"]); ok {
-		snapshot.Balance = &balance
+	if balanceText, ok := result.Extra["balance"].(string); ok {
+		if balance, err := paymentchannels.ParseU64(balanceText, "balance"); err == nil {
+			snapshot.Balance = &balance
+		}
 	}
 	if requested, ok := asRequirementInt(result.Extra["withdrawRequestedAt"]); ok {
 		snapshot.WithdrawRequestedAt = requested
@@ -1859,7 +1892,7 @@ func readChannelState(result *x402.SettleResponse) channelSettleSnapshot {
 		snapshot.hasBalance = true
 	}
 	if total, ok := raw["totalClaimed"].(string); ok {
-		if parsed, err := batchsettlement.AmountToU64(total, "totalClaimed"); err == nil {
+		if parsed, err := paymentchannels.ParseU64(total, "totalClaimed"); err == nil {
 			snapshot.totalClaimed = parsed
 		}
 	}
@@ -1873,7 +1906,7 @@ func confirmedDeposit(current uint64, confirmed channelSettleSnapshot) uint64 {
 	if !confirmed.hasBalance {
 		return current
 	}
-	balance, err := batchsettlement.AmountToU64(confirmed.balance, "channelState.balance")
+	balance, err := paymentchannels.ParseU64(confirmed.balance, "channelState.balance")
 	if err != nil || balance <= current {
 		return current
 	}

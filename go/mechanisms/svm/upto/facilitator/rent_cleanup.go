@@ -168,7 +168,7 @@ type StartConfig struct {
 
 // RentCleanupConfig configures a rent cleanup manager for one network.
 type RentCleanupConfig struct {
-	Signer  UptoFacilitatorSigner
+	Signer  paymentchannels.PaymentChannelFacilitatorSigner
 	Storage ChannelStorage
 	Network string
 
@@ -178,10 +178,10 @@ type RentCleanupConfig struct {
 	ComputeUnitPriceMicroLamports *uint64
 
 	// SettleComputeUnitLimit is the SetComputeUnitLimit for close/distribute
-	// cleanup transactions. Unset defaults to DefaultSettleComputeUnitLimit
+	// cleanup transactions. Unset defaults to paymentchannels.DefaultSettleComputeUnitLimit
 	// (100k, standard SPL Token settlement); raise it for compute-heavy
 	// Token-2022 extension mints. Reclaim batches instead derive their limit
-	// per channel (ReclaimComputeUnitLimit) and are mint-independent.
+	// per channel (paymentchannels.ReclaimComputeUnitLimit) and are mint-independent.
 	SettleComputeUnitLimit *uint32
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement"
 	batchclient "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement/client"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -121,7 +122,7 @@ func (f *lifecycleFixture) requirements(overrides ...func(*types.PaymentRequirem
 }
 
 func (f *lifecycleFixture) state(overrides ...func(*ChannelState)) ChannelState {
-	salt, err := batchsettlement.AmountToU64(f.channelConfig.Salt, "salt")
+	salt, err := paymentchannels.ParseU64(f.channelConfig.Salt, "salt")
 	if err != nil {
 		panic(err)
 	}

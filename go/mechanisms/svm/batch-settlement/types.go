@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"strconv"
 
 	solana "github.com/gagliardetto/solana-go"
 
@@ -587,14 +586,6 @@ func asSafePositiveInt(value any) (int64, bool) {
 	return parsed, true
 }
 
-func formatU64(value uint64) string {
-	return strconv.FormatUint(value, 10)
-}
-
-func parseDecimalU64(value string) (uint64, error) {
-	return paymentchannels.ParseU64(value, "amount")
-}
-
 func mustKey(address string) []byte {
 	key, err := solana.PublicKeyFromBase58(address)
 	if err != nil {
@@ -609,11 +600,6 @@ func mustSig(signature string) []byte {
 		return nil
 	}
 	return parsed[:]
-}
-
-// AmountToU64 parses a decimal atomic amount.
-func AmountToU64(value, field string) (uint64, error) {
-	return paymentchannels.ParseU64(value, field)
 }
 
 // PositiveAmount parses a non-zero decimal atomic amount.

@@ -9,6 +9,7 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
@@ -148,7 +149,7 @@ func (p *ServerSignedTrustPolicy) GrantFor(requirements types.PaymentRequirement
 		}
 		grant := ResolvedServerSignedTrust{Operator: operator}
 		if candidate.MaxDeposit != "" {
-			parsed, err := parseU64(candidate.MaxDeposit, "maxDeposit")
+			parsed, err := paymentchannels.ParseU64(candidate.MaxDeposit, "maxDeposit")
 			if err != nil {
 				return ResolvedServerSignedTrust{}, err
 			}
@@ -172,7 +173,7 @@ func (p *ServerSignedTrustPolicy) GrantFor(requirements types.PaymentRequirement
 	if err != nil {
 		return ResolvedServerSignedTrust{}, err
 	}
-	parsed, err := parseU64(atomic, "maxDeposit")
+	parsed, err := paymentchannels.ParseU64(atomic, "maxDeposit")
 	if err != nil {
 		return ResolvedServerSignedTrust{}, err
 	}

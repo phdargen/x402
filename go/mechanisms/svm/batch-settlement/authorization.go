@@ -70,7 +70,7 @@ func SignBatchAuthorization(
 		ChannelID:        channelID,
 		Payer:            payer.Address().String(),
 		RequestID:        requestID,
-		AuthorizedAmount: formatU64(authorizedAmount),
+		AuthorizedAmount: FormatU64(authorizedAmount),
 		ExpiresAt:        expiresAt,
 		Signature:        solana.SignatureFromBytes(signature).String(),
 	}, nil
@@ -81,7 +81,7 @@ func VerifyBatchAuthorization(authorization BatchAuthorization, operator string,
 	if authorization.ExpiresAt <= nowSeconds {
 		return false
 	}
-	amount, err := parseDecimalU64(authorization.AuthorizedAmount)
+	amount, err := paymentchannels.ParseU64(authorization.AuthorizedAmount, "amount")
 	if err != nil {
 		return false
 	}

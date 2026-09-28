@@ -19,8 +19,8 @@ import (
 func TestChannelReadPolicyBackoffIsLinear(t *testing.T) {
 	policy := paymentchannels.ResolveChannelReadPolicy(paymentchannels.ChannelReadPolicy{})
 
-	assert.Equal(t, DefaultChannelReadMaxAttempts, policy.MaxAttempts)
-	assert.Equal(t, DefaultChannelReadBackoffStep, policy.BackoffStep)
+	assert.Equal(t, paymentchannels.DefaultChannelReadMaxAttempts, policy.MaxAttempts)
+	assert.Equal(t, paymentchannels.DefaultChannelReadBackoffStep, policy.BackoffStep)
 
 	var (
 		delays []time.Duration

@@ -251,7 +251,11 @@ func (f *BatchSvmScheme) Settle(ctx context.Context, payload types.PaymentPayloa
 	if !ok || !batchsettlement.IsBatchFacilitatorPayload(record) {
 		return SettleFailure(x402.Network(payload.Accepted.Network), batchsettlement.ErrPayloadType, "", ""), nil
 	}
-	response, err := f.settleParsed(ctx, record, requirements, facilitatorContextOf(fctx))
+	var facilitatorContext any
+	if fctx != nil {
+		facilitatorContext = fctx
+	}
+	response, err := f.settleParsed(ctx, record, requirements, facilitatorContext)
 	if err != nil {
 		payer := ""
 		if config, ok := record["channelConfig"].(map[string]any); ok {
@@ -344,27 +348,31 @@ func (f *BatchSvmScheme) verifyParsed(ctx context.Context, record map[string]any
 }
 
 func (f *BatchSvmScheme) settleParsed(ctx context.Context, record map[string]any, requirements types.PaymentRequirements, facilitatorContext any) (*x402.SettleResponse, error) {
-	switch record["type"] {
-	case batchsettlement.PayloadTypeDeposit:
-		parsed, err := batchsettlement.ParseBatchPayload(record)
-		if err != nil {
-			return nil, err
-		}
-		return f.settleDeposit(ctx, parsed, requirements, facilitatorContext)
-	case batchsettlement.PayloadTypeVoucher, batchsettlement.PayloadTypeAuthorization:
-		parsed, err := batchsettlement.ParseBatchPayload(record)
-		if err != nil {
-			return nil, err
-		}
-		return SettleFailure(x402.Network(requirements.Network), batchsettlement.ErrPayloadType, parsed.ChannelConfig.Payer, ""), nil
-	case batchsettlement.PayloadTypeRefund:
+	payloadType, _ := record["type"].(string)
+	if payloadType == batchsettlement.PayloadTypeRefund {
 		if _, ok := record["amount"]; ok {
 			return nil, fmt.Errorf("%s: refund returns the full unused escrow", batchsettlement.ErrCloseAmountUnsupported)
 		}
-		parsed, err := batchsettlement.ParseBatchPayload(record)
+	}
+	needsParsed := payloadType == batchsettlement.PayloadTypeDeposit ||
+		payloadType == batchsettlement.PayloadTypeVoucher ||
+		payloadType == batchsettlement.PayloadTypeAuthorization ||
+		payloadType == batchsettlement.PayloadTypeRefund
+	var parsed batchsettlement.ParsedBatchPayload
+	if needsParsed {
+		var err error
+		parsed, err = batchsettlement.ParseBatchPayload(record)
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	switch payloadType {
+	case batchsettlement.PayloadTypeDeposit:
+		return f.settleDeposit(ctx, parsed, requirements, facilitatorContext)
+	case batchsettlement.PayloadTypeVoucher, batchsettlement.PayloadTypeAuthorization:
+		return SettleFailure(x402.Network(requirements.Network), batchsettlement.ErrPayloadType, parsed.ChannelConfig.Payer, ""), nil
+	case batchsettlement.PayloadTypeRefund:
 		refund, err := decodeAs[batchsettlement.BatchRefundPayload](record)
 		if err != nil {
 			return nil, err
@@ -559,21 +567,16 @@ func (f *BatchSvmScheme) fetchChannel(ctx context.Context, network, channelID st
 	if f.hooks.fetchChannel != nil {
 		return f.hooks.fetchChannel(ctx, network, channelID)
 	}
-	for attempt := 0; attempt < ChannelReadAttempts; attempt++ {
-		channel, err := f.readChannel(ctx, network, channelID)
-		if err != nil {
-			return nil, err
-		}
-		if channel != nil {
-			return channel, nil
-		}
-		if attempt+1 < ChannelReadAttempts {
-			if err := f.waitForChannelRead(ctx, attempt); err != nil {
-				return nil, err
-			}
-		}
+	channel, ok, err := f.fetchChannelUntil(ctx, network, channelID, func(ch *generated.Channel) bool {
+		return ch != nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("%s: channel is not visible after confirmation", batchsettlement.ErrChannelState)
+	if !ok {
+		return nil, fmt.Errorf("%s: channel is not visible after confirmation", batchsettlement.ErrChannelState)
+	}
+	return channel, nil
 }
 
 func (f *BatchSvmScheme) fetchChannelUntil(ctx context.Context, network, channelID string, predicate func(*generated.Channel) bool) (*generated.Channel, bool, error) {
@@ -1007,11 +1010,4 @@ func randomBatchMemo() (string, error) {
 		return "", err
 	}
 	return "x402:batch:" + hex.EncodeToString(buf[:]), nil
-}
-
-func facilitatorContextOf(fctx *x402.FacilitatorContext) any {
-	if fctx == nil {
-		return nil
-	}
-	return fctx
 }

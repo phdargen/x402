@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	solana "github.com/gagliardetto/solana-go"
+	"github.com/google/uuid"
 
+	"github.com/x402-foundation/x402/go/v2/mechanisms/svm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/svm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/svm/paymentchannels"
 )
@@ -30,7 +32,7 @@ func SignBatchVoucher(
 	}
 	return batchsettlement.BatchVoucher{
 		ChannelID:          channelID,
-		MaxClaimableAmount: formatU64(maxClaimableAmount),
+		MaxClaimableAmount: batchsettlement.FormatU64(maxClaimableAmount),
 		ExpiresAt:          expiresAt,
 		Signature:          signature,
 	}, nil
@@ -70,7 +72,7 @@ func (t *BatchChannelTracker) PreviewVoucher(ctx context.Context, charge uint64)
 	if t.ChannelConfig.VoucherSigner == batchsettlement.VoucherSignerServer {
 		return batchsettlement.BatchVoucher{}, fmt.Errorf("server-signed channels do not use client vouchers")
 	}
-	next, err := addU64(t.cumulative, charge)
+	next, err := batchsettlement.AddU64Checked(t.cumulative, charge)
 	if err != nil {
 		return batchsettlement.BatchVoucher{}, err
 	}
@@ -230,7 +232,7 @@ func BuildDepositPayload(ctx context.Context, args BuildDepositArgs) (*BuiltDepo
 		pendingAuth = &struct {
 			requestID string
 			expiresAt int64
-		}{requestID: newRequestID(), expiresAt: *args.AuthorizationExpiresAt}
+		}{requestID: uuid.NewString(), expiresAt: *args.AuthorizationExpiresAt}
 	}
 	feePayer, err := solana.PublicKeyFromBase58(args.FeePayer)
 	if err != nil {
@@ -271,7 +273,7 @@ func BuildDepositPayload(ctx context.Context, args BuildDepositArgs) (*BuiltDepo
 	if err := args.Payer.SignTransaction(ctx, open.Transaction); err != nil {
 		return nil, err
 	}
-	encoded, err := encodeTransaction(open.Transaction)
+	encoded, err := svm.EncodeTransaction(open.Transaction)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +284,7 @@ func BuildDepositPayload(ctx context.Context, args BuildDepositArgs) (*BuiltDepo
 		ReceiverAuthorizer: args.ReceiverAuthorizer,
 		Token:              args.Mint,
 		WithdrawDelay:      args.WithdrawDelay,
-		Salt:               formatU64(open.Salt),
+		Salt:               batchsettlement.FormatU64(open.Salt),
 		OpenSlot:           int64(open.OpenSlot),
 	}
 	if voucherSigner == batchsettlement.VoucherSignerServer {
@@ -303,7 +305,7 @@ func BuildDepositPayload(ctx context.Context, args BuildDepositArgs) (*BuiltDepo
 		Voucher:       credential.voucher,
 		Authorization: credential.authorization,
 		Deposit: batchsettlement.BatchDeposit{
-			Amount:      formatU64(args.DepositAmount),
+			Amount:      batchsettlement.FormatU64(args.DepositAmount),
 			Transaction: encoded,
 		},
 	}
@@ -364,7 +366,7 @@ func BuildRefundPayload(ctx context.Context, args BuildRefundArgs) (batchsettlem
 	if err := args.Payer.SignTransaction(ctx, tx); err != nil {
 		return batchsettlement.BatchRefundPayload{}, err
 	}
-	encoded, err := encodeTransaction(tx)
+	encoded, err := svm.EncodeTransaction(tx)
 	if err != nil {
 		return batchsettlement.BatchRefundPayload{}, err
 	}
