@@ -421,6 +421,72 @@ func signRefundConsent(t *testing.T, channelId, amount, nonce, network string) (
 	return authorizer, "0x" + hex.EncodeToString(sig)
 }
 
+func signedManagedDeposit(t *testing.T, cfg batchsettlement.ChannelConfig, channelId string) types.PaymentPayload {
+	t.Helper()
+	const amount, maxClaimable = "1000", "1000"
+	key, err := crypto.HexToECDSA(managedAuthKeyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chainID, err := evm.GetEvmChainId(managedNetwork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	salt := "0x" + strings.Repeat("aa", 32)
+	erc3009Nonce, err := batchsettlement.BuildErc3009DepositNonce(channelId, salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceBytes, err := evm.HexToBytes(erc3009Nonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := evm.HashTypedData(
+		evm.TypedDataDomain{
+			Name:              "USDC",
+			Version:           "2",
+			ChainID:           chainID,
+			VerifyingContract: cfg.Token,
+		},
+		batchsettlement.ReceiveAuthorizationTypes,
+		"ReceiveWithAuthorization",
+		map[string]interface{}{
+			"from":        cfg.Payer,
+			"to":          batchsettlement.ERC3009DepositCollectorAddress,
+			"value":       big.NewInt(1000),
+			"validAfter":  big.NewInt(0),
+			"validBefore": big.NewInt(now + 3600),
+			"nonce":       nonceBytes,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := crypto.Sign(hash, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig[64] += 27
+	p := &batchsettlement.BatchSettlementDepositPayload{
+		Type:          "deposit",
+		ChannelConfig: cfg,
+		Voucher:       voucherFields(channelId, maxClaimable, eoaVoucherSignature(t, channelId, maxClaimable, managedNetwork)),
+		Deposit: batchsettlement.BatchSettlementDepositData{
+			Amount: amount,
+			Authorization: batchsettlement.BatchSettlementDepositAuthorization{
+				Erc3009Authorization: &batchsettlement.BatchSettlementErc3009Authorization{
+					ValidAfter:  "0",
+					ValidBefore: fmt.Sprintf("%d", now+3600),
+					Salt:        salt,
+					Signature:   "0x" + hex.EncodeToString(sig),
+				},
+			},
+		},
+	}
+	return managedEnvelope(p.ToMap())
+}
+
 func eoaVoucherSignature(t *testing.T, channelId, maxClaimable, network string) string {
 	t.Helper()
 	key, err := crypto.HexToECDSA(managedAuthKeyHex)
