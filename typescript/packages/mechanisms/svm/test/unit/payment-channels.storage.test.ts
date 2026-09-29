@@ -26,7 +26,7 @@ function record(overrides: Partial<PaymentChannelRecord> = {}): PaymentChannelRe
 }
 
 describe("payment-channel facilitator storage", () => {
-  it("keeps open facts and only moves expiry and activity forward", async () => {
+  it("keeps open facts and only moves expiry and activity forward on a compatible open", async () => {
     const storage = new InMemoryPaymentChannelStorage();
     const created = await storage.recordOpen(
       record({ callerIdentity: "svc-1", expiresAt: 50, receiverAuthorizer: "auth-a" }),
@@ -35,11 +35,11 @@ describe("payment-channel facilitator storage", () => {
 
     const again = await storage.recordOpen(
       record({
-        callerIdentity: "svc-2",
+        callerIdentity: "svc-1",
         expiresAt: 40,
         lastActivityAt: 30,
         payTo: "other",
-        receiverAuthorizer: "auth-b",
+        receiverAuthorizer: "auth-a",
       }),
     );
     expect(again.revertToken).toBe("");
@@ -56,6 +56,52 @@ describe("payment-channel facilitator storage", () => {
     expect(() => checkOpenBindings(record({ callerIdentity: "svc-2" }), again.record)).toThrow(
       CallerIdentityConflictError,
     );
+  });
+
+  it.each([
+    ["callerIdentity", { callerIdentity: "svc-2" }, CallerIdentityConflictError],
+    ["receiverAuthorizer", { receiverAuthorizer: "auth-b" }, ReceiverAuthorizerConflictError],
+  ] as const)(
+    "leaves the row and revert token untouched on a conflicting %s",
+    async (_name, conflict, errorClass) => {
+      const storage = new InMemoryPaymentChannelStorage();
+      const first = record({
+        callerIdentity: "svc-1",
+        expiresAt: 50,
+        receiverAuthorizer: "auth-a",
+      });
+      const created = await storage.recordOpen(first);
+
+      const requested = record({ ...conflict, expiresAt: 90, lastActivityAt: 30 });
+      const conflicting = await storage.recordOpen(requested);
+      expect(conflicting.revertToken).toBe("");
+      expect(conflicting.record).toMatchObject({
+        callerIdentity: "svc-1",
+        expiresAt: 50,
+        lastActivityAt: 10,
+        receiverAuthorizer: "auth-a",
+      });
+      expect(() => checkOpenBindings(requested, conflicting.record)).toThrow(errorClass);
+      expect(await storage.get(SOLANA_DEVNET_CAIP2, "chan-a")).toMatchObject({
+        expiresAt: 50,
+        lastActivityAt: 10,
+      });
+
+      await storage.revertOpen(created);
+      expect(await storage.get(SOLANA_DEVNET_CAIP2, "chan-a")).toBeUndefined();
+    },
+  );
+
+  it("rotates the revert token on a same-identity open", async () => {
+    const storage = new InMemoryPaymentChannelStorage();
+    const created = await storage.recordOpen(
+      record({ callerIdentity: "svc-1", receiverAuthorizer: "auth-a" }),
+    );
+    await storage.recordOpen(
+      record({ callerIdentity: "svc-1", lastActivityAt: 11, receiverAuthorizer: "auth-a" }),
+    );
+    await storage.revertOpen(created);
+    expect(await storage.get(SOLANA_DEVNET_CAIP2, "chan-a")).toMatchObject({ lastActivityAt: 11 });
   });
 
   it("reverts only the row this open created", async () => {

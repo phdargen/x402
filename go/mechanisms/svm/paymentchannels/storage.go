@@ -57,13 +57,22 @@ type PaymentChannelStorage interface {
 	// ExpiresAt and LastActivityAt only move forward. Hosts may enforce
 	// admission policy here.
 	//
+	// When an existing row's non-empty CallerIdentity or ReceiverAuthorizer
+	// differs from the requested non-empty value, RecordOpen MUST leave the
+	// row unchanged (no token rotation, no ExpiresAt or LastActivityAt
+	// advance) and return the stored row with an empty RevertToken. The
+	// SDK then rejects the open through CheckOpenBindings, and the creator's
+	// RevertOpen still matches. The comparison and the write MUST be one
+	// atomic operation.
+	//
 	// The absent-row check and insert MUST be atomic under concurrent callers
 	// (for example a unique key on Network and ChannelID with insert-on-conflict,
 	// or one transaction). A naive read-then-write allows two opens on the same
 	// key to both insert and breaks first-writer-wins binding checks.
 	RecordOpen(ctx context.Context, record PaymentChannelRecord) (PaymentChannelOpenWrite, error)
 	// RevertOpen deletes the row only when write.RevertToken is non-empty and
-	// still matches. A later open rotates the token, so this becomes a no-op.
+	// still matches. A later non-conflicting open rotates the token, so this
+	// becomes a no-op.
 	RevertOpen(ctx context.Context, write PaymentChannelOpenWrite) error
 	// RecordActivity bumps LastActivityAt for channels already verified
 	// onchain. A missing row is inserted. Bindings and admission policy are
@@ -179,8 +188,9 @@ func ReportStorageError(onStorageError OnStorageError, err error, network, chann
 }
 
 // InMemoryPaymentChannelStorage is an in-memory PaymentChannelStorage. A
-// per-row counter is the revert token: RecordOpen on an existing row rotates
-// it and returns an empty token, so the creator's revert no longer matches.
+// per-row counter is the revert token: a non-conflicting RecordOpen on an
+// existing row rotates it and returns an empty token, so the creator's revert
+// no longer matches. A conflicting open leaves the row and token untouched.
 type InMemoryPaymentChannelStorage struct {
 	mu        sync.Mutex
 	channels  map[string]memoryChannelRow
@@ -197,14 +207,18 @@ func NewInMemoryPaymentChannelStorage() *InMemoryPaymentChannelStorage {
 	return &InMemoryPaymentChannelStorage{channels: make(map[string]memoryChannelRow)}
 }
 
-// RecordOpen inserts a row or moves its forward-only timestamps.
+// RecordOpen inserts a row or moves its forward-only timestamps. An open whose
+// bindings conflict with the stored row changes nothing.
 func (s *InMemoryPaymentChannelStorage) RecordOpen(_ context.Context, record PaymentChannelRecord) (PaymentChannelOpenWrite, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := channelStorageKey(record.Network, record.ChannelID)
+	existing, ok := s.channels[key]
+	if ok && CheckOpenBindings(record, existing.record) != nil {
+		return PaymentChannelOpenWrite{Record: existing.record, RevertToken: ""}, nil
+	}
 	s.nextToken++
 	revertToken := strconv.FormatUint(s.nextToken, 10)
-	existing, ok := s.channels[key]
 	if !ok {
 		s.channels[key] = memoryChannelRow{record: record, revertToken: revertToken}
 		return PaymentChannelOpenWrite{Record: record, RevertToken: revertToken}, nil

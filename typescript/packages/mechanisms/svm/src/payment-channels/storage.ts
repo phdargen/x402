@@ -56,6 +56,14 @@ export interface PaymentChannelStorage {
    * `expiresAt` and `lastActivityAt` only move forward. Hosts may enforce
    * admission policy here.
    *
+   * When an existing row's non-empty `callerIdentity` or `receiverAuthorizer`
+   * differs from the requested non-empty value, `recordOpen` MUST leave the
+   * row unchanged (no token rotation, no `expiresAt` or `lastActivityAt`
+   * advance) and return the stored row with an empty `revertToken`. The SDK
+   * then rejects the open through {@link checkOpenBindings}, and the creator's
+   * `revertOpen` still matches. The comparison and the write MUST be one
+   * atomic operation.
+   *
    * The absent-row check and insert MUST be atomic under concurrent callers
    * (for example a unique key on `network` and `channelId` with
    * insert-on-conflict, or one transaction). A naive read-then-write allows
@@ -68,7 +76,8 @@ export interface PaymentChannelStorage {
   recordOpen(record: PaymentChannelRecord): Promise<PaymentChannelOpenWrite>;
   /**
    * Delete the row only when `write.revertToken` is non-empty and still
-   * matches. A later open rotates the token, so this becomes a no-op.
+   * matches. A later non-conflicting open rotates the token, so this becomes a
+   * no-op.
    *
    * @param write - The {@link PaymentChannelStorage.recordOpen} result
    */
@@ -138,20 +147,37 @@ export function checkOpenBindings(
   requested: PaymentChannelRecord,
   stored: PaymentChannelRecord,
 ): void {
+  const conflict = openBindingConflict(requested, stored);
+  if (conflict) throw conflict;
+}
+
+/**
+ * Find the binding conflict between a requested open and the stored row.
+ * Empty bindings on either side never conflict.
+ *
+ * @param requested - Bindings this open asked to store
+ * @param stored - Row already stored
+ * @returns The conflict error, or undefined when the open is compatible
+ */
+function openBindingConflict(
+  requested: PaymentChannelRecord,
+  stored: PaymentChannelRecord,
+): ReceiverAuthorizerConflictError | CallerIdentityConflictError | undefined {
   if (
     requested.receiverAuthorizer !== "" &&
     stored.receiverAuthorizer !== "" &&
     stored.receiverAuthorizer !== requested.receiverAuthorizer
   ) {
-    throw new ReceiverAuthorizerConflictError();
+    return new ReceiverAuthorizerConflictError();
   }
   if (
     requested.callerIdentity !== "" &&
     stored.callerIdentity !== "" &&
     stored.callerIdentity !== requested.callerIdentity
   ) {
-    throw new CallerIdentityConflictError();
+    return new CallerIdentityConflictError();
   }
+  return undefined;
 }
 
 /**
@@ -244,9 +270,10 @@ export function reportStorageError(
 
 /**
  * In-memory {@link PaymentChannelStorage}. A per-row counter is the revert
- * token: {@link InMemoryPaymentChannelStorage.recordOpen} on an existing row
- * rotates it and returns an empty token, so the creator's revert no longer
- * matches.
+ * token: a non-conflicting {@link InMemoryPaymentChannelStorage.recordOpen} on
+ * an existing row rotates it and returns an empty token, so the creator's
+ * revert no longer matches. A conflicting open leaves the row and token
+ * untouched.
  */
 export class InMemoryPaymentChannelStorage implements PaymentChannelStorage {
   private readonly channels = new Map<
@@ -258,8 +285,11 @@ export class InMemoryPaymentChannelStorage implements PaymentChannelStorage {
   /** @inheritdoc */
   async recordOpen(record: PaymentChannelRecord): Promise<PaymentChannelOpenWrite> {
     const key = channelKey(record.network, record.channelId);
-    const revertToken = String(++this.nextToken);
     const existing = this.channels.get(key);
+    if (existing && openBindingConflict(record, existing.record)) {
+      return { record: { ...existing.record }, revertToken: "" };
+    }
+    const revertToken = String(++this.nextToken);
     if (!existing) {
       const stored = { ...record };
       this.channels.set(key, { record: stored, revertToken });
