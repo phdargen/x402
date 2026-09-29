@@ -369,6 +369,7 @@ func TestSettle_SelfManagedDepositBindingConflictFailsBeforeBroadcast(t *testing
 		t.Fatal(err)
 	}
 	signer := newManagedSigner(t, nil)
+	signer.getBalance = func(string, string) (*big.Int, error) { return big.NewInt(10000), nil }
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
 		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "owner-b", nil },
 		DelegatedAuthStore:    delegated,
@@ -386,6 +387,8 @@ func TestSettle_SelfManagedDepositBindingConflictFailsBeforeBroadcast(t *testing
 			PayTo:   managedReceiver,
 			Extra: map[string]interface{}{
 				"receiverAuthorizer": auth.addr,
+				"name":               "USDC",
+				"version":            "2",
 			},
 		}, nil)
 	var se *x402.SettleError
