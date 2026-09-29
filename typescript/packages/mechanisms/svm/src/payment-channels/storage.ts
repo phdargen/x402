@@ -56,6 +56,12 @@ export interface PaymentChannelStorage {
    * `expiresAt` and `lastActivityAt` only move forward. Hosts may enforce
    * admission policy here.
    *
+   * The absent-row check and insert MUST be atomic under concurrent callers
+   * (for example a unique key on `network` and `channelId` with
+   * insert-on-conflict, or one transaction). A naive read-then-write allows
+   * two opens on the same key to both insert and breaks first-writer-wins
+   * binding checks.
+   *
    * @param record - Open facts to store
    * @returns The stored row and a revert token when this call created it
    */

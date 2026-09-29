@@ -56,6 +56,11 @@ type PaymentChannelStorage interface {
 	// open facts (PayTo, TokenProgram, ReceiverAuthorizer, CallerIdentity);
 	// ExpiresAt and LastActivityAt only move forward. Hosts may enforce
 	// admission policy here.
+	//
+	// The absent-row check and insert MUST be atomic under concurrent callers
+	// (for example a unique key on Network and ChannelID with insert-on-conflict,
+	// or one transaction). A naive read-then-write allows two opens on the same
+	// key to both insert and breaks first-writer-wins binding checks.
 	RecordOpen(ctx context.Context, record PaymentChannelRecord) (PaymentChannelOpenWrite, error)
 	// RevertOpen deletes the row only when write.RevertToken is non-empty and
 	// still matches. A later open rotates the token, so this becomes a no-op.
