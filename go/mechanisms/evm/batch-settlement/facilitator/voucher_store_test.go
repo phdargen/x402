@@ -461,7 +461,13 @@ func managedDepositSigner(t *testing.T) *fakeFacilitatorSigner {
 		waitForReceipt: func(txHash string) (*evm.TransactionReceipt, error) {
 			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash}, nil
 		},
+		getBalance: func(string, string) (*big.Int, error) {
+			return big.NewInt(10000), nil
+		},
 		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+			if functionName == "deposit" {
+				return nil, nil
+			}
 			if functionName != evm.FunctionTryAggregate {
 				return nil, errors.New("unexpected rpc")
 			}
@@ -513,7 +519,7 @@ func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) 
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "owner-b", nil }
 
 	_, err := SettleManaged(context.Background(), deps,
-		managedDepositEnvelope(cfg, channelId),
+		signedManagedDeposit(t, cfg, channelId),
 		managedRequirements(auth.addr), nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
@@ -542,7 +548,7 @@ func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
 
 	resp, err := SettleManaged(context.Background(), deps,
-		managedDepositEnvelope(cfg, channelId),
+		signedManagedDeposit(t, cfg, channelId),
 		managedRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -452,7 +452,9 @@ func depositSettlementCacheKey(
 // `store` is consulted first (keyed by depositSettlementCacheKey) to reconcile
 // a previously-broadcast-but-unconfirmed deposit transaction from a prior
 // settlement_pending response, instead of re-broadcasting. A nil store
-// disables this fast path. A delegated binding is written before any chain transaction.
+// disables this fast path. That fast path skips re-verification: the
+// authorization was already consumed onchain. Every other settle re-runs
+// VerifyDeposit before the delegated binding and before broadcast.
 func SettleDeposit(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
@@ -544,6 +546,34 @@ func SettleDeposit(
 			deleteDelegatedAuthMarker(ctx, store, markerKey)
 			return resp, nil
 		}
+	}
+
+	// Re-verify before binding or broadcasting. A failed check must not write
+	// channel ownership.
+	verified, verifyErr := VerifyDeposit(ctx, signer, payload, requirements, extensions, fctx, allowedFactories)
+	if verifyErr != nil {
+		var ve *x402.VerifyError
+		if errors.As(verifyErr, &ve) {
+			return nil, x402.NewSettleError(ve.InvalidReason, ve.Payer, network, "", ve.InvalidMessage)
+		}
+		return nil, x402.NewSettleError(ErrInvalidDepositPayload, config.Payer, network, "", verifyErr.Error())
+	}
+	if verified == nil || !verified.IsValid {
+		reason := ErrInvalidDepositPayload
+		payer := config.Payer
+		message := reason
+		if verified != nil {
+			if verified.InvalidReason != "" {
+				reason = verified.InvalidReason
+			}
+			if verified.InvalidMessage != "" {
+				message = verified.InvalidMessage
+			}
+			if verified.Payer != "" {
+				payer = verified.Payer
+			}
+		}
+		return nil, x402.NewSettleError(reason, payer, network, "", message)
 	}
 
 	collectorAddr, collectorData, err := buildDepositCollectorCall(payload, transferMethod, permit2Branch)
