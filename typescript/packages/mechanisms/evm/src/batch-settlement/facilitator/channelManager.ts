@@ -29,10 +29,20 @@ export type { FacilitatorChannel };
 
 export type FacilitatorRetention = "when-unused" | "forever";
 
+/**
+ *
+ * @param retention
+ */
 function normalizeRetention(retention?: FacilitatorRetention): FacilitatorRetention {
   return retention ?? "when-unused";
 }
 
+/**
+ *
+ * @param held
+ * @param channel
+ * @param chargeCount
+ */
 export function isChannelFinished(
   held: boolean,
   channel: FacilitatorChannel,
@@ -47,7 +57,15 @@ export function isChannelFinished(
   return BigInt(channel.balance) <= BigInt(channel.totalClaimed);
 }
 
-/** Deletes a never-claimed row after idle refund bookkeeping. */
+/**
+ * Deletes a never-claimed row after idle refund bookkeeping.
+ *
+ * @param retention
+ * @param held
+ * @param channel
+ * @param chargeCount
+ * @param appliedTotalClaimed
+ */
 export function shouldDeleteNeverClaimedRefundRow(
   retention: FacilitatorRetention | undefined,
   held: boolean,
@@ -68,14 +86,26 @@ export function shouldDeleteNeverClaimedRefundRow(
   }
 }
 
-/** @deprecated Use shouldDeleteNeverClaimedRefundRow or settle-worker cleanup. */
+/**
+ * @param retention
+ * @param held
+ * @param channel
+ * @param chargeCount
+ * @deprecated Use shouldDeleteNeverClaimedRefundRow or settle-worker cleanup.
+ */
 export function shouldDeleteVoucherRow(
   retention: FacilitatorRetention | undefined,
   held: boolean,
   channel: FacilitatorChannel,
   chargeCount: number,
 ): boolean {
-  return shouldDeleteNeverClaimedRefundRow(retention, held, channel, chargeCount, channel.totalClaimed);
+  return shouldDeleteNeverClaimedRefundRow(
+    retention,
+    held,
+    channel,
+    chargeCount,
+    channel.totalClaimed,
+  );
 }
 
 export interface FacilitatorChannelManagerConfig {
