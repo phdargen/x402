@@ -88,8 +88,9 @@ type FacilitatorChannelManagerConfig struct {
 type FacilitatorClaimOptions struct {
 	MaxClaimsPerBatch int
 	IdleSecs          *int
-	// MinUnclaimed is an optional decimal uint256 threshold. Nil keeps the
-	// default any-positive-unclaimed behavior.
+	// MinUnclaimed is an optional decimal uint256 threshold. Nil keeps any
+	// positive unclaimed. The default selector applies it. A custom selector
+	// sets ChannelQuery.MinUnclaimed on the queries that need it.
 	MinUnclaimed *string
 	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
 	UnclaimedDesc bool
@@ -207,17 +208,20 @@ func afterClaim(
 	if err != nil {
 		return err
 	}
-	for _, claim := range claims {
-		channelID, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
+	finishErrs := make([]error, len(claims))
+	forEachChannel(len(claims), func(i int) {
+		channelID, err := batchsettlement.ComputeChannelId(claims[i].Voucher.Channel, network)
 		if err != nil {
-			return err
+			finishErrs[i] = err
+			return
 		}
-		claimed := claim.TotalClaimed
-		if err := retryChannelUpdate(ctx, func() error {
+		claimed := claims[i].TotalClaimed
+		finishErrs[i] = retryChannelUpdate(ctx, func() error {
 			return finishAttestedClaim(ctx, store, channelID, claimed)
-		}); err != nil {
-			return err
-		}
+		})
+	})
+	if err := errors.Join(finishErrs...); err != nil {
+		return err
 	}
 	if len(deltas) == 0 {
 		return nil
@@ -493,6 +497,10 @@ type receiverPendingRead struct {
 }
 
 // Settle settles eligible receiver pairs and cleans up when pending reaches zero.
+// One receivers() eth_call selects one settle tx. That tx submits the pairs
+// from that read that still have pending above MinPending, and does not take
+// pairs from the next read. A failed read is skipped when another batch
+// succeeds. Every read failing is returned.
 func (m *FacilitatorChannelManager) Settle(
 	ctx context.Context,
 	opts *FacilitatorSettleOptions,
@@ -507,15 +515,101 @@ func (m *FacilitatorChannelManager) Settle(
 		return nil, nil
 	}
 
-	reads, err := m.readReceiverPending(ctx, targets)
-	if err != nil {
-		return nil, err
+	byNetwork := make(map[string][]storage.SettleTarget)
+	networkOrder := make([]string, 0)
+	for _, target := range targets {
+		if _, ok := byNetwork[target.Network]; !ok {
+			networkOrder = append(networkOrder, target.Network)
+		}
+		byNetwork[target.Network] = append(byNetwork[target.Network], target)
 	}
-	toSettle := make([]storage.SettleTarget, 0, receiverBudget)
-	now := time.Now().UnixMilli()
-	visited := make([]receiverPendingRead, 0, len(reads))
+
+	results := make([]FacilitatorSettleResult, 0)
+	var failed []error
+	readAny := false
+	for _, network := range networkOrder {
+		group := byNetwork[network]
+		txCount := 0
+		for i := 0; i < len(group) && txCount < maxTxsPerRun; i += maxSettlesPerTx {
+			if err := ctx.Err(); err != nil {
+				return results, err
+			}
+			end := i + maxSettlesPerTx
+			if end > len(group) {
+				end = len(group)
+			}
+			batch := group[i:end]
+			reads, err := m.readReceiverPendingChunk(ctx, batch)
+			if err != nil {
+				if ctx.Err() != nil {
+					return results, ctx.Err()
+				}
+				failed = append(failed, fmt.Errorf("receiver pending read of %d: %w", len(batch), err))
+				continue
+			}
+			readAny = true
+			eligible := m.receiversToSettle(ctx, reads, minPending, opts)
+			if len(eligible) == 0 {
+				continue
+			}
+			payload := &batchsettlement.BatchSettlementSettlePayload{
+				Type:     "settle",
+				Receiver: eligible[0].Receiver,
+				Token:    eligible[0].Token,
+			}
+			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), eligible[0].Token, eligible[0].Receiver)
+			if err != nil {
+				if ctx.Err() != nil {
+					return results, ctx.Err()
+				}
+				reportSettleError(m.logger, opts, err, nil)
+				continue
+			}
+			submissions, skipped, err := submitSettleMulticall(ctx, m.logger, m.signer, x402.Network(network), eligible, dataSuffix)
+			for _, skip := range skipped {
+				target := skip.target
+				if opts != nil && opts.OnError != nil {
+					opts.OnError(skip.err, &target)
+				}
+			}
+			batchResults, _ := settleResultsFromSubmissions(string(network), submissions)
+			results = append(results, batchResults...)
+			if err != nil {
+				if ctx.Err() != nil {
+					return results, ctx.Err()
+				}
+				reportSettleError(m.logger, opts, err, nil)
+			}
+			if len(submissions) == 0 {
+				continue
+			}
+			txCount++
+			for _, sub := range submissions {
+				if err := m.confirmSettledTargets(ctx, sub.targets, opts); err != nil {
+					return results, err
+				}
+			}
+		}
+	}
+	if !readAny && len(failed) > 0 {
+		return results, errors.Join(failed...)
+	}
+	for _, err := range failed {
+		reportSettleError(m.logger, opts, err, nil)
+	}
+	return results, nil
+}
+
+// receiversToSettle keeps pairs from one receivers() read that this batch's tx will submit.
+func (m *FacilitatorChannelManager) receiversToSettle(
+	ctx context.Context,
+	reads []receiverPendingRead,
+	minPending *big.Int,
+	opts *FacilitatorSettleOptions,
+) []storage.SettleTarget {
+	m.observeSettlePending(ctx, reads, time.Now().UnixMilli())
+	eligible := make([]storage.SettleTarget, 0, len(reads))
 	for _, row := range reads {
-		visited = append(visited, row)
 		if row.pending.Sign() == 0 {
 			if err := m.cleanupSettledPair(ctx, row.target); err != nil {
 				target := row.target
@@ -526,78 +620,24 @@ func (m *FacilitatorChannelManager) Settle(
 		if minPending != nil && row.pending.Cmp(minPending) <= 0 {
 			continue
 		}
-		toSettle = append(toSettle, row.target)
-		if len(toSettle) >= receiverBudget {
-			break
-		}
+		eligible = append(eligible, row.target)
 	}
-	m.observeSettlePending(ctx, visited, now)
-	if len(toSettle) == 0 {
-		return nil, nil
-	}
+	return eligible
+}
 
-	byNetwork := make(map[string][]storage.SettleTarget)
-	networkOrder := make([]string, 0)
-	for _, target := range toSettle {
-		if _, ok := byNetwork[target.Network]; !ok {
-			networkOrder = append(networkOrder, target.Network)
-		}
-		byNetwork[target.Network] = append(byNetwork[target.Network], target)
-	}
-
-	results := make([]FacilitatorSettleResult, 0)
-	settledTargets := make([]storage.SettleTarget, 0)
-	for _, network := range networkOrder {
-		group := byNetwork[network]
-		txCount := 0
-		for i := 0; i < len(group) && txCount < maxTxsPerRun; i += maxSettlesPerTx {
-			end := i + maxSettlesPerTx
-			if end > len(group) {
-				end = len(group)
-			}
-			if err := ctx.Err(); err != nil {
-				return results, err
-			}
-			batch := group[i:end]
-			payload := &batchsettlement.BatchSettlementSettlePayload{
-				Type:     "settle",
-				Receiver: batch[0].Receiver,
-				Token:    batch[0].Token,
-			}
-			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), batch[0].Token, batch[0].Receiver)
-			if err != nil {
-				if ctx.Err() != nil {
-					return results, ctx.Err()
-				}
-				reportSettleError(m.logger, opts, err, nil)
-				continue
-			}
-			submissions, skipped, err := submitSettleMulticall(ctx, m.logger, m.signer, x402.Network(network), batch, dataSuffix)
-			for _, skip := range skipped {
-				target := skip.target
-				if opts != nil && opts.OnError != nil {
-					opts.OnError(skip.err, &target)
-				}
-			}
-			batchResults, landed := settleResultsFromSubmissions(string(network), submissions)
-			results = append(results, batchResults...)
-			settledTargets = append(settledTargets, landed...)
-			if err != nil {
-				if ctx.Err() != nil {
-					return results, ctx.Err()
-				}
-				reportSettleError(m.logger, opts, err, nil)
-				continue
-			}
-			if len(submissions) > 0 {
-				txCount++
-			}
-		}
-	}
-
-	confirm, err := m.readReceiverPending(ctx, settledTargets)
+// confirmSettledTargets re-reads the pairs one settle tx just submitted.
+func (m *FacilitatorChannelManager) confirmSettledTargets(
+	ctx context.Context,
+	targets []storage.SettleTarget,
+	opts *FacilitatorSettleOptions,
+) error {
+	confirm, err := m.readReceiverPendingChunk(ctx, targets)
 	if err != nil {
-		return results, err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		reportSettleError(m.logger, opts, fmt.Errorf("receiver pending confirm of %d: %w", len(targets), err), nil)
+		return nil
 	}
 	m.observeSettlePending(ctx, confirm, time.Now().UnixMilli())
 	for _, row := range confirm {
@@ -609,7 +649,7 @@ func (m *FacilitatorChannelManager) Settle(
 			reportSettleError(m.logger, opts, err, &target)
 		}
 	}
-	return results, nil
+	return nil
 }
 
 func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, reads []receiverPendingRead, atMillis int64) {
@@ -690,7 +730,8 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 	return out, nil
 }
 
-func (m *FacilitatorChannelManager) readReceiverPending(
+// readReceiverPendingChunk is one receivers() eth_call for a single settle batch.
+func (m *FacilitatorChannelManager) readReceiverPendingChunk(
 	ctx context.Context,
 	targets []storage.SettleTarget,
 ) ([]receiverPendingRead, error) {

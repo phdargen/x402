@@ -298,23 +298,35 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 	begun := make([]attestedClaim, 0, len(claims))
 	kept := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(claims))
 	now := time.Now().UnixMilli()
-	for _, claim := range claims {
-		channelID, idErr := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
-		if idErr != nil {
-			_ = abortAttestedClaims(ctx, m.storage, begun)
-			return nil, idErr
+	ones := make([]attestedClaim, len(claims))
+	busy := make([]bool, len(claims))
+	errs := make([]error, len(claims))
+	forEachChannel(len(claims), func(i int) {
+		channelID, err := batchsettlement.ComputeChannelId(claims[i].Voucher.Channel, network)
+		if err != nil {
+			errs[i] = err
+			return
 		}
-		one, busy, beginErr := beginAttestedClaim(ctx, m.storage, channelID, claim.TotalClaimed, now)
-		if beginErr != nil {
-			_ = abortAttestedClaims(ctx, m.storage, begun)
-			return nil, beginErr
-		}
-		if busy {
+		ones[i], busy[i], errs[i] = beginAttestedClaim(ctx, m.storage, channelID, claims[i].TotalClaimed, now)
+	})
+	var beginErr error
+	for i, claim := range claims {
+		if errs[i] != nil {
+			if beginErr == nil {
+				beginErr = errs[i]
+			}
 			continue
 		}
-		begun = append(begun, one)
+		if busy[i] {
+			continue
+		}
+		begun = append(begun, ones[i])
 		kept = append(kept, claim)
-		counts = append(counts, chargeCountUint(one.Count))
+		counts = append(counts, chargeCountUint(ones[i].Count))
+	}
+	if beginErr != nil {
+		_ = abortAttestedClaims(ctx, m.storage, begun)
+		return nil, beginErr
 	}
 	if len(kept) == 0 {
 		return nil, nil

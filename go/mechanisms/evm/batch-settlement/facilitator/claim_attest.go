@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -21,11 +22,40 @@ const (
 
 	channelConflictAttempts = 4
 	channelConflictBackoff  = 20 * time.Millisecond
+	// channelUpdateParallelism bounds concurrent CAS writes on distinct channels.
+	channelUpdateParallelism = 10
 )
 
 var errChannelConflict = errors.New("channel update conflict")
 
 var errAttestedClaimBusy = errors.New("attested claim in progress")
+
+// forEachChannel waits for every index. One call failing does not cancel the rest.
+// A single item runs inline.
+func forEachChannel(n int, fn func(int)) {
+	if n <= 1 {
+		if n == 1 {
+			fn(0)
+		}
+		return
+	}
+	limit := channelUpdateParallelism
+	if limit > n {
+		limit = n
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fn(i)
+		}(i)
+	}
+	wg.Wait()
+}
 
 // attestedClaim is one channel whose charge count was written into a marker.
 type attestedClaim struct {
@@ -149,12 +179,11 @@ func noteAttestedClaimTxs(ctx context.Context, store storage.ChannelStorage[*Fac
 	if txHash == "" {
 		return nil
 	}
-	for _, item := range begun {
-		if err := noteAttestedClaimTx(ctx, store, item, txHash); err != nil {
-			return err
-		}
-	}
-	return nil
+	errs := make([]error, len(begun))
+	forEachChannel(len(begun), func(i int) {
+		errs[i] = noteAttestedClaimTx(ctx, store, begun[i], txHash)
+	})
+	return errors.Join(errs...)
 }
 
 func noteAttestedClaimTx(ctx context.Context, store storage.ChannelStorage[*FacilitatorChannel], item attestedClaim, txHash string) error {

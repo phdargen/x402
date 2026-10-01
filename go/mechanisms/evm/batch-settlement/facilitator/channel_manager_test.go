@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
@@ -48,6 +50,106 @@ func seedManagerSettleTarget(t *testing.T, mgr *FacilitatorChannelManager, ch *F
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedSettleReceivers(t *testing.T, mgr *FacilitatorChannelManager, n int) {
+	t.Helper()
+	mgr.settleTargetStorage = storage.NewInMemorySettleTargetStorage()
+	for i := 0; i < n; i++ {
+		if err := mgr.settleTargetStorage.RecordClaimed(context.Background(), storage.SettleTargetClaimDelta{
+			Network:  managedNetwork,
+			Receiver: fmt.Sprintf("0x%040x", i+1),
+			Token:    managedToken,
+			Amount:   bigInt(1),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type settleRPCEvent struct {
+	kind      string
+	receivers []string
+}
+
+func watchSettleRPC(t *testing.T, signer *fakeFacilitatorSigner) *[]settleRPCEvent {
+	t.Helper()
+	events := &[]settleRPCEvent{}
+	innerRead := signer.readContract
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == evm.FunctionTryAggregate {
+			if calls, ok := multicallArgCalls(args); ok && calls.Len() > 0 && bytes.Equal(multicallSelector(calls.Index(0)), receiversSelector()) {
+				*events = append(*events, settleRPCEvent{kind: "read", receivers: receiversFromAggregate(calls)})
+			}
+		}
+		return innerRead(functionName, args...)
+	}
+	innerWrite := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		if functionName == "multicall" {
+			*events = append(*events, settleRPCEvent{kind: "write", receivers: receiversFromSettleCalls(t, args)})
+		}
+		return innerWrite(functionName, args...)
+	}
+	return events
+}
+
+func receiversFromAggregate(calls reflect.Value) []string {
+	out := make([]string, 0, calls.Len())
+	for i := 0; i < calls.Len(); i++ {
+		receiver, ok := receiverForCall(calls.Index(i))
+		if !ok {
+			continue
+		}
+		out = append(out, receiver)
+	}
+	return out
+}
+
+func receiversFromSettleCalls(t *testing.T, args []interface{}) []string {
+	t.Helper()
+	if len(args) == 0 {
+		t.Fatal("missing settle calls")
+	}
+	calls, ok := args[0].([][]byte)
+	if !ok {
+		t.Fatalf("settle calls type %T", args[0])
+	}
+	sel := mustMethodID(batchsettlement.BatchSettlementSettleABI, "settle")
+	out := make([]string, 0, len(calls))
+	for _, call := range calls {
+		if len(call) < 36 || !bytes.Equal(call[:4], sel) {
+			t.Fatalf("settle calldata %x", call)
+		}
+		out = append(out, strings.ToLower(common.BytesToAddress(call[4:36]).Hex()))
+	}
+	return out
+}
+
+func assertSettleWriteMatchesPreviousRead(t *testing.T, events []settleRPCEvent) {
+	t.Helper()
+	writes := 0
+	for i, ev := range events {
+		if ev.kind != "write" {
+			continue
+		}
+		writes++
+		if i == 0 || events[i-1].kind != "read" || !reflect.DeepEqual(events[i-1].receivers, ev.receivers) {
+			t.Fatalf("write %v is not the previous read in %+v", ev.receivers, events)
+		}
+	}
+	if writes == 0 {
+		t.Fatal("no settle tx")
+	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func newTestManager(t *testing.T, signer evm.FacilitatorEvmSigner, store storage.ChannelStorage[*FacilitatorChannel], auth *fakeAuthorizerSigner, keepFinishedRows bool, fctx *x402.FacilitatorContext) *FacilitatorChannelManager {
@@ -950,6 +1052,38 @@ func TestFacilitatorChannelManager_SelectClaimRowsHonored(t *testing.T) {
 	}
 }
 
+func TestClaimRowQuery_UsesMinUnclaimedFromTheQuery(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &claimQueryRecorder{InMemoryChannelStorage: inner}
+	mgr := newTestManager(t, nil, store, nil, false, nil)
+	idle := 3600
+	minUnclaimed := "1000"
+	_, err := mgr.loadClaimRows(context.Background(), &FacilitatorClaimOptions{
+		IdleSecs:          &idle,
+		MinUnclaimed:      &minUnclaimed,
+		MaxClaimsPerBatch: 1,
+		MaxTxsPerRun:      1,
+		SelectClaimRows: func(_ context.Context, query func(storage.ChannelQuery) ([]*FacilitatorChannel, error), _ int) ([]*FacilitatorChannel, error) {
+			if _, err := query(storage.ChannelQuery{OldestFirst: true, Limit: intPtr(1)}); err != nil {
+				return nil, err
+			}
+			return query(storage.ChannelQuery{UnclaimedDesc: true, MinUnclaimed: &minUnclaimed, Limit: intPtr(1)})
+		},
+	}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(store.filters) != 2 {
+		t.Fatalf("filters = %d", len(store.filters))
+	}
+	if store.filters[0].MinUnclaimed != nil || store.filters[0].IdleAtOrBefore == nil || !store.filters[0].OldestFirst {
+		t.Fatalf("idle probe = %+v", store.filters[0])
+	}
+	if store.filters[1].MinUnclaimed == nil || *store.filters[1].MinUnclaimed != minUnclaimed || !store.filters[1].UnclaimedDesc {
+		t.Fatalf("amount query = %+v", store.filters[1])
+	}
+}
+
 func TestFacilitatorChannelManager_ClaimPassesMaxTxsPerRunLimit(t *testing.T) {
 	auth := managedAuthorizer()
 	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
@@ -1084,6 +1218,150 @@ func TestFacilitatorChannelManager_SettleReceiverReadGivesUpAfterRetries(t *test
 	}
 	if got, _ := store.Get(context.Background(), ch.ChannelId); got == nil {
 		t.Fatal("expected the row to remain")
+	}
+}
+
+func TestFacilitatorChannelManager_SettleChunksReceiverReads(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	seedSettleReceivers(t, mgr, 5)
+	events := watchSettleRPC(t, signer)
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MaxSettlesPerTx: 2,
+		MaxTxsPerRun:    3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 5 || signer.writeCalls != 3 {
+		t.Fatalf("results=%d writes=%d", len(results), signer.writeCalls)
+	}
+	assertSettleWriteMatchesPreviousRead(t, *events)
+	var sizes []int
+	for _, ev := range *events {
+		if ev.kind == "read" {
+			sizes = append(sizes, len(ev.receivers))
+		}
+	}
+	want := []int{2, 2, 2, 2, 1, 1}
+	if !reflect.DeepEqual(sizes, want) {
+		t.Fatalf("receiver reads = %v, want %v", sizes, want)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleReadDoesNotBorrowNextBatch(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	settled := fmt.Sprintf("0x%040x", 2)
+	signer := newManagedSigner(t, &managedRPC{
+		receiverClaimed: bigInt(5000),
+		receiverSettled: bigInt(0),
+		receiverSettledByAddr: map[string]*big.Int{
+			settled: bigInt(5000),
+		},
+	})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	seedSettleReceivers(t, mgr, 4)
+	events := watchSettleRPC(t, signer)
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MaxSettlesPerTx: 2,
+		MaxTxsPerRun:    2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 || signer.writeCalls != 2 {
+		t.Fatalf("results=%d writes=%d", len(results), signer.writeCalls)
+	}
+	var writes [][]string
+	for i, ev := range *events {
+		if ev.kind != "write" {
+			continue
+		}
+		if i == 0 || (*events)[i-1].kind != "read" {
+			t.Fatalf("write without a preceding read: %v", *events)
+		}
+		prev := (*events)[i-1].receivers
+		for _, receiver := range ev.receivers {
+			if !containsString(prev, receiver) {
+				t.Fatalf("tx receiver %s was not in the preceding read %v", receiver, prev)
+			}
+		}
+		writes = append(writes, ev.receivers)
+	}
+	if len(writes) != 2 || len(writes[0]) != 1 || len(writes[1]) != 2 {
+		t.Fatalf("writes = %v", writes)
+	}
+	if containsString(writes[0], settled) || containsString(writes[1], settled) {
+		t.Fatalf("settled receiver was submitted: %v", writes)
+	}
+	if containsString(writes[0], writes[1][0]) || containsString(writes[0], writes[1][1]) {
+		t.Fatalf("tx borrowed the next batch: %v", writes)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleContinuesAfterReceiverChunkFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	seedSettleReceivers(t, mgr, 3)
+	inner := signer.readContract
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == evm.FunctionTryAggregate {
+			if calls, ok := multicallArgCalls(args); ok && calls.Len() > 1 {
+				return nil, fmt.Errorf("rpc down")
+			}
+		}
+		return inner(functionName, args...)
+	}
+	var reported int
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MaxSettlesPerTx: 2,
+		MaxTxsPerRun:    2,
+		OnError: func(err error, target *storage.SettleTarget) {
+			if err == nil || target != nil {
+				t.Fatalf("err=%v target=%v", err, target)
+			}
+			reported++
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || signer.writeCalls != 1 || reported != 1 {
+		t.Fatalf("results=%d writes=%d reported=%d", len(results), signer.writeCalls, reported)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleReceiverReadFailureReturnsWhenEveryChunkFails(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	seedSettleReceivers(t, mgr, 3)
+	inner := signer.readContract
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == evm.FunctionTryAggregate {
+			return nil, fmt.Errorf("rpc down")
+		}
+		return inner(functionName, args...)
+	}
+	var reported int
+	_, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MaxSettlesPerTx: 2,
+		MaxTxsPerRun:    2,
+		OnError: func(error, *storage.SettleTarget) {
+			reported++
+		},
+	})
+	if err == nil {
+		t.Fatal("expected receiver read failure")
+	}
+	if signer.writeCalls != 0 || reported != 0 {
+		t.Fatalf("writes=%d reported=%d", signer.writeCalls, reported)
 	}
 }
 
