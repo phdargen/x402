@@ -69,6 +69,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		return nil, err
 	}
 	kept := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(filtered))
+	lookup := rowLookup(ctx, m.storage, rows)
 	for _, claim := range filtered {
 		channelID, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
 		if err != nil {
@@ -78,11 +79,27 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		if !ok {
 			continue
 		}
+		stored, err := lookup(channelID)
+		if err != nil {
+			return nil, err
+		}
+		if stored != nil && stored.PendingClaim != nil {
+			skip, resolveErr := m.resolvePendingClaim(ctx, channelID, stored, view.totalClaimed)
+			if resolveErr != nil {
+				return nil, resolveErr
+			}
+			if skip {
+				continue
+			}
+		}
 		charged, chargedOk := storage.ParseUint256(claim.TotalClaimed)
 		if !chargedOk {
 			continue
 		}
 		if view.totalClaimed.Cmp(charged) >= 0 {
+			if unreconciledClaimDelta(stored, view.totalClaimed) {
+				m.logger.Warn("batch-settlement: onchain totalClaimed advanced without an attested claim marker", "channel_id", channelID, "network", network)
+			}
 			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, rows); err != nil {
 				return nil, err
 			}
@@ -277,63 +294,96 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 	if len(claims) == 0 {
 		return nil, nil
 	}
-	counts, attested, err := SnapshotClaimChargeCounts(ctx, m.storage, claims, network, rows)
-	if err != nil {
-		return nil, err
+	counts := make([]uint64, 0, len(claims))
+	begun := make([]attestedClaim, 0, len(claims))
+	kept := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(claims))
+	now := time.Now().UnixMilli()
+	for _, claim := range claims {
+		channelID, idErr := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
+		if idErr != nil {
+			_ = abortAttestedClaims(ctx, m.storage, begun)
+			return nil, idErr
+		}
+		one, busy, beginErr := beginAttestedClaim(ctx, m.storage, channelID, claim.TotalClaimed, now)
+		if beginErr != nil {
+			_ = abortAttestedClaims(ctx, m.storage, begun)
+			return nil, beginErr
+		}
+		if busy {
+			continue
+		}
+		begun = append(begun, one)
+		kept = append(kept, claim)
+		counts = append(counts, chargeCountUint(one.Count))
 	}
-	asset := claims[0].Voucher.Channel.Token
-	payTo := claims[0].Voucher.Channel.Receiver
-	payload := &batchsettlement.BatchSettlementClaimPayload{Type: "claim", Claims: claims}
+	if len(kept) == 0 {
+		return nil, nil
+	}
+	asset := kept[0].Voucher.Channel.Token
+	payTo := kept[0].Voucher.Channel.Receiver
+	payload := &batchsettlement.BatchSettlementClaimPayload{Type: "claim", Claims: kept}
 	builderSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), asset, payTo)
 	if err != nil {
+		_ = abortAttestedClaims(ctx, m.storage, begun)
 		return nil, err
 	}
 	dataSuffix, err := batchsettlement.ComposeClaimDataSuffix(counts, builderSuffix)
 	if err != nil {
+		_ = abortAttestedClaims(ctx, m.storage, begun)
 		return nil, err
 	}
 	response, err := SubmitClaim(ctx, SubmitClaimInput{
 		Network:    network,
-		Claims:     claims,
+		Claims:     kept,
 		DataSuffix: dataSuffix,
 	}, m.submitContext())
+	landed, releaseErr := releaseAttestedClaims(ctx, m.storage, begun, err, response)
+	if landed {
+		afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterClaimTimeout)
+		defer cancel()
+		if afterErr := afterClaim(afterCtx, m.storage, kept, network, m.settleTargetStorage, rows); afterErr != nil {
+			return nil, afterErr
+		}
+		if releaseErr != nil {
+			return nil, releaseErr
+		}
+		return []FacilitatorClaimResult{{
+			Network:     network,
+			Vouchers:    len(kept),
+			Transaction: response.Transaction,
+		}}, nil
+	}
 	if err != nil {
+		if releaseErr != nil {
+			return nil, releaseErr
+		}
 		return nil, err
 	}
-	if !response.Success {
-		if response.ErrorReason != ErrClaimSimulationFailed {
-			return nil, fmt.Errorf("%s", formatFailure("Claim", response))
-		}
-		if len(claims) == 1 {
-			channelID, idErr := batchsettlement.ComputeChannelId(claims[0].Voucher.Channel, network)
-			if idErr != nil {
-				return nil, idErr
-			}
-			simErr := fmt.Errorf("claim simulation failed for channel %s on %s", channelID, network)
-			reportClaimError(m.logger, opts, simErr, channelID)
-			if syncErr := m.resyncFailedClaim(ctx, channelID); syncErr != nil {
-				return nil, syncErr
-			}
-			return nil, nil
-		}
-		mid := len(claims) / 2
-		left, leftErr := m.submitClaimLeaf(ctx, network, claims[:mid], rows, opts)
-		if leftErr != nil {
-			return left, leftErr
-		}
-		right, rightErr := m.submitClaimLeaf(ctx, network, claims[mid:], rows, opts)
-		return append(left, right...), rightErr
+	if releaseErr != nil {
+		return nil, releaseErr
 	}
-	afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterClaimTimeout)
-	defer cancel()
-	if err := afterClaim(afterCtx, m.storage, claims, network, attested, m.settleTargetStorage, rows); err != nil {
-		return nil, err
+	if response == nil || response.ErrorReason != ErrClaimSimulationFailed {
+		return nil, fmt.Errorf("%s", formatFailure("Claim", response))
 	}
-	return []FacilitatorClaimResult{{
-		Network:     network,
-		Vouchers:    len(claims),
-		Transaction: response.Transaction,
-	}}, nil
+	if len(kept) == 1 {
+		channelID, idErr := batchsettlement.ComputeChannelId(kept[0].Voucher.Channel, network)
+		if idErr != nil {
+			return nil, idErr
+		}
+		simErr := fmt.Errorf("claim simulation failed for channel %s on %s", channelID, network)
+		reportClaimError(m.logger, opts, simErr, channelID)
+		if syncErr := m.resyncFailedClaim(ctx, channelID); syncErr != nil {
+			return nil, syncErr
+		}
+		return nil, nil
+	}
+	mid := len(kept) / 2
+	left, leftErr := m.submitClaimLeaf(ctx, network, kept[:mid], rows, opts)
+	if leftErr != nil {
+		return left, leftErr
+	}
+	right, rightErr := m.submitClaimLeaf(ctx, network, kept[mid:], rows, opts)
+	return append(left, right...), rightErr
 }
 
 func (m *FacilitatorChannelManager) resyncFailedClaim(ctx context.Context, channelID string) error {
@@ -344,7 +394,7 @@ func (m *FacilitatorChannelManager) resyncFailedClaim(ctx context.Context, chann
 	return m.syncClaimMirror(ctx, channelID, state.Balance, state.TotalClaimed, state.WithdrawRequestedAt, true)
 }
 
-// syncClaimMirror writes on-chain mirror fields. TotalClaimed only moves forward.
+// syncClaimMirror writes onchain mirror fields. TotalClaimed only moves forward.
 // full also overwrites Balance, WithdrawRequestedAt, and OnchainSyncedAt.
 func (m *FacilitatorChannelManager) syncClaimMirror(
 	ctx context.Context,
@@ -355,7 +405,7 @@ func (m *FacilitatorChannelManager) syncClaimMirror(
 	full bool,
 ) error {
 	now := time.Now().UnixMilli()
-	_, err := m.storage.UpdateChannel(ctx, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
+	return updateChannelStrict(ctx, m.storage, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
 		}
@@ -382,11 +432,10 @@ func (m *FacilitatorChannelManager) syncClaimMirror(
 		next.OnchainSyncedAt = now
 		return next
 	})
-	return err
 }
 
 // applyPreflightSettleDelta records a claim that landed without AfterClaim.
-// The delta is on-chain totalClaimed minus the stored watermark.
+// The delta is onchain totalClaimed minus the stored watermark.
 func (m *FacilitatorChannelManager) applyPreflightSettleDelta(
 	ctx context.Context,
 	network, channelID, receiver, token string,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"regexp"
 	"strings"
@@ -38,9 +39,10 @@ type VoucherStoreDeps struct {
 	DelegatedAuthStore      storage.DelegatedAuthStore
 	EIP6492AllowedFactories []string
 	PendingStore            x402.PendingSettlementStore
-	Retention               FacilitatorRetention
+	KeepFinishedRows        bool
 	SettleTargetStorage     storage.SettleTargetStorage
 	OnStorageError          func(err error, network, channelId string)
+	Logger                  *slog.Logger
 }
 
 func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) string {
@@ -522,11 +524,11 @@ func settleManagedRefund(
 		return failSettle(requirements, ErrCumulativeAmountMismatch), nil
 	}
 
-	claims := rebuildClaims(stored)
-	attested := 0
-	if len(claims) > 0 {
-		attested = stored.ChargeCount
+	if _, readErr := ReadChannelState(ctx, deps.Signer, channelId); readErr != nil {
+		return failSettle(requirements, ErrRpcReadFailed), nil
 	}
+
+	claims := rebuildClaims(stored)
 	amount := resolveRefundAmount(raw.Amount, stored)
 	nonce := fmt.Sprintf("%d", stored.RefundNonce)
 	enriched := *raw
@@ -536,10 +538,22 @@ func settleManagedRefund(
 	enriched.RefundAuthorizerSignature = ""
 	enriched.ClaimAuthorizerSignature = ""
 
-	var claimSuffix []byte
+	var (
+		claimSuffix []byte
+		begun       []attestedClaim
+	)
 	if len(claims) > 0 {
-		claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{uint64(attested)})
+		one, busy, beginErr := beginAttestedClaim(ctx, deps.Storage, channelId, claims[0].TotalClaimed, time.Now().UnixMilli())
+		if beginErr != nil {
+			return nil, beginErr
+		}
+		if busy {
+			return failSettle(requirements, ErrChannelBusy), nil
+		}
+		begun = []attestedClaim{one}
+		claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
 		if err != nil {
+			_ = abortAttestedClaims(ctx, deps.Storage, begun)
 			return failSettle(requirements, ErrRpcReadFailed), nil
 		}
 	}
@@ -554,19 +568,31 @@ func settleManagedRefund(
 		AuthorizerSigner:    deps.AuthorizerSigner,
 		AuthorizerSubmitter: deps.AuthorizerSubmitter,
 	})
+	landed, releaseErr := releaseAttestedClaims(ctx, deps.Storage, begun, err, settled)
 	if err != nil {
+		if releaseErr != nil {
+			return nil, releaseErr
+		}
 		return nil, err
 	}
-	if !settled.Success {
+	if !landed {
+		if releaseErr != nil {
+			return nil, releaseErr
+		}
 		return settled, nil
 	}
 
 	extraState, _ := settled.Extra["channelState"].(map[string]interface{})
 	if len(claims) > 0 {
 		newClaimed := refundClaimedTotal(stored.TotalClaimed, claims, extraState)
-		if err := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); err != nil {
+		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed); finishErr != nil {
+			voucherStoreLogger(deps).Warn("batch-settlement: refund landed but attested claim was not applied", "channel_id", channelId, "error", finishErr)
+		} else if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
 			return settled, nil
 		}
+	}
+	if releaseErr != nil {
+		voucherStoreLogger(deps).Warn("batch-settlement: refund landed but claim marker hash was not stored", "channel_id", channelId, "error", releaseErr)
 	}
 	balance := stored.Balance
 	totalClaimed := stored.TotalClaimed
@@ -583,14 +609,9 @@ func settleManagedRefund(
 		if current == nil {
 			return current
 		}
-		chargeCount := current.ChargeCount - attested
-		if chargeCount < 0 {
-			chargeCount = 0
-		}
 		next := current.Clone()
 		next.Balance = balance
 		next.TotalClaimed = totalClaimed
-		next.ChargeCount = chargeCount
 		if extraState != nil {
 			if v, ok := extraNumber(extraState["withdrawRequestedAt"]); ok {
 				next.WithdrawRequestedAt = v
@@ -608,13 +629,16 @@ func settleManagedRefund(
 			next.RefundNonce = current.RefundNonce + 1
 		}
 		next.LastRequestTimestamp = time.Now().UnixMilli()
-		if ShouldDeleteNeverClaimedRefundRow(deps.Retention, next, chargeCount, totalClaimed) {
+		if ShouldDeleteNeverClaimedRefundRow(deps.KeepFinishedRows, next, next.ChargeCount, totalClaimed) {
 			return nil
 		}
 		return next
 	})
 	if err != nil {
 		return settled, nil
+	}
+	if updated != nil && updated.Status == storage.ChannelConflict {
+		voucherStoreLogger(deps).Warn("batch-settlement: refund landed but channel row update conflicted", "channel_id", channelId)
 	}
 
 	chargeCount := 0
@@ -1169,6 +1193,13 @@ func mismatchVerifyExtra(channelId string, extra map[string]interface{}, stored 
 		out["voucherState"] = map[string]interface{}{}
 	}
 	return out
+}
+
+func voucherStoreLogger(deps VoucherStoreDeps) *slog.Logger {
+	if deps.Logger != nil {
+		return deps.Logger
+	}
+	return slog.Default()
 }
 
 func failSettle(requirements types.PaymentRequirements, errorReason string) *x402.SettleResponse {
