@@ -447,7 +447,15 @@ func managedDepositEnvelope(cfg batchsettlement.ChannelConfig, channelId string)
 
 func managedDepositSigner(t *testing.T) *fakeFacilitatorSigner {
 	t.Helper()
+	return depositSignerWithBalances(t, 0, 1000)
+}
+
+// depositSignerWithBalances reads prior until the deposit write, then each post-write
+// read takes the next balance from postWrite and repeats the last.
+func depositSignerWithBalances(t *testing.T, prior int64, postWrite ...int64) *fakeFacilitatorSigner {
+	t.Helper()
 	var writeSeen bool
+	postReads := 0
 	return &fakeFacilitatorSigner{
 		addresses: []string{managedFacilitator},
 		chainId:   big.NewInt(84532),
@@ -472,9 +480,11 @@ func managedDepositSigner(t *testing.T) *fakeFacilitatorSigner {
 				return nil, errors.New("unexpected rpc")
 			}
 			if !writeSeen {
-				return multicallChannelStateResult(t, big.NewInt(0), big.NewInt(0), 0, big.NewInt(0)), nil
+				return multicallChannelStateResult(t, big.NewInt(prior), big.NewInt(0), 0, big.NewInt(0)), nil
 			}
-			return multicallChannelStateResult(t, big.NewInt(1000), big.NewInt(0), 0, big.NewInt(0)), nil
+			balance := postWrite[min(postReads, len(postWrite)-1)]
+			postReads++
+			return multicallChannelStateResult(t, big.NewInt(balance), big.NewInt(0), 0, big.NewInt(0)), nil
 		},
 	}
 }
@@ -651,7 +661,8 @@ func TestSettleManaged_OmittedPendingIdWhileReservationLive(t *testing.T) {
 	channelId := mustChannelId(t, cfg)
 	voucher := voucherFields(channelId, "2000", dummySig)
 	acquireBound(t, store, "0xother", voucher)
-	rpcSigner := newManagedSigner(t, &managedRPC{})
+	rpc := &managedRPC{}
+	rpcSigner := newManagedSigner(t, rpc)
 	deps := managedDeps(t, store, store, auth, rpcSigner)
 
 	result, err := SettleManaged(context.Background(), deps,
@@ -663,8 +674,8 @@ func TestSettleManaged_OmittedPendingIdWhileReservationLive(t *testing.T) {
 	if result.Success || result.ErrorReason != ErrPendingIdMismatch {
 		t.Fatalf("got %+v", result)
 	}
-	if rpcSigner.verifyCalls != 0 {
-		t.Fatalf("verifyCalls=%d, want 0", rpcSigner.verifyCalls)
+	if rpcSigner.verifyCalls != 0 || rpc.tryAggregate != 0 {
+		t.Fatalf("verifyCalls=%d tryAggregate=%d, want 0", rpcSigner.verifyCalls, rpc.tryAggregate)
 	}
 	held, _ := store.IsHeld(context.Background(), channelId, "")
 	if !held {
@@ -1338,3 +1349,439 @@ func (failingDelegatedAuth) Get(_ context.Context, _, _ string) (*storage.Delega
 	return nil, errors.New("auth store down")
 }
 func (failingDelegatedAuth) RevertBind(_ context.Context, _, _, _ string) error { return nil }
+
+type countingChannelStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	updates int
+}
+
+func (s *countingChannelStore) UpdateChannel(ctx context.Context, channelId string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	s.updates++
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelId, update)
+}
+
+// chainIdFailingSigner makes any typed-data voucher check fail with ErrChannelStateReadFailed.
+type chainIdFailingSigner struct {
+	*fakeFacilitatorSigner
+}
+
+func (chainIdFailingSigner) GetChainID(context.Context) (*big.Int, error) {
+	return nil, errors.New("chain id unavailable")
+}
+
+func TestSettleManaged_HeldFreshMirrorSkipsRead(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	synced := time.Now().UnixMilli()
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: synced}))
+	voucher := voucherFields(channelId, "2000", dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	rpc := &managedRPC{balance: bigInt(7777)}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if rpc.tryAggregate != 0 || got.Balance != "10000" || got.OnchainSyncedAt != synced || got.ChargedCumulativeAmount != "2000" {
+		t.Fatalf("tryAggregate=%d stored=%+v", rpc.tryAggregate, got)
+	}
+}
+
+func TestSettleManaged_HeldStaleMirrorReadsOnceAndStampsSample(t *testing.T) {
+	store := &countingChannelStore{InMemoryChannelStorage: storage.NewInMemoryChannelStorage[*FacilitatorChannel]()}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store.InMemoryChannelStorage, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: 1}))
+	voucher := voucherFields(channelId, "2000", dummySig)
+	acquireBound(t, store.InMemoryChannelStorage, "0xpending", voucher)
+	rpc := &managedRPC{balance: bigInt(7777), totalClaimed: bigInt(300)}
+
+	before := time.Now().UnixMilli()
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	after := time.Now().UnixMilli()
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if rpc.tryAggregate != 1 || store.updates != 1 {
+		t.Fatalf("tryAggregate=%d updates=%d, want 1 and 1", rpc.tryAggregate, store.updates)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.Balance != "7777" || got.TotalClaimed != "300" || got.OnchainSyncedAt < before || got.OnchainSyncedAt > after || got.ChargedCumulativeAmount != "2000" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_HeldZeroTtlReadsEverySettle(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: time.Now().UnixMilli() - 60_000}))
+	rpc := &managedRPC{balance: bigInt(7777)}
+	deps := managedDeps(t, store, store, auth, newManagedSigner(t, rpc))
+	zero := int64(0)
+	deps.OnchainStateTtlMs = &zero
+	reqs := managedRequirements(auth.addr)
+
+	before := time.Now().UnixMilli()
+	for _, maxClaimable := range []string{"2000", "3000"} {
+		voucher := voucherFields(channelId, maxClaimable, dummySig)
+		acquireBound(t, store, "0xpending", voucher)
+		resp, err := SettleManaged(context.Background(), deps, voucherEnvelope(cfg, voucher, "0xpending"), reqs, nil, nil)
+		if err != nil || !resp.Success {
+			t.Fatalf("settle %s: %+v %v", maxClaimable, resp, err)
+		}
+	}
+	after := time.Now().UnixMilli()
+	got, _ := store.Get(context.Background(), channelId)
+	if rpc.tryAggregate != 2 || got.Balance != "7777" || got.OnchainSyncedAt < before || got.OnchainSyncedAt > after || got.ChargedCumulativeAmount != "3000" {
+		t.Fatalf("tryAggregate=%d stored=%+v", rpc.tryAggregate, got)
+	}
+}
+
+func TestSettleManaged_HeldReadErrorChargesExistingRow(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: 1}))
+	voucher := voucherFields(channelId, "2000", dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	rpc := &managedRPC{readFail: true}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.Balance != "10000" || got.OnchainSyncedAt != 1 || got.ChargedCumulativeAmount != "2000" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_HeldReadErrorWithoutRowFails(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	voucher := voucherFields(channelId, "1000", dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	rpc := &managedRPC{readFail: true}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrRpcReadFailed {
+		t.Fatalf("got %+v", resp)
+	}
+	if got, _ := store.Get(context.Background(), channelId); got != nil {
+		t.Fatalf("stored %+v, want no row", got)
+	}
+}
+
+func TestSettleManaged_HeldMissingRowCreatedInOneCommit(t *testing.T) {
+	store := &countingChannelStore{InMemoryChannelStorage: storage.NewInMemoryChannelStorage[*FacilitatorChannel]()}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	voucher := voucherFields(channelId, "1500", dummySig)
+	acquireBound(t, store.InMemoryChannelStorage, "0xpending", voucher)
+	rpc := &managedRPC{balance: bigInt(7777), totalClaimed: bigInt(500)}
+
+	before := time.Now().UnixMilli()
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	after := time.Now().UnixMilli()
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if rpc.tryAggregate != 1 || store.updates != 1 {
+		t.Fatalf("tryAggregate=%d updates=%d, want 1 and 1", rpc.tryAggregate, store.updates)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "1500" || got.Balance != "7777" || got.TotalClaimed != "500" ||
+		got.OnchainSyncedAt < before || got.OnchainSyncedAt > after || got.ChargeCount != 1 {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_HeldReadLosesToNewerRowStamp(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: 1}))
+	voucher := voucherFields(channelId, "2000", dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	rpc := &managedRPC{balance: bigInt(7777)}
+	signer := newManagedSigner(t, rpc)
+	read := signer.readContract
+	var newer int64
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == evm.FunctionTryAggregate {
+			newer = time.Now().UnixMilli() + 60_000
+			seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{Balance: "5555", OnchainSyncedAt: newer}))
+		}
+		return read(functionName, args...)
+	}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, signer),
+		voucherEnvelope(cfg, voucher, "0xpending"), managedRequirements(auth.addr), nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.Balance != "5555" || got.OnchainSyncedAt != newer || got.ChargedCumulativeAmount != "2000" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_UnheldAcquiresFreshOwnerAndMirrorsVerifyRead(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: 1}))
+	voucher := voucherFields(channelId, "2000", dummySig)
+	rpc := &managedRPC{balance: bigInt(7777)}
+	signer := newManagedSigner(t, rpc)
+	deps := managedDeps(t, store, store, auth, signer)
+	reqs := managedRequirements(auth.addr)
+	probed := false
+	var during *x402.VerifyResponse
+	read := signer.readContract
+	signer.readContract = func(functionName string, args ...interface{}) (interface{}, error) {
+		if functionName == evm.FunctionTryAggregate && !probed {
+			probed = true
+			during, _ = VerifyManaged(context.Background(), deps, voucherEnvelope(cfg, voucher, ""), reqs, nil)
+		}
+		return read(functionName, args...)
+	}
+
+	before := time.Now().UnixMilli()
+	resp, err := SettleManaged(context.Background(), deps, voucherEnvelope(cfg, voucher, "0xstale"), reqs, nil, nil)
+	after := time.Now().UnixMilli()
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if during == nil || during.InvalidReason != ErrChannelBusy {
+		t.Fatalf("verify during settle = %+v, want %s", during, ErrChannelBusy)
+	}
+	held, _ := store.IsHeld(context.Background(), channelId, "")
+	got, _ := store.Get(context.Background(), channelId)
+	if held || rpc.tryAggregate != 1 {
+		t.Fatalf("held=%v tryAggregate=%d, want released and 1", held, rpc.tryAggregate)
+	}
+	if got.Balance != "7777" || got.OnchainSyncedAt < before || got.OnchainSyncedAt > after || got.ChargedCumulativeAmount != "2000" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_UnheldAcquireErrorFailsBeforeVerify(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner, acquireErr: errors.New("lock store down")}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, inner, storedManagedChannel(cfg, channelId, nil))
+	rpc := &managedRPC{}
+
+	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, voucherFields(channelId, "2000", dummySig), ""), managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrRpcReadFailed || rpc.tryAggregate != 0 {
+		t.Fatalf("got %+v tryAggregate=%d", resp, rpc.tryAggregate)
+	}
+	got, _ := inner.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "1000" {
+		t.Fatalf("charged = %q, want 1000", got.ChargedCumulativeAmount)
+	}
+}
+
+func TestSettleManagedDeposit_ConfirmedReadStampsItsSample(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "06")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "0", Balance: "0", OnchainSyncedAt: 1,
+	}))
+	deps := managedDeps(t, store, store, auth, depositSignerWithBalances(t, 0, 0, 1000))
+
+	before := time.Now().UnixMilli()
+	resp, err := SettleManaged(context.Background(), deps, signedManagedDeposit(t, cfg, channelId), managedRequirements(auth.addr), nil, nil)
+	after := time.Now().UnixMilli()
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.OnchainSyncedAt < before || got.OnchainSyncedAt > after || got.Balance != "1000" || got.ChargedCumulativeAmount != "1000" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManagedDeposit_OptimisticKeepsStoredStamp(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "06")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "0", Balance: "500", OnchainSyncedAt: 12_345,
+	}))
+	deps := managedDeps(t, store, store, auth, depositSignerWithBalances(t, 500, 500))
+
+	resp, err := SettleManaged(context.Background(), deps, signedManagedDeposit(t, cfg, channelId), managedRequirements(auth.addr), nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.OnchainSyncedAt != 12_345 || got.Balance != "1500" {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManagedDeposit_ReconcileKeepsStoredStamp(t *testing.T) {
+	cases := []struct {
+		name         string
+		seedRow      bool
+		wantSyncedAt int64
+	}{
+		{name: "existing row keeps its stamp", seedRow: true, wantSyncedAt: 12_345},
+		{name: "new row has no stamp", seedRow: false, wantSyncedAt: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+			auth := managedAuthorizer()
+			cfg := managedConfig(auth.addr, "07")
+			channelId := mustChannelId(t, cfg)
+			if tc.seedRow {
+				seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+					ChargedCumulativeAmount: "0", Balance: "500", OnchainSyncedAt: 12_345,
+				}))
+			}
+			deps := managedDeps(t, store, store, auth, depositSignerWithBalances(t, 1500, 1500))
+			payload := signedManagedDeposit(t, cfg, channelId)
+			dp, err := batchsettlement.DepositPayloadFromMap(payload.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := deps.PendingStore.Set(context.Background(), depositSettlementCacheKey(dp, batchsettlement.AssetTransferMethodEip3009), successTxHash); err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := SettleManaged(context.Background(), deps, payload, managedRequirements(auth.addr), nil, nil)
+			if err != nil || !resp.Success {
+				t.Fatalf("got %+v %v", resp, err)
+			}
+			got, _ := store.Get(context.Background(), channelId)
+			if got.OnchainSyncedAt != tc.wantSyncedAt || got.Balance != "1500" {
+				t.Fatalf("stored %+v", got)
+			}
+		})
+	}
+}
+
+func TestVerifyManaged_ClearedEoaVoucherSkipsTypedDataCheck(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	cfg.PayerAuthorizer = managedPayer
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{OnchainSyncedAt: 1}))
+	sig := eoaVoucherSignature(t, channelId, "2000", managedNetwork)
+	rpc := &managedRPC{}
+	signer := chainIdFailingSigner{newManagedSigner(t, rpc)}
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, signer),
+		voucherEnvelope(cfg, voucherFields(channelId, "2000", sig), ""), managedRequirements(auth.addr), nil)
+	if err != nil || !resp.IsValid {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if rpc.tryAggregate != 1 || got.OnchainSyncedAt != 1 {
+		t.Fatalf("tryAggregate=%d onchainSyncedAt=%d, want 1 and 1", rpc.tryAggregate, got.OnchainSyncedAt)
+	}
+}
+
+func TestVerifyManaged_ForgedEoaVoucherRejectedBeforeAcquire(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner, acquireErr: errors.New("lock store down")}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	cfg.PayerAuthorizer = managedPayer
+	channelId := mustChannelId(t, cfg)
+	forged := voucherFields(channelId, "2000", eoaVoucherSignature(t, channelId, "1000", managedNetwork))
+	rpc := &managedRPC{}
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)),
+		voucherEnvelope(cfg, forged, ""), managedRequirements(auth.addr), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrVoucherSignatureInvalid || rpc.tryAggregate != 0 {
+		t.Fatalf("got %+v tryAggregate=%d", resp, rpc.tryAggregate)
+	}
+}
+
+func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {
+	auth := managedAuthorizer()
+	reqs := managedRequirements(auth.addr)
+	eoaCfg := managedConfig(auth.addr, "00")
+	eoaCfg.PayerAuthorizer = managedPayer
+	eoaId := mustChannelId(t, eoaCfg)
+	eoaVoucher := voucherFields(eoaId, "2000", eoaVoucherSignature(t, eoaId, "2000", managedNetwork))
+	zeroCfg := managedConfig(auth.addr, "01")
+	zeroId := mustChannelId(t, zeroCfg)
+
+	cases := []struct {
+		name string
+		run  func(deps VoucherStoreDeps) (string, error)
+	}{
+		{name: "zero authorizer verify", run: func(deps VoucherStoreDeps) (string, error) {
+			resp, err := VerifyManaged(context.Background(), deps, voucherEnvelope(zeroCfg, voucherFields(zeroId, "2000", dummySig), ""), reqs, nil)
+			if err != nil {
+				return "", err
+			}
+			return resp.InvalidReason, nil
+		}},
+		{name: "refund verify", run: func(deps VoucherStoreDeps) (string, error) {
+			resp, err := VerifyManaged(context.Background(), deps, refundEnvelope(eoaCfg, eoaVoucher, "", "", ""), reqs, nil)
+			if err != nil {
+				return "", err
+			}
+			return resp.InvalidReason, nil
+		}},
+		{name: "unheld settle", run: func(deps VoucherStoreDeps) (string, error) {
+			resp, err := SettleManaged(context.Background(), deps, voucherEnvelope(eoaCfg, eoaVoucher, ""), reqs, nil, nil)
+			if err != nil {
+				return "", err
+			}
+			return resp.ErrorReason, nil
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+			signer := chainIdFailingSigner{newManagedSigner(t, nil)}
+			reason, err := tc.run(managedDeps(t, store, store, auth, signer))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reason != ErrChannelStateReadFailed {
+				t.Fatalf("reason = %q, want %q", reason, ErrChannelStateReadFailed)
+			}
+		})
+	}
+}

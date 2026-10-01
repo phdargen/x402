@@ -218,7 +218,10 @@ func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelS
 			ub.TotalClaimed = maxUint256String(ub.TotalClaimed, snap.TotalClaimed)
 			ub.WithdrawRequestedAt = snap.WithdrawRequestedAt
 			ub.RefundNonce = snap.RefundNonce
-			ub.OnchainSyncedAt = now
+			// The stamp is the read time of the escrow fields; zero is no observation.
+			if snap.OnchainSyncedAt > ub.OnchainSyncedAt {
+				ub.OnchainSyncedAt = snap.OnchainSyncedAt
+			}
 		}
 		ub.ChargedCumulativeAmount = newCharged.String()
 		ub.SignedMaxClaimable = input.Voucher.MaxClaimableAmount

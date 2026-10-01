@@ -424,7 +424,7 @@ func TestSettleDeposit_BadAmount(t *testing.T) {
 			Amount: "not-a-number",
 		},
 	}
-	_, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil, nil)
+	_, _, err := SettleDeposit(context.Background(), scheme.signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrInvalidDepositPayload {
 		t.Fatalf("got err = %v", err)
@@ -450,7 +450,7 @@ func TestSettleDeposit_MissingAuthorization(t *testing.T) {
 			Amount: "100",
 		},
 	}
-	_, err = SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil, nil)
+	_, _, err = SettleDeposit(context.Background(), signer, payload, reqsFor(testNetwork), nil, nil, nil, nil, nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrErc3009AuthorizationRequired {
 		t.Fatalf("got err = %v", err)
@@ -649,7 +649,7 @@ func TestSettleDeposit_PostReceiptBalanceNotDoubled(t *testing.T) {
 		},
 	}
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, nil)
+	resp, _, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -718,7 +718,7 @@ func TestSettleDeposit_Erc20ApprovalAcceptsSingleExtensionHash(t *testing.T) {
 		},
 	})
 
-	resp, err := SettleDeposit(
+	resp, _, err := SettleDeposit(
 		context.Background(), signer, payload, reqs,
 		extensionsWithErc20Approval(info), fctx, nil, nil, nil, nil,
 	)
@@ -772,7 +772,7 @@ func TestSettleDeposit_Erc20ApprovalSingleHashWithoutBalanceIncreaseFails(t *tes
 		},
 	})
 
-	_, err := SettleDeposit(
+	_, _, err := SettleDeposit(
 		context.Background(), signer, payload, reqs,
 		extensionsWithErc20Approval(info), fctx, nil, nil, nil, nil,
 	)
@@ -828,7 +828,7 @@ func TestSettleDeposit_Erc20ApprovalSingleHashWithReadErrorReturnsSettlementPend
 		},
 	})
 
-	_, err := SettleDeposit(
+	_, _, err := SettleDeposit(
 		context.Background(), signer, payload, reqs,
 		extensionsWithErc20Approval(info), fctx, nil, nil, nil, nil,
 	)

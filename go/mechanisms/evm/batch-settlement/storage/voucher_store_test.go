@@ -284,22 +284,69 @@ func TestCommitVoucherCharge_ConflictWhenUpdateNotApplied(t *testing.T) {
 func TestCommitVoucherCharge_LocalVerifyKeepsStoredEscrow(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel {
-		return voucherBaseChannel(&Channel{Balance: "7777", TotalClaimed: "3"})
+		seed := voucherBaseChannel(&Channel{Balance: "7777", TotalClaimed: "3"})
+		seed.OnchainSyncedAt = 500
+		return seed
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	snapshot := voucherBaseChannel(&Channel{Balance: "10000", TotalClaimed: "0"})
+	snapshot.OnchainSyncedAt = 900
 	result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
 		Increment:   big.NewInt(100),
 		SignedCap:   big.NewInt(5000),
 		Voucher:     batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
-		Snapshot:    voucherBaseChannel(&Channel{Balance: "10000", TotalClaimed: "0"}),
+		Snapshot:    snapshot,
 		LocalVerify: true,
 	})
 	if err != nil {
 		t.Fatalf("CommitVoucherCharge: %v", err)
 	}
-	if result.Status != CommitCommitted || result.Current.Balance != "7777" || result.Current.TotalClaimed != "3" {
+	if result.Status != CommitCommitted || result.Current.Balance != "7777" || result.Current.TotalClaimed != "3" || result.Current.OnchainSyncedAt != 500 {
 		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCommitVoucherCharge_OnchainSyncedAtMovesOnlyForward(t *testing.T) {
+	cases := []struct {
+		name         string
+		snapshotAt   int64
+		wantSyncedAt int64
+	}{
+		{name: "newer snapshot stamp replaces row stamp", snapshotAt: 2_000, wantSyncedAt: 2_000},
+		{name: "zero snapshot stamp keeps row stamp", snapshotAt: 0, wantSyncedAt: 1_000},
+		{name: "older snapshot stamp keeps row stamp", snapshotAt: 400, wantSyncedAt: 1_000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewInMemoryChannelStorage[*Channel]()
+			if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel {
+				seed := voucherBaseChannel(&Channel{Balance: "1"})
+				seed.OnchainSyncedAt = 1_000
+				return seed
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			snapshot := voucherBaseChannel(&Channel{Balance: "4242"})
+			snapshot.OnchainSyncedAt = tc.snapshotAt
+			result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+				Increment: big.NewInt(100),
+				SignedCap: big.NewInt(5000),
+				Voucher:   batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"},
+				Snapshot:  snapshot,
+				Now:       9_999,
+			})
+			if err != nil {
+				t.Fatalf("CommitVoucherCharge: %v", err)
+			}
+			if result.Status != CommitCommitted {
+				t.Fatalf("status = %q", result.Status)
+			}
+			got, _ := store.Get(context.Background(), voucherChannelId)
+			if got.OnchainSyncedAt != tc.wantSyncedAt || got.Balance != "4242" || got.LastRequestTimestamp != 9_999 {
+				t.Fatalf("stored onchainSyncedAt=%d balance=%q lastRequestTimestamp=%d", got.OnchainSyncedAt, got.Balance, got.LastRequestTimestamp)
+			}
+		})
 	}
 }
 
