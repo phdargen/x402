@@ -929,15 +929,198 @@ func TestSettleManaged_ChargeExceedsSignedCap(t *testing.T) {
 	acquireBound(t, store, "0xpending", voucher)
 	reqs := managedRequirements(auth.addr)
 	reqs.Amount = "1000"
+	payload := voucherEnvelope(cfg, voucher, "0xpending")
+	payload.Accepted.Amount = "500"
 
 	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, nil),
-		voucherEnvelope(cfg, voucher, "0xpending"), reqs, nil, nil)
+		payload, reqs, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.Success || resp.ErrorReason != ErrChargeExceedsSignedCumulative {
 		t.Fatalf("got %+v", resp)
 	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "500" {
+		t.Fatalf("charged = %q", got.ChargedCumulativeAmount)
+	}
+}
+
+func TestSettleManaged_ReplayUnderDynamicPriceDoesNotDoubleCharge(t *testing.T) {
+	store, deps, payload, reqs, channelId := heldDynamicVoucher(t, "100", "0", "100", "40")
+
+	first, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+	if err != nil || !first.Success {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	voucher := voucherFields(channelId, "100", dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	second, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Success || second.ErrorReason != ErrCumulativeAmountMismatch || second.Extra != nil {
+		t.Fatalf("replay: %+v", second)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "40" || got.ChargeCount != 1 {
+		t.Fatalf("stored charged=%s chargeCount=%d", got.ChargedCumulativeAmount, got.ChargeCount)
+	}
+}
+
+func TestSettleManaged_ConcurrentSamePayloadChargesOnce(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "0",
+		OnchainSyncedAt:         time.Now().UnixMilli(),
+	}))
+	voucher := voucherFields(channelId, "100", dummySig)
+	payload := voucherEnvelope(cfg, voucher, "0xpending")
+	payload.Accepted.Amount = "100"
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "40"
+	deps := managedDeps(t, store, alwaysHeldLock{}, auth, nil)
+
+	var wg sync.WaitGroup
+	results := make([]*x402.SettleResponse, 2)
+	errs := make([]error, 2)
+	wg.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+		}()
+	}
+	wg.Wait()
+
+	success := 0
+	for i, resp := range results {
+		if errs[i] != nil {
+			t.Fatalf("err: %v", errs[i])
+		}
+		if resp.Success {
+			success++
+			continue
+		}
+		if resp.ErrorReason != ErrCumulativeAmountMismatch {
+			t.Fatalf("loser: %+v", resp)
+		}
+	}
+	if success != 1 {
+		t.Fatalf("success=%d", success)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "40" || got.ChargeCount != 1 {
+		t.Fatalf("stored charged=%s chargeCount=%d", got.ChargedCumulativeAmount, got.ChargeCount)
+	}
+}
+
+func TestSettleManaged_DifferentAcceptedAmountStillCharges(t *testing.T) {
+	store, deps, payload, reqs, channelId := heldDynamicVoucher(t, "100", "0", "100", "40")
+	if _, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	next := voucherEnvelope(cfgFromPayload(t, payload), voucherFields(channelId, "100", dummySig), "0xpending")
+	next.Accepted.Amount = "60"
+	reqs.Amount = "60"
+	acquireBound(t, store, "0xpending", voucherFields(channelId, "100", dummySig))
+	resp, err := SettleManaged(context.Background(), deps, next, reqs, nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "100" {
+		t.Fatalf("charged = %q", got.ChargedCumulativeAmount)
+	}
+}
+
+func TestSettleManaged_FixedPriceStillCharges(t *testing.T) {
+	_, deps, payload, reqs, channelId := heldDynamicVoucher(t, "100", "0", "100", "100")
+	store := deps.Storage
+	resp, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "100" || got.ChargeCount != 1 {
+		t.Fatalf("stored charged=%s chargeCount=%d", got.ChargedCumulativeAmount, got.ChargeCount)
+	}
+}
+
+func TestSettleManaged_ActualAboveAcceptedRejected(t *testing.T) {
+	store, deps, payload, reqs, channelId := heldDynamicVoucher(t, "100", "0", "40", "50")
+	resp, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrChargeExceedsSignedCumulative {
+		t.Fatalf("got %+v", resp)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "0" || got.ChargeCount != 0 {
+		t.Fatalf("stored charged=%s chargeCount=%d", got.ChargedCumulativeAmount, got.ChargeCount)
+	}
+}
+
+func TestSettleManaged_AcceptedAboveSignedCapRejected(t *testing.T) {
+	_, deps, payload, reqs, _ := heldDynamicVoucher(t, "100", "0", "200", "40")
+	resp, err := SettleManaged(context.Background(), deps, payload, reqs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrInvalidPayload {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+// heldDynamicVoucher seeds a fresh row and holds the admission lock for one voucher.
+func heldDynamicVoucher(t *testing.T, maxClaimable, charged, accepted, actual string) (
+	*storage.InMemoryChannelStorage[*FacilitatorChannel],
+	VoucherStoreDeps,
+	types.PaymentPayload,
+	types.PaymentRequirements,
+	string,
+) {
+	t.Helper()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: charged,
+		OnchainSyncedAt:         time.Now().UnixMilli(),
+	}))
+	voucher := voucherFields(channelId, maxClaimable, dummySig)
+	acquireBound(t, store, "0xpending", voucher)
+	payload := voucherEnvelope(cfg, voucher, "0xpending")
+	payload.Accepted.Amount = accepted
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = actual
+	return store, managedDeps(t, store, store, auth, nil), payload, reqs, channelId
+}
+
+func cfgFromPayload(t *testing.T, payload types.PaymentPayload) batchsettlement.ChannelConfig {
+	t.Helper()
+	raw, _ := payload.Payload["channelConfig"].(map[string]interface{})
+	cfg, err := batchsettlement.ChannelConfigFromMap(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+type alwaysHeldLock struct{}
+
+func (alwaysHeldLock) Acquire(context.Context, string, string, int64) (bool, error) {
+	return true, nil
+}
+func (alwaysHeldLock) Release(context.Context, string, string) error { return nil }
+func (alwaysHeldLock) IsHeld(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 func TestSettleManaged_IncrementsChargeCount(t *testing.T) {
@@ -1631,6 +1814,74 @@ func TestSettleManagedDeposit_ConfirmedReadStampsItsSample(t *testing.T) {
 	}
 }
 
+func TestSettleManagedDeposit_ReconciledReplayDoesNotDoubleCharge(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "08")
+	channelId := mustChannelId(t, cfg)
+	signer := depositSignerWithBalances(t, 0, 1000)
+	writes := 0
+	write := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		writes++
+		return write(functionName, args...)
+	}
+	deps := managedDeps(t, store, store, auth, signer)
+	payload := signedManagedDeposit(t, cfg, channelId)
+
+	first, err := SettleManaged(context.Background(), deps, payload, managedRequirements(auth.addr), nil, nil)
+	if err != nil || !first.Success {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	dp, err := batchsettlement.DepositPayloadFromMap(payload.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.PendingStore.Set(context.Background(), depositSettlementCacheKey(dp, batchsettlement.AssetTransferMethodEip3009), successTxHash); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := SettleManaged(context.Background(), deps, payload, managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Success || second.ErrorReason != ErrCumulativeAmountMismatch || second.Transaction != successTxHash {
+		t.Fatalf("replay: %+v", second)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "1000" || writes != 1 {
+		t.Fatalf("charged=%s writes=%d", got.ChargedCumulativeAmount, writes)
+	}
+}
+
+func TestSettleManagedDeposit_ActualAboveAcceptedDoesNotBroadcast(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "09")
+	channelId := mustChannelId(t, cfg)
+	signer := depositSignerWithBalances(t, 0, 1000)
+	writes := 0
+	write := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		writes++
+		return write(functionName, args...)
+	}
+	deps := managedDeps(t, store, store, auth, signer)
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "2000"
+
+	resp, err := SettleManaged(context.Background(), deps, signedManagedDeposit(t, cfg, channelId), reqs, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrChargeExceedsSignedCumulative || writes != 0 {
+		t.Fatalf("got %+v writes=%d", resp, writes)
+	}
+	if got, _ := store.Get(context.Background(), channelId); got != nil {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
 func TestSettleManagedDeposit_OptimisticKeepsStoredStamp(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
@@ -1733,6 +1984,45 @@ func TestVerifyManaged_ForgedEoaVoucherRejectedBeforeAcquire(t *testing.T) {
 	if resp.IsValid || resp.InvalidReason != ErrVoucherSignatureInvalid || rpc.tryAggregate != 0 {
 		t.Fatalf("got %+v tryAggregate=%d", resp, rpc.tryAggregate)
 	}
+}
+
+func TestVerifyManaged_ForgedAcceptedAmountRejectedBeforeAcquire(t *testing.T) {
+	auth := managedAuthorizer()
+	reqs := managedRequirements(auth.addr)
+
+	t.Run("voucher", func(t *testing.T) {
+		inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+		store := &hookStore{inner: inner, acquireErr: errors.New("lock store down")}
+		cfg := managedConfig(auth.addr, "00")
+		channelId := mustChannelId(t, cfg)
+		payload := voucherEnvelope(cfg, voucherFields(channelId, "2000", dummySig), "")
+		payload.Accepted.Amount = "1"
+
+		resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil), payload, reqs, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.IsValid || resp.InvalidReason != ErrInvalidPayload {
+			t.Fatalf("got %+v", resp)
+		}
+	})
+
+	t.Run("deposit", func(t *testing.T) {
+		inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+		store := &hookStore{inner: inner, acquireErr: errors.New("lock store down")}
+		cfg := managedConfig(auth.addr, "01")
+		channelId := mustChannelId(t, cfg)
+		payload := managedDepositEnvelope(cfg, channelId)
+		payload.Accepted.Amount = "1"
+
+		resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil), payload, reqs, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.IsValid || resp.InvalidReason != ErrInvalidPayload {
+			t.Fatalf("got %+v", resp)
+		}
+	})
 }
 
 func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {

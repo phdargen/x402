@@ -35,6 +35,7 @@ const (
 type CommitVoucherChargeInput[T ChannelRecord[T]] struct {
 	Increment           *big.Int
 	SignedCap           *big.Int
+	ExpectedCharged     *big.Int
 	Voucher             batchsettlement.BatchSettlementVoucherFields
 	Snapshot            T
 	ResolveSnapshot     func(current T) T
@@ -48,10 +49,11 @@ type CommitVoucherChargeInput[T ChannelRecord[T]] struct {
 type CommitVoucherChargeStatus string
 
 const (
-	CommitMissing     CommitVoucherChargeStatus = "missing"
-	CommitCapExceeded CommitVoucherChargeStatus = "cap_exceeded"
-	CommitCommitted   CommitVoucherChargeStatus = "committed"
-	CommitConflict    CommitVoucherChargeStatus = "conflict"
+	CommitMissing           CommitVoucherChargeStatus = "missing"
+	CommitCapExceeded       CommitVoucherChargeStatus = "cap_exceeded"
+	CommitWatermarkMismatch CommitVoucherChargeStatus = "watermark_mismatch"
+	CommitCommitted         CommitVoucherChargeStatus = "committed"
+	CommitConflict          CommitVoucherChargeStatus = "conflict"
 )
 
 // CommitVoucherChargeResult is the CAS outcome of CommitVoucherCharge.
@@ -162,7 +164,7 @@ func PaymentResponseExtra(
 //
 // Any storage outcome other than status "updated" with a committed callback
 // result (including status "conflict" from a contended compare-and-write)
-// maps to status "conflict".
+// maps to status "conflict". Unchanged-row outcomes are returned as-is.
 func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelStorage[T], channelId string, input CommitVoucherChargeInput[T]) (*CommitVoucherChargeResult[T], error) {
 	now := input.Now
 	if now == 0 {
@@ -193,6 +195,10 @@ func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelS
 			// Fail closed on a corrupt watermark: leave the row unchanged.
 			// The CAS no-op maps to CommitConflict below.
 			outcome = &CommitVoucherChargeResult[T]{Status: CommitConflict}
+			return current
+		}
+		if input.ExpectedCharged != nil && charged.Cmp(input.ExpectedCharged) != 0 {
+			outcome = &CommitVoucherChargeResult[T]{Status: CommitWatermarkMismatch, Charged: charged.String()}
 			return current
 		}
 		increment := input.Increment
@@ -236,7 +242,7 @@ func CommitVoucherCharge[T ChannelRecord[T]](ctx context.Context, store ChannelS
 	if err != nil {
 		return nil, err
 	}
-	if outcome != nil && (outcome.Status == CommitMissing || outcome.Status == CommitCapExceeded) {
+	if outcome != nil && (outcome.Status == CommitMissing || outcome.Status == CommitCapExceeded || outcome.Status == CommitWatermarkMismatch) {
 		return outcome, nil
 	}
 	if updateResult.Status != ChannelUpdated || outcome == nil || outcome.Status != CommitCommitted {

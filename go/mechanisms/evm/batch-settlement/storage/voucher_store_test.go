@@ -189,6 +189,106 @@ func TestCommitVoucherCharge_CapExceededDoesNotMutate(t *testing.T) {
 	}
 }
 
+func TestCommitVoucherCharge_ExpectedCharged(t *testing.T) {
+	voucher := batchsettlement.BatchSettlementVoucherFields{MaxClaimableAmount: "5000", Signature: "0xbbb"}
+
+	t.Run("match commits", func(t *testing.T) {
+		store := NewInMemoryChannelStorage[*Channel]()
+		if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+			Increment:       big.NewInt(500),
+			SignedCap:       big.NewInt(5000),
+			ExpectedCharged: big.NewInt(2000),
+			Voucher:         voucher,
+		})
+		if err != nil {
+			t.Fatalf("CommitVoucherCharge: %v", err)
+		}
+		if result.Status != CommitCommitted || result.Current.ChargedCumulativeAmount != "2500" {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+
+	t.Run("mismatch leaves the row unchanged", func(t *testing.T) {
+		store := NewInMemoryChannelStorage[*Channel]()
+		if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+			Increment:       big.NewInt(500),
+			SignedCap:       big.NewInt(5000),
+			ExpectedCharged: big.NewInt(0),
+			Voucher:         voucher,
+		})
+		if err != nil {
+			t.Fatalf("CommitVoucherCharge: %v", err)
+		}
+		if result.Status != CommitWatermarkMismatch || result.Charged != "2000" {
+			t.Fatalf("result = %+v", result)
+		}
+		got, _ := store.Get(context.Background(), voucherChannelId)
+		if got.ChargedCumulativeAmount != "2000" || got.Signature != "0xaaa" {
+			t.Fatalf("row changed: %+v", got)
+		}
+	})
+
+	t.Run("nil skips the check", func(t *testing.T) {
+		store := NewInMemoryChannelStorage[*Channel]()
+		if _, err := store.UpdateChannel(context.Background(), voucherChannelId, func(*Channel) *Channel { return voucherBaseChannel(nil) }); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		result, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+			Increment: big.NewInt(500),
+			SignedCap: big.NewInt(5000),
+			Voucher:   voucher,
+		})
+		if err != nil {
+			t.Fatalf("CommitVoucherCharge: %v", err)
+		}
+		if result.Status != CommitCommitted || result.Current.ChargedCumulativeAmount != "2500" {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+
+	t.Run("recovered snapshot must match", func(t *testing.T) {
+		store := NewInMemoryChannelStorage[*Channel]()
+		snapshot := voucherBaseChannel(&Channel{ChargedCumulativeAmount: "1000"})
+		matched, err := CommitVoucherCharge(context.Background(), store, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+			Increment:       big.NewInt(500),
+			SignedCap:       big.NewInt(5000),
+			ExpectedCharged: big.NewInt(1000),
+			Voucher:         voucher,
+			Snapshot:        snapshot,
+		})
+		if err != nil {
+			t.Fatalf("CommitVoucherCharge: %v", err)
+		}
+		if matched.Status != CommitCommitted || matched.Current.ChargedCumulativeAmount != "1500" {
+			t.Fatalf("match = %+v", matched)
+		}
+
+		empty := NewInMemoryChannelStorage[*Channel]()
+		miss, err := CommitVoucherCharge(context.Background(), empty, voucherChannelId, CommitVoucherChargeInput[*Channel]{
+			Increment:       big.NewInt(500),
+			SignedCap:       big.NewInt(5000),
+			ExpectedCharged: big.NewInt(0),
+			Voucher:         voucher,
+			Snapshot:        snapshot,
+		})
+		if err != nil {
+			t.Fatalf("CommitVoucherCharge: %v", err)
+		}
+		if miss.Status != CommitWatermarkMismatch {
+			t.Fatalf("status = %q", miss.Status)
+		}
+		if got, _ := empty.Get(context.Background(), voucherChannelId); got != nil {
+			t.Fatalf("mismatch created a row: %+v", got)
+		}
+	})
+}
+
 func TestCommitVoucherCharge_CorruptWatermarkIsConflictWithoutWrite(t *testing.T) {
 	store := NewInMemoryChannelStorage[*Channel]()
 	seed := voucherBaseChannel(nil)
