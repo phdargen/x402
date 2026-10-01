@@ -21,7 +21,7 @@ func (s *channelSettleTargets[T]) RecordClaimed(context.Context, SettleTargetCla
 	return nil
 }
 
-func (s *channelSettleTargets[T]) RemoveSettleTarget(context.Context, SettleTarget) error {
+func (s *channelSettleTargets[T]) RemoveSettleTarget(context.Context, SettleTarget, int64) error {
 	return nil
 }
 
