@@ -2,12 +2,13 @@ package facilitator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"strings"
-
 	"sync"
 	"time"
 
@@ -20,9 +21,7 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-const (
-	defaultSettleQueryPageSize = 100
-)
+const defaultSettleQueryPageSize = 100
 
 // FacilitatorRetention controls when managed voucher rows are removed from storage.
 type FacilitatorRetention string
@@ -51,8 +50,8 @@ func ParseFacilitatorRetention(raw string) (FacilitatorRetention, error) {
 }
 
 // IsChannelFinished reports whether this channel has no remaining claim, refund, or withdraw work.
-func IsChannelFinished(held bool, channel *FacilitatorChannel, chargeCount int) bool {
-	if held || chargeCount != 0 || channel == nil {
+func IsChannelFinished(channel *FacilitatorChannel, chargeCount int) bool {
+	if chargeCount != 0 || channel == nil {
 		return false
 	}
 	if uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) > 0 {
@@ -64,15 +63,14 @@ func IsChannelFinished(held bool, channel *FacilitatorChannel, chargeCount int) 
 // ShouldDeleteNeverClaimedRefundRow deletes a finished idle-refund row that never claimed on-chain.
 func ShouldDeleteNeverClaimedRefundRow(
 	retention FacilitatorRetention,
-	held bool,
 	channel *FacilitatorChannel,
 	chargeCount int,
 	appliedTotalClaimed string,
 ) bool {
-	if NormalizeRetention(retention) != RetentionWhenUnused || held {
+	if NormalizeRetention(retention) != RetentionWhenUnused {
 		return false
 	}
-	if !IsChannelFinished(held, channel, chargeCount) {
+	if !IsChannelFinished(channel, chargeCount) {
 		return false
 	}
 	claimed, ok := storage.ParseUint256(appliedTotalClaimed)
@@ -82,19 +80,22 @@ func ShouldDeleteNeverClaimedRefundRow(
 // ShouldDeleteFinishedChannelAtSettle deletes a claimed finished row after receiver pending hits zero.
 func ShouldDeleteFinishedChannelAtSettle(
 	retention FacilitatorRetention,
-	held bool,
 	channel *FacilitatorChannel,
 	chargeCount int,
 ) bool {
-	if NormalizeRetention(retention) != RetentionWhenUnused || held {
+	if NormalizeRetention(retention) != RetentionWhenUnused {
 		return false
 	}
-	return IsChannelFinished(held, channel, chargeCount)
+	return IsChannelFinished(channel, chargeCount)
 }
 
 // FacilitatorChannelManagerConfig is storage, signers, submit mode, and retention.
 type FacilitatorChannelManagerConfig struct {
-	Storage             storage.ChannelStorage[*FacilitatorChannel]
+	Storage storage.ChannelStorage[*FacilitatorChannel]
+	// LockStorage reserves a channel for the whole idle refund. Claim, settle,
+	// and retention deletes do not use it. Nil falls back to Storage when
+	// Storage implements ChannelLockStorage; otherwise idle refund runs without
+	// a reservation and logs once.
 	LockStorage         storage.ChannelLockStorage
 	Signer              evm.FacilitatorEvmSigner
 	AuthorizerSigner    batchsettlement.AuthorizerSigner
@@ -204,14 +205,6 @@ func formatFailure(operation string, response *x402.SettleResponse) string {
 		msg = response.ErrorMessage
 	}
 	return fmt.Sprintf("%s failed: %s — %s", operation, reason, msg)
-}
-
-func channelIsHeld(ctx context.Context, lock storage.ChannelLockStorage, channelId string) bool {
-	held, err := lock.IsHeld(ctx, channelId, "")
-	if err != nil {
-		return false
-	}
-	return held
 }
 
 // AfterClaim applies claimed totals, subtracts attested chargeCount, and upserts settle targets.
@@ -462,6 +455,7 @@ type FacilitatorChannelManager struct {
 	context             *x402.FacilitatorContext
 	settleTargetStorage storage.SettleTargetStorage
 	logger              *slog.Logger
+	idleRefundLockWarn  sync.Once
 
 	mu            sync.Mutex
 	timers        map[autoJob]*time.Ticker
@@ -851,12 +845,11 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 			continue
 		}
 		channelId := row.ChannelId
-		held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channelId)
 		_, err := m.storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
-			if !ShouldDeleteFinishedChannelAtSettle(m.retention, held, current, current.ChargeCount) {
+			if !ShouldDeleteFinishedChannelAtSettle(m.retention, current, current.ChargeCount) {
 				return current
 			}
 			return nil
@@ -892,7 +885,7 @@ func (m *FacilitatorChannelManager) RefundIdleChannels(ctx context.Context, opts
 	if err != nil {
 		return nil, err
 	}
-	return m.refundChannels(ctx, channels, opts.OnError)
+	return m.refundChannels(ctx, channels, &idleAt, opts.OnError)
 }
 
 func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt *int64, limit int) ([]*FacilitatorChannel, error) {
@@ -910,7 +903,7 @@ func (m *FacilitatorChannelManager) queryRefundable(ctx context.Context, idleAt 
 	return page.Items, nil
 }
 
-func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels []*FacilitatorChannel, onError func(error, string)) ([]FacilitatorRefundResult, error) {
+func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels []*FacilitatorChannel, idleAt *int64, onError func(error, string)) ([]FacilitatorRefundResult, error) {
 	results := make([]FacilitatorRefundResult, 0)
 	for _, channel := range channels {
 		if err := ctx.Err(); err != nil {
@@ -919,10 +912,7 @@ func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels
 		if channel == nil {
 			continue
 		}
-		if m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channel.ChannelId) {
-			continue
-		}
-		result, err := m.refundChannel(ctx, channel)
+		result, err := m.refundReserved(ctx, channel, idleAt)
 		if err != nil {
 			if ctx.Err() != nil {
 				return results, ctx.Err()
@@ -935,6 +925,58 @@ func (m *FacilitatorChannelManager) refundChannels(ctx context.Context, channels
 		}
 	}
 	return results, nil
+}
+
+// refundReserved holds the admission lock for one idle refund, re-reads the row,
+// and releases the lock when the refund returns. The TTL is storage.MaxPendingTtlMs,
+// the same ceiling as a verify lock. A channel that is already reserved is skipped.
+// Without a lock store the queried row is refunded as-is.
+func (m *FacilitatorChannelManager) refundReserved(ctx context.Context, queried *FacilitatorChannel, idleAt *int64) (*FacilitatorRefundResult, error) {
+	target := queried
+	if m.lockStorage == nil {
+		m.idleRefundLockWarn.Do(func() {
+			m.logger.Warn("batch-settlement: idle refund running without an admission lock")
+		})
+	} else {
+		owner, err := newRefundLockOwner()
+		if err != nil {
+			return nil, err
+		}
+		acquired, err := m.lockStorage.Acquire(ctx, queried.ChannelId, owner, storage.MaxPendingTtlMs)
+		if err != nil {
+			return nil, err
+		}
+		if !acquired {
+			return nil, nil
+		}
+		defer m.releaseRefundLock(ctx, queried.ChannelId, owner)
+		fresh, err := m.storage.Get(ctx, queried.ChannelId)
+		if err != nil {
+			return nil, err
+		}
+		if !storage.MatchesChannelQuery(fresh.Base(), storage.ChannelQuery{
+			Kind:           storage.QueryKindIdleRefundable,
+			IdleAtOrBefore: idleAt,
+		}) {
+			return nil, nil
+		}
+		target = fresh
+	}
+	return m.refundChannel(ctx, target)
+}
+
+func (m *FacilitatorChannelManager) releaseRefundLock(ctx context.Context, channelId, owner string) {
+	if err := m.lockStorage.Release(ctx, channelId, owner); err != nil {
+		m.logger.Warn("batch-settlement: idle refund lock release failed", "channel_id", channelId, "error", err)
+	}
+}
+
+func newRefundLockOwner() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
 }
 
 func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *FacilitatorChannel) (*FacilitatorRefundResult, error) {
@@ -1036,9 +1078,8 @@ func (m *FacilitatorChannelManager) afterRefund(
 		attested = target.ChargeCount
 	}
 
-	held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, target.ChannelId)
 	_, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
-		return applyRefundChannel(current, claims, attested, refunded, held, m.retention)
+		return applyRefundChannel(current, claims, attested, refunded, m.retention)
 	})
 	if err != nil {
 		return err
@@ -1051,7 +1092,6 @@ func applyRefundChannel(
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	attested int,
 	refunded map[string]interface{},
-	held bool,
 	retention FacilitatorRetention,
 ) *FacilitatorChannel {
 	if current == nil {
@@ -1093,7 +1133,7 @@ func applyRefundChannel(
 			appliedTotalClaimed = v
 		}
 	}
-	if ShouldDeleteNeverClaimedRefundRow(retention, held, next, next.ChargeCount, appliedTotalClaimed) {
+	if ShouldDeleteNeverClaimedRefundRow(retention, next, next.ChargeCount, appliedTotalClaimed) {
 		return nil
 	}
 	return next
