@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,10 +220,13 @@ func TestAfterClaim_ConflictRetries(t *testing.T) {
 type orderLogStore struct {
 	*storage.InMemoryChannelStorage[*FacilitatorChannel]
 	log *[]string
+	mu  sync.Mutex
 }
 
 func (s *orderLogStore) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	s.mu.Lock()
 	*s.log = append(*s.log, "channel")
+	s.mu.Unlock()
 	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelID, update)
 }
 
