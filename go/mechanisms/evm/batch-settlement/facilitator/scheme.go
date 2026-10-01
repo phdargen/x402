@@ -30,6 +30,9 @@ type BatchSettlementEvmSchemeConfig struct {
 	AuthorizerSubmitter   evm.FacilitatorEvmSigner
 	// Logger receives facilitator events. Nil uses slog.Default().
 	Logger *slog.Logger
+	// OnStorageError is called when removing a binding after a failed deposit
+	// fails; the deposit error is returned to the caller instead. Nil logs it through Logger.
+	OnStorageError func(err error, network, channelId string)
 }
 
 type voucherStoreRuntime struct {
@@ -52,6 +55,7 @@ type BatchSettlementEvmScheme struct {
 	voucherStore          *voucherStoreRuntime
 	resolveCallerIdentity ResolveCallerIdentity
 	delegatedAuthStore    storage.DelegatedAuthStore
+	onStorageError        func(err error, network, channelId string)
 	logger                *slog.Logger
 }
 
@@ -93,17 +97,13 @@ func NewBatchSettlementEvmSchemeWithConfig(
 		if config.PendingSettlementStore != nil {
 			s.pendingStore = config.PendingSettlementStore
 		}
-		s.resolveCallerIdentity = config.ResolveCallerIdentity
-		if s.resolveCallerIdentity != nil {
-			if config.DelegatedAuthStore != nil {
-				s.delegatedAuthStore = config.DelegatedAuthStore
-			} else {
-				s.delegatedAuthStore = storage.NewInMemoryDelegatedAuthStore()
-			}
-		} else {
-			s.delegatedAuthStore = config.DelegatedAuthStore
+		if config.ResolveCallerIdentity != nil && config.DelegatedAuthStore == nil {
+			return nil, fmt.Errorf("resolveCallerIdentity requires delegatedAuthStore")
 		}
+		s.resolveCallerIdentity = config.ResolveCallerIdentity
+		s.delegatedAuthStore = config.DelegatedAuthStore
 		s.logger = config.Logger
+		s.onStorageError = config.OnStorageError
 		if config.VoucherStore != nil {
 			lockStorage := config.VoucherStore.LockStorage
 			if lockStorage == nil && storage.IsChannelLockStorage(config.VoucherStore.Storage) {
@@ -130,7 +130,18 @@ func NewBatchSettlementEvmSchemeWithConfig(
 			}
 		}
 	}
+	if s.onStorageError == nil {
+		s.onStorageError = s.logStorageError
+	}
 	return s, nil
+}
+
+func (f *BatchSettlementEvmScheme) logStorageError(err error, network, channelId string) {
+	logger := f.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("batch-settlement: delegated auth store operation failed", "error", err, "network", network, "channelId", channelId)
 }
 
 // SetPendingSettlementStore overrides the default in-memory PendingSettlementStore.
@@ -267,7 +278,8 @@ func (f *BatchSettlementEvmScheme) Settle(
 		if bindErr != nil {
 			return nil, bindErr
 		}
-		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore, f.delegatedAuthStore, delegatedCaller)
+		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore,
+			newDelegatedDepositBinding(f.delegatedAuthStore, delegatedCaller, f.onStorageError))
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +370,6 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		AuthorizerSubmitter: f.authorizerSubmitter,
 		SubmitMode:          f.submitMode,
 		Context:             fctx,
-		DelegatedAuthStore:  f.delegatedAuthStore,
 		Retention:           f.voucherStore.retention,
 		SettleTargetStorage: f.voucherStore.settleTargetStorage,
 		Logger:              f.logger,
@@ -381,6 +392,7 @@ func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
 		PendingStore:            f.pendingStore,
 		Retention:               f.voucherStore.retention,
 		SettleTargetStorage:     f.voucherStore.settleTargetStorage,
+		OnStorageError:          f.onStorageError,
 	}
 }
 

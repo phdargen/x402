@@ -12,6 +12,8 @@ type DelegatedAuthBinding struct {
 	ChannelId      string
 	Network        string
 	CallerIdentity string
+	// OpenToken identifies the deposit that created the binding. Get does not return it.
+	OpenToken string
 }
 
 // DelegatedAuthIdentityConflictError is returned by Bind when a different
@@ -23,13 +25,16 @@ func (e *DelegatedAuthIdentityConflictError) Error() string {
 }
 
 // DelegatedAuthStore persists delegated deposit/refund caller-identity bindings.
+// The SDK removes a binding only through RevertBind, after the deposit that created it failed.
 // Bind is durable; nil means a later Get sees the row. Do not broadcast before that.
 type DelegatedAuthStore interface {
-	// Bind is first-writer-wins. inserted is true only when this call created the row.
-	// Same identity returns inserted == false; a different identity conflicts.
-	Bind(ctx context.Context, binding DelegatedAuthBinding) (inserted bool, err error)
+	// Bind is first-writer-wins. created is true only when this call inserted the row.
+	// Same identity on an existing row returns created == false and clears its open
+	// token; a different identity conflicts and leaves the row untouched.
+	Bind(ctx context.Context, binding DelegatedAuthBinding) (created bool, err error)
 	Get(ctx context.Context, channelId string, network string) (*DelegatedAuthBinding, error)
-	Delete(ctx context.Context, channelId string, network string) error
+	// RevertBind deletes the binding only when openToken is non-empty and matches.
+	RevertBind(ctx context.Context, channelId string, network string, openToken string) error
 }
 
 // InMemoryDelegatedAuthStore is a volatile DelegatedAuthStore. A multi-replica
@@ -46,24 +51,24 @@ func NewInMemoryDelegatedAuthStore() *InMemoryDelegatedAuthStore {
 	return &InMemoryDelegatedAuthStore{bindings: make(map[string]DelegatedAuthBinding)}
 }
 
-// Bind records the caller identity. inserted is true only for a new row.
 func (s *InMemoryDelegatedAuthStore) Bind(_ context.Context, binding DelegatedAuthBinding) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := bindingKey(binding.ChannelId, binding.Network)
 	existing, ok := s.bindings[key]
-	if ok {
-		if existing.CallerIdentity == binding.CallerIdentity {
-			return false, nil
-		}
+	if !ok {
+		s.bindings[key] = binding
+		return true, nil
+	}
+	if existing.CallerIdentity != binding.CallerIdentity {
 		return false, &DelegatedAuthIdentityConflictError{}
 	}
-	s.bindings[key] = binding
-	return true, nil
+	existing.OpenToken = ""
+	s.bindings[key] = existing
+	return false, nil
 }
 
-// Get looks up a binding. The returned value is a copy so callers cannot
-// mutate the stored row.
+// Get returns a copy without the open token.
 func (s *InMemoryDelegatedAuthStore) Get(_ context.Context, channelId string, network string) (*DelegatedAuthBinding, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,15 +76,20 @@ func (s *InMemoryDelegatedAuthStore) Get(_ context.Context, channelId string, ne
 	if !ok {
 		return nil, nil
 	}
-	cp := binding
-	return &cp, nil
+	binding.OpenToken = ""
+	return &binding, nil
 }
 
-// Delete removes a binding.
-func (s *InMemoryDelegatedAuthStore) Delete(_ context.Context, channelId string, network string) error {
+func (s *InMemoryDelegatedAuthStore) RevertBind(_ context.Context, channelId string, network string, openToken string) error {
+	if openToken == "" {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.bindings, bindingKey(channelId, network))
+	key := bindingKey(channelId, network)
+	if existing, ok := s.bindings[key]; ok && existing.OpenToken == openToken {
+		delete(s.bindings, key)
+	}
 	return nil
 }
 

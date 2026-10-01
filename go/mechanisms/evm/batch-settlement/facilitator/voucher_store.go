@@ -40,6 +40,7 @@ type VoucherStoreDeps struct {
 	PendingStore            x402.PendingSettlementStore
 	Retention               FacilitatorRetention
 	SettleTargetStorage     storage.SettleTargetStorage
+	OnStorageError          func(err error, network, channelId string)
 }
 
 func boundAdmissionOwner(pendingId string, voucher batchsettlement.BatchSettlementVoucherFields) string {
@@ -388,7 +389,8 @@ func settleManagedDeposit(
 		return failSettle(requirements, ErrVoucherStoreUnavailable), nil
 	}
 
-	settled, err := SettleDeposit(ctx, deps.Signer, raw, requirements, payment.Extensions, fctx, dataSuffix, deps.EIP6492AllowedFactories, deps.PendingStore, deps.DelegatedAuthStore, identity)
+	settled, err := SettleDeposit(ctx, deps.Signer, raw, requirements, payment.Extensions, fctx, dataSuffix, deps.EIP6492AllowedFactories, deps.PendingStore,
+		newDelegatedDepositBinding(deps.DelegatedAuthStore, identity, deps.OnStorageError))
 	if err != nil {
 		return nil, err
 	}
@@ -571,9 +573,6 @@ func settleManagedRefund(
 	})
 	if err != nil {
 		return settled, nil
-	}
-	if updated != nil && updated.Status == storage.ChannelDeleted && deps.DelegatedAuthStore != nil {
-		_ = deps.DelegatedAuthStore.Delete(ctx, channelId, requirements.Network)
 	}
 
 	chargeCount := 0
