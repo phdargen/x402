@@ -102,7 +102,6 @@ type FacilitatorChannelManagerConfig struct {
 	SubmitMode          SubmitMode
 	Retention           FacilitatorRetention
 	Context             *x402.FacilitatorContext
-	DelegatedAuthStore  storage.DelegatedAuthStore
 	// SettleTargetStorage tracks claimed (network, receiver, token) pairs.
 	// Nil derives pairs from channel rows with totalClaimed > 0.
 	SettleTargetStorage storage.SettleTargetStorage
@@ -461,7 +460,6 @@ type FacilitatorChannelManager struct {
 	submitMode          SubmitMode
 	retention           FacilitatorRetention
 	context             *x402.FacilitatorContext
-	delegatedAuthStore  storage.DelegatedAuthStore
 	settleTargetStorage storage.SettleTargetStorage
 	logger              *slog.Logger
 
@@ -506,7 +504,6 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 		submitMode:          submitMode,
 		retention:           retention,
 		context:             config.Context,
-		delegatedAuthStore:  config.DelegatedAuthStore,
 		settleTargetStorage: settleTargets,
 		logger:              logger,
 		timers:              make(map[autoJob]*time.Ticker),
@@ -855,7 +852,7 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 		}
 		channelId := row.ChannelId
 		held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, channelId)
-		result, err := m.storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		_, err := m.storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 			if current == nil {
 				return current
 			}
@@ -866,9 +863,6 @@ func (m *FacilitatorChannelManager) cleanupSettledPair(
 		})
 		if err != nil {
 			return err
-		}
-		if result != nil && result.Status == storage.ChannelDeleted && m.delegatedAuthStore != nil {
-			_ = m.delegatedAuthStore.Delete(ctx, channelId, target.Network)
 		}
 	}
 	return nil
@@ -1043,14 +1037,11 @@ func (m *FacilitatorChannelManager) afterRefund(
 	}
 
 	held := m.lockStorage != nil && channelIsHeld(ctx, m.lockStorage, target.ChannelId)
-	result, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+	_, err := m.storage.UpdateChannel(ctx, target.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
 		return applyRefundChannel(current, claims, attested, refunded, held, m.retention)
 	})
 	if err != nil {
 		return err
-	}
-	if result != nil && result.Status == storage.ChannelDeleted && m.delegatedAuthStore != nil {
-		_ = m.delegatedAuthStore.Delete(ctx, target.ChannelId, target.Network)
 	}
 	return nil
 }

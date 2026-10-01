@@ -13,13 +13,13 @@ const (
 
 func TestInMemoryDelegatedAuthStore_BindAndGetCopy(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
-	inserted, err := store.Bind(context.Background(), DelegatedAuthBinding{
+	created, err := store.Bind(context.Background(), DelegatedAuthBinding{
 		ChannelId:      delegatedChannelId,
 		Network:        delegatedNetwork,
 		CallerIdentity: "tenant-a",
 	})
-	if err != nil || !inserted {
-		t.Fatalf("Bind: inserted=%v err=%v", inserted, err)
+	if err != nil || !created {
+		t.Fatalf("Bind: created=%v err=%v", created, err)
 	}
 	row, err := store.Get(context.Background(), delegatedChannelId, delegatedNetwork)
 	if err != nil {
@@ -41,13 +41,13 @@ func TestInMemoryDelegatedAuthStore_BindAndGetCopy(t *testing.T) {
 func TestInMemoryDelegatedAuthStore_RepeatBindIsIdempotent(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
 	binding := DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}
-	inserted, err := store.Bind(context.Background(), binding)
-	if err != nil || !inserted {
-		t.Fatalf("Bind: inserted=%v err=%v", inserted, err)
+	created, err := store.Bind(context.Background(), binding)
+	if err != nil || !created {
+		t.Fatalf("Bind: created=%v err=%v", created, err)
 	}
-	inserted, err = store.Bind(context.Background(), binding)
-	if err != nil || inserted {
-		t.Fatalf("repeat Bind: inserted=%v err=%v", inserted, err)
+	created, err = store.Bind(context.Background(), binding)
+	if err != nil || created {
+		t.Fatalf("repeat Bind: created=%v err=%v", created, err)
 	}
 }
 
@@ -63,17 +63,28 @@ func TestInMemoryDelegatedAuthStore_RejectsSecondIdentity(t *testing.T) {
 	}
 }
 
-func TestInMemoryDelegatedAuthStore_DeleteAllowsRebind(t *testing.T) {
+func TestInMemoryDelegatedAuthStore_GetOmitsOpenToken(t *testing.T) {
 	store := NewInMemoryDelegatedAuthStore()
-	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a"}); err != nil {
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a", OpenToken: "tok"}); err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
-	if err := store.Delete(context.Background(), delegatedChannelId, delegatedNetwork); err != nil {
-		t.Fatalf("Delete: %v", err)
+	row, err := store.Get(context.Background(), delegatedChannelId, delegatedNetwork)
+	if err != nil || row == nil || row.OpenToken != "" {
+		t.Fatalf("Get: row=%+v err=%v", row, err)
+	}
+}
+
+func TestInMemoryDelegatedAuthStore_RevertBindAllowsRebind(t *testing.T) {
+	store := NewInMemoryDelegatedAuthStore()
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a", OpenToken: "tok"}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if err := store.RevertBind(context.Background(), delegatedChannelId, delegatedNetwork, "tok"); err != nil {
+		t.Fatalf("RevertBind: %v", err)
 	}
 	row, err := store.Get(context.Background(), delegatedChannelId, delegatedNetwork)
 	if err != nil || row != nil {
-		t.Fatalf("Get after delete: row=%+v err=%v", row, err)
+		t.Fatalf("Get after revert: row=%+v err=%v", row, err)
 	}
 	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b"}); err != nil {
 		t.Fatalf("rebind: %v", err)
@@ -81,5 +92,56 @@ func TestInMemoryDelegatedAuthStore_DeleteAllowsRebind(t *testing.T) {
 	row, err = store.Get(context.Background(), delegatedChannelId, delegatedNetwork)
 	if err != nil || row == nil || row.CallerIdentity != "tenant-b" {
 		t.Fatalf("row after rebind = %+v err=%v", row, err)
+	}
+}
+
+func TestInMemoryDelegatedAuthStore_RevertBindKeepsRowOnTokenMismatch(t *testing.T) {
+	store := NewInMemoryDelegatedAuthStore()
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a", OpenToken: "tok"}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	for _, token := range []string{"", "other"} {
+		if err := store.RevertBind(context.Background(), delegatedChannelId, delegatedNetwork, token); err != nil {
+			t.Fatalf("RevertBind(%q): %v", token, err)
+		}
+		if row, _ := store.Get(context.Background(), delegatedChannelId, delegatedNetwork); row == nil {
+			t.Fatalf("RevertBind(%q) deleted the binding", token)
+		}
+	}
+}
+
+func TestInMemoryDelegatedAuthStore_SameIdentityRebindDisablesRevert(t *testing.T) {
+	store := NewInMemoryDelegatedAuthStore()
+	binding := DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a", OpenToken: "tok"}
+	if _, err := store.Bind(context.Background(), binding); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	binding.OpenToken = "tok-b"
+	if created, err := store.Bind(context.Background(), binding); err != nil || created {
+		t.Fatalf("re-Bind: created=%v err=%v", created, err)
+	}
+	for _, token := range []string{"tok", "tok-b"} {
+		if err := store.RevertBind(context.Background(), delegatedChannelId, delegatedNetwork, token); err != nil {
+			t.Fatalf("RevertBind(%q): %v", token, err)
+		}
+	}
+	if row, _ := store.Get(context.Background(), delegatedChannelId, delegatedNetwork); row == nil {
+		t.Fatal("binding removed after a same-identity re-bind")
+	}
+}
+
+func TestInMemoryDelegatedAuthStore_ConflictKeepsToken(t *testing.T) {
+	store := NewInMemoryDelegatedAuthStore()
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-a", OpenToken: "tok"}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if _, err := store.Bind(context.Background(), DelegatedAuthBinding{ChannelId: delegatedChannelId, Network: delegatedNetwork, CallerIdentity: "tenant-b", OpenToken: "tok-b"}); err == nil {
+		t.Fatal("expected conflict")
+	}
+	if err := store.RevertBind(context.Background(), delegatedChannelId, delegatedNetwork, "tok"); err != nil {
+		t.Fatalf("RevertBind: %v", err)
+	}
+	if row, _ := store.Get(context.Background(), delegatedChannelId, delegatedNetwork); row != nil {
+		t.Fatalf("creator could not revert after a conflicting bind: %+v", row)
 	}
 }

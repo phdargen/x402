@@ -285,12 +285,14 @@ A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to
 ```go
 scheme, err := facilitator.NewBatchSettlementEvmSchemeWithConfig(evmSigner, authorizerSigner, &facilitator.BatchSettlementEvmSchemeConfig{
     ResolveCallerIdentity: resolveCallerIdentity, // DelegatedSettleContext -> caller id
-    // Optional: shared DelegatedAuthStore for multi-replica facilitators. Default is in-memory.
-    // Bind/Get/Delete all take ctx first; a lost binding fails closed.
+    DelegatedAuthStore:    delegatedAuthStore,     // required with ResolveCallerIdentity
+    // Optional: OnStorageError is called when cleaning up after a failed deposit fails (default: log).
 })
 ```
 
-The default identity store is in-memory. A multi-replica facilitator must inject a shared `DelegatedAuthStore`; a lost binding fails closed.
+`DelegatedAuthStore` is required whenever `ResolveCallerIdentity` is set; the constructor returns an error otherwise. Use a durable store shared across replicas (`storage.NewInMemoryDelegatedAuthStore()` is for single-process use and tests); a lost binding fails closed.
+
+A deposit binds the caller identity before broadcast. If the deposit definitively fails, the facilitator calls `RevertBind` to remove the binding it created; it never removes a binding another deposit created.
 
 ## Facilitator-managed custody
 

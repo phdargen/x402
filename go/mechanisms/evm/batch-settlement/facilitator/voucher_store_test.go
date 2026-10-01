@@ -504,6 +504,37 @@ func TestSettleManagedDeposit_IdentityErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// updateFailingStorage fails every channel write.
+type updateFailingStorage struct {
+	storage.ChannelStorage[*FacilitatorChannel]
+}
+
+func (updateFailingStorage) UpdateChannel(context.Context, string, func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	return nil, errors.New("storage down")
+}
+
+func TestSettleManagedDeposit_VoucherCommitFailureReportsTxAndKeepsBinding(t *testing.T) {
+	mem := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "05")
+	channelId := mustChannelId(t, cfg)
+	deps := managedDeps(t, updateFailingStorage{ChannelStorage: mem}, mem, auth, managedDepositSigner(t))
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
+
+	resp, err := SettleManaged(context.Background(), deps,
+		signedManagedDeposit(t, cfg, channelId),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrVoucherStoreUnavailable || resp.Transaction != successTxHash {
+		t.Fatalf("commit failure must report failure with the deposit tx, got %+v", resp)
+	}
+	if binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork); binding == nil || binding.CallerIdentity != "svc" {
+		t.Fatalf("confirmed deposit must keep the binding, got %+v", binding)
+	}
+}
+
 func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
@@ -1261,8 +1292,10 @@ func TestSettleManaged_FullRefundDeletesRow(t *testing.T) {
 	}))
 	reqs := managedRequirements(auth.addr)
 	reqs.Extra["refundAuthorizer"] = refundAuth
+	deps := managedDeps(t, store, store, auth, nil)
+	bindManagedIdentity(t, deps.DelegatedAuthStore, channelId, "svc")
 
-	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, nil),
+	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "0", dummySig), "10000", "", sig),
 		reqs, nil, nil)
 	if err != nil || !resp.Success {
@@ -1271,6 +1304,10 @@ func TestSettleManaged_FullRefundDeletesRow(t *testing.T) {
 	got, _ := store.Get(context.Background(), channelId)
 	if got != nil {
 		t.Fatalf("expected deleted row, got %+v", got)
+	}
+	// The binding outlives the voucher row.
+	if binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork); binding == nil || binding.CallerIdentity != "svc" {
+		t.Fatalf("full refund must keep the delegated binding, got %+v", binding)
 	}
 }
 
@@ -1300,4 +1337,4 @@ func (failingDelegatedAuth) Bind(context.Context, storage.DelegatedAuthBinding) 
 func (failingDelegatedAuth) Get(_ context.Context, _, _ string) (*storage.DelegatedAuthBinding, error) {
 	return nil, errors.New("auth store down")
 }
-func (failingDelegatedAuth) Delete(_ context.Context, _, _ string) error { return nil }
+func (failingDelegatedAuth) RevertBind(_ context.Context, _, _, _ string) error { return nil }
