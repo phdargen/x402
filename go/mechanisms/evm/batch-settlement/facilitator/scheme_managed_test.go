@@ -445,6 +445,7 @@ func TestScheme_DirectModeRelaysPresignedClaim(t *testing.T) {
 func TestScheme_GetExtraAdvertisesRefundAuth(t *testing.T) {
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), managedAuthorizer(), &BatchSettlementEvmSchemeConfig{
 		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
+		DelegatedAuthStore:    storage.NewInMemoryDelegatedAuthStore(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -452,6 +453,15 @@ func TestScheme_GetExtraAdvertisesRefundAuth(t *testing.T) {
 	got := scheme.GetExtra(x402.Network(managedNetwork))
 	if got["refundAuth"] != true {
 		t.Fatalf("extra = %+v", got)
+	}
+}
+
+func TestScheme_ResolveCallerIdentityRequiresDelegatedAuthStore(t *testing.T) {
+	_, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), managedAuthorizer(), &BatchSettlementEvmSchemeConfig{
+		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
+	})
+	if err == nil {
+		t.Fatal("expected constructor error without a DelegatedAuthStore")
 	}
 }
 

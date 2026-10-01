@@ -68,7 +68,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheMissSuccessLeavesNoEntry(t *t
 	}
 	signer.getBalance = func(string, string) (*big.Int, error) { return big.NewInt(1000), nil }
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil, "")
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil)
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheMissReceiptFailurePopulatesSt
 	}
 	signer.getBalance = func(string, string) (*big.Int, error) { return big.NewInt(1000), nil }
 
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil, "")
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
 		t.Fatalf("got err = %v, want settlement_pending", err)
@@ -128,7 +128,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheHitReconcilesWithoutRebroadca
 		},
 	}
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil, "")
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil)
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestSettleDeposit_PendingSettlementStore_CacheHitStillPendingReturnsAgainWi
 		waitForReceipt: func(string) (*evm.TransactionReceipt, error) { return nil, errors.New("rpc: still pending") },
 	}
 
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil, "")
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, store, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
 		t.Fatalf("got err = %v, want settlement_pending", err)
@@ -191,7 +191,7 @@ func TestSettleDeposit_PendingSettlementStore_NilStoreDisablesFastPath(t *testin
 	}
 	signer.getBalance = func(string, string) (*big.Int, error) { return big.NewInt(1000), nil }
 
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, nil, "")
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("SettleDeposit: %v", err)
 	}
@@ -200,26 +200,48 @@ func TestSettleDeposit_PendingSettlementStore_NilStoreDisablesFastPath(t *testin
 	}
 }
 
-type errDelegatedAuth struct{ err error }
+// spyDelegatedAuth records bound and reverted open tokens and can inject failures.
+type spyDelegatedAuth struct {
+	*storage.InMemoryDelegatedAuthStore
+	bindErr       error
+	revertErr     error
+	boundTokens   []string
+	revertedToken []string
+}
 
-func (s errDelegatedAuth) Bind(context.Context, storage.DelegatedAuthBinding) (bool, error) {
-	return false, s.err
+func newSpyDelegatedAuth() *spyDelegatedAuth {
+	return &spyDelegatedAuth{InMemoryDelegatedAuthStore: storage.NewInMemoryDelegatedAuthStore()}
 }
-func (s errDelegatedAuth) Get(context.Context, string, string) (*storage.DelegatedAuthBinding, error) {
-	return nil, nil
-}
-func (s errDelegatedAuth) Delete(context.Context, string, string) error { return nil }
 
-type failSetPendingStore struct{ inner x402.PendingSettlementStore }
+func (s *spyDelegatedAuth) Bind(ctx context.Context, binding storage.DelegatedAuthBinding) (bool, error) {
+	if s.bindErr != nil {
+		return false, s.bindErr
+	}
+	s.boundTokens = append(s.boundTokens, binding.OpenToken)
+	return s.InMemoryDelegatedAuthStore.Bind(ctx, binding)
+}
 
-func (s failSetPendingStore) Get(ctx context.Context, key string) (string, bool, error) {
-	return s.inner.Get(ctx, key)
+func (s *spyDelegatedAuth) RevertBind(ctx context.Context, channelId, network, openToken string) error {
+	s.revertedToken = append(s.revertedToken, openToken)
+	if s.revertErr != nil {
+		return s.revertErr
+	}
+	return s.InMemoryDelegatedAuthStore.RevertBind(ctx, channelId, network, openToken)
 }
-func (s failSetPendingStore) Set(context.Context, string, string) error {
-	return errors.New("store down")
+
+// recordingPendingStore records every key written to the wrapped store.
+type recordingPendingStore struct {
+	x402.PendingSettlementStore
+	setKeys []string
 }
-func (s failSetPendingStore) Delete(ctx context.Context, key string) error {
-	return s.inner.Delete(ctx, key)
+
+func (s *recordingPendingStore) Set(ctx context.Context, key, value string) error {
+	s.setKeys = append(s.setKeys, key)
+	return s.PendingSettlementStore.Set(ctx, key, value)
+}
+
+func delegatedBinding(store storage.DelegatedAuthStore) *DelegatedDepositBinding {
+	return &DelegatedDepositBinding{Store: store, CallerIdentity: "svc"}
 }
 
 func delegatedDepositSigner(t *testing.T, write func(string, ...interface{}) (string, error), wait func(string) (*evm.TransactionReceipt, error)) *fakeFacilitatorSigner {
@@ -252,42 +274,93 @@ func requireDelegatedBinding(t *testing.T, store storage.DelegatedAuthStore, cha
 	}
 }
 
+// pendingThenRevertedSigner times out the first receipt wait, then reports a revert.
+func pendingThenRevertedSigner(t *testing.T, txHash string) *fakeFacilitatorSigner {
+	t.Helper()
+	waits := 0
+	return delegatedDepositSigner(t,
+		func(string, ...interface{}) (string, error) { return txHash, nil },
+		func(hash string) (*evm.TransactionReceipt, error) {
+			waits++
+			if waits == 1 {
+				return nil, errors.New("rpc: timeout")
+			}
+			return &evm.TransactionReceipt{Status: evm.TxStatusFailed, TxHash: hash}, nil
+		},
+	)
+}
+
+func requireSettleErrorReason(t *testing.T, err error, reason string) *x402.SettleError {
+	t.Helper()
+	var se *x402.SettleError
+	if !errors.As(err, &se) || se.ErrorReason != reason {
+		t.Fatalf("got err = %v, want %s", err, reason)
+	}
+	return se
+}
+
 func TestSettleDeposit_DelegatedBindErrorDoesNotBroadcast(t *testing.T) {
 	_, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	auth.bindErr = errors.New("mongo down")
 	signer := delegatedDepositSigner(t,
 		func(string, ...interface{}) (string, error) { return "0x" + strings.Repeat("ab", 32), nil },
 		func(string) (*evm.TransactionReceipt, error) { return nil, errors.New("unused") },
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil,
-		errDelegatedAuth{err: errors.New("mongo down")}, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrVoucherStoreUnavailable {
-		t.Fatalf("got err = %v, want store unavailable", err)
-	}
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrVoucherStoreUnavailable)
 	if signer.writeCalls != 0 || signer.sendCalls != 0 {
 		t.Fatalf("bind error must not broadcast, writes=%d sends=%d", signer.writeCalls, signer.sendCalls)
 	}
+	if len(auth.revertedToken) != 0 {
+		t.Fatalf("a failed bind has nothing to revert, got %v", auth.revertedToken)
+	}
 }
 
-func TestSettleDeposit_BroadcastFailureDeletesInsertedBinding(t *testing.T) {
+func TestSettleDeposit_DelegatedIdentityConflictDoesNotBroadcastOrTouchBinding(t *testing.T) {
 	_, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
+	auth := newSpyDelegatedAuth()
+	if _, err := auth.InMemoryDelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: payload.Voucher.ChannelId, Network: testNetwork, CallerIdentity: "other", OpenToken: "creator-token",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	signer := delegatedDepositSigner(t,
-		func(string, ...interface{}) (string, error) { return "", errors.New("rpc down") },
+		func(string, ...interface{}) (string, error) { return "0x" + strings.Repeat("ab", 32), nil },
 		nil,
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, auth, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrDepositTransactionFailed {
-		t.Fatalf("got err = %v", err)
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrDelegatedSettleUnauthenticated)
+	if signer.writeCalls != 0 {
+		t.Fatalf("conflict must not broadcast, writes=%d", signer.writeCalls)
+	}
+	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "other")
+	// The creator can still revert after the conflict.
+	if err := auth.InMemoryDelegatedAuthStore.RevertBind(context.Background(), payload.Voucher.ChannelId, testNetwork, "creator-token"); err != nil {
+		t.Fatal(err)
 	}
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
 }
 
-func TestSettleDeposit_IdempotentRebindFailureKeepsExistingBinding(t *testing.T) {
+func TestSettleDeposit_BroadcastFailureRevertsCreatedBinding(t *testing.T) {
+	sig, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	signer := delegatedDepositSigner(t,
+		func(string, ...interface{}) (string, error) { return "", errors.New("rpc down") },
+		nil,
+	)
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrDepositTransactionFailed)
+	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
+	if len(auth.boundTokens) != 1 || auth.boundTokens[0] != depositOpenToken(sig) {
+		t.Fatalf("bound tokens = %v, want derived token for the authorization", auth.boundTokens)
+	}
+}
+
+func TestSettleDeposit_ExistingBindingSurvivesBroadcastFailure(t *testing.T) {
 	_, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
-	if _, err := auth.Bind(context.Background(), storage.DelegatedAuthBinding{
+	auth := newSpyDelegatedAuth()
+	if _, err := auth.InMemoryDelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
 		ChannelId: payload.Voucher.ChannelId, Network: testNetwork, CallerIdentity: "svc",
 	}); err != nil {
 		t.Fatal(err)
@@ -296,37 +369,99 @@ func TestSettleDeposit_IdempotentRebindFailureKeepsExistingBinding(t *testing.T)
 		func(string, ...interface{}) (string, error) { return "", errors.New("rpc down") },
 		nil,
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, auth, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrDepositTransactionFailed {
-		t.Fatalf("got err = %v", err)
-	}
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrDepositTransactionFailed)
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "svc")
+	if len(auth.revertedToken) != 0 {
+		t.Fatalf("an existing binding must not be reverted, got %v", auth.revertedToken)
+	}
 }
 
-func TestSettleDeposit_SettlementPendingKeepsInsertedBinding(t *testing.T) {
-	sig, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
-	pending := x402.NewInMemoryPendingSettlementStore()
-	txHash := "0x" + strings.Repeat("ab", 32)
+func TestSettleDeposit_RevertFailureIsReportedToOnStorageError(t *testing.T) {
+	_, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	auth.revertErr = errors.New("mongo down")
 	signer := delegatedDepositSigner(t,
-		func(string, ...interface{}) (string, error) { return txHash, nil },
+		func(string, ...interface{}) (string, error) { return "", errors.New("rpc down") },
+		nil,
+	)
+	var reportedErr error
+	var reportedNetwork, reportedChannel string
+	binding := delegatedBinding(auth)
+	binding.OnStorageError = func(err error, network, channelId string) {
+		reportedErr, reportedNetwork, reportedChannel = err, network, channelId
+	}
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, binding)
+	requireSettleErrorReason(t, err, ErrDepositTransactionFailed)
+	if !errors.Is(reportedErr, auth.revertErr) || reportedNetwork != testNetwork || reportedChannel != payload.Voucher.ChannelId {
+		t.Fatalf("OnStorageError got (%v, %q, %q)", reportedErr, reportedNetwork, reportedChannel)
+	}
+}
+
+func TestSettleDeposit_SettlementPendingKeepsBindingAndWritesOnlyTheTxEntry(t *testing.T) {
+	sig, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	pending := &recordingPendingStore{PendingSettlementStore: x402.NewInMemoryPendingSettlementStore()}
+	signer := delegatedDepositSigner(t,
+		func(string, ...interface{}) (string, error) { return "0x" + strings.Repeat("ab", 32), nil },
 		func(string) (*evm.TransactionReceipt, error) { return nil, errors.New("rpc: timeout") },
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, auth, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
-		t.Fatalf("got err = %v, want settlement_pending", err)
-	}
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrSettlementPending)
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "svc")
-	if _, ok, _ := pending.Get(context.Background(), delegatedAuthInsertedMarker(sig)); !ok {
-		t.Fatal("pending settle must keep the inserted-binding marker")
+	if len(pending.setKeys) != 1 || pending.setKeys[0] != sig {
+		t.Fatalf("pending store keys written = %v, want only the authorization key", pending.setKeys)
+	}
+	if len(auth.revertedToken) != 0 {
+		t.Fatalf("pending must not revert, got %v", auth.revertedToken)
 	}
 }
 
-func TestSettleDeposit_ReconcileTerminalFailureDeletesInsertedBinding(t *testing.T) {
+func TestSettleDeposit_ReconcileTerminalFailureRevertsCreatedBinding(t *testing.T) {
 	sig, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
+	auth := newSpyDelegatedAuth()
+	pending := x402.NewInMemoryPendingSettlementStore()
+	signer := pendingThenRevertedSigner(t, "0x"+strings.Repeat("ab", 32))
+
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrSettlementPending)
+
+	_, err = SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrTransactionReverted)
+	if signer.writeCalls != 1 {
+		t.Fatalf("reconcile writes = %d, want 1", signer.writeCalls)
+	}
+	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
+	if len(auth.revertedToken) != 1 || auth.revertedToken[0] != depositOpenToken(sig) {
+		t.Fatalf("reverted tokens = %v, want the derived token", auth.revertedToken)
+	}
+}
+
+func TestSettleDeposit_ReconcileTerminalFailureKeepsBindingAfterSameIdentityRebind(t *testing.T) {
+	_, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	pending := x402.NewInMemoryPendingSettlementStore()
+	signer := pendingThenRevertedSigner(t, "0x"+strings.Repeat("ab", 32))
+
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrSettlementPending)
+
+	// A second deposit by the same identity depends on the binding.
+	created, err := auth.InMemoryDelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: payload.Voucher.ChannelId, Network: testNetwork, CallerIdentity: "svc", OpenToken: "second",
+	})
+	if err != nil || created {
+		t.Fatalf("second bind: created=%v err=%v", created, err)
+	}
+
+	_, err = SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrTransactionReverted)
+	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "svc")
+}
+
+func TestSettleDeposit_ReconcileConfirmedKeepsBindingAndClearsPendingEntry(t *testing.T) {
+	sig, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
 	pending := x402.NewInMemoryPendingSettlementStore()
 	txHash := "0x" + strings.Repeat("ab", 32)
 	waits := 0
@@ -337,32 +472,29 @@ func TestSettleDeposit_ReconcileTerminalFailureDeletesInsertedBinding(t *testing
 			if waits == 1 {
 				return nil, errors.New("rpc: timeout")
 			}
-			return &evm.TransactionReceipt{Status: evm.TxStatusFailed, TxHash: hash}, nil
+			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: hash}, nil
 		},
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, auth, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrSettlementPending {
-		t.Fatalf("first settle err = %v", err)
-	}
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	requireSettleErrorReason(t, err, ErrSettlementPending)
 
-	_, err = SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, auth, "svc")
-	if !errors.As(err, &se) || se.ErrorReason != ErrTransactionReverted {
-		t.Fatalf("reconcile err = %v", err)
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
+	if err != nil || !resp.Success || resp.Transaction != txHash {
+		t.Fatalf("reconcile resp=%+v err=%v", resp, err)
 	}
-	if signer.writeCalls != 1 {
-		t.Fatalf("reconcile writes = %d, want 1", signer.writeCalls)
+	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "svc")
+	if _, ok, _ := pending.Get(context.Background(), sig); ok {
+		t.Fatal("confirmed reconcile must clear the pending entry")
 	}
-	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
-	if _, ok, _ := pending.Get(context.Background(), delegatedAuthInsertedMarker(sig)); ok {
-		t.Fatal("terminal reconcile must drop the inserted-binding marker")
+	if len(auth.revertedToken) != 0 {
+		t.Fatalf("confirmed reconcile must not revert, got %v", auth.revertedToken)
 	}
 }
 
-func TestSettleDeposit_SuccessKeepsBindingAndDropsMarker(t *testing.T) {
-	sig, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
-	pending := x402.NewInMemoryPendingSettlementStore()
+func TestSettleDeposit_SuccessKeepsBinding(t *testing.T) {
+	_, payload, reqs := pendingDepositPayload(t)
+	auth := newSpyDelegatedAuth()
+	pending := &recordingPendingStore{PendingSettlementStore: x402.NewInMemoryPendingSettlementStore()}
 	writeSeen := false
 	signer := &fakeFacilitatorSigner{
 		addresses:    []string{"0xfacilitator"},
@@ -376,44 +508,25 @@ func TestSettleDeposit_SuccessKeepsBindingAndDropsMarker(t *testing.T) {
 		},
 	}
 	signer.getBalance = func(string, string) (*big.Int, error) { return big.NewInt(1000), nil }
-	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, auth, "svc")
+	resp, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, pending, delegatedBinding(auth))
 	if err != nil || !resp.Success {
 		t.Fatalf("got resp=%+v err=%v", resp, err)
 	}
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "svc")
-	if _, ok, _ := pending.Get(context.Background(), delegatedAuthInsertedMarker(sig)); ok {
-		t.Fatal("success must drop the inserted-binding marker")
+	if len(pending.setKeys) != 0 {
+		t.Fatalf("success must not write pending-store keys, got %v", pending.setKeys)
 	}
-}
-
-func TestSettleDeposit_MarkerSetFailureDeletesBindingWithoutBroadcast(t *testing.T) {
-	_, payload, reqs := pendingDepositPayload(t)
-	auth := storage.NewInMemoryDelegatedAuthStore()
-	signer := delegatedDepositSigner(t,
-		func(string, ...interface{}) (string, error) { return "0x" + strings.Repeat("ab", 32), nil },
-		nil,
-	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil,
-		failSetPendingStore{inner: x402.NewInMemoryPendingSettlementStore()}, auth, "svc")
-	var se *x402.SettleError
-	if !errors.As(err, &se) || se.ErrorReason != ErrVoucherStoreUnavailable {
-		t.Fatalf("got err = %v", err)
-	}
-	if signer.writeCalls != 0 {
-		t.Fatalf("marker failure must not broadcast, writes=%d", signer.writeCalls)
-	}
-	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
 }
 
 func TestSettleDeposit_InvalidVerifyDoesNotBindOrBroadcast(t *testing.T) {
 	_, payload, reqs := pendingDepositPayload(t)
 	payload.Voucher.Signature = "0x" + strings.Repeat("11", 65)
-	auth := storage.NewInMemoryDelegatedAuthStore()
+	auth := newSpyDelegatedAuth()
 	signer := delegatedDepositSigner(t,
 		func(string, ...interface{}) (string, error) { return "0x" + strings.Repeat("ab", 32), nil },
 		nil,
 	)
-	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, auth, "svc")
+	_, err := SettleDeposit(context.Background(), signer, payload, reqs, nil, nil, nil, nil, nil, delegatedBinding(auth))
 	var se *x402.SettleError
 	if !errors.As(err, &se) {
 		t.Fatalf("got err = %v, want settle error", err)
@@ -422,4 +535,7 @@ func TestSettleDeposit_InvalidVerifyDoesNotBindOrBroadcast(t *testing.T) {
 		t.Fatalf("invalid deposit must not broadcast, writes=%d sends=%d", signer.writeCalls, signer.sendCalls)
 	}
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
+	if len(auth.boundTokens) != 0 {
+		t.Fatalf("invalid deposit must not bind, got %v", auth.boundTokens)
+	}
 }
