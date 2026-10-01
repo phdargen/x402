@@ -483,14 +483,157 @@ func TestFacilitatorChannelManager_RefundSkipsLiveLock(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("acquire: %v %v", ok, err)
 	}
-	mgr := newTestManager(t, nil, store, auth, "", nil)
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, "", nil)
 	results, err := refundIdle(mgr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("got %+v", results)
+	if len(results) != 0 || signer.writeCalls != 0 {
+		t.Fatalf("results=%+v writes=%d", results, signer.writeCalls)
 	}
+	held, err := store.IsHeld(context.Background(), ch.ChannelId, "pending")
+	if err != nil || !held {
+		t.Fatalf("original holder should remain: held=%v err=%v", held, err)
+	}
+}
+
+func TestFacilitatorChannelManager_RefundReleasesLockOnSuccess(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "03", &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "1000",
+		Balance:                 "10000",
+		ChargeCount:             0,
+		LastRequestTimestamp:    time.Now().UnixMilli() - 120_000,
+	})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, nil)
+	heldDuring := false
+	origWrite := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		held, err := store.IsHeld(context.Background(), ch.ChannelId, "")
+		if err != nil {
+			t.Errorf("IsHeld during refund: %v", err)
+		}
+		heldDuring = held
+		return origWrite(functionName, args...)
+	}
+	mgr := newTestManager(t, signer, store, auth, RetentionForever, nil)
+	results, err := refundIdle(mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !heldDuring {
+		t.Fatalf("results=%+v heldDuring=%v", results, heldDuring)
+	}
+	held, err := store.IsHeld(context.Background(), ch.ChannelId, "")
+	if err != nil || held {
+		t.Fatalf("lock should be released: held=%v err=%v", held, err)
+	}
+}
+
+func TestFacilitatorChannelManager_RefundReleasesLockOnFailure(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "04", &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "1000",
+		Balance:                 "10000",
+		ChargeCount:             0,
+		LastRequestTimestamp:    time.Now().UnixMilli() - 120_000,
+	})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, nil)
+	heldDuring := false
+	signer.writeContract = func(string, ...interface{}) (string, error) {
+		held, err := store.IsHeld(context.Background(), ch.ChannelId, "")
+		if err != nil {
+			t.Errorf("IsHeld during refund: %v", err)
+		}
+		heldDuring = held
+		return "", errors.New("rpc down")
+	}
+	mgr := newTestManager(t, signer, store, auth, "", nil)
+	results, err := refundIdle(mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || !heldDuring {
+		t.Fatalf("results=%+v heldDuring=%v", results, heldDuring)
+	}
+	held, err := store.IsHeld(context.Background(), ch.ChannelId, "")
+	if err != nil || held {
+		t.Fatalf("lock should be released: held=%v err=%v", held, err)
+	}
+	got, err := store.Get(context.Background(), ch.ChannelId)
+	if err != nil || got == nil || got.Balance != "10000" {
+		t.Fatalf("row should be unchanged: %+v %v", got, err)
+	}
+}
+
+func TestFacilitatorChannelManager_RefundSkipsRowDrainedBeforeLock(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "05", &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "1000",
+		Balance:                 "10000",
+		ChargeCount:             0,
+		LastRequestTimestamp:    time.Now().UnixMilli() - 120_000,
+	})
+	seedManagedChannel(t, store, ch)
+	locks := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	hook := acquireHookLock{
+		ChannelLockStorage: locks,
+		before: func() {
+			_, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+				if current == nil {
+					return current
+				}
+				next := current.Clone()
+				next.Balance = "0"
+				return next
+			})
+			if err != nil {
+				t.Errorf("drain row: %v", err)
+			}
+		},
+	}
+	signer := newManagedSigner(t, nil)
+	mgr, err := NewFacilitatorChannelManager(FacilitatorChannelManagerConfig{
+		Storage:          store,
+		LockStorage:      hook,
+		Signer:           signer,
+		AuthorizerSigner: auth,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := refundIdle(mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || signer.writeCalls != 0 {
+		t.Fatalf("results=%+v writes=%d", results, signer.writeCalls)
+	}
+	held, err := locks.IsHeld(context.Background(), ch.ChannelId, "")
+	if err != nil || held {
+		t.Fatalf("lock should be released: held=%v err=%v", held, err)
+	}
+}
+
+type acquireHookLock struct {
+	storage.ChannelLockStorage
+	before func()
+}
+
+func (l acquireHookLock) Acquire(ctx context.Context, channelId, pendingId string, ttlMs int64) (bool, error) {
+	if l.before != nil {
+		l.before()
+	}
+	return l.ChannelLockStorage.Acquire(ctx, channelId, pendingId, ttlMs)
 }
 
 func TestFacilitatorChannelManager_RefundClaimsThenRefunds(t *testing.T) {
@@ -1324,7 +1467,7 @@ func TestFacilitatorChannelManager_SettleCleanupMatchesLowercaseTarget(t *testin
 	}
 }
 
-func TestFacilitatorChannelManager_SettleCleanupKeepsHeldRow(t *testing.T) {
+func TestFacilitatorChannelManager_SettleCleanupDeletesDespiteLock(t *testing.T) {
 	auth := managedAuthorizer()
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	ch := finishedManagedChannel(t, auth, "52")
@@ -1346,9 +1489,36 @@ func TestFacilitatorChannelManager_SettleCleanupKeepsHeldRow(t *testing.T) {
 	if _, err := mgr.Settle(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := store.Get(context.Background(), ch.ChannelId)
-	if got == nil {
-		t.Fatal("held row was deleted")
+	got, err := store.Get(context.Background(), ch.ChannelId)
+	if err != nil || got != nil {
+		t.Fatalf("finished row should be deleted despite a live lock: %+v %v", got, err)
+	}
+}
+
+func TestShouldDeleteFinishedChannel_NoLockInput(t *testing.T) {
+	finished := &FacilitatorChannel{Channel: storage.Channel{
+		Balance:                 "1000",
+		ChargedCumulativeAmount: "1000",
+		TotalClaimed:            "1000",
+	}}
+	if !IsChannelFinished(finished, 0) {
+		t.Fatal("expected finished")
+	}
+	if !ShouldDeleteFinishedChannelAtSettle(RetentionWhenUnused, finished, 0) {
+		t.Fatal("expected settle delete")
+	}
+	if ShouldDeleteFinishedChannelAtSettle(RetentionForever, finished, 0) {
+		t.Fatal("forever retention must keep the row")
+	}
+	if ShouldDeleteNeverClaimedRefundRow(RetentionWhenUnused, finished, 0, finished.TotalClaimed) {
+		t.Fatal("a claimed row is not a never-claimed refund delete")
+	}
+	unclaimed := finished.Clone()
+	unclaimed.TotalClaimed = "0"
+	unclaimed.Balance = "0"
+	unclaimed.ChargedCumulativeAmount = "0"
+	if !ShouldDeleteNeverClaimedRefundRow(RetentionWhenUnused, unclaimed, 0, "0") {
+		t.Fatal("expected never-claimed refund delete")
 	}
 }
 
