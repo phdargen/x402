@@ -70,10 +70,8 @@ type ChannelStorage[T ChannelRecord[T]] interface {
 	UpdateChannel(ctx context.Context, channelId string, update func(current T) T) (*ChannelUpdateResult[T], error)
 }
 
-// ChannelLockStorage is a best-effort per-channel admission lock. Loss or
-// unavailability degrades to optimistic mode: the durable charge CAS still
-// serializes commits. Implementation/parse errors (unreadable hold records)
-// fail closed at the caller.
+// ChannelLockStorage is a per-channel admission lock. Acquire errors fail closed at verify
+// and at unheld voucher settle; the durable charge CAS still serializes commits.
 type ChannelLockStorage interface {
 	// Acquire is SET NX + TTL. Value is pendingId. Expired keys are free.
 	Acquire(ctx context.Context, channelId string, pendingId string, ttlMs int64) (bool, error)

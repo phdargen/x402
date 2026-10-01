@@ -278,7 +278,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 		if bindErr != nil {
 			return nil, bindErr
 		}
-		settled, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore,
+		settled, _, err := SettleDeposit(ctx, f.signer, depositPayload, requirements, payload.Extensions, fctx, dataSuffix, f.config.EIP6492AllowedFactories, f.pendingStore,
 			newDelegatedDepositBinding(f.delegatedAuthStore, delegatedCaller, f.onStorageError))
 		if err != nil {
 			return nil, err
