@@ -65,30 +65,31 @@ func releaseAdmission(ctx context.Context, deps VoucherStoreDeps, channelId, own
 }
 
 // acquireAdmission reserves the channel for a fresh owner bound to voucher.
-// A live hold returns missReason; a lock-store error is ErrRpcReadFailed.
+// A live hold or lock I/O failure is a *x402.VerifyError for callers to map
+// into verify/settle responses; implementation errors are returned as-is.
 func acquireAdmission(
 	ctx context.Context,
 	deps VoucherStoreDeps,
 	voucher batchsettlement.BatchSettlementVoucherFields,
 	ttlMs int64,
 	missReason string,
-) (pendingId, owner, reason string, err error) {
-	pendingId, nonceErr := createNonce()
-	if nonceErr != nil {
-		return "", "", ErrVoucherStoreUnavailable, nil
+) (pendingId, owner string, err error) {
+	pendingId, err = createNonce()
+	if err != nil {
+		return "", "", x402.NewVerifyError(ErrVoucherStoreUnavailable, "", err.Error())
 	}
 	owner = storage.AdmissionOwner(pendingId, voucher)
-	acquired, acqErr := deps.LockStorage.Acquire(ctx, voucher.ChannelId, owner, ttlMs)
-	if impl := storage.RethrowLockImplementationError(acqErr); impl != nil {
-		return "", "", "", impl
+	acquired, err := deps.LockStorage.Acquire(ctx, voucher.ChannelId, owner, ttlMs)
+	if impl := storage.RethrowLockImplementationError(err); impl != nil {
+		return "", "", impl
 	}
-	if acqErr != nil {
-		return "", "", ErrRpcReadFailed, nil
+	if err != nil {
+		return "", "", x402.NewVerifyError(ErrRpcReadFailed, "", err.Error())
 	}
 	if !acquired {
-		return "", "", missReason, nil
+		return "", "", x402.NewVerifyError(missReason, "", "")
 	}
-	return pendingId, owner, "", nil
+	return pendingId, owner, nil
 }
 
 func onchainStateTtlMs(deps VoucherStoreDeps) int64 {
@@ -122,6 +123,10 @@ func VerifyManaged(
 	if managedErr := managedRequirementError(deps, channelConfig.Salt, requirements); managedErr != "" {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: managedErr, Payer: payer}, nil
 	}
+	// accepted.amount is the priced maximum. Refunds are zero-charge and skip this.
+	if !batchsettlement.IsRefundPayload(raw) && payload.Accepted.Amount != requirements.Amount {
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload, Payer: payer}, nil
+	}
 
 	var clearance eoaSignatureClearance
 	if batchsettlement.IsVoucherPayload(raw) && !strings.EqualFold(channelConfig.PayerAuthorizer, zeroAddress) {
@@ -137,12 +142,12 @@ func VerifyManaged(
 	}
 
 	channelId := voucher.ChannelId
-	pendingId, owner, lockReason, lockErr := acquireAdmission(ctx, deps, voucher, storage.PendingTtlMs(requirements.MaxTimeoutSeconds), ErrChannelBusy)
+	pendingId, owner, lockErr := acquireAdmission(ctx, deps, voucher, storage.PendingTtlMs(requirements.MaxTimeoutSeconds), ErrChannelBusy)
 	if lockErr != nil {
-		return nil, lockErr
-	}
-	if lockReason != "" {
-		return &x402.VerifyResponse{IsValid: false, InvalidReason: lockReason, Payer: payer}, nil
+		if impl := storage.RethrowLockImplementationError(lockErr); impl != nil {
+			return nil, impl
+		}
+		return verifyResponseFromErr(lockErr, payer), nil
 	}
 	reserved := true
 	defer func() {
@@ -239,7 +244,7 @@ func SettleManaged(
 		if err != nil {
 			return nil, x402.NewSettleError(ErrInvalidPayload, "", x402.Network(requirements.Network), "", err.Error())
 		}
-		return settleManagedVoucher(ctx, deps, vp, requirements)
+		return settleManagedVoucher(ctx, deps, vp, payload.Accepted.Amount, requirements)
 	}
 	if batchsettlement.IsDepositPayload(raw) {
 		dp, err := batchsettlement.DepositPayloadFromMap(raw)
@@ -282,10 +287,35 @@ func settleManagedCancel(
 	}, nil
 }
 
+// settleChargeBounds re-checks the verify watermark at settle.
+// expectedCharged is signedCap minus acceptedAmount.
+func settleChargeBounds(acceptedAmount, actualAmount, signedCap string) (increment, cap, expectedCharged *big.Int, reason string) {
+	accepted, ok := parseManagedUint(acceptedAmount)
+	if !ok {
+		return nil, nil, nil, ErrInvalidPayload
+	}
+	increment, ok = parseManagedUint(actualAmount)
+	if !ok {
+		return nil, nil, nil, ErrInvalidPayload
+	}
+	cap, ok = parseManagedUint(signedCap)
+	if !ok {
+		return nil, nil, nil, ErrInvalidPayload
+	}
+	if increment.Cmp(accepted) > 0 {
+		return nil, nil, nil, ErrChargeExceedsSignedCumulative
+	}
+	if accepted.Cmp(cap) > 0 {
+		return nil, nil, nil, ErrInvalidPayload
+	}
+	return increment, cap, new(big.Int).Sub(cap, accepted), ""
+}
+
 func settleManagedVoucher(
 	ctx context.Context,
 	deps VoucherStoreDeps,
 	raw *batchsettlement.BatchSettlementVoucherPayload,
+	acceptedAmount string,
 	requirements types.PaymentRequirements,
 ) (*x402.SettleResponse, error) {
 	channelId := raw.Voucher.ChannelId
@@ -296,6 +326,10 @@ func settleManagedVoucher(
 
 	if managedErr := managedRequirementError(deps, raw.ChannelConfig.Salt, requirements); managedErr != "" {
 		return failSettle(requirements, managedErr), nil
+	}
+	increment, signedCap, expectedCharged, boundReason := settleChargeBounds(acceptedAmount, requirements.Amount, raw.Voucher.MaxClaimableAmount)
+	if boundReason != "" {
+		return failSettle(requirements, boundReason), nil
 	}
 
 	held, heldErr := admissionHeld(ctx, deps, channelId, owner)
@@ -309,16 +343,14 @@ func settleManagedVoucher(
 			return failSettle(requirements, configErr), nil
 		}
 		var err error
-		if mirror, reason, err = heldVoucherMirror(ctx, deps, raw, requirements); err != nil {
-			return nil, err
+		mirror, err = heldVoucherMirror(ctx, deps, raw, requirements)
+		if resp, settleErr := failSettleFromErr(requirements, err); settleErr != nil || resp != nil {
+			return resp, settleErr
 		}
 	} else {
-		_, fresh, missReason, err := acquireAdmission(ctx, deps, raw.Voucher, storage.PendingTtlMs(requirements.MaxTimeoutSeconds), ErrPendingIdMismatch)
-		if err != nil {
-			return nil, err
-		}
-		if missReason != "" {
-			return failSettle(requirements, missReason), nil
+		_, fresh, err := acquireAdmission(ctx, deps, raw.Voucher, storage.PendingTtlMs(requirements.MaxTimeoutSeconds), ErrPendingIdMismatch)
+		if resp, settleErr := failSettleFromErr(requirements, err); settleErr != nil || resp != nil {
+			return resp, settleErr
 		}
 		defer func() {
 			_ = releaseAdmission(ctx, deps, channelId, fresh)
@@ -329,14 +361,6 @@ func settleManagedVoucher(
 		return failSettle(requirements, reason), nil
 	}
 
-	increment, _ := new(big.Int).SetString(requirements.Amount, 10)
-	if increment == nil {
-		increment = new(big.Int)
-	}
-	signedCap, _ := new(big.Int).SetString(raw.Voucher.MaxClaimableAmount, 10)
-	if signedCap == nil {
-		signedCap = new(big.Int)
-	}
 	var mapper func(*FacilitatorChannel) *FacilitatorChannel
 	if increment.Sign() != 0 {
 		network := requirements.Network
@@ -347,6 +371,7 @@ func settleManagedVoucher(
 	outcome, err := storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
 		Increment:       increment,
 		SignedCap:       signedCap,
+		ExpectedCharged: expectedCharged,
 		Voucher:         raw.Voucher,
 		ResolveSnapshot: mirror.snapshot,
 		Map:             mapper,
@@ -359,6 +384,9 @@ func settleManagedVoucher(
 	}
 	if outcome.Status == storage.CommitCapExceeded {
 		return failSettle(requirements, ErrChargeExceedsSignedCumulative), nil
+	}
+	if outcome.Status == storage.CommitWatermarkMismatch {
+		return failSettle(requirements, ErrCumulativeAmountMismatch), nil
 	}
 	if outcome.Status != storage.CommitCommitted {
 		return failSettle(requirements, ErrChannelBusy), nil
@@ -393,6 +421,13 @@ func settleManagedDeposit(
 		_ = releaseAdmission(ctx, deps, channelId, owner)
 	}()
 
+	// Reject an actual above the accepted maximum before broadcast. The commit
+	// below still re-checks the watermark on a reconciled retry.
+	increment, signedCap, expectedCharged, boundReason := settleChargeBounds(payment.Accepted.Amount, requirements.Amount, raw.Voucher.MaxClaimableAmount)
+	if boundReason != "" {
+		return failSettle(requirements, boundReason), nil
+	}
+
 	identity, bindErr := ResolveDepositDelegatedCaller(ctx, deps.ResolveCallerIdentity, deps.DelegatedAuthStore,
 		payment, raw, requirements, fctx)
 	if bindErr != nil {
@@ -412,18 +447,11 @@ func settleManagedDeposit(
 		return settled, nil
 	}
 
-	increment, _ := new(big.Int).SetString(requirements.Amount, 10)
-	if increment == nil {
-		increment = new(big.Int)
-	}
-	signedCap, _ := new(big.Int).SetString(raw.Voucher.MaxClaimableAmount, 10)
-	if signedCap == nil {
-		signedCap = new(big.Int)
-	}
 	outcome, commitErr := storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
-		Increment: increment,
-		SignedCap: signedCap,
-		Voucher:   raw.Voucher,
+		Increment:       increment,
+		SignedCap:       signedCap,
+		ExpectedCharged: expectedCharged,
+		Voucher:         raw.Voucher,
 		ResolveSnapshot: func(current *FacilitatorChannel) *FacilitatorChannel {
 			return depositChargeSnapshot(raw, requirements, settled.Extra, current, syncedAt)
 		},
@@ -926,27 +954,31 @@ func heldVoucherMirror(
 	deps VoucherStoreDeps,
 	raw *batchsettlement.BatchSettlementVoucherPayload,
 	requirements types.PaymentRequirements,
-) (voucherMirror, string, error) {
+) (voucherMirror, error) {
 	channelId := raw.Voucher.ChannelId
 	stored, getErr := deps.Storage.Get(ctx, channelId)
 	if impl := storage.RethrowLockImplementationError(getErr); impl != nil {
-		return voucherMirror{}, "", impl
+		return voucherMirror{}, impl
 	}
 	if getErr != nil {
-		return voucherMirror{}, ErrRpcReadFailed, nil
+		return voucherMirror{}, x402.NewSettleError(
+			ErrRpcReadFailed, "", x402.Network(requirements.Network), "", getErr.Error(),
+		)
 	}
 	if stored != nil && batchsettlement.IsOnchainStateFresh(*cachedOnchain(stored), onchainStateTtlMs(deps), time.Now().UnixMilli()) {
-		return voucherMirror{}, "", nil
+		return voucherMirror{}, nil
 	}
 	readAt := time.Now().UnixMilli()
 	state, err := ReadChannelState(ctx, deps.Signer, channelId)
 	if err != nil {
 		if stored != nil {
-			return voucherMirror{}, "", nil
+			return voucherMirror{}, nil
 		}
-		return voucherMirror{}, ErrRpcReadFailed, nil
+		return voucherMirror{}, x402.NewSettleError(
+			ErrRpcReadFailed, "", x402.Network(requirements.Network), "", err.Error(),
+		)
 	}
-	return voucherMirror{channel: mirrorChannel(raw, requirements, state, readAt)}, "", nil
+	return voucherMirror{channel: mirrorChannel(raw, requirements, state, readAt)}, nil
 }
 
 // verifiedVoucherMirror runs the full voucher verify and mirrors the state it read.
@@ -1148,6 +1180,26 @@ func failSettle(requirements types.PaymentRequirements, errorReason string) *x40
 	}
 }
 
+// failSettleFromErr maps admission/mirror failures into a SettleResponse.
+// Implementation errors are returned for the caller to propagate.
+func failSettleFromErr(requirements types.PaymentRequirements, err error) (*x402.SettleResponse, error) {
+	if err == nil {
+		return nil, nil
+	}
+	if impl := storage.RethrowLockImplementationError(err); impl != nil {
+		return nil, impl
+	}
+	var se *x402.SettleError
+	if errors.As(err, &se) {
+		return failSettle(requirements, se.ErrorReason), nil
+	}
+	var ve *x402.VerifyError
+	if errors.As(err, &ve) {
+		return failSettle(requirements, ve.InvalidReason), nil
+	}
+	return nil, err
+}
+
 // depositPersistReason maps a non-committed deposit charge outcome to a
 // fail-closed error reason.
 func depositPersistReason(outcome *storage.CommitVoucherChargeResult[*FacilitatorChannel]) string {
@@ -1155,6 +1207,8 @@ func depositPersistReason(outcome *storage.CommitVoucherChargeResult[*Facilitato
 		switch outcome.Status {
 		case storage.CommitCapExceeded:
 			return ErrChargeExceedsSignedCumulative
+		case storage.CommitWatermarkMismatch:
+			return ErrCumulativeAmountMismatch
 		case storage.CommitMissing:
 			return ErrMissingChannel
 		}

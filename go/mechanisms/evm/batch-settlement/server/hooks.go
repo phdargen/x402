@@ -830,6 +830,12 @@ func handleBeforeSettle(s *BatchSettlementEvmScheme, ctx x402.SettleContext) (*x
 			Reason:  batchsettlement.ErrChargeExceedsSignedCumulative,
 			Message: fmt.Sprintf("Charged %s exceeds signed max %s", outcome.Charged, signedCap.String()),
 		}, nil
+	case storage.CommitWatermarkMismatch:
+		return &x402.BeforeHookResult{
+			Abort:   true,
+			Reason:  batchsettlement.ErrCumulativeAmountMismatch,
+			Message: "Charged amount does not match the verified watermark",
+		}, nil
 	case storage.CommitCommitted:
 		charged := outcome.Current.ChargedCumulativeAmount
 		reqAmount := ctx.Requirements.GetAmount()
