@@ -135,6 +135,7 @@ func (m *FacilitatorChannelManager) loadClaimRows(
 	filter := storage.ChannelQuery{Limit: &limit}
 	if opts != nil {
 		filter.UnclaimedDesc = opts.UnclaimedDesc
+		filter.MinUnclaimed = opts.MinUnclaimed
 	}
 	items, err := query(filter)
 	if err != nil {
@@ -166,13 +167,11 @@ func (m *FacilitatorChannelManager) claimRowQuery(
 			Network:       q.Network,
 			UnclaimedDesc: q.UnclaimedDesc,
 			OldestFirst:   q.OldestFirst,
+			MinUnclaimed:  q.MinUnclaimed,
 		}
-		if opts != nil {
-			if opts.IdleSecs != nil {
-				idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
-				filter.IdleAtOrBefore = &idleAt
-			}
-			filter.MinUnclaimed = opts.MinUnclaimed
+		if opts != nil && opts.IdleSecs != nil {
+			idleAt := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
+			filter.IdleAtOrBefore = &idleAt
 		}
 		page, err := storage.QueryChannels(ctx, m.storage, filter, nil)
 		if err != nil {

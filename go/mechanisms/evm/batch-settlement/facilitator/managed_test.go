@@ -260,6 +260,8 @@ type managedRPC struct {
 	failReads map[string]struct{}
 	// failReceivers marks receiver addresses whose receivers() subcalls revert.
 	failReceivers map[string]struct{}
+	// receiverSettledByAddr overrides receiverSettled for one receiver address.
+	receiverSettledByAddr map[string]*big.Int
 	// resyncView overrides the 3-call channel-state read used after a failed claim.
 	resyncView *managedChainView
 }

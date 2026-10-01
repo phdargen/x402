@@ -1539,17 +1539,24 @@ func multicallReceiversResults(t *testing.T, rpc *managedRPC, calls reflect.Valu
 	if err != nil {
 		t.Fatalf("receivers abi: %v", err)
 	}
-	data, err := receiversABI.Methods["receivers"].Outputs.Pack(rpc.receiverClaimed, rpc.receiverSettled)
+	defaultData, err := receiversABI.Methods["receivers"].Outputs.Pack(rpc.receiverClaimed, rpc.receiverSettled)
 	if err != nil {
 		t.Fatalf("pack receivers: %v", err)
 	}
 	out := make([]testMulticallResult, calls.Len())
 	for i := range out {
 		call := calls.Index(i)
+		data := defaultData
 		if receiver, found := receiverForCall(call); found {
 			if _, fail := rpc.failReceivers[receiver]; fail {
 				out[i] = testMulticallResult{Success: false}
 				continue
+			}
+			if settled, ok := rpc.receiverSettledByAddr[receiver]; ok {
+				data, err = receiversABI.Methods["receivers"].Outputs.Pack(rpc.receiverClaimed, settled)
+				if err != nil {
+					t.Fatalf("pack receivers: %v", err)
+				}
 			}
 		}
 		out[i] = testMulticallResult{Success: true, ReturnData: data}
