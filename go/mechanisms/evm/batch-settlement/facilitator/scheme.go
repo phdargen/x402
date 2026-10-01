@@ -2,8 +2,10 @@ package facilitator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
@@ -41,7 +43,7 @@ type voucherStoreRuntime struct {
 	settleTargetStorage storage.SettleTargetStorage
 	withdrawDelay       int
 	onchainStateTtlMs   *int64
-	retention           FacilitatorRetention
+	keepFinishedRows    bool
 }
 
 // BatchSettlementEvmScheme implements SchemeNetworkFacilitator for batch settlement on EVM.
@@ -126,7 +128,7 @@ func NewBatchSettlementEvmSchemeWithConfig(
 				settleTargetStorage: settleTargets,
 				withdrawDelay:       withdrawDelay,
 				onchainStateTtlMs:   config.VoucherStore.OnchainStateTtlMs,
-				retention:           NormalizeRetention(config.VoucherStore.Retention),
+				keepFinishedRows:    config.VoucherStore.KeepFinishedRows,
 			}
 		}
 	}
@@ -293,18 +295,67 @@ func (f *BatchSettlementEvmScheme) Settle(
 				fmt.Sprintf("failed to parse claim payload: %s", err))
 		}
 		claimSuffix := dataSuffix
-		var attested map[string]int
 		if managed && f.voucherStore != nil {
-			counts, snapshot, snapErr := SnapshotClaimChargeCounts(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, nil)
-			if snapErr != nil {
-				return nil, snapErr
+			begun := make([]attestedClaim, 0, len(claimPayload.Claims))
+			counts := make([]uint64, 0, len(claimPayload.Claims))
+			now := time.Now().UnixMilli()
+			for _, claim := range claimPayload.Claims {
+				channelID, idErr := batchsettlement.ComputeChannelId(claim.Voucher.Channel, requirements.Network)
+				if idErr != nil {
+					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
+					return nil, idErr
+				}
+				one, busy, beginErr := beginAttestedClaim(ctx, f.voucherStore.storage, channelID, claim.TotalClaimed, now)
+				if beginErr != nil {
+					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
+					return nil, beginErr
+				}
+				if busy {
+					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
+					return &x402.SettleResponse{
+						Success:     false,
+						ErrorReason: ErrChannelBusy,
+						Transaction: "",
+						Network:     network,
+					}, nil
+				}
+				begun = append(begun, one)
+				counts = append(counts, chargeCountUint(one.Count))
 			}
-			attested = snapshot
 			composed, composeErr := batchsettlement.ComposeClaimDataSuffix(counts, dataSuffix)
 			if composeErr != nil {
+				_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
 				return nil, composeErr
 			}
 			claimSuffix = composed
+			settled, err := SubmitClaim(ctx, SubmitClaimInput{
+				Network:    requirements.Network,
+				Claims:     claimPayload.Claims,
+				Signature:  claimPayload.ClaimAuthorizerSignature,
+				DataSuffix: claimSuffix,
+			}, f.submitContext())
+			landed, releaseErr := releaseAttestedClaims(ctx, f.voucherStore.storage, begun, err, settled)
+			if err != nil {
+				if releaseErr != nil {
+					return nil, releaseErr
+				}
+				return nil, err
+			}
+			if !landed {
+				if releaseErr != nil {
+					return nil, releaseErr
+				}
+				return settled, nil
+			}
+			if afterErr := AfterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage); afterErr != nil || releaseErr != nil {
+				logger := f.logger
+				if logger == nil {
+					logger = slog.Default()
+				}
+				logger.Error("batch-settlement: claim landed but attested bookkeeping failed", "error", errors.Join(afterErr, releaseErr), "network", requirements.Network)
+				return settled, nil
+			}
+			return settled, nil
 		}
 		settled, err := SubmitClaim(ctx, SubmitClaimInput{
 			Network:    requirements.Network,
@@ -314,11 +365,6 @@ func (f *BatchSettlementEvmScheme) Settle(
 		}, f.submitContext())
 		if err != nil {
 			return nil, err
-		}
-		if settled.Success && attested != nil && f.voucherStore != nil {
-			if afterErr := AfterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, attested, f.voucherStore.settleTargetStorage); afterErr != nil {
-				return nil, afterErr
-			}
 		}
 		return settled, nil
 	}
@@ -370,7 +416,7 @@ func (f *BatchSettlementEvmScheme) CreateChannelManager(fctx *x402.FacilitatorCo
 		AuthorizerSubmitter: f.authorizerSubmitter,
 		SubmitMode:          f.submitMode,
 		Context:             fctx,
-		Retention:           f.voucherStore.retention,
+		KeepFinishedRows:    f.voucherStore.keepFinishedRows,
 		SettleTargetStorage: f.voucherStore.settleTargetStorage,
 		Logger:              f.logger,
 	})
@@ -390,9 +436,10 @@ func (f *BatchSettlementEvmScheme) voucherStoreDeps() VoucherStoreDeps {
 		DelegatedAuthStore:      f.delegatedAuthStore,
 		EIP6492AllowedFactories: f.config.EIP6492AllowedFactories,
 		PendingStore:            f.pendingStore,
-		Retention:               f.voucherStore.retention,
+		KeepFinishedRows:        f.voucherStore.keepFinishedRows,
 		SettleTargetStorage:     f.voucherStore.settleTargetStorage,
 		OnStorageError:          f.onStorageError,
+		Logger:                  f.logger,
 	}
 }
 

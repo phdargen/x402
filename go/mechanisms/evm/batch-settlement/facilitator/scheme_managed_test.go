@@ -3,6 +3,7 @@ package facilitator
 import (
 	"bytes"
 	"context"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -176,6 +177,15 @@ func TestScheme_ManagedClaimComposesBuilderSuffix(t *testing.T) {
 		ChargeCount: 6, Signature: "0xcafe",
 	}))
 	signer := newManagedSigner(t, nil)
+	var attested int
+	origWrite := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		row, _ := store.Get(context.Background(), channelId)
+		if row != nil && row.PendingClaim != nil {
+			attested = row.PendingClaim.AttestedCount
+		}
+		return origWrite(functionName, args...)
+	}
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
 		VoucherStore: &VoucherStoreConfig{Storage: store},
 	})
@@ -199,8 +209,12 @@ func TestScheme_ManagedClaimComposesBuilderSuffix(t *testing.T) {
 		t.Fatalf("missing builder suffix in %x", signer.lastDataSuffix)
 	}
 	counts := batchsettlement.ParseChargeCountsSuffix(signer.lastDataSuffix)
-	if len(counts) != 1 || counts[0] != 6 {
-		t.Fatalf("counts = %v", counts)
+	if len(counts) != 1 || counts[0] != 6 || attested != 6 {
+		t.Fatalf("counts = %v attested = %d", counts, attested)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargeCount != 0 || got.PendingClaim != nil {
+		t.Fatalf("stored %+v", got)
 	}
 }
 
@@ -233,8 +247,8 @@ func TestScheme_ManagedClaimSimulationLeavesStore(t *testing.T) {
 		t.Fatalf("expected failure %+v", resp)
 	}
 	got, _ := store.Get(context.Background(), channelId)
-	if got.ChargeCount != 4 {
-		t.Fatalf("chargeCount = %d", got.ChargeCount)
+	if got.ChargeCount != 4 || got.PendingClaim != nil {
+		t.Fatalf("store mutated: %+v", got)
 	}
 }
 
@@ -522,5 +536,53 @@ func TestAcceptRefundAuthorizerConsent_StripsOffchainSignature(t *testing.T) {
 	}
 	if raw.RefundAuthorizerSignature == "" {
 		t.Fatal("signature from receiverAuthorizer must be kept for on-chain submission")
+	}
+}
+
+func TestScheme_ManagedClaimFinishFailureKeepsMarker(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, inner, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargeCount: 4, Signature: "0xcafe",
+	}))
+	store := &allowNUpdates{InMemoryChannelStorage: inner, allow: 2}
+	signer := newManagedSigner(t, nil)
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
+		VoucherStore: &VoucherStoreConfig{Storage: store},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := batchsettlement.BatchSettlementVoucherClaim{Signature: "0xcafe", TotalClaimed: "1000"}
+	claim.Voucher.Channel = cfg
+	claim.Voucher.MaxClaimableAmount = "1000"
+	payload := managedEnvelope((&batchsettlement.BatchSettlementClaimPayload{
+		Type:   "claim",
+		Claims: []batchsettlement.BatchSettlementVoucherClaim{claim},
+	}).ToMap())
+
+	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), nil)
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, err := inner.Get(context.Background(), channelId)
+	if err != nil || got.ChargeCount != 4 || got.PendingClaim == nil || got.PendingClaim.AttestedCount != 4 || got.PendingClaim.ClaimedTo != "1000" {
+		t.Fatalf("marker = %+v err=%v", got, err)
+	}
+
+	repairRPC := &managedRPC{totalClaimed: big.NewInt(1000), balance: big.NewInt(10000)}
+	repair := newTestManager(t, newManagedSigner(t, repairRPC), inner, auth, false, nil)
+	results, err := repair.Claim(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 0 || repair.signer.(*fakeFacilitatorSigner).writeCalls != 0 {
+		t.Fatalf("repair results=%+v", results)
+	}
+	got, err = inner.Get(context.Background(), channelId)
+	if err != nil || got.ChargeCount != 0 || got.PendingClaim != nil || got.TotalClaimed != "1000" {
+		t.Fatalf("repaired %+v %v", got, err)
 	}
 }

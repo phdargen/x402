@@ -9,10 +9,20 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
+// PendingClaim is the charge count written down before a claim is sent.
+// Preflight subtracts it once the claim has landed, or clears it if the claim did not.
+type PendingClaim struct {
+	AttestedCount int    `json:"attestedCount"`
+	ClaimedTo     string `json:"claimedTo"`
+	TxHash        string `json:"txHash,omitempty"`
+	StartedAt     int64  `json:"startedAt"`
+}
+
 // FacilitatorChannel is the facilitator-managed channel record.
 type FacilitatorChannel struct {
 	storage.Channel
-	ChargeCount int `json:"chargeCount"`
+	ChargeCount  int           `json:"chargeCount"`
+	PendingClaim *PendingClaim `json:"pendingClaim,omitempty"`
 }
 
 // Base returns the shared channel fields.
@@ -69,8 +79,9 @@ type VoucherStoreConfig struct {
 	// OnchainStateTtlMs is the cached onchain accept window. nil derives from
 	// WithdrawDelay. 0 disables the cache and always re-reads onchain.
 	OnchainStateTtlMs *int64
-	// Retention controls when voucher rows are removed. Empty defaults to when-unused.
-	Retention FacilitatorRetention
+	// KeepFinishedRows retains a voucher row after the channel is finished.
+	// False, the zero value, deletes finished rows.
+	KeepFinishedRows bool
 }
 
 func cachedOnchain(channel *FacilitatorChannel) *batchsettlement.CachedChannelOnchain {
