@@ -98,6 +98,7 @@ func managedEnvelope(payload map[string]interface{}) types.PaymentPayload {
 		Accepted: types.PaymentRequirements{
 			Scheme:  batchsettlement.SchemeBatched,
 			Network: managedNetwork,
+			Amount:  managedRequirements(zeroAddress).Amount,
 		},
 	}
 }
