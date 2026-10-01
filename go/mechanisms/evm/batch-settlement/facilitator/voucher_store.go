@@ -585,10 +585,11 @@ func settleManagedRefund(
 	extraState, _ := settled.Extra["channelState"].(map[string]interface{})
 	if len(claims) > 0 {
 		newClaimed := refundClaimedTotal(stored.TotalClaimed, claims, extraState)
+		if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
+			return settled, nil
+		}
 		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed); finishErr != nil {
 			voucherStoreLogger(deps).Warn("batch-settlement: refund landed but attested claim was not applied", "channel_id", channelId, "error", finishErr)
-		} else if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
-			return settled, nil
 		}
 	}
 	if releaseErr != nil {

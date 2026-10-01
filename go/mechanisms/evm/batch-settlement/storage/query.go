@@ -73,6 +73,12 @@ type ChannelReceiverTokenQuerier[T ChannelRecord[T]] interface {
 	QueryByReceiverToken(ctx context.Context, network, receiver, token string) ([]T, error)
 }
 
+// ChannelReceiverTokenScanner streams one receiver and token.
+// Stores without it keep QueryChannelsByReceiverToken.
+type ChannelReceiverTokenScanner[T ChannelRecord[T]] interface {
+	ScanByReceiverToken(ctx context.Context, network, receiver, token string, visit func(T) error) error
+}
+
 // MatchesChannelQuery reports whether channel satisfies filter.
 //
 // Uint256 comparisons use big.Int so lexicographic string order cannot leak

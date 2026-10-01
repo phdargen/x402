@@ -111,7 +111,7 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	}
 }
 
-func TestAfterClaim_FinishesChannelsBeforeRecordingTargets(t *testing.T) {
+func TestAfterClaim_RecordsTargetsBeforeFinishingChannels(t *testing.T) {
 	t.Parallel()
 	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	log := make([]string, 0)
@@ -145,8 +145,8 @@ func TestAfterClaim_FinishesChannelsBeforeRecordingTargets(t *testing.T) {
 	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, targets, known); err != nil {
 		t.Fatal(err)
 	}
-	if len(log) != 3 || log[0] != "channel" || log[1] != "channel" || log[2] != "target" {
-		t.Fatalf("ops = %v, want one update per channel then the target", log)
+	if len(log) != 3 || log[0] != "target" || log[1] != "channel" || log[2] != "channel" {
+		t.Fatalf("ops = %v, want the target then one update per channel", log)
 	}
 	if len(targets.amounts) != 1 || targets.amounts[0] != "5200" {
 		t.Fatalf("deltas = %v, want one aggregated 5200", targets.amounts)
@@ -157,6 +157,33 @@ func TestAfterClaim_FinishesChannelsBeforeRecordingTargets(t *testing.T) {
 	}
 	if got.TotalClaimed != "5000" || got.ChargeCount != 0 || got.PendingClaim != nil {
 		t.Fatalf("first totalClaimed=%s chargeCount=%d marker=%v", got.TotalClaimed, got.ChargeCount, got.PendingClaim)
+	}
+}
+
+type failRecordTargets struct {
+	*storage.InMemorySettleTargetStorage
+}
+
+func (s *failRecordTargets) RecordClaimed(context.Context, storage.SettleTargetClaimDelta) error {
+	return errors.New("record failed")
+}
+
+func TestAfterClaim_TargetWriteFailureLeavesWatermark(t *testing.T) {
+	t.Parallel()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	channel := afterClaimChannel("5000", 2)
+	plantClaimMarker(channel, 2, "5000")
+	if err := seedChannel(store, channel); err != nil {
+		t.Fatal(err)
+	}
+	targets := &failRecordTargets{InMemorySettleTargetStorage: storage.NewInMemorySettleTargetStorage()}
+	err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, targets)
+	if err == nil || err.Error() != "record failed" {
+		t.Fatalf("err = %v", err)
+	}
+	got, getErr := store.Get(context.Background(), channel.ChannelId)
+	if getErr != nil || got.TotalClaimed != "0" || got.ChargeCount != 2 || got.PendingClaim == nil {
+		t.Fatalf("watermark moved: %+v %v", got, getErr)
 	}
 }
 

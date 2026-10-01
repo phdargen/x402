@@ -25,6 +25,9 @@ type SettleTargetObservation struct {
 	Target   SettleTarget
 	Pending  *big.Int
 	AtMillis int64
+	// UpdatedBefore limits a zero-pending delete to rows whose updatedAt is strictly older.
+	// Zero deletes by key. A claim that upserts the row after the receivers() read keeps its delta.
+	UpdatedBefore int64
 }
 
 // SettleTargetStorage tracks claimed (network, receiver, token) pairs.
@@ -32,7 +35,10 @@ type SettleTargetObservation struct {
 type SettleTargetStorage interface {
 	RecordClaimed(ctx context.Context, delta SettleTargetClaimDelta) error
 	ListSettleTargets(ctx context.Context, q SettleQuery) (*QueryPage[SettleTarget], error)
-	RemoveSettleTarget(ctx context.Context, target SettleTarget) error
+	// RemoveSettleTarget deletes one pair.
+	// updatedBeforeMillis > 0 deletes only when updatedAt is strictly older than that
+	// unix-milli instant, or the row has no updatedAt. Zero deletes by key.
+	RemoveSettleTarget(ctx context.Context, target SettleTarget, updatedBeforeMillis int64) error
 }
 
 // SettleTargetObserver applies onchain pending after a settle read.
@@ -54,6 +60,7 @@ type inMemorySettleTargetEntry struct {
 	token         string
 	pendingAmount *big.Int
 	lastAttemptAt int64
+	updatedAt     int64
 }
 
 var _ SettleTargetStorage = (*InMemorySettleTargetStorage)(nil)
@@ -155,23 +162,25 @@ func (s *InMemorySettleTargetStorage) RecordClaimed(
 		entry.pendingAmount = new(big.Int)
 	}
 	entry.pendingAmount = new(big.Int).Add(entry.pendingAmount, delta.Amount)
+	entry.updatedAt = now
 	return nil
 }
 
-func (s *InMemorySettleTargetStorage) RemoveSettleTarget(_ context.Context, target SettleTarget) error {
+func (s *InMemorySettleTargetStorage) RemoveSettleTarget(_ context.Context, target SettleTarget, updatedBeforeMillis int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.entries, settleTargetKey(target.Network, target.Receiver, target.Token))
+	s.deleteIfStale(settleTargetKey(target.Network, target.Receiver, target.Token), updatedBeforeMillis)
 	return nil
 }
 
 func (s *InMemorySettleTargetStorage) ObserveSettlePending(_ context.Context, obs []SettleTargetObservation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	observedAt := time.Now().UnixMilli()
 	for _, item := range obs {
 		key := settleTargetKey(item.Target.Network, item.Target.Receiver, item.Target.Token)
 		if item.Pending == nil || item.Pending.Sign() <= 0 {
-			delete(s.entries, key)
+			s.deleteIfStale(key, item.UpdatedBefore)
 			continue
 		}
 		entry := s.entries[key]
@@ -185,8 +194,20 @@ func (s *InMemorySettleTargetStorage) ObserveSettlePending(_ context.Context, ob
 		}
 		entry.pendingAmount = new(big.Int).Set(item.Pending)
 		entry.lastAttemptAt = item.AtMillis
+		entry.updatedAt = observedAt
 	}
 	return nil
+}
+
+// deleteIfStale removes key. updatedBeforeMillis > 0 keeps a row updated at or after that instant.
+func (s *InMemorySettleTargetStorage) deleteIfStale(key string, updatedBeforeMillis int64) {
+	if updatedBeforeMillis > 0 {
+		entry := s.entries[key]
+		if entry != nil && entry.updatedAt >= updatedBeforeMillis {
+			return
+		}
+	}
+	delete(s.entries, key)
 }
 
 func pendingAboveMin(pending, minPending *big.Int) bool {

@@ -182,7 +182,7 @@ func formatFailure(operation string, response *x402.SettleResponse) string {
 	return fmt.Sprintf("%s failed: %s — %s", operation, reason, msg)
 }
 
-// AfterClaim merges claimed totals, subtracts each pending claim marker, and records settle targets.
+// AfterClaim records settle targets, then merges claimed totals and subtracts each pending claim marker.
 // Call only after a successful onchain claim.
 func AfterClaim(
 	ctx context.Context,
@@ -194,8 +194,9 @@ func AfterClaim(
 	return afterClaim(ctx, store, claims, network, targetStore, nil)
 }
 
-// afterClaim applies each channel marker, then records settle-target deltas.
-// Deltas are taken from the pre-finish watermark so a replay does not add them twice.
+// afterClaim records settle-target deltas, then applies each channel marker.
+// Deltas come from the pre-finish watermark. A crash replay may add a delta twice.
+// ObserveSettlePending replaces the cache with the onchain pending, so the extra amount does not stick.
 func afterClaim(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
@@ -207,6 +208,16 @@ func afterClaim(
 	deltas, err := settleTargetClaimDeltas(ctx, store, claims, network, known)
 	if err != nil {
 		return err
+	}
+	if len(deltas) > 0 {
+		if targetStore == nil {
+			return fmt.Errorf("settle target storage is required")
+		}
+		for _, delta := range deltas {
+			if err := targetStore.RecordClaimed(ctx, delta); err != nil {
+				return err
+			}
+		}
 	}
 	finishErrs := make([]error, len(claims))
 	forEachChannel(len(claims), func(i int) {
@@ -220,21 +231,7 @@ func afterClaim(
 			return finishAttestedClaim(ctx, store, channelID, claimed)
 		})
 	})
-	if err := errors.Join(finishErrs...); err != nil {
-		return err
-	}
-	if len(deltas) == 0 {
-		return nil
-	}
-	if targetStore == nil {
-		return fmt.Errorf("settle target storage is required")
-	}
-	for _, delta := range deltas {
-		if err := targetStore.RecordClaimed(ctx, delta); err != nil {
-			return err
-		}
-	}
-	return nil
+	return errors.Join(finishErrs...)
 }
 
 func rowLookup(
@@ -539,7 +536,7 @@ func (m *FacilitatorChannelManager) Settle(
 				end = len(group)
 			}
 			batch := group[i:end]
-			reads, err := m.readReceiverPendingChunk(ctx, batch)
+			reads, readAt, err := m.readReceiverPendingChunk(ctx, batch)
 			if err != nil {
 				if ctx.Err() != nil {
 					return results, ctx.Err()
@@ -548,7 +545,7 @@ func (m *FacilitatorChannelManager) Settle(
 				continue
 			}
 			readAny = true
-			eligible := m.receiversToSettle(ctx, reads, minPending, opts)
+			eligible := m.receiversToSettle(ctx, reads, minPending, opts, readAt)
 			if len(eligible) == 0 {
 				continue
 			}
@@ -572,7 +569,7 @@ func (m *FacilitatorChannelManager) Settle(
 					opts.OnError(skip.err, &target)
 				}
 			}
-			batchResults, _ := settleResultsFromSubmissions(string(network), submissions)
+			batchResults := settleResultsFromSubmissions(string(network), submissions)
 			results = append(results, batchResults...)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -606,12 +603,13 @@ func (m *FacilitatorChannelManager) receiversToSettle(
 	reads []receiverPendingRead,
 	minPending *big.Int,
 	opts *FacilitatorSettleOptions,
+	readAt int64,
 ) []storage.SettleTarget {
-	m.observeSettlePending(ctx, reads, time.Now().UnixMilli())
+	m.observeSettlePending(ctx, reads, time.Now().UnixMilli(), readAt)
 	eligible := make([]storage.SettleTarget, 0, len(reads))
 	for _, row := range reads {
 		if row.pending.Sign() == 0 {
-			if err := m.cleanupSettledPair(ctx, row.target); err != nil {
+			if err := m.cleanupSettledPair(ctx, row.target, readAt); err != nil {
 				target := row.target
 				reportSettleError(m.logger, opts, err, &target)
 			}
@@ -631,7 +629,7 @@ func (m *FacilitatorChannelManager) confirmSettledTargets(
 	targets []storage.SettleTarget,
 	opts *FacilitatorSettleOptions,
 ) error {
-	confirm, err := m.readReceiverPendingChunk(ctx, targets)
+	confirm, readAt, err := m.readReceiverPendingChunk(ctx, targets)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -639,12 +637,12 @@ func (m *FacilitatorChannelManager) confirmSettledTargets(
 		reportSettleError(m.logger, opts, fmt.Errorf("receiver pending confirm of %d: %w", len(targets), err), nil)
 		return nil
 	}
-	m.observeSettlePending(ctx, confirm, time.Now().UnixMilli())
+	m.observeSettlePending(ctx, confirm, time.Now().UnixMilli(), readAt)
 	for _, row := range confirm {
 		if row.pending.Sign() != 0 {
 			continue
 		}
-		if err := m.cleanupSettledPair(ctx, row.target); err != nil {
+		if err := m.cleanupSettledPair(ctx, row.target, readAt); err != nil {
 			target := row.target
 			reportSettleError(m.logger, opts, err, &target)
 		}
@@ -652,7 +650,7 @@ func (m *FacilitatorChannelManager) confirmSettledTargets(
 	return nil
 }
 
-func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, reads []receiverPendingRead, atMillis int64) {
+func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, reads []receiverPendingRead, atMillis, readAt int64) {
 	observer, ok := m.settleTargetStorage.(storage.SettleTargetObserver)
 	if !ok || len(reads) == 0 {
 		return
@@ -660,9 +658,10 @@ func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, re
 	obs := make([]storage.SettleTargetObservation, 0, len(reads))
 	for _, row := range reads {
 		obs = append(obs, storage.SettleTargetObservation{
-			Target:   row.target,
-			Pending:  row.pending,
-			AtMillis: atMillis,
+			Target:        row.target,
+			Pending:       row.pending,
+			AtMillis:      atMillis,
+			UpdatedBefore: readAt,
 		})
 	}
 	if err := observer.ObserveSettlePending(ctx, obs); err != nil {
@@ -731,13 +730,15 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 }
 
 // readReceiverPendingChunk is one receivers() eth_call for a single settle batch.
+// readAt is captured before the call so a claim that lands during the read keeps its settle row.
 func (m *FacilitatorChannelManager) readReceiverPendingChunk(
 	ctx context.Context,
 	targets []storage.SettleTarget,
-) ([]receiverPendingRead, error) {
+) ([]receiverPendingRead, int64, error) {
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
+	readAt := time.Now().UnixMilli()
 	network := targets[0].Network
 	calls := make([]evm.MulticallCall, 0, len(targets))
 	for _, target := range targets {
@@ -750,7 +751,7 @@ func (m *FacilitatorChannelManager) readReceiverPendingChunk(
 	}
 	results, err := m.readMulticall(ctx, network, calls)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	out := make([]receiverPendingRead, 0, len(targets))
 	for i, target := range targets {
@@ -769,7 +770,7 @@ func (m *FacilitatorChannelManager) readReceiverPendingChunk(
 		}
 		out = append(out, receiverPendingRead{target: target, pending: pending})
 	}
-	return out, nil
+	return out, readAt, nil
 }
 
 func parseReceiversMulticallResult(raw interface{}) (*big.Int, *big.Int, error) {
@@ -791,32 +792,35 @@ func parseReceiversMulticallResult(raw interface{}) (*big.Int, *big.Int, error) 
 func (m *FacilitatorChannelManager) cleanupSettledPair(
 	ctx context.Context,
 	target storage.SettleTarget,
+	readAt int64,
 ) error {
-	if err := m.settleTargetStorage.RemoveSettleTarget(ctx, target); err != nil {
+	if err := m.settleTargetStorage.RemoveSettleTarget(ctx, target, readAt); err != nil {
 		return err
 	}
 	if m.keepFinishedRows {
 		return nil
+	}
+	deleteFinished := func(row *FacilitatorChannel) error {
+		if row == nil {
+			return nil
+		}
+		_, err := m.storage.UpdateChannel(ctx, row.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+			if current == nil || !ShouldDeleteFinishedChannelAtSettle(m.keepFinishedRows, current, current.ChargeCount) {
+				return current
+			}
+			return nil
+		})
+		return err
+	}
+	if scanner, ok := m.storage.(storage.ChannelReceiverTokenScanner[*FacilitatorChannel]); ok {
+		return scanner.ScanByReceiverToken(ctx, target.Network, target.Receiver, target.Token, deleteFinished)
 	}
 	rows, err := storage.QueryChannelsByReceiverToken(ctx, m.storage, target.Network, target.Receiver, target.Token)
 	if err != nil {
 		return err
 	}
 	for _, row := range rows {
-		if row == nil {
-			continue
-		}
-		channelId := row.ChannelId
-		_, err := m.storage.UpdateChannel(ctx, channelId, func(current *FacilitatorChannel) *FacilitatorChannel {
-			if current == nil {
-				return current
-			}
-			if !ShouldDeleteFinishedChannelAtSettle(m.keepFinishedRows, current, current.ChargeCount) {
-				return current
-			}
-			return nil
-		})
-		if err != nil {
+		if err := deleteFinished(row); err != nil {
 			return err
 		}
 	}
@@ -1056,10 +1060,10 @@ func (m *FacilitatorChannelManager) afterRefund(
 			oldClaimed = current.TotalClaimed
 		}
 		newClaimed := refundClaimedTotal(oldClaimed, claims, refunded)
-		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed); err != nil {
+		if err := applyClaimedSettleDelta(ctx, m.settleTargetStorage, target.Network, target.ChannelConfig.Receiver, target.ChannelConfig.Token, newClaimed, oldClaimed); err != nil {
 			return err
 		}
-		if err := applyClaimedSettleDelta(ctx, m.settleTargetStorage, target.Network, target.ChannelConfig.Receiver, target.ChannelConfig.Token, newClaimed, oldClaimed); err != nil {
+		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed); err != nil {
 			return err
 		}
 	}

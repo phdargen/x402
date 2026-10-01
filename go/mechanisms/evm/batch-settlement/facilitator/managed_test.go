@@ -599,7 +599,7 @@ func (s *recordingSettleTargets) RecordClaimed(context.Context, storage.SettleTa
 	return nil
 }
 
-func (s *recordingSettleTargets) RemoveSettleTarget(context.Context, storage.SettleTarget) error {
+func (s *recordingSettleTargets) RemoveSettleTarget(context.Context, storage.SettleTarget, int64) error {
 	return nil
 }
 
