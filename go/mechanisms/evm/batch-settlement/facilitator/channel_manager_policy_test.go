@@ -30,7 +30,7 @@ func TestFacilitatorChannelManager_DerivedSettleTargetsSurviveFreshManager(t *te
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	ch := managerChannel(t, auth, "00", &channelFields{TotalClaimed: "5000", ChargedCumulativeAmount: "5000"})
 	seedManagedChannel(t, store, ch)
-	first := newTestManager(t, nil, store, auth, "", nil)
+	first := newTestManager(t, nil, store, auth, false, nil)
 	second, err := NewFacilitatorChannelManager(FacilitatorChannelManagerConfig{
 		Storage:          store,
 		Signer:           newManagedSigner(t, nil),
@@ -74,7 +74,7 @@ func TestFacilitatorChannelManager_LoggerRecordsPreflightSkipAndDrained(t *testi
 			strings.ToLower(drained.ChannelId): {Balance: big.NewInt(50), TotalClaimed: big.NewInt(50)},
 		},
 	})
-	mgr := newTestManager(t, signer, store, auth, "", nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
 	logs := &recordLogHandler{}
 	mgr.logger = slog.New(logs)
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
@@ -95,7 +95,7 @@ func TestFacilitatorChannelManager_LoggerRecordsPreflightSkipAndDrained(t *testi
 }
 
 func TestFacilitatorChannelManager_StartSkipsRefundWithoutIdleSecs(t *testing.T) {
-	mgr := newTestManager(t, nil, nil, nil, "", nil)
+	mgr := newTestManager(t, nil, nil, nil, false, nil)
 	interval := 60
 	mgr.Start(FacilitatorAutoConfig{
 		ClaimIntervalSecs:  &interval,

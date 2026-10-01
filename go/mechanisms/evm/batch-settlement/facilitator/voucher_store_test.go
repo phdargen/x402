@@ -1505,6 +1505,40 @@ func TestSettleManaged_FullRefundDeletesRow(t *testing.T) {
 	}
 }
 
+func TestSettleManaged_KeepFinishedRowsRetainsFullRefund(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	refundAuth := auth.addr
+	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("23", 12), refundAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := managedConfig(auth.addr, "00")
+	cfg.Salt = packed
+	channelId := mustChannelId(t, cfg)
+	_, sig := signRefundConsent(t, channelId, "10000", "0", managedNetwork)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "0",
+		SignedMaxClaimable:      "0",
+		Balance:                 "10000",
+	}))
+	reqs := managedRequirements(auth.addr)
+	reqs.Extra["refundAuthorizer"] = refundAuth
+	deps := managedDeps(t, store, store, auth, nil)
+	deps.KeepFinishedRows = true
+
+	resp, err := SettleManaged(context.Background(), deps,
+		refundEnvelope(cfg, voucherFields(channelId, "0", dummySig), "10000", "", sig),
+		reqs, nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, err := store.Get(context.Background(), channelId)
+	if err != nil || got == nil {
+		t.Fatalf("row = %+v %v", got, err)
+	}
+}
+
 func TestVerifyManaged_RefundMatchesWatermark(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
@@ -2073,5 +2107,38 @@ func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", reason, ErrChannelStateReadFailed)
 			}
 		})
+	}
+}
+
+func TestSettleManaged_RefundReadFailureFailsClosed(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "1000",
+		Balance:                 "10000",
+		ChargeCount:             3,
+	}))
+	signer := newManagedSigner(t, &managedRPC{readFail: true})
+	deps := managedDeps(t, store, store, auth, signer)
+	bindManagedIdentity(t, deps.DelegatedAuthStore, channelId, "svc")
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
+
+	resp, err := SettleManaged(context.Background(), deps,
+		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
+		managedRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp == nil || resp.Success || resp.ErrorReason != ErrRpcReadFailed || resp.Transaction != "" {
+		t.Fatalf("got %+v", resp)
+	}
+	if signer.writeCalls != 0 {
+		t.Fatalf("writes = %d", signer.writeCalls)
+	}
+	got, err := store.Get(context.Background(), channelId)
+	if err != nil || got.Balance != "10000" || got.RefundNonce != 0 || got.ChargeCount != 3 || got.PendingClaim != nil {
+		t.Fatalf("stored %+v %v", got, err)
 	}
 }

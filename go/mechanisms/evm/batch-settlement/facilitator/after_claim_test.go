@@ -2,7 +2,8 @@ package facilitator
 
 import (
 	"context"
-	"strings"
+	"errors"
+	"math/big"
 	"testing"
 	"time"
 
@@ -56,32 +57,17 @@ func afterClaimVoucher(channel *FacilitatorChannel) batchsettlement.BatchSettlem
 	return claim
 }
 
-func attestedCharge(channels ...*FacilitatorChannel) map[string]int {
-	out := make(map[string]int, len(channels))
-	for _, ch := range channels {
-		out[strings.ToLower(ch.ChannelId)] = ch.ChargeCount
+func plantClaimMarker(channel *FacilitatorChannel, count int, claimedTo string) {
+	channel.PendingClaim = &PendingClaim{
+		AttestedCount: count,
+		ClaimedTo:     claimedTo,
+		StartedAt:     time.Now().UnixMilli(),
 	}
-	return out
 }
 
 func managedAfterClaimStores(t *testing.T) (*storage.InMemoryChannelStorage[*FacilitatorChannel], storage.SettleTargetStorage) {
 	t.Helper()
 	return storage.NewInMemoryChannelStorage[*FacilitatorChannel](), storage.NewInMemorySettleTargetStorage()
-}
-
-func TestParseFacilitatorRetention(t *testing.T) {
-	t.Parallel()
-	got, err := ParseFacilitatorRetention("when-unused")
-	if err != nil || got != RetentionWhenUnused {
-		t.Fatalf("got %q err=%v", got, err)
-	}
-	got, err = ParseFacilitatorRetention("")
-	if err != nil || got != RetentionWhenUnused {
-		t.Fatalf("default got %q err=%v", got, err)
-	}
-	if _, err := ParseFacilitatorRetention("bogus"); err == nil {
-		t.Fatal("expected invalid retention error")
-	}
 }
 
 func TestAfterClaim_DoesNotDeleteWhenFullyClaimed(t *testing.T) {
@@ -91,7 +77,7 @@ func TestAfterClaim_DoesNotDeleteWhenFullyClaimed(t *testing.T) {
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), targets); err != nil {
+	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)
@@ -108,10 +94,11 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	t.Parallel()
 	store, targets := managedAfterClaimStores(t)
 	channel := afterClaimChannel("5000", 2)
+	plantClaimMarker(channel, 2, "5000")
 	if err := seedChannel(store, channel); err != nil {
 		t.Fatal(err)
 	}
-	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, attestedCharge(channel), targets); err != nil {
+	if err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, targets); err != nil {
 		t.Fatalf("AfterClaim: %v", err)
 	}
 	got, err := store.Get(context.Background(), channel.ChannelId)
@@ -123,13 +110,14 @@ func TestAfterClaim_SubtractsAttestedChargeCount(t *testing.T) {
 	}
 }
 
-func TestAfterClaim_UpsertsAggregatedTargetsBeforeChannelUpdates(t *testing.T) {
+func TestAfterClaim_FinishesChannelsBeforeRecordingTargets(t *testing.T) {
 	t.Parallel()
 	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	log := make([]string, 0)
 	channels := orderLogStore{InMemoryChannelStorage: inner, log: &log}
 	targets := &orderLogTargets{InMemorySettleTargetStorage: storage.NewInMemorySettleTargetStorage(), log: &log}
 	first := afterClaimChannel("5000", 2)
+	plantClaimMarker(first, 2, "5000")
 	secondCfg := afterClaimConfig()
 	secondCfg.Salt = managedSalt("02")
 	secondID, err := batchsettlement.ComputeChannelId(secondCfg, afterClaimNetwork)
@@ -141,6 +129,7 @@ func TestAfterClaim_UpsertsAggregatedTargetsBeforeChannelUpdates(t *testing.T) {
 	second.ChannelConfig = secondCfg
 	second.ChargedCumulativeAmount = "300"
 	second.TotalClaimed = "100"
+	plantClaimMarker(second, 1, "300")
 	claimSecond := afterClaimVoucher(second)
 	claimSecond.TotalClaimed = "300"
 	if err := seedChannel(&channels, first); err != nil {
@@ -152,11 +141,11 @@ func TestAfterClaim_UpsertsAggregatedTargetsBeforeChannelUpdates(t *testing.T) {
 	log = nil
 	claims := []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(first), claimSecond}
 	known := []*FacilitatorChannel{first, second}
-	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, attestedCharge(first, second), targets, known); err != nil {
+	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, targets, known); err != nil {
 		t.Fatal(err)
 	}
-	if len(log) != 3 || log[0] != "target" || log[1] != "channel" || log[2] != "channel" {
-		t.Fatalf("ops = %v, want target then one update per channel", log)
+	if len(log) != 3 || log[0] != "channel" || log[1] != "channel" || log[2] != "target" {
+		t.Fatalf("ops = %v, want one update per channel then the target", log)
 	}
 	if len(targets.amounts) != 1 || targets.amounts[0] != "5200" {
 		t.Fatalf("deltas = %v, want one aggregated 5200", targets.amounts)
@@ -165,8 +154,65 @@ func TestAfterClaim_UpsertsAggregatedTargetsBeforeChannelUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TotalClaimed != "5000" || got.ChargeCount != 0 {
-		t.Fatalf("first totalClaimed=%s chargeCount=%d", got.TotalClaimed, got.ChargeCount)
+	if got.TotalClaimed != "5000" || got.ChargeCount != 0 || got.PendingClaim != nil {
+		t.Fatalf("first totalClaimed=%s chargeCount=%d marker=%v", got.TotalClaimed, got.ChargeCount, got.PendingClaim)
+	}
+}
+
+func TestAfterClaim_DoesNotSubtractTwice(t *testing.T) {
+	t.Parallel()
+	store, targets := managedAfterClaimStores(t)
+	channel := afterClaimChannel("8000", 80)
+	plantClaimMarker(channel, 50, "5000")
+	if err := seedChannel(store, channel); err != nil {
+		t.Fatal(err)
+	}
+	claims := []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}
+	if err := AfterClaim(context.Background(), store, claims, afterClaimNetwork, targets); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background(), channel.ChannelId)
+	if err != nil || got.ChargeCount != 30 || got.PendingClaim != nil {
+		t.Fatalf("after finish: %+v %v", got, err)
+	}
+	if err := AfterClaim(context.Background(), store, claims, afterClaimNetwork, targets); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get(context.Background(), channel.ChannelId)
+	if err != nil || got.ChargeCount != 30 {
+		t.Fatalf("replay chargeCount=%d err=%v", got.ChargeCount, err)
+	}
+}
+
+type conflictChannelStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	calls int
+}
+
+func (s *conflictChannelStore) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	s.calls++
+	return &storage.ChannelUpdateResult[*FacilitatorChannel]{Status: storage.ChannelConflict}, nil
+}
+
+func TestAfterClaim_ConflictRetries(t *testing.T) {
+	t.Parallel()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	channel := afterClaimChannel("5000", 2)
+	plantClaimMarker(channel, 2, "5000")
+	if err := seedChannel(inner, channel); err != nil {
+		t.Fatal(err)
+	}
+	store := &conflictChannelStore{InMemoryChannelStorage: inner}
+	err := AfterClaim(context.Background(), store, []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(channel)}, afterClaimNetwork, storage.NewInMemorySettleTargetStorage())
+	if !errors.Is(err, errChannelConflict) {
+		t.Fatalf("err = %v", err)
+	}
+	if store.calls < 2 {
+		t.Fatalf("update calls = %d, want a retry", store.calls)
+	}
+	got, err := inner.Get(context.Background(), channel.ChannelId)
+	if err != nil || got.ChargeCount != 2 || got.PendingClaim == nil {
+		t.Fatalf("row changed: %+v %v", got, err)
 	}
 }
 
@@ -206,4 +252,21 @@ func seedChannel(store storage.ChannelStorage[*FacilitatorChannel], channel *Fac
 
 func intPtr(v int) *int {
 	return &v
+}
+
+func TestUnreconciledClaimDelta(t *testing.T) {
+	t.Parallel()
+	channel := &FacilitatorChannel{}
+	if !unreconciledClaimDelta(channel, big.NewInt(1)) {
+		t.Fatal("onchain ahead of a zero watermark is unreconciled")
+	}
+	channel.PendingClaim = &PendingClaim{AttestedCount: 1, ClaimedTo: "1", StartedAt: 1}
+	if unreconciledClaimDelta(channel, big.NewInt(1)) {
+		t.Fatal("a live marker is resolved by preflight, not this warning")
+	}
+	channel.PendingClaim = nil
+	channel.TotalClaimed = "5"
+	if unreconciledClaimDelta(channel, big.NewInt(5)) {
+		t.Fatal("equal totals are reconciled")
+	}
 }
