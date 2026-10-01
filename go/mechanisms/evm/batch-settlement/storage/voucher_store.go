@@ -16,7 +16,10 @@ import (
 
 const (
 	minPendingTtlMs = 5_000
-	maxPendingTtlMs = 10 * 60 * 1000
+	// MaxPendingTtlMs is the admission-lock ceiling: 10 minutes (600s).
+	// PendingTtlMs clamps a verify lock to this. Idle refund uses the same
+	// ceiling so a crashed refund does not hold the channel any longer.
+	MaxPendingTtlMs int64 = 10 * 60 * 1000
 )
 
 // VoucherStoreMode says who owns the authoritative offchain voucher store.
@@ -87,8 +90,8 @@ func PendingTtlMs(maxTimeoutSeconds int) int64 {
 	if requestedMs < minPendingTtlMs {
 		return minPendingTtlMs
 	}
-	if requestedMs > maxPendingTtlMs {
-		return maxPendingTtlMs
+	if requestedMs > MaxPendingTtlMs {
+		return MaxPendingTtlMs
 	}
 	return requestedMs
 }

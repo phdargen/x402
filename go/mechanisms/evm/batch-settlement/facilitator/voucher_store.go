@@ -566,7 +566,7 @@ func settleManagedRefund(
 			next.RefundNonce = current.RefundNonce + 1
 		}
 		next.LastRequestTimestamp = time.Now().UnixMilli()
-		if ShouldDeleteNeverClaimedRefundRow(deps.Retention, false, next, chargeCount, totalClaimed) {
+		if ShouldDeleteNeverClaimedRefundRow(deps.Retention, next, chargeCount, totalClaimed) {
 			return nil
 		}
 		return next
