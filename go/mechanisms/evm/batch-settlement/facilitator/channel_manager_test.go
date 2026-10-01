@@ -1773,6 +1773,120 @@ func TestFacilitatorChannelManager_SettleCleanupDeletesDespiteLock(t *testing.T)
 	}
 }
 
+func TestCleanupSettledPair_ScannerDeletesWithoutList(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := finishedManagedChannel(t, auth, "sc")
+	seedManagedChannel(t, inner, ch)
+	store := &cleanupScanStore{InMemoryChannelStorage: inner, yield: []*FacilitatorChannel{ch}}
+	mgr := newTestManager(t, nil, store, auth, false, nil)
+	targets := &countingRemoveTargets{recordingSettleTargets: &recordingSettleTargets{}}
+	mgr.settleTargetStorage = targets
+
+	if err := mgr.cleanupSettledPair(context.Background(), storage.SettleTarget{
+		Network: ch.Network, Receiver: ch.ChannelConfig.Receiver, Token: ch.ChannelConfig.Token,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if store.scans != 1 || store.lists != 0 || targets.removed != 1 {
+		t.Fatalf("scans=%d lists=%d removed=%d", store.scans, store.lists, targets.removed)
+	}
+	got, err := inner.Get(context.Background(), ch.ChannelId)
+	if err != nil || got != nil {
+		t.Fatalf("row = %+v %v", got, err)
+	}
+}
+
+func TestCleanupSettledPair_ListFallbackDeletes(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := finishedManagedChannel(t, auth, "lf")
+	seedManagedChannel(t, inner, ch)
+	store := &cleanupListStore{InMemoryChannelStorage: inner}
+	mgr := newTestManager(t, nil, store, auth, false, nil)
+	targets := &countingRemoveTargets{recordingSettleTargets: &recordingSettleTargets{}}
+	mgr.settleTargetStorage = targets
+
+	if err := mgr.cleanupSettledPair(context.Background(), storage.SettleTarget{
+		Network: ch.Network, Receiver: ch.ChannelConfig.Receiver, Token: ch.ChannelConfig.Token,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if store.lists == 0 || targets.removed != 1 {
+		t.Fatalf("lists=%d removed=%d", store.lists, targets.removed)
+	}
+	got, err := inner.Get(context.Background(), ch.ChannelId)
+	if err != nil || got != nil {
+		t.Fatalf("row = %+v %v", got, err)
+	}
+}
+
+func TestCleanupSettledPair_KeepFinishedRowsRemovesTargetOnly(t *testing.T) {
+	auth := managedAuthorizer()
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := finishedManagedChannel(t, auth, "kf")
+	seedManagedChannel(t, inner, ch)
+	store := &cleanupScanStore{InMemoryChannelStorage: inner, yield: []*FacilitatorChannel{ch}}
+	mgr := newTestManager(t, nil, store, auth, true, nil)
+	targets := &countingRemoveTargets{recordingSettleTargets: &recordingSettleTargets{}}
+	mgr.settleTargetStorage = targets
+
+	if err := mgr.cleanupSettledPair(context.Background(), storage.SettleTarget{
+		Network: ch.Network, Receiver: ch.ChannelConfig.Receiver, Token: ch.ChannelConfig.Token,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if store.scans != 0 || store.lists != 0 || targets.removed != 1 {
+		t.Fatalf("scans=%d lists=%d removed=%d", store.scans, store.lists, targets.removed)
+	}
+	got, err := inner.Get(context.Background(), ch.ChannelId)
+	if err != nil || got == nil {
+		t.Fatalf("row = %+v %v", got, err)
+	}
+}
+
+type cleanupScanStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	yield []*FacilitatorChannel
+	scans int
+	lists int
+}
+
+func (s *cleanupScanStore) List(context.Context) ([]*FacilitatorChannel, error) {
+	s.lists++
+	return nil, nil
+}
+
+func (s *cleanupScanStore) ScanByReceiverToken(_ context.Context, _, _, _ string, visit func(*FacilitatorChannel) error) error {
+	s.scans++
+	for _, row := range s.yield {
+		if err := visit(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type cleanupListStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	lists int
+}
+
+func (s *cleanupListStore) List(ctx context.Context) ([]*FacilitatorChannel, error) {
+	s.lists++
+	return s.InMemoryChannelStorage.List(ctx)
+}
+
+type countingRemoveTargets struct {
+	*recordingSettleTargets
+	removed int
+}
+
+func (s *countingRemoveTargets) RemoveSettleTarget(ctx context.Context, target storage.SettleTarget, updatedBeforeMillis int64) error {
+	s.removed++
+	return s.recordingSettleTargets.RemoveSettleTarget(ctx, target, updatedBeforeMillis)
+}
+
 func TestShouldDeleteFinishedChannel_NoLockInput(t *testing.T) {
 	finished := &FacilitatorChannel{Channel: storage.Channel{
 		Balance:                 "1000",

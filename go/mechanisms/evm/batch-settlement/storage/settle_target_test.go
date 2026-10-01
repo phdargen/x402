@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const settleTargetTestNetwork = "eip155:84532"
@@ -211,13 +212,85 @@ func TestInMemorySettleTargetStorage_SyncFromChain(t *testing.T) {
 	}
 }
 
+func TestInMemorySettleTargetStorage_ZeroPendingDeleteRespectsFence(t *testing.T) {
+	store := NewInMemorySettleTargetStorage()
+	target := SettleTarget{Network: settleTargetTestNetwork, Receiver: settleAddr(7), Token: settleAddr(8)}
+	fence := time.Now().UnixMilli()
+	applySettleDelta(t, store, target.Receiver, target.Token, 5)
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        target,
+		Pending:       big.NewInt(0),
+		UpdatedBefore: fence,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 1 {
+		t.Fatalf("claim at or after the fence was deleted: %+v", got)
+	}
+	if err := store.RemoveSettleTarget(context.Background(), target, fence); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 1 {
+		t.Fatalf("remove at the fence deleted the row: %+v", got)
+	}
+
+	future := time.Now().UnixMilli() + 1000
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        target,
+		Pending:       big.NewInt(0),
+		UpdatedBefore: future,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 0 {
+		t.Fatalf("older row survived observe: %+v", got)
+	}
+
+	applySettleDelta(t, store, target.Receiver, target.Token, 3)
+	if err := store.RemoveSettleTarget(context.Background(), target, time.Now().UnixMilli()+1000); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 0 {
+		t.Fatalf("older row survived remove: %+v", got)
+	}
+
+	applySettleDelta(t, store, target.Receiver, target.Token, 2)
+	if err := store.RemoveSettleTarget(context.Background(), target, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 0 {
+		t.Fatalf("unfenced remove kept the row: %+v", got)
+	}
+}
+
+func TestInMemorySettleTargetStorage_ZeroPendingDeletesMissingUpdatedAt(t *testing.T) {
+	store := NewInMemorySettleTargetStorage()
+	target := SettleTarget{Network: settleTargetTestNetwork, Receiver: settleAddr(9), Token: settleAddr(10)}
+	store.entries[settleTargetKey(target.Network, target.Receiver, target.Token)] = &inMemorySettleTargetEntry{
+		network:       target.Network,
+		receiver:      strings.ToLower(target.Receiver),
+		token:         strings.ToLower(target.Token),
+		pendingAmount: big.NewInt(4),
+	}
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        target,
+		Pending:       big.NewInt(0),
+		UpdatedBefore: 1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := querySettleTargets(t, store, settleTargetTestNetwork, nil, nil); len(got) != 0 {
+		t.Fatalf("row with no updatedAt survived: %+v", got)
+	}
+}
+
 func TestInMemorySettleTargetStorage_DeleteMissing(t *testing.T) {
 	store := NewInMemorySettleTargetStorage()
 	if err := store.RemoveSettleTarget(context.Background(), SettleTarget{
 		Network:  settleTargetTestNetwork,
 		Receiver: settleAddr(1),
 		Token:    settleAddr(2),
-	}); err != nil {
+	}, 0); err != nil {
 		t.Fatal(err)
 	}
 }

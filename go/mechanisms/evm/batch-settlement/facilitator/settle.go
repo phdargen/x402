@@ -189,7 +189,7 @@ func ExecuteSettleBatch(
 	dataSuffix []byte,
 ) ([]FacilitatorSettleResult, error) {
 	submissions, _, err := submitSettleMulticall(ctx, slog.Default(), signer, network, targets, dataSuffix)
-	results, _ := settleResultsFromSubmissions(string(network), submissions)
+	results := settleResultsFromSubmissions(string(network), submissions)
 	return results, err
 }
 
@@ -203,9 +203,8 @@ type skippedSettleTarget struct {
 	err    error
 }
 
-func settleResultsFromSubmissions(network string, submissions []settleMulticallSubmission) ([]FacilitatorSettleResult, []storage.SettleTarget) {
+func settleResultsFromSubmissions(network string, submissions []settleMulticallSubmission) []FacilitatorSettleResult {
 	results := make([]FacilitatorSettleResult, 0)
-	landed := make([]storage.SettleTarget, 0)
 	for _, sub := range submissions {
 		for _, target := range sub.targets {
 			results = append(results, FacilitatorSettleResult{
@@ -214,10 +213,9 @@ func settleResultsFromSubmissions(network string, submissions []settleMulticallS
 				Token:       target.Token,
 				Transaction: sub.txHash,
 			})
-			landed = append(landed, target)
 		}
 	}
-	return results, landed
+	return results
 }
 
 func submitSettleMulticall(
