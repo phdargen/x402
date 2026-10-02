@@ -57,6 +57,11 @@ export async function resolveDataSuffix(
     }
   }
 
+  return concatDataSuffixParts(parts);
+}
+
+/** Concatenates non-empty hex suffix fragments (used by {@link resolveDataSuffix}). */
+export function concatDataSuffixParts(parts: Hex[]): Hex | undefined {
   if (parts.length === 0) {
     return undefined;
   }
