@@ -9,11 +9,7 @@ import {
   MAX_ERROR_MESSAGE_LENGTH,
 } from "../../src/utils";
 import { getEvmChainIdV1 } from "../../src/v1";
-import {
-  appendDataSuffix,
-  concatDataSuffixParts,
-  resolveDataSuffix,
-} from "../../src/shared/extensions/builderCode";
+import { appendDataSuffix, resolveDataSuffix } from "../../src/shared/extensions/builderCode";
 
 describe("EVM Utils", () => {
   describe("getEvmChainId (CAIP-2 only)", () => {
@@ -231,9 +227,6 @@ describe("builder-code data suffix", () => {
     expect(appendDataSuffix("0xabcd", "0x")).toBe("0xabcd");
     expect(appendDataSuffix("0xabcd", "0xef")).toBe("0xabcdef");
     expect(appendDataSuffix("0xabcd", "beef")).toBe("0xabcdbeef");
-    expect(concatDataSuffixParts([])).toBeUndefined();
-    expect(concatDataSuffixParts(["0xdead", "0xbeef"])).toBe("0xdeadbeef");
-    expect(concatDataSuffixParts(["0xdead", "beef"])).toBe("0xdeadbeef");
   });
 
   it("returns a single suffix unchanged", async () => {

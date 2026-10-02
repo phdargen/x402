@@ -44,6 +44,7 @@ import {
 import { paymentInfoToContractTuple } from "../../../src/auth-capture/utils";
 import { BUILDER_CODE_KEY } from "../../../src/shared/extensions";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
+import * as Errors from "../../../src/auth-capture/errors";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 
 const DEPLOYED_BYTECODE = "0x6080604052" as const;
@@ -909,6 +910,43 @@ describe("AuthCaptureEvmScheme", () => {
 
       const call = mockSigner.writeContract.mock.calls[0][0];
       expect(call.args[2]).toBe(PERMIT2_TOKEN_COLLECTOR_ADDRESS);
+    });
+  });
+
+  describe("verify/settle — wire payload shape", () => {
+    it("should reject lifecycle-shaped objects with an unknown type on verify and settle", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = {
+        x402Version: 2,
+        accepted: mockRequirements,
+        payload: { type: "not-a-real-lifecycle" },
+      };
+
+      const verifyResult = await scheme.verify(envelope, mockRequirements);
+      expect(verifyResult.isValid).toBe(false);
+      expect(verifyResult.invalidReason).toBe(Errors.ErrInvalidPayloadType);
+
+      const settleResult = await scheme.settle(envelope, mockRequirements);
+      expect(settleResult.success).toBe(false);
+      expect(settleResult.errorReason).toBe(Errors.ErrInvalidPayloadType);
+      expect(settleResult.transaction).toBe("");
+    });
+
+    it("should reject non-object wire payloads on verify and settle", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = {
+        x402Version: 2,
+        accepted: mockRequirements,
+        payload: "not-json",
+      };
+
+      const verifyResult = await scheme.verify(envelope, mockRequirements);
+      expect(verifyResult.isValid).toBe(false);
+      expect(verifyResult.invalidReason).toBe(Errors.ErrInvalidPayloadFormat);
+
+      const settleResult = await scheme.settle(envelope, mockRequirements);
+      expect(settleResult.success).toBe(false);
+      expect(settleResult.errorReason).toBe(Errors.ErrInvalidPayloadFormat);
     });
   });
 
