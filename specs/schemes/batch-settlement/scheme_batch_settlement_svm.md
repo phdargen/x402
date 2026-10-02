@@ -68,7 +68,7 @@ claim promptly.
 |---|---|
 | One-time escrow deposit | Payment-channels `open` deposits escrow, records `withdrawDelay`, fixes `payee`, `authorized_signer`, `rent_payer`, and commits `distribution_hash`. |
 | Per-request authorization | Client mode: an Ed25519 voucher signed by `payerAuthorizer`. Server mode: an expiring payer proof plus a single-use request identifier; the advertised amount is a ceiling and the operator signs the actual cumulative charge after serving. |
-| Monotonic amount | Server-owned offchain watermark plus onchain `settled < maxClaimableAmount <= deposit` at redemption. For client-signed `voucher` verify and for the client-signed voucher on a top-up `deposit`, the facilitator MUST require `maxClaimableAmount >= Channel.settled + PaymentRequirements.amount`. |
+| Monotonic amount | Server-owned offchain watermark plus onchain `settled < maxClaimableAmount <= deposit` at redemption. For client-signed `voucher` verify and for the client-signed voucher on a top-up `deposit`, the facilitator MUST require `maxClaimableAmount >= Channel.settled + PaymentRequirements.amount` and `maxClaimableAmount > Channel.settled`, so a zero-price route cannot be satisfied by a voucher equal to `Channel.settled`. |
 | Batched redemption | One `settle` per channel, packed transaction-size permitting; `distribute` pays settled deltas. |
 | Recipient binding | `distribution_hash` fixed at `open` sends funds to `payTo`; program re-checks it at `distribute`. |
 | Recovery of unused deposit | Section 3. |

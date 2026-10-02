@@ -90,15 +90,16 @@ func flattenEnvMap(env map[string]catalogEnvDecl) catalogEnvList {
 }
 
 type catalogRouteDefinition struct {
-	Scheme              string            `json:"scheme"`
-	Network             string            `json:"network"`
-	AssetTransferMethod string            `json:"assetTransferMethod"`
-	Sdks                []string          `json:"sdks"`
-	RequiresEnv         string            `json:"requiresEnv"`
-	Price               catalogPrice      `json:"price"`
-	Extensions          []string          `json:"extensions"`
-	SettlementOverride  *SettlementAmount `json:"settlementOverride"`
-	PaymentFlow         string            `json:"paymentFlow"`
+	Scheme              string                 `json:"scheme"`
+	Network             string                 `json:"network"`
+	AssetTransferMethod string                 `json:"assetTransferMethod"`
+	Sdks                []string               `json:"sdks"`
+	RequiresEnv         string                 `json:"requiresEnv"`
+	Price               catalogPrice           `json:"price"`
+	Extensions          []string               `json:"extensions"`
+	SettlementOverride  *SettlementAmount      `json:"settlementOverride"`
+	PaymentFlow         string                 `json:"paymentFlow"`
+	RequirementsExtra   map[string]interface{} `json:"requirementsExtra"`
 }
 
 // SettlementAmount is the partial amount an upto route settles.
@@ -126,6 +127,7 @@ type CatalogRoute struct {
 	Extensions          []string
 	SettlementOverride  *SettlementAmount
 	PaymentFlow         string
+	RequirementsExtra   map[string]interface{}
 }
 
 // ResolvedRoute is a catalog route with env-dependent requirements resolved.
@@ -371,6 +373,7 @@ func CatalogRoutes() []CatalogRoute {
 			Extensions:          definition.Extensions,
 			SettlementOverride:  definition.SettlementOverride,
 			PaymentFlow:         definition.PaymentFlow,
+			RequirementsExtra:   definition.RequirementsExtra,
 		})
 	}
 	return routes
@@ -502,17 +505,21 @@ func resolvePrice(route CatalogRoute, network catalogNetwork, caip2 string) (int
 	return price, nil, nil
 }
 
-// mergeRouteExtra merges price-derived extra with catalog paymentFlow.
-// Authorization is omitted on the wire, matching core applyPaymentFlowWireExtra.
-func mergeRouteExtra(priceExtra map[string]interface{}, paymentFlow string) map[string]interface{} {
+// mergeRouteExtra merges catalog requirementsExtra, price-derived extra, and
+// paymentFlow. Authorization is omitted on the wire, matching core
+// applyPaymentFlowWireExtra. Price extra wins over requirementsExtra.
+func mergeRouteExtra(priceExtra map[string]interface{}, routeExtra map[string]interface{}, paymentFlow string) map[string]interface{} {
 	var wireFlow string
 	if paymentFlow != "" && paymentFlow != "authorization" {
 		wireFlow = paymentFlow
 	}
-	if wireFlow == "" && len(priceExtra) == 0 {
+	if wireFlow == "" && len(priceExtra) == 0 && len(routeExtra) == 0 {
 		return nil
 	}
 	extra := map[string]interface{}{}
+	for key, value := range routeExtra {
+		extra[key] = value
+	}
 	for key, value := range priceExtra {
 		extra[key] = value
 	}
@@ -543,7 +550,7 @@ func ResolvedRoutes() []ResolvedRoute {
 			fmt.Printf("❌ %v\n", err)
 			os.Exit(1)
 		}
-		extra := mergeRouteExtra(priceExtra, route.PaymentFlow)
+		extra := mergeRouteExtra(priceExtra, route.RequirementsExtra, route.PaymentFlow)
 
 		resolved = append(resolved, ResolvedRoute{
 			Path:                route.Path,

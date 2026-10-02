@@ -99,6 +99,7 @@ import {
   validateRefund,
 } from "./seal";
 import {
+  advancesSettled,
   assertServerModeProof as checkServerModeProof,
   assertServerModeRefundProof,
   voucherSignerFor,
@@ -812,6 +813,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
         ChannelStatus.Open,
       ]);
       const expectedDeposit = existing.deposit + deposit;
+      const settled = existing.settlement.settled;
       switch (proof.signer) {
         case "server":
           if (charge > expectedDeposit) {
@@ -821,7 +823,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           }
           break;
         case "client":
-          if (proofAmount < existing.settlement.settled + charge || proofAmount > expectedDeposit) {
+          if (!advancesSettled(proofAmount, settled, charge) || proofAmount > expectedDeposit) {
             throw new Error(
               `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: voucher exceeds topped-up ceiling`,
             );
@@ -1135,7 +1137,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
     ]);
     if (cumulative > channel.deposit) throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
     const charge = parseU64(requirements.amount, "amount");
-    if (cumulative < channel.settlement.settled + charge) {
+    if (!advancesSettled(cumulative, channel.settlement.settled, charge)) {
       throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
     }
     return channel;

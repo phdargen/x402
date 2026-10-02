@@ -510,6 +510,10 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.True(t, result.IsValid)
 		result, err = verifyVoucher(500, "0")
 		require.NoError(t, err)
+		require.False(t, result.IsValid)
+		require.Equal(t, batchsettlement.ErrCumulativeAmountMismatch, result.InvalidReason)
+		result, err = verifyVoucher(501, "0")
+		require.NoError(t, err)
 		require.True(t, result.IsValid)
 		result, err = verifyVoucher(499, "0")
 		require.NoError(t, err)
@@ -526,7 +530,7 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 				c.Settlement = generated.SettlementWatermarks{Settled: 500}
 			}), nil
 		}
-		topUpDeposit := func(maxClaimableAmount uint64) error {
+		topUpDeposit := func(maxClaimableAmount uint64, amount string) error {
 			signed, err := batchclient.SignBatchVoucher(ctx, payer, channelID, maxClaimableAmount, 0)
 			require.NoError(t, err)
 			_, err = scheme.validateDeposit(ctx, batchsettlement.ParsedBatchPayload{
@@ -534,10 +538,11 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 				ChannelConfig: channelConfig,
 				Deposit:       &batchsettlement.BatchDeposit{Amount: "1000", Transaction: "topup-tx"},
 				Voucher:       &signed,
-			}, requirements(func(r *types.PaymentRequirements) { r.Amount = "100" }), ProofAmountExact)
+			}, requirements(func(r *types.PaymentRequirements) { r.Amount = amount }), ProofAmountExact)
 			return err
 		}
-		require.ErrorContains(t, topUpDeposit(599), batchsettlement.ErrCumulativeAmountMismatch)
+		require.ErrorContains(t, topUpDeposit(599, "100"), batchsettlement.ErrCumulativeAmountMismatch)
+		require.ErrorContains(t, topUpDeposit(500, "0"), batchsettlement.ErrCumulativeAmountMismatch)
 	})
 
 	t.Run("verifies the payer proof behind server-mode payloads", func(t *testing.T) {

@@ -583,6 +583,10 @@ describe("batch facilitator lifecycle", () => {
     await expect(verifyVoucher(600n)).resolves.toMatchObject({ isValid: true });
     await expect(verifyVoucher(601n)).resolves.toMatchObject({ isValid: true });
     await expect(verifyVoucher(500n, requirements({ amount: "0" }))).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: BatchError.CUMULATIVE_AMOUNT_MISMATCH,
+    });
+    await expect(verifyVoucher(501n, requirements({ amount: "0" }))).resolves.toMatchObject({
       isValid: true,
     });
     await expect(verifyVoucher(499n, requirements({ amount: "0" }))).resolves.toMatchObject({
@@ -617,7 +621,7 @@ describe("batch facilitator lifecycle", () => {
         ) => Promise<unknown>;
       }
     ).validateDeposit.bind(scheme);
-    const topUpDeposit = async (maxClaimableAmount: bigint) => {
+    const topUpDeposit = async (maxClaimableAmount: bigint, amount = "100") => {
       const voucher = await signBatchVoucher(payer, {
         channelId,
         expiresAt: 0,
@@ -630,12 +634,14 @@ describe("batch facilitator lifecycle", () => {
           type: "deposit",
           voucher,
         },
-        requirements({ amount: "100" }),
+        requirements({ amount }),
         "exact",
       );
     };
     await expect(topUpDeposit(599n)).rejects.toThrow(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
     await expect(topUpDeposit(600n)).resolves.toBeDefined();
+    await expect(topUpDeposit(500n, "0")).rejects.toThrow(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+    await expect(topUpDeposit(501n, "0")).resolves.toBeDefined();
     topUpSpy.mockRestore();
   });
 
