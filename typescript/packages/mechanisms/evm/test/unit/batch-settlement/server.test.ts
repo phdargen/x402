@@ -2459,7 +2459,7 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
     it("uses the onchain totalClaimed as the charged baseline", async () => {
       const config = buildChannelConfig();
       const channelId = computeChannelId(config);
-      const payload = buildVoucherPayload(channelId, "6000", config);
+      const payload = await buildSignedVoucherPayload(channelId, "6000", config);
       const requirements = makeRequirements({ amount: "1000" });
       await runBeforeVerify(server, payload, requirements);
 
@@ -2470,13 +2470,16 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
       });
 
       expect(result).toBeUndefined();
-      expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("5000");
+      expect(server.readRequestContext(payload)?.channelSnapshot?.chargedCumulativeAmount).toBe(
+        "5000",
+      );
+      expect(await storage.get(channelId)).toBeUndefined();
     });
 
     it("rejects a voucher advancing by less than the price above the onchain totalClaimed", async () => {
       const config = buildChannelConfig();
       const channelId = computeChannelId(config);
-      const payload = buildVoucherPayload(channelId, "5001", config);
+      const payload = await buildSignedVoucherPayload(channelId, "5001", config);
       const requirements = makeRequirements({ amount: "1000" });
       expect(await runBeforeVerifyResult(payload, requirements)).toBeUndefined();
 
@@ -2528,7 +2531,10 @@ describe("BatchSettlementEvmScheme — onAfterVerify", () => {
       });
 
       expect(result).toMatchObject({ skipHandler: true });
-      expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("5000");
+      expect(server.readRequestContext(payload)?.channelSnapshot?.chargedCumulativeAmount).toBe(
+        "5000",
+      );
+      expect(await storage.get(channelId)).toBeUndefined();
     });
 
     it.each([
