@@ -187,10 +187,17 @@ function buildSettledLog(
   } as Log;
 }
 
-function envelopeVoucher(payload: BatchSettlementVoucherPayload): PaymentPayload {
+function envelopeVoucher(
+  payload: BatchSettlementVoucherPayload,
+  acceptedAmount?: string,
+): PaymentPayload {
   return {
     x402Version: 2,
-    accepted: { scheme: "batch-settlement", network: NETWORK },
+    accepted: {
+      scheme: "batch-settlement",
+      network: NETWORK,
+      ...(acceptedAmount !== undefined ? { amount: acceptedAmount } : {}),
+    },
     payload: payload as unknown as Record<string, unknown>,
   } as unknown as PaymentPayload;
 }
@@ -203,10 +210,17 @@ function envelopeRefund(payload: BatchSettlementRefundPayload): PaymentPayload {
   } as unknown as PaymentPayload;
 }
 
-function envelopeDeposit(payload: BatchSettlementDepositPayload): PaymentPayload {
+function envelopeDeposit(
+  payload: BatchSettlementDepositPayload,
+  acceptedAmount?: string,
+): PaymentPayload {
   return {
     x402Version: 2,
-    accepted: { scheme: "batch-settlement", network: NETWORK },
+    accepted: {
+      scheme: "batch-settlement",
+      network: NETWORK,
+      ...(acceptedAmount !== undefined ? { amount: acceptedAmount } : {}),
+    },
     payload: payload as unknown as Record<string, unknown>,
   } as unknown as PaymentPayload;
 }
@@ -3153,7 +3167,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
         },
       },
     };
-    return { payload: envelopeDeposit(dp), channelId, config };
+    return { payload: envelopeDeposit(dp, "10000"), channelId, config };
   }
 
   function mockClaimedChannelMulticall(totalClaimed: bigint, balance = totalClaimed): void {
@@ -3281,7 +3295,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
     expect(stored?.chargeCount).toBe(4);
   });
 
-  it("still returns onchain deposit success when the managed charge would exceed the signed cap", async () => {
+  it("fails closed with the deposit proof when the stored watermark no longer matches the verified voucher", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
       voucherStore: { storage },
@@ -3304,7 +3318,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
     }));
 
     const result = await scheme.settle(payload, managedRequirements());
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(Errors.ErrCumulativeAmountMismatch);
+    expect(result.transaction).not.toBe("");
     expect((await storage.get(channelId))?.chargedCumulativeAmount).toBe("20000");
     expect((await storage.get(channelId))?.chargeCount).toBe(2);
   });
@@ -3351,7 +3367,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       channelConfig: config,
       voucher: { channelId, maxClaimableAmount, signature: "0xfeedface" },
     };
-    return { payload: envelopeVoucher(vp), channelId, config };
+    return { payload: envelopeVoucher(vp, "1000"), channelId, config };
   }
 
   async function seedStoredChannel(
@@ -3491,9 +3507,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     const voucher = (payload.payload as BatchSettlementVoucherPayload).voucher;
     await storage.acquire(channelId, admissionOwner("0xpending", voucher), 60_000);
 
+    // The client priced this request at 500 (cap 3000 - watermark 2500); charging 1000 exceeds it.
     const result = await scheme.settle(
       {
         ...payload,
+        accepted: { ...payload.accepted, amount: "500" },
         payload: { ...payload.payload, pendingId: "0xpending" },
       },
       managedRequirements({ amount: "1000" }),
@@ -3703,7 +3721,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
     );
 
     expect(result.success).toBe(true);
-    expect(await storage.get(channelId)).toBeUndefined();
+    expect(await storage.get(channelId)).toBeDefined();
   });
 
   it("allows a managed refund without authorizer signature when caller identity matches the store", async () => {
@@ -3749,7 +3767,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
 
     const result = await scheme.settle(payload, managedRequirements({ amount: "0" }));
     expect(result.success).toBe(true);
-    expect(await storage.get(channelId)).toBeUndefined();
+    expect(await storage.get(channelId)).toBeDefined();
   });
 
   it("charges the first managed voucher against onchain totalClaimed when the store is empty", async () => {
@@ -3895,11 +3913,14 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       signature: "0xstoredsig",
     });
     const channelId = computeChannelId(config);
-    const payload = envelopeVoucher({
-      type: "voucher",
-      channelConfig: config,
-      voucher: { channelId, maxClaimableAmount: "7000", signature: "0xfeedface" },
-    });
+    const payload = envelopeVoucher(
+      {
+        type: "voucher",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "7000", signature: "0xfeedface" },
+      },
+      "1000",
+    );
 
     const result = await scheme.verify(payload, managedRequirements({ amount: "1000" }));
     expect(result.isValid).toBe(false);

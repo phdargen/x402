@@ -51,7 +51,7 @@ import {
 } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { resolveDepositDelegatedCaller, settleDeposit, verifyDeposit } from "./deposit";
-import { readChannelState } from "./utils";
+import { parseRequirementsAmount, readChannelState } from "./utils";
 import { verifyVoucher } from "./voucher";
 import { encodeChargeCountsSuffix } from "../chargeCounts";
 import { submitRefund } from "./refund";
@@ -205,6 +205,33 @@ export async function verifyManaged(
     return { isValid: false, invalidReason: managedErr, payer: raw.channelConfig.payer };
   }
 
+  // requirements.amount comes from the resource server and floors every paid request, so it is
+  // validated before any cached-state path can consume it. Refunds are zero-charge and skip it.
+  const isRefund = isBatchSettlementRefundPayload(raw);
+  let price = 0n;
+  if (!isRefund) {
+    const parsedPrice = parseRequirementsAmount(requirements.amount);
+    if (parsedPrice === undefined) {
+      return {
+        isValid: false,
+        invalidReason: isBatchSettlementDepositPayload(raw)
+          ? Errors.ErrInvalidDepositPayload
+          : Errors.ErrInvalidVoucherPayload,
+        invalidMessage: "invalid requirements amount",
+        payer: raw.channelConfig.payer,
+      };
+    }
+    price = parsedPrice;
+    // accepted.amount is the priced maximum the client signed against.
+    if (payload.accepted.amount !== requirements.amount) {
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrInvalidPayloadType,
+        payer: raw.channelConfig.payer,
+      };
+    }
+  }
+
   if (isBatchSettlementVoucherPayload(raw) && raw.channelConfig.payerAuthorizer !== ZERO_ADDRESS) {
     const signatureOk = await verifyEoaVoucherSignature(raw, requirements.network);
     if (!signatureOk) {
@@ -261,9 +288,17 @@ export async function verifyManaged(
       return verified;
     }
     const onchainClaimed = readExtraTotalClaimed(verified.extra);
+    if (onchainClaimed === undefined) {
+      // Without the facilitator-read onchain baseline there is nothing safe to charge against.
+      await releaseLock(deps, channelId, owner);
+      return {
+        isValid: false,
+        invalidReason: Errors.ErrRpcReadFailed,
+        payer: raw.channelConfig.payer,
+      };
+    }
     const charged = stored?.chargedCumulativeAmount ?? onchainClaimed;
-    const isRefund = isBatchSettlementRefundPayload(raw);
-    const expected = isRefund ? BigInt(charged) : BigInt(charged) + BigInt(requirements.amount);
+    const expected = isRefund ? BigInt(charged) : BigInt(charged) + price;
 
     if (BigInt(raw.voucher.maxClaimableAmount) !== expected) {
       await releaseLock(deps, channelId, owner);
@@ -326,7 +361,7 @@ export async function settleManaged(
     return settleManagedCancel(deps, raw, requirements);
   }
   if (isBatchSettlementVoucherPayload(raw)) {
-    return settleManagedVoucher(deps, raw, requirements);
+    return settleManagedVoucher(deps, raw, payload.accepted.amount, requirements);
   }
   if (isBatchSettlementDepositPayload(raw)) {
     return settleManagedDeposit(deps, payload, raw, requirements, context, dataSuffix);
@@ -377,12 +412,14 @@ async function settleManagedCancel(
  *
  * @param deps - Store dependencies.
  * @param raw - Voucher payload.
+ * @param acceptedAmount - `payload.accepted.amount`, the priced maximum the client signed against.
  * @param requirements - Payment requirements.
  * @returns Offchain settle response.
  */
 async function settleManagedVoucher(
   deps: VoucherStoreDeps,
   raw: BatchSettlementEnrichedVoucherPayload,
+  acceptedAmount: string,
   requirements: PaymentRequirements,
 ): Promise<SettleResponse> {
   const channelId = raw.voucher.channelId;
@@ -391,6 +428,14 @@ async function settleManagedVoucher(
     const managedErr = managedRequirementError(deps, raw.channelConfig.salt, requirements);
     if (managedErr) {
       return failSettle(requirements, managedErr);
+    }
+    const bounds = settleChargeBounds(
+      acceptedAmount,
+      requirements.amount,
+      raw.voucher.maxClaimableAmount,
+    );
+    if ("errorReason" in bounds) {
+      return failSettle(requirements, bounds.errorReason);
     }
 
     const held = await admissionHeld(deps, channelId, owner);
@@ -415,8 +460,7 @@ async function settleManagedVoucher(
       }
     }
 
-    const increment = BigInt(requirements.amount);
-    const signedCap = BigInt(raw.voucher.maxClaimableAmount);
+    const { increment, signedCap, expectedCharged } = bounds;
     const map =
       increment === 0n
         ? undefined
@@ -424,6 +468,7 @@ async function settleManagedVoucher(
     let outcome = await commitVoucherCharge(deps.storage, channelId, {
       increment,
       signedCap,
+      expectedCharged,
       voucher: raw.voucher,
       map,
     });
@@ -432,6 +477,7 @@ async function settleManagedVoucher(
       outcome = await commitVoucherCharge(deps.storage, channelId, {
         increment,
         signedCap,
+        expectedCharged,
         voucher: raw.voucher,
         snapshot: await provisionalFromOnchain(deps, raw, requirements),
         map,
@@ -443,6 +489,9 @@ async function settleManagedVoucher(
     }
     if (outcome.status === "cap_exceeded") {
       return failSettle(requirements, Errors.ErrChargeExceedsSignedCumulative);
+    }
+    if (outcome.status === "watermark_mismatch") {
+      return failSettle(requirements, Errors.ErrCumulativeAmountMismatch);
     }
     if (outcome.status !== "committed") {
       return failSettle(requirements, Errors.ErrChannelBusy);
@@ -491,6 +540,17 @@ async function settleManagedDeposit(
   const channelId = raw.voucher.channelId;
   const owner = boundAdmissionOwner(raw.pendingId, raw.voucher);
   try {
+    // Reject an actual above the accepted maximum before broadcast. The commit below still
+    // re-checks the watermark on a reconciled retry.
+    const bounds = settleChargeBounds(
+      payment.accepted.amount,
+      requirements.amount,
+      raw.voucher.maxClaimableAmount,
+    );
+    if ("errorReason" in bounds) {
+      return failSettle(requirements, bounds.errorReason);
+    }
+
     const resolved = await resolveDepositDelegatedCaller(
       deps.resolveCallerIdentity,
       deps.delegatedAuthStore,
@@ -522,8 +582,9 @@ async function settleManagedDeposit(
 
     try {
       const outcome = await commitVoucherCharge(deps.storage, channelId, {
-        increment: BigInt(requirements.amount),
-        signedCap: BigInt(raw.voucher.maxClaimableAmount),
+        increment: bounds.increment,
+        signedCap: bounds.signedCap,
+        expectedCharged: bounds.expectedCharged,
         voucher: raw.voucher,
         snapshot: current => depositChargeSnapshot(raw, requirements, settled.extra, current),
         map: channel => incrementChargeCount(channel, requirements.network),
@@ -536,6 +597,9 @@ async function settleManagedDeposit(
         // On-chain deposit already succeeded; omit the managed charge when it
         // would exceed the signed cap and leave the stored watermark unchanged.
         return settled;
+      }
+      if (outcome.status === "watermark_mismatch") {
+        return failDepositPersist(settled, Errors.ErrCumulativeAmountMismatch);
       }
       if (outcome.status !== "committed") {
         return failDepositPersist(settled, Errors.ErrChannelBusy);
@@ -1083,14 +1147,49 @@ function resolveRefundAmount(
 /**
  * Reads onchain `totalClaimed` from a verify extra blob.
  *
+ * Canonical rule shared with the resource server: a plain decimal string with no leading zeros,
+ * or a JSON number that is a non-negative safe integer.
+ *
  * @param extra - Verify response extra.
- * @returns Decimal string.
+ * @returns Decimal string, or undefined when absent or not canonical.
  */
-function readExtraTotalClaimed(extra: Record<string, unknown> | undefined): string {
+function readExtraTotalClaimed(extra: Record<string, unknown> | undefined): string | undefined {
   const value = extra?.totalClaimed;
-  if (typeof value === "string" && /^\d+$/.test(value)) return value;
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return String(value);
-  return "0";
+  if (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value)) return value;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return undefined;
+}
+
+/**
+ * Re-checks the verify watermark at settle.
+ *
+ * `accepted.amount` is the priced maximum the client signed against, `requirements.amount` is
+ * the actual charge (at most the maximum), and `expectedCharged` is the stored watermark the
+ * voucher was admitted against (`signedCap - accepted`).
+ *
+ * @param acceptedAmount - `payload.accepted.amount`.
+ * @param actualAmount - `requirements.amount` presented to `/settle`.
+ * @param signedCap - The voucher's `maxClaimableAmount`.
+ * @returns Charge bounds, or the error reason when any operand is malformed or inconsistent.
+ */
+function settleChargeBounds(
+  acceptedAmount: string,
+  actualAmount: string,
+  signedCap: string,
+): { increment: bigint; signedCap: bigint; expectedCharged: bigint } | { errorReason: string } {
+  const accepted = parseRequirementsAmount(acceptedAmount);
+  const increment = parseRequirementsAmount(actualAmount);
+  const cap = parseRequirementsAmount(signedCap);
+  if (accepted === undefined || increment === undefined || cap === undefined) {
+    return { errorReason: Errors.ErrInvalidPayloadType };
+  }
+  if (increment > accepted) {
+    return { errorReason: Errors.ErrChargeExceedsSignedCumulative };
+  }
+  if (accepted > cap) {
+    return { errorReason: Errors.ErrInvalidPayloadType };
+  }
+  return { increment, signedCap: cap, expectedCharged: cap - accepted };
 }
 
 /**

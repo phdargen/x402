@@ -3,6 +3,7 @@ package facilitator
 import (
 	"context"
 	"errors"
+	"math"
 	"math/big"
 	"strings"
 	"sync"
@@ -2140,5 +2141,75 @@ func TestSettleManaged_RefundReadFailureFailsClosed(t *testing.T) {
 	got, err := store.Get(context.Background(), channelId)
 	if err != nil || got.Balance != "10000" || got.RefundNonce != 0 || got.ChargeCount != 3 || got.PendingClaim != nil {
 		t.Fatalf("stored %+v %v", got, err)
+	}
+}
+
+func TestVerifyManaged_MalformedRequirementsAmountOnCachedPath(t *testing.T) {
+	for _, amount := range []string{"", "abc", "-5", "+5", " 5 ", "1.5", "0x10", "1_0"} {
+		t.Run(amount, func(t *testing.T) {
+			store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+			auth := managedAuthorizer()
+			cfg := managedConfig(auth.addr, "00")
+			cfg.PayerAuthorizer = managedPayer
+			channelId := mustChannelId(t, cfg)
+			sig := eoaVoucherSignature(t, channelId, "2000", managedNetwork)
+			seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+				Balance:            "10000",
+				TotalClaimed:       "0",
+				OnchainSyncedAt:    time.Now().UnixMilli(),
+				SignedMaxClaimable: "1000",
+			}))
+			rpc := &managedRPC{}
+			signer := newManagedSigner(t, rpc)
+			reqs := managedRequirements(auth.addr)
+			reqs.Amount = amount
+			payment := voucherEnvelope(cfg, voucherFields(channelId, "2000", sig), "")
+			payment.Accepted.Amount = amount
+
+			resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, signer), payment, reqs, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp.IsValid || resp.InvalidReason != ErrInvalidVoucherPayload {
+				t.Fatalf("got %+v, want %s", resp, ErrInvalidVoucherPayload)
+			}
+		})
+	}
+}
+
+func TestReadExtraTotalClaimed(t *testing.T) {
+	cases := []struct {
+		name  string
+		value interface{}
+		want  string
+		ok    bool
+	}{
+		{"zero string", "0", "0", true},
+		{"plain string", "19200", "19200", true},
+		{"leading zeros", "007", "", false},
+		{"signed", "+5", "", false},
+		{"negative", "-1", "", false},
+		{"whitespace", " 5", "", false},
+		{"empty", "", "", false},
+		{"float64 integer", float64(42), "42", true},
+		{"float64 max safe", float64(1<<53 - 1), "9007199254740991", true},
+		{"float64 above safe", float64(1 << 53), "", false},
+		{"float64 fractional", 1.5, "", false},
+		{"float64 negative", float64(-1), "", false},
+		{"float64 NaN", math.NaN(), "", false},
+		{"float64 Inf", math.Inf(1), "", false},
+		{"missing", nil, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			extra := map[string]interface{}{}
+			if tc.value != nil {
+				extra["totalClaimed"] = tc.value
+			}
+			got, ok := readExtraTotalClaimed(extra)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("readExtraTotalClaimed(%v) = (%q, %v), want (%q, %v)", tc.value, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }

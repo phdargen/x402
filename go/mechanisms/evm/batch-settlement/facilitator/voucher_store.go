@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"math/big"
 	"regexp"
 	"strings"
@@ -125,9 +126,20 @@ func VerifyManaged(
 	if managedErr := managedRequirementError(deps, channelConfig.Salt, requirements); managedErr != "" {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: managedErr, Payer: payer}, nil
 	}
-	// accepted.amount is the priced maximum. Refunds are zero-charge and skip this.
-	if !batchsettlement.IsRefundPayload(raw) && payload.Accepted.Amount != requirements.Amount {
-		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload, Payer: payer}, nil
+	// requirements.amount comes from the resource server and floors every paid request, so it is
+	// validated before any cached-state path can consume it. Refunds are zero-charge and skip it.
+	if !batchsettlement.IsRefundPayload(raw) {
+		if _, ok := parseRequirementsAmount(requirements.Amount); !ok {
+			reason := ErrInvalidVoucherPayload
+			if batchsettlement.IsDepositPayload(raw) {
+				reason = ErrInvalidDepositPayload
+			}
+			return &x402.VerifyResponse{IsValid: false, InvalidReason: reason, InvalidMessage: "invalid requirements amount", Payer: payer}, nil
+		}
+		// accepted.amount is the priced maximum.
+		if payload.Accepted.Amount != requirements.Amount {
+			return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload, Payer: payer}, nil
+		}
 	}
 
 	var clearance eoaSignatureClearance
@@ -177,7 +189,11 @@ func VerifyManaged(
 		return verified, nil
 	}
 
-	onchainClaimed := readExtraTotalClaimed(verified.Extra)
+	onchainClaimed, claimedOk := readExtraTotalClaimed(verified.Extra)
+	if !claimedOk {
+		// Without the facilitator-read onchain baseline there is nothing safe to charge against.
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrRpcReadFailed, Payer: payer}, nil
+	}
 	charged := onchainClaimed
 	if stored != nil {
 		charged = stored.ChargedCumulativeAmount
@@ -292,11 +308,11 @@ func settleManagedCancel(
 // settleChargeBounds re-checks the verify watermark at settle.
 // expectedCharged is signedCap minus acceptedAmount.
 func settleChargeBounds(acceptedAmount, actualAmount, signedCap string) (increment, cap, expectedCharged *big.Int, reason string) {
-	accepted, ok := parseManagedUint(acceptedAmount)
+	accepted, ok := parseRequirementsAmount(acceptedAmount)
 	if !ok {
 		return nil, nil, nil, ErrInvalidPayload
 	}
-	increment, ok = parseManagedUint(actualAmount)
+	increment, ok = parseRequirementsAmount(actualAmount)
 	if !ok {
 		return nil, nil, nil, ErrInvalidPayload
 	}
@@ -1145,11 +1161,35 @@ func resolveRefundAmount(amount string, stored *FacilitatorChannel) string {
 	return "0"
 }
 
-func readExtraTotalClaimed(extra map[string]interface{}) string {
-	if s := optionalUintString(extra["totalClaimed"]); s != nil {
-		return *s
+// maxSafeJSONInteger is the largest integer a JSON number carries losslessly (2^53 - 1).
+const maxSafeJSONInteger = float64(1<<53 - 1)
+
+// readExtraTotalClaimed reads the onchain totalClaimed baseline from a verify extra.
+// Canonical rule shared across SDKs: a plain decimal string with no leading zeros ("0" is the
+// only string starting with 0), or a JSON number that is a non-negative safe integer.
+// ok=false means the baseline is unavailable and the caller must fail closed, never use zero.
+func readExtraTotalClaimed(extra map[string]interface{}) (string, bool) {
+	switch v := extra["totalClaimed"].(type) {
+	case string:
+		n, ok := parseManagedUint(v)
+		if !ok || n.String() != v {
+			return "", false
+		}
+		return v, true
+	case int:
+		if v >= 0 {
+			return fmt.Sprintf("%d", v), true
+		}
+	case int64:
+		if v >= 0 {
+			return fmt.Sprintf("%d", v), true
+		}
+	case float64:
+		if v >= 0 && v <= maxSafeJSONInteger && v == math.Trunc(v) {
+			return fmt.Sprintf("%d", int64(v)), true
+		}
 	}
-	return "0"
+	return "", false
 }
 
 func mismatchVerifyExtra(channelId string, extra map[string]interface{}, stored *FacilitatorChannel, charged string) map[string]interface{} {
