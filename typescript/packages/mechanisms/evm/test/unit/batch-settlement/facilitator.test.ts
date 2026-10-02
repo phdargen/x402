@@ -3190,9 +3190,9 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
       voucherStore: { storage },
     });
     mockClaimedChannelMulticall(19_200n);
-    // Passes the onchain "above claimed" check (24200 > 19200) but is not
+    // Clears the price floor (30200 >= 19200 + 10000) but is not
     // charged(19200) + amount(10000).
-    const { payload, channelId } = buildManagedDeposit("24200");
+    const { payload, channelId } = buildManagedDeposit("30200");
 
     const result = await scheme.verify(payload, managedRequirements());
     expect(result.isValid).toBe(false);
@@ -3287,7 +3287,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
       voucherStore: { storage },
     });
     mockClaimedChannelMulticall(19_200n);
-    const { payload, channelId, config } = buildManagedDeposit("20100");
+    const { payload, channelId, config } = buildManagedDeposit("29500");
     await storage.updateChannel(channelId, () => ({
       channelId,
       channelConfig: config,
