@@ -1600,8 +1600,17 @@ function readVerifiedChannelState(result: VerifyResponse): VerifiedChannelState 
   const state = raw as Record<string, unknown>;
   const digits = (value: unknown): bigint | undefined =>
     typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : undefined;
-  const totalClaimed = digits(state.totalClaimed);
-  if (totalClaimed === undefined) return undefined;
+  const totalClaimedText =
+    typeof state.totalClaimed === "string" && /^\d+$/.test(state.totalClaimed)
+      ? state.totalClaimed
+      : undefined;
+  if (totalClaimedText === undefined) return undefined;
+  let totalClaimed: bigint;
+  try {
+    totalClaimed = parseU64(totalClaimedText, "totalClaimed");
+  } catch {
+    return undefined;
+  }
   const withdrawRequestedAt =
     typeof state.withdrawRequestedAt === "number" && Number.isInteger(state.withdrawRequestedAt)
       ? state.withdrawRequestedAt

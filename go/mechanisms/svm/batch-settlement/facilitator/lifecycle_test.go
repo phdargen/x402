@@ -480,6 +480,66 @@ func TestBatchFacilitatorLifecycle(t *testing.T) {
 		require.Equal(t, batchsettlement.ErrPayloadType, result.InvalidReason)
 	})
 
+	t.Run("requires client vouchers to advance beyond the settled watermark", func(t *testing.T) {
+		scheme := newScheme(t, newSigner(t), nil)
+		hookTerms(scheme, defaultTerms)
+		hookChannelID(scheme, channelID)
+		scheme.hooks.fetchChannel = func(context.Context, string, string) (*generated.Channel, error) {
+			return channel(func(c *generated.Channel) {
+				c.Settlement = generated.SettlementWatermarks{Settled: 500}
+			}), nil
+		}
+		verifyVoucher := func(maxClaimableAmount uint64, amount string) (*x402.VerifyResponse, error) {
+			req := requirements(func(r *types.PaymentRequirements) { r.Amount = amount })
+			signed, err := batchclient.SignBatchVoucher(ctx, payer, channelID, maxClaimableAmount, 0)
+			require.NoError(t, err)
+			payload := batchsettlement.BatchVoucherPayload{
+				Type: batchsettlement.PayloadTypeVoucher, ChannelConfig: channelConfig, Voucher: signed,
+			}
+			return scheme.Verify(ctx, payment(payload, req), req, nil)
+		}
+		result, err := verifyVoucher(599, "100")
+		require.NoError(t, err)
+		require.False(t, result.IsValid)
+		require.Equal(t, batchsettlement.ErrCumulativeAmountMismatch, result.InvalidReason)
+		result, err = verifyVoucher(600, "100")
+		require.NoError(t, err)
+		require.True(t, result.IsValid)
+		result, err = verifyVoucher(601, "100")
+		require.NoError(t, err)
+		require.True(t, result.IsValid)
+		result, err = verifyVoucher(500, "0")
+		require.NoError(t, err)
+		require.True(t, result.IsValid)
+		result, err = verifyVoucher(499, "0")
+		require.NoError(t, err)
+		require.False(t, result.IsValid)
+		require.Equal(t, batchsettlement.ErrCumulativeAmountMismatch, result.InvalidReason)
+		for _, amount := range []string{"-1", "abc", "18446744073709551616"} {
+			result, err = verifyVoucher(600, amount)
+			require.NoError(t, err)
+			require.False(t, result.IsValid)
+		}
+
+		scheme.hooks.readChannel = func(context.Context, string, string) (*generated.Channel, error) {
+			return channel(func(c *generated.Channel) {
+				c.Settlement = generated.SettlementWatermarks{Settled: 500}
+			}), nil
+		}
+		topUpDeposit := func(maxClaimableAmount uint64) error {
+			signed, err := batchclient.SignBatchVoucher(ctx, payer, channelID, maxClaimableAmount, 0)
+			require.NoError(t, err)
+			_, err = scheme.validateDeposit(ctx, batchsettlement.ParsedBatchPayload{
+				Type:          batchsettlement.PayloadTypeDeposit,
+				ChannelConfig: channelConfig,
+				Deposit:       &batchsettlement.BatchDeposit{Amount: "1000", Transaction: "topup-tx"},
+				Voucher:       &signed,
+			}, requirements(func(r *types.PaymentRequirements) { r.Amount = "100" }), ProofAmountExact)
+			return err
+		}
+		require.ErrorContains(t, topUpDeposit(599), batchsettlement.ErrCumulativeAmountMismatch)
+	})
+
 	t.Run("verifies the payer proof behind server-mode payloads", func(t *testing.T) {
 		operatorKey := mustKey(t)
 		operator, err := batchclient.NewPrivateKeySigner(operatorKey.String())

@@ -196,7 +196,8 @@ func (f *BatchSvmScheme) validateDeposit(ctx context.Context, payload batchsettl
 				return ValidatedDeposit{}, fmt.Errorf("%s: charge exceeds topped-up ceiling", batchsettlement.ErrCumulativeAmountMismatch)
 			}
 		case batchsettlement.VoucherSignerClient:
-			if proofAmount < charge || proofAmount > expected {
+			minimum, ok := batchsettlement.AddU64(existing.Settlement.Settled, charge)
+			if !ok || proofAmount < minimum || proofAmount > expected {
 				return ValidatedDeposit{}, fmt.Errorf("%s: voucher exceeds topped-up ceiling", batchsettlement.ErrCumulativeAmountMismatch)
 			}
 		default:
@@ -1153,6 +1154,14 @@ func (f *BatchSvmScheme) validateVoucherOnly(ctx context.Context, payload batchs
 	}
 	if cumulative > channel.Deposit {
 		return nil, fmt.Errorf("%s", batchsettlement.ErrCumulativeExceedsDeposit)
+	}
+	charge, err := paymentchannels.ParseU64(requirements.Amount, "amount")
+	if err != nil {
+		return nil, err
+	}
+	minimum, ok := batchsettlement.AddU64(channel.Settlement.Settled, charge)
+	if !ok || cumulative < minimum {
+		return nil, fmt.Errorf("%s", batchsettlement.ErrCumulativeAmountMismatch)
 	}
 	return channel, nil
 }

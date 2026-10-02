@@ -829,6 +829,7 @@ func TestBatchServerLifecycleBoundaries(t *testing.T) {
 			map[string]any{"totalClaimed": "bad", "withdrawRequestedAt": 0},
 			map[string]any{"balance": "bad", "totalClaimed": "0", "withdrawRequestedAt": 1.5},
 			map[string]any{"totalClaimed": "0", "withdrawRequestedAt": "bad"},
+			map[string]any{"totalClaimed": "18446744073709551616", "withdrawRequestedAt": 0},
 		}
 		for _, channelState := range snapshots {
 			store := NewMemoryChannelStore()
@@ -861,6 +862,9 @@ func TestBatchServerLifecycleBoundaries(t *testing.T) {
 				func() bool {
 					total, ok := stateMap["totalClaimed"].(string)
 					if !ok || !batchsettlement.IsDigits(total) {
+						return false
+					}
+					if _, err := paymentchannels.ParseU64(total, "totalClaimed"); err != nil {
 						return false
 					}
 					balance, ok := stateMap["balance"].(string)

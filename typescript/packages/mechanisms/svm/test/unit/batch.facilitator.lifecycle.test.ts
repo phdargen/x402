@@ -32,6 +32,7 @@ import { ChannelStatus } from "../../src/payment-channels/onchain";
 import { getChannelDistributionHash } from "../../src/payment-channels/facilitator";
 import { ChannelBroadcastConfirmationError } from "../../src/payment-channels/facilitator";
 import { TransactionOnchainFailureError } from "../../src/utils";
+import * as paymentChannelsOpen from "../../src/payment-channels/open";
 
 const NETWORK = SOLANA_DEVNET_CAIP2;
 const MINT = USDC_DEVNET_ADDRESS;
@@ -538,6 +539,104 @@ describe("batch facilitator lifecycle", () => {
         requirements(),
       ),
     ).resolves.toMatchObject({ isValid: false, invalidReason: BatchError.PAYLOAD_TYPE });
+  });
+
+  it("requires client vouchers to advance beyond the settled watermark", async () => {
+    const scheme = new BatchSvmScheme(signer() as never, {
+      channelStorage: new InMemoryPaymentChannelStorage(),
+    });
+    const api = internals(scheme);
+    api.resolveTerms = vi.fn().mockResolvedValue({
+      feePayer: feePayer.address,
+      feePayerSigner: feePayer,
+      receiverAuthorizer: receiverAuthorizer.address,
+      tokenProgram: TOKEN_PROGRAM_ADDRESS,
+      withdrawDelay: 900,
+    });
+    api.deriveChannelId = vi.fn().mockResolvedValue(channelId);
+    api.fetchChannel = vi
+      .fn()
+      .mockResolvedValue(channel({ settlement: { payoutWatermark: 0n, settled: 500n } }));
+    const verifyVoucher = async (
+      maxClaimableAmount: bigint,
+      req: PaymentRequirements = requirements({ amount: "100" }),
+    ) => {
+      const voucher = await signBatchVoucher(payer, {
+        channelId,
+        expiresAt: 0,
+        maxClaimableAmount,
+      });
+      return scheme.verify(
+        {
+          accepted: req,
+          payload: { channelConfig, type: "voucher", voucher },
+          x402Version: 2,
+        },
+        req,
+      );
+    };
+
+    await expect(verifyVoucher(599n)).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: BatchError.CUMULATIVE_AMOUNT_MISMATCH,
+    });
+    await expect(verifyVoucher(600n)).resolves.toMatchObject({ isValid: true });
+    await expect(verifyVoucher(601n)).resolves.toMatchObject({ isValid: true });
+    await expect(verifyVoucher(500n, requirements({ amount: "0" }))).resolves.toMatchObject({
+      isValid: true,
+    });
+    await expect(verifyVoucher(499n, requirements({ amount: "0" }))).resolves.toMatchObject({
+      isValid: false,
+      invalidReason: BatchError.CUMULATIVE_AMOUNT_MISMATCH,
+    });
+
+    for (const amount of ["-1", "abc", "18446744073709551616"]) {
+      await expect(verifyVoucher(600n, requirements({ amount }))).resolves.toMatchObject({
+        isValid: false,
+      });
+    }
+
+    api.readChannel = vi
+      .fn()
+      .mockResolvedValue(channel({ settlement: { payoutWatermark: 0n, settled: 500n } }));
+    api.assertSettlementAccounts = vi.fn().mockResolvedValue(undefined);
+    const topUpSpy = vi
+      .spyOn(paymentChannelsOpen, "verifyTopUpTransaction")
+      .mockResolvedValue(undefined);
+    const validateDeposit = (
+      scheme as unknown as {
+        validateDeposit: (
+          payload: {
+            channelConfig: BatchChannelConfig;
+            deposit: { amount: string; transaction: string };
+            type: "deposit";
+            voucher: Awaited<ReturnType<typeof signBatchVoucher>>;
+          },
+          requirements: PaymentRequirements,
+          bound: "exact" | "ceiling",
+        ) => Promise<unknown>;
+      }
+    ).validateDeposit.bind(scheme);
+    const topUpDeposit = async (maxClaimableAmount: bigint) => {
+      const voucher = await signBatchVoucher(payer, {
+        channelId,
+        expiresAt: 0,
+        maxClaimableAmount,
+      });
+      return validateDeposit(
+        {
+          channelConfig,
+          deposit: { amount: "1000", transaction: "topup-tx" },
+          type: "deposit",
+          voucher,
+        },
+        requirements({ amount: "100" }),
+        "exact",
+      );
+    };
+    await expect(topUpDeposit(599n)).rejects.toThrow(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+    await expect(topUpDeposit(600n)).resolves.toBeDefined();
+    topUpSpy.mockRestore();
   });
 
   it("verifies the payer proof behind server-mode payloads", async () => {

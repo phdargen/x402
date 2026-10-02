@@ -821,7 +821,7 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
           }
           break;
         case "client":
-          if (proofAmount < charge || proofAmount > expectedDeposit) {
+          if (proofAmount < existing.settlement.settled + charge || proofAmount > expectedDeposit) {
             throw new Error(
               `${BatchError.CUMULATIVE_AMOUNT_MISMATCH}: voucher exceeds topped-up ceiling`,
             );
@@ -1134,6 +1134,10 @@ export class BatchSvmScheme implements SchemeNetworkFacilitator {
       ChannelStatus.Open,
     ]);
     if (cumulative > channel.deposit) throw new Error(BatchError.CUMULATIVE_EXCEEDS_DEPOSIT);
+    const charge = parseU64(requirements.amount, "amount");
+    if (cumulative < channel.settlement.settled + charge) {
+      throw new Error(BatchError.CUMULATIVE_AMOUNT_MISMATCH);
+    }
     return channel;
   }
 

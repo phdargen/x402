@@ -649,6 +649,7 @@ describe("batch server lifecycle boundaries", () => {
       { totalClaimed: "bad", withdrawRequestedAt: 0 },
       { balance: "bad", totalClaimed: "0", withdrawRequestedAt: 1.5 },
       { totalClaimed: "0", withdrawRequestedAt: "bad" },
+      { totalClaimed: "18446744073709551616", withdrawRequestedAt: 0 },
     ];
     for (const channelState of snapshots) {
       const store = new MemoryChannelStore();
@@ -673,6 +674,7 @@ describe("batch server lifecycle boundaries", () => {
         channelState !== null &&
         typeof channelState.totalClaimed === "string" &&
         /^\d+$/.test(channelState.totalClaimed) &&
+        BigInt(channelState.totalClaimed) <= 18446744073709551615n &&
         !(typeof channelState.balance === "string" && /^\d+$/.test(channelState.balance));
       if (snapshotWithoutBalance) {
         expect(result).toMatchObject({
