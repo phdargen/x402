@@ -720,6 +720,16 @@ describe("AuthCaptureEvmScheme", () => {
       );
     });
 
+    it("should verify authorization charge payloads that include charge-completion fields", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const eip3009 = buildChargeEip3009Payload();
+      expect(await scheme.verify(eip3009, eip3009.accepted).then(r => r.isValid)).toBe(true);
+      const permit2 = buildChargePermit2Payload(CAPTURE_AUTHORIZER, {
+        assetTransferMethod: "permit2",
+      });
+      expect(await scheme.verify(permit2, permit2.accepted).then(r => r.isValid)).toBe(true);
+    });
+
     it("should call authorize when paymentFlow is escrow", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       const reqs = {
@@ -1829,6 +1839,212 @@ describe("AuthCaptureEvmScheme", () => {
     });
   });
 
+  describe("verify — collect envelope rules", () => {
+    it("should reject collect verification after captureDeadline passes", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date((captureDeadline + 10) * 1000));
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const result = await scheme.verify(buildEip3009Payload(), mockRequirements);
+      vi.useRealTimers();
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_capture_deadline_expired");
+    });
+
+    it("should reject bound collect payloads that omit saltNonce", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildBoundEip3009Payload();
+      const { saltNonce: _removed, ...collect } = payload.payload;
+      const result = await scheme.verify(
+        { ...payload, payload: collect },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_format");
+    });
+
+    it("should reject escrow collect payloads that carry charge-completion signatures", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: { ...payload.payload, authorizerSignature: "0xabcd" as `0x${string}` },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_format");
+    });
+
+    it("should reject unbound collect payloads that include saltNonce", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: { ...payload.payload, saltNonce: SALT_NONCE },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_format");
+    });
+
+    it("should reject EIP-3009 collect routed to the wrong token collector", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const wrongCollector = "0x0000000000000000000000000000000000000001" as `0x${string}`;
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: {
+            ...payload.payload,
+            authorization: { ...payload.payload.authorization, to: wrongCollector },
+          },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_token_collector_mismatch");
+    });
+
+    it("should reject collect when maxTimeoutSeconds exceeds the captureDeadline window", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const accepted = {
+        ...mockRequirements,
+        maxTimeoutSeconds: 999_999,
+        extra: {
+          ...mockRequirements.extra,
+          captureDeadline: futureSeconds + 100,
+          refundDeadline: futureSeconds + 200,
+        },
+      };
+      const result = await scheme.verify(buildEip3009Payload(), accepted);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_deadline_ordering");
+    });
+
+    it("should reject collect when EIP-3009 validBefore is inside the safety margin", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const soon = String(Math.floor(Date.now() / 1000) + 3);
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: {
+            ...payload.payload,
+            authorization: { ...payload.payload.authorization, validBefore: soon },
+          },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_authorization_expired");
+    });
+
+    it("should reject collect when refundDeadline precedes captureDeadline", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const extra = {
+        ...mockRequirements.extra,
+        captureDeadline: futureSeconds + 10_000,
+        refundDeadline: futureSeconds + 5000,
+      };
+      const accepted = { ...mockRequirements, extra };
+      const result = await scheme.verify(buildEip3009Payload(), accepted);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_deadline_ordering");
+    });
+
+    it("should reject permit2 requirements paired with an EIP-3009 collect payload", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const accepted = {
+        ...mockRequirements,
+        extra: { ...mockRequirements.extra, assetTransferMethod: "permit2" as const },
+      };
+      const result = await scheme.verify(buildEip3009Payload(), accepted);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_method_mismatch");
+    });
+
+    it("should reject collect when the signed authorization value does not match requirements.amount", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: {
+            ...payload.payload,
+            authorization: { ...payload.payload.authorization, value: "500000" },
+          },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_amount_mismatch");
+    });
+
+    it("should reject authorization charge with both feeBps and feeAmount on the wire", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildChargeEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...envelope,
+          payload: { ...envelope.payload, feeBps: 0, feeAmount: "0" },
+        },
+        envelope.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_format");
+    });
+
+    it("should reject authorization charge when submitted fee is out of range", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildChargeEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...envelope,
+          payload: { ...envelope.payload, feeAmount: "999999" },
+        },
+        envelope.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_fee_bps_out_of_range");
+    });
+
+    it("should reject authorization charge when the charge amount exceeds the signed permit", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildChargeEip3009Payload();
+      const result = await scheme.verify(
+        {
+          ...envelope,
+          payload: { ...envelope.payload, amount: "2000000" },
+        },
+        envelope.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_amount_mismatch");
+    });
+
+    it("should reject EIP-3009 collect when validAfter is still in the future", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const payload = buildEip3009Payload();
+      const futureValidAfter = String(Math.floor(Date.now() / 1000) + 3600);
+      const result = await scheme.verify(
+        {
+          ...payload,
+          payload: {
+            ...payload.payload,
+            authorization: { ...payload.payload.authorization, validAfter: futureValidAfter },
+          },
+        },
+        payload.accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_authorization_not_yet_valid");
+    });
+
+  });
+
   describe("verify/settle — lifecycle payloads", () => {
     it("should reject capture when paymentState balances do not match the signed expectations", async () => {
       mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
@@ -1985,6 +2201,161 @@ describe("AuthCaptureEvmScheme", () => {
       );
       expect(result.isValid).toBe(false);
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_refund_funding_unavailable");
+    });
+
+    it("should verify lifecycle capture against v1.0 feeBps wire fields", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const extra = boundExtra({ authCaptureEscrow: AUTH_CAPTURE_ESCROW_V1_0_ADDRESS });
+      const accepted = { ...mockRequirements, extra };
+      const result = await scheme.verify(
+        {
+          x402Version: 2,
+          accepted,
+          payload: {
+            type: "capture",
+            paymentInfo: boundPaymentInfo(),
+            saltNonce: SALT_NONCE,
+            amount: "500000",
+            feeBps: 0,
+            feeReceiver: FEE_RECIPIENT,
+            expectedCapturableAmount: "1000000",
+            expectedRefundableAmount: "0",
+            authorizerSignature: "0xabcd",
+          },
+        },
+        accepted,
+      );
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject lifecycle refund after refundDeadline expires", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner, { refundFunding: true });
+      const expired = Math.floor(Date.now() / 1000) - 60;
+      const extra = boundExtra({ refundDeadline: expired });
+      const accepted = { ...mockRequirements, extra };
+      const paymentInfo = { ...boundPaymentInfo(), refundExpiry: expired };
+      const result = await scheme.verify(
+        {
+          x402Version: 2,
+          accepted,
+          payload: {
+            type: "refund",
+            paymentInfo,
+            saltNonce: SALT_NONCE,
+            amount: "100000",
+            expectedCapturableAmount: "0",
+            expectedRefundableAmount: "1000000",
+            authorizerSignature: "0xabcd",
+          },
+        },
+        accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_refund_deadline_expired");
+    });
+
+    it("should reject lifecycle capture amounts above onchain capturable balance", async () => {
+      mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "paymentState") {
+          return {
+            hasCollectedPayment: true,
+            capturableAmount: BigInt("100000"),
+            refundableAmount: 0n,
+          };
+        }
+        return BigInt("1000000000");
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({
+        amount: "500000",
+        expectedCapturableAmount: "100000",
+      });
+      const result = await scheme.verify(envelope, envelope.accepted);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_amount_mismatch");
+    });
+
+    it("should reject lifecycle refunds above onchain refundable balance", async () => {
+      mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "paymentState") {
+          return {
+            hasCollectedPayment: true,
+            capturableAmount: 0n,
+            refundableAmount: BigInt("100000"),
+          };
+        }
+        return BigInt("1000000000");
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner, { refundFunding: true });
+      const extra = boundExtra();
+      const accepted = { ...mockRequirements, extra };
+      const result = await scheme.verify(
+        {
+          x402Version: 2,
+          accepted,
+          payload: {
+            type: "refund",
+            paymentInfo: boundPaymentInfo(),
+            saltNonce: SALT_NONCE,
+            amount: "500000",
+            expectedCapturableAmount: "0",
+            expectedRefundableAmount: "100000",
+            authorizerSignature: "0xabcd",
+          },
+        },
+        accepted,
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_refund_exceeds_capture");
+    });
+
+    it("should verify a void lifecycle payload when capturable balance remains", async () => {
+      mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "paymentState") {
+          return {
+            hasCollectedPayment: true,
+            capturableAmount: BigInt("500000"),
+            refundableAmount: 0n,
+          };
+        }
+        return BigInt("1000000000");
+      });
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const extra = boundExtra();
+      const accepted = { ...mockRequirements, extra };
+      const result = await scheme.verify(
+        {
+          x402Version: 2,
+          accepted,
+          payload: {
+            type: "void",
+            paymentInfo: boundPaymentInfo(),
+            saltNonce: SALT_NONCE,
+            authorizerSignature: "0xabcd",
+          },
+        },
+        accepted,
+      );
+      expect(result.isValid).toBe(true);
+    });
+
+    it("should reject lifecycle capture when submitted absolute fee is out of range", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({ feeAmount: "999999" });
+      const result = await scheme.verify(envelope, envelope.accepted);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe("invalid_auth_capture_evm_fee_bps_out_of_range");
+    });
+
+    it("should fail lifecycle capture settle when fee wire does not match v1.1 deployment", async () => {
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const envelope = buildCapturePayload({ feeAmount: undefined, feeBps: 0 });
+      const result = await scheme.settle(envelope, envelope.accepted);
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe("invalid_auth_capture_evm_payload_format");
     });
 
     it("should settle a refund through the operator refund collector when funding is configured", async () => {
