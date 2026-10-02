@@ -115,6 +115,24 @@ describe("signCaptureFields", () => {
     );
   });
 
+  it("derives v1.1 feeAmount from feeBps when feeAmount is omitted", async () => {
+    const signer = mockSigner();
+    const extra = normalizedExtra();
+    const fields = await signCaptureFields({
+      signer,
+      chainId: CHAIN_ID,
+      extra,
+      paymentInfoHash: "0x" + "ff".repeat(32),
+      amount: "1000000",
+      capturable: "1000000",
+      refundable: "0",
+      feeBps: 100,
+      feeReceiver: extra.feeRecipient,
+    });
+    expect(fields.feeAmount).toBe("10000");
+    expect(fields.feeBps).toBeUndefined();
+  });
+
   it("honors explicit v1.1 feeAmount override", async () => {
     const signer = mockSigner();
     const extra = normalizedExtra();

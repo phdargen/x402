@@ -32,6 +32,9 @@ export interface AuthCaptureServerConfig {
   receiverAuthorizerSigner?: AuthorizerSigner;
 }
 
+/** Align relative deadline conversion so repeated 402s in the same minute share values. */
+const DEADLINE_OFFSET_BUCKET_SECONDS = 60;
+
 const AUTH_CAPTURE_MERCHANT_FIELD_HINTS: Record<string, string> = {
   captureAuthorizer:
     ' For operatorType "delegated", omit extra.captureAuthorizer so the scheme copies it from ' +
@@ -99,6 +102,7 @@ function assertAuthCaptureMerchantExtraComplete(extra: Record<string, unknown>):
  */
 export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   readonly scheme = AUTH_CAPTURE_SCHEME;
+  readonly dynamicExtraFields = ["captureDeadline", "refundDeadline"];
   readonly defaultAssetTransferMethod: AssetTransferMethod = "eip3009";
   readonly paymentFlows = {
     eip3009: { supported: ["escrow", "authorization"], default: "escrow" },
@@ -225,6 +229,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
     }
 
     const now = Math.floor(Date.now() / 1000);
+    const deadlineBase =
+      Math.floor(now / DEADLINE_OFFSET_BUCKET_SECONDS) * DEADLINE_OFFSET_BUCKET_SECONDS;
     const hasAbsCapture = typeof merged.captureDeadline === "number";
     const hasAbsRefund = typeof merged.refundDeadline === "number";
     const hasRelCapture = merged.captureDeadlineSeconds !== undefined;
@@ -250,8 +256,12 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       );
     }
 
-    const captureFromOffset = resolveOffsetToDeadline(merged, "captureDeadlineSeconds", now);
-    const refundFromOffset = resolveOffsetToDeadline(merged, "refundDeadlineSeconds", now);
+    const captureFromOffset = resolveOffsetToDeadline(
+      merged,
+      "captureDeadlineSeconds",
+      deadlineBase,
+    );
+    const refundFromOffset = resolveOffsetToDeadline(merged, "refundDeadlineSeconds", deadlineBase);
     delete merged.captureDeadlineSeconds;
     delete merged.refundDeadlineSeconds;
 

@@ -370,6 +370,11 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.payTo).toBe("0x1234567890123456789012345678901234567890");
     });
 
+    it("should declare captureDeadline and refundDeadline as dynamic extra fields", () => {
+      const scheme = new AuthCaptureEvmScheme();
+      expect(scheme.dynamicExtraFields).toEqual(["captureDeadline", "refundDeadline"]);
+    });
+
     it("should convert captureDeadlineSeconds and refundDeadlineSeconds to absolute deadlines, stripping the offset keys", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
@@ -385,17 +390,15 @@ describe("AuthCaptureEvmScheme", () => {
         network: "eip155:84532" as const,
       };
 
-      const before = Math.floor(Date.now() / 1000);
+      const now = Math.floor(Date.now() / 1000);
+      const bucketStart = Math.floor(now / 60) * 60;
       const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
-      const after = Math.floor(Date.now() / 1000);
 
       const captureDeadline = result.extra?.captureDeadline as number;
       const refundDeadline = result.extra?.refundDeadline as number;
 
-      expect(captureDeadline).toBeGreaterThanOrEqual(before + 600);
-      expect(captureDeadline).toBeLessThanOrEqual(after + 600);
-      expect(refundDeadline).toBeGreaterThanOrEqual(before + 1200);
-      expect(refundDeadline).toBeLessThanOrEqual(after + 1200);
+      expect(captureDeadline).toBe(bucketStart + 600);
+      expect(refundDeadline).toBe(bucketStart + 1200);
 
       expect(result.extra).not.toHaveProperty("captureDeadlineSeconds");
       expect(result.extra).not.toHaveProperty("refundDeadlineSeconds");
@@ -420,6 +423,28 @@ describe("AuthCaptureEvmScheme", () => {
       await expect(scheme.enhancePaymentRequirements(reqs, supportedKind, [])).rejects.toThrow(
         /both absolute deadlines/,
       );
+    });
+
+    it("should throw when both absolute and relative deadline pairs are present", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+      };
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({
+          captureDeadline: 1_700_000_000,
+          refundDeadline: 1_800_000_000,
+          captureDeadlineSeconds: 600,
+          refundDeadlineSeconds: 1_200,
+        }),
+      };
+
+      await expect(
+        scheme.enhancePaymentRequirements(requirements, supportedKind, []),
+      ).rejects.toThrow(/not a mix/);
     });
 
     it("should use absolute captureDeadline / refundDeadline when both are set without offsets", async () => {
@@ -447,7 +472,7 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.extra).not.toHaveProperty("refundDeadlineSeconds");
     });
 
-    it("should produce distinct deadlines across two calls separated in time", async () => {
+    it("should keep relative deadlines stable across enhance calls within the same bucket", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
@@ -466,8 +491,31 @@ describe("AuthCaptureEvmScheme", () => {
       await new Promise(resolve => setTimeout(resolve, 1100));
       const second = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
 
-      expect(second.extra?.captureDeadline).toBeGreaterThan(first.extra?.captureDeadline as number);
-      expect(second.extra?.refundDeadline).toBeGreaterThan(first.extra?.refundDeadline as number);
+      expect(second.extra?.captureDeadline).toBe(first.extra?.captureDeadline);
+      expect(second.extra?.refundDeadline).toBe(first.extra?.refundDeadline);
+    });
+
+    it("should align relative deadlines to the offset bucket start", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const requirements = {
+        ...baseRequirements,
+        extra: completeExtra({
+          captureDeadlineSeconds: 600,
+          refundDeadlineSeconds: 1_200,
+        }),
+      };
+      const supportedKind = {
+        x402Version: 2,
+        scheme: "auth-capture",
+        network: "eip155:84532" as const,
+      };
+
+      const now = Math.floor(Date.now() / 1000);
+      const bucketStart = Math.floor(now / 60) * 60;
+      const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
+
+      expect(result.extra?.captureDeadline).toBe(bucketStart + 600);
+      expect(result.extra?.refundDeadline).toBe(bucketStart + 1_200);
     });
 
     it("should throw on non-positive captureDeadlineSeconds", async () => {
@@ -558,17 +606,15 @@ describe("AuthCaptureEvmScheme", () => {
         },
       };
 
-      const before = Math.floor(Date.now() / 1000);
+      const now = Math.floor(Date.now() / 1000);
+      const bucketStart = Math.floor(now / 60) * 60;
       const result = await scheme.enhancePaymentRequirements(requirements, supportedKind, []);
-      const after = Math.floor(Date.now() / 1000);
 
       const captureDeadline = result.extra?.captureDeadline as number;
       const refundDeadline = result.extra?.refundDeadline as number;
 
-      expect(captureDeadline).toBeGreaterThanOrEqual(before + 600);
-      expect(captureDeadline).toBeLessThanOrEqual(after + 600);
-      expect(refundDeadline).toBeGreaterThanOrEqual(before + 1200);
-      expect(refundDeadline).toBeLessThanOrEqual(after + 1200);
+      expect(captureDeadline).toBe(bucketStart + 600);
+      expect(refundDeadline).toBe(bucketStart + 1200);
     });
   });
 

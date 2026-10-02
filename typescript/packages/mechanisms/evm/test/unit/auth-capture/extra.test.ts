@@ -171,6 +171,17 @@ describe("validateSubmittedFee", () => {
       }),
     ).toBeUndefined();
   });
+
+  it("rejects non-zero v1.1 fee when the fee receiver is the zero address", () => {
+    const extra = { ...parseOk(), feeRecipient: zeroAddress };
+    expect(
+      validateSubmittedFee(extra, "1000000", {
+        version: "v1.1",
+        feeAmount: "5000",
+        feeReceiver: zeroAddress,
+      }),
+    ).toBe(Errors.ErrZeroFeeReceiver);
+  });
 });
 
 describe("validateOperator", () => {
