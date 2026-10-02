@@ -175,9 +175,7 @@ describe("EVM Utils", () => {
     it("formats non-string signer payloads in the error message", () => {
       const response = invalidBroadcastHashResponse({ code: 1 }, "bad_hash", "eip155:84532");
       expect(response.success).toBe(false);
-      expect(response.errorMessage).toBe(
-        'signer returned an invalid transaction hash: {"code":1}',
-      );
+      expect(response.errorMessage).toBe('signer returned an invalid transaction hash: {"code":1}');
     });
   });
 

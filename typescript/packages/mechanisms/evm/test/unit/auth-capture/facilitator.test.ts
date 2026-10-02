@@ -1853,11 +1853,9 @@ describe("AuthCaptureEvmScheme", () => {
     it("should reject bound collect payloads that omit saltNonce", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       const payload = buildBoundEip3009Payload();
-      const { saltNonce: _removed, ...collect } = payload.payload;
-      const result = await scheme.verify(
-        { ...payload, payload: collect },
-        payload.accepted,
-      );
+      const collect = { ...payload.payload };
+      delete collect.saltNonce;
+      const result = await scheme.verify({ ...payload, payload: collect }, payload.accepted);
       expect(result.isValid).toBe(false);
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_payload_format");
     });
@@ -2042,7 +2040,6 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.isValid).toBe(false);
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_authorization_not_yet_valid");
     });
-
   });
 
   describe("verify/settle — lifecycle payloads", () => {

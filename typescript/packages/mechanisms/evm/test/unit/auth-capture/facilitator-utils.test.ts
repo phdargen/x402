@@ -7,7 +7,10 @@ import {
   resolveSubmitter,
   selectSubmitter,
 } from "../../../src/auth-capture/facilitator/utils";
-import { ESCROW_ERROR_TO_INVALID_REASON, ErrSimulationFailed } from "../../../src/auth-capture/errors";
+import {
+  ESCROW_ERROR_TO_INVALID_REASON,
+  ErrSimulationFailed,
+} from "../../../src/auth-capture/errors";
 import { EIP3009_TOKEN_COLLECTOR_ADDRESS } from "../../../src/auth-capture/constants";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
 
@@ -32,12 +35,12 @@ describe("auth-capture facilitator utils", () => {
 
   it("uses the first signer for custom operators", () => {
     const signers = [signer([A]), signer([B])];
-    expect(
-      resolveSubmitter(signers, { operatorType: "custom", captureAuthorizer: C }),
-    ).toBe(signers[0]);
-    expect(
-      resolveSubmitter(signers, { operatorType: "delegated", captureAuthorizer: B }),
-    ).toBe(signers[1]);
+    expect(resolveSubmitter(signers, { operatorType: "custom", captureAuthorizer: C })).toBe(
+      signers[0],
+    );
+    expect(resolveSubmitter(signers, { operatorType: "delegated", captureAuthorizer: B })).toBe(
+      signers[1],
+    );
   });
 
   it("reads the payer from EIP-3009 and Permit2 collect envelopes", () => {

@@ -188,9 +188,9 @@ describe("validateOperator", () => {
 
   it("rejects delegated operators that are not facilitator submitters", () => {
     const extra = parseOk();
-    expect(validateOperator(extra, ["0x0000000000000000000000000000000000000001"], undefined, false)).toBe(
-      Errors.ErrOperatorNotAdmitted,
-    );
+    expect(
+      validateOperator(extra, ["0x0000000000000000000000000000000000000001"], undefined, false),
+    ).toBe(Errors.ErrOperatorNotAdmitted);
   });
 
   it("blocks lifecycle relay for custom operators", () => {
@@ -199,7 +199,12 @@ describe("validateOperator", () => {
       captureAuthorizer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
     expect(
-      validateOperator(extra, submitters, { operators: [{ operatorType: "custom", address: "*" }] }, true),
+      validateOperator(
+        extra,
+        submitters,
+        { operators: [{ operatorType: "custom", address: "*" }] },
+        true,
+      ),
     ).toBe(Errors.ErrLifecycleNotRelayed);
   });
 
@@ -219,12 +224,8 @@ describe("validateOperator", () => {
 describe("fee encoding helpers", () => {
   it("matches deployment version to wire fee fields", () => {
     expect(feeFieldMatchesDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_0, { feeBps: 0 })).toBe(true);
-    expect(feeFieldMatchesDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_0, { feeAmount: "1" })).toBe(
-      false,
-    );
-    expect(feeFieldMatchesDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_1, { feeAmount: "1" })).toBe(
-      true,
-    );
+    expect(feeFieldMatchesDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_0, { feeAmount: "1" })).toBe(false);
+    expect(feeFieldMatchesDeployment(AUTH_CAPTURE_DEPLOYMENT_V1_1, { feeAmount: "1" })).toBe(true);
   });
 
   it("derives default submitted fee per deployment version", () => {
@@ -271,7 +272,11 @@ describe("fee encoding helpers", () => {
     });
     const feeRecipient = "0x4444444444444444444444444444444444444444" as `0x${string}`;
     expect(
-      captureEscrowArgs(tuple, 500_000n, { version: "v1.0", feeBps: 10, feeReceiver: feeRecipient }),
+      captureEscrowArgs(tuple, 500_000n, {
+        version: "v1.0",
+        feeBps: 10,
+        feeReceiver: feeRecipient,
+      }),
     ).toEqual([tuple, 500_000n, 10, feeRecipient]);
     expect(
       captureEscrowArgs(tuple, 500_000n, {
@@ -327,15 +332,7 @@ describe("verifyCommon", () => {
       verifyCommon("exact", "eip155:84532", requirements, "auth-capture", [], undefined, false),
     ).toEqual({ error: Errors.ErrUnsupportedScheme });
     expect(
-      verifyCommon(
-        "auth-capture",
-        "eip155:1",
-        requirements,
-        "auth-capture",
-        [],
-        undefined,
-        false,
-      ),
+      verifyCommon("auth-capture", "eip155:1", requirements, "auth-capture", [], undefined, false),
     ).toEqual({ error: Errors.ErrNetworkMismatch });
   });
 

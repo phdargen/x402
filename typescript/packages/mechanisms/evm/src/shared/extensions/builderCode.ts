@@ -60,7 +60,12 @@ export async function resolveDataSuffix(
   return concatDataSuffixParts(parts);
 }
 
-/** Concatenates non-empty hex suffix fragments (used by {@link resolveDataSuffix}). */
+/**
+ * Concatenates non-empty hex suffix fragments (used by {@link resolveDataSuffix}).
+ *
+ * @param parts - Hex suffix fragments; after the first, leading `0x` is stripped when merging.
+ * @returns Combined hex string, or `undefined` when `parts` is empty.
+ */
 export function concatDataSuffixParts(parts: Hex[]): Hex | undefined {
   if (parts.length === 0) {
     return undefined;

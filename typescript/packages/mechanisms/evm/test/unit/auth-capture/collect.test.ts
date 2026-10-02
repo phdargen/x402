@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import { zeroAddress } from "viem";
 import { verifyCollect } from "../../../src/auth-capture/facilitator/collect";
 import { EIP3009_TOKEN_COLLECTOR_ADDRESS } from "../../../src/auth-capture/constants";
-import { computePayerAgnosticPaymentInfoHash, deriveBoundSalt } from "../../../src/auth-capture/nonce";
+import {
+  computePayerAgnosticPaymentInfoHash,
+  deriveBoundSalt,
+} from "../../../src/auth-capture/nonce";
 import type { FacilitatorEvmSigner } from "../../../src/signer";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
 

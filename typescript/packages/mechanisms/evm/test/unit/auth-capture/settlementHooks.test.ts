@@ -281,7 +281,10 @@ describe("AuthCaptureSettlementHooks", () => {
       await hooks.settleOnCancel({
         requirements: {
           ...requirements,
-          extra: escrowExtra({ paymentFlow: "authorization", receiverAuthorizer: authorizerSigner.address }),
+          extra: escrowExtra({
+            paymentFlow: "authorization",
+            receiverAuthorizer: authorizerSigner.address,
+          }),
         },
         paymentPayload: { payload: collectPayload() },
       } as never),
@@ -290,8 +293,14 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("skips deferred after-handler settle when authorize receipt was stored", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
-    const extra = escrowExtra({ captureMode: "deferred", receiverAuthorizer: "0x0000000000000000000000000000000000000000" });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
+    const extra = escrowExtra({
+      captureMode: "deferred",
+      receiverAuthorizer: "0x0000000000000000000000000000000000000000",
+    });
     const requirements = {
       scheme: "auth-capture",
       network: "eip155:84532" as const,
@@ -326,7 +335,10 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("uses stored capturable balance when enriching sync capture", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
     const extra = escrowExtra();
     const requirements = {
       scheme: "auth-capture",
@@ -373,7 +385,10 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("persists charge results with refundable balance for authorization flow", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
     const requirements = {
       scheme: "auth-capture",
       network: "eip155:84532" as const,
@@ -419,7 +434,10 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("updates capturable balances after sync capture settle", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
     const extra = escrowExtra();
     const requirements = {
       scheme: "auth-capture",
@@ -474,7 +492,10 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("does not persist storage when authorize settle fails", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
     const extra = escrowExtra();
     const requirements = {
       scheme: "auth-capture",
@@ -497,7 +518,10 @@ describe("AuthCaptureSettlementHooks", () => {
 
   it("zeros capturable on successful cancel void settle", async () => {
     const storage = new InMemoryAuthorizedPaymentStorage();
-    const hooks = new AuthCaptureSettlementHooks({ storage, receiverAuthorizerSigner: authorizerSigner });
+    const hooks = new AuthCaptureSettlementHooks({
+      storage,
+      receiverAuthorizerSigner: authorizerSigner,
+    });
     const extra = escrowExtra();
     const paymentInfo: PaymentInfoStruct = {
       operator: extra.captureAuthorizer,
@@ -545,7 +569,12 @@ describe("AuthCaptureSettlementHooks", () => {
         extra,
       },
       declaredExtensions: {},
-      result: { success: true, transaction: "0xvoid", network: "eip155:84532", payer: paymentInfo.payer },
+      result: {
+        success: true,
+        transaction: "0xvoid",
+        network: "eip155:84532",
+        payer: paymentInfo.payer,
+      },
     } as never);
 
     expect((await storage.get(hash))?.capturableAmount).toBe("0");
