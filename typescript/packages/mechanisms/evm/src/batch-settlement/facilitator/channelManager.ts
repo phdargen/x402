@@ -30,18 +30,22 @@ export type { FacilitatorChannel };
 export type FacilitatorRetention = "when-unused" | "forever";
 
 /**
+ * Applies the default row-retention policy when none is configured.
  *
- * @param retention
+ * @param retention - Optional retention mode from config.
+ * @returns Effective retention mode.
  */
 function normalizeRetention(retention?: FacilitatorRetention): FacilitatorRetention {
   return retention ?? "when-unused";
 }
 
 /**
+ * Returns whether escrow is fully claimed and no charges remain unattested.
  *
- * @param held
- * @param channel
- * @param chargeCount
+ * @param held - Whether an admission lock is currently held.
+ * @param channel - Stored facilitator channel row.
+ * @param chargeCount - Unattested charge count on the row.
+ * @returns True when the channel can be treated as closed.
  */
 export function isChannelFinished(
   held: boolean,
@@ -60,11 +64,12 @@ export function isChannelFinished(
 /**
  * Deletes a never-claimed row after idle refund bookkeeping.
  *
- * @param retention
- * @param held
- * @param channel
- * @param chargeCount
- * @param appliedTotalClaimed
+ * @param retention - Row retention policy.
+ * @param held - Whether an admission lock is currently held.
+ * @param channel - Stored facilitator channel row.
+ * @param chargeCount - Unattested charge count on the row.
+ * @param appliedTotalClaimed - Post-refund `totalClaimed` used for the never-claimed check.
+ * @returns True when the row should be removed from storage.
  */
 export function shouldDeleteNeverClaimedRefundRow(
   retention: FacilitatorRetention | undefined,
@@ -87,10 +92,14 @@ export function shouldDeleteNeverClaimedRefundRow(
 }
 
 /**
- * @param retention
- * @param held
- * @param channel
- * @param chargeCount
+ * Legacy delete predicate that mirrors {@link shouldDeleteNeverClaimedRefundRow}
+ * using the row's stored `totalClaimed`.
+ *
+ * @param retention - Row retention policy.
+ * @param held - Whether an admission lock is currently held.
+ * @param channel - Stored facilitator channel row.
+ * @param chargeCount - Unattested charge count on the row.
+ * @returns True when the row should be removed from storage.
  * @deprecated Use shouldDeleteNeverClaimedRefundRow or settle-worker cleanup.
  */
 export function shouldDeleteVoucherRow(

@@ -134,6 +134,32 @@ describe("voucherStore helpers — commitVoucherCharge", () => {
     expect(await storage.get(CHANNEL_ID)).toMatchObject({ chargedCumulativeAmount: "2000" });
   });
 
+  it("returns watermark_mismatch without mutating storage when expectedCharged differs", async () => {
+    const storage = new InMemoryChannelStorage();
+    await storage.updateChannel(CHANNEL_ID, () => baseChannel());
+    const result = await commitVoucherCharge(storage, CHANNEL_ID, {
+      increment: 500n,
+      signedCap: 3000n,
+      expectedCharged: 1500n,
+      voucher: { maxClaimableAmount: "2500", signature: "0xbbb" },
+    });
+    expect(result).toEqual({ status: "watermark_mismatch", charged: "2000" });
+    expect(await storage.get(CHANNEL_ID)).toMatchObject({ chargedCumulativeAmount: "2000" });
+  });
+
+  it("commits when expectedCharged equals the stored watermark", async () => {
+    const storage = new InMemoryChannelStorage();
+    await storage.updateChannel(CHANNEL_ID, () => baseChannel());
+    const result = await commitVoucherCharge(storage, CHANNEL_ID, {
+      increment: 500n,
+      signedCap: 3000n,
+      expectedCharged: 2000n,
+      voucher: { maxClaimableAmount: "2500", signature: "0xbbb" },
+    });
+    expect(result.status).toBe("committed");
+    expect(await storage.get(CHANNEL_ID)).toMatchObject({ chargedCumulativeAmount: "2500" });
+  });
+
   it("applies map after a successful commit", async () => {
     const storage = new InMemoryChannelStorage();
     await storage.updateChannel(CHANNEL_ID, () => baseChannel());

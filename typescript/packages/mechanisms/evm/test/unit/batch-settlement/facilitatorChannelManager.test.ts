@@ -521,7 +521,9 @@ describe("FacilitatorChannelManager — refund()", () => {
     expect(results[0].channel).toBe(channel.channelId);
 
     const stored = await storage.get(channel.channelId);
-    expect(stored).toBeUndefined();
+    expect(stored).toBeDefined();
+    expect(stored?.totalClaimed).toBe("3000");
+    expect(stored?.chargeCount).toBe(0);
   });
 
   it("refundIdleChannels ignores channels whose escrow balance is already zero", async () => {
@@ -584,7 +586,10 @@ describe("FacilitatorChannelManager — refund()", () => {
     expect(signer.writeContract).not.toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "refundWithSignature" }),
     );
-    expect(await storage.get(channel.channelId)).toBeUndefined();
+    const stored = await storage.get(channel.channelId);
+    expect(stored).toBeDefined();
+    expect(stored?.totalClaimed).toBe("5000");
+    expect(stored?.chargeCount).toBe(0);
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };

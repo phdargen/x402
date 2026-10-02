@@ -95,7 +95,7 @@ describe("afterClaim", () => {
     expect((await storage.get(channel.channelId))?.chargeCount).toBe(2);
   });
 
-  it("deletes a closed channel row after claim when retention is until-closed", async () => {
+  it("keeps a closed channel row after claim when retention is when-unused", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const channel = buildChannel({ chargeCount: 0 });
     await storage.updateChannel(channel.channelId, () => channel);
@@ -113,10 +113,13 @@ describe("afterClaim", () => {
       NETWORK,
       attestedMap(channel),
       undefined,
-      "until-closed",
+      "when-unused",
     );
 
-    expect(await storage.get(channel.channelId)).toBeUndefined();
+    const stored = await storage.get(channel.channelId);
+    expect(stored).toBeDefined();
+    expect(stored?.totalClaimed).toBe("5000");
+    expect(stored?.chargeCount).toBe(0);
   });
 
   it("keeps a closed channel row when retention is forever", async () => {
@@ -189,7 +192,7 @@ describe("afterClaim", () => {
     expect(await storage.get(channel.channelId)).toBeDefined();
   });
 
-  it("still deletes a closed row when lock inspection fails (treated as unlocked)", async () => {
+  it("keeps a closed row after claim when lock inspection fails (treated as unlocked)", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const lockStorage = {
       acquire: storage.acquire.bind(storage),
@@ -216,6 +219,6 @@ describe("afterClaim", () => {
       undefined,
     );
 
-    expect(await storage.get(channel.channelId)).toBeUndefined();
+    expect(await storage.get(channel.channelId)).toBeDefined();
   });
 });

@@ -12,6 +12,11 @@ export type VoucherStoreMode = "self" | "facilitator";
 export type CommitVoucherChargeInput<T extends Channel = Channel> = {
   increment: bigint;
   signedCap: bigint;
+  /**
+   * When set, the stored (or recovered) `chargedCumulativeAmount` must equal this value before the
+   * charge applies. Pins the commit to the watermark `/verify` admitted.
+   */
+  expectedCharged?: bigint;
   voucher: { maxClaimableAmount: string; signature: string };
   snapshot?: T | ((current: T | undefined) => T | undefined);
   recoverFromSnapshot?: boolean;
@@ -24,6 +29,7 @@ export type CommitVoucherChargeInput<T extends Channel = Channel> = {
 export type CommitVoucherChargeResult<T extends Channel = Channel> =
   | { status: "missing" }
   | { status: "cap_exceeded"; charged: string }
+  | { status: "watermark_mismatch"; charged: string }
   | { status: "committed"; previous: Channel; current: T }
   | { status: "conflict" };
 
@@ -169,7 +175,13 @@ export async function commitVoucherCharge<T extends Channel = Channel>(
       return current;
     }
 
-    const newCharged = BigInt(base.chargedCumulativeAmount) + input.increment;
+    const charged = BigInt(base.chargedCumulativeAmount);
+    if (input.expectedCharged !== undefined && charged !== input.expectedCharged) {
+      outcome = { status: "watermark_mismatch", charged: charged.toString() };
+      return current;
+    }
+
+    const newCharged = charged + input.increment;
     if (newCharged > input.signedCap) {
       outcome = { status: "cap_exceeded", charged: newCharged.toString() };
       return current;
@@ -198,7 +210,11 @@ export async function commitVoucherCharge<T extends Channel = Channel>(
     return updatedChannel;
   });
 
-  if (outcome?.status === "missing" || outcome?.status === "cap_exceeded") {
+  if (
+    outcome?.status === "missing" ||
+    outcome?.status === "cap_exceeded" ||
+    outcome?.status === "watermark_mismatch"
+  ) {
     return outcome;
   }
 
