@@ -234,6 +234,12 @@ function encodeCborValue(value: SettlementMetadataValue): Uint8Array {
     return concatBytes([encodeCborMajorType(4, value.length), ...value.map(encodeCborValue)]);
   }
 
+  // Runtime guard: the type system is not enforced for JS callers, and Object.entries would
+  // silently turn booleans, dates, functions and typed arrays into empty or index-keyed maps.
+  if (!isPlainObject(value)) {
+    throw new Error(`Unsupported CBOR metadata value: ${describeValue(value)}`);
+  }
+
   // Deterministic encoding: keys sorted bytewise by their encoded form (RFC 8949 section 4.2.1)
   const entries = Object.entries(value)
     .map(([key, entry]) => ({ key: encodeCborString(key), value: encodeCborValue(entry) }))
@@ -242,6 +248,30 @@ function encodeCborValue(value: SettlementMetadataValue): Uint8Array {
     encodeCborMajorType(5, entries.length),
     ...entries.flatMap(entry => [entry.key, entry.value]),
   ]);
+}
+
+/**
+ * Checks that a value is a plain object (prototype is `Object.prototype` or `null`).
+ *
+ * @param value - Value to check
+ * @returns True when the value is a plain object
+ */
+function isPlainObject(value: unknown): value is Record<string, SettlementMetadataValue> {
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Describes an unsupported value for error messages without serializing its contents.
+ *
+ * @param value - Unsupported value
+ * @returns Short type description
+ */
+function describeValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "object") return value.constructor?.name ?? "object";
+  return typeof value;
 }
 
 /**

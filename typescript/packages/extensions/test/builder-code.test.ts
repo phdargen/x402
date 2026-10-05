@@ -14,6 +14,8 @@ import {
   MAX_CLIENT_SERVICE_CODES,
   MAX_SERVER_SERVICE_CODES,
   type DataSuffixContext,
+  type SettlementMetadata,
+  type SettlementMetadataValue,
 } from "../src/builder-code";
 
 const APP = "bc_my_app";
@@ -599,6 +601,37 @@ describe("Builder Code Extension", () => {
       expect(() => encodeBuilderCodeSuffix({ m: { negative: -1 } })).toThrow();
       expect(() => encodeBuilderCodeSuffix({ m: { float: 1.5 } })).toThrow();
       expect(() => encodeBuilderCodeSuffix({ m: { tooLarge: 2n ** 64n } })).toThrow();
+    });
+
+    it.each([
+      ["true", true],
+      ["false", false],
+      ["null", null],
+      ["undefined", undefined],
+      ["Uint8Array", new Uint8Array([1, 2])],
+      ["Date", new Date(0)],
+      ["function", () => 1],
+      ["symbol", Symbol("x")],
+      ["Map", new Map([["k", 1]])],
+      ["class instance", new (class Foo {})()],
+    ])("rejects %s as a metadata value instead of encoding it as a map", (_name, bad) => {
+      const invalid = bad as unknown as SettlementMetadataValue;
+      expect(() => encodeBuilderCodeSuffix({ m: { bad: invalid } })).toThrow(/Unsupported CBOR/);
+      expect(() => encodeBuilderCodeSuffix({ m: { nested: { list: [invalid] } } })).toThrow(
+        /Unsupported CBOR/,
+      );
+    });
+
+    it("rejects unsupported metadata at the top level of m", () => {
+      const invalid = true as unknown as SettlementMetadata;
+      expect(() => encodeBuilderCodeSuffix({ m: invalid })).toThrow(/Unsupported CBOR/);
+    });
+
+    it("still encodes null-prototype objects as maps", () => {
+      const m = Object.assign(Object.create(null), { k: 1 }) as SettlementMetadata;
+      expect(parseBuilderCodeSuffixFromCalldata(encodeBuilderCodeSuffix({ m }))?.m).toEqual({
+        k: 1n,
+      });
     });
 
     it.each([

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -181,16 +182,40 @@ func TestEncodeRejectsOversizedCbor(t *testing.T) {
 }
 
 func TestEncodeRejectsUnsupportedMetadataValues(t *testing.T) {
+	type customStruct struct{ A uint64 }
+	one := uint64(1)
+
 	for name, value := range map[string]any{
-		"negative": -1,
-		"float":    1.5,
-		"bool":     true,
-		"bytes":    []byte{1},
-		"nil":      nil,
+		"negative":       -1,
+		"float":          1.5,
+		"bool":           true,
+		"false":          false,
+		"bytes":          []byte{1},
+		"byte array":     [2]byte{1, 2},
+		"nil":            nil,
+		"time":           time.Unix(0, 0),
+		"func":           func() {},
+		"struct":         customStruct{A: 1},
+		"pointer":        &one,
+		"int8":           int8(1),
+		"uint32":         uint32(1),
+		"bool slice":     []bool{true},
+		"typed map":      map[string]string{"k": "v"},
+		"non-text keys":  map[int]uint64{1: 1},
+		"channel":        make(chan int),
+		"nested nil map": map[string]any{"k": nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := EncodeBuilderCodeSuffix(BuilderCodeSuffixData{M: map[string]any{"k": value}}); err == nil {
-				t.Fatalf("expected an error for %s", name)
+			wrappers := map[string]any{
+				"direct": value,
+				"array":  []any{value},
+				"map":    map[string]any{"nested": map[string]any{"k": value}},
+			}
+			for position, wrapped := range wrappers {
+				_, err := EncodeBuilderCodeSuffix(BuilderCodeSuffixData{M: map[string]any{"k": wrapped}})
+				if err == nil {
+					t.Fatalf("expected an error for %s (%s)", name, position)
+				}
 			}
 		})
 	}
