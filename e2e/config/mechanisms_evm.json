@@ -457,7 +457,7 @@
         "operatorType": "custom",
         "paymentFlow": "escrow",
         "captureMode": "deferred",
-        "captureAuthorizer": "0x7cEc17a1784118Eae0ACD148A4a3E4280F54ABe0",
+        "captureAuthorizer": "0x8FE415CdB559fBF5B235B81CC4F7a69684A274bb",
         "receiverAuthorizer": "0x0000000000000000000000000000000000000000"
       }
     }

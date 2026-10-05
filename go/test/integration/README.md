@@ -37,6 +37,7 @@ middleware with **real Base Sepolia transactions** for both `eip3009` and `permi
 
 - 🔐 **TestAuthCaptureIntegration_AuthorizeThenCapture** — authorize before the handler, capture after; payer and receiver balances move by the price
 - 🔐 **TestAuthCaptureIntegration_VoidOnHandlerFailure** — handler fails after authorize; the hold is voided back to the payer
+- 🔐 **TestAuthCaptureIntegration_CustomOperators** — `evm_auth_capture_custom_operator_test.go`: verify and settle through the deployed forwarding operator, and reject the noop and gas-wasting operators without a broadcast
 
 Tests marked with 🔐 require environment variables and will **skip** if not configured.
 

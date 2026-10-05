@@ -34,6 +34,8 @@ type mockFacSigner struct {
 	paymentStateCapturable   *big.Int
 	paymentStateRefundable   *big.Int
 	paymentStateErr          error
+	// stalePaymentStateReads serves the empty pre-collect state this many times, then the fields above.
+	stalePaymentStateReads int
 
 	simulateErr map[string]error // escrow function name -> forced simulation error
 
@@ -194,7 +196,14 @@ func (m *mockFacSigner) tryAggregate(args []interface{}) (interface{}, error) {
 	for i := range results {
 		callData := calls.Index(i).FieldByName("CallData").Bytes()
 		if bytes.HasPrefix(callData, escrow.Methods["paymentState"].ID) {
-			returnData, err := escrow.Methods["paymentState"].Outputs.Pack(m.paymentStateHasCollected, m.paymentStateCapturable, m.paymentStateRefundable)
+			collected := m.paymentStateHasCollected
+			capturable, refundable := m.paymentStateCapturable, m.paymentStateRefundable
+			if m.stalePaymentStateReads > 0 {
+				m.stalePaymentStateReads--
+				collected = false
+				capturable, refundable = big.NewInt(0), big.NewInt(0)
+			}
+			returnData, err := escrow.Methods["paymentState"].Outputs.Pack(collected, capturable, refundable)
 			if err != nil {
 				return nil, err
 			}

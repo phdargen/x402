@@ -413,6 +413,38 @@ func TestSettleCustomCollect(t *testing.T) {
 		assert.Empty(t, run.signer.writtenFunctions)
 	})
 
+	t.Run("a lagging paymentState read is retried until the collect is visible", func(t *testing.T) {
+		run := newCustomRun(t, false)
+		arm(run)
+		write := run.signer.afterWrite
+		run.signer.afterWrite = func(function string) {
+			write(function)
+			run.signer.stalePaymentStateReads = 2
+		}
+
+		resp, err := run.scheme.Settle(context.Background(), run.payload, run.requirements, nil)
+		require.NoError(t, err)
+		assert.True(t, resp.Success)
+		assert.Equal(t, 0, run.signer.stalePaymentStateReads)
+	})
+
+	t.Run("a payment that stays uncollected is rejected", func(t *testing.T) {
+		run := newCustomRun(t, false)
+		arm(run)
+		write := run.signer.afterWrite
+		run.signer.afterWrite = func(function string) {
+			write(function)
+			run.signer.paymentStateHasCollected = false
+			run.signer.paymentStateCapturable = big.NewInt(0)
+			run.signer.paymentStateRefundable = big.NewInt(0)
+		}
+
+		resp, err := run.scheme.Settle(context.Background(), run.payload, run.requirements, nil)
+		require.NoError(t, err)
+		assert.False(t, resp.Success)
+		assert.Equal(t, ErrUnexpectedPaymentState, resp.ErrorReason)
+	})
+
 	t.Run("a resumed settlement is still checked against the receipt", func(t *testing.T) {
 		run := newCustomRun(t, true)
 		arm(run)

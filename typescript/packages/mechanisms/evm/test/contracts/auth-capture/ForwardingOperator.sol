@@ -35,7 +35,7 @@ interface IAuthCaptureEscrow {
     uint256 amount,
     address tokenCollector,
     bytes calldata collectorData,
-    uint16 feeBps,
+    uint256 feeAmount,
     address feeReceiver
   ) external;
 }
@@ -61,9 +61,9 @@ contract ForwardingOperator {
     uint256 amount,
     address tokenCollector,
     bytes calldata collectorData,
-    uint16 feeBps,
+    uint256 feeAmount,
     address feeReceiver
   ) external {
-    escrow.charge(paymentInfo, amount, tokenCollector, collectorData, feeBps, feeReceiver);
+    escrow.charge(paymentInfo, amount, tokenCollector, collectorData, feeAmount, feeReceiver);
   }
 }

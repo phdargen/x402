@@ -129,6 +129,7 @@ function buildCustomEscrowRequirements(
     assetTransferMethod: "eip3009",
     paymentFlow: "escrow",
     captureMode: "deferred",
+    receiverAuthorizer: zeroAddress,
   };
   return {
     scheme: "auth-capture",
@@ -201,7 +202,7 @@ function buildPipeline(operators: readonly `0x${string}`[]): Pipeline {
   const client = new x402Client().register(NETWORK, new AuthCaptureEvmClient(clientSigner));
 
   const server = new x402ResourceServer(facilitatorClient);
-  server.register(NETWORK, new AuthCaptureEvmServer());
+  server.register(NETWORK, new AuthCaptureEvmServer({ collectOnlyRoutes: true }));
 
   return {
     client,

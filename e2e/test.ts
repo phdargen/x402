@@ -1063,7 +1063,7 @@ async function runTest() {
   if (authCaptureScenarios.length > 0) {
     const branchSelected = (branch: string) =>
       authCaptureScenarios.some(s => endpointAuthCaptureCoverageBranch(s.endpoint) === branch);
-    log('🔍 Auth-capture branch coverage (--min picks one EIP-3009 variant per server via shuffle):');
+    log('🔍 Auth-capture branch coverage (--min requires each branch once; one permit2 globally):');
     log(`   Self-managed sync EIP-3009:    ${branchSelected('self-sync-eip3009') ? '✅' : '⚠️  not in selected set'}`);
     log(`   Self-managed sync Permit2:     ${branchSelected('self-sync-permit2') ? '✅' : '⚠️  not in selected set'}`);
     log(`   Facilitator-authorizer sync:   ${branchSelected('facilitator-sync') ? '✅' : '⚠️  not in selected set'}`);

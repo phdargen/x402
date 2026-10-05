@@ -245,7 +245,7 @@ if (authorizerSigner) {
 }
 
 const defaultAuthCaptureForwardingOperator =
-  "0x7cEc17a1784118Eae0ACD148A4a3E4280F54ABe0";
+  "0x8FE415CdB559fBF5B235B81CC4F7a69684A274bb";
 const authCaptureCustomOperatorAllowlist = (
   process.env.FACILITATOR_EVM_AUTH_CAPTURE_CUSTOM_OPERATORS?.trim() ||
   defaultAuthCaptureForwardingOperator

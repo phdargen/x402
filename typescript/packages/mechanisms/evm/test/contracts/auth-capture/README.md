@@ -16,13 +16,13 @@ Committed ABI + creation bytecode live in `artifacts/`. Integration tests CREATE
 
 ## Base Sepolia addresses
 
-CREATE2 factory: `0x4e59b44847b379578588920cA78FbF26c0B4956C`. Salt is `keccak256("x402.auth-capture.test.<Name>.v1")`. ForwardingOperator is constructed with canonical `AuthCaptureEscrow` `0xBdEA0D1bcC5966192B070Fdf62aB4EF5b4420cff`. A bytecode change yields a new address.
+CREATE2 factory: `0x4e59b44847b379578588920cA78FbF26c0B4956C`. Salt is `keccak256("x402.auth-capture.test.<Name>.v1")`. ForwardingOperator is constructed with canonical `AuthCaptureEscrow` `0xf96815976523E00e65Be8f34cA5e64b4f41EB19c`. A bytecode change yields a new address.
 
 | Contract | Address |
 | --- | --- |
-| ForwardingOperator | `0x7cEc17a1784118Eae0ACD148A4a3E4280F54ABe0` |
-| NoopOperator | `0xB275Ff1fb679669A8057965d3Bf36F7601C8b9b1` |
-| GasWastingOperator | `0x9471744F28AdbbFbb8996A3862FF63Aac33919F1` |
+| ForwardingOperator | `0x8FE415CdB559fBF5B235B81CC4F7a69684A274bb` |
+| NoopOperator | `0x00Cc67f415Fec4ddAFB4F4a36F324AbBfdddFf27` |
+| GasWastingOperator | `0x637233E61c1cCC12f2Aa5e83524d976be5E2dE04` |
 
 ## Regenerate artifacts
 

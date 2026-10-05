@@ -305,7 +305,7 @@ Optional environment variables (batch-settlement scheme):
 SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY=0x...              # self-managed auth-capture sync (/auth-capture/evm/*) and optional batch-settlement receiver authorizer; omit for facilitator-delegated auth-capture routes
 CLIENT_EVM_BATCH_SETTLEMENT_VOUCHER_SIGNER_PRIVATE_KEY=0x...  # EOA the client uses to sign vouchers
 EVM_BATCH_SETTLEMENT_RECOVERY=true                            # test client state-loss recovery scenario (default: true)
-FACILITATOR_EVM_AUTH_CAPTURE_CUSTOM_OPERATORS=0x7cEc...       # optional comma-separated custom operator allowlist (defaults to ForwardingOperator on Base Sepolia)
+FACILITATOR_EVM_AUTH_CAPTURE_CUSTOM_OPERATORS=0x8FE4...       # optional comma-separated custom operator allowlist (defaults to ForwardingOperator on Base Sepolia)
 # Auth-capture: SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is required for /auth-capture/evm/* (server-signed sync capture). The facilitator-authorizer, deferred, and custom-forwarding routes always run in the same suite; deferred capture is triggered by the harness after the client GET. With the server key set you get full auth-capture coverage (5 EVM paths); without it only the three facilitator-delegated paths run (/auth-capture/evm/* are omitted via requiresEnv).
 
 # SVM

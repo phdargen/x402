@@ -7,7 +7,7 @@ import (
 	authcapturefacilitator "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/facilitator"
 )
 
-const defaultAuthCaptureForwardingOperator = "0x7cEc17a1784118Eae0ACD148A4a3E4280F54ABe0"
+const defaultAuthCaptureForwardingOperator = "0x8FE415CdB559fBF5B235B81CC4F7a69684A274bb"
 
 func authCaptureCustomOperators() []authcapturefacilitator.OperatorAllowlistEntry {
 	raw := strings.TrimSpace(os.Getenv("FACILITATOR_EVM_AUTH_CAPTURE_CUSTOM_OPERATORS"))

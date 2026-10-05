@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -398,6 +399,30 @@ func (f *AuthCaptureEvmScheme) customSnapshotFor(ctx context.Context, out *colle
 	return newSnapshot(addresses, state, balances)
 }
 
+// staleUncollected is the empty paymentState a node returns before it has the collect,
+// even after it has already served the receipt.
+func staleUncollected(snap *customSnapshot) bool {
+	return snap != nil && !snap.collected && snap.capturable.Sign() == 0 && snap.refundable.Sign() == 0
+}
+
+// snapshotAfterCollect reads the confirmed snapshot, retrying while paymentState is still
+// the empty pre-collect struct. The node that served the receipt may not show the collect yet.
+func (f *AuthCaptureEvmScheme) snapshotAfterCollect(ctx context.Context, out *collectOutcome, addresses []string) (*customSnapshot, error) {
+	var snap *customSnapshot
+	var err error
+	for attempt := 1; ; attempt++ {
+		snap, err = f.customSnapshotFor(ctx, out, addresses)
+		if err != nil || !staleUncollected(snap) || attempt == collectedReadAttempts {
+			return snap, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(collectedReadDelay):
+		}
+	}
+}
+
 // snapshotCustomBalances reads the pre-broadcast state the receipt check compares against.
 func (f *AuthCaptureEvmScheme) snapshotCustomBalances(ctx context.Context, out *collectOutcome) (*customSnapshot, error) {
 	tokenStore, err := f.customTokenStore(ctx, out)
@@ -436,7 +461,7 @@ func (f *AuthCaptureEvmScheme) customReceiptCheck(out *collectOutcome, before *c
 		if err != nil {
 			return nil, toSettleError(err, out.network, out.payer)
 		}
-		after, err := f.customSnapshotFor(ctx, out, f.watchedAddresses(out, tokenStore))
+		after, err := f.snapshotAfterCollect(ctx, out, f.watchedAddresses(out, tokenStore))
 		if err != nil {
 			return nil, toSettleError(toVerifyViolation(err, out.payer), out.network, out.payer)
 		}

@@ -41,7 +41,7 @@ contract GasWastingOperator {
         uint256,
         address,
         bytes calldata,
-        uint16,
+        uint256,
         address
     ) external {
         _waste();

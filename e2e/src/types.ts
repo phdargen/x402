@@ -81,7 +81,8 @@ export function endpointAuthCaptureNeedsDeferredCapture(endpoint: TestEndpoint):
 
 /**
  * Auth-capture branch id for coverage / minimization (not the HTTP path).
- * EIP-3009 variants share one `--min` endpoint slot; permit2 stays separate.
+ * Used by `--min` to require every catalog branch at least once; EIP-3009 paths
+ * also share one endpoint slot per server (`auth-capture~eip3009`).
  */
 export function endpointAuthCaptureCoverageBranch(endpoint: TestEndpoint): string | undefined {
   if (endpointPaymentScheme(endpoint) !== 'auth-capture') {
@@ -108,9 +109,9 @@ export function endpointAuthCaptureCoverageBranch(endpoint: TestEndpoint): strin
 }
 
 /**
- * Endpoint path used for coverage-based minimization. Auth-capture catalog paths
- * collapse to one slot per asset transfer method so `--min` does not multiply tests;
- * {@link shuffleScenarios} picks which variant runs each time.
+ * Endpoint path used for coverage-based minimization. Auth-capture collapses to
+ * one slot per server per asset method; branch coverage is tracked separately
+ * ({@link endpointAuthCaptureCoverageBranch}).
  */
 export function endpointPathForCoverageMinimization(endpoint: TestEndpoint): string {
   if (endpointPaymentScheme(endpoint) === 'auth-capture') {
