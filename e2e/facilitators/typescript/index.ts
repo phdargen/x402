@@ -38,7 +38,10 @@ import {
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
 import { BatchSettlementEvmScheme } from "@x402/evm/batch-settlement/facilitator";
-import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/facilitator";
+import {
+  AuthCaptureEvmScheme,
+  InMemoryAuthCaptureDelegatedAuthStorage,
+} from "@x402/evm/auth-capture/facilitator";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
 import { UptoEvmScheme } from "@x402/evm/upto/facilitator";
 import { ExactEvmSchemeV1 } from "@x402/evm/exact/v1/facilitator";
@@ -115,6 +118,7 @@ import {
   recoverTransactionAddress,
   type TransactionSerialized,
 } from "viem";
+import { getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia, base } from "viem/chains";
 import { resolveNetworkCaip2 } from "./catalog-network.js";
@@ -238,6 +242,21 @@ const authorizerSigner: AuthorizerSigner | undefined = evmAccount
   : undefined;
 if (authorizerSigner) {
   console.info(`EVM Receiver Authorizer: ${authorizerSigner.address}`);
+}
+
+const defaultAuthCaptureForwardingOperator =
+  "0x7cEc17a1784118Eae0ACD148A4a3E4280F54ABe0";
+const authCaptureCustomOperatorAllowlist = (
+  process.env.FACILITATOR_EVM_AUTH_CAPTURE_CUSTOM_OPERATORS?.trim() ||
+  defaultAuthCaptureForwardingOperator
+)
+  .split(",")
+  .map(entry => entry.trim())
+  .filter(entry => entry.length > 0);
+if (authCaptureCustomOperatorAllowlist.length > 0) {
+  console.info(
+    `EVM Auth-capture custom operators: ${authCaptureCustomOperatorAllowlist.join(", ")}`,
+  );
 }
 
 // Initialize the SVM account from private key when configured
@@ -473,6 +492,17 @@ const evmSigner =
         waitForTransactionReceipt: (args: { hash: `0x${string}` }) =>
           viemClient.waitForTransactionReceipt(args),
         getCode: (args: { address: `0x${string}` }) => viemClient.getCode(args),
+        simulateCalls: (args: {
+          account: `0x${string}`;
+          calls: readonly {
+            to: `0x${string}`;
+            data?: `0x${string}`;
+            gas?: bigint;
+          }[];
+        }) =>
+          viemClient.simulateCalls(
+            args as Parameters<typeof viemClient.simulateCalls>[0],
+          ),
       })
     : undefined;
 
@@ -685,6 +715,28 @@ if (evmSigner && authorizerSigner) {
     .register(
       EVM_NETWORK as Network,
       new AuthCaptureEvmScheme(evmSigner, {
+        ...(authorizerSigner
+          ? {
+              authorizerSigner,
+              delegatedAuthStorage: new InMemoryAuthCaptureDelegatedAuthStorage(),
+              resolveCallerIdentity: async () => "x402-e2e",
+              onStorageError: (error: unknown, network: string, paymentInfoHash: string) => {
+                console.warn("[delegated-auth-storage]", {
+                  network,
+                  paymentInfoHash,
+                  error: error instanceof Error ? error.message : error,
+                });
+              },
+            }
+          : {}),
+        ...(authCaptureCustomOperatorAllowlist.length > 0
+          ? {
+              operators: authCaptureCustomOperatorAllowlist.map(address => ({
+                address: getAddress(address),
+                operatorType: "custom" as const,
+              })),
+            }
+          : {}),
         customOperatorAuthorizeGasLimit: 1_000_000n,
         refundFunding: false,
       }),

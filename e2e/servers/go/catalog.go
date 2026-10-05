@@ -95,6 +95,8 @@ type catalogRouteDefinition struct {
 	AssetTransferMethod string                 `json:"assetTransferMethod"`
 	Sdks                []string               `json:"sdks"`
 	RequiresEnv         string                 `json:"requiresEnv"`
+	RequiresEnvAbsent   string                 `json:"requiresEnvAbsent"`
+	SchemeExtra         map[string]interface{} `json:"schemeExtra"`
 	Price               catalogPrice           `json:"price"`
 	Extensions          []string               `json:"extensions"`
 	SettlementOverride  *SettlementAmount      `json:"settlementOverride"`
@@ -123,6 +125,8 @@ type CatalogRoute struct {
 	Network             string
 	AssetTransferMethod string
 	RequiresEnv         string
+	RequiresEnvAbsent   string
+	SchemeExtra         map[string]interface{}
 	Price               catalogPrice
 	Extensions          []string
 	SettlementOverride  *SettlementAmount
@@ -362,6 +366,9 @@ func CatalogRoutes() []CatalogRoute {
 		if definition.RequiresEnv != "" && os.Getenv(definition.RequiresEnv) == "" {
 			continue
 		}
+		if definition.RequiresEnvAbsent != "" && os.Getenv(definition.RequiresEnvAbsent) != "" {
+			continue
+		}
 
 		routes = append(routes, CatalogRoute{
 			Path:                path,
@@ -369,6 +376,8 @@ func CatalogRoutes() []CatalogRoute {
 			Network:             definition.Network,
 			AssetTransferMethod: definition.AssetTransferMethod,
 			RequiresEnv:         definition.RequiresEnv,
+			RequiresEnvAbsent:   definition.RequiresEnvAbsent,
+			SchemeExtra:         definition.SchemeExtra,
 			Price:               definition.Price,
 			Extensions:          definition.Extensions,
 			SettlementOverride:  definition.SettlementOverride,
@@ -551,6 +560,14 @@ func ResolvedRoutes() []ResolvedRoute {
 			os.Exit(1)
 		}
 		extra := mergeRouteExtra(priceExtra, route.RequirementsExtra, route.PaymentFlow)
+		if len(route.SchemeExtra) > 0 {
+			if extra == nil {
+				extra = map[string]interface{}{}
+			}
+			for key, value := range route.SchemeExtra {
+				extra[key] = value
+			}
+		}
 
 		resolved = append(resolved, ResolvedRoute{
 			Path:                route.Path,

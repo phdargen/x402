@@ -1,12 +1,9 @@
 package server
 
 import (
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/ethereum/go-ethereum/crypto"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	authcaptureserver "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/server"
@@ -148,13 +145,19 @@ func SchemeBindings(cfg Config) []SchemeBinding {
 				return batched
 			case "auth-capture":
 				if authCap == nil {
-					authorizer, err := authCaptureAuthorizerSigner()
-					if err != nil {
+					authCfg := &authcaptureserver.Config{}
+					if authorizer, err := authCaptureAuthorizerSigner(); err != nil {
 						fmt.Printf("Failed to create auth-capture receiver authorizer: %v\n", err)
 						os.Exit(1)
+					} else if authorizer != nil {
+						authCfg.ReceiverAuthorizerSigner = authorizer
+						fmt.Printf("Auth-capture receiver authorizer (self-managed): %s\n", authorizer.Address())
+					} else {
+						authCfg.CollectOnlyRoutes = true
+						fmt.Println("Auth-capture receiver authorizer: facilitator-delegated (collect-only routes enabled)")
 					}
-					fmt.Printf("Auth-capture receiver authorizer: %s\n", authorizer.Address())
-					authCap = authcaptureserver.NewAuthCaptureEvmScheme(&authcaptureserver.Config{ReceiverAuthorizerSigner: authorizer})
+					authCap = authcaptureserver.NewAuthCaptureEvmScheme(authCfg)
+					setAuthCaptureEvmScheme(authCap)
 				}
 				return authCap
 			}
@@ -237,16 +240,11 @@ func SchemeBindings(cfg Config) []SchemeBinding {
 	return bindings
 }
 
-// authCaptureAuthorizerSigner returns the signer for auth-capture Capture and Void messages:
-// SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY when set, otherwise a throwaway key. It only
-// signs and never holds funds, so the routes need no operator-supplied secret.
+// authCaptureAuthorizerSigner returns the signer for auth-capture Capture and Void messages when
+// SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is set; otherwise nil for facilitator-delegated mode.
 func authCaptureAuthorizerSigner() (*BatchedAuthorizerSigner, error) {
 	if key := os.Getenv("SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"); key != "" {
 		return NewBatchedAuthorizerSigner(key)
 	}
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		return nil, err
-	}
-	return NewBatchedAuthorizerSigner(hex.EncodeToString(crypto.FromECDSA(key)))
+	return nil, nil
 }

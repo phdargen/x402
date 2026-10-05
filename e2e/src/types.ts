@@ -56,6 +56,70 @@ export function endpointUsesBatchSettlement(endpoint: TestEndpoint): boolean {
   return endpoint.scheme === 'batch-settlement';
 }
 
+function authCaptureExtra(endpoint: TestEndpoint): Record<string, string | number | boolean> | undefined {
+  return endpoint.schemeExtra;
+}
+
+export function endpointAuthCaptureCaptureMode(endpoint: TestEndpoint): string | undefined {
+  const mode = authCaptureExtra(endpoint)?.captureMode;
+  return mode != null ? String(mode) : undefined;
+}
+
+export function endpointAuthCaptureOperatorType(endpoint: TestEndpoint): string | undefined {
+  const operatorType = authCaptureExtra(endpoint)?.operatorType;
+  return operatorType != null ? String(operatorType) : undefined;
+}
+
+/** Deferred delegated escrow: harness must POST capture after the client authorize GET. */
+export function endpointAuthCaptureNeedsDeferredCapture(endpoint: TestEndpoint): boolean {
+  return (
+    endpointPaymentScheme(endpoint) === 'auth-capture' &&
+    endpointAuthCaptureCaptureMode(endpoint) === 'deferred' &&
+    endpointAuthCaptureOperatorType(endpoint) === 'delegated'
+  );
+}
+
+/**
+ * Auth-capture branch id for coverage / minimization (not the HTTP path).
+ * EIP-3009 variants share one `--min` endpoint slot; permit2 stays separate.
+ */
+export function endpointAuthCaptureCoverageBranch(endpoint: TestEndpoint): string | undefined {
+  if (endpointPaymentScheme(endpoint) !== 'auth-capture') {
+    return undefined;
+  }
+  const method = endpointAssetTransferMethod(endpoint) ?? 'eip3009';
+  if (method === 'permit2') {
+    return 'self-sync-permit2';
+  }
+  const path = endpoint.path;
+  if (path.startsWith('/auth-capture-custom-forwarding/')) {
+    return 'custom-forwarding';
+  }
+  if (path.startsWith('/auth-capture-deferred/')) {
+    return 'deferred-delegated';
+  }
+  if (path.startsWith('/auth-capture-facilitator-authorizer/')) {
+    return 'facilitator-sync';
+  }
+  if (path.startsWith('/auth-capture/')) {
+    return 'self-sync-eip3009';
+  }
+  return 'other';
+}
+
+/**
+ * Endpoint path used for coverage-based minimization. Auth-capture catalog paths
+ * collapse to one slot per asset transfer method so `--min` does not multiply tests;
+ * {@link shuffleScenarios} picks which variant runs each time.
+ */
+export function endpointPathForCoverageMinimization(endpoint: TestEndpoint): string {
+  if (endpointPaymentScheme(endpoint) === 'auth-capture') {
+    const method = endpointAssetTransferMethod(endpoint) ?? 'eip3009';
+    return `auth-capture~${method}`;
+  }
+  return endpoint.path;
+}
+
 export interface ClientResult {
   success: boolean;
   data?: any;
@@ -117,6 +181,8 @@ export interface TestEndpoint {
   paymentFlow?: PaymentFlow;
   schemeOptions?: SchemeOptions;
   extensions?: string[];
+  /** Merged catalog `schemeExtra` for harness branching (auth-capture modes, etc.). */
+  schemeExtra?: Record<string, string | number | boolean>;
   /** For MCP tools: the tool name used in tools/call. Defaults to path if not specified. */
   toolName?: string;
   /** For MCP tools: expected MCP wire transport for discovery metadata. */

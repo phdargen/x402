@@ -66,6 +66,10 @@ export const ErrVerificationFailed = "invalid_auth_capture_evm_verification_fail
 export const ErrTransactionReverted = "invalid_auth_capture_evm_transaction_reverted";
 export const ErrSettlementPending = "settlement_pending";
 
+// Resource-server lifecycle manager errors (never sent on the wire)
+export const ErrServerLifecycleUnavailable =
+  "invalid_auth_capture_evm_server_lifecycle_unavailable";
+
 /**
  * Map an AuthCaptureEscrow custom-error name (decoded by viem from a
  * ContractFunctionRevertedError) to a stable invalidReason string. Anything

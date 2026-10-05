@@ -9,6 +9,7 @@ import {
   CAPTURE_TYPES_V1_0,
   EIP3009_TOKEN_COLLECTOR_ADDRESS,
 } from "../../../src/auth-capture/constants";
+import * as Errors from "../../../src/auth-capture/errors";
 import type { FacilitatorClient } from "@x402/core/server";
 import { zeroAddress } from "viem";
 import type { AuthorizedPayment } from "../../../src/auth-capture/server/storage";
@@ -1277,6 +1278,62 @@ describe("AuthCaptureEvmScheme", () => {
       await expect(lifecycle.refund(hash, { amount: "1" })).rejects.toThrow(
         /lifecycle is out of band/,
       );
+    });
+
+    it("should refuse capture, void and refund for a custom operator without calling the facilitator", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord({ operatorType: "custom" }));
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      const unavailable = new RegExp(Errors.ErrServerLifecycleUnavailable);
+
+      await expect(lifecycle.capture(hash)).rejects.toThrow(unavailable);
+      await expect(lifecycle.voidPayment(hash)).rejects.toThrow(unavailable);
+      await expect(lifecycle.refund(hash, { amount: "1" })).rejects.toThrow(unavailable);
+      expect(settle).not.toHaveBeenCalled();
+    });
+
+    it("should refuse capture and void but allow refund for an authorization-flow payment", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () =>
+        sampleRecord({
+          paymentFlow: "authorization",
+          capturableAmount: "0",
+          refundableAmount: "1000000",
+        }),
+      );
+      const { lifecycle, settle } = lifecycleScheme(storage);
+      const unavailable = new RegExp(Errors.ErrServerLifecycleUnavailable);
+
+      await expect(lifecycle.capture(hash)).rejects.toThrow(unavailable);
+      await expect(lifecycle.voidPayment(hash)).rejects.toThrow(unavailable);
+      expect(settle).not.toHaveBeenCalled();
+
+      await lifecycle.refund(hash, { amount: "100" });
+      expect(settle).toHaveBeenCalledOnce();
+      const [paymentPayload, requirements] = settle.mock.calls[0];
+      expect(paymentPayload.payload.type).toBe("refund");
+      expect(requirements.extra.paymentFlow).toBe("authorization");
+      expect(requirements.extra).not.toHaveProperty("captureMode");
+    });
+
+    it("should send captureMode deferred for an escrow-flow payment", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord());
+      const { lifecycle, settle } = lifecycleScheme(storage);
+
+      await lifecycle.capture(hash, { amount: "500000" });
+      expect(settle.mock.calls[0][1].extra.captureMode).toBe("deferred");
+    });
+
+    it("should refuse lifecycle when the record has no saltNonce", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord({ saltNonce: undefined }));
+      const { lifecycle, settle } = lifecycleScheme(storage);
+
+      await expect(lifecycle.voidPayment(hash)).rejects.toThrow(
+        new RegExp(Errors.ErrServerLifecycleUnavailable),
+      );
+      expect(settle).not.toHaveBeenCalled();
     });
 
     it("should capture through the facilitator and write remaining balances", async () => {

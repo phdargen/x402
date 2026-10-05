@@ -1,4 +1,9 @@
-import { TestScenario, endpointAssetTransferMethod, endpointPaymentScheme } from './types';
+import {
+  TestScenario,
+  endpointAssetTransferMethod,
+  endpointPathForCoverageMinimization,
+  endpointPaymentScheme,
+} from './types';
 import { log, verboseLog } from './logger';
 
 /**
@@ -110,7 +115,7 @@ export class CoverageTracker {
     );
     const endpointKey = this.getEndpointCoverageKey(
       scenario.server.name,
-      scenario.endpoint.path,
+      endpointPathForCoverageMinimization(scenario.endpoint),
       protocolFamily,
       version,
       scenario,
@@ -158,7 +163,7 @@ export class CoverageTracker {
     );
     const endpointKey = this.getEndpointCoverageKey(
       scenario.server.name,
-      scenario.endpoint.path,
+      endpointPathForCoverageMinimization(scenario.endpoint),
       protocolFamily,
       version,
       scenario,
@@ -193,6 +198,10 @@ export class CoverageTracker {
  * implementations (e.g. go / python / typescript facilitators, or
  * express / flask / gin servers) are distributed evenly rather than the
  * first alphabetical entry always being chosen for every coverage slot.
+ *
+ * Auth-capture catalog paths share one endpoint coverage slot per asset
+ * transfer method (`auth-capture~eip3009` / `auth-capture~permit2`), so the
+ * shuffle rotates which variant runs under `--min` without multiplying tests.
  *
  * Pass a numeric `seed` for a reproducible shuffle; omit it (default) for a
  * fresh random distribution on every run.

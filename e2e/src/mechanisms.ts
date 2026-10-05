@@ -136,6 +136,8 @@ export type RouteDefinition = {
   paymentFlow?: PaymentFlow;
   /** Omit this route unless the named env var is set (optional add-on routes). */
   requiresEnv?: string;
+  /** Omit this route when the named env var is set (mutually exclusive add-on routes). */
+  requiresEnvAbsent?: string;
   /** Payment completion window advertised on this route. */
   maxTimeoutSeconds?: number;
   /** Merged into the route payment option's `extra` (wire `PaymentRequirements.extra`). */
@@ -192,6 +194,7 @@ type EndpointLike = {
   paymentFlow?: PaymentFlow;
   schemeOptions?: Record<string, boolean>;
   extensions?: string[];
+  schemeExtra?: Record<string, string | number | boolean>;
   health?: boolean;
   close?: boolean;
   /** MCP tool name, equal to `path` for MCP endpoints (`method: 'tool'`). */
@@ -405,6 +408,7 @@ export function sdkRouteToEndpoint(route: SdkRoute, transport: RouteTransport = 
       paymentFlow: route.paymentFlow,
       schemeOptions: route.schemeOptions,
       extensions: route.extensions,
+      ...(route.schemeExtra ? { schemeExtra: route.schemeExtra } : {}),
     };
   }
 
@@ -419,6 +423,7 @@ export function sdkRouteToEndpoint(route: SdkRoute, transport: RouteTransport = 
     paymentFlow: route.paymentFlow,
     schemeOptions: route.schemeOptions,
     extensions: route.extensions,
+    ...(route.schemeExtra ? { schemeExtra: route.schemeExtra } : {}),
   };
 }
 
@@ -491,11 +496,17 @@ export type RouteFilter = {
 };
 
 export function routeEnvSatisfied(route: SdkRoute, env: EnvLookup): boolean {
-  if (!route.requiresEnv) {
-    return true;
+  if (route.requiresEnv && !env(route.requiresEnv)?.trim()) {
+    return false;
   }
-  return Boolean(env(route.requiresEnv)?.trim());
+  if (route.requiresEnvAbsent && env(route.requiresEnvAbsent)?.trim()) {
+    return false;
+  }
+  return true;
 }
+
+/** Harness-only POST path to trigger deferred auth-capture lifecycle capture on e2e servers. */
+export const AUTH_CAPTURE_E2E_CAPTURE_PATH = '/__e2e/auth-capture/capture';
 
 export function filterRoutes(routes: SdkRoute[], filter?: RouteFilter): SdkRoute[] {
   if (!filter?.excludeSchemes?.length && !filter?.excludeNetworks?.length) {

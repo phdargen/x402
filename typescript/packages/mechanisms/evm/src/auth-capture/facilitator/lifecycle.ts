@@ -10,7 +10,7 @@ import type { PendingSettlementStore } from "@x402/core/facilitator";
 import { isAddressEqual } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
-import { computePaymentInfoHash, deriveBoundSalt, isNonZeroAddress } from "../nonce";
+import { computePaymentInfoHash, deriveBoundSalt } from "../nonce";
 import { resolveDataSuffix } from "../../shared/extensions";
 import {
   waitAndReturnSettleResponse,
@@ -145,10 +145,6 @@ export async function verifyLifecycle(
     !config?.refundFunding
   ) {
     return { isValid: false, invalidReason: Errors.ErrRefundFundingUnavailable };
-  }
-
-  if (!isNonZeroAddress(extra.receiverAuthorizer)) {
-    return { isValid: false, invalidReason: Errors.ErrMissingReceiverAuthorizer };
   }
 
   const paymentInfo = wirePayload.paymentInfo;

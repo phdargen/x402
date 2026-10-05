@@ -24,7 +24,15 @@ import {
   declareEip2612GasSponsoringExtension,
   declareErc20ApprovalGasSponsoringExtension,
 } from "@x402/extensions";
-import { HTTPFacilitatorClient, type RoutesConfig, type x402ResourceServer } from "@x402/core/server";
+import {
+  HTTPFacilitatorClient,
+  type RoutesConfig,
+  type x402ResourceServer,
+} from "@x402/core/server";
+import {
+  createAuthCaptureLifecycleManager,
+  setAuthCaptureLifecycleManager,
+} from "./auth-capture-e2e";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Caip2Network, ServerEnvConfig } from "../../src/server-env";
 import {
@@ -64,6 +72,7 @@ async function registerFamilySchemes(
   server: x402ResourceServer,
   family: ProtocolFamily,
   cfg: ServerEnvConfig,
+  primaryFacilitator?: HTTPFacilitatorClient,
 ): Promise<void> {
   const pattern = networkCaip2Pattern(family);
 
@@ -104,21 +113,22 @@ async function registerFamilySchemes(
         }),
       );
       if (schemesForSdkNetwork("typescript", "evm").includes("auth-capture")) {
-        if (!receiverAuthorizerPrivateKey) {
-          console.error(
-            "❌ SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is required for auth-capture on evm",
-          );
-          process.exit(1);
+        const authCaptureScheme = new AuthCaptureEvmScheme(
+          receiverAuthorizerSigner
+            ? { receiverAuthorizerSigner }
+            : { collectOnlyRoutes: true },
+        );
+        if (receiverAuthorizerSigner) {
+          console.info(`Auth-capture receiver authorizer (self-managed): ${receiverAuthorizerSigner.address}`);
+        } else {
+          console.info("Auth-capture receiver authorizer: facilitator-delegated (collect-only routes enabled)");
         }
-        console.info(
-          `Auth-capture receiver authorizer: ${privateKeyToAccount(receiverAuthorizerPrivateKey).address}`,
-        );
-        server.register(
-          pattern,
-          new AuthCaptureEvmScheme({
-            receiverAuthorizerSigner: privateKeyToAccount(receiverAuthorizerPrivateKey),
-          }),
-        );
+        server.register(pattern, authCaptureScheme);
+        if (primaryFacilitator) {
+          setAuthCaptureLifecycleManager(
+            createAuthCaptureLifecycleManager(authCaptureScheme, primaryFacilitator),
+          );
+        }
       }
       return;
     }
@@ -184,10 +194,14 @@ async function registerFamilySchemes(
  * Registers e2e schemes + bazaar extension for every family with a payee address
  * configured (catalog-driven via {@link isFamilyConfigured}).
  */
-export async function configureResourceServer(server: x402ResourceServer, cfg: ServerEnvConfig): Promise<void> {
+export async function configureResourceServer(
+  server: x402ResourceServer,
+  cfg: ServerEnvConfig,
+  primaryFacilitator?: HTTPFacilitatorClient,
+): Promise<void> {
   for (const family of PROTOCOL_FAMILIES) {
     if (isFamilyConfigured(cfg, family)) {
-      await registerFamilySchemes(server, family, cfg);
+      await registerFamilySchemes(server, family, cfg, primaryFacilitator);
     }
   }
 

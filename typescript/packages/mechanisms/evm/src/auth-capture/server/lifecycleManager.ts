@@ -2,6 +2,7 @@ import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/
 import type { FacilitatorClient } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
+import * as Errors from "../errors";
 import { authorizerMode, parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
 import { buildCapturePayload, buildRefundPayload, buildVoidPayload } from "../lifecyclePayload";
 import type {
@@ -40,7 +41,7 @@ export class AuthCaptureLifecycleManager {
    * @returns Facilitator settle response.
    */
   async capture(paymentInfoHash: `0x${string}`, opts?: CaptureOptions): Promise<SettleResponse> {
-    const record = await this.requireRecord(paymentInfoHash);
+    const { record, saltNonce } = await this.resolve(paymentInfoHash, false);
     const extra = extraFromRecord(record);
     const chainId = getEvmChainId(record.network);
     const amount = opts?.amount ?? record.capturableAmount;
@@ -50,7 +51,7 @@ export class AuthCaptureLifecycleManager {
         paymentInfoHash: record.paymentInfoHash,
         capturableAmount: record.capturableAmount,
         refundableAmount: record.refundableAmount,
-        saltNonce: this.requireSaltNonce(record),
+        saltNonce,
       },
       extra,
       signer: this.signerFor(record),
@@ -80,13 +81,13 @@ export class AuthCaptureLifecycleManager {
    * @returns Facilitator settle response.
    */
   async voidPayment(paymentInfoHash: `0x${string}`): Promise<SettleResponse> {
-    const record = await this.requireRecord(paymentInfoHash);
+    const { record, saltNonce } = await this.resolve(paymentInfoHash, false);
     const extra = extraFromRecord(record);
     const payload = await buildVoidPayload({
       record: {
         paymentInfo: record.paymentInfo,
         paymentInfoHash: record.paymentInfoHash,
-        saltNonce: this.requireSaltNonce(record),
+        saltNonce,
       },
       extra,
       signer: this.signerFor(record),
@@ -112,7 +113,7 @@ export class AuthCaptureLifecycleManager {
    * @returns Facilitator settle response.
    */
   async refund(paymentInfoHash: `0x${string}`, opts: { amount: string }): Promise<SettleResponse> {
-    const record = await this.requireRecord(paymentInfoHash);
+    const { record, saltNonce } = await this.resolve(paymentInfoHash, true);
     const extra = extraFromRecord(record);
     const payload = await buildRefundPayload({
       record: {
@@ -120,7 +121,7 @@ export class AuthCaptureLifecycleManager {
         paymentInfoHash: record.paymentInfoHash,
         capturableAmount: record.capturableAmount,
         refundableAmount: record.refundableAmount,
-        saltNonce: this.requireSaltNonce(record),
+        saltNonce,
       },
       extra,
       signer: this.signerFor(record),
@@ -180,32 +181,39 @@ export class AuthCaptureLifecycleManager {
   }
 
   /**
-   * Load a stored payment or throw.
+   * Load a stored payment and refuse the operations the facilitator would never relay for it:
+   * custom operators (lifecycle is out of band), capture / void on an authorization-flow
+   * payment (already a terminal charge, only a refund applies), and records without the
+   * `saltNonce` lifecycle payloads need.
    *
    * @param paymentInfoHash - Storage key.
-   * @returns The record.
+   * @param refund - True for a refund, the only operation an authorization-flow payment allows.
+   * @returns The record and its `saltNonce`.
    */
-  private async requireRecord(paymentInfoHash: `0x${string}`): Promise<AuthorizedPayment> {
+  private async resolve(
+    paymentInfoHash: `0x${string}`,
+    refund: boolean,
+  ): Promise<{ record: AuthorizedPayment; saltNonce: `0x${string}` }> {
     const record = await this.config.scheme.getStorage().get(paymentInfoHash);
     if (!record) {
       throw new Error(`AuthCapture: no authorized payment ${paymentInfoHash}`);
     }
-    return record;
-  }
-
-  /**
-   * Bound-payment `saltNonce` from storage, required for lifecycle settles.
-   *
-   * @param record - Stored payment.
-   * @returns The 32-byte nonce.
-   */
-  private requireSaltNonce(record: AuthorizedPayment): `0x${string}` {
-    if (!record.saltNonce) {
+    if (record.operatorType === "custom") {
       throw new Error(
-        "AuthCapture: saltNonce is required for lifecycle settles (salt binding is on)",
+        `${Errors.ErrServerLifecycleUnavailable}: the custom operator performs capture, void and refund itself`,
       );
     }
-    return record.saltNonce;
+    if (record.paymentFlow === "authorization" && !refund) {
+      throw new Error(
+        `${Errors.ErrServerLifecycleUnavailable}: an authorization-flow payment is already charged, only a refund applies`,
+      );
+    }
+    if (!record.saltNonce) {
+      throw new Error(
+        `${Errors.ErrServerLifecycleUnavailable}: the record has no saltNonce, which lifecycle payloads need`,
+      );
+    }
+    return { record, saltNonce: record.saltNonce };
   }
 
   /**
@@ -226,8 +234,8 @@ export class AuthCaptureLifecycleManager {
         return undefined;
       case "collect-only":
         throw new Error(
-          `AuthCapture: payment ${record.paymentInfoHash} is collect-only (zero receiverAuthorizer); ` +
-            "its lifecycle is out of band",
+          `${Errors.ErrServerLifecycleUnavailable}: payment ${record.paymentInfoHash} is collect-only ` +
+            "(zero receiverAuthorizer); its lifecycle is out of band",
         );
       default: {
         const exhaustive: never = mode;
@@ -274,6 +282,7 @@ function extraFromRecord(record: AuthorizedPayment): NormalizedAuthCaptureExtra 
  * @returns Requirements whose extra matches the original collect.
  */
 function buildRequirements(record: AuthorizedPayment): PaymentRequirements {
+  const { captureMode, ...extra } = extraFromRecord(record);
   return {
     scheme: AUTH_CAPTURE_SCHEME,
     network: record.network,
@@ -281,6 +290,9 @@ function buildRequirements(record: AuthorizedPayment): PaymentRequirements {
     amount: record.paymentInfo.maxAmount,
     payTo: record.paymentInfo.receiver,
     maxTimeoutSeconds: 1,
-    extra: extraFromRecord(record) as unknown as Record<string, unknown>,
+    // captureMode is escrow-only: the spec forbids it on an authorization route.
+    extra: (record.paymentFlow === "escrow"
+      ? { ...extra, captureMode }
+      : extra) as unknown as Record<string, unknown>,
   };
 }

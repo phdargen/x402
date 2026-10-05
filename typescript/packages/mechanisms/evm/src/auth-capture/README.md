@@ -183,7 +183,7 @@ Operational notes:
 
 ## Deferred lifecycle: storage and helpers
 
-Pass `receiverAuthorizerSigner` (self mode) or rely on a delegated authorizer, plus an optional `storage`, to the scheme constructor. `createLifecycleManager` supports self and delegated routes; delegated payloads are sent unsigned, and it throws for a collect-only route. Successful collect settles persist an `AuthorizedPayment` record via `onAfterSettle` (the before-handler `authorize` under escrow, or the after-handler `charge` under authorization). Sync routes persist too, because a later refund still needs durable state.
+Pass `receiverAuthorizerSigner` (self mode) or rely on a delegated authorizer, plus an optional `storage`, to the scheme constructor. `createLifecycleManager` supports self and delegated routes; delegated payloads are sent unsigned. It refuses, before calling the facilitator, a collect-only payment (its lifecycle is out of band), a `"custom"` operator's payment (the operator performs capture, void and refund itself), `capture` / `void` on an `"authorization"`-flow payment (already a terminal charge; only `refund` applies), and a record without a `saltNonce`. Each throws an error prefixed `invalid_auth_capture_evm_server_lifecycle_unavailable`. Successful collect settles persist an `AuthorizedPayment` record via `onAfterSettle` (the before-handler `authorize` under escrow, or the after-handler `charge` under authorization). Sync routes persist too, because a later refund still needs durable state.
 
 Out-of-band `capture` / `void` / `refund` go through `scheme.createLifecycleManager(facilitator)`. In-request hooks stay on the scheme.
 

@@ -6,7 +6,8 @@ import { createWalletClient, createPublicClient, http, parseEther, formatEther, 
 import { privateKeyToAccount } from 'viem/accounts';
 import { base, baseSepolia } from 'viem/chains';
 import { TestDiscovery } from './src/discovery';
-import { ClientConfig, ScenarioResult, ServerConfig, TestScenario, endpointAssetTransferMethod, endpointPaymentFlow, endpointPaymentScheme, endpointUsesBatchSettlement } from './src/types';
+import { ClientConfig, ScenarioResult, ServerConfig, TestScenario, endpointAssetTransferMethod, endpointAuthCaptureCoverageBranch, endpointAuthCaptureNeedsDeferredCapture, endpointPaymentFlow, endpointPaymentScheme, endpointUsesBatchSettlement } from './src/types';
+import { AUTH_CAPTURE_E2E_CAPTURE_PATH } from './src/mechanisms';
 import { config as loggerConfig, log, verboseLog, errorLog, close as closeLogger, createComboLogger } from './src/logger';
 import { handleDiscoveryValidation, shouldRunDiscoveryValidation, type TestedDiscoveryScenario } from './extensions/bazaar';
 import { parseArgs, printHelp } from './src/cli/args';
@@ -1056,6 +1057,21 @@ async function runTest() {
     log('');
   }
 
+  const authCaptureScenarios = filteredScenarios.filter(
+    s => endpointPaymentScheme(s.endpoint) === 'auth-capture',
+  );
+  if (authCaptureScenarios.length > 0) {
+    const branchSelected = (branch: string) =>
+      authCaptureScenarios.some(s => endpointAuthCaptureCoverageBranch(s.endpoint) === branch);
+    log('🔍 Auth-capture branch coverage (--min picks one EIP-3009 variant per server via shuffle):');
+    log(`   Self-managed sync EIP-3009:    ${branchSelected('self-sync-eip3009') ? '✅' : '⚠️  not in selected set'}`);
+    log(`   Self-managed sync Permit2:     ${branchSelected('self-sync-permit2') ? '✅' : '⚠️  not in selected set'}`);
+    log(`   Facilitator-authorizer sync:   ${branchSelected('facilitator-sync') ? '✅' : '⚠️  not in selected set'}`);
+    log(`   Deferred delegated:            ${branchSelected('deferred-delegated') ? '✅' : '⚠️  not in selected set'}`);
+    log(`   Custom forwarding (collect):   ${branchSelected('custom-forwarding') ? '✅' : '⚠️  not in selected set'}`);
+    log('');
+  }
+
   // Auto-detect Permit2 scenarios (upto uses Permit2 under the hood)
   const hasPermit2Scenarios = filteredScenarios.some(s => endpointAssetTransferMethod(s.endpoint) === 'permit2');
 
@@ -1550,6 +1566,43 @@ async function runTest() {
 
       const result = await runClientTest(scenario.client.proxy, baseClientConfig);
 
+      let deferredCaptureError: string | undefined;
+      let captureTransaction: string | undefined;
+      if (result.success && endpointAuthCaptureNeedsDeferredCapture(scenario.endpoint)) {
+        try {
+          const captureResponse = await fetch(
+            `http://localhost:${port}${AUTH_CAPTURE_E2E_CAPTURE_PATH}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ path: scenario.endpoint.path }),
+            },
+          );
+          const captureBody = (await captureResponse.json()) as {
+            success?: boolean;
+            transaction?: string;
+            error?: string;
+            errorReason?: string;
+          };
+          if (!captureResponse.ok) {
+            deferredCaptureError =
+              captureBody.error || `Deferred capture HTTP ${captureResponse.status}`;
+          } else if (!captureBody.success) {
+            deferredCaptureError =
+              captureBody.errorReason || captureBody.error || 'Deferred capture settle failed';
+          } else if (!captureBody.transaction) {
+            deferredCaptureError = 'Deferred capture succeeded but no transaction hash returned';
+          } else {
+            captureTransaction = captureBody.transaction;
+            cLog.verboseLog(`  🔗 Deferred capture transaction: ${captureTransaction}`);
+          }
+        } catch (error) {
+          deferredCaptureError =
+            error instanceof Error ? error.message : 'Deferred capture request failed';
+        }
+      }
+
+      const passed = result.success && !deferredCaptureError;
       const detailedResult: DetailedTestResult = {
         testNumber: localTestNumber,
         client: scenario.client.name,
@@ -1558,16 +1611,16 @@ async function runTest() {
         facilitator: scenario.facilitator?.name || 'none',
         protocolFamily: scenario.protocolFamily,
         ...scenarioDimensions(scenario),
-        passed: result.success,
-        error: result.error,
-        transaction: result.payment_response?.transaction,
+        passed,
+        error: deferredCaptureError || result.error,
+        transaction: captureTransaction || result.payment_response?.transaction,
         network: result.payment_response?.network,
       };
 
-      if (result.success) {
+      if (passed) {
         cLog.log(`  ✅ Test passed`);
       } else {
-        cLog.log(`  ❌ Test failed: ${result.error}`);
+        cLog.log(`  ❌ Test failed: ${detailedResult.error}`);
         if (result.verboseLogs && result.verboseLogs.length > 0) {
           cLog.log(`  🔍 Verbose logs:`);
           result.verboseLogs.forEach(logLine => cLog.log(logLine));

@@ -317,55 +317,7 @@ func (s *realFacilitatorEvmSigner) WriteContract(
 	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
-	// Parse ABI
-	contractABI, err := abi.JSON(strings.NewReader(string(abiJSON)))
-	if err != nil {
-		return "", fmt.Errorf("failed to parse ABI: %w", err)
-	}
-
-	// Pack the method call
-	data, err := contractABI.Pack(method, args...)
-	if err != nil {
-		return "", fmt.Errorf("failed to pack method call: %w", err)
-	}
-	data = evmmech.AppendDataSuffix(data, dataSuffix)
-
-	// Get nonce
-	nonce, err := s.reserveNonce(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	// Get gas price
-	gasPrice, err := s.client.SuggestGasPrice(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to get gas price: %w", err)
-	}
-
-	// Create transaction
-	to := common.HexToAddress(contractAddress)
-	tx := types.NewTransaction(
-		nonce,
-		to,
-		big.NewInt(0), // value
-		300000,        // gas limit
-		gasPrice,
-		data,
-	)
-
-	// Sign transaction
-	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(s.chainID), s.privateKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Send transaction
-	err = s.client.SendTransaction(ctx, signedTx)
-	if err != nil {
-		return "", fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	return signedTx.Hash().Hex(), nil
+	return s.writeContract(ctx, contractAddress, abiJSON, method, dataSuffix, 0, args...)
 }
 
 func (s *realFacilitatorEvmSigner) SendTransaction(
@@ -1077,10 +1029,29 @@ func main() {
 			batchedevm.NewBatchSettlementEvmScheme(evmSigner, batchedAuthorizer),
 		)
 
+		authCaptureDelegatedStorage := authcapturefacilitator.NewInMemoryAuthCaptureDelegatedAuthStorage()
+		authCaptureAuthorizer, err := newBatchedAuthorizerSigner(evmPrivateKey)
+		if err != nil {
+			log.Fatalf("Failed to create auth-capture delegated authorizer: %v", err)
+		}
+		log.Printf("EVM Receiver Authorizer (auth-capture): %s", authCaptureAuthorizer.Address())
+		customOperators := authCaptureCustomOperators()
+		if len(customOperators) > 0 {
+			log.Printf("EVM Auth-capture custom operators: %v", customOperators)
+		}
 		facilitator.Register(
 			[]x402.Network{x402.Network(evmNetwork)},
 			authcapturefacilitator.NewAuthCaptureEvmScheme(evmSigner, authcapturefacilitator.AuthCaptureEvmSchemeConfig{
 				CaptureAuthorizer: addresses[0],
+				AuthorizerSigner:  authCaptureAuthorizer,
+				DelegatedAuthStorage: authCaptureDelegatedStorage,
+				ResolveCallerIdentity: func(ctx context.Context, _ authcapturefacilitator.DelegatedSettleContext) (string, error) {
+					return "x402-e2e", nil
+				},
+				OnStorageError: func(err error, network x402.Network, paymentInfoHash string) {
+					log.Printf("[delegated-auth-storage] network=%s paymentInfoHash=%s err=%v", network, paymentInfoHash, err)
+				},
+				Operators: customOperators,
 			}),
 		)
 
