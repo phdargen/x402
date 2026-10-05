@@ -269,13 +269,16 @@ func TestEnhance_CustomOperators(t *testing.T) {
 
 	t.Run("a collect-only route needs no signer", func(t *testing.T) {
 		scheme := NewAuthCaptureEvmScheme(&Config{})
-		enhanced, err := enhance(scheme, routeRequirements(custom), facilitatorKind(admitted("*")))
+		collectOnly := AuthCaptureRouteExtra{
+			OperatorType: "custom", CaptureMode: "deferred", CaptureAuthorizer: testCustomOperator, ReceiverAuthorizer: authcapture.ZeroAddress,
+		}.Map()
+		enhanced, err := enhance(scheme, routeRequirements(collectOnly), facilitatorKind(admitted("*")))
 		require.NoError(t, err)
 		assert.Equal(t, authcapture.ZeroAddress, enhanced.Extra["receiverAuthorizer"])
 	})
 }
 
-func TestEnhance_RoutesThatSignNeedASigner(t *testing.T) {
+func TestEnhance_RoutesThatSignNeedAnAuthorizer(t *testing.T) {
 	scheme := NewAuthCaptureEvmScheme(&Config{CaptureAuthorizer: testCaptureAuthorizer})
 	for name, route := range map[string]map[string]interface{}{
 		"sync escrow":   {},
@@ -283,21 +286,26 @@ func TestEnhance_RoutesThatSignNeedASigner(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := enhance(scheme, routeRequirements(route), facilitatorKind(nil))
-			require.ErrorContains(t, err, ErrMissingReceiverAuthorizerSigner)
+			require.ErrorContains(t, err, ErrMissingReceiverAuthorizer)
 		})
 	}
 
-	t.Run("deferred escrow may omit it", func(t *testing.T) {
-		_, err := enhance(scheme, routeRequirements(map[string]interface{}{"captureMode": "deferred"}), facilitatorKind(nil))
+	t.Run("deferred escrow must name its authorizer or be explicitly collect-only", func(t *testing.T) {
+		deferred := map[string]interface{}{"captureMode": "deferred"}
+		_, err := enhance(scheme, routeRequirements(deferred), facilitatorKind(nil))
+		require.ErrorContains(t, err, ErrMissingReceiverAuthorizer)
+
+		deferred["receiverAuthorizer"] = authcapture.ZeroAddress
+		_, err = enhance(scheme, routeRequirements(deferred), facilitatorKind(nil))
 		require.NoError(t, err)
 	})
 }
 
-func TestValidateFacilitatorSupport_CustomOperatorsNeedNeitherSignerNorAuthorizer(t *testing.T) {
-	scheme := NewAuthCaptureEvmScheme(&Config{})
+func TestValidateFacilitatorSupport_CustomOperatorsNeedNoCaptureAuthorizer(t *testing.T) {
 	kind := types.SupportedKind{Extra: map[string]interface{}{"operators": []interface{}{}}}
-	require.NoError(t, scheme.ValidateFacilitatorSupport(testNetwork, kind, nil))
-	require.ErrorContains(t, scheme.ValidateFacilitatorSupport(testNetwork, types.SupportedKind{}, nil), ErrMissingReceiverAuthorizerSigner)
+	require.ErrorContains(t, NewAuthCaptureEvmScheme(&Config{}).ValidateFacilitatorSupport(testNetwork, kind, nil), "receiverAuthorizer")
+	require.NoError(t, NewAuthCaptureEvmScheme(&Config{CollectOnlyRoutes: true}).ValidateFacilitatorSupport(testNetwork, kind, nil))
+	require.NoError(t, newTestScheme(&mockSigner{address: testSignerAddress}).ValidateFacilitatorSupport(testNetwork, kind, nil))
 }
 
 func TestAuthCaptureRouteExtra_Map(t *testing.T) {
@@ -322,3 +330,90 @@ func TestAuthCaptureRouteExtra_Map(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestEnhance_ReceiverAuthorizerResolution(t *testing.T) {
+	const (
+		facilitatorAuthorizer = "0x2222222222222222222222222222222222222222"
+		other                 = "0x9999999999999999999999999999999999999999"
+	)
+	route := func(overrides map[string]interface{}) types.PaymentRequirements {
+		extra := map[string]interface{}{"captureAuthorizer": testCaptureAuthorizer}
+		for key, value := range overrides {
+			extra[key] = value
+		}
+		return routeRequirements(extra)
+	}
+	kind := func(extra map[string]interface{}) types.SupportedKind { return facilitatorKind(extra) }
+	unsignedScheme := func() *AuthCaptureEvmScheme { return NewAuthCaptureEvmScheme(&Config{}) }
+
+	t.Run("defaults an omitted route authorizer to the facilitator-advertised one", func(t *testing.T) {
+		result, err := enhance(unsignedScheme(), route(nil), kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.NoError(t, err)
+		assert.Equal(t, facilitatorAuthorizer, result.Extra["receiverAuthorizer"])
+		assert.Equal(t, "sync", result.Extra["captureMode"])
+	})
+
+	t.Run("accepts a route authorizer equal to the facilitator-advertised one", func(t *testing.T) {
+		result, err := enhance(unsignedScheme(),
+			route(map[string]interface{}{"receiverAuthorizer": "0x2222222222222222222222222222222222222222"}),
+			kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.NoError(t, err)
+		assert.Equal(t, facilitatorAuthorizer, result.Extra["receiverAuthorizer"])
+	})
+
+	t.Run("lets the scheme signer win over a facilitator-advertised authorizer", func(t *testing.T) {
+		result, err := enhance(signedScheme(), route(nil), kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.NoError(t, err)
+		assert.Equal(t, evm.NormalizeAddress(testSignerAddress), result.Extra["receiverAuthorizer"])
+	})
+
+	t.Run("throws naming all three fixes when nothing can authorize", func(t *testing.T) {
+		_, err := enhance(unsignedScheme(), route(map[string]interface{}{"captureMode": "deferred"}), kind(nil))
+		require.ErrorContains(t, err, "ReceiverAuthorizerSigner")
+		require.ErrorContains(t, err, "delegates the authorizer")
+		require.ErrorContains(t, err, "zero address")
+	})
+
+	t.Run("throws when the route names a non-zero authorizer nobody can sign for", func(t *testing.T) {
+		_, err := enhance(unsignedScheme(),
+			route(map[string]interface{}{"receiverAuthorizer": other}),
+			kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.ErrorContains(t, err, "can not be signed")
+		require.ErrorContains(t, err, ErrUnsignableReceiverAuthorizer)
+	})
+
+	t.Run("allows an explicit zero authorizer for escrow deferred, ignoring the advertisement", func(t *testing.T) {
+		result, err := enhance(unsignedScheme(),
+			route(map[string]interface{}{"receiverAuthorizer": authcapture.ZeroAddress, "captureMode": "deferred"}),
+			kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.NoError(t, err)
+		assert.Equal(t, authcapture.ZeroAddress, result.Extra["receiverAuthorizer"])
+	})
+
+	t.Run("rejects an explicit zero authorizer on escrow sync and on authorization", func(t *testing.T) {
+		_, err := enhance(unsignedScheme(), route(map[string]interface{}{"receiverAuthorizer": authcapture.ZeroAddress}), kind(nil))
+		require.ErrorContains(t, err, "non-zero receiverAuthorizer")
+		_, err = enhance(unsignedScheme(),
+			route(map[string]interface{}{"receiverAuthorizer": authcapture.ZeroAddress, "paymentFlow": "authorization"}), kind(nil))
+		require.ErrorContains(t, err, "non-zero receiverAuthorizer")
+	})
+
+	t.Run("keeps the signer's conflict check against a different route authorizer", func(t *testing.T) {
+		_, err := enhance(signedScheme(), route(map[string]interface{}{"receiverAuthorizer": other}), kind(nil))
+		require.ErrorContains(t, err, ErrReceiverAuthorizerMismatch)
+	})
+
+	t.Run("delegates an authorization route to the facilitator authorizer", func(t *testing.T) {
+		result, err := enhance(unsignedScheme(),
+			route(map[string]interface{}{"paymentFlow": "authorization"}),
+			kind(map[string]interface{}{"receiverAuthorizer": facilitatorAuthorizer}))
+		require.NoError(t, err)
+		assert.Equal(t, facilitatorAuthorizer, result.Extra["receiverAuthorizer"])
+		assert.Equal(t, "authorization", result.Extra["paymentFlow"])
+	})
+
+	t.Run("ignores a zero facilitator advertisement", func(t *testing.T) {
+		_, err := enhance(unsignedScheme(), route(nil), kind(map[string]interface{}{"receiverAuthorizer": authcapture.ZeroAddress}))
+		require.ErrorContains(t, err, "has no receiverAuthorizer")
+	})
+}

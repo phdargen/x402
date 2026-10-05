@@ -11,13 +11,19 @@ import (
 
 	"github.com/joho/godotenv"
 	x402 "github.com/x402-foundation/x402/go/v2"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	authcapturefac "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/facilitator"
+	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 )
 
 const defaultPort = "4022"
 
 // Auth-capture facilitator demo: acts as the escrow operator (captureAuthorizer),
-// authorizing holds and relaying the server's signed capture or void.
+// authorizing holds and relaying the server's capture or void. When
+// EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY is set, it also advertises extra.receiverAuthorizer
+// and signs delegated charge and lifecycle payloads with an explicit
+// InMemoryAuthCaptureDelegatedAuthStorage and OnStorageError (all four delegation fields
+// are required to opt in).
 func main() {
 	_ = godotenv.Load()
 
@@ -46,6 +52,27 @@ func main() {
 		FeeRecipient:      feeRecipient,
 		MinFeeBps:         uint16(minFeeBps),
 		MaxFeeBps:         uint16(maxFeeBps),
+	}
+
+	// Optional dedicated receiver authorizer (recommended: separate from the relayer).
+	var receiverAuthorizer evm.ClientEvmSigner
+	if receiverAuthorizerKey := os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"); receiverAuthorizerKey != "" {
+		receiverAuthorizer, err = evmsigners.NewClientSignerFromPrivateKey(receiverAuthorizerKey)
+		if err != nil {
+			fmt.Printf("Invalid EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+			os.Exit(1)
+		}
+		config.AuthorizerSigner = receiverAuthorizer
+		config.DelegatedAuthStorage = authcapturefac.NewInMemoryAuthCaptureDelegatedAuthStorage()
+		// SDK hook: called during delegated /settle (see DelegatedSettleContext).
+		// Authenticate the resource server (API key, mTLS, JWT, etc.) using the context and
+		// return a stable merchant id, or an empty string to reject. Local testing only:
+		config.ResolveCallerIdentity = func(_ context.Context, _ authcapturefac.DelegatedSettleContext) (string, error) {
+			return "example-local-caller", nil
+		}
+		config.OnStorageError = func(err error, network x402.Network, paymentInfoHash string) {
+			fmt.Printf("[delegated-auth-storage] network=%s paymentInfoHash=%s error=%v\n", network, paymentInfoHash, err)
+		}
 	}
 
 	facilitator := x402.Newx402Facilitator()
@@ -105,6 +132,13 @@ func main() {
 
 	fmt.Printf("Auth-capture facilitator listening on http://localhost:%s\n", port)
 	fmt.Printf("  Capture authorizer (operator): %s\n", config.CaptureAuthorizer)
+	if receiverAuthorizer != nil {
+		fmt.Printf("  Receiver authorizer: %s\n", receiverAuthorizer.Address())
+		fmt.Println("  Delegated auth bindings: InMemoryAuthCaptureDelegatedAuthStorage (process-local)")
+		fmt.Println("  Delegated settles: ResolveCallerIdentity returns example-local-caller (local only)")
+	} else {
+		fmt.Println("  Receiver authorizer: not configured (resource servers must self-sign)")
+	}
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		fmt.Printf("Server error: %v\n", err)
 		os.Exit(1)

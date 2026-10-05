@@ -5,9 +5,7 @@
  * produces is no longer evidence of the server's intent, so the request is authenticated
  * out of band instead. The first authenticated caller to settle a payment is bound to its
  * `paymentInfoHash`; every later facilitator-signed step must come from the same identity.
- *
- * Modelled on the SVM payment-channel storage contract (`recordOpen` / `revertOpen`): the
- * binding is written after re-verify and BEFORE broadcast, and fails closed.
+ * The binding is written after re-verify and before broadcast, and fails closed.
  */
 
 import type {

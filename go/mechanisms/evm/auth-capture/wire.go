@@ -6,7 +6,8 @@ import (
 )
 
 // ChargeCompletion carries the fields a server adds to a collect payload to complete
-// a charge. FeeBps is nil when the payload uses feeAmount (v1.1).
+// a charge. FeeBps is nil when the payload uses feeAmount (v1.1). AuthorizerSignature is
+// empty when the authorizer is delegated to the facilitator.
 type ChargeCompletion struct {
 	Amount              string
 	FeeBps              *uint16
@@ -33,7 +34,9 @@ type Permit2CollectPayload struct {
 	Charge               *ChargeCompletion
 }
 
-// CapturePayload is the parsed capture lifecycle payload.
+// CapturePayload is the parsed capture lifecycle payload. Without a local signer (authorizer
+// delegated to the facilitator) both signatures are empty and VoidRemainder asks the facilitator
+// to sign the Void leg.
 type CapturePayload struct {
 	PaymentInfo              PaymentInfoStruct
 	SaltNonce                string
@@ -45,6 +48,7 @@ type CapturePayload struct {
 	ExpectedRefundableAmount string
 	AuthorizerSignature      string
 	VoidAuthorizerSignature  string
+	VoidRemainder            bool
 }
 
 // VoidPayload is the parsed void lifecycle payload. VoidAuthorizerSignature is only
@@ -134,7 +138,9 @@ func Permit2CollectPayloadFromMap(data map[string]interface{}) (*Permit2CollectP
 	return payload, nil
 }
 
-// chargeCompletionFromMap reads the server-added charge fields. All four or none must be present.
+// chargeCompletionFromMap reads the server-added charge fields. The amount, a fee field and
+// feeReceiver must be present together or not at all; the authorizer signature is optional
+// because a facilitator-delegated authorizer produces it at settle time.
 func chargeCompletionFromMap(data map[string]interface{}) (*ChargeCompletion, error) {
 	feeBps, hasFeeBps := JSONNumberToUint16(data["feeBps"])
 	feeAmount, hasFeeAmount := data["feeAmount"].(string)
@@ -142,18 +148,12 @@ func chargeCompletionFromMap(data map[string]interface{}) (*ChargeCompletion, er
 	feeReceiver, hasFeeReceiver := data["feeReceiver"].(string)
 	authorizerSignature, hasAuthorizerSig := data["authorizerSignature"].(string)
 
-	present := 0
-	for _, has := range []bool{hasAmount, hasFeeBps || hasFeeAmount, hasFeeReceiver, hasAuthorizerSig} {
-		if has {
-			present++
-		}
-	}
-	switch present {
-	case 0:
+	hasFee := hasFeeBps || hasFeeAmount
+	if !hasAmount && !hasFee && !hasFeeReceiver && !hasAuthorizerSig {
 		return nil, nil
-	case 4:
-	default:
-		return nil, fmt.Errorf("charge completion needs amount, a fee field, feeReceiver and authorizerSignature together")
+	}
+	if !hasAmount || !hasFee || !hasFeeReceiver {
+		return nil, fmt.Errorf("charge completion needs amount, a fee field and feeReceiver together")
 	}
 
 	charge := &ChargeCompletion{
@@ -222,6 +222,7 @@ func CapturePayloadFromMap(data map[string]interface{}) (*CapturePayload, error)
 	payload.ExpectedRefundableAmount, _ = data["expectedRefundableAmount"].(string)
 	payload.AuthorizerSignature, _ = data["authorizerSignature"].(string)
 	payload.VoidAuthorizerSignature, _ = data["voidAuthorizerSignature"].(string)
+	payload.VoidRemainder = data["voidRemainder"] == true
 	if feeBps, ok := JSONNumberToUint16(data["feeBps"]); ok {
 		payload.FeeBps = &feeBps
 	}

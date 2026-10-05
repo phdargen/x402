@@ -53,14 +53,15 @@ const (
 func mockRequirements(extra map[string]interface{}) types.PaymentRequirements {
 	future := time.Now().Unix() + 86400
 	baseExtra := map[string]interface{}{
-		"captureAuthorizer": testCaptureAuthorizer,
-		"captureDeadline":   float64(future),
-		"refundDeadline":    float64(future + 86400),
-		"feeRecipient":      testFeeRecipient,
-		"minFeeBps":         float64(0),
-		"maxFeeBps":         float64(100),
-		"name":              "USDC",
-		"version":           "2",
+		"captureAuthorizer":  testCaptureAuthorizer,
+		"receiverAuthorizer": testSignerAddress,
+		"captureDeadline":    float64(future),
+		"refundDeadline":     float64(future + 86400),
+		"feeRecipient":       testFeeRecipient,
+		"minFeeBps":          float64(0),
+		"maxFeeBps":          float64(100),
+		"name":               "USDC",
+		"version":            "2",
 	}
 	for k, v := range extra {
 		baseExtra[k] = v
@@ -105,9 +106,32 @@ func TestValidateFacilitatorSupport(t *testing.T) {
 		wantErr       string
 	}{
 		{
-			name:    "missing signer",
-			config:  &Config{},
-			wantErr: ErrMissingReceiverAuthorizerSigner,
+			name:          "no signer and the facilitator advertises no receiverAuthorizer",
+			config:        &Config{},
+			supportedKind: types.SupportedKind{Extra: map[string]interface{}{"captureAuthorizer": testCaptureAuthorizer}},
+			wantErr:       "receiverAuthorizer",
+		},
+		{
+			name:          "facilitator advertises capture and receiver authorizers",
+			config:        &Config{},
+			supportedKind: types.SupportedKind{Extra: map[string]interface{}{"captureAuthorizer": testCaptureAuthorizer, "receiverAuthorizer": testFacilitatorAddr}},
+		},
+		{
+			name:          "collect-only routes need no receiverAuthorizer",
+			config:        &Config{CollectOnlyRoutes: true},
+			supportedKind: types.SupportedKind{Extra: map[string]interface{}{"captureAuthorizer": testCaptureAuthorizer}},
+		},
+		{
+			name:          "a zero advertised receiverAuthorizer does not count",
+			config:        &Config{},
+			supportedKind: types.SupportedKind{Extra: map[string]interface{}{"captureAuthorizer": testCaptureAuthorizer, "receiverAuthorizer": authcapture.ZeroAddress}},
+			wantErr:       "receiverAuthorizer",
+		},
+		{
+			name:          "facilitator omits captureAuthorizer",
+			config:        &Config{},
+			supportedKind: types.SupportedKind{Extra: map[string]interface{}{"receiverAuthorizer": testFacilitatorAddr}},
+			wantErr:       "captureAuthorizer",
 		},
 		{
 			name:   "local captureAuthorizer configured",
@@ -142,10 +166,10 @@ func newTestScheme(signer *mockSigner) *AuthCaptureEvmScheme {
 	return NewAuthCaptureEvmScheme(&Config{ReceiverAuthorizerSigner: signer})
 }
 
-func TestEnhancePaymentRequirements_MissingSigner(t *testing.T) {
-	scheme := NewAuthCaptureEvmScheme(&Config{})
-	_, err := scheme.EnhancePaymentRequirements(context.Background(), mockRequirements(nil), types.SupportedKind{}, nil)
-	require.ErrorContains(t, err, ErrMissingReceiverAuthorizerSigner)
+func TestEnhancePaymentRequirements_NoAuthorizer(t *testing.T) {
+	scheme := NewAuthCaptureEvmScheme(&Config{CaptureAuthorizer: testCaptureAuthorizer})
+	_, err := scheme.EnhancePaymentRequirements(context.Background(), routeRequirements(nil), types.SupportedKind{}, nil)
+	require.ErrorContains(t, err, ErrMissingReceiverAuthorizer)
 }
 
 func TestEnhancePaymentRequirements_ResolvesLocalConfigFirst(t *testing.T) {

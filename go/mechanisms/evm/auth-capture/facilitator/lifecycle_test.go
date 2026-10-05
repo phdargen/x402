@@ -545,3 +545,12 @@ func TestLifecycle_SimulationsRunAsTheOperator(t *testing.T) {
 		require.NoError(t, err)
 	})
 }
+
+func TestVerifyLifecycle_RejectsAMissingSignatureWhenNoDelegatedAuthorizerIsConfigured(t *testing.T) {
+	fx := newLifecycleFixture(t, nil)
+	wire := fx.buildCapture(t, captureOpts{})
+	delete(wire, "authorizerSignature")
+
+	_, err := newScheme(fx.signer(), AuthCaptureEvmSchemeConfig{}).Verify(context.Background(), fx.payload(wire), fx.requirements, nil)
+	assertVerifyReason(t, err, ErrAuthorizerSignature)
+}

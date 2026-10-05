@@ -30,6 +30,7 @@ func (f *AuthCaptureEvmScheme) checkRefundPreconditions(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*refundPreconditions, error) {
 	p, err := authcapture.RefundPayloadFromMap(payload.Payload)
 	if err != nil {
@@ -40,6 +41,13 @@ func (f *AuthCaptureEvmScheme) checkRefundPreconditions(
 	lc, err := f.checkLifecycleCommon(payload, requirements, p.PaymentInfo, p.SaltNonce, opRefund)
 	if err != nil {
 		return nil, err
+	}
+	signed, err := f.signedLifecyclePayload(ctx, fctx, payload, requirements, lc)
+	if err != nil {
+		return nil, err
+	}
+	if p, err = authcapture.RefundPayloadFromMap(signed.Payload); err != nil {
+		return nil, x402.NewVerifyError(ErrPayloadFormat, payer, err.Error())
 	}
 
 	amount, amountOK := parseUint(p.Amount)
@@ -88,8 +96,9 @@ func (f *AuthCaptureEvmScheme) verifyRefund(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*x402.VerifyResponse, error) {
-	pre, err := f.checkRefundPreconditions(ctx, payload, requirements)
+	pre, err := f.checkRefundPreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +120,7 @@ func (f *AuthCaptureEvmScheme) settleRefund(
 		return resp, err
 	}
 
-	pre, err := f.checkRefundPreconditions(ctx, payload, requirements)
+	pre, err := f.checkRefundPreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, toSettleError(err, network, "")
 	}

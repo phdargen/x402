@@ -235,25 +235,91 @@ func (s *AuthCaptureEvmScheme) resolveFeeTerms(route, advertised map[string]inte
 	return evm.NormalizeAddress(feeRecipient), minFeeBps, maxFeeBps, nil
 }
 
-// resolveReceiverAuthorizer returns the signer's address, which a route may only restate. Without
-// a signer only a deferred escrow route can be served, and it names its own authorizer or none.
-func (s *AuthCaptureEvmScheme) resolveReceiverAuthorizer(route map[string]interface{}, terms resolvedTerms) (string, error) {
+// advertisedAddress reads an optional address the facilitator advertised, "" when absent.
+func advertisedAddress(advertised map[string]interface{}, key string) (string, error) {
+	raw, set := advertised[key]
+	if !set || raw == nil || raw == "" {
+		return "", nil
+	}
+	if value, ok := raw.(string); ok && evm.IsValidAddress(value) {
+		return value, nil
+	}
+	return "", fmt.Errorf("%s: the facilitator advertised an invalid %s %v", ErrInvalidRouteExtra, key, raw)
+}
+
+// resolveReceiverAuthorizer resolves who authorizes facilitator-relayed charge and lifecycle,
+// strictly and in order: the scheme signer (self-managed); else the route's own
+// receiverAuthorizer (the zero address is explicit collect-only, the facilitator-advertised
+// address is delegated, anything else has no way to be signed); else the facilitator-advertised
+// address. It fails instead of silently falling back to collect-only, and rejects a collect-only
+// result on a route that needs a signed charge or capture.
+func (s *AuthCaptureEvmScheme) resolveReceiverAuthorizer(route, advertised map[string]interface{}, terms resolvedTerms) (string, error) {
 	fromRoute, err := routeAddress(route, "receiverAuthorizer")
 	if err != nil {
 		return "", err
 	}
-	signer := s.config.ReceiverAuthorizerSigner
-	if signer != nil {
+	advertisedAddr, err := advertisedAddress(advertised, "receiverAuthorizer")
+	if err != nil {
+		return "", err
+	}
+	advertisedNonZero := ""
+	if authcapture.IsNonZeroAddress(advertisedAddr) {
+		advertisedNonZero = advertisedAddr
+	}
+
+	receiverAuthorizer, err := s.pickReceiverAuthorizer(fromRoute, advertisedNonZero)
+	if err != nil {
+		return "", err
+	}
+	if authcapture.IsNonZeroAddress(receiverAuthorizer) {
+		return receiverAuthorizer, nil
+	}
+	switch {
+	case terms.paymentFlow == authcapture.PaymentFlowAuthorization:
+		return "", fmt.Errorf("%s: paymentFlow authorization requires a non-zero receiverAuthorizer "+
+			"(extra.receiverAuthorizer of the zero address is collect-only, valid only for escrow with captureMode deferred)",
+			ErrMissingReceiverAuthorizer)
+	case terms.captureMode == authcapture.CaptureModeSync:
+		return "", fmt.Errorf("%s: escrow sync routes require a non-zero receiverAuthorizer "+
+			"(extra.receiverAuthorizer of the zero address is collect-only, valid only with captureMode deferred)",
+			ErrMissingReceiverAuthorizer)
+	}
+	return receiverAuthorizer, nil
+}
+
+// pickReceiverAuthorizer applies the resolution order of resolveReceiverAuthorizer.
+func (s *AuthCaptureEvmScheme) pickReceiverAuthorizer(fromRoute, advertisedNonZero string) (string, error) {
+	if signer := s.config.ReceiverAuthorizerSigner; signer != nil {
 		address := evm.NormalizeAddress(signer.Address())
 		if authcapture.IsNonZeroAddress(fromRoute) && !strings.EqualFold(fromRoute, address) {
 			return "", fmt.Errorf("%s: extra.receiverAuthorizer %s is not the configured signer %s", ErrReceiverAuthorizerMismatch, fromRoute, address)
 		}
 		return address, nil
 	}
-	if terms.paymentFlow == authcapture.PaymentFlowAuthorization || terms.captureMode == authcapture.CaptureModeSync {
-		return "", fmt.Errorf("%s: this route signs the capture or charge itself", ErrMissingReceiverAuthorizerSigner)
+
+	if fromRoute != "" {
+		switch {
+		case !authcapture.IsNonZeroAddress(fromRoute):
+			return authcapture.ZeroAddress, nil
+		case advertisedNonZero != "" && strings.EqualFold(fromRoute, advertisedNonZero):
+			return evm.NormalizeAddress(fromRoute), nil
+		}
+		return "", fmt.Errorf("%s: extra.receiverAuthorizer %s can not be signed: the scheme has no "+
+			"ReceiverAuthorizerSigner and the facilitator does not advertise that address. "+
+			"Configure a ReceiverAuthorizerSigner, omit the field to use the facilitator's authorizer, "+
+			"or set it to the zero address for collect-only with captureMode deferred",
+			ErrUnsignableReceiverAuthorizer, fromRoute)
 	}
-	return evm.NormalizeAddress(firstNonEmpty(fromRoute, authcapture.ZeroAddress)), nil
+
+	if advertisedNonZero != "" {
+		return evm.NormalizeAddress(advertisedNonZero), nil
+	}
+	return "", fmt.Errorf("%s: AuthCapture has no receiverAuthorizer: the route sets none, the scheme has no "+
+		"ReceiverAuthorizerSigner, and the facilitator advertises none. Fix one of: "+
+		"(1) configure a ReceiverAuthorizerSigner on the scheme, "+
+		"(2) use a facilitator that delegates the authorizer (advertises extra.receiverAuthorizer), "+
+		"or (3) set extra.receiverAuthorizer to the zero address with captureMode deferred (collect-only)",
+		ErrMissingReceiverAuthorizer)
 }
 
 // deadlineKey reads an optional positive integer, reporting whether the route set it.

@@ -40,6 +40,10 @@ const (
 	ErrPaymentInfoMismatch            = "invalid_auth_capture_evm_payment_info_mismatch"
 	ErrUndeployedSmartWallet          = "invalid_auth_capture_evm_payload_undeployed_smart_wallet"
 
+	// Delegated receiver authorizer errors.
+	ErrUnauthenticatedAuthorizerRequest = "invalid_auth_capture_evm_unauthenticated_authorizer_request"
+	ErrDelegatedAuthUnavailable         = "invalid_auth_capture_evm_delegated_auth_unavailable"
+
 	// Typed simulation and settlement reverts.
 	ErrPaymentAlreadyCollected   = "invalid_auth_capture_evm_payment_already_collected"
 	ErrTokenCollectionFailed     = "invalid_auth_capture_evm_token_collection_failed"

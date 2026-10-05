@@ -21,6 +21,7 @@ var (
 	deferredExtra      = map[string]interface{}{"paymentFlow": "escrow", "captureMode": "deferred"}
 	authorizationExtra = map[string]interface{}{"paymentFlow": "authorization"}
 	syncExtra          = map[string]interface{}{"paymentFlow": "escrow", "captureMode": "sync"}
+	collectOnlyExtra   = map[string]interface{}{"paymentFlow": "escrow", "captureMode": "deferred", "receiverAuthorizer": authcapture.ZeroAddress}
 )
 
 func settleContext(phase x402.SettlePhase, extra map[string]interface{}) x402.SettleContext {
@@ -185,10 +186,6 @@ func TestEnrichSettlementPayload_ChargeVariants(t *testing.T) {
 		require.ErrorContains(t, err, ErrFailedToSignCharge)
 	})
 
-	t.Run("no signer fails", func(t *testing.T) {
-		_, err := NewAuthCaptureEvmScheme(&Config{}).EnrichSettlementPayload(settleContext(x402.SettlePhaseAfterHandler, authorizationExtra))
-		require.ErrorContains(t, err, ErrMissingReceiverAuthorizerSigner)
-	})
 }
 
 func TestEnrichSettlementPayload_DeferredAddsNothingAfterTheHandler(t *testing.T) {
@@ -227,7 +224,8 @@ func TestSettleOnCancel_SkipsHoldsItCannotVoid(t *testing.T) {
 	assert.NotNil(t, cancel(signed, deferredExtra), "a deferred hold is voided when the handler fails")
 	assert.Nil(t, cancel(signed, authorizationExtra), "the authorization flow holds nothing")
 	assert.Nil(t, cancel(signed, map[string]interface{}{"operatorType": "custom", "captureMode": "deferred"}))
-	assert.Nil(t, cancel(NewAuthCaptureEvmScheme(&Config{}), deferredExtra), "without a signer there is nothing to sign a void with")
+	assert.NotNil(t, cancel(NewAuthCaptureEvmScheme(&Config{}), deferredExtra), "without a local signer the facilitator signs the void")
+	assert.Nil(t, cancel(signed, collectOnlyExtra), "a collect-only hold has no authorizer to sign a void")
 }
 
 func TestBeforeSettleHook(t *testing.T) {
@@ -577,11 +575,17 @@ func TestLifecycleManager_Refusals(t *testing.T) {
 		require.ErrorContains(t, err, ErrLifecycleUnavailable)
 	})
 
-	t.Run("a server with no signer", func(t *testing.T) {
+	t.Run("a collect-only payment", func(t *testing.T) {
 		scheme := NewAuthCaptureEvmScheme(&Config{CaptureAuthorizer: testCaptureAuthorizer})
-		hash := authorize(t, scheme, deferredExtra)
-		_, err := scheme.NewLifecycleManager(&fakeFacilitator{}).Capture(ctx, hash, nil)
-		require.ErrorContains(t, err, ErrMissingReceiverAuthorizerSigner)
+		hash := authorize(t, scheme, collectOnlyExtra)
+		manager := scheme.NewLifecycleManager(&fakeFacilitator{})
+		_, err := manager.Capture(ctx, hash, nil)
+		require.ErrorContains(t, err, "lifecycle is out of band")
+		_, err = manager.Void(ctx, hash)
+		require.ErrorContains(t, err, "lifecycle is out of band")
+		_, err = manager.Refund(ctx, hash, big.NewInt(1))
+		require.ErrorContains(t, err, "lifecycle is out of band")
+		require.ErrorContains(t, err, ErrLifecycleUnavailable)
 	})
 
 	t.Run("listing", func(t *testing.T) {
@@ -617,4 +621,102 @@ func mustChainID(t *testing.T, network string) *big.Int {
 	chainID, err := evm.GetEvmChainId(network)
 	require.NoError(t, err)
 	return chainID
+}
+
+var (
+	delegatedSyncExtra     = map[string]interface{}{"paymentFlow": "escrow", "captureMode": "sync", "receiverAuthorizer": testFacilitatorAddr}
+	delegatedDeferredExtra = map[string]interface{}{"paymentFlow": "escrow", "captureMode": "deferred", "receiverAuthorizer": testFacilitatorAddr}
+	delegatedAuthorization = map[string]interface{}{"paymentFlow": "authorization", "receiverAuthorizer": testFacilitatorAddr}
+)
+
+// delegatedScheme has no receiver-authorizer signer: the facilitator signs.
+func delegatedScheme() *AuthCaptureEvmScheme {
+	return NewAuthCaptureEvmScheme(&Config{CaptureAuthorizer: testCaptureAuthorizer})
+}
+
+func TestEnrichSettlementPayload_CollectOnlyRouteIsNotEnriched(t *testing.T) {
+	scheme := delegatedScheme()
+	for _, phase := range []x402.SettlePhase{x402.SettlePhaseAfterHandler, x402.SettlePhaseCancel} {
+		fields, err := scheme.EnrichSettlementPayload(settleContext(phase, collectOnlyExtra))
+		require.NoError(t, err)
+		assert.Nil(t, fields)
+	}
+}
+
+func TestEnrichSettlementPayload_UnsignedCaptureWhenTheAuthorizerIsDelegated(t *testing.T) {
+	t.Run("a partial capture asks the facilitator to void the remainder", func(t *testing.T) {
+		fields, err := delegatedScheme().EnrichSettlementPayload(settleContextWithAmount(x402.SettlePhaseAfterHandler, delegatedSyncExtra, "400000"))
+		require.NoError(t, err)
+		assert.Equal(t, "capture", fields["type"])
+		assert.Equal(t, "400000", fields["amount"])
+		assert.Equal(t, "1000000", fields["expectedCapturableAmount"])
+		assert.Equal(t, "0", fields["expectedRefundableAmount"])
+		assert.Equal(t, true, fields["voidRemainder"])
+		assert.NotContains(t, fields, "authorizerSignature")
+		assert.NotContains(t, fields, "voidAuthorizerSignature")
+	})
+
+	t.Run("a full capture omits voidRemainder", func(t *testing.T) {
+		fields, err := delegatedScheme().EnrichSettlementPayload(settleContext(x402.SettlePhaseAfterHandler, delegatedSyncExtra))
+		require.NoError(t, err)
+		assert.Equal(t, "capture", fields["type"])
+		assert.Equal(t, "1000000", fields["amount"])
+		assert.NotContains(t, fields, "voidRemainder")
+	})
+}
+
+func TestEnrichSettlementPayload_UnsignedVoidOnCancelWhenDelegated(t *testing.T) {
+	fields, err := delegatedScheme().EnrichSettlementPayload(settleContext(x402.SettlePhaseCancel, delegatedSyncExtra))
+	require.NoError(t, err)
+	assert.Equal(t, "void", fields["type"])
+	assert.NotContains(t, fields, "authorizerSignature")
+}
+
+func TestEnrichSettlementPayload_UnsignedChargeCompletionWhenDelegated(t *testing.T) {
+	fields, err := delegatedScheme().EnrichSettlementPayload(settleContext(x402.SettlePhaseAfterHandler, delegatedAuthorization))
+	require.NoError(t, err)
+	assert.Equal(t, "1000000", fields["amount"])
+	assert.Contains(t, fields, "feeReceiver")
+	assert.NotContains(t, fields, "authorizerSignature")
+}
+
+func TestSettleOnCancel_ReturnsRequirementsWithoutASignerWhenDelegated(t *testing.T) {
+	requirements, err := delegatedScheme().SettleOnCancel(x402.VerifiedPaymentCanceledContext{
+		SettleContext: settleContext(x402.SettlePhaseCancel, delegatedDeferredExtra),
+		Reason:        x402.CancellationReasonHandlerFailed,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, requirements)
+	assert.Equal(t, testFacilitatorAddr, requirements.Extra["receiverAuthorizer"])
+}
+
+func TestLifecycleManager_SendsUnsignedPayloadsWhenTheAuthorizerIsDelegated(t *testing.T) {
+	ctx := context.Background()
+	scheme := delegatedScheme()
+	facilitator := &fakeFacilitator{}
+	manager := scheme.NewLifecycleManager(facilitator)
+	hash := authorize(t, scheme, delegatedDeferredExtra)
+
+	_, err := manager.Capture(ctx, hash, &CaptureOptions{Amount: big.NewInt(500000), VoidRemainder: true})
+	require.NoError(t, err)
+	_, err = manager.Void(ctx, hash)
+	require.NoError(t, err)
+	_, err = manager.Refund(ctx, hash, big.NewInt(1))
+	require.NoError(t, err)
+
+	require.Len(t, facilitator.payloads, 3)
+	var capture, voided, refund types.PaymentPayload
+	require.NoError(t, json.Unmarshal(facilitator.payloads[0], &capture))
+	require.NoError(t, json.Unmarshal(facilitator.payloads[1], &voided))
+	require.NoError(t, json.Unmarshal(facilitator.payloads[2], &refund))
+
+	assert.Equal(t, "capture", capture.Payload["type"])
+	assert.Equal(t, "500000", capture.Payload["amount"])
+	assert.Equal(t, true, capture.Payload["voidRemainder"])
+	assert.NotContains(t, capture.Payload, "authorizerSignature")
+	assert.NotContains(t, capture.Payload, "voidAuthorizerSignature")
+	assert.Equal(t, "void", voided.Payload["type"])
+	assert.NotContains(t, voided.Payload, "authorizerSignature")
+	assert.Equal(t, "refund", refund.Payload["type"])
+	assert.NotContains(t, refund.Payload, "authorizerSignature")
 }

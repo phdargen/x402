@@ -28,9 +28,15 @@ const DefaultRefundDeadline = 24 * time.Hour
 // Config configures the server-side EVM auth-capture scheme.
 type Config struct {
 	// ReceiverAuthorizerSigner signs the Capture, Void, Charge and Refund messages that let the
-	// facilitator release funds. Required except on routes that are both operatorType custom
-	// and captureMode deferred, which only collect.
+	// facilitator release funds. Without it a route's receiverAuthorizer is delegated to the
+	// facilitator, which signs the unsigned payloads after authenticating the caller, or is the
+	// zero address for a collect-only route.
 	ReceiverAuthorizerSigner evm.ClientEvmSigner
+
+	// CollectOnlyRoutes skips the startup check that the facilitator advertises
+	// extra.receiverAuthorizer when no ReceiverAuthorizerSigner is configured. Use it only when
+	// every route is collect-only (escrow + deferred + explicit receiverAuthorizer of the zero address).
+	CollectOnlyRoutes bool
 
 	// CaptureAuthorizer is the default escrow operator for every route, which a route's own
 	// extra.captureAuthorizer overrides. A delegated route falls back to the facilitator's
@@ -116,28 +122,40 @@ func (s *AuthCaptureEvmScheme) Storage() AuthorizedPaymentStorage {
 	return s.storage
 }
 
-// ValidateFacilitatorSupport fails startup when no signer or captureAuthorizer is available. A
-// facilitator that admits custom operators lets a server run without either, because its routes
-// then name their own operator and only collect.
+// ValidateFacilitatorSupport fails startup when the facilitator advertises no usable
+// captureAuthorizer, or when this server delegates receiver signing but the facilitator does not
+// advertise a non-zero receiverAuthorizer. A facilitator that admits custom operators lets a
+// server run without a captureAuthorizer, because its routes then name their own operator.
 func (s *AuthCaptureEvmScheme) ValidateFacilitatorSupport(
 	network x402.Network,
 	supportedKind types.SupportedKind,
 	_ []string,
 ) error {
 	customOperators := supportedKind.Extra["operators"] != nil
-	if s.config.ReceiverAuthorizerSigner == nil && !customOperators {
-		return errors.New(ErrMissingReceiverAuthorizerSigner)
+	if s.config.CaptureAuthorizer == "" && !customOperators {
+		advertised, _ := supportedKind.Extra["captureAuthorizer"].(string)
+		if !authcapture.IsNonZeroAddress(advertised) {
+			return fmt.Errorf(
+				"no captureAuthorizer is configured and the facilitator does not advertise one for auth-capture on %s",
+				network,
+			)
+		}
 	}
-	if s.config.CaptureAuthorizer != "" || customOperators {
+
+	if s.config.ReceiverAuthorizerSigner != nil || s.config.CollectOnlyRoutes {
 		return nil
 	}
-	if advertised, _ := supportedKind.Extra["captureAuthorizer"].(string); evm.IsValidAddress(advertised) {
-		return nil
+	advertised, _ := supportedKind.Extra["receiverAuthorizer"].(string)
+	if !authcapture.IsNonZeroAddress(advertised) {
+		return fmt.Errorf(
+			"no ReceiverAuthorizerSigner is configured and the facilitator does not advertise a "+
+				"receiverAuthorizer on %s. Configure a ReceiverAuthorizerSigner, use a facilitator that "+
+				"advertises one, or set CollectOnlyRoutes when every route is collect-only "+
+				"(escrow + deferred + extra.receiverAuthorizer of the zero address)",
+			network,
+		)
 	}
-	return fmt.Errorf(
-		"no captureAuthorizer is configured and the facilitator does not advertise one for auth-capture on %s",
-		network,
-	)
+	return nil
 }
 
 // RegisterMoneyParser adds a custom money parser, tried in registration order before the default.
@@ -278,7 +296,7 @@ func (s *AuthCaptureEvmScheme) EnhancePaymentRequirements(
 	if err != nil {
 		return requirements, err
 	}
-	receiverAuthorizer, err := s.resolveReceiverAuthorizer(route, terms)
+	receiverAuthorizer, err := s.resolveReceiverAuthorizer(route, advertised, terms)
 	if err != nil {
 		return requirements, err
 	}

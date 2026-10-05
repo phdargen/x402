@@ -172,8 +172,6 @@ func TestIsCapturePayload(t *testing.T) {
 	delete(neither, "feeAmount")
 	noSaltNonce := copyMap(valid)
 	delete(noSaltNonce, "saltNonce")
-	noSignature := copyMap(valid)
-	delete(noSignature, "authorizerSignature")
 	badInfo := copyMap(valid)
 	badInfo["paymentInfo"] = map[string]interface{}{}
 	void := copyMap(valid)
@@ -181,7 +179,7 @@ func TestIsCapturePayload(t *testing.T) {
 
 	for name, payload := range map[string]interface{}{
 		"both fee fields": both, "no fee field": neither, "no saltNonce": noSaltNonce,
-		"no signature": noSignature, "bad paymentInfo": badInfo, "wrong type": void, "nil": nil,
+		"bad paymentInfo": badInfo, "wrong type": void, "nil": nil,
 	} {
 		if IsCapturePayload(payload) {
 			t.Fatalf("expected %s to be rejected", name)
@@ -200,12 +198,53 @@ func TestIsVoidPayload(t *testing.T) {
 		t.Fatal("expected a void payload")
 	}
 
-	noSignature := copyMap(valid)
-	delete(noSignature, "authorizerSignature")
 	capture := copyMap(valid)
 	capture["type"] = "capture"
-	if IsVoidPayload(noSignature) || IsVoidPayload(capture) || IsVoidPayload("void") {
+	if IsVoidPayload(capture) || IsVoidPayload("void") {
 		t.Fatal("expected malformed void payloads to be rejected")
+	}
+}
+
+func TestIsLifecyclePayload_AcceptsUnsignedPayloadsForADelegatedAuthorizer(t *testing.T) {
+	capture := validCapture()
+	delete(capture, "authorizerSignature")
+	if !IsCapturePayload(capture) {
+		t.Fatal("expected an unsigned capture payload")
+	}
+	withVoidRemainder := copyMap(capture)
+	withVoidRemainder["voidRemainder"] = true
+	if !IsCapturePayload(withVoidRemainder) {
+		t.Fatal("expected an unsigned capture payload with voidRemainder")
+	}
+
+	unsignedVoid := map[string]interface{}{"type": "void", "paymentInfo": validPaymentInfoWire(), "saltNonce": "0x01"}
+	if !IsVoidPayload(unsignedVoid) {
+		t.Fatal("expected an unsigned void payload")
+	}
+	unsignedRefund := validRefund()
+	delete(unsignedRefund, "authorizerSignature")
+	if !IsRefundPayload(unsignedRefund) {
+		t.Fatal("expected an unsigned refund payload")
+	}
+
+	// voidRemainder only stands in for a void signature the facilitator will produce.
+	voidRemainderFalse := copyMap(capture)
+	voidRemainderFalse["voidRemainder"] = false
+	signedWithVoidRemainder := copyMap(validCapture())
+	signedWithVoidRemainder["voidRemainder"] = true
+	voidSignatureOnly := copyMap(capture)
+	voidSignatureOnly["voidAuthorizerSignature"] = "0xab"
+	voidWithVoidRemainder := copyMap(unsignedVoid)
+	voidWithVoidRemainder["voidRemainder"] = true
+	for name, accepted := range map[string]bool{
+		"voidRemainder false":                IsCapturePayload(voidRemainderFalse),
+		"voidRemainder with a signature":     IsCapturePayload(signedWithVoidRemainder),
+		"a void signature without a capture": IsCapturePayload(voidSignatureOnly),
+		"voidRemainder on a void payload":    IsVoidPayload(voidWithVoidRemainder),
+	} {
+		if accepted {
+			t.Fatalf("expected %s to be rejected", name)
+		}
 	}
 }
 
@@ -260,7 +299,7 @@ func TestIsRefundPayload(t *testing.T) {
 		t.Fatal("expected a refund payload")
 	}
 
-	for _, missing := range []string{"saltNonce", "amount", "expectedCapturableAmount", "expectedRefundableAmount", "authorizerSignature", "paymentInfo"} {
+	for _, missing := range []string{"saltNonce", "amount", "expectedCapturableAmount", "expectedRefundableAmount", "paymentInfo"} {
 		payload := copyMap(valid)
 		delete(payload, missing)
 		if IsRefundPayload(payload) {

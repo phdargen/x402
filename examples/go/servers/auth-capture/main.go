@@ -11,6 +11,7 @@ import (
 	x402 "github.com/x402-foundation/x402/go/v2"
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	nethttpmw "github.com/x402-foundation/x402/go/v2/http/nethttp"
+	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	authcaptureserver "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/server"
 	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 )
@@ -21,8 +22,10 @@ const (
 	price       = "$0.01"
 )
 
-// Auth-capture resource server demo: after the handler runs, its receiver-authorizer
-// signature lets the facilitator capture (on success) or void (on failure).
+// Auth-capture resource server demo: after the handler runs, the facilitator captures
+// (on success) or voids (on failure). The receiver authorizer's signature comes either from
+// this server (EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY set) or, when that key is omitted, from
+// the facilitator, which advertises its own receiverAuthorizer in GET /supported.
 func main() {
 	_ = godotenv.Load()
 
@@ -38,23 +41,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	receiverAuthKey := os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")
-	if receiverAuthKey == "" {
-		fmt.Println("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY environment variable is required")
-		os.Exit(1)
-	}
-	receiverAuthorizer, err := evmsigners.NewClientSignerFromPrivateKey(receiverAuthKey)
-	if err != nil {
-		fmt.Printf("Invalid EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
-		os.Exit(1)
-	}
-
-	scheme := authcaptureserver.NewAuthCaptureEvmScheme(&authcaptureserver.Config{
-		ReceiverAuthorizerSigner: receiverAuthorizer,
+	// Optional: omit to delegate capture/void signing to the facilitator.
+	config := &authcaptureserver.Config{
 		// CaptureAuthorizer/FeeRecipient/MinFeeBps/MaxFeeBps are left empty here so
 		// this server falls back to whatever the facilitator advertises; set them
 		// explicitly to pin your own escrow terms instead.
-	})
+	}
+	var receiverAuthorizer evm.ClientEvmSigner
+	if receiverAuthKey := os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY"); receiverAuthKey != "" {
+		signer, err := evmsigners.NewClientSignerFromPrivateKey(receiverAuthKey)
+		if err != nil {
+			fmt.Printf("Invalid EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY: %v\n", err)
+			os.Exit(1)
+		}
+		receiverAuthorizer = signer
+		config.ReceiverAuthorizerSigner = signer
+	}
+
+	scheme := authcaptureserver.NewAuthCaptureEvmScheme(config)
 
 	facilitator := x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
 		URL: facilitatorURL,
@@ -96,7 +100,11 @@ func main() {
 
 	fmt.Printf("Auth-capture server listening on http://localhost:%s\n", defaultPort)
 	fmt.Printf("  GET /weather\n")
-	fmt.Printf("  Receiver authorizer: %s\n", receiverAuthorizer.Address())
+	if receiverAuthorizer != nil {
+		fmt.Printf("  Receiver authorizer (self): %s\n", receiverAuthorizer.Address())
+	} else {
+		fmt.Println("  Receiver authorizer: delegated to facilitator (from /supported extra.receiverAuthorizer)")
+	}
 
 	if err := http.ListenAndServe(":"+defaultPort, handler); err != nil {
 		fmt.Printf("Server error: %v\n", err)

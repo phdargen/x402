@@ -27,7 +27,8 @@ type CaptureOptions struct {
 
 // LifecycleManager captures, voids and refunds stored authorized payments through a facilitator,
 // for deferred routes and for any payment the server holds a record of. It refuses payments of a
-// custom operator, whose contract performs those calls itself.
+// custom operator, whose contract performs those calls itself, and collect-only payments. Payments
+// whose authorizer is delegated to the facilitator are sent unsigned.
 type LifecycleManager struct {
 	scheme      *AuthCaptureEvmScheme
 	facilitator x402.FacilitatorClient
@@ -155,6 +156,25 @@ func (m *LifecycleManager) settle(ctx context.Context, call *lifecycleCall, fiel
 	return m.facilitator.Settle(ctx, payloadBytes, requirementsBytes)
 }
 
+// signerFor is the signer for a stored payment's lifecycle payloads: the scheme signer when it is
+// the payment's authorizer, none when the authorizer is delegated to the facilitator (which signs
+// the unsigned payload), and an error when the payment is collect-only.
+func (m *LifecycleManager) signerFor(record *AuthorizedPayment) (evm.ClientEvmSigner, error) {
+	signer := m.scheme.config.ReceiverAuthorizerSigner
+	mode := authcapture.AuthorizerModeFor(record.ReceiverAuthorizer, signer)
+	switch mode {
+	case authcapture.AuthorizerModeSelf:
+		return signer, nil
+	case authcapture.AuthorizerModeDelegated:
+		return nil, nil
+	case authcapture.AuthorizerModeCollectOnly:
+		return nil, fmt.Errorf("%s: payment %s is collect-only (zero receiverAuthorizer); its lifecycle is out of band",
+			ErrLifecycleUnavailable, record.PaymentInfoHash)
+	default:
+		return nil, fmt.Errorf("unexpected authorizer mode %s", mode)
+	}
+}
+
 // Capture captures a stored payment, optionally releasing the rest of the hold.
 func (m *LifecycleManager) Capture(ctx context.Context, paymentInfoHash string, opts *CaptureOptions) (*x402.SettleResponse, error) {
 	if opts == nil {
@@ -164,7 +184,7 @@ func (m *LifecycleManager) Capture(ctx context.Context, paymentInfoHash string, 
 	if err != nil {
 		return nil, err
 	}
-	signer, err := m.scheme.requireSigner()
+	signer, err := m.signerFor(call.record)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +203,7 @@ func (m *LifecycleManager) Capture(ctx context.Context, paymentInfoHash string, 
 	if opts.Fee != nil {
 		fee = *opts.Fee
 	}
-	fields, err := signCapture(ctx, signer, call.deployment, call.extra, call.chainID, captureTerms{
+	fields, err := buildCaptureFields(ctx, signer, call.deployment, call.extra, call.chainID, captureTerms{
 		paymentInfoHash: call.record.PaymentInfoHash,
 		amount:          amount,
 		fee:             fee,
@@ -209,15 +229,19 @@ func (m *LifecycleManager) Void(ctx context.Context, paymentInfoHash string) (*x
 	if err != nil {
 		return nil, err
 	}
-	signer, err := m.scheme.requireSigner()
+	signer, err := m.signerFor(call.record)
 	if err != nil {
 		return nil, err
 	}
-	signature, err := authcapture.SignVoid(ctx, signer, call.extra.CaptureAuthorizer, call.chainID, call.record.PaymentInfoHash)
-	if err != nil {
-		return nil, fmt.Errorf(ErrFailedToSignVoid+": %w", err)
+	fields := map[string]interface{}{"type": "void"}
+	if signer != nil {
+		signature, err := authcapture.SignVoid(ctx, signer, call.extra.CaptureAuthorizer, call.chainID, call.record.PaymentInfoHash)
+		if err != nil {
+			return nil, fmt.Errorf(ErrFailedToSignVoid+": %w", err)
+		}
+		fields["authorizerSignature"] = evm.BytesToHex(signature)
 	}
-	response, err := m.settle(ctx, call, map[string]interface{}{"type": "void", "authorizerSignature": evm.BytesToHex(signature)})
+	response, err := m.settle(ctx, call, fields)
 	if err != nil || !response.Success {
 		return response, err
 	}
@@ -230,30 +254,33 @@ func (m *LifecycleManager) Refund(ctx context.Context, paymentInfoHash string, a
 	if err != nil {
 		return nil, err
 	}
-	signer, err := m.scheme.requireSigner()
+	signer, err := m.signerFor(call.record)
 	if err != nil {
 		return nil, err
 	}
 	if amount == nil || amount.Sign() <= 0 || amount.Cmp(call.refundable) > 0 {
 		return nil, fmt.Errorf("%s: refund amount %v must be > 0 and <= refundable %s", ErrInvalidLifecycleAmount, amount, call.refundable)
 	}
-	signature, err := authcapture.SignRefund(ctx, signer, call.extra.CaptureAuthorizer, call.chainID, authcapture.RefundParams{
-		PaymentInfoHash:    call.record.PaymentInfoHash,
-		Amount:             amount,
-		TokenCollector:     call.deployment.OperatorRefundCollector,
-		ExpectedCapturable: call.capturable,
-		ExpectedRefundable: call.refundable,
-	})
-	if err != nil {
-		return nil, fmt.Errorf(ErrFailedToSignRefund+": %w", err)
-	}
-	response, err := m.settle(ctx, call, map[string]interface{}{
+	fields := map[string]interface{}{
 		"type":                     "refund",
 		"amount":                   amount.String(),
 		"expectedCapturableAmount": call.capturable.String(),
 		"expectedRefundableAmount": call.refundable.String(),
-		"authorizerSignature":      evm.BytesToHex(signature),
-	})
+	}
+	if signer != nil {
+		signature, err := authcapture.SignRefund(ctx, signer, call.extra.CaptureAuthorizer, call.chainID, authcapture.RefundParams{
+			PaymentInfoHash:    call.record.PaymentInfoHash,
+			Amount:             amount,
+			TokenCollector:     call.deployment.OperatorRefundCollector,
+			ExpectedCapturable: call.capturable,
+			ExpectedRefundable: call.refundable,
+		})
+		if err != nil {
+			return nil, fmt.Errorf(ErrFailedToSignRefund+": %w", err)
+		}
+		fields["authorizerSignature"] = evm.BytesToHex(signature)
+	}
+	response, err := m.settle(ctx, call, fields)
 	if err != nil || !response.Success {
 		return response, err
 	}

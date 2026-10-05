@@ -191,6 +191,7 @@ func (f *AuthCaptureEvmScheme) checkCapturePreconditions(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*capturePreconditions, error) {
 	p, err := authcapture.CapturePayloadFromMap(payload.Payload)
 	if err != nil {
@@ -201,6 +202,13 @@ func (f *AuthCaptureEvmScheme) checkCapturePreconditions(
 	lc, err := f.checkLifecycleCommon(payload, requirements, p.PaymentInfo, p.SaltNonce, opCapture)
 	if err != nil {
 		return nil, err
+	}
+	signed, err := f.signedLifecyclePayload(ctx, fctx, payload, requirements, lc)
+	if err != nil {
+		return nil, err
+	}
+	if p, err = authcapture.CapturePayloadFromMap(signed.Payload); err != nil {
+		return nil, x402.NewVerifyError(ErrPayloadFormat, payer, err.Error())
 	}
 
 	fee, ok := parseSubmittedFee(p.FeeBps, p.FeeAmount, &lc.deployment)
@@ -308,8 +316,9 @@ func (f *AuthCaptureEvmScheme) verifyCapture(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*x402.VerifyResponse, error) {
-	pre, err := f.checkCapturePreconditions(ctx, payload, requirements)
+	pre, err := f.checkCapturePreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +340,7 @@ func (f *AuthCaptureEvmScheme) settleCapture(
 		return resp, err
 	}
 
-	pre, err := f.checkCapturePreconditions(ctx, payload, requirements)
+	pre, err := f.checkCapturePreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, toSettleError(err, network, "")
 	}
@@ -397,6 +406,7 @@ func (f *AuthCaptureEvmScheme) checkVoidPreconditions(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*lifecyclePreconditions, error) {
 	p, err := authcapture.VoidPayloadFromMap(payload.Payload)
 	if err != nil {
@@ -410,6 +420,13 @@ func (f *AuthCaptureEvmScheme) checkVoidPreconditions(
 	lc, err := f.checkLifecycleCommon(payload, requirements, p.PaymentInfo, p.SaltNonce, opVoid)
 	if err != nil {
 		return nil, err
+	}
+	signed, err := f.signedLifecyclePayload(ctx, fctx, payload, requirements, lc)
+	if err != nil {
+		return nil, err
+	}
+	if p, err = authcapture.VoidPayloadFromMap(signed.Payload); err != nil {
+		return nil, x402.NewVerifyError(ErrPayloadFormat, payer, err.Error())
 	}
 	if err := f.checkVoidSignature(ctx, lc, p.AuthorizerSignature, ErrAuthorizerSignature); err != nil {
 		return nil, err
@@ -429,8 +446,9 @@ func (f *AuthCaptureEvmScheme) verifyVoid(
 	ctx context.Context,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
 ) (*x402.VerifyResponse, error) {
-	lc, err := f.checkVoidPreconditions(ctx, payload, requirements)
+	lc, err := f.checkVoidPreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +470,7 @@ func (f *AuthCaptureEvmScheme) settleVoid(
 		return resp, err
 	}
 
-	lc, err := f.checkVoidPreconditions(ctx, payload, requirements)
+	lc, err := f.checkVoidPreconditions(ctx, payload, requirements, fctx)
 	if err != nil {
 		return nil, toSettleError(err, network, "")
 	}
@@ -468,4 +486,301 @@ func (f *AuthCaptureEvmScheme) settleVoid(
 		return nil, err
 	}
 	return f.awaitSettlement(ctx, payload, requirements, payer, txHash, nil)
+}
+
+// hasAuthorizerSignature reports whether a lifecycle payload carries the authorizer signature.
+func hasAuthorizerSignature(payload map[string]interface{}) bool {
+	signature, _ := payload["authorizerSignature"].(string)
+	return signature != ""
+}
+
+// lifecyclePaymentInfo reads the paymentInfo and payer out of a capture, void or refund payload.
+func lifecyclePaymentInfo(payload map[string]interface{}) (authcapture.PaymentInfoStruct, error) {
+	switch payload["type"] {
+	case opCapture:
+		p, err := authcapture.CapturePayloadFromMap(payload)
+		if err != nil {
+			return authcapture.PaymentInfoStruct{}, err
+		}
+		return p.PaymentInfo, nil
+	case opVoid:
+		p, err := authcapture.VoidPayloadFromMap(payload)
+		if err != nil {
+			return authcapture.PaymentInfoStruct{}, err
+		}
+		return p.PaymentInfo, nil
+	case opRefund:
+		p, err := authcapture.RefundPayloadFromMap(payload)
+		if err != nil {
+			return authcapture.PaymentInfoStruct{}, err
+		}
+		return p.PaymentInfo, nil
+	default:
+		return authcapture.PaymentInfoStruct{}, fmt.Errorf("unexpected lifecycle payload type %v", payload["type"])
+	}
+}
+
+// signedLifecyclePayload returns the lifecycle payload with its authorizer signature: as is when
+// the server signed it, signed by this facilitator when the authorizer is delegated to it, and a
+// verification failure otherwise.
+func (f *AuthCaptureEvmScheme) signedLifecyclePayload(
+	ctx context.Context,
+	fctx *x402.FacilitatorContext,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	lc *lifecyclePreconditions,
+) (types.PaymentPayload, error) {
+	if hasAuthorizerSignature(payload.Payload) {
+		return payload, nil
+	}
+	delegated := getDelegatedAuthorizer(f.config, lc.extra.ReceiverAuthorizer)
+	if delegated == nil {
+		return payload, x402.NewVerifyError(ErrAuthorizerSignature, lc.paymentInfo.Payer, "authorizerSignature is required unless the authorizer is delegated to this facilitator")
+	}
+	return f.signDelegatedLifecycle(ctx, fctx, delegated, payload, requirements, lc)
+}
+
+// signDelegatedLifecycle authenticates a lifecycle request whose authorizer is delegated to this
+// facilitator and signs it. The caller must resolve to the identity bound to the payment at
+// authorize (or charge) time. Nothing is bound here.
+func (f *AuthCaptureEvmScheme) signDelegatedLifecycle(
+	ctx context.Context,
+	fctx *x402.FacilitatorContext,
+	delegated *delegatedAuthorizer,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	lc *lifecyclePreconditions,
+) (types.PaymentPayload, error) {
+	payer := lc.paymentInfo.Payer
+	network := x402.Network(requirements.Network)
+	operation, _ := payload.Payload["type"].(string)
+
+	identity := resolveDelegatedCallerIdentity(ctx, delegated, DelegatedSettleContext{
+		Step:               DelegatedStep(operation),
+		PaymentInfoHash:    lc.paymentInfoHash,
+		Network:            network,
+		Payer:              payer,
+		Payload:            payload,
+		Requirements:       requirements,
+		FacilitatorContext: fctx,
+	})
+	if identity == "" {
+		return payload, x402.NewVerifyError(ErrUnauthenticatedAuthorizerRequest, payer, "")
+	}
+
+	binding, err := delegated.storage.Get(ctx, network, lc.paymentInfoHash)
+	if err != nil {
+		return payload, x402.NewVerifyError(ErrDelegatedAuthUnavailable, payer,
+			"failed to read delegated auth binding: "+evm.TruncateErrorMessage(err.Error()))
+	}
+	if binding == nil || binding.ExpiresAt <= uint64(time.Now().Unix()) || binding.CallerIdentity != identity {
+		return payload, x402.NewVerifyError(ErrUnauthenticatedAuthorizerRequest, payer, "")
+	}
+
+	signed := make(map[string]interface{}, len(payload.Payload)+2)
+	for key, value := range payload.Payload {
+		signed[key] = value
+	}
+	switch operation {
+	case opVoid:
+		signature, err := authcapture.SignVoid(ctx, delegated.signer, lc.extra.CaptureAuthorizer, lc.chainID, lc.paymentInfoHash)
+		if err != nil {
+			return payload, x402.NewVerifyError(ErrAuthorizerSignature, payer, err.Error())
+		}
+		signed["authorizerSignature"] = evm.BytesToHex(signature)
+	case opRefund:
+		p, err := authcapture.RefundPayloadFromMap(payload.Payload)
+		if err != nil {
+			return payload, x402.NewVerifyError(ErrPayloadFormat, payer, err.Error())
+		}
+		amount, amountOK := parseUint(p.Amount)
+		expectedCapturable, capturableOK := parseUint(p.ExpectedCapturableAmount)
+		expectedRefundable, refundableOK := parseUint(p.ExpectedRefundableAmount)
+		if !amountOK || !capturableOK || !refundableOK {
+			return payload, x402.NewVerifyError(ErrPayloadFormat, payer, "amount, expectedCapturableAmount and expectedRefundableAmount must be unsigned integers")
+		}
+		signature, err := authcapture.SignRefund(ctx, delegated.signer, lc.extra.CaptureAuthorizer, lc.chainID,
+			authcapture.RefundParams{
+				PaymentInfoHash:    lc.paymentInfoHash,
+				Amount:             amount,
+				TokenCollector:     lc.deployment.OperatorRefundCollector,
+				ExpectedCapturable: expectedCapturable,
+				ExpectedRefundable: expectedRefundable,
+			})
+		if err != nil {
+			return payload, x402.NewVerifyError(ErrAuthorizerSignature, payer, err.Error())
+		}
+		signed["authorizerSignature"] = evm.BytesToHex(signature)
+	case opCapture:
+		p, err := authcapture.CapturePayloadFromMap(payload.Payload)
+		if err != nil {
+			return payload, x402.NewVerifyError(ErrPayloadFormat, payer, err.Error())
+		}
+		fee, ok := parseSubmittedFee(p.FeeBps, p.FeeAmount, &lc.deployment)
+		if !ok {
+			return payload, x402.NewVerifyError(ErrPayloadFormat, payer, "fee field does not match the deployment's fee encoding")
+		}
+		amount, amountOK := parseUint(p.Amount)
+		expectedCapturable, capturableOK := parseUint(p.ExpectedCapturableAmount)
+		expectedRefundable, refundableOK := parseUint(p.ExpectedRefundableAmount)
+		if !amountOK || !capturableOK || !refundableOK {
+			return payload, x402.NewVerifyError(ErrPayloadFormat, payer, "amount, expectedCapturableAmount and expectedRefundableAmount must be unsigned integers")
+		}
+		signature, err := authcapture.SignCapture(ctx, delegated.signer, &lc.deployment, lc.extra.CaptureAuthorizer, lc.chainID,
+			authcapture.CaptureParams{
+				PaymentInfoHash:    lc.paymentInfoHash,
+				Amount:             amount,
+				Fee:                fee,
+				FeeReceiver:        p.FeeReceiver,
+				ExpectedCapturable: expectedCapturable,
+				ExpectedRefundable: expectedRefundable,
+			})
+		if err != nil {
+			return payload, x402.NewVerifyError(ErrAuthorizerSignature, payer, err.Error())
+		}
+		signed["authorizerSignature"] = evm.BytesToHex(signature)
+		delete(signed, "voidRemainder")
+		if p.VoidRemainder {
+			voidSignature, err := authcapture.SignVoid(ctx, delegated.signer, lc.extra.CaptureAuthorizer, lc.chainID, lc.paymentInfoHash)
+			if err != nil {
+				return payload, x402.NewVerifyError(ErrAuthorizerSignature, payer, err.Error())
+			}
+			signed["voidAuthorizerSignature"] = evm.BytesToHex(voidSignature)
+		}
+	default:
+		return payload, x402.NewVerifyError(ErrPayloadType, payer, fmt.Sprintf("unexpected lifecycle payload type: %s", operation))
+	}
+
+	payload.Payload = signed
+	return payload, nil
+}
+
+// delegatedLifecycle resolves the delegated authorizer and the identifiers of an unverified
+// lifecycle payload. It returns a nil authorizer when the authorizer is not delegated to this
+// facilitator, or when the payload or requirements are unreadable, which verification reports.
+func (f *AuthCaptureEvmScheme) delegatedLifecycle(
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+) (*delegatedAuthorizer, *lifecyclePreconditions) {
+	extra, deployment, err := authcapture.ParseAuthCaptureExtra(requirements)
+	if err != nil {
+		return nil, nil
+	}
+	delegated := getDelegatedAuthorizer(f.config, extra.ReceiverAuthorizer)
+	if delegated == nil {
+		return nil, nil
+	}
+	paymentInfo, err := lifecyclePaymentInfo(payload.Payload)
+	if err != nil {
+		return nil, nil
+	}
+	chainID, err := evm.GetEvmChainId(requirements.Network)
+	if err != nil {
+		return nil, nil
+	}
+	paymentInfoHash, err := authcapture.ComputePaymentInfoHash(chainID, paymentInfo, paymentInfo.Payer, deployment.Escrow)
+	if err != nil {
+		return nil, nil
+	}
+	return delegated, &lifecyclePreconditions{
+		deployment:      deployment,
+		extra:           extra,
+		chainID:         chainID,
+		paymentInfo:     paymentInfo,
+		paymentInfoHash: paymentInfoHash,
+	}
+}
+
+// lifecycleSettler settles an authorizer-signed lifecycle payload.
+type lifecycleSettler func(
+	ctx context.Context,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
+) (*x402.SettleResponse, error)
+
+// settleLifecycle re-verifies and settles a lifecycle payload. A delegated authorizer's signature
+// is produced first, so the pending-settlement key derives from it and a retry reconciles.
+func (f *AuthCaptureEvmScheme) settleLifecycle(
+	ctx context.Context,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	fctx *x402.FacilitatorContext,
+	settle lifecycleSettler,
+) (*x402.SettleResponse, error) {
+	delegated, lc := f.delegatedLifecycle(payload, requirements)
+
+	settleable := payload
+	if delegated != nil && !hasAuthorizerSignature(payload.Payload) {
+		signed, err := f.signDelegatedLifecycle(ctx, fctx, delegated, payload, requirements, lc)
+		if err != nil {
+			return nil, toSettleError(err, x402.Network(payload.Accepted.Network), lc.paymentInfo.Payer)
+		}
+		settleable = signed
+	}
+
+	resp, err := settle(ctx, settleable, requirements, fctx)
+	if err == nil && resp != nil && resp.Success && delegated != nil {
+		f.releaseTerminalBinding(ctx, delegated, lc, requirements, settleable.Payload)
+	}
+	return resp, err
+}
+
+// releaseTerminalBinding deletes the caller binding once the payment has nothing left to relay:
+// no capturable hold and nothing refundable. It is best effort, so a storage failure never fails
+// a confirmed settle. Balances come from the signed expectations; a void leg is not known
+// locally, so those cases read paymentState once, and a stale read just leaves the row to expire.
+func (f *AuthCaptureEvmScheme) releaseTerminalBinding(
+	ctx context.Context,
+	delegated *delegatedAuthorizer,
+	lc *lifecyclePreconditions,
+	requirements types.PaymentRequirements,
+	settled map[string]interface{},
+) {
+	var capturable, refundable *big.Int
+	switch settled["type"] {
+	case opRefund:
+		p, err := authcapture.RefundPayloadFromMap(settled)
+		if err != nil {
+			return
+		}
+		amount, amountOK := parseUint(p.Amount)
+		expectedCapturable, capturableOK := parseUint(p.ExpectedCapturableAmount)
+		expectedRefundable, refundableOK := parseUint(p.ExpectedRefundableAmount)
+		if !amountOK || !capturableOK || !refundableOK {
+			return
+		}
+		capturable = expectedCapturable
+		refundable = new(big.Int).Sub(expectedRefundable, amount)
+	case opCapture:
+		p, err := authcapture.CapturePayloadFromMap(settled)
+		if err != nil {
+			return
+		}
+		if p.VoidAuthorizerSignature == "" {
+			amount, amountOK := parseUint(p.Amount)
+			expectedCapturable, capturableOK := parseUint(p.ExpectedCapturableAmount)
+			expectedRefundable, refundableOK := parseUint(p.ExpectedRefundableAmount)
+			if !amountOK || !capturableOK || !refundableOK {
+				return
+			}
+			capturable = new(big.Int).Sub(expectedCapturable, amount)
+			refundable = new(big.Int).Add(expectedRefundable, amount)
+		}
+	}
+	if capturable == nil {
+		_, readCapturable, readRefundable, err := readPaymentState(ctx, f.signer, &lc.deployment, lc.paymentInfoHash)
+		if err != nil {
+			return
+		}
+		capturable, refundable = readCapturable, readRefundable
+	}
+	if capturable.Sign() != 0 || refundable.Sign() != 0 {
+		return
+	}
+
+	network := x402.Network(requirements.Network)
+	if err := delegated.storage.Delete(ctx, network, lc.paymentInfoHash); err != nil {
+		reportDelegatedStorageError(delegated, err, network, lc.paymentInfoHash)
+	}
 }

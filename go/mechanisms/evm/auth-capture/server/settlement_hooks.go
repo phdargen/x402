@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -100,16 +99,18 @@ func (s *AuthCaptureEvmScheme) SettleOnCancel(ctx x402.VerifiedPaymentCanceledCo
 	}
 	if extra.PaymentFlow == authcapture.PaymentFlowAuthorization ||
 		extra.OperatorType == authcapture.OperatorTypeCustom ||
-		s.config.ReceiverAuthorizerSigner == nil {
+		authcapture.AuthorizerModeFor(extra.ReceiverAuthorizer, s.config.ReceiverAuthorizerSigner) == authcapture.AuthorizerModeCollectOnly {
 		return nil, nil
 	}
 	return &requirements, nil
 }
 
-// EnrichSettlementPayload adds the receiver-authorizer signature the facilitator needs: none for
+// EnrichSettlementPayload adds the receiver-authorizer fields the facilitator needs: none for
 // authorize, a Charge completing the authorization flow, a Capture after the handler (plus a
 // Void of the remainder on a partial capture), and a Void on cancel. A deferred route adds
 // nothing after the handler because its capture happens later through the lifecycle manager.
+// Without a local signer for the route's receiverAuthorizer (delegated to the facilitator) the
+// enrichments carry no signatures, and a collect-only route gets no enrichment.
 func (s *AuthCaptureEvmScheme) EnrichSettlementPayload(ctx x402.SettleContext) (map[string]interface{}, error) {
 	if ctx.Phase == x402.SettlePhaseBeforeHandler {
 		return nil, nil
@@ -118,61 +119,74 @@ func (s *AuthCaptureEvmScheme) EnrichSettlementPayload(ctx x402.SettleContext) (
 	if err != nil {
 		return nil, err
 	}
+
+	// Delegated mode builds the same payloads without signatures; the facilitator signs them.
+	mode := authcapture.AuthorizerModeFor(request.extra.ReceiverAuthorizer, s.config.ReceiverAuthorizerSigner)
+	var signer evm.ClientEvmSigner
+	switch mode {
+	case authcapture.AuthorizerModeCollectOnly:
+		return nil, nil
+	case authcapture.AuthorizerModeSelf:
+		signer = s.config.ReceiverAuthorizerSigner
+	case authcapture.AuthorizerModeDelegated:
+	default:
+		return nil, fmt.Errorf("unexpected authorizer mode %s", mode)
+	}
+
 	switch {
 	case ctx.Phase == x402.SettlePhaseCancel:
-		return s.voidEnrichment(ctx.Ctx, request)
+		return s.voidEnrichment(ctx.Ctx, signer, request)
 	case request.extra.PaymentFlow == authcapture.PaymentFlowAuthorization:
-		return s.chargeEnrichment(ctx.Ctx, request)
+		return s.chargeEnrichment(ctx.Ctx, signer, request)
 	case request.extra.CaptureMode == authcapture.CaptureModeDeferred:
 		return nil, nil
 	default:
-		return s.captureEnrichment(ctx.Ctx, request)
+		return s.captureEnrichment(ctx.Ctx, signer, request)
 	}
 }
 
-func (s *AuthCaptureEvmScheme) requireSigner() (evm.ClientEvmSigner, error) {
-	if s.config.ReceiverAuthorizerSigner == nil {
-		return nil, errors.New(ErrMissingReceiverAuthorizerSigner)
-	}
-	return s.config.ReceiverAuthorizerSigner, nil
-}
-
-func (s *AuthCaptureEvmScheme) voidEnrichment(ctx context.Context, request *settleRequest) (map[string]interface{}, error) {
-	signer, err := s.requireSigner()
-	if err != nil {
-		return nil, err
-	}
+// voidEnrichment builds the cancel Void, signed when a local signer is given.
+func (s *AuthCaptureEvmScheme) voidEnrichment(ctx context.Context, signer evm.ClientEvmSigner, request *settleRequest) (map[string]interface{}, error) {
 	paymentInfo, err := request.paymentInfo.ToWireMap()
 	if err != nil {
 		return nil, err
+	}
+	result := map[string]interface{}{
+		"type":        "void",
+		"paymentInfo": paymentInfo,
+	}
+	if signer == nil {
+		return result, nil
 	}
 	signature, err := authcapture.SignVoid(ctx, signer, request.extra.CaptureAuthorizer, request.chainID, request.paymentInfoHash)
 	if err != nil {
 		return nil, fmt.Errorf(ErrFailedToSignVoid+": %w", err)
 	}
-	return map[string]interface{}{
-		"type":                "void",
-		"paymentInfo":         paymentInfo,
-		"authorizerSignature": evm.BytesToHex(signature),
-	}, nil
+	result["authorizerSignature"] = evm.BytesToHex(signature)
+	return result, nil
 }
 
 // chargeEnrichment completes an authorization-flow charge with the settlement amount, the fee at
-// the route's minimum, and a Charge signature bound to the client's collector data.
-func (s *AuthCaptureEvmScheme) chargeEnrichment(ctx context.Context, request *settleRequest) (map[string]interface{}, error) {
-	signer, err := s.requireSigner()
-	if err != nil {
-		return nil, err
-	}
+// the route's minimum, and, when a local signer is given, a Charge signature bound to the
+// client's collector data.
+func (s *AuthCaptureEvmScheme) chargeEnrichment(ctx context.Context, signer evm.ClientEvmSigner, request *settleRequest) (map[string]interface{}, error) {
 	amount, err := request.settlementAmount(request.signedAmount)
 	if err != nil {
 		return nil, err
+	}
+	fee := authcapture.DefaultCaptureFee(&request.deployment, amount, request.extra.MinFeeBps)
+	result := map[string]interface{}{
+		"amount":      amount.String(),
+		"feeReceiver": request.extra.FeeRecipient,
+	}
+	fee.AddToWire(result)
+	if signer == nil {
+		return result, nil
 	}
 	collectorData, err := evm.HexToBytes(request.collect.signature)
 	if err != nil {
 		return nil, fmt.Errorf(ErrInvalidCollectPayload+": signature: %w", err)
 	}
-	fee := authcapture.DefaultCaptureFee(&request.deployment, amount, request.extra.MinFeeBps)
 	signature, err := authcapture.SignCharge(ctx, signer, &request.deployment, request.extra.CaptureAuthorizer, request.chainID,
 		authcapture.ChargeParams{
 			PaymentInfoHash: request.paymentInfoHash,
@@ -185,12 +199,7 @@ func (s *AuthCaptureEvmScheme) chargeEnrichment(ctx context.Context, request *se
 	if err != nil {
 		return nil, fmt.Errorf(ErrFailedToSignCharge+": %w", err)
 	}
-	result := map[string]interface{}{
-		"amount":              amount.String(),
-		"feeReceiver":         request.extra.FeeRecipient,
-		"authorizerSignature": evm.BytesToHex(signature),
-	}
-	fee.AddToWire(result)
+	result["authorizerSignature"] = evm.BytesToHex(signature)
 	return result, nil
 }
 
@@ -212,11 +221,7 @@ func (s *AuthCaptureEvmScheme) storedBalances(ctx context.Context, request *sett
 	return capturable, refundable, nil
 }
 
-func (s *AuthCaptureEvmScheme) captureEnrichment(ctx context.Context, request *settleRequest) (map[string]interface{}, error) {
-	signer, err := s.requireSigner()
-	if err != nil {
-		return nil, err
-	}
+func (s *AuthCaptureEvmScheme) captureEnrichment(ctx context.Context, signer evm.ClientEvmSigner, request *settleRequest) (map[string]interface{}, error) {
 	capturable, refundable, err := s.storedBalances(ctx, request)
 	if err != nil {
 		return nil, err
@@ -225,7 +230,7 @@ func (s *AuthCaptureEvmScheme) captureEnrichment(ctx context.Context, request *s
 	if err != nil {
 		return nil, err
 	}
-	signed, err := signCapture(ctx, signer, request.deployment, request.extra, request.chainID, captureTerms{
+	signed, err := buildCaptureFields(ctx, signer, request.deployment, request.extra, request.chainID, captureTerms{
 		paymentInfoHash: request.paymentInfoHash,
 		amount:          amount,
 		fee:             authcapture.DefaultCaptureFee(&request.deployment, amount, request.extra.MinFeeBps),
@@ -258,9 +263,11 @@ type captureTerms struct {
 	voidRemainder   bool
 }
 
-// signCapture signs a Capture, and a Void when the remainder is released, returning the signed
-// wire fields shared by in-request and manager captures.
-func signCapture(
+// buildCaptureFields builds the capture wire fields shared by in-request and manager captures,
+// signing the Capture (and a Void when the remainder is released) when a local signer is given.
+// Without one (authorizer delegated to the facilitator) the signatures are omitted and
+// voidRemainder asks the facilitator to sign the Void leg.
+func buildCaptureFields(
 	ctx context.Context,
 	signer evm.ClientEvmSigner,
 	deployment authcapture.AuthCaptureDeployment,
@@ -268,6 +275,20 @@ func signCapture(
 	chainID *big.Int,
 	terms captureTerms,
 ) (map[string]interface{}, error) {
+	result := map[string]interface{}{
+		"amount":                   terms.amount.String(),
+		"feeReceiver":              terms.feeReceiver,
+		"expectedCapturableAmount": terms.capturable.String(),
+		"expectedRefundableAmount": terms.refundable.String(),
+	}
+	terms.fee.AddToWire(result)
+	if signer == nil {
+		if terms.voidRemainder {
+			result["voidRemainder"] = true
+		}
+		return result, nil
+	}
+
 	signature, err := authcapture.SignCapture(ctx, signer, &deployment, extra.CaptureAuthorizer, chainID,
 		authcapture.CaptureParams{
 			PaymentInfoHash:    terms.paymentInfoHash,
@@ -280,14 +301,7 @@ func signCapture(
 	if err != nil {
 		return nil, fmt.Errorf(ErrFailedToSignCapture+": %w", err)
 	}
-	result := map[string]interface{}{
-		"amount":                   terms.amount.String(),
-		"feeReceiver":              terms.feeReceiver,
-		"expectedCapturableAmount": terms.capturable.String(),
-		"expectedRefundableAmount": terms.refundable.String(),
-		"authorizerSignature":      evm.BytesToHex(signature),
-	}
-	terms.fee.AddToWire(result)
+	result["authorizerSignature"] = evm.BytesToHex(signature)
 	if terms.voidRemainder {
 		voidSignature, err := authcapture.SignVoid(ctx, signer, extra.CaptureAuthorizer, chainID, terms.paymentInfoHash)
 		if err != nil {

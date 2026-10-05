@@ -179,7 +179,7 @@ Operational notes:
 
 - Without `delegatedAuthStorage` and `onStorageError`, facilitator-delegated signing is off (`getDelegatedAuthorizer` returns undefined). Use a durable store with an atomic insert-if-absent `bind` when more than one process serves the same payments.
 - Identity is first-writer-wins, so anyone who can present the same credential can drive that payment's lifecycle. Give each merchant its own credential.
-- `validateFacilitatorSupport` (same hook as SVM `upto` and EVM batch-settlement) runs during `x402ResourceServer.initialize()` and fails fast when the facilitator omits `captureAuthorizer` or, for delegated receiver signing, `receiverAuthorizer`. Collect-only merchants whose routes always set `receiverAuthorizer: zeroAddress` may pass `collectOnlyRoutes: true` on the scheme constructor to skip the receiver check. Route-specific mistakes (for example escrow + sync without any authorizer) still surface in `enhancePaymentRequirements`.
+- `validateFacilitatorSupport` runs during `x402ResourceServer.initialize()` and fails fast when the facilitator omits `captureAuthorizer` or, for delegated receiver signing, `receiverAuthorizer`. Collect-only merchants whose routes always set `receiverAuthorizer: zeroAddress` may pass `collectOnlyRoutes: true` on the scheme constructor to skip the receiver check. Route-specific mistakes (for example escrow + sync without any authorizer) still surface in `enhancePaymentRequirements`.
 
 ## Deferred lifecycle: storage and helpers
 

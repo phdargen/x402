@@ -20,6 +20,19 @@ type PaymentInfoStruct struct {
 	Salt                string `json:"salt"`
 }
 
+// AuthorizerMode says who produces authorizerSignature for a published receiverAuthorizer:
+//   - AuthorizerModeSelf: the server's receiver-authorizer signer, which signs locally.
+//   - AuthorizerModeDelegated: a non-zero authorizer the server holds no key for; payloads go
+//     out unsigned and the facilitator signs after authenticating the request out of band.
+//   - AuthorizerModeCollectOnly: the zero address; the facilitator relays no lifecycle.
+type AuthorizerMode string
+
+const (
+	AuthorizerModeSelf        AuthorizerMode = "self"
+	AuthorizerModeDelegated   AuthorizerMode = "delegated"
+	AuthorizerModeCollectOnly AuthorizerMode = "collect-only"
+)
+
 // AuthCaptureExtra is the parsed requirements.Extra (absolute deadlines).
 type AuthCaptureExtra struct {
 	CaptureAuthorizer   string
@@ -114,13 +127,23 @@ func hasFeeField(v map[string]interface{}) (hasFeeBps, hasFeeAmount bool) {
 	return hasFeeBps, hasFeeAmount
 }
 
-// isCompleteCharge requires every charge completion field, with exactly one fee field.
+// isOptionalString reports whether key is absent or a string.
+func isOptionalString(v map[string]interface{}, key string) bool {
+	value, present := v[key]
+	if !present {
+		return true
+	}
+	_, ok := value.(string)
+	return ok
+}
+
+// isCompleteCharge requires the amount, feeReceiver and exactly one fee field. The authorizer
+// signature is optional because a facilitator-delegated authorizer produces it at settle time.
 func isCompleteCharge(v map[string]interface{}) bool {
 	_, hasAmount := v["amount"].(string)
 	_, hasFeeReceiver := v["feeReceiver"].(string)
-	_, hasAuthorizerSig := v["authorizerSignature"].(string)
 	hasFeeBps, hasFeeAmount := hasFeeField(v)
-	return hasAmount && hasFeeReceiver && hasAuthorizerSig && hasFeeBps != hasFeeAmount
+	return hasAmount && hasFeeReceiver && isOptionalString(v, "authorizerSignature") && hasFeeBps != hasFeeAmount
 }
 
 // isCollectEnvelope checks the fields shared by both collect payload shapes.
@@ -213,7 +236,8 @@ func IsLifecyclePayload(value interface{}) bool {
 	return ok && (t == "capture" || t == "void" || t == "refund")
 }
 
-// IsCapturePayload reports whether value is a capture lifecycle payload.
+// IsCapturePayload reports whether value is a capture lifecycle payload. The signatures are
+// optional so a facilitator-delegated authorizer can sign them at settle time.
 func IsCapturePayload(value interface{}) bool {
 	v, ok := value.(map[string]interface{})
 	if !ok || !IsLifecyclePayload(value) || v["type"] != "capture" {
@@ -226,12 +250,26 @@ func IsCapturePayload(value interface{}) bool {
 	if !isPaymentInfoStructMap(v["paymentInfo"]) || !isHexString(v["saltNonce"]) {
 		return false
 	}
-	for _, key := range []string{"amount", "feeReceiver", "expectedCapturableAmount", "expectedRefundableAmount", "authorizerSignature"} {
+	for _, key := range []string{"amount", "feeReceiver", "expectedCapturableAmount", "expectedRefundableAmount"} {
 		if !isNonEmptyString(v[key]) {
 			return false
 		}
 	}
-	return true
+	return isOptionalString(v, "authorizerSignature") &&
+		isOptionalString(v, "voidAuthorizerSignature") &&
+		isDelegatedCaptureShape(v)
+}
+
+// isDelegatedCaptureShape applies the cross-field rules for a capture whose signatures may be
+// delegated: a void signature needs the capture signature, and voidRemainder is the unsigned
+// stand-in for the void signature.
+func isDelegatedCaptureShape(v map[string]interface{}) bool {
+	_, hasAuthorizerSig := v["authorizerSignature"]
+	_, hasVoidSig := v["voidAuthorizerSignature"]
+	if voidRemainder, present := v["voidRemainder"]; present {
+		return voidRemainder == true && !hasAuthorizerSig && !hasVoidSig
+	}
+	return hasAuthorizerSig || !hasVoidSig
 }
 
 // IsVoidPayload reports whether value is a void lifecycle payload.
@@ -240,9 +278,11 @@ func IsVoidPayload(value interface{}) bool {
 	if !ok || !IsLifecyclePayload(value) || v["type"] != "void" {
 		return false
 	}
+	_, hasVoidRemainder := v["voidRemainder"]
 	return isPaymentInfoStructMap(v["paymentInfo"]) &&
 		isHexString(v["saltNonce"]) &&
-		isNonEmptyString(v["authorizerSignature"])
+		isOptionalString(v, "authorizerSignature") &&
+		!hasVoidRemainder
 }
 
 // IsRefundPayload reports whether value is a refund lifecycle payload.
@@ -254,10 +294,11 @@ func IsRefundPayload(value interface{}) bool {
 	if !isPaymentInfoStructMap(v["paymentInfo"]) || !isHexString(v["saltNonce"]) {
 		return false
 	}
-	for _, key := range []string{"amount", "expectedCapturableAmount", "expectedRefundableAmount", "authorizerSignature"} {
+	for _, key := range []string{"amount", "expectedCapturableAmount", "expectedRefundableAmount"} {
 		if !isNonEmptyString(v[key]) {
 			return false
 		}
 	}
-	return true
+	_, hasVoidRemainder := v["voidRemainder"]
+	return isOptionalString(v, "authorizerSignature") && !hasVoidRemainder
 }

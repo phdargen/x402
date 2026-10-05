@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
@@ -47,6 +48,22 @@ type AuthCaptureEvmSchemeConfig struct {
 	// the refunded tokens from the captureAuthorizer, so enable it only with an out-of-band
 	// funding agreement that keeps every advertised submitter funded and approved.
 	RefundFunding bool
+
+	// AuthorizerSigner enables facilitator-delegated receiver authorization. Its address is
+	// advertised as /supported extra.receiverAuthorizer, and the facilitator signs charge and
+	// lifecycle digests with it when the server omits authorizerSignature. It requires
+	// ResolveCallerIdentity, DelegatedAuthStorage and OnStorageError together;
+	// NewAuthCaptureEvmScheme panics when only some of the four are set.
+	AuthorizerSigner evm.ClientEvmSigner
+	// ResolveCallerIdentity authenticates the caller of a delegated settle out of band and
+	// returns a stable identity. An empty identity or an error rejects the settle. The identity
+	// must be the same across the authorize and the later lifecycle settles of one payment.
+	ResolveCallerIdentity ResolveCallerIdentity
+	// DelegatedAuthStorage holds the caller bindings for delegated payments.
+	DelegatedAuthStorage AuthCaptureDelegatedAuthStorage
+	// OnStorageError is called when reverting or deleting a binding fails. It must not replace
+	// the settle result.
+	OnStorageError OnDelegatedAuthStorageError
 }
 
 // SenderReader is an optional capability of a FacilitatorEvmSigner: ReadContract with an
@@ -95,8 +112,10 @@ type AuthCaptureEvmScheme struct {
 	pendingStore x402.PendingSettlementStore
 }
 
-// NewAuthCaptureEvmScheme creates a new AuthCaptureEvmScheme.
+// NewAuthCaptureEvmScheme creates a new AuthCaptureEvmScheme. It panics when
+// facilitator-delegated receiver authorization is only partially configured.
 func NewAuthCaptureEvmScheme(signer evm.FacilitatorEvmSigner, config AuthCaptureEvmSchemeConfig) *AuthCaptureEvmScheme {
+	assertDelegatedReceiverAuthorizerConfig(config)
 	return &AuthCaptureEvmScheme{
 		signer:       signer,
 		config:       config,
@@ -144,11 +163,16 @@ func (f *AuthCaptureEvmScheme) operatorAdmitted(address string) bool {
 	return false
 }
 
-// GetExtra returns the facilitator's advertised auth-capture terms for /supported.
+// GetExtra returns the facilitator's advertised auth-capture terms for /supported: the capture
+// authorizer, the receiver authorizer when this facilitator can authenticate delegated requests,
+// the fee terms, and the custom-operator allowlist.
 func (f *AuthCaptureEvmScheme) GetExtra(_ x402.Network) map[string]interface{} {
 	extra := map[string]interface{}{}
 	if f.config.CaptureAuthorizer != "" {
 		extra["captureAuthorizer"] = f.config.CaptureAuthorizer
+	}
+	if f.config.AuthorizerSigner != nil {
+		extra["receiverAuthorizer"] = common.HexToAddress(f.config.AuthorizerSigner.Address()).Hex()
 	}
 	if f.config.FeeRecipient != "" {
 		extra["feeRecipient"] = f.config.FeeRecipient
@@ -180,11 +204,11 @@ func (f *AuthCaptureEvmScheme) Verify(
 	case authcapture.IsEip3009Payload(payload.Payload), authcapture.IsPermit2Payload(payload.Payload):
 		return f.verifyCollect(ctx, payload, requirements)
 	case authcapture.IsCapturePayload(payload.Payload):
-		return f.verifyCapture(ctx, payload, requirements)
+		return f.verifyCapture(ctx, payload, requirements, fctx)
 	case authcapture.IsVoidPayload(payload.Payload):
-		return f.verifyVoid(ctx, payload, requirements)
+		return f.verifyVoid(ctx, payload, requirements, fctx)
 	case authcapture.IsRefundPayload(payload.Payload):
-		return f.verifyRefund(ctx, payload, requirements)
+		return f.verifyRefund(ctx, payload, requirements, fctx)
 	default:
 		return nil, x402.NewVerifyError(unknownShapeReason(payload.Payload), "", "payload matches no known auth-capture shape")
 	}
@@ -201,11 +225,11 @@ func (f *AuthCaptureEvmScheme) Settle(
 	case authcapture.IsEip3009Payload(payload.Payload), authcapture.IsPermit2Payload(payload.Payload):
 		return f.settleCollect(ctx, payload, requirements, fctx)
 	case authcapture.IsCapturePayload(payload.Payload):
-		return f.settleCapture(ctx, payload, requirements, fctx)
+		return f.settleLifecycle(ctx, payload, requirements, fctx, f.settleCapture)
 	case authcapture.IsVoidPayload(payload.Payload):
-		return f.settleVoid(ctx, payload, requirements, fctx)
+		return f.settleLifecycle(ctx, payload, requirements, fctx, f.settleVoid)
 	case authcapture.IsRefundPayload(payload.Payload):
-		return f.settleRefund(ctx, payload, requirements, fctx)
+		return f.settleLifecycle(ctx, payload, requirements, fctx, f.settleRefund)
 	default:
 		network := x402.Network(payload.Accepted.Network)
 		return nil, x402.NewSettleError(unknownShapeReason(payload.Payload), "", network, "", "payload matches no known auth-capture shape")

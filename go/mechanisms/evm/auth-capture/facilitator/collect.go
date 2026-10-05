@@ -67,6 +67,7 @@ type collectOutcome struct {
 // collectPreconditions is the verified state settleCollect reuses from verifyCollect.
 type collectPreconditions struct {
 	collectOutcome
+	auth         *collectAuth
 	sigData      *evm.ERC6492SignatureData
 	rawSignature []byte
 }
@@ -373,25 +374,34 @@ func reconstructCollectOutcome(payload types.PaymentPayload, requirements types.
 	return newCollectOutcome(rc, auth, op, payload, requirements)
 }
 
+// chargeParams are the values the receiver authorizer signs for a completed charge. The
+// collector data is the client signature exactly as it arrived on the wire.
+func chargeParams(auth *collectAuth, out *collectOutcome) (authcapture.ChargeParams, error) {
+	collectorData, err := evm.HexToBytes(auth.signature)
+	if err != nil {
+		return authcapture.ChargeParams{}, x402.NewVerifyError(ErrSignature, auth.payer, err.Error())
+	}
+	return authcapture.ChargeParams{
+		PaymentInfoHash: out.paymentInfoHash,
+		Amount:          out.amount,
+		TokenCollector:  out.tokenCollector,
+		CollectorData:   collectorData,
+		Fee:             out.fee,
+		FeeReceiver:     out.feeReceiver,
+	}, nil
+}
+
 // checkChargeSignature verifies the receiver authorizer's signature over a completed charge.
 func (f *AuthCaptureEvmScheme) checkChargeSignature(ctx context.Context, rc *requestContext, auth *collectAuth, out *collectOutcome) error {
 	signature, err := evm.HexToBytes(auth.charge.AuthorizerSignature)
 	if err != nil {
 		return x402.NewVerifyError(ErrAuthorizerSignature, auth.payer, err.Error())
 	}
-	collectorData, err := evm.HexToBytes(auth.signature)
+	params, err := chargeParams(auth, out)
 	if err != nil {
-		return x402.NewVerifyError(ErrSignature, auth.payer, err.Error())
+		return err
 	}
-	valid, err := authcapture.VerifyCharge(ctx, f.signer, rc.extra.ReceiverAuthorizer, &rc.deployment, rc.extra.CaptureAuthorizer, rc.chainID,
-		authcapture.ChargeParams{
-			PaymentInfoHash: out.paymentInfoHash,
-			Amount:          out.amount,
-			TokenCollector:  out.tokenCollector,
-			CollectorData:   collectorData,
-			Fee:             out.fee,
-			FeeReceiver:     out.feeReceiver,
-		}, signature)
+	valid, err := authcapture.VerifyCharge(ctx, f.signer, rc.extra.ReceiverAuthorizer, &rc.deployment, rc.extra.CaptureAuthorizer, rc.chainID, params, signature)
 	if err != nil {
 		return x402.NewVerifyError(ErrAuthorizerSignature, auth.payer, err.Error())
 	}
@@ -450,8 +460,13 @@ func (f *AuthCaptureEvmScheme) checkCollectPreconditions(
 		return nil, x402.NewVerifyError(ErrNonceMismatch, auth.payer, fmt.Sprintf("nonce mismatch: %s != %s", auth.nonce, expectedNonce))
 	}
 	if op.completed {
-		if err := f.checkChargeSignature(ctx, rc, auth, out); err != nil {
-			return nil, err
+		if auth.charge.AuthorizerSignature != "" {
+			if err := f.checkChargeSignature(ctx, rc, auth, out); err != nil {
+				return nil, err
+			}
+		} else if getDelegatedAuthorizer(f.config, rc.extra.ReceiverAuthorizer) == nil {
+			// A delegated authorizer signs at settle time, after authenticating the caller.
+			return nil, x402.NewVerifyError(ErrAuthorizerSignature, auth.payer, "authorizerSignature is required unless the authorizer is delegated to this facilitator")
 		}
 	}
 
@@ -462,7 +477,7 @@ func (f *AuthCaptureEvmScheme) checkCollectPreconditions(
 	if rc.extra.OperatorType == authcapture.OperatorTypeCustom && needsFactoryDeploy(sigData) {
 		return nil, x402.NewVerifyError(ErrUndeployedSmartWallet, auth.payer, "custom operators do not support counterfactual wallets")
 	}
-	return &collectPreconditions{collectOutcome: *out, sigData: sigData, rawSignature: sigData.InnerSignature}, nil
+	return &collectPreconditions{collectOutcome: *out, auth: auth, sigData: sigData, rawSignature: sigData.InnerSignature}, nil
 }
 
 // escrowArgs are the AuthCaptureEscrow authorize or charge call arguments.
@@ -550,34 +565,174 @@ func (f *AuthCaptureEvmScheme) settleCollect(
 			return nil, toSettleError(err, network, pre.payer)
 		}
 	}
+
+	delegated := getDelegatedAuthorizer(f.config, pre.extra.ReceiverAuthorizer)
+	if delegated == nil {
+		return f.broadcastCollect(ctx, fctx, payload, requirements, pre).response()
+	}
+
+	bindRecord, err := f.authenticateDelegatedCollect(ctx, delegated, fctx, payload, requirements, pre)
+	if err != nil {
+		return nil, err
+	}
+	if bindRecord == nil {
+		return f.broadcastCollect(ctx, fctx, payload, requirements, pre).response()
+	}
+	bound := bindThenBroadcast(ctx, delegated, *bindRecord, func() (settleOutcome, bindDisposition) {
+		outcome := f.broadcastCollect(ctx, fctx, payload, requirements, pre)
+		return outcome, outcome.disposition
+	})
+	if !bound.OK {
+		if bound.Reason == bindConflict {
+			return nil, x402.NewSettleError(ErrUnauthenticatedAuthorizerRequest, pre.payer, network, "", "")
+		}
+		return nil, x402.NewSettleError(ErrDelegatedAuthUnavailable, pre.payer, network, "",
+			"failed to bind delegated caller: "+evm.TruncateErrorMessage(bound.Err.Error()))
+	}
+	return bound.Value.response()
+}
+
+// settleOutcome is a settle result, which is either a response or an error, and whether a caller
+// binding written for it should be kept: it is reverted only when no transaction can have landed.
+type settleOutcome struct {
+	resp        *x402.SettleResponse
+	err         error
+	disposition bindDisposition
+}
+
+func (o settleOutcome) response() (*x402.SettleResponse, error) {
+	return o.resp, o.err
+}
+
+// notBroadcast is the outcome of a settle that failed before any transaction was sent.
+func notBroadcast(err error) settleOutcome {
+	return settleOutcome{err: err, disposition: bindRevert}
+}
+
+// awaited is the outcome of a settle whose transaction was broadcast. A pending receipt or any
+// other post-broadcast outcome may still have landed onchain; only a revert is final.
+func awaited(resp *x402.SettleResponse, err error) settleOutcome {
+	var settleErr *x402.SettleError
+	if errors.As(err, &settleErr) && settleErr.ErrorReason == ErrTransactionReverted {
+		return settleOutcome{resp: resp, err: err, disposition: bindRevert}
+	}
+	return settleOutcome{resp: resp, err: err, disposition: bindKeep}
+}
+
+// authenticateDelegatedCollect authenticates a collect whose authorizer is delegated to this
+// facilitator, produces the Charge signature the server omitted, and returns the binding to write
+// before broadcast. It returns a nil record when the payment needs no binding.
+func (f *AuthCaptureEvmScheme) authenticateDelegatedCollect(
+	ctx context.Context,
+	delegated *delegatedAuthorizer,
+	fctx *x402.FacilitatorContext,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	pre *collectPreconditions,
+) (*AuthCaptureDelegatedAuthRecord, error) {
+	network := pre.network
+	fail := func(reason, message string) error {
+		return x402.NewSettleError(reason, pre.payer, network, "", message)
+	}
+
+	identity := resolveDelegatedCallerIdentity(ctx, delegated, DelegatedSettleContext{
+		Step:               DelegatedStep(pre.function),
+		PaymentInfoHash:    pre.paymentInfoHash,
+		Network:            network,
+		Payer:              pre.payer,
+		Payload:            payload,
+		Requirements:       requirements,
+		FacilitatorContext: fctx,
+	})
+	if identity == "" {
+		return nil, fail(ErrUnauthenticatedAuthorizerRequest, "")
+	}
+
+	if pre.function == "charge" && pre.auth.charge.AuthorizerSignature == "" {
+		if err := f.signDelegatedCharge(ctx, delegated, pre); err != nil {
+			return nil, toSettleError(err, network, pre.payer)
+		}
+	}
+
+	// Only payments whose later steps the facilitator can still relay need a binding.
+	// A custom operator's lifecycle is never relayed, and a charge is only refundable
+	// through the facilitator when refunds are funded.
+	relayable := pre.extra.OperatorType != authcapture.OperatorTypeCustom &&
+		(pre.function == "authorize" || f.config.RefundFunding)
+	if !relayable {
+		return nil, nil
+	}
+	return &AuthCaptureDelegatedAuthRecord{
+		Network:         network,
+		PaymentInfoHash: pre.paymentInfoHash,
+		CallerIdentity:  identity,
+		ExpiresAt:       pre.extra.RefundDeadline,
+	}, nil
+}
+
+// signDelegatedCharge signs the Charge digest the server omitted and checks that the signature
+// verifies as the receiver authorizer's.
+func (f *AuthCaptureEvmScheme) signDelegatedCharge(ctx context.Context, delegated *delegatedAuthorizer, pre *collectPreconditions) error {
+	chainID, err := evm.GetEvmChainId(string(pre.network))
+	if err != nil {
+		return x402.NewVerifyError(ErrInvalidNetwork, pre.payer, err.Error())
+	}
+	params, err := chargeParams(pre.auth, &pre.collectOutcome)
+	if err != nil {
+		return err
+	}
+	signature, err := authcapture.SignCharge(ctx, delegated.signer, &pre.deployment, pre.extra.CaptureAuthorizer, chainID, params)
+	if err != nil {
+		return x402.NewVerifyError(ErrAuthorizerSignature, pre.payer, err.Error())
+	}
+	valid, err := authcapture.VerifyCharge(ctx, f.signer, pre.extra.ReceiverAuthorizer, &pre.deployment, pre.extra.CaptureAuthorizer, chainID, params, signature)
+	if err != nil {
+		return x402.NewVerifyError(ErrAuthorizerSignature, pre.payer, err.Error())
+	}
+	if !valid {
+		return x402.NewVerifyError(ErrAuthorizerSignature, pre.payer, "authorizer signature invalid")
+	}
+	return nil
+}
+
+// broadcastCollect submits the authorize or charge call and awaits its receipt.
+func (f *AuthCaptureEvmScheme) broadcastCollect(
+	ctx context.Context,
+	fctx *x402.FacilitatorContext,
+	payload types.PaymentPayload,
+	requirements types.PaymentRequirements,
+	pre *collectPreconditions,
+) settleOutcome {
+	network := pre.network
+	custom := pre.extra.OperatorType == authcapture.OperatorTypeCustom
 	if needsFactoryDeploy(pre.sigData) {
 		if err := evm.SendFactoryDeployTransaction(ctx, f.signer, pre.sigData); err != nil {
-			return nil, x402.NewSettleError(ErrSmartWalletDeploymentFailed, pre.payer, network, "", err.Error())
+			return notBroadcast(x402.NewSettleError(ErrSmartWalletDeploymentFailed, pre.payer, network, "", err.Error()))
 		}
 	}
 
 	args, err := pre.escrowArgs()
 	if err != nil {
-		return nil, toSettleError(err, network, pre.payer)
+		return notBroadcast(toSettleError(err, network, pre.payer))
 	}
 	if !custom {
 		txHash, err := f.writeEscrow(ctx, fctx, payload, requirements, &pre.deployment, pre.payer, pre.function, args...)
 		if err != nil {
-			return nil, err
+			return notBroadcast(err)
 		}
-		return f.awaitSettlement(ctx, payload, requirements, pre.payer, txHash, nil)
+		return awaited(f.awaitSettlement(ctx, payload, requirements, pre.payer, txHash, nil))
 	}
 
 	before, err := f.snapshotCustomBalances(ctx, &pre.collectOutcome)
 	if err != nil {
-		return nil, toSettleError(err, network, pre.payer)
+		return notBroadcast(toSettleError(err, network, pre.payer))
 	}
 	txHash, err := f.submitEscrowCall(ctx, fctx, payload, requirements, &pre.deployment, pre.payer,
 		pre.extra.CaptureAuthorizer, f.customGasLimit(), pre.function, args...)
 	if err != nil {
-		return nil, err
+		return notBroadcast(err)
 	}
-	return f.awaitSettlement(ctx, payload, requirements, pre.payer, txHash, f.customReceiptCheck(&pre.collectOutcome, before))
+	return awaited(f.awaitSettlement(ctx, payload, requirements, pre.payer, txHash, f.customReceiptCheck(&pre.collectOutcome, before)))
 }
 
 // resumedCollectCheck is the receipt check for a collect whose transaction was broadcast by an

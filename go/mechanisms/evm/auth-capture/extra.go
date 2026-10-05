@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 	"github.com/x402-foundation/x402/go/v2/types"
@@ -179,4 +180,16 @@ func extraUint16(ex map[string]interface{}, key string) (uint16, error) {
 		return 0, fmt.Errorf("missing or invalid %s", key)
 	}
 	return n, nil
+}
+
+// AuthorizerModeFor selects the authorizer mode for a resolved receiverAuthorizer: the zero
+// address is collect-only, the signer's own address is self, and any other address is delegated.
+func AuthorizerModeFor(receiverAuthorizer string, signer evm.ClientEvmSigner) AuthorizerMode {
+	if !IsNonZeroAddress(receiverAuthorizer) {
+		return AuthorizerModeCollectOnly
+	}
+	if signer != nil && strings.EqualFold(evm.NormalizeAddress(signer.Address()), evm.NormalizeAddress(receiverAuthorizer)) {
+		return AuthorizerModeSelf
+	}
+	return AuthorizerModeDelegated
 }
