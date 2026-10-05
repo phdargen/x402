@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -2211,5 +2212,212 @@ func TestReadExtraTotalClaimed(t *testing.T) {
 				t.Fatalf("readExtraTotalClaimed(%v) = (%q, %v), want (%q, %v)", tc.value, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+// hotRefund drives a client-requested managed refund against a channel with unclaimed charges.
+type hotRefund struct {
+	t         *testing.T
+	store     storage.ChannelStorage[*FacilitatorChannel]
+	inner     *storage.InMemoryChannelStorage[*FacilitatorChannel]
+	signer    *fakeFacilitatorSigner
+	deps      VoucherStoreDeps
+	cfg       batchsettlement.ChannelConfig
+	channelID string
+	charged   string
+	reqs      types.PaymentRequirements
+	// onWrite runs inside the first onchain write, after the refund was built.
+	onWrite func()
+	// refundAmount is the amount of the last single refundWithSignature write.
+	refundAmount *big.Int
+}
+
+func newHotRefund(t *testing.T, fields *channelFields, planted *PendingClaim, wrap func(*storage.InMemoryChannelStorage[*FacilitatorChannel]) storage.ChannelStorage[*FacilitatorChannel]) *hotRefund {
+	t.Helper()
+	auth := managedAuthorizer()
+	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("11", 12), auth.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := managedConfig(auth.addr, "00")
+	cfg.Salt = packed
+	channelID := mustChannelId(t, cfg)
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	row := storedManagedChannel(cfg, channelID, fields)
+	row.PendingClaim = planted
+	seedManagedChannel(t, inner, row)
+	var store storage.ChannelStorage[*FacilitatorChannel] = inner
+	if wrap != nil {
+		store = wrap(inner)
+	}
+	signer := newManagedSigner(t, nil)
+	h := &hotRefund{t: t, store: store, inner: inner, signer: signer, cfg: cfg, channelID: channelID, charged: row.ChargedCumulativeAmount}
+	orig := signer.writeContract
+	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
+		if functionName == "refundWithSignature" {
+			for _, arg := range args {
+				if n, ok := arg.(*big.Int); ok {
+					h.refundAmount = n
+					break
+				}
+			}
+		}
+		if h.onWrite != nil {
+			h.onWrite()
+		}
+		return orig(functionName, args...)
+	}
+	h.deps = managedDeps(t, store, store.(storage.ChannelLockStorage), auth, signer)
+	h.deps.SettleTargetStorage = storage.NewInMemorySettleTargetStorage()
+	h.reqs = managedRequirements(auth.addr)
+	h.reqs.Extra["refundAuthorizer"] = auth.addr
+	return h
+}
+
+func (h *hotRefund) settle(amount string) (*x402.SettleResponse, error) {
+	h.t.Helper()
+	_, sig := signRefundConsent(h.t, h.channelID, amount, "0", managedNetwork)
+	return SettleManaged(context.Background(), h.deps,
+		refundEnvelope(h.cfg, voucherFields(h.channelID, h.charged, dummySig), amount, "", sig),
+		h.reqs, nil, nil)
+}
+
+func (h *hotRefund) row() *FacilitatorChannel {
+	h.t.Helper()
+	got, err := h.inner.Get(context.Background(), h.channelID)
+	if err != nil || got == nil {
+		h.t.Fatalf("row missing: %v", err)
+	}
+	return got
+}
+
+func workerMarker() *PendingClaim {
+	return &PendingClaim{AttestedCount: 4, ClaimedTo: "3000", StartedAt: time.Now().UnixMilli()}
+}
+
+func unclaimedFields() *channelFields {
+	return &channelFields{
+		ChargedCumulativeAmount: "5000",
+		SignedMaxClaimable:      "5000",
+		Balance:                 "10000",
+		TotalClaimed:            "1000",
+		ChargeCount:             6,
+	}
+}
+
+func TestSettleManaged_RefundWithLiveWorkerMarkerSendsRefundOnly(t *testing.T) {
+	marker := workerMarker()
+	h := newHotRefund(t, unclaimedFields(), marker, nil)
+	resp, err := h.settle("5000")
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if !reflect.DeepEqual(h.signer.writeFns, []string{"refundWithSignature"}) {
+		t.Fatalf("writes = %v, want the refund alone", h.signer.writeFns)
+	}
+	got := h.row()
+	if got.PendingClaim == nil || *got.PendingClaim != *marker || got.ChargeCount != 6 {
+		t.Fatalf("worker marker changed: %+v", got)
+	}
+	if got.ChargedCumulativeAmount != "5000" || got.Signature != dummySig || got.SignedMaxClaimable != "5000" {
+		t.Fatalf("voucher not kept for the worker: %+v", got)
+	}
+	item := attestedClaim{ChannelID: h.channelID, Count: marker.AttestedCount, ClaimedTo: marker.ClaimedTo, StartedAt: marker.StartedAt}
+	if err := finishAttestedClaim(context.Background(), h.inner, h.channelID, "3000", item); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 2 {
+		t.Fatalf("after worker finish: %+v", got)
+	}
+}
+
+func TestSettleManaged_RefundOnlyCapsPartialAmountAtUnchargedBalance(t *testing.T) {
+	h := newHotRefund(t, unclaimedFields(), workerMarker(), nil)
+	resp, err := h.settle("9000")
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if h.refundAmount == nil || h.refundAmount.String() != "5000" {
+		t.Fatalf("refund amount = %v, want balance - charged = 5000", h.refundAmount)
+	}
+}
+
+func TestSettleManaged_RefundWithoutUnchargedBalanceFails(t *testing.T) {
+	fields := unclaimedFields()
+	fields.ChargedCumulativeAmount = "10000"
+	fields.SignedMaxClaimable = "10000"
+	h := newHotRefund(t, fields, nil, nil)
+	resp, err := h.settle("100")
+	if err != nil || resp == nil || resp.Success || resp.ErrorReason != ErrRefundNoBalance {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if len(h.signer.writeFns) != 0 || h.row().PendingClaim != nil {
+		t.Fatalf("writes=%v row=%+v", h.signer.writeFns, h.row())
+	}
+}
+
+func TestSettleManaged_RefundBundlesClaimWhenIdle(t *testing.T) {
+	h := newHotRefund(t, unclaimedFields(), nil, nil)
+	resp, err := h.settle("5000")
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if !reflect.DeepEqual(h.signer.writeFns, []string{"multicall"}) {
+		t.Fatalf("writes = %v, want one multicall", h.signer.writeFns)
+	}
+	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 0 || got.TotalClaimed != "5000" {
+		t.Fatalf("after bundled claim: %+v", got)
+	}
+}
+
+// commitBeforeBegin commits a voucher the first time the refund touches the row.
+type commitBeforeBegin struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	once   sync.Once
+	commit func()
+}
+
+func (s *commitBeforeBegin) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	s.once.Do(s.commit)
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelID, update)
+}
+
+func TestSettleManaged_RefundRejectsVoucherCommittedBeforeBegin(t *testing.T) {
+	var h *hotRefund
+	h = newHotRefund(t, unclaimedFields(), nil, func(inner *storage.InMemoryChannelStorage[*FacilitatorChannel]) storage.ChannelStorage[*FacilitatorChannel] {
+		return &commitBeforeBegin{InMemoryChannelStorage: inner, commit: func() {
+			commitVoucher(t, inner, h.channelID, "6000", "0xnewer")
+		}}
+	})
+	resp, err := h.settle("5000")
+	if err != nil || resp == nil || resp.Success || resp.ErrorReason != ErrCumulativeAmountMismatch {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if len(h.signer.writeFns) != 0 {
+		t.Fatalf("writes = %v, want none", h.signer.writeFns)
+	}
+	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 7 {
+		t.Fatalf("row = %+v", got)
+	}
+}
+
+func TestSettleManaged_RefundDoesNotLowerConcurrentTotalClaimed(t *testing.T) {
+	h := newHotRefund(t, unclaimedFields(), workerMarker(), nil)
+	h.onWrite = func() {
+		_, err := h.inner.UpdateChannel(context.Background(), h.channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
+			next := current.Clone()
+			next.TotalClaimed = "4000"
+			return next
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := h.settle("5000")
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if got := h.row(); got.TotalClaimed != "4000" {
+		t.Fatalf("totalClaimed = %s, want 4000 kept", got.TotalClaimed)
 	}
 }

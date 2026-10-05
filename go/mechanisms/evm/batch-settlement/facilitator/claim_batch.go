@@ -2,6 +2,7 @@ package facilitator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -69,6 +70,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		return nil, err
 	}
 	kept := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(filtered))
+	conflicts := 0
 	lookup := rowLookup(ctx, m.storage, rows)
 	for _, claim := range filtered {
 		channelID, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
@@ -86,6 +88,10 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		if stored != nil && stored.PendingClaim != nil {
 			skip, resolveErr := m.resolvePendingClaim(ctx, channelID, stored, view.totalClaimed)
 			if resolveErr != nil {
+				if errors.Is(resolveErr, errChannelConflict) {
+					conflicts++
+					continue
+				}
 				return nil, resolveErr
 			}
 			if skip {
@@ -104,6 +110,10 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 				return nil, err
 			}
 			if err := m.syncClaimMirror(ctx, channelID, nil, view.totalClaimed, 0, false); err != nil {
+				if errors.Is(err, errChannelConflict) {
+					conflicts++
+					continue
+				}
 				return nil, err
 			}
 			continue
@@ -114,6 +124,10 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 				return nil, err
 			}
 			if err := m.syncClaimMirror(ctx, channelID, view.balance, view.totalClaimed, view.withdrawAt, true); err != nil {
+				if errors.Is(err, errChannelConflict) {
+					conflicts++
+					continue
+				}
 				return nil, err
 			}
 			continue
@@ -124,6 +138,9 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		}
 		claim.TotalClaimed = amount.String()
 		kept = append(kept, claim)
+	}
+	if conflicts > 0 {
+		m.logger.Info("batch-settlement: claim preflight skipped channels with update conflicts", "network", network, "conflict", conflicts)
 	}
 	return kept, nil
 }
@@ -299,7 +316,7 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 	kept := make([]batchsettlement.BatchSettlementVoucherClaim, 0, len(claims))
 	now := time.Now().UnixMilli()
 	ones := make([]attestedClaim, len(claims))
-	busy := make([]bool, len(claims))
+	results := make([]beginResult, len(claims))
 	errs := make([]error, len(claims))
 	forEachChannel(len(claims), func(i int) {
 		channelID, err := batchsettlement.ComputeChannelId(claims[i].Voucher.Channel, network)
@@ -307,26 +324,55 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 			errs[i] = err
 			return
 		}
-		ones[i], busy[i], errs[i] = beginAttestedClaim(ctx, m.storage, channelID, claims[i].TotalClaimed, now)
+		ones[i], results[i], errs[i] = beginAttestedClaim(ctx, m.storage, channelID, claims[i], now)
 	})
-	var beginErr error
+	var (
+		beginErr                                            error
+		busy, superseded, alreadyClaimed, missing, conflict int
+	)
 	for i, claim := range claims {
 		if errs[i] != nil {
+			if errors.Is(errs[i], errChannelConflict) {
+				conflict++
+				continue
+			}
 			if beginErr == nil {
 				beginErr = errs[i]
 			}
 			continue
 		}
-		if busy[i] {
-			continue
+		switch results[i] {
+		case beginStarted:
+			begun = append(begun, ones[i])
+			kept = append(kept, claim)
+			counts = append(counts, chargeCountUint(ones[i].Count))
+		case beginBusy:
+			busy++
+		case beginSuperseded:
+			superseded++
+		case beginAlreadyClaimed:
+			alreadyClaimed++
+		case beginMissing:
+			missing++
+		default:
+			if beginErr == nil {
+				beginErr = fmt.Errorf("unexpected begin result %d", results[i])
+			}
 		}
-		begun = append(begun, ones[i])
-		kept = append(kept, claim)
-		counts = append(counts, chargeCountUint(ones[i].Count))
 	}
 	if beginErr != nil {
 		_ = abortAttestedClaims(ctx, m.storage, begun)
 		return nil, beginErr
+	}
+	if skipped := busy + superseded + alreadyClaimed + missing + conflict; skipped > 0 {
+		m.logger.Info("batch-settlement: claim batch skipped channels",
+			"network", network,
+			"busy", busy,
+			"superseded", superseded,
+			"already_claimed", alreadyClaimed,
+			"missing", missing,
+			"conflict", conflict,
+		)
 	}
 	if len(kept) == 0 {
 		return nil, nil
@@ -353,7 +399,7 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 	if landed {
 		afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterClaimTimeout)
 		defer cancel()
-		if afterErr := afterClaim(afterCtx, m.storage, kept, network, m.settleTargetStorage, rows); afterErr != nil {
+		if afterErr := afterClaim(afterCtx, m.storage, kept, network, m.settleTargetStorage, rows, begun); afterErr != nil {
 			return nil, afterErr
 		}
 		if releaseErr != nil {

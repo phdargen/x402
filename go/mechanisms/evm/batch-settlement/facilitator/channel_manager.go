@@ -183,6 +183,7 @@ func formatFailure(operation string, response *x402.SettleResponse) string {
 }
 
 // AfterClaim records settle targets, then merges claimed totals and subtracts each pending claim marker.
+// The marker is matched on ClaimedTo == claim.TotalClaimed.
 // Call only after a successful onchain claim.
 func AfterClaim(
 	ctx context.Context,
@@ -191,10 +192,11 @@ func AfterClaim(
 	network string,
 	targetStore storage.SettleTargetStorage,
 ) error {
-	return afterClaim(ctx, store, claims, network, targetStore, nil)
+	return afterClaim(ctx, store, claims, network, targetStore, nil, nil)
 }
 
 // afterClaim records settle-target deltas, then applies each channel marker.
+// begun holds the markers this caller wrote. A channel without an entry matches its marker on ClaimedTo.
 // Deltas come from the pre-finish watermark. A crash replay may add a delta twice.
 // ObserveSettlePending replaces the cache with the onchain pending, so the extra amount does not stick.
 func afterClaim(
@@ -204,7 +206,12 @@ func afterClaim(
 	network string,
 	targetStore storage.SettleTargetStorage,
 	known []*FacilitatorChannel,
+	begun []attestedClaim,
 ) error {
+	items := make(map[string]attestedClaim, len(begun))
+	for _, item := range begun {
+		items[strings.ToLower(item.ChannelID)] = item
+	}
 	deltas, err := settleTargetClaimDeltas(ctx, store, claims, network, known)
 	if err != nil {
 		return err
@@ -227,8 +234,12 @@ func afterClaim(
 			return
 		}
 		claimed := claims[i].TotalClaimed
+		item, ok := items[strings.ToLower(channelID)]
+		if !ok {
+			item = attestedClaim{ChannelID: channelID, ClaimedTo: claimed}
+		}
 		finishErrs[i] = retryChannelUpdate(ctx, func() error {
-			return finishAttestedClaim(ctx, store, channelID, claimed)
+			return finishAttestedClaim(ctx, store, channelID, claimed, item)
 		})
 	})
 	return errors.Join(finishErrs...)
@@ -994,12 +1005,16 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 	var claimSuffix []byte
 	var begun []attestedClaim
 	if len(claims) > 0 {
-		one, busy, beginErr := beginAttestedClaim(ctx, m.storage, target.ChannelId, claims[0].TotalClaimed, time.Now().UnixMilli())
+		one, result, beginErr := beginAttestedClaim(ctx, m.storage, target.ChannelId, claims[0], time.Now().UnixMilli())
 		if beginErr != nil {
 			return nil, beginErr
 		}
-		if busy {
+		switch result {
+		case beginStarted:
+		case beginBusy, beginSuperseded, beginAlreadyClaimed, beginMissing:
 			return nil, errAttestedClaimBusy
+		default:
+			return nil, fmt.Errorf("unexpected begin result %d", result)
 		}
 		begun = []attestedClaim{one}
 		claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
@@ -1027,7 +1042,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 	if !landed {
 		return nil, fmt.Errorf("%s", formatFailure("Refund", response))
 	}
-	if err := m.afterRefund(ctx, target, claims, response); err != nil {
+	if err := m.afterRefund(ctx, target, claims, begun, response); err != nil {
 		return nil, err
 	}
 	if releaseErr != nil {
@@ -1044,6 +1059,7 @@ func (m *FacilitatorChannelManager) afterRefund(
 	ctx context.Context,
 	target *FacilitatorChannel,
 	claims []batchsettlement.BatchSettlementVoucherClaim,
+	begun []attestedClaim,
 	response *x402.SettleResponse,
 ) error {
 	var refunded map[string]interface{}
@@ -1063,7 +1079,11 @@ func (m *FacilitatorChannelManager) afterRefund(
 		if err := applyClaimedSettleDelta(ctx, m.settleTargetStorage, target.Network, target.ChannelConfig.Receiver, target.ChannelConfig.Token, newClaimed, oldClaimed); err != nil {
 			return err
 		}
-		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed); err != nil {
+		item := attestedClaim{ChannelID: target.ChannelId, ClaimedTo: claims[0].TotalClaimed}
+		if len(begun) > 0 {
+			item = begun[0]
+		}
+		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed, item); err != nil {
 			return err
 		}
 	}
@@ -1096,7 +1116,7 @@ func applyRefundChannel(
 			next.Balance = v
 		}
 		if v, ok := refunded["totalClaimed"].(string); ok {
-			next.TotalClaimed = v
+			next.TotalClaimed = storageMaxUint(next.TotalClaimed, v)
 		}
 		if v, ok := refunded["refundNonce"].(string); ok {
 			if n, ok := extraNumber(v); ok {
@@ -1111,13 +1131,7 @@ func applyRefundChannel(
 			next.WithdrawRequestedAt = n
 		}
 	}
-	appliedTotalClaimed := next.TotalClaimed
-	if refunded != nil {
-		if v, ok := refunded["totalClaimed"].(string); ok {
-			appliedTotalClaimed = v
-		}
-	}
-	if ShouldDeleteNeverClaimedRefundRow(keepFinishedRows, next, next.ChargeCount, appliedTotalClaimed) {
+	if ShouldDeleteNeverClaimedRefundRow(keepFinishedRows, next, next.ChargeCount, next.TotalClaimed) {
 		return nil
 	}
 	return next

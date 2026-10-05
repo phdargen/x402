@@ -305,12 +305,14 @@ func (f *BatchSettlementEvmScheme) Settle(
 					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
 					return nil, idErr
 				}
-				one, busy, beginErr := beginAttestedClaim(ctx, f.voucherStore.storage, channelID, claim.TotalClaimed, now)
+				one, result, beginErr := beginAttestedClaim(ctx, f.voucherStore.storage, channelID, claim, now)
 				if beginErr != nil {
 					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
 					return nil, beginErr
 				}
-				if busy {
+				switch result {
+				case beginStarted:
+				case beginBusy, beginSuperseded, beginAlreadyClaimed, beginMissing:
 					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
 					return &x402.SettleResponse{
 						Success:     false,
@@ -318,6 +320,9 @@ func (f *BatchSettlementEvmScheme) Settle(
 						Transaction: "",
 						Network:     network,
 					}, nil
+				default:
+					_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
+					return nil, fmt.Errorf("unexpected begin result %d", result)
 				}
 				begun = append(begun, one)
 				counts = append(counts, chargeCountUint(one.Count))
@@ -347,7 +352,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 				}
 				return settled, nil
 			}
-			if afterErr := AfterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage); afterErr != nil || releaseErr != nil {
+			if afterErr := afterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage, nil, begun); afterErr != nil || releaseErr != nil {
 				logger := f.logger
 				if logger == nil {
 					logger = slog.Default()

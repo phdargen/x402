@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
+	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 )
 
@@ -107,49 +109,86 @@ func retryChannelUpdate(ctx context.Context, update func() error) error {
 	return last
 }
 
-// beginAttestedClaim records the live charge count before a claim is sent.
-// busy is true when a marker is already present; the caller must not attest again.
+// beginResult is the outcome of beginAttestedClaim.
+type beginResult int
+
+const (
+	// beginStarted means a marker was written; the caller owns it.
+	beginStarted beginResult = iota
+	// beginSuperseded means the row holds a newer voucher than the claim.
+	beginSuperseded
+	// beginBusy means another claim's marker is on the row.
+	beginBusy
+	// beginAlreadyClaimed means the row totalClaimed already covers the claim.
+	beginAlreadyClaimed
+	// beginMissing means there is no row for the channel.
+	beginMissing
+)
+
+// claimMatchesRow reports whether the claim was built from the voucher the row holds.
+// Each paid commit writes a new voucher, so a match means no charge was added since.
+func claimMatchesRow(current *FacilitatorChannel, claim batchsettlement.BatchSettlementVoucherClaim) bool {
+	return strings.EqualFold(current.Signature, claim.Signature) &&
+		sameUint(current.SignedMaxClaimable, claim.Voucher.MaxClaimableAmount)
+}
+
+// beginAttestedClaim records the charge count of the claim's own voucher before the claim is sent.
+// Inside one CAS it checks, in order: row missing, row voucher newer than the claim, another
+// marker present, row already claimed through the claim. Only if all pass is the marker written.
 func beginAttestedClaim(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
-	channelID, claimedTo string,
+	channelID string,
+	claim batchsettlement.BatchSettlementVoucherClaim,
 	now int64,
-) (attestedClaim, bool, error) {
+) (attestedClaim, beginResult, error) {
+	outcome := beginMissing
+	var started attestedClaim
 	res, err := store.UpdateChannel(ctx, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
-		if current == nil || current.PendingClaim != nil {
+		switch {
+		case current == nil:
+			outcome = beginMissing
+			return current
+		case !claimMatchesRow(current, claim):
+			outcome = beginSuperseded
+			return current
+		case current.PendingClaim != nil:
+			outcome = beginBusy
 			return current
 		}
-		next := current.Clone()
+		if cmp, ok := storage.Uint256Cmp(current.TotalClaimed, claim.TotalClaimed); ok && cmp >= 0 {
+			outcome = beginAlreadyClaimed
+			return current
+		}
 		count := current.ChargeCount
 		if count < 0 {
 			count = 0
 		}
+		next := current.Clone()
 		next.PendingClaim = &PendingClaim{
 			AttestedCount: count,
-			ClaimedTo:     claimedTo,
+			ClaimedTo:     claim.TotalClaimed,
 			StartedAt:     now,
 		}
+		started = attestedClaim{
+			ChannelID: channelID,
+			Count:     count,
+			ClaimedTo: claim.TotalClaimed,
+			StartedAt: now,
+		}
+		outcome = beginStarted
 		return next
 	})
 	if err != nil {
-		return attestedClaim{}, false, err
+		return attestedClaim{}, beginMissing, err
 	}
 	if res != nil && res.Status == storage.ChannelConflict {
-		return attestedClaim{}, false, fmt.Errorf("channel %s update conflict: %w", channelID, errChannelConflict)
+		return attestedClaim{}, beginMissing, fmt.Errorf("channel %s update conflict: %w", channelID, errChannelConflict)
 	}
-	if res == nil || res.Channel == nil || res.Channel.PendingClaim == nil {
-		return attestedClaim{ChannelID: channelID, ClaimedTo: claimedTo}, false, nil
+	if outcome == beginStarted {
+		return started, beginStarted, nil
 	}
-	if res.Status == storage.ChannelUnchanged {
-		return attestedClaim{}, true, nil
-	}
-	marker := res.Channel.PendingClaim
-	return attestedClaim{
-		ChannelID: channelID,
-		Count:     marker.AttestedCount,
-		ClaimedTo: marker.ClaimedTo,
-		StartedAt: marker.StartedAt,
-	}, false, nil
+	return attestedClaim{}, outcome, nil
 }
 
 func abortAttestedClaims(ctx context.Context, store storage.ChannelStorage[*FacilitatorChannel], begun []attestedClaim) error {
@@ -210,9 +249,27 @@ func samePendingClaim(current *FacilitatorChannel, item attestedClaim) bool {
 	return marker.StartedAt == item.StartedAt && marker.AttestedCount == item.Count && marker.ClaimedTo == item.ClaimedTo
 }
 
-// finishAttestedClaim subtracts the marker, merges totalClaimed, and clears it.
-// A missing marker only moves totalClaimed forward, so a replay does not subtract again.
-func finishAttestedClaim(ctx context.Context, store storage.ChannelStorage[*FacilitatorChannel], channelID, claimed string) error {
+// ownsMarker reports whether the marker on current belongs to item.
+// An item without StartedAt (exported AfterClaim, no begin) matches on ClaimedTo alone.
+func ownsMarker(current *FacilitatorChannel, item attestedClaim) bool {
+	if current == nil || current.PendingClaim == nil {
+		return false
+	}
+	if item.StartedAt == 0 {
+		return sameUint(current.PendingClaim.ClaimedTo, item.ClaimedTo)
+	}
+	return samePendingClaim(current, item)
+}
+
+// finishAttestedClaim merges totalClaimed and, only when the stored marker is item's own,
+// subtracts its count and clears it. A late or replayed finish therefore cannot subtract
+// a newer marker; it only moves totalClaimed forward.
+func finishAttestedClaim(
+	ctx context.Context,
+	store storage.ChannelStorage[*FacilitatorChannel],
+	channelID, claimed string,
+	item attestedClaim,
+) error {
 	return updateChannelStrict(ctx, store, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
 			return current
@@ -223,7 +280,7 @@ func finishAttestedClaim(ctx context.Context, store storage.ChannelStorage[*Faci
 			next.TotalClaimed = merged
 			changed = true
 		}
-		if current.PendingClaim != nil {
+		if ownsMarker(current, item) {
 			count := current.ChargeCount - current.PendingClaim.AttestedCount
 			if count < 0 {
 				count = 0
@@ -324,7 +381,7 @@ func (m *FacilitatorChannelManager) resolvePendingClaim(
 	}
 	if landed {
 		claimed := storageMaxUint(marker.ClaimedTo, onchain.String())
-		return false, finishAttestedClaim(ctx, m.storage, channelID, claimed)
+		return false, finishAttestedClaim(ctx, m.storage, channelID, claimed, item)
 	}
 	aged := time.Now().UnixMilli()-marker.StartedAt >= pendingClaimResolveAge.Milliseconds()
 	if reverted || (aged && onchain.Cmp(claimedTo) < 0) {

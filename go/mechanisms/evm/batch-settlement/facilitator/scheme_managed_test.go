@@ -586,3 +586,43 @@ func TestScheme_ManagedClaimFinishFailureKeepsMarker(t *testing.T) {
 		t.Fatalf("repaired %+v %v", got, err)
 	}
 }
+
+func TestScheme_ManagedClaimSupersededReturnsChannelBusy(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	// The row already holds a newer voucher than the one in the claim payload.
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "1500",
+		SignedMaxClaimable:      "1500",
+		Signature:               "0xnewer",
+		ChargeCount:             5,
+	}))
+	signer := newManagedSigner(t, nil)
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
+		VoucherStore: &VoucherStoreConfig{Storage: store},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := batchsettlement.BatchSettlementVoucherClaim{Signature: "0xcafe", TotalClaimed: "1000"}
+	claim.Voucher.Channel = cfg
+	claim.Voucher.MaxClaimableAmount = "1000"
+	payload := managedEnvelope((&batchsettlement.BatchSettlementClaimPayload{
+		Type:   "claim",
+		Claims: []batchsettlement.BatchSettlementVoucherClaim{claim},
+	}).ToMap())
+
+	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), nil)
+	if err != nil || resp == nil || resp.Success || resp.ErrorReason != ErrChannelBusy {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if signer.writeCalls != 0 {
+		t.Fatalf("writeCalls = %d, want none", signer.writeCalls)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.PendingClaim != nil || got.ChargeCount != 5 || got.TotalClaimed != "0" {
+		t.Fatalf("stored %+v", got)
+	}
+}

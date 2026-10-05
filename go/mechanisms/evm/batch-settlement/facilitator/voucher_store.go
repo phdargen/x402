@@ -540,12 +540,16 @@ func settleManagedRefund(
 		return failSettle(requirements, ErrCumulativeAmountMismatch), nil
 	}
 
-	if _, readErr := ReadChannelState(ctx, deps.Signer, channelId); readErr != nil {
+	onchain, readErr := ReadChannelState(ctx, deps.Signer, channelId)
+	if readErr != nil || onchain == nil {
 		return failSettle(requirements, ErrRpcReadFailed), nil
 	}
 
 	claims := rebuildClaims(stored)
-	amount := resolveRefundAmount(raw.Amount, stored)
+	amount, capErr := capRefundAmount(resolveRefundAmount(raw.Amount, stored), onchain.Balance, stored.ChargedCumulativeAmount)
+	if capErr != "" {
+		return failSettle(requirements, capErr), nil
+	}
 	nonce := fmt.Sprintf("%d", stored.RefundNonce)
 	enriched := *raw
 	enriched.Amount = amount
@@ -559,18 +563,29 @@ func settleManagedRefund(
 		begun       []attestedClaim
 	)
 	if len(claims) > 0 {
-		one, busy, beginErr := beginAttestedClaim(ctx, deps.Storage, channelId, claims[0].TotalClaimed, time.Now().UnixMilli())
+		one, result, beginErr := beginAttestedClaim(ctx, deps.Storage, channelId, claims[0], time.Now().UnixMilli())
 		if beginErr != nil {
 			return nil, beginErr
 		}
-		if busy {
-			return failSettle(requirements, ErrChannelBusy), nil
-		}
-		begun = []attestedClaim{one}
-		claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
-		if err != nil {
-			_ = abortAttestedClaims(ctx, deps.Storage, begun)
-			return failSettle(requirements, ErrRpcReadFailed), nil
+		switch result {
+		case beginStarted:
+			begun = []attestedClaim{one}
+			claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
+			if err != nil {
+				_ = abortAttestedClaims(ctx, deps.Storage, begun)
+				return failSettle(requirements, ErrRpcReadFailed), nil
+			}
+		case beginBusy, beginAlreadyClaimed:
+			// Another claim covers the receiver's share. Send the refund alone for the payer's
+			// unspent part; the worker claims the remainder later and this attests nothing.
+			voucherStoreLogger(deps).Info("batch-settlement: refund sent without bundled claim", "channel_id", channelId)
+			claims = nil
+			enriched.Claims = nil
+		case beginSuperseded, beginMissing:
+			// A voucher was committed after the refund amount was computed. Refunding would give away the new charge.
+			return failSettle(requirements, ErrCumulativeAmountMismatch), nil
+		default:
+			return nil, fmt.Errorf("unexpected begin result %d", result)
 		}
 	}
 	settled, err := SubmitRefund(ctx, SubmitRefundInput{
@@ -604,7 +619,7 @@ func settleManagedRefund(
 		if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
 			return settled, nil
 		}
-		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed); finishErr != nil {
+		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed, begun[0]); finishErr != nil {
 			voucherStoreLogger(deps).Warn("batch-settlement: refund landed but attested claim was not applied", "channel_id", channelId, "error", finishErr)
 		}
 	}
@@ -628,7 +643,7 @@ func settleManagedRefund(
 		}
 		next := current.Clone()
 		next.Balance = balance
-		next.TotalClaimed = totalClaimed
+		next.TotalClaimed = storageMaxUint(current.TotalClaimed, totalClaimed)
 		if extraState != nil {
 			if v, ok := extraNumber(extraState["withdrawRequestedAt"]); ok {
 				next.WithdrawRequestedAt = v
@@ -646,7 +661,7 @@ func settleManagedRefund(
 			next.RefundNonce = current.RefundNonce + 1
 		}
 		next.LastRequestTimestamp = time.Now().UnixMilli()
-		if ShouldDeleteNeverClaimedRefundRow(deps.KeepFinishedRows, next, next.ChargeCount, totalClaimed) {
+		if ShouldDeleteNeverClaimedRefundRow(deps.KeepFinishedRows, next, next.ChargeCount, next.TotalClaimed) {
 			return nil
 		}
 		return next
@@ -1136,6 +1151,24 @@ func refundAmountError(amount string) string {
 		return ErrRefundAmountInvalid
 	}
 	return ""
+}
+
+// capRefundAmount limits a refund to the payer's unspent part, onchainBalance - charged.
+// The receiver's earned part stays in the channel whether or not a claim is bundled.
+// A non-positive cap fails with ErrRefundNoBalance.
+func capRefundAmount(amount string, onchainBalance *big.Int, charged string) (string, string) {
+	chargedInt, ok := parseManagedUint(charged)
+	if !ok || onchainBalance == nil {
+		return "", ErrCumulativeAmountMismatch
+	}
+	limit := new(big.Int).Sub(onchainBalance, chargedInt)
+	if limit.Sign() <= 0 {
+		return "", ErrRefundNoBalance
+	}
+	if requested, ok := parseManagedUint(amount); ok && requested.Cmp(limit) > 0 {
+		return limit.String(), ""
+	}
+	return amount, ""
 }
 
 func resolveRefundAmount(amount string, stored *FacilitatorChannel) string {

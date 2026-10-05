@@ -2207,7 +2207,8 @@ func TestFacilitatorChannelManager_RefundClaimsApplySettleTargetDelta(t *testing
 	}
 
 	targets := storage.NewInMemorySettleTargetStorage()
-	deps := managedDeps(t, store, store, auth, signer)
+	// The idle refund above drained the fake chain's balance, so the hot refund gets its own signer.
+	deps := managedDeps(t, store, store, auth, newManagedSigner(t, nil))
 	deps.SettleTargetStorage = targets
 	refundAuth := auth.addr
 	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("11", 12), refundAuth)
@@ -2592,7 +2593,8 @@ func TestBeginAttestedClaim_ConflictAndBusy(t *testing.T) {
 	ch := managerChannel(t, auth, "b1", nil)
 	seedManagedChannel(t, inner, ch)
 	blocked := &conflictChannelStore{InMemoryChannelStorage: inner}
-	_, _, err := beginAttestedClaim(context.Background(), blocked, ch.ChannelId, "1000", time.Now().UnixMilli())
+	claim := claimFromRow(t, ch)
+	_, _, err := beginAttestedClaim(context.Background(), blocked, ch.ChannelId, claim, time.Now().UnixMilli())
 	if !errors.Is(err, errChannelConflict) {
 		t.Fatalf("begin err = %v", err)
 	}
@@ -2601,13 +2603,135 @@ func TestBeginAttestedClaim_ConflictAndBusy(t *testing.T) {
 		t.Fatal("conflict wrote a marker")
 	}
 
-	one, busy, err := beginAttestedClaim(context.Background(), inner, ch.ChannelId, "1000", time.Now().UnixMilli())
-	if err != nil || busy || one.Count != got.ChargeCount {
-		t.Fatalf("first begin %+v busy=%v err=%v", one, busy, err)
+	one, result, err := beginAttestedClaim(context.Background(), inner, ch.ChannelId, claim, time.Now().UnixMilli())
+	if err != nil || result != beginStarted || one.Count != got.ChargeCount {
+		t.Fatalf("first begin %+v result=%v err=%v", one, result, err)
 	}
-	_, busy, err = beginAttestedClaim(context.Background(), inner, ch.ChannelId, "1000", time.Now().UnixMilli())
-	if err != nil || !busy {
-		t.Fatalf("second begin busy=%v err=%v", busy, err)
+	_, result, err = beginAttestedClaim(context.Background(), inner, ch.ChannelId, claim, time.Now().UnixMilli())
+	if err != nil || result != beginBusy {
+		t.Fatalf("second begin result=%v err=%v", result, err)
+	}
+}
+
+func claimFromRow(t *testing.T, ch *FacilitatorChannel) batchsettlement.BatchSettlementVoucherClaim {
+	t.Helper()
+	claims := rebuildClaims(ch)
+	if len(claims) != 1 {
+		t.Fatalf("row has no claimable voucher: %+v", ch)
+	}
+	return claims[0]
+}
+
+func commitVoucher(t *testing.T, store storage.ChannelStorage[*FacilitatorChannel], channelID, charged, signature string) {
+	t.Helper()
+	_, err := store.UpdateChannel(context.Background(), channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
+		next := current.Clone()
+		next.ChargedCumulativeAmount = charged
+		next.SignedMaxClaimable = charged
+		next.Signature = signature
+		next.ChargeCount++
+		return next
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBeginAttestedClaim_StaleClaimedToAfterVoucherCommit(t *testing.T) {
+	// The claim was built at charged=1000/count=4, then a voucher commit bumped the row to 1500/count=5.
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "b2", &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "2000",
+		ChargeCount:             4,
+	})
+	ch.Signature = "0xold"
+	seedManagedChannel(t, store, ch)
+	stale := claimFromRow(t, ch)
+
+	commitVoucher(t, store, ch.ChannelId, "1500", "0xnew")
+
+	_, result, err := beginAttestedClaim(context.Background(), store, ch.ChannelId, stale, time.Now().UnixMilli())
+	if err != nil || result != beginSuperseded {
+		t.Fatalf("stale begin result=%v err=%v", result, err)
+	}
+	got, _ := store.Get(context.Background(), ch.ChannelId)
+	if got.PendingClaim != nil || got.ChargeCount != 5 {
+		t.Fatalf("superseded begin changed the row: %+v", got)
+	}
+
+	fresh := claimFromRow(t, got)
+	one, result, err := beginAttestedClaim(context.Background(), store, ch.ChannelId, fresh, time.Now().UnixMilli())
+	if err != nil || result != beginStarted || one.Count != 5 {
+		t.Fatalf("fresh begin %+v result=%v err=%v", one, result, err)
+	}
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, fresh.TotalClaimed, one); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.Get(context.Background(), ch.ChannelId)
+	if got.PendingClaim != nil || got.ChargeCount != 0 || got.TotalClaimed != "1500" {
+		t.Fatalf("after finish %+v", got)
+	}
+}
+
+func TestBeginAttestedClaim_AlreadyClaimed(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "b3", &channelFields{ChargedCumulativeAmount: "1000", SignedMaxClaimable: "1000", ChargeCount: 3})
+	seedManagedChannel(t, store, ch)
+	claim := claimFromRow(t, ch)
+	if _, err := store.UpdateChannel(context.Background(), ch.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		next := current.Clone()
+		next.TotalClaimed = "1000"
+		return next
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := beginAttestedClaim(context.Background(), store, ch.ChannelId, claim, time.Now().UnixMilli())
+	if err != nil || result != beginAlreadyClaimed {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+	got, _ := store.Get(context.Background(), ch.ChannelId)
+	if got.PendingClaim != nil || got.ChargeCount != 3 {
+		t.Fatalf("row changed: %+v", got)
+	}
+}
+
+func TestBeginAttestedClaim_Missing(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "b4", nil)
+	_, result, err := beginAttestedClaim(context.Background(), store, ch.ChannelId, claimFromRow(t, ch), time.Now().UnixMilli())
+	if err != nil || result != beginMissing {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+}
+
+func TestFinishAttestedClaim_NonMatchingItemKeepsMarker(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "b5", &channelFields{ChargedCumulativeAmount: "1000", SignedMaxClaimable: "1000", ChargeCount: 4})
+	plantClaimMarker(ch, 3, "900")
+	seedManagedChannel(t, store, ch)
+	stranger := attestedClaim{ChannelID: ch.ChannelId, Count: 4, ClaimedTo: "1000", StartedAt: ch.PendingClaim.StartedAt - 1}
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", stranger); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := store.Get(context.Background(), ch.ChannelId)
+	if got.PendingClaim == nil || got.PendingClaim.AttestedCount != 3 || got.ChargeCount != 4 {
+		t.Fatalf("other marker was touched: %+v", got)
+	}
+	if got.TotalClaimed != "1000" {
+		t.Fatalf("totalClaimed = %s, want merged 1000", got.TotalClaimed)
+	}
+	owner := attestedClaim{ChannelID: ch.ChannelId, Count: 3, ClaimedTo: "900", StartedAt: ch.PendingClaim.StartedAt}
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", owner); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.Get(context.Background(), ch.ChannelId)
+	if got.PendingClaim != nil || got.ChargeCount != 1 {
+		t.Fatalf("owner finish: %+v", got)
 	}
 }
 
@@ -2676,5 +2800,135 @@ func TestRefund_BundleCalldataMatchesMarker(t *testing.T) {
 	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 0 || got.PendingClaim != nil {
 		t.Fatalf("stored %+v", got)
+	}
+}
+
+type conflictOnChannelStore struct {
+	*storage.InMemoryChannelStorage[*FacilitatorChannel]
+	conflictID string
+}
+
+func (s *conflictOnChannelStore) UpdateChannel(ctx context.Context, channelID string, update func(*FacilitatorChannel) *FacilitatorChannel) (*storage.ChannelUpdateResult[*FacilitatorChannel], error) {
+	if strings.EqualFold(channelID, s.conflictID) {
+		return &storage.ChannelUpdateResult[*FacilitatorChannel]{Status: storage.ChannelConflict}, nil
+	}
+	return s.InMemoryChannelStorage.UpdateChannel(ctx, channelID, update)
+}
+
+func claimBatchFixture(t *testing.T) (*FacilitatorChannel, *FacilitatorChannel, *storage.InMemoryChannelStorage[*FacilitatorChannel], *fakeAuthorizerSigner) {
+	t.Helper()
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	fields := &channelFields{ChargedCumulativeAmount: "1000", SignedMaxClaimable: "1000", ChargeCount: 2}
+	first := managerChannel(t, auth, "a1", fields)
+	second := managerChannel(t, auth, "a2", fields)
+	seedManagedChannel(t, store, first)
+	seedManagedChannel(t, store, second)
+	return first, second, store, auth
+}
+
+func assertClaimedAlone(t *testing.T, store storage.ChannelStorage[*FacilitatorChannel], claimed, skipped *FacilitatorChannel, results []FacilitatorClaimResult, signer *fakeFacilitatorSigner) {
+	t.Helper()
+	if len(results) != 1 || results[0].Vouchers != 1 || signer.writeCalls != 1 {
+		t.Fatalf("results=%+v writes=%d", results, signer.writeCalls)
+	}
+	got, _ := store.Get(context.Background(), claimed.ChannelId)
+	if got.TotalClaimed != "1000" || got.ChargeCount != 0 || got.PendingClaim != nil {
+		t.Fatalf("claimed channel %+v", got)
+	}
+	got, _ = store.Get(context.Background(), skipped.ChannelId)
+	if got.TotalClaimed != "0" || got.PendingClaim != nil {
+		t.Fatalf("skipped channel %+v", got)
+	}
+}
+
+func TestClaimSlice_SkipsSupersededChannel(t *testing.T) {
+	first, second, store, auth := claimBatchFixture(t)
+	claims := []batchsettlement.BatchSettlementVoucherClaim{claimFromRow(t, first), claimFromRow(t, second)}
+	commitVoucher(t, store, second.ChannelId, "1500", "0xnew")
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaimedAlone(t, store, first, second, results, signer)
+	if got, _ := store.Get(context.Background(), second.ChannelId); got.ChargeCount != 3 {
+		t.Fatalf("superseded row chargeCount = %d, want 3", got.ChargeCount)
+	}
+}
+
+func TestClaimSlice_SkipsBusyAndAlreadyClaimedChannels(t *testing.T) {
+	first, second, store, auth := claimBatchFixture(t)
+	claims := []batchsettlement.BatchSettlementVoucherClaim{claimFromRow(t, first), claimFromRow(t, second)}
+	if _, err := store.UpdateChannel(context.Background(), second.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		next := current.Clone()
+		plantClaimMarker(next, 2, "1000")
+		return next
+	}); err != nil {
+		t.Fatal(err)
+	}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Vouchers != 1 {
+		t.Fatalf("results=%+v", results)
+	}
+	got, _ := store.Get(context.Background(), second.ChannelId)
+	if got.PendingClaim == nil || got.ChargeCount != 2 {
+		t.Fatalf("busy channel was touched: %+v", got)
+	}
+}
+
+func TestClaimSlice_SkipsBeginConflict(t *testing.T) {
+	first, second, inner, auth := claimBatchFixture(t)
+	claims := []batchsettlement.BatchSettlementVoucherClaim{claimFromRow(t, first), claimFromRow(t, second)}
+	store := &conflictOnChannelStore{InMemoryChannelStorage: inner, conflictID: second.ChannelId}
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaimedAlone(t, inner, first, second, results, signer)
+}
+
+func TestClaimSlice_ResolvePendingConflictDoesNotFailPass(t *testing.T) {
+	first, second, inner, auth := claimBatchFixture(t)
+	claims := []batchsettlement.BatchSettlementVoucherClaim{claimFromRow(t, first), claimFromRow(t, second)}
+	if _, err := inner.UpdateChannel(context.Background(), second.ChannelId, func(current *FacilitatorChannel) *FacilitatorChannel {
+		next := current.Clone()
+		plantClaimMarker(next, 2, "1000")
+		return next
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store := &conflictOnChannelStore{InMemoryChannelStorage: inner, conflictID: second.ChannelId}
+	signer := newManagedSigner(t, &managedRPC{chainViews: map[string]managedChainView{
+		strings.ToLower(second.ChannelId): {Balance: big.NewInt(10000), TotalClaimed: big.NewInt(1000)},
+	}})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Vouchers != 1 || signer.writeCalls != 1 {
+		t.Fatalf("results=%+v writes=%d", results, signer.writeCalls)
+	}
+	got, _ := inner.Get(context.Background(), first.ChannelId)
+	if got.TotalClaimed != "1000" || got.ChargeCount != 0 {
+		t.Fatalf("first channel %+v", got)
+	}
+}
+
+func TestApplyRefundChannel_TotalClaimedIsMonotonic(t *testing.T) {
+	auth := managedAuthorizer()
+	ch := managerChannel(t, auth, "m1", &channelFields{ChargedCumulativeAmount: "5000", SignedMaxClaimable: "5000", TotalClaimed: "4000", ChargeCount: 2})
+	next := applyRefundChannel(ch, nil, map[string]interface{}{"balance": "6000", "totalClaimed": "1000"}, true)
+	if next == nil || next.TotalClaimed != "4000" || next.Balance != "6000" {
+		t.Fatalf("next = %+v", next)
 	}
 }
