@@ -374,6 +374,7 @@ func (s *realFacilitatorEvmSigner) WaitForTransactionReceipt(ctx context.Context
 				Status:      uint64(receipt.Status),
 				BlockNumber: receipt.BlockNumber.Uint64(),
 				TxHash:      receipt.TxHash.Hex(),
+				Logs:        receipt.Logs,
 			}, nil
 		}
 		time.Sleep(1 * time.Second)

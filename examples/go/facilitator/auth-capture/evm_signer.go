@@ -12,12 +12,14 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	evmmech "github.com/x402-foundation/x402/go/v2/mechanisms/evm"
+	authcapturefac "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/facilitator"
 )
 
 // facilitatorEvmSigner implements evmmech.FacilitatorEvmSigner.
@@ -152,6 +154,18 @@ func (s *facilitatorEvmSigner) WriteContract(
 	dataSuffix []byte,
 	args ...interface{},
 ) (string, error) {
+	return s.WriteContractWithGas(ctx, contractAddress, abiJSON, method, dataSuffix, 500_000, args...)
+}
+
+func (s *facilitatorEvmSigner) WriteContractWithGas(
+	ctx context.Context,
+	contractAddress string,
+	abiJSON []byte,
+	method string,
+	dataSuffix []byte,
+	gas uint64,
+	args ...interface{},
+) (string, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(string(abiJSON)))
 	if err != nil {
 		return "", fmt.Errorf("parse ABI: %w", err)
@@ -161,10 +175,17 @@ func (s *facilitatorEvmSigner) WriteContract(
 		return "", fmt.Errorf("pack call: %w", err)
 	}
 	data = evmmech.AppendDataSuffix(data, dataSuffix)
-	return s.SendTransaction(ctx, contractAddress, data)
+	if gas == 0 {
+		gas = 500_000
+	}
+	return s.sendTransactionWithGas(ctx, contractAddress, data, gas)
 }
 
 func (s *facilitatorEvmSigner) SendTransaction(ctx context.Context, to string, data []byte) (string, error) {
+	return s.sendTransactionWithGas(ctx, to, data, 500_000)
+}
+
+func (s *facilitatorEvmSigner) sendTransactionWithGas(ctx context.Context, to string, data []byte, gas uint64) (string, error) {
 	nonce, err := s.client.PendingNonceAt(ctx, s.address)
 	if err != nil {
 		return "", fmt.Errorf("get nonce: %w", err)
@@ -174,7 +195,7 @@ func (s *facilitatorEvmSigner) SendTransaction(ctx context.Context, to string, d
 		return "", fmt.Errorf("suggest gas price: %w", err)
 	}
 	toAddr := common.HexToAddress(to)
-	tx := types.NewTransaction(nonce, toAddr, big.NewInt(0), 500000, gasPrice, data)
+	tx := types.NewTransaction(nonce, toAddr, big.NewInt(0), gas, gasPrice, data)
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(s.chainID), s.privateKey)
 	if err != nil {
 		return "", fmt.Errorf("sign tx: %w", err)
@@ -183,6 +204,121 @@ func (s *facilitatorEvmSigner) SendTransaction(ctx context.Context, to string, d
 		return "", fmt.Errorf("send tx: %w", err)
 	}
 	return signedTx.Hash().Hex(), nil
+}
+
+type rpcSimulateCall struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	Data string `json:"data"`
+	Gas  string `json:"gas,omitempty"`
+}
+
+type rpcSimulateLog struct {
+	Address string   `json:"address"`
+	Topics  []string `json:"topics"`
+	Data    string   `json:"data"`
+}
+
+type rpcSimulateCallOutcome struct {
+	Status     string           `json:"status"`
+	ReturnData string           `json:"returnData"`
+	GasUsed    string           `json:"gasUsed"`
+	Logs       []rpcSimulateLog `json:"logs"`
+	Error      *struct {
+		Data string `json:"data"`
+	} `json:"error,omitempty"`
+}
+
+type rpcSimulatedBlock struct {
+	Calls []rpcSimulateCallOutcome `json:"calls"`
+}
+
+func (s *facilitatorEvmSigner) SimulateCalls(
+	ctx context.Context,
+	from string,
+	calls []authcapturefac.SimulatedCall,
+) ([]authcapturefac.SimulatedCallResult, error) {
+	rpcCalls := make([]rpcSimulateCall, len(calls))
+	for i, call := range calls {
+		data := call.Data
+		if len(data) == 0 {
+			data = []byte{}
+		}
+		entry := rpcSimulateCall{
+			From: common.HexToAddress(from).Hex(),
+			To:   common.HexToAddress(call.To).Hex(),
+			Data: hexutil.Encode(data),
+		}
+		if call.Gas > 0 {
+			entry.Gas = hexutil.EncodeUint64(call.Gas)
+		}
+		rpcCalls[i] = entry
+	}
+
+	var blocks []rpcSimulatedBlock
+	err := s.client.Client().CallContext(ctx, &blocks, "eth_simulateV1", []interface{}{
+		map[string]interface{}{
+			"blockStateCalls": []map[string]interface{}{
+				{"calls": rpcCalls},
+			},
+		},
+		"latest",
+	}...)
+	if err != nil {
+		return nil, fmt.Errorf("eth_simulateV1 failed: %w", err)
+	}
+	if len(blocks) == 0 || len(blocks[0].Calls) != len(calls) {
+		return nil, fmt.Errorf("eth_simulateV1 returned unexpected call count")
+	}
+
+	results := make([]authcapturefac.SimulatedCallResult, len(calls))
+	for i, outcome := range blocks[0].Calls {
+		returnData := outcome.ReturnData
+		if outcome.Error != nil && outcome.Error.Data != "" {
+			returnData = outcome.Error.Data
+		}
+		if returnData == "" {
+			returnData = "0x"
+		}
+		data, err := hexutil.Decode(returnData)
+		if err != nil {
+			return nil, fmt.Errorf("invalid simulate return data: %w", err)
+		}
+		var gasUsed uint64
+		if outcome.GasUsed != "" {
+			gasUsed, err = hexutil.DecodeUint64(outcome.GasUsed)
+			if err != nil {
+				return nil, fmt.Errorf("invalid simulate gasUsed: %w", err)
+			}
+		}
+		results[i] = authcapturefac.SimulatedCallResult{
+			Success:    outcome.Status == "0x1",
+			ReturnData: data,
+			GasUsed:    gasUsed,
+			Logs:       parseSimulateLogs(outcome.Logs),
+		}
+	}
+	return results, nil
+}
+
+func parseSimulateLogs(logs []rpcSimulateLog) []*types.Log {
+	parsed := make([]*types.Log, 0, len(logs))
+	for _, log := range logs {
+		topics := make([]common.Hash, len(log.Topics))
+		for i, topic := range log.Topics {
+			topics[i] = common.HexToHash(topic)
+		}
+		data, err := hexutil.Decode(log.Data)
+		if err != nil {
+			data = []byte{}
+		}
+		parsed = append(parsed, &types.Log{
+			Address: common.HexToAddress(log.Address),
+			Topics:  topics,
+			Data:    data,
+		})
+	}
+	return parsed
 }
 
 func (s *facilitatorEvmSigner) WaitForTransactionReceipt(ctx context.Context, txHash string) (*evmmech.TransactionReceipt, error) {
@@ -194,6 +330,7 @@ func (s *facilitatorEvmSigner) WaitForTransactionReceipt(ctx context.Context, tx
 				Status:      uint64(receipt.Status),
 				BlockNumber: receipt.BlockNumber.Uint64(),
 				TxHash:      receipt.TxHash.Hex(),
+				Logs:        receipt.Logs,
 			}, nil
 		}
 		select {

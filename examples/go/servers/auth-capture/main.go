@@ -26,20 +26,18 @@ const (
 // (on success) or voids (on failure). The receiver authorizer's signature comes either from
 // this server (EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY set) or, when that key is omitted, from
 // the facilitator, which advertises its own receiverAuthorizer in GET /supported.
+//
+// Run `go run . custom-escrow` for the collect-only custom-operator flow.
 func main() {
 	_ = godotenv.Load()
 
-	evmAddress := os.Getenv("EVM_PAYEE_ADDRESS")
-	if evmAddress == "" {
-		fmt.Println("EVM_PAYEE_ADDRESS environment variable is required")
-		os.Exit(1)
+	if len(os.Args) > 1 && os.Args[1] == "custom-escrow" {
+		runCustomEscrow()
+		return
 	}
 
-	facilitatorURL := os.Getenv("FACILITATOR_URL")
-	if facilitatorURL == "" {
-		fmt.Println("FACILITATOR_URL environment variable is required")
-		os.Exit(1)
-	}
+	evmAddress := requireEnv("EVM_PAYEE_ADDRESS")
+	facilitatorURL := requireEnv("FACILITATOR_URL")
 
 	// Optional: omit to delegate capture/void signing to the facilitator.
 	config := &authcaptureserver.Config{
@@ -98,7 +96,8 @@ func main() {
 		Timeout: 30 * time.Second,
 	})(mux)
 
-	fmt.Printf("Auth-capture server listening on http://localhost:%s\n", defaultPort)
+	port := envOr("PORT", defaultPort)
+	fmt.Printf("Auth-capture server listening on http://localhost:%s\n", port)
 	fmt.Printf("  GET /weather\n")
 	if receiverAuthorizer != nil {
 		fmt.Printf("  Receiver authorizer (self): %s\n", receiverAuthorizer.Address())
@@ -106,7 +105,7 @@ func main() {
 		fmt.Println("  Receiver authorizer: delegated to facilitator (from /supported extra.receiverAuthorizer)")
 	}
 
-	if err := http.ListenAndServe(":"+defaultPort, handler); err != nil {
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
 		fmt.Printf("Server error: %v\n", err)
 		os.Exit(1)
 	}

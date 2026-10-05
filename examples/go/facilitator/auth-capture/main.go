@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
+	authcapture "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture"
 	authcapturefac "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/facilitator"
 	evmsigners "github.com/x402-foundation/x402/go/v2/signers/evm"
 )
@@ -52,6 +54,29 @@ func main() {
 		FeeRecipient:      feeRecipient,
 		MinFeeBps:         uint16(minFeeBps),
 		MaxFeeBps:         uint16(maxFeeBps),
+	}
+
+	// Custom operators are admitted per address. An empty list admits none, leaving
+	// only "delegated" routes through the relayer.
+	customOperators := parseCommaSeparatedList(os.Getenv("CUSTOM_OPERATOR_ALLOWLIST"))
+	for _, addr := range customOperators {
+		if !evm.IsValidAddress(addr) {
+			fmt.Printf(
+				"Invalid CUSTOM_OPERATOR_ALLOWLIST entry \"%s\" (comma-separated 20-byte hex addresses, 0x-prefixed)\n",
+				addr,
+			)
+			os.Exit(1)
+		}
+	}
+	if len(customOperators) > 0 {
+		config.Operators = make([]authcapturefac.OperatorAllowlistEntry, len(customOperators))
+		for i, addr := range customOperators {
+			config.Operators[i] = authcapturefac.OperatorAllowlistEntry{
+				Address:      evm.NormalizeAddress(addr),
+				OperatorType: authcapture.OperatorTypeCustom,
+			}
+		}
+		config.CustomOperatorGasLimit = authcapture.DefaultCustomOperatorGasLimit
 	}
 
 	// Optional dedicated receiver authorizer (recommended: separate from the relayer).
@@ -139,10 +164,27 @@ func main() {
 	} else {
 		fmt.Println("  Receiver authorizer: not configured (resource servers must self-sign)")
 	}
+	if len(customOperators) > 0 {
+		fmt.Printf("  Custom operators admitted: %s\n", strings.Join(customOperators, ", "))
+	} else {
+		fmt.Println("  Custom operators: none admitted")
+	}
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		fmt.Printf("Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func parseCommaSeparatedList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {

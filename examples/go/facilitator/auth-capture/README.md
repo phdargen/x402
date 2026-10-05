@@ -66,11 +66,18 @@ The first authenticated caller to settle a payment is bound to its `paymentInfoH
 
 Pair with the [auth-capture server example](../../servers/auth-capture/): run this facilitator with `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` set and omit `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` on the resource server for facilitator-delegated sync flows.
 
+## Custom-operator allowlist
+
+`CUSTOM_OPERATOR_ALLOWLIST` is a comma-separated list of operator addresses the facilitator will relay collect for, advertised in `/supported` as `extra.operators` when the signer implements `SimulateCalls` and `WriteContractWithGas` (this example wires both via `eth_simulateV1`). Leave it empty to admit no custom operator; set it to the operator address the [custom-escrow server example](../../servers/auth-capture/) deploys so that flow can relay collect-only `authorize` through it.
+
+Custom collect verification uses `eth_simulateV1` with a gas cap (`CustomOperatorGasLimit`, default `1_000_000`) and outcome checks before broadcast.
+
 ## Run
 
 ```bash
 cp .env-example .env
-# fill in EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY)
+# fill in EVM_PRIVATE_KEY (and optionally EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY,
+# CUSTOM_OPERATOR_ALLOWLIST, EVM_RPC_URL, PORT)
 
 go run .
 ```
@@ -86,4 +93,5 @@ Listens on `http://localhost:4022` by default (`PORT` overrides).
 | `EVM_RPC_URL`         | Default `https://sepolia.base.org` |
 | `FEE_RECIPIENT`       | Optional advertised fee recipient |
 | `MIN_FEE_BPS`/`MAX_FEE_BPS` | Optional advertised fee bounds |
+| `CUSTOM_OPERATOR_ALLOWLIST` | Comma-separated custom operator addresses to admit (empty admits none) |
 | `PORT`                | Listen port (default `4022`) |
