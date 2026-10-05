@@ -25,8 +25,9 @@ export const ErrOperatorNotAdmitted = "invalid_auth_capture_evm_operator_not_adm
 export const ErrOperatorMismatch = "invalid_auth_capture_evm_operator_mismatch";
 export const ErrSaltBindingMismatch = "invalid_auth_capture_evm_salt_binding_mismatch";
 export const ErrAuthorizerSignature = "invalid_auth_capture_evm_authorizer_signature";
-export const ErrUnauthenticatedLifecycleRequest =
-  "invalid_auth_capture_evm_unauthenticated_lifecycle_request";
+export const ErrUnauthenticatedAuthorizerRequest =
+  "invalid_auth_capture_evm_unauthenticated_authorizer_request";
+export const ErrDelegatedAuthUnavailable = "invalid_auth_capture_evm_delegated_auth_unavailable";
 export const ErrUnexpectedPaymentState = "invalid_auth_capture_evm_unexpected_payment_state";
 export const ErrRefundFundingUnavailable = "invalid_auth_capture_evm_refund_funding_unavailable";
 export const ErrUnsupportedAssetTransferMethod =

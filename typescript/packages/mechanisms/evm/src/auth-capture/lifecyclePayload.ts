@@ -43,28 +43,34 @@ export function paymentInfoFromCollect(
   );
 }
 
-export type SignedCaptureFields = {
+/**
+ * Capture fields for the wire. Without a local signer (authorizer delegated to the
+ * facilitator) the signatures are omitted and `voidRemainder` asks the facilitator to sign
+ * the `Void` leg.
+ */
+export type CaptureFields = {
   amount: string;
   feeReceiver: `0x${string}`;
   expectedCapturableAmount: string;
   expectedRefundableAmount: string;
-  authorizerSignature: `0x${string}`;
+  authorizerSignature?: `0x${string}`;
   voidAuthorizerSignature?: `0x${string}`;
+  voidRemainder?: true;
 } & ({ feeBps: number; feeAmount?: never } | { feeAmount: string; feeBps?: never });
 
 /**
- * Merge a submitted fee into signed capture fields for the deployment version.
+ * Merge a submitted fee into capture fields for the deployment version.
  *
  * @param fee - Submitted fee (`feeBps` or `feeAmount`).
  * @param fields - Capture fields excluding the version-specific fee amount.
- * @returns Signed capture fields with the fee encoding for this deployment.
+ * @returns Capture fields with the fee encoding for this deployment.
  */
-function signedCaptureFieldsFromFee(
+function captureFieldsFromFee(
   fee: SubmittedFee,
-  fields: Omit<SignedCaptureFields, "feeBps" | "feeAmount" | "feeReceiver"> & {
+  fields: Omit<CaptureFields, "feeBps" | "feeAmount" | "feeReceiver"> & {
     feeReceiver: `0x${string}`;
   },
-): SignedCaptureFields {
+): CaptureFields {
   if (fee.version === "v1.0") {
     return { ...fields, feeBps: fee.feeBps, feeReceiver: fee.feeReceiver };
   }
@@ -72,11 +78,12 @@ function signedCaptureFieldsFromFee(
 }
 
 /**
- * Sign capture (and optionally void-remainder) authorizer digests shared by
- * sync enrichment and deferred helper settles.
+ * Build capture fields, signing the capture (and optionally void-remainder) authorizer
+ * digests when a signer is given. Shared by sync enrichment and deferred helper settles.
  *
  * @param params - Capture context and optional explicit void-remainder flag.
- * @param params.signer - Authorizer key used to sign capture and void digests.
+ * @param params.signer - Authorizer key used to sign capture and void digests; omit when the
+ *   authorizer is delegated to the facilitator.
  * @param params.chainId - EVM chain id for EIP-712 domain separation.
  * @param params.extra - Normalized auth-capture extra (authorizer, fee bounds).
  * @param params.paymentInfoHash - Hash of the escrow PaymentInfo struct.
@@ -90,8 +97,8 @@ function signedCaptureFieldsFromFee(
  * @param params.voidOnPartialCapture - When true and amount is below capturable, sign void.
  * @returns Signed capture fields for wire payloads or enrichment.
  */
-export async function signCaptureFields(params: {
-  signer: AuthorizerSigner;
+export async function buildCaptureFields(params: {
+  signer?: AuthorizerSigner;
   chainId: number;
   extra: NormalizedAuthCaptureExtra;
   paymentInfoHash: `0x${string}`;
@@ -105,7 +112,7 @@ export async function signCaptureFields(params: {
   voidRemainder?: boolean;
   /** Sync enrichment: attach void sig when amount is below capturable. */
   voidOnPartialCapture?: boolean;
-}): Promise<SignedCaptureFields> {
+}): Promise<CaptureFields> {
   const defaultFee = defaultSubmittedFee(params.extra, params.amount);
   const fee: SubmittedFee =
     params.feeBps !== undefined && params.feeReceiver !== undefined
@@ -124,25 +131,32 @@ export async function signCaptureFields(params: {
         ? { version: "v1.1", feeAmount: params.feeAmount, feeReceiver: params.feeReceiver }
         : defaultFee;
 
+  const fields = {
+    amount: params.amount,
+    expectedCapturableAmount: params.capturable,
+    expectedRefundableAmount: params.refundable,
+    feeReceiver: fee.feeReceiver,
+  };
+  const needsVoid =
+    params.voidRemainder === true ||
+    (params.voidOnPartialCapture === true && BigInt(params.amount) < BigInt(params.capturable));
+
+  if (!params.signer) {
+    return captureFieldsFromFee(fee, { ...fields, ...(needsVoid ? { voidRemainder: true } : {}) });
+  }
+
   const captureDigest =
     fee.version === "v1.0"
       ? {
           paymentInfoHash: params.paymentInfoHash,
-          amount: params.amount,
+          ...fields,
           feeBps: fee.feeBps,
-          feeReceiver: fee.feeReceiver,
-          expectedCapturableAmount: params.capturable,
-          expectedRefundableAmount: params.refundable,
         }
       : {
           paymentInfoHash: params.paymentInfoHash,
-          amount: params.amount,
+          ...fields,
           feeAmount: fee.feeAmount,
-          feeReceiver: fee.feeReceiver,
-          expectedCapturableAmount: params.capturable,
-          expectedRefundableAmount: params.refundable,
         };
-
   const authorizerSignature = await signCapture(
     params.signer,
     params.chainId,
@@ -150,17 +164,8 @@ export async function signCaptureFields(params: {
     params.extra.deployment,
     captureDigest,
   );
-  const result = signedCaptureFieldsFromFee(fee, {
-    amount: params.amount,
-    expectedCapturableAmount: params.capturable,
-    expectedRefundableAmount: params.refundable,
-    authorizerSignature,
-    feeReceiver: fee.feeReceiver,
-  });
-  const needsVoidSig =
-    params.voidRemainder === true ||
-    (params.voidOnPartialCapture === true && BigInt(params.amount) < BigInt(params.capturable));
-  if (needsVoidSig) {
+  const result = captureFieldsFromFee(fee, { ...fields, authorizerSignature });
+  if (needsVoid) {
     result.voidAuthorizerSignature = await signVoid(
       params.signer,
       params.chainId,
@@ -179,7 +184,7 @@ export async function signCaptureFields(params: {
  * @param params.collect - Client collect payload from the authorize settle.
  * @param params.requirements - Payment requirements for reconstruction.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for capture digests.
+ * @param params.signer - Authorizer signer for capture digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.capturable - Current capturable balance on the hold.
  * @param params.refundable - Current refundable balance on the hold.
@@ -191,7 +196,7 @@ export async function buildCaptureEnrichment(params: {
   collect: AuthCaptureCollectPayload;
   requirements: PaymentRequirements;
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
   capturable: string;
   refundable: string;
@@ -205,7 +210,7 @@ export async function buildCaptureEnrichment(params: {
     paymentInfo,
     params.extra.deployment.escrow,
   );
-  const signed = await signCaptureFields({
+  const signed = await buildCaptureFields({
     signer: params.signer,
     chainId: params.chainId,
     extra: params.extra,
@@ -233,7 +238,7 @@ export async function buildCaptureEnrichment(params: {
  * @param params.record.refundableAmount - Refundable balance at settle time.
  * @param params.record.saltNonce - Bound salt nonce for lifecycle settles.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for capture digests.
+ * @param params.signer - Authorizer signer for capture digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.amount - Atomic capture amount.
  * @param params.feeBps - Optional submitted fee basis points (v1.0).
@@ -251,7 +256,7 @@ export async function buildCapturePayload(params: {
     saltNonce: `0x${string}`;
   };
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
   amount: string;
   feeBps?: number;
@@ -259,7 +264,7 @@ export async function buildCapturePayload(params: {
   feeReceiver?: `0x${string}`;
   voidRemainder?: boolean;
 }): Promise<CapturePayload> {
-  const signed = await signCaptureFields({
+  const signed = await buildCaptureFields({
     signer: params.signer,
     chainId: params.chainId,
     extra: params.extra,
@@ -286,7 +291,7 @@ export async function buildCapturePayload(params: {
  * @param params - Collect-derived payment info and signer.
  * @param params.paymentInfo - PaymentInfo struct reconstructed from collect.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for void digests.
+ * @param params.signer - Authorizer signer for void digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.paymentInfoHash - Hash of the PaymentInfo struct.
  * @returns Void fields to merge into the payload.
@@ -294,21 +299,45 @@ export async function buildCapturePayload(params: {
 export async function buildVoidEnrichment(params: {
   paymentInfo: PaymentInfoStruct;
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
   paymentInfoHash: `0x${string}`;
 }): Promise<Record<string, unknown>> {
-  const authorizerSignature = await signVoid(
+  const authorizerSignature = await signVoidIfLocal(params);
+  return {
+    type: "void",
+    paymentInfo: params.paymentInfo,
+    ...(authorizerSignature ? { authorizerSignature } : {}),
+  };
+}
+
+/**
+ * Sign a `Void` digest when a local signer is configured.
+ *
+ * @param params - Signer and digest context.
+ * @param params.signer - Authorizer signer; undefined when the authorizer is delegated.
+ * @param params.chainId - EVM chain id for hashing and signing.
+ * @param params.extra - Normalized auth-capture extra.
+ * @param params.paymentInfoHash - Escrow payment identifier.
+ * @returns The signature, or undefined when delegated.
+ */
+async function signVoidIfLocal(params: {
+  signer?: AuthorizerSigner;
+  chainId: number;
+  extra: NormalizedAuthCaptureExtra;
+  paymentInfoHash: `0x${string}`;
+}): Promise<`0x${string}` | undefined> {
+  if (!params.signer) return undefined;
+  return signVoid(
     params.signer,
     params.chainId,
     params.extra.captureAuthorizer,
     params.paymentInfoHash,
   );
-  return { type: "void", paymentInfo: params.paymentInfo, authorizerSignature };
 }
 
 /**
- * Build a signed void lifecycle payload.
+ * Build a void lifecycle payload, signed when a local signer is given.
  *
  * @param params - Stored payment record and signer.
  * @param params.record - Stored authorized-payment fields needed for void.
@@ -316,7 +345,7 @@ export async function buildVoidEnrichment(params: {
  * @param params.record.paymentInfoHash - Storage key for the authorized payment.
  * @param params.record.saltNonce - Bound salt nonce for lifecycle settles.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for void digests.
+ * @param params.signer - Authorizer signer for void digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @returns Void payload ready for facilitator `/settle`.
  */
@@ -327,25 +356,25 @@ export async function buildVoidPayload(params: {
     saltNonce: `0x${string}`;
   };
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
 }): Promise<VoidPayload> {
-  const authorizerSignature = await signVoid(
-    params.signer,
-    params.chainId,
-    params.extra.captureAuthorizer,
-    params.record.paymentInfoHash,
-  );
+  const authorizerSignature = await signVoidIfLocal({
+    signer: params.signer,
+    chainId: params.chainId,
+    extra: params.extra,
+    paymentInfoHash: params.record.paymentInfoHash,
+  });
   return {
     type: "void",
     paymentInfo: params.record.paymentInfo,
     saltNonce: params.record.saltNonce,
-    authorizerSignature,
+    ...(authorizerSignature ? { authorizerSignature } : {}),
   };
 }
 
 /**
- * Build a signed refund lifecycle payload.
+ * Build a refund lifecycle payload, signed when a local signer is given.
  *
  * @param params - Stored payment record, refund amount, and signer.
  * @param params.record - Stored authorized-payment fields needed for refund.
@@ -355,7 +384,7 @@ export async function buildVoidPayload(params: {
  * @param params.record.refundableAmount - Refundable balance at settle time.
  * @param params.record.saltNonce - Bound salt nonce for lifecycle settles.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for refund digests.
+ * @param params.signer - Authorizer signer for refund digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.amount - Atomic refund amount.
  * @returns Refund payload ready for facilitator `/settle`.
@@ -369,22 +398,19 @@ export async function buildRefundPayload(params: {
     saltNonce: `0x${string}`;
   };
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
   amount: string;
 }): Promise<RefundPayload> {
-  const authorizerSignature = await signRefund(
-    params.signer,
-    params.chainId,
-    params.extra.captureAuthorizer,
-    {
-      paymentInfoHash: params.record.paymentInfoHash,
-      amount: params.amount,
-      tokenCollector: params.extra.deployment.operatorRefundCollector,
-      expectedCapturableAmount: params.record.capturableAmount,
-      expectedRefundableAmount: params.record.refundableAmount,
-    },
-  );
+  const authorizerSignature = params.signer
+    ? await signRefund(params.signer, params.chainId, params.extra.captureAuthorizer, {
+        paymentInfoHash: params.record.paymentInfoHash,
+        amount: params.amount,
+        tokenCollector: params.extra.deployment.operatorRefundCollector,
+        expectedCapturableAmount: params.record.capturableAmount,
+        expectedRefundableAmount: params.record.refundableAmount,
+      })
+    : undefined;
   return {
     type: "refund",
     paymentInfo: params.record.paymentInfo,
@@ -392,18 +418,19 @@ export async function buildRefundPayload(params: {
     amount: params.amount,
     expectedCapturableAmount: params.record.capturableAmount,
     expectedRefundableAmount: params.record.refundableAmount,
-    authorizerSignature,
+    ...(authorizerSignature ? { authorizerSignature } : {}),
   };
 }
 
 /**
- * Build additive charge-completion enrichment for bound authorization routes.
+ * Build additive charge-completion enrichment for bound authorization routes. Without a
+ * signer (authorizer delegated to the facilitator) the signature is omitted.
  *
  * @param params - Collect payload, requirements, and signer.
  * @param params.collect - Client collect payload from the authorize settle.
  * @param params.requirements - Payment requirements for reconstruction.
  * @param params.extra - Normalized auth-capture extra.
- * @param params.signer - Authorizer signer for charge digests.
+ * @param params.signer - Authorizer signer for charge digests; omit when delegated.
  * @param params.chainId - EVM chain id for hashing and signing.
  * @param params.amount - Atomic charge amount.
  * @returns Charge completion fields to merge into the payload.
@@ -412,7 +439,7 @@ export async function buildChargeCompletionEnrichment(params: {
   collect: AuthCaptureCollectPayload;
   requirements: PaymentRequirements;
   extra: NormalizedAuthCaptureExtra;
-  signer: AuthorizerSigner;
+  signer?: AuthorizerSigner;
   chainId: number;
   amount: string;
 }): Promise<Record<string, unknown>> {
@@ -428,6 +455,14 @@ export async function buildChargeCompletionEnrichment(params: {
     paymentInfo,
     params.extra.deployment.escrow,
   );
+  const completion =
+    fee.version === "v1.0"
+      ? { amount: params.amount, feeBps: fee.feeBps, feeReceiver: fee.feeReceiver }
+      : { amount: params.amount, feeAmount: fee.feeAmount, feeReceiver: fee.feeReceiver };
+  if (!params.signer) {
+    return completion;
+  }
+
   const chargeDigest =
     fee.version === "v1.0"
       ? {
@@ -453,18 +488,5 @@ export async function buildChargeCompletionEnrichment(params: {
     params.extra.deployment,
     chargeDigest,
   );
-  if (fee.version === "v1.0") {
-    return {
-      amount: params.amount,
-      feeBps: fee.feeBps,
-      feeReceiver: fee.feeReceiver,
-      authorizerSignature,
-    };
-  }
-  return {
-    amount: params.amount,
-    feeAmount: fee.feeAmount,
-    feeReceiver: fee.feeReceiver,
-    authorizerSignature,
-  };
+  return { ...completion, authorizerSignature };
 }

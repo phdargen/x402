@@ -14,6 +14,10 @@ import {
 } from "viem";
 import { AuthCaptureEvmScheme } from "../../../src/auth-capture/facilitator/scheme";
 import {
+  InMemoryAuthCaptureDelegatedAuthStorage,
+  type AuthCaptureDelegatedAuthStorage,
+} from "../../../src/auth-capture/facilitator/delegatedAuth";
+import {
   facilitatorAddresses,
   normalizePaymentState,
   PAYMENT_STATE_MAX_ATTEMPTS,
@@ -607,6 +611,13 @@ describe("AuthCaptureEvmScheme", () => {
         authorizerSignature: "0xabcd",
         ...overrides,
       },
+    };
+  }
+
+  function delegatedSigner() {
+    return {
+      address: RECEIVER_AUTHORIZER,
+      signTypedData: vi.fn().mockResolvedValue("0xabcd" as `0x${string}`),
     };
   }
 
@@ -1515,11 +1526,14 @@ describe("AuthCaptureEvmScheme", () => {
       const scheme = new AuthCaptureEvmScheme(signerWithSim, {
         feeTerms: { feeRecipient: FEE_RECIPIENT, minFeeBps: 100, maxFeeBps: 100 },
         operators: [{ address: "*", operatorType: "custom" }],
-        receiverAuthorizer: FACILITATOR_EOA,
+        authorizerSigner: delegatedSigner(),
+        resolveCallerIdentity: () => "caller-1",
+        delegatedAuthStorage: new InMemoryAuthCaptureDelegatedAuthStorage(),
+        onStorageError: vi.fn(),
       });
       const extra = scheme.getExtra("eip155:8453");
       expect(extra).toMatchObject({
-        receiverAuthorizer: FACILITATOR_EOA,
+        receiverAuthorizer: getAddress(RECEIVER_AUTHORIZER),
         feeRecipient: FEE_RECIPIENT,
         minFeeBps: 100,
         maxFeeBps: 100,
@@ -1535,6 +1549,412 @@ describe("AuthCaptureEvmScheme", () => {
       const extra = scheme.getExtra("eip155:8453");
       expect(extra).not.toHaveProperty("operators");
       expect(mockSigner.getAddresses()).toContain(extra?.captureAuthorizer);
+    });
+  });
+
+  describe("delegated receiver authorizer", () => {
+    const CALLER = "caller-1";
+    const paymentInfoHash = () =>
+      computePaymentInfoHash(84532, boundPaymentInfo(), AUTH_CAPTURE_ESCROW_ADDRESS);
+
+    function unsigned<T extends { payload: Record<string, unknown> }>(envelope: T): T {
+      const payload = { ...envelope.payload };
+      delete payload.authorizerSignature;
+      return { ...envelope, payload };
+    }
+
+    function makeDelegated(
+      overrides: {
+        identity?: string | undefined;
+        storage?: AuthCaptureDelegatedAuthStorage;
+        refundFunding?: boolean;
+      } = {},
+    ) {
+      const storage = overrides.storage ?? new InMemoryAuthCaptureDelegatedAuthStorage();
+      const signer = delegatedSigner();
+      const resolveCallerIdentity = vi
+        .fn()
+        .mockResolvedValue("identity" in overrides ? overrides.identity : CALLER);
+      const onStorageError = vi.fn();
+      const scheme = new AuthCaptureEvmScheme(mockSigner, {
+        authorizerSigner: signer,
+        resolveCallerIdentity,
+        delegatedAuthStorage: storage,
+        onStorageError,
+        refundFunding: overrides.refundFunding ?? true,
+      });
+      return { scheme, storage, signer, resolveCallerIdentity, onStorageError };
+    }
+
+    function bindRow(
+      storage: AuthCaptureDelegatedAuthStorage,
+      callerIdentity = CALLER,
+      expiresAt = refundDeadline,
+    ) {
+      return storage.bind({
+        network: "eip155:84532",
+        paymentInfoHash: paymentInfoHash(),
+        callerIdentity,
+        expiresAt,
+      });
+    }
+
+    /** Report `pre` from `paymentState` until a transaction is written, then `post`. */
+    function mockPaymentStates(
+      pre: { capturableAmount: bigint; refundableAmount: bigint },
+      post: { capturableAmount: bigint; refundableAmount: bigint },
+    ) {
+      let written = false;
+      mockSigner.writeContract.mockImplementation(async () => {
+        written = true;
+        return MOCK_TX_HASH;
+      });
+      mockSigner.readContract.mockImplementation(async (args: { functionName: string }) => {
+        if (args.functionName === "isValidSignature") return ERC1271_MAGIC_VALUE;
+        if (args.functionName === "getTokenStore") return TOKEN_STORE;
+        if (args.functionName === "paymentState") {
+          return { hasCollectedPayment: true, ...(written ? post : pre) };
+        }
+        return INITIAL_BALANCE;
+      });
+    }
+
+    const CHARGED = { capturableAmount: 0n, refundableAmount: BigInt("1000000") };
+
+    function lifecycleEnvelope(payload: Record<string, unknown>) {
+      return buildCapturePayload({ authorizerSignature: undefined, ...payload });
+    }
+
+    describe("configuration", () => {
+      const fullDelegation = {
+        authorizerSigner: delegatedSigner(),
+        resolveCallerIdentity: () => CALLER,
+        delegatedAuthStorage: new InMemoryAuthCaptureDelegatedAuthStorage(),
+        onStorageError: vi.fn(),
+      };
+
+      it("requires the full delegation quartet together", () => {
+        expect(
+          () => new AuthCaptureEvmScheme(mockSigner, { authorizerSigner: delegatedSigner() }),
+        ).toThrow("authorizerSigner requires resolveCallerIdentity");
+        expect(
+          () => new AuthCaptureEvmScheme(mockSigner, { resolveCallerIdentity: () => CALLER }),
+        ).toThrow("facilitator-delegated receiver authorization requires authorizerSigner");
+        expect(
+          () =>
+            new AuthCaptureEvmScheme(mockSigner, {
+              authorizerSigner: delegatedSigner(),
+              resolveCallerIdentity: () => CALLER,
+            }),
+        ).toThrow("authorizerSigner requires delegatedAuthStorage");
+        expect(
+          () =>
+            new AuthCaptureEvmScheme(mockSigner, {
+              ...fullDelegation,
+              onStorageError: undefined,
+            }),
+        ).toThrow("authorizerSigner requires onStorageError");
+        expect(
+          () =>
+            new AuthCaptureEvmScheme(mockSigner, {
+              delegatedAuthStorage: new InMemoryAuthCaptureDelegatedAuthStorage(),
+            }),
+        ).toThrow("facilitator-delegated receiver authorization requires authorizerSigner");
+      });
+
+      it("rejects a delegatedAuthStorage that does not implement the interface", () => {
+        expect(
+          () =>
+            new AuthCaptureEvmScheme(mockSigner, {
+              ...fullDelegation,
+              delegatedAuthStorage: {} as AuthCaptureDelegatedAuthStorage,
+            }),
+        ).toThrow("delegatedAuthStorage must implement");
+      });
+
+      it("does not advertise receiverAuthorizer when delegation is not configured", () => {
+        const extra = new AuthCaptureEvmScheme(mockSigner).getExtra("eip155:8453");
+        expect(extra).not.toHaveProperty("receiverAuthorizer");
+      });
+    });
+
+    describe("charge", () => {
+      it("verifies an unsigned charge without resolving identity or binding", async () => {
+        const { scheme, storage, resolveCallerIdentity } = makeDelegated();
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.verify(envelope, envelope.accepted);
+        expect(result.isValid).toBe(true);
+        expect(resolveCallerIdentity).not.toHaveBeenCalled();
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeUndefined();
+      });
+
+      it("rejects an unsigned charge when no delegated authorizer is configured", async () => {
+        const scheme = new AuthCaptureEvmScheme(mockSigner);
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.verify(envelope, envelope.accepted);
+        expect(result.isValid).toBe(false);
+        expect(result.invalidReason).toBe(Errors.ErrAuthorizerSignature);
+      });
+
+      it("signs the Charge digest, binds the caller until refundDeadline, then broadcasts", async () => {
+        const { scheme, storage, signer, resolveCallerIdentity } = makeDelegated();
+        mockPaymentStates({ capturableAmount: 0n, refundableAmount: 0n }, CHARGED);
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(signer.signTypedData).toHaveBeenCalledWith(
+          expect.objectContaining({ primaryType: "Charge" }),
+        );
+        expect(resolveCallerIdentity).toHaveBeenCalledWith(
+          expect.objectContaining({ step: "charge", paymentInfoHash: paymentInfoHash() }),
+        );
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toMatchObject({
+          callerIdentity: CALLER,
+          expiresAt: refundDeadline,
+        });
+        expect(mockSigner.writeContract).toHaveBeenCalledWith(
+          expect.objectContaining({ functionName: "charge" }),
+        );
+      });
+
+      it("does not bind a charge that cannot be refunded through this facilitator", async () => {
+        const { scheme, storage } = makeDelegated({ refundFunding: false });
+        mockPaymentStates({ capturableAmount: 0n, refundableAmount: 0n }, CHARGED);
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeUndefined();
+      });
+
+      it.each([
+        ["unauthenticated", undefined],
+        ["empty identity", ""],
+      ])("refuses to sign or broadcast for an %s caller", async (_name, identity) => {
+        const { scheme, signer } = makeDelegated({ identity });
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(result.errorReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+        expect(signer.signTypedData).not.toHaveBeenCalled();
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("treats a throwing identity resolver as unauthenticated", async () => {
+        const { scheme, resolveCallerIdentity } = makeDelegated();
+        resolveCallerIdentity.mockRejectedValue(new Error("auth backend down"));
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.errorReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("fails closed with no broadcast when another identity already holds the binding", async () => {
+        const { scheme, storage } = makeDelegated();
+        await bindRow(storage, "someone-else");
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.errorReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+        expect((await storage.get("eip155:84532", paymentInfoHash()))?.callerIdentity).toBe(
+          "someone-else",
+        );
+      });
+
+      it("fails closed with no broadcast when the binding store is unavailable", async () => {
+        const storage = new InMemoryAuthCaptureDelegatedAuthStorage();
+        vi.spyOn(storage, "bind").mockRejectedValue(new Error("db down"));
+        const { scheme } = makeDelegated({ storage });
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(result.errorReason).toBe(Errors.ErrDelegatedAuthUnavailable);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("reverts the binding it created when the broadcast is rejected", async () => {
+        const { scheme, storage } = makeDelegated();
+        mockSigner.writeContract.mockRejectedValue(new Error("insufficient funds for gas"));
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeUndefined();
+      });
+
+      it("reverts the binding it created when the transaction reverts onchain", async () => {
+        const { scheme, storage } = makeDelegated();
+        mockSigner.waitForTransactionReceipt.mockResolvedValue({ status: "reverted" });
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(result.errorReason).toBe(Errors.ErrTransactionReverted);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeUndefined();
+      });
+
+      it("keeps the binding when the receipt wait times out", async () => {
+        const { scheme, storage } = makeDelegated();
+        mockSigner.waitForTransactionReceipt.mockRejectedValue(new Error("receipt timeout"));
+        const envelope = unsigned(buildChargeEip3009Payload());
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toMatchObject({
+          callerIdentity: CALLER,
+        });
+      });
+
+      it("does not delete a pre-existing binding when a same-identity retry reverts", async () => {
+        const { scheme, storage } = makeDelegated();
+        await bindRow(storage);
+        mockSigner.waitForTransactionReceipt.mockResolvedValue({ status: "reverted" });
+        const envelope = unsigned(buildChargeEip3009Payload());
+        await scheme.settle(envelope, envelope.accepted);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeDefined();
+      });
+
+      it("binds an authorize settle for a delegated operator", async () => {
+        const { scheme, storage } = makeDelegated();
+        const envelope = buildBoundEip3009Payload();
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toMatchObject({
+          callerIdentity: CALLER,
+        });
+      });
+    });
+
+    describe("lifecycle", () => {
+      it("signs and settles an unsigned capture for the bound caller", async () => {
+        const { scheme, storage, signer, resolveCallerIdentity } = makeDelegated();
+        await bindRow(storage);
+        const envelope = lifecycleEnvelope({});
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(resolveCallerIdentity).toHaveBeenCalledWith(
+          expect.objectContaining({ step: "capture" }),
+        );
+        expect(signer.signTypedData).toHaveBeenCalledWith(
+          expect.objectContaining({ primaryType: "Capture" }),
+        );
+        const names = mockSigner.writeContract.mock.calls.map(
+          (call: [{ functionName: string }]) => call[0].functionName,
+        );
+        expect(names).toEqual(["capture"]);
+      });
+
+      it("verifies an unsigned capture for the bound caller and rejects everyone else", async () => {
+        const { scheme, storage } = makeDelegated();
+        const envelope = lifecycleEnvelope({});
+
+        const unbound = await scheme.verify(envelope, envelope.accepted);
+        expect(unbound.invalidReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+
+        await bindRow(storage, "someone-else");
+        const mismatch = await scheme.verify(envelope, envelope.accepted);
+        expect(mismatch.invalidReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+
+        await storage.delete("eip155:84532", paymentInfoHash());
+        await bindRow(storage);
+        const match = await scheme.verify(envelope, envelope.accepted);
+        expect(match.isValid).toBe(true);
+      });
+
+      it("rejects an unauthenticated caller before touching the binding store", async () => {
+        const { scheme, storage } = makeDelegated({ identity: undefined });
+        await bindRow(storage);
+        const envelope = lifecycleEnvelope({});
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.errorReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("treats an expired binding as absent", async () => {
+        const { scheme, storage } = makeDelegated();
+        await bindRow(storage, CALLER, Math.floor(Date.now() / 1000) - 1);
+        const envelope = lifecycleEnvelope({});
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.errorReason).toBe(Errors.ErrUnauthenticatedAuthorizerRequest);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("reports the binding store being unavailable instead of unauthenticated", async () => {
+        const storage = new InMemoryAuthCaptureDelegatedAuthStorage();
+        vi.spyOn(storage, "get").mockRejectedValue(new Error("db down"));
+        const { scheme } = makeDelegated({ storage });
+        const envelope = lifecycleEnvelope({});
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.errorReason).toBe(Errors.ErrDelegatedAuthUnavailable);
+        expect(mockSigner.writeContract).not.toHaveBeenCalled();
+      });
+
+      it("signs both legs of a capture that voids the remainder", async () => {
+        const { scheme, storage, signer } = makeDelegated();
+        await bindRow(storage);
+        const envelope = lifecycleEnvelope({ voidRemainder: true });
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(signer.signTypedData.mock.calls.map(call => call[0].primaryType)).toEqual([
+          "Capture",
+          "Void",
+        ]);
+        const names = mockSigner.writeContract.mock.calls.map(
+          (call: [{ functionName: string }]) => call[0].functionName,
+        );
+        expect(names).toEqual(["capture", "void"]);
+      });
+
+      it("signs an unsigned void and releases the binding once nothing is left", async () => {
+        const { scheme, storage, signer } = makeDelegated();
+        await bindRow(storage);
+        mockPaymentStates(
+          { capturableAmount: BigInt("1000000"), refundableAmount: 0n },
+          { capturableAmount: 0n, refundableAmount: 0n },
+        );
+        const envelope = {
+          ...buildCapturePayload(),
+          payload: { type: "void", paymentInfo: boundPaymentInfo(), saltNonce: SALT_NONCE },
+        };
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(signer.signTypedData).toHaveBeenCalledWith(
+          expect.objectContaining({ primaryType: "Void" }),
+        );
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeUndefined();
+      });
+
+      it("keeps the binding after a capture that leaves a refundable balance", async () => {
+        const { scheme, storage } = makeDelegated();
+        await bindRow(storage);
+        const envelope = lifecycleEnvelope({});
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeDefined();
+      });
+
+      it("does not release the binding when the lifecycle settle fails", async () => {
+        const { scheme, storage } = makeDelegated();
+        await bindRow(storage);
+        mockSigner.writeContract.mockRejectedValue(new Error("insufficient funds for gas"));
+        const envelope = lifecycleEnvelope({
+          amount: "1000000",
+          expectedCapturableAmount: "1000000",
+        });
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(false);
+        expect(await storage.get("eip155:84532", paymentInfoHash())).toBeDefined();
+      });
+
+      it("reports a failing early delete to onStorageError without failing the settle", async () => {
+        const { scheme, storage, onStorageError } = makeDelegated();
+        await bindRow(storage);
+        vi.spyOn(storage, "delete").mockRejectedValue(new Error("db down"));
+        mockPaymentStates(
+          { capturableAmount: BigInt("1000000"), refundableAmount: 0n },
+          { capturableAmount: 0n, refundableAmount: 0n },
+        );
+        const envelope = lifecycleEnvelope({ voidRemainder: true });
+        const result = await scheme.settle(envelope, envelope.accepted);
+        expect(result.success).toBe(true);
+        expect(onStorageError).toHaveBeenCalled();
+      });
     });
   });
 

@@ -6,8 +6,8 @@ import type {
   VerifiedPaymentCanceledContext,
 } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
-import { computePaymentInfoHash, isNonZeroAddress } from "../nonce";
-import { parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
+import { computePaymentInfoHash } from "../nonce";
+import { authorizerMode, parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
 import {
   buildCaptureEnrichment,
   buildChargeCompletionEnrichment,
@@ -54,7 +54,8 @@ function signedCollectAmount(collect: AuthCaptureCollectPayload): string {
 /**
  * In-request settlement hooks: payload enrichment, cancel void, persist, and
  * deferred-settle skip. Storage and the receiver-authorizer signer only —
- * out-of-band capture/void/refund live on `AuthCaptureLifecycleManager`.
+ * out-of-band capture/void/refund live on `AuthCaptureLifecycleManager`. Without a local
+ * signer for the route's `receiverAuthorizer` the enrichments carry no signatures.
  */
 export class AuthCaptureSettlementHooks {
   private readonly authorizeResults = new WeakMap<object, SettleResponse>();
@@ -80,8 +81,10 @@ export class AuthCaptureSettlementHooks {
     const collect = asCollectPayload(ctx.paymentPayload.payload);
     if (!collect) return;
 
-    const signer = this.config.receiverAuthorizerSigner;
-    if (!signer) return;
+    // Delegated mode builds the same payloads without signatures; the facilitator signs them.
+    const mode = authorizerMode(extra.receiverAuthorizer, this.config.receiverAuthorizerSigner);
+    if (mode === "collect-only") return;
+    const signer = mode === "self" ? this.config.receiverAuthorizerSigner : undefined;
 
     if (ctx.phase === "cancel") {
       if (extra.paymentFlow !== "escrow") return;
@@ -101,7 +104,7 @@ export class AuthCaptureSettlementHooks {
 
     const chainId = getEvmChainId(ctx.requirements.network);
 
-    if (extra.paymentFlow === "authorization" && isNonZeroAddress(extra.receiverAuthorizer)) {
+    if (extra.paymentFlow === "authorization") {
       return buildChargeCompletionEnrichment({
         collect,
         requirements: ctx.requirements as PaymentRequirements,
@@ -149,9 +152,8 @@ export class AuthCaptureSettlementHooks {
     if ("error" in extraParsed) return;
     const extra = extraParsed.extra;
     if (extra.paymentFlow !== "escrow") return;
-    if (!this.config.receiverAuthorizerSigner || !isNonZeroAddress(extra.receiverAuthorizer)) {
-      return;
-    }
+    const mode = authorizerMode(extra.receiverAuthorizer, this.config.receiverAuthorizerSigner);
+    if (mode === "collect-only") return;
     return context.requirements as PaymentRequirements;
   }
 

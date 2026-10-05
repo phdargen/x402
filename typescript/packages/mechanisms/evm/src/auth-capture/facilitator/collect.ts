@@ -35,9 +35,10 @@ import {
   withPendingSettlementStore,
 } from "../../shared/settleReceipt";
 import { classifyErc6492Payer } from "../../shared/verifySignature";
-import { getEvmChainId } from "../../utils";
+import { getEvmChainId, truncateErrorMessage } from "../../utils";
 import { paymentInfoToContractTuple, reconstructPaymentInfo, unpackForSettle } from "../utils";
-import { verifyCharge } from "../authorizerSigner";
+import { signCharge, verifyCharge, type ChargeDigest } from "../authorizerSigner";
+import type { AuthCaptureDelegatedAuthRecord } from "./delegatedAuth";
 import type {
   AuthCaptureCollectPayload,
   AuthCaptureFacilitatorConfig,
@@ -47,6 +48,13 @@ import type {
 } from "../types";
 import { isEip3009Payload, isPermit2Payload } from "../types";
 import * as Errors from "../errors";
+import {
+  bindThenBroadcast,
+  getDelegatedAuthorizer,
+  resolveDelegatedCallerIdentity,
+  type BindDisposition,
+  type DelegatedAuthorizer,
+} from "./delegatedAuth";
 import {
   chargeEscrowArgs,
   chargeFeeFromCollectPayload,
@@ -88,6 +96,45 @@ function collectSaltNonce(payload: AuthCaptureCollectPayload): `0x${string}` | u
  */
 function collectChargeAmount(payload: AuthCaptureCollectPayload): string | undefined {
   return "amount" in payload && typeof payload.amount === "string" ? payload.amount : undefined;
+}
+
+/**
+ * Authorizer signature from a charge-completion collect payload.
+ *
+ * @param payload - Collect envelope.
+ * @returns The signature, or undefined when absent (delegated authorizer).
+ */
+function collectAuthorizerSignature(payload: AuthCaptureCollectPayload): `0x${string}` | undefined {
+  return "authorizerSignature" in payload ? payload.authorizerSignature : undefined;
+}
+
+/**
+ * EIP-712 Charge digest for the deployment's fee encoding.
+ *
+ * @param paymentInfoHash - Escrow payment identifier.
+ * @param amount - Charged amount.
+ * @param unpacked - Collector and collector data from the collect payload.
+ * @param unpacked.tokenCollector - Canonical collector for the asset-transfer method.
+ * @param unpacked.collectorData - Raw signature bytes forwarded to the collector.
+ * @param fee - Submitted fee (`feeBps` or `feeAmount` per deployment).
+ * @returns Digest to sign or verify.
+ */
+function chargeDigestFor(
+  paymentInfoHash: `0x${string}`,
+  amount: bigint,
+  unpacked: { tokenCollector: `0x${string}`; collectorData: `0x${string}` },
+  fee: SubmittedFee,
+): ChargeDigest {
+  const base = {
+    paymentInfoHash,
+    amount,
+    tokenCollector: unpacked.tokenCollector,
+    collectorData: unpacked.collectorData,
+    feeReceiver: fee.feeReceiver,
+  };
+  return fee.version === "v1.0"
+    ? { ...base, feeBps: fee.feeBps }
+    : { ...base, feeAmount: fee.feeAmount };
 }
 
 /**
@@ -139,8 +186,7 @@ export async function verifyCollect(
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
   }
 
-  const hasChargeCompletion =
-    "authorizerSignature" in wirePayload && wirePayload.authorizerSignature !== undefined;
+  const hasChargeCompletion = collectChargeAmount(wirePayload) !== undefined;
   const isCharge = extra.paymentFlow === "authorization";
 
   if (
@@ -309,35 +355,27 @@ export async function verifyCollect(
   }
 
   if (hasChargeCompletion) {
-    const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
-    const chargeDigest =
-      fee.version === "v1.0"
-        ? {
-            paymentInfoHash,
-            amount: settleAmount,
-            tokenCollector: unpacked.tokenCollector,
-            collectorData: unpacked.collectorData,
-            feeBps: fee.feeBps,
-            feeReceiver: fee.feeReceiver,
-          }
-        : {
-            paymentInfoHash,
-            amount: settleAmount,
-            tokenCollector: unpacked.tokenCollector,
-            collectorData: unpacked.collectorData,
-            feeAmount: fee.feeAmount,
-            feeReceiver: fee.feeReceiver,
-          };
-    const ok = await verifyCharge(
-      submitter,
-      extra.receiverAuthorizer,
-      chainId,
-      extra.captureAuthorizer,
-      extra.deployment,
-      chargeDigest,
-      wirePayload.authorizerSignature as `0x${string}`,
-    );
-    if (!ok) {
+    const authorizerSignature = collectAuthorizerSignature(wirePayload);
+    // A delegated authorizer signs at settle time, after authenticating the caller.
+    if (authorizerSignature) {
+      const ok = await verifyCharge(
+        submitter,
+        extra.receiverAuthorizer,
+        chainId,
+        extra.captureAuthorizer,
+        extra.deployment,
+        chargeDigestFor(
+          computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow),
+          settleAmount,
+          unpacked,
+          fee,
+        ),
+        authorizerSignature,
+      );
+      if (!ok) {
+        return { isValid: false, invalidReason: Errors.ErrAuthorizerSignature, payer };
+      }
+    } else if (!getDelegatedAuthorizer(config, extra.receiverAuthorizer)) {
       return { isValid: false, invalidReason: Errors.ErrAuthorizerSignature, payer };
     }
   }
@@ -775,12 +813,173 @@ export async function settleCollect(
     return execution;
   }
 
+  const delegated = getDelegatedAuthorizer(config, execution.extra.receiverAuthorizer);
+  if (delegated) {
+    const authenticated = await authenticateDelegatedCollect(
+      delegated,
+      config,
+      payload,
+      requirements,
+      wirePayload,
+      execution,
+      context,
+    );
+    if ("success" in authenticated) {
+      return authenticated;
+    }
+    const broadcast = () =>
+      broadcastCollect(config, wirePayload, execution, store, pendingKey, dataSuffix);
+    if (!authenticated.bindRecord) {
+      return (await broadcast()).value;
+    }
+    const bound = await bindThenBroadcast({
+      delegated,
+      record: authenticated.bindRecord,
+      broadcast,
+    });
+    if (!bound.ok) {
+      return {
+        success: false,
+        errorReason:
+          bound.reason === "conflict"
+            ? Errors.ErrUnauthenticatedAuthorizerRequest
+            : Errors.ErrDelegatedAuthUnavailable,
+        ...(bound.reason === "unavailable"
+          ? {
+              errorMessage: `failed to bind delegated caller: ${truncateErrorMessage(bound.error instanceof Error ? bound.error.message : String(bound.error))}`,
+            }
+          : {}),
+        transaction: "",
+        network: requirements.network,
+        payer: execution.payer,
+      };
+    }
+    return bound.value;
+  }
+
+  return (await broadcastCollect(config, wirePayload, execution, store, pendingKey, dataSuffix))
+    .value;
+}
+
+/**
+ * Authenticate a collect whose authorizer is delegated to this facilitator, produce the
+ * `Charge` signature the server omitted, and decide whether the caller must be bound.
+ *
+ * @param delegated - Delegated-authorizer wiring.
+ * @param config - Facilitator config.
+ * @param payload - Wire payment envelope.
+ * @param requirements - Published requirements.
+ * @param wirePayload - Narrowed collect payload.
+ * @param execution - Parsed collect execution context.
+ * @param context - Optional facilitator context passed to `resolveCallerIdentity`.
+ * @returns A terminal failure, or the binding to write before broadcast (when one is needed).
+ */
+async function authenticateDelegatedCollect(
+  delegated: DelegatedAuthorizer,
+  config: AuthCaptureFacilitatorConfig | undefined,
+  payload: PaymentPayload,
+  requirements: PaymentRequirements,
+  wirePayload: AuthCaptureCollectPayload,
+  execution: CollectSettleExecution,
+  context?: FacilitatorContext,
+): Promise<SettleResponse | { bindRecord?: AuthCaptureDelegatedAuthRecord }> {
+  const { extra, payer, network, paymentInfoHash, functionName } = execution;
+  const fail = (errorReason: string): SettleResponse => ({
+    success: false,
+    errorReason,
+    transaction: "",
+    network,
+    payer,
+  });
+
+  const identity = await resolveDelegatedCallerIdentity(delegated, {
+    step: functionName,
+    paymentInfoHash,
+    network,
+    payer,
+    payload,
+    requirements,
+    facilitatorContext: context,
+  });
+  if (!identity) {
+    return fail(Errors.ErrUnauthenticatedAuthorizerRequest);
+  }
+
+  if (functionName === "charge" && !collectAuthorizerSignature(wirePayload)) {
+    const chainId = getEvmChainId(requirements.network);
+    const unpacked = unpackForSettle(wirePayload, extra.assetTransferMethod, extra.deployment);
+    const digest = chargeDigestFor(
+      paymentInfoHash,
+      execution.settleAmount,
+      unpacked,
+      execution.fee,
+    );
+    const signature = await signCharge(
+      delegated.signer,
+      chainId,
+      extra.captureAuthorizer,
+      extra.deployment,
+      digest,
+    );
+    const ok = await verifyCharge(
+      execution.submitter,
+      extra.receiverAuthorizer,
+      chainId,
+      extra.captureAuthorizer,
+      extra.deployment,
+      digest,
+      signature,
+    );
+    if (!ok) {
+      return fail(Errors.ErrAuthorizerSignature);
+    }
+  }
+
+  // Only payments whose later steps the facilitator can still relay need a binding.
+  // A custom operator's lifecycle is never relayed, and a charge is only refundable
+  // through the facilitator when refunds are funded.
+  const relayable =
+    extra.operatorType === "delegated" &&
+    (functionName === "authorize" || config?.refundFunding === true);
+  if (!relayable) {
+    return {};
+  }
+  return {
+    bindRecord: {
+      network,
+      paymentInfoHash,
+      callerIdentity: identity,
+      expiresAt: extra.refundDeadline,
+    },
+  };
+}
+
+/**
+ * Broadcast the collect and await its receipt.
+ *
+ * @param config - Facilitator config.
+ * @param wirePayload - Narrowed collect payload.
+ * @param execution - Parsed collect execution context.
+ * @param store - Pending-settlement store keyed by the collect signature.
+ * @param pendingKey - Store lookup key (the collect signature).
+ * @param dataSuffix - Optional settlement suffix appended to the calldata.
+ * @returns The settle response, and whether a caller binding written for it should be kept:
+ *   it is reverted only when no transaction can have landed.
+ */
+async function broadcastCollect(
+  config: AuthCaptureFacilitatorConfig | undefined,
+  wirePayload: AuthCaptureCollectPayload,
+  execution: CollectSettleExecution,
+  store: PendingSettlementStore,
+  pendingKey: string | undefined,
+  dataSuffix: `0x${string}` | undefined,
+): Promise<{ value: SettleResponse; disposition: BindDisposition }> {
   const customBalanceSnapshot = await snapshotCustomOperatorBalances(
     execution.submitter,
     execution,
   );
   if (customBalanceSnapshot && "success" in customBalanceSnapshot) {
-    return customBalanceSnapshot;
+    return { value: customBalanceSnapshot, disposition: "revert" };
   }
 
   const tuple = paymentInfoToContractTuple(execution.paymentInfo);
@@ -824,15 +1023,18 @@ export async function settleCollect(
   );
   if ("error" in written) {
     return {
-      success: false,
-      errorReason: written.error,
-      transaction: "",
-      network: requirements.network,
-      payer: execution.payer,
+      value: {
+        success: false,
+        errorReason: written.error,
+        transaction: "",
+        network: execution.network,
+        payer: execution.payer,
+      },
+      disposition: "revert",
     };
   }
 
-  return awaitCollectSettlement(
+  const value = await awaitCollectSettlement(
     store,
     pendingKey,
     written.txHash,
@@ -840,6 +1042,11 @@ export async function settleCollect(
     customBalanceSnapshot,
     false,
   );
+  // A pending receipt or any other post-broadcast outcome may still have landed onchain.
+  return {
+    value,
+    disposition: value.errorReason === Errors.ErrTransactionReverted ? "revert" : "keep",
+  };
 }
 
 /**

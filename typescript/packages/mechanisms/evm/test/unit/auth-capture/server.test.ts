@@ -10,6 +10,7 @@ import {
   EIP3009_TOKEN_COLLECTOR_ADDRESS,
 } from "../../../src/auth-capture/constants";
 import type { FacilitatorClient } from "@x402/core/server";
+import { zeroAddress } from "viem";
 import type { AuthorizedPayment } from "../../../src/auth-capture/server/storage";
 
 const BASE_SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -207,6 +208,7 @@ describe("AuthCaptureEvmScheme", () => {
         name: "USDC",
         version: "2",
         captureMode: "deferred",
+        receiverAuthorizer: zeroAddress,
       };
       for (const [k, v] of Object.entries(overrides)) {
         if (v === undefined) delete out[k];
@@ -630,6 +632,7 @@ describe("AuthCaptureEvmScheme", () => {
         name: "USDC",
         version: "2",
         captureMode: "deferred",
+        receiverAuthorizer: zeroAddress,
       };
       for (const [k, v] of Object.entries(overrides)) {
         if (v === undefined) delete out[k];
@@ -811,18 +814,15 @@ describe("AuthCaptureEvmScheme", () => {
       ).rejects.toThrow(/does not match the scheme's receiverAuthorizerSigner/);
     });
 
-    it("should throw on escrow sync without a receiverAuthorizerSigner", async () => {
+    it("should throw on escrow sync with an explicit zero receiverAuthorizer", async () => {
       const scheme = new AuthCaptureEvmScheme();
       const requirements = {
         ...baseRequirements,
-        extra: completeExtra({
-          captureMode: undefined,
-          receiverAuthorizer: "0x1111111111111111111111111111111111111111",
-        }),
+        extra: completeExtra({ captureMode: undefined }),
       };
       await expect(
         scheme.enhancePaymentRequirements(requirements, supportedKind, []),
-      ).rejects.toThrow(/receiverAuthorizerSigner/);
+      ).rejects.toThrow(/sync routes require a non-zero receiverAuthorizer/);
     });
 
     it("should throw when captureMode is set on an authorization route", async () => {
@@ -896,6 +896,210 @@ describe("AuthCaptureEvmScheme", () => {
       );
       expect(result.extra?.paymentFlow).toBe("escrow");
       expect(result.extra?.captureMode).toBe("deferred");
+    });
+  });
+
+  describe("enhancePaymentRequirements - receiver authorizer resolution", () => {
+    const FACILITATOR_AUTHORIZER = "0x2222222222222222222222222222222222222222" as `0x${string}`;
+    const SIGNER_ADDRESS = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+    const OTHER = "0x9999999999999999999999999999999999999999" as `0x${string}`;
+
+    const route = (overrides: Record<string, unknown> = {}) => ({
+      scheme: "auth-capture",
+      network: "eip155:84532" as const,
+      amount: "1000000",
+      asset: BASE_SEPOLIA_USDC,
+      payTo: "0x1234567890123456789012345678901234567890",
+      maxTimeoutSeconds: 300,
+      extra: {
+        captureAuthorizer: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        captureDeadlineSeconds: 3600,
+        refundDeadlineSeconds: 7200,
+        feeRecipient: zeroAddress,
+        minFeeBps: 0,
+        maxFeeBps: 0,
+        name: "USDC",
+        version: "2",
+        ...overrides,
+      },
+    });
+    const kind = (extra?: Record<string, unknown>) => ({
+      x402Version: 2,
+      scheme: "auth-capture",
+      network: "eip155:84532" as const,
+      extra,
+    });
+    const signerScheme = () =>
+      new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: { address: SIGNER_ADDRESS, signTypedData: vi.fn() },
+      });
+
+    it("defaults an omitted route authorizer to the facilitator-advertised one", async () => {
+      const result = await new AuthCaptureEvmScheme().enhancePaymentRequirements(
+        route(),
+        kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(FACILITATOR_AUTHORIZER);
+      expect(result.extra?.captureMode).toBe("sync");
+    });
+
+    it("accepts a route authorizer equal to the facilitator-advertised one", async () => {
+      const result = await new AuthCaptureEvmScheme().enhancePaymentRequirements(
+        route({ receiverAuthorizer: FACILITATOR_AUTHORIZER.toLowerCase() }),
+        kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(FACILITATOR_AUTHORIZER);
+    });
+
+    it("lets the scheme signer win over a facilitator-advertised authorizer", async () => {
+      const result = await signerScheme().enhancePaymentRequirements(
+        route(),
+        kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(SIGNER_ADDRESS);
+    });
+
+    it("throws naming all three fixes when nothing can authorize", async () => {
+      await expect(
+        new AuthCaptureEvmScheme().enhancePaymentRequirements(
+          route({ captureMode: "deferred" }),
+          kind(),
+          [],
+        ),
+      ).rejects.toThrow(/receiverAuthorizerSigner.*delegates the authorizer.*zeroAddress/s);
+    });
+
+    it("throws when the route names a non-zero authorizer nobody can sign for", async () => {
+      await expect(
+        new AuthCaptureEvmScheme().enhancePaymentRequirements(
+          route({ receiverAuthorizer: OTHER }),
+          kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+          [],
+        ),
+      ).rejects.toThrow(/can not be signed/);
+    });
+
+    it("allows an explicit zero authorizer for escrow deferred, ignoring the advertisement", async () => {
+      const result = await new AuthCaptureEvmScheme().enhancePaymentRequirements(
+        route({ receiverAuthorizer: zeroAddress, captureMode: "deferred" }),
+        kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(zeroAddress);
+    });
+
+    it("rejects an explicit zero authorizer on escrow sync and on authorization", async () => {
+      const scheme = new AuthCaptureEvmScheme();
+      await expect(
+        scheme.enhancePaymentRequirements(route({ receiverAuthorizer: zeroAddress }), kind(), []),
+      ).rejects.toThrow(/non-zero receiverAuthorizer/);
+      await expect(
+        scheme.enhancePaymentRequirements(
+          route({ receiverAuthorizer: zeroAddress, paymentFlow: "authorization" }),
+          kind(),
+          [],
+        ),
+      ).rejects.toThrow(/non-zero receiverAuthorizer/);
+    });
+
+    it("keeps the signer's conflict check against a different route authorizer", async () => {
+      await expect(
+        signerScheme().enhancePaymentRequirements(route({ receiverAuthorizer: OTHER }), kind(), []),
+      ).rejects.toThrow(/does not match the scheme's receiverAuthorizerSigner/);
+    });
+
+    it("delegates an authorization route to the facilitator authorizer", async () => {
+      const result = await new AuthCaptureEvmScheme().enhancePaymentRequirements(
+        route({ paymentFlow: "authorization" }),
+        kind({ receiverAuthorizer: FACILITATOR_AUTHORIZER }),
+        [],
+      );
+      expect(result.extra?.receiverAuthorizer).toBe(FACILITATOR_AUTHORIZER);
+      expect(result.extra?.paymentFlow).toBe("authorization");
+    });
+
+    it("ignores a zero facilitator advertisement", async () => {
+      await expect(
+        new AuthCaptureEvmScheme().enhancePaymentRequirements(
+          route(),
+          kind({ receiverAuthorizer: zeroAddress }),
+          [],
+        ),
+      ).rejects.toThrow(/has no receiverAuthorizer/);
+    });
+  });
+
+  describe("validateFacilitatorSupport", () => {
+    const NETWORK = "eip155:84532" as const;
+    const CAPTURE_AUTHORIZER = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const RECEIVER_AUTHORIZER = "0x2222222222222222222222222222222222222222";
+
+    function supportedKind(extra?: Record<string, unknown>) {
+      return { x402Version: 2, scheme: "auth-capture", network: NETWORK, extra };
+    }
+
+    it("returns a problem when the facilitator omits captureAuthorizer", () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const problem = scheme.validateFacilitatorSupport(
+        NETWORK,
+        supportedKind({ receiverAuthorizer: RECEIVER_AUTHORIZER }),
+        [],
+      );
+      expect(problem).toMatch(/captureAuthorizer/);
+    });
+
+    it("returns a problem when no signer and the facilitator omits receiverAuthorizer", () => {
+      const scheme = new AuthCaptureEvmScheme();
+      const problem = scheme.validateFacilitatorSupport(
+        NETWORK,
+        supportedKind({ captureAuthorizer: CAPTURE_AUTHORIZER }),
+        [],
+      );
+      expect(problem).toMatch(/receiverAuthorizer/);
+    });
+
+    it("returns void when the server has a receiver-authorizer signer", () => {
+      const scheme = new AuthCaptureEvmScheme({
+        receiverAuthorizerSigner: {
+          address: "0x1111111111111111111111111111111111111111",
+          signTypedData: vi.fn(),
+        },
+      });
+      expect(
+        scheme.validateFacilitatorSupport(
+          NETWORK,
+          supportedKind({ captureAuthorizer: CAPTURE_AUTHORIZER }),
+          [],
+        ),
+      ).toBeUndefined();
+    });
+
+    it("returns void when the facilitator advertises capture and receiver authorizers", () => {
+      const scheme = new AuthCaptureEvmScheme();
+      expect(
+        scheme.validateFacilitatorSupport(
+          NETWORK,
+          supportedKind({
+            captureAuthorizer: CAPTURE_AUTHORIZER,
+            receiverAuthorizer: RECEIVER_AUTHORIZER,
+          }),
+          [],
+        ),
+      ).toBeUndefined();
+    });
+
+    it("returns void for collect-only merchants when collectOnlyRoutes is set", () => {
+      const scheme = new AuthCaptureEvmScheme({ collectOnlyRoutes: true });
+      expect(
+        scheme.validateFacilitatorSupport(
+          NETWORK,
+          supportedKind({ captureAuthorizer: CAPTURE_AUTHORIZER }),
+          [],
+        ),
+      ).toBeUndefined();
     });
   });
 
@@ -1035,14 +1239,44 @@ describe("AuthCaptureEvmScheme", () => {
       await expect(lifecycle.capture(hash)).rejects.toThrow(/no authorized payment/);
     });
 
-    it("should throw when capture is called without a receiverAuthorizerSigner", async () => {
+    it("should send unsigned lifecycle payloads when the authorizer is delegated to the facilitator", async () => {
       const storage = new InMemoryAuthorizedPaymentStorage();
       await storage.update(hash, () => sampleRecord());
-      const scheme = new AuthCaptureEvmScheme({ storage });
-      const lifecycle = scheme.createLifecycleManager({
+      const settle = vi.fn().mockResolvedValue({
+        success: true,
+        transaction: "0xtx",
+        network: "eip155:84532",
+        payer,
+      });
+      const lifecycle = new AuthCaptureEvmScheme({ storage }).createLifecycleManager({
+        settle,
+      } as unknown as FacilitatorClient);
+
+      await lifecycle.capture(hash, { amount: "500000", voidRemainder: true });
+      await lifecycle.voidPayment(hash);
+      await lifecycle.refund(hash, { amount: "1" });
+
+      const [capture, voidPayload, refund] = settle.mock.calls.map(call => call[0].payload);
+      expect(capture).toMatchObject({ type: "capture", amount: "500000", voidRemainder: true });
+      expect(capture.authorizerSignature).toBeUndefined();
+      expect(capture.voidAuthorizerSignature).toBeUndefined();
+      expect(voidPayload.type).toBe("void");
+      expect(voidPayload.authorizerSignature).toBeUndefined();
+      expect(refund.type).toBe("refund");
+      expect(refund.authorizerSignature).toBeUndefined();
+    });
+
+    it("should throw that lifecycle is out of band for a collect-only payment", async () => {
+      const storage = new InMemoryAuthorizedPaymentStorage();
+      await storage.update(hash, () => sampleRecord({ receiverAuthorizer: zeroAddress }));
+      const lifecycle = new AuthCaptureEvmScheme({ storage }).createLifecycleManager({
         settle: vi.fn(),
       } as unknown as FacilitatorClient);
-      await expect(lifecycle.capture(hash)).rejects.toThrow(/receiverAuthorizerSigner/);
+      await expect(lifecycle.capture(hash)).rejects.toThrow(/lifecycle is out of band/);
+      await expect(lifecycle.voidPayment(hash)).rejects.toThrow(/lifecycle is out of band/);
+      await expect(lifecycle.refund(hash, { amount: "1" })).rejects.toThrow(
+        /lifecycle is out of band/,
+      );
     });
 
     it("should capture through the facilitator and write remaining balances", async () => {

@@ -31,20 +31,15 @@ if (!facilitatorUrl) {
   process.exit(1);
 }
 
-if (!receiverAuthorizerPrivateKey) {
-  console.error(
-    "Missing EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY (required for delegated deferred lifecycle)",
-  );
-  process.exit(1);
-}
-
-const receiverAuthorizerSigner = privateKeyToAccount(receiverAuthorizerPrivateKey);
+const receiverAuthorizerSigner = receiverAuthorizerPrivateKey
+  ? privateKeyToAccount(receiverAuthorizerPrivateKey)
+  : undefined;
 const payToAddress = getAddress(payTo) as `0x${string}`;
 
 const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
-const scheme = new AuthCaptureEvmScheme({
-  receiverAuthorizerSigner,
-});
+const scheme = new AuthCaptureEvmScheme(
+  receiverAuthorizerSigner ? { receiverAuthorizerSigner } : {},
+);
 const lifecycle = scheme.createLifecycleManager(facilitatorClient);
 
 const resourceServer = new x402ResourceServer(facilitatorClient).register(NETWORK, scheme);
@@ -156,7 +151,13 @@ async function main(): Promise<void> {
     console.log("  POST /admin/capture  { paymentInfoHash, amount?, voidRemainder? }");
     console.log("  POST /admin/void     { paymentInfoHash }");
     console.log("  Deferred captures use in-memory storage — call admin routes before restart.");
-    console.log(`  Receiver authorizer: ${receiverAuthorizerSigner.address}`);
+    if (receiverAuthorizerSigner) {
+      console.log(`  Receiver authorizer (self): ${receiverAuthorizerSigner.address}`);
+    } else {
+      console.log(
+        "  Receiver authorizer: delegated to facilitator (from /supported extra.receiverAuthorizer)",
+      );
+    }
     console.log("  Capture authorizer: copied from facilitator /supported extra.captureAuthorizer");
   });
 }

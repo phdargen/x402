@@ -16,9 +16,10 @@ Pick **one** script at a time (all listen on port `4021`):
 
 ### Delegated sync
 
-The facilitator relays `authorize`, the resource handler runs, then the server signs and relays `capture` (or `void` on handler failure). Requires:
+The facilitator relays `authorize`, the resource handler runs, then the server relays `capture` (or `void` on handler failure). Receiver-authorizer signatures are either:
 
-- `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` = local authorizer that signs capture/void
+- **Self:** set `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` (must match the published `extra.receiverAuthorizer`)
+- **Delegated:** omit the key; `extra.receiverAuthorizer` is taken from the facilitator's `/supported` and the facilitator signs lifecycle payloads
 
 `extra.captureAuthorizer` for delegated flows is copied from the facilitator's `/supported` extra.captureAuthorizer (the advertised relayer).
 
@@ -26,7 +27,7 @@ The `/weather` route bills a random fraction of the authorized `$0.01` ceiling t
 
 ### Delegated deferred (async capture)
 
-Funds are held in escrow during the request, but the after-handler facilitator settle is skipped. Capture runs **asynchronously** through:
+Funds are held in escrow during the request, but the after-handler facilitator settle is skipped. Lifecycle signing uses the same self vs facilitator-delegated receiver authorizer options as delegated sync. Capture runs **asynchronously** through:
 
 - `GET /admin/payments` — list in-memory authorized payments
 - `POST /admin/capture` — `{ "paymentInfoHash": "0x...", "voidRemainder": true }`
@@ -46,7 +47,7 @@ Set `CUSTOM_OPERATOR_ADDRESS` to that operator. The example facilitator allowlis
 - Node.js v20+, pnpm v10
 - A running [auth-capture facilitator](../../facilitator/auth-capture)
 - An EVM `payTo` address (`EVM_ADDRESS`)
-- For delegated flows: receiver authorizer key (capture authorizer comes from facilitator `/supported` extra.captureAuthorizer)
+- For delegated flows: optional local receiver authorizer key, or a facilitator that advertises `extra.receiverAuthorizer` on `/supported` (capture authorizer comes from `extra.captureAuthorizer`)
 - For custom escrow: deployed custom operator on Base Sepolia
 
 ## Setup
@@ -79,5 +80,5 @@ cd ../../servers/auth-capture && pnpm capture-pending
 | --- | --- | --- |
 | `EVM_ADDRESS` | yes | `payTo` receiver address |
 | `FACILITATOR_URL` | yes | Auth-capture facilitator endpoint |
-| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | delegated flows | Signs capture/void/refund lifecycle payloads |
+| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | delegated flows (optional) | Self-managed receiver authorizer; omit to delegate lifecycle signing to the facilitator |
 | `CUSTOM_OPERATOR_ADDRESS` | custom-escrow | Allowlisted custom operator contract |

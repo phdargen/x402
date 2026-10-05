@@ -19,6 +19,7 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 import { InMemoryPendingSettlementStore, PendingSettlementStore } from "@x402/core/facilitator";
+import { getAddress } from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { resolveDataSuffix } from "../../shared/extensions";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
@@ -28,8 +29,43 @@ import * as Errors from "../errors";
 import { facilitatorAddresses } from "./utils";
 import { verifyCollect, settleCollect } from "./collect";
 import { verifyLifecycle, settleLifecycle } from "./lifecycle";
+import { assertDelegatedAuthStorage } from "./delegatedAuth";
 
 export type { AuthCaptureFacilitatorConfig } from "../types";
+
+/**
+ * Fail fast when facilitator-delegated receiver authorization is only partially configured.
+ *
+ * @param config - Facilitator scheme config.
+ * @throws When any delegation field is set without the full quartet.
+ */
+function assertDelegatedReceiverAuthorizerConfig(config?: AuthCaptureFacilitatorConfig): void {
+  if (!config) return;
+
+  const hasAuthorizerSigner = config.authorizerSigner !== undefined;
+  const hasResolveCallerIdentity = config.resolveCallerIdentity !== undefined;
+  const delegatedAuthStorage = config.delegatedAuthStorage;
+  const hasDelegatedAuthStorage = delegatedAuthStorage !== undefined;
+  const hasOnStorageError = config.onStorageError !== undefined;
+  const anyDelegation =
+    hasAuthorizerSigner || hasResolveCallerIdentity || hasDelegatedAuthStorage || hasOnStorageError;
+
+  if (!anyDelegation) return;
+
+  if (!hasAuthorizerSigner) {
+    throw new Error("facilitator-delegated receiver authorization requires authorizerSigner");
+  }
+  if (!hasResolveCallerIdentity) {
+    throw new Error("authorizerSigner requires resolveCallerIdentity");
+  }
+  if (delegatedAuthStorage === undefined) {
+    throw new Error("authorizerSigner requires delegatedAuthStorage");
+  }
+  assertDelegatedAuthStorage(delegatedAuthStorage);
+  if (!hasOnStorageError) {
+    throw new Error("authorizerSigner requires onStorageError");
+  }
+}
 
 /**
  * AuthCapture Facilitator Scheme - implements x402's SchemeNetworkFacilitator.
@@ -48,6 +84,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   readonly caipFamily = "eip155:*";
   private readonly signers: readonly FacilitatorEvmSigner[];
   private readonly pendingStore: PendingSettlementStore;
+  private readonly config: AuthCaptureFacilitatorConfig | undefined;
 
   /**
    * Construct a facilitator-side auth-capture scheme bound to one or more signers.
@@ -55,14 +92,18 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
    * submitters — do not register the scheme twice on the same network.
    *
    * @param signer - Facilitator signer, or a set of signers to rotate across.
-   * @param config - Optional fee terms, operator allowlist, delegated refund funding.
+   * @param config - Optional fee terms, operator allowlist, delegated refund funding, and
+   *                 the facilitator-delegated receiver authorizer.
+   * @throws If facilitator-delegated receiver authorization is only partially configured.
    */
   constructor(
     signer: FacilitatorEvmSigner | readonly FacilitatorEvmSigner[],
-    private config?: AuthCaptureFacilitatorConfig,
+    config?: AuthCaptureFacilitatorConfig,
   ) {
+    assertDelegatedReceiverAuthorizerConfig(config);
     this.signers = Array.isArray(signer) ? [...signer] : [signer];
     this.pendingStore = config?.pendingSettlementStore ?? new InMemoryPendingSettlementStore();
+    this.config = config;
   }
 
   /**
@@ -77,8 +118,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
 
   /**
    * Facilitator-injected `extra` fields for `/supported`: a randomly selected
-   * `captureAuthorizer`, optional receiver authorizer, grouped fee terms, and
-   * the custom-operator allowlist.
+   * `captureAuthorizer`, the receiver authorizer when this facilitator can authenticate
+   * delegated requests, grouped fee terms, and the custom-operator allowlist.
    *
    * @param _ - Unused network argument (interface compatibility).
    * @returns Extra to merge into payment requirements, or undefined when empty.
@@ -89,8 +130,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
     if (addresses.length > 0) {
       extra.captureAuthorizer = addresses[Math.floor(Math.random() * addresses.length)];
     }
-    if (this.config?.receiverAuthorizer) {
-      extra.receiverAuthorizer = this.config.receiverAuthorizer;
+    if (this.config?.authorizerSigner) {
+      extra.receiverAuthorizer = getAddress(this.config.authorizerSigner.address);
     }
     if (this.config?.feeTerms) {
       extra.feeRecipient = this.config.feeTerms.feeRecipient;
@@ -124,7 +165,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   ): Promise<VerifyResponse> {
     const raw = payload.payload;
     if (isLifecyclePayload(raw)) {
-      return verifyLifecycle(this.signers, this.config, payload, requirements, raw);
+      return verifyLifecycle(this.signers, this.config, payload, requirements, raw, context);
     }
     if (isAuthCaptureCollectPayload(raw)) {
       const dataSuffix = await resolveDataSuffix(context, {

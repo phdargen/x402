@@ -18,7 +18,15 @@ import {
 } from "../../shared/settleReceipt";
 import { getEvmChainId } from "../../utils";
 import { paymentInfoToContractTuple } from "../utils";
-import { verifyCapture, verifyRefund, verifyVoid } from "../authorizerSigner";
+import {
+  signCapture,
+  signRefund,
+  signVoid,
+  verifyCapture,
+  verifyRefund,
+  verifyVoid,
+  type CaptureDigest,
+} from "../authorizerSigner";
 import type {
   AuthCaptureFacilitatorConfig,
   AuthCaptureLifecyclePayload,
@@ -26,6 +34,7 @@ import type {
   PaymentInfoStruct,
   PaymentState,
   RefundPayload,
+  SignedLifecyclePayload,
   VoidPayload,
 } from "../types";
 import { isCapturePayload, isRefundPayload, isVoidPayload } from "../types";
@@ -38,7 +47,14 @@ import {
   validateSubmittedFee,
   verifyCommon,
   type NormalizedAuthCaptureExtra,
+  type SubmittedFee,
 } from "../extra";
+import {
+  getDelegatedAuthorizer,
+  reportDelegatedStorageError,
+  resolveDelegatedCallerIdentity,
+  type DelegatedAuthorizer,
+} from "./delegatedAuth";
 import {
   facilitatorAddresses,
   readPaymentStateForBalances,
@@ -57,6 +73,7 @@ import {
  * @param payload - Wire payment envelope.
  * @param requirements - Published requirements.
  * @param wirePayload - Payload with a lifecycle `type`.
+ * @param context - Optional facilitator context passed to `resolveCallerIdentity`.
  * @returns VerifyResponse.
  */
 export async function verifyLifecycle(
@@ -65,6 +82,7 @@ export async function verifyLifecycle(
   payload: PaymentPayload,
   requirements: PaymentRequirements,
   wirePayload: AuthCaptureLifecyclePayload,
+  context?: FacilitatorContext,
 ): Promise<VerifyResponse> {
   if (wirePayload.type === "capture" && !isCapturePayload(wirePayload)) {
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat };
@@ -155,31 +173,50 @@ export async function verifyLifecycle(
   const paymentInfoHash = computePaymentInfoHash(chainId, paymentInfo, extra.deployment.escrow);
   const now = Math.floor(Date.now() / 1000);
 
-  if (!wirePayload.authorizerSignature) {
-    const facilitatorControlled = facilitatorAddresses(signers).some(a =>
-      isAddressEqual(a, extra.receiverAuthorizer),
-    );
+  const delegated = getDelegatedAuthorizer(config, extra.receiverAuthorizer);
+  const signed = hasAuthorizerSignature(wirePayload)
+    ? { payload: wirePayload }
+    : delegated
+      ? await signDelegatedLifecycle({
+          delegated,
+          extra,
+          chainId,
+          paymentInfoHash,
+          payload,
+          requirements,
+          wirePayload,
+          context,
+        })
+      : { failure: { reason: Errors.ErrAuthorizerSignature } };
+  if ("failure" in signed) {
     return {
       isValid: false,
-      invalidReason: facilitatorControlled
-        ? Errors.ErrUnauthenticatedLifecycleRequest
-        : Errors.ErrAuthorizerSignature,
+      invalidReason: signed.failure.reason,
+      invalidMessage: signed.failure.message,
     };
   }
+  const signedPayload = signed.payload;
 
-  if (wirePayload.type === "capture") {
+  if (signedPayload.type === "capture") {
     return verifyCapturePayload(
       submitter,
       extra,
       chainId,
       paymentInfo,
       paymentInfoHash,
-      wirePayload,
+      signedPayload,
       now,
     );
   }
-  if (wirePayload.type === "void") {
-    return verifyVoidPayload(submitter, extra, chainId, paymentInfo, paymentInfoHash, wirePayload);
+  if (signedPayload.type === "void") {
+    return verifyVoidPayload(
+      submitter,
+      extra,
+      chainId,
+      paymentInfo,
+      paymentInfoHash,
+      signedPayload,
+    );
   }
   return verifyRefundPayload(
     submitter,
@@ -187,9 +224,154 @@ export async function verifyLifecycle(
     chainId,
     paymentInfo,
     paymentInfoHash,
-    wirePayload,
+    signedPayload,
     now,
   );
+}
+
+/**
+ * Whether the payload carries the authorizer signature.
+ *
+ * @param wirePayload - Lifecycle payload.
+ * @returns True when `authorizerSignature` is present.
+ */
+function hasAuthorizerSignature(
+  wirePayload: AuthCaptureLifecyclePayload,
+): wirePayload is SignedLifecyclePayload {
+  return Boolean(wirePayload.authorizerSignature);
+}
+
+type DelegatedLifecycleFailure = { reason: string; message?: string };
+
+/**
+ * Authenticate a lifecycle request whose authorizer is delegated to this facilitator and
+ * sign it. The caller must resolve to the identity bound to the payment at `authorize` (or
+ * `charge`) time. Nothing is bound here.
+ *
+ * @param args - Request context.
+ * @param args.delegated - Delegated-authorizer wiring.
+ * @param args.extra - Normalized extra.
+ * @param args.chainId - EVM chain id.
+ * @param args.paymentInfoHash - Escrow payment identifier.
+ * @param args.payload - Wire payment envelope.
+ * @param args.requirements - Published requirements.
+ * @param args.wirePayload - Unsigned lifecycle payload.
+ * @param args.context - Optional facilitator context passed to `resolveCallerIdentity`.
+ * @returns The payload with the facilitator's signature(s), or why the request was refused.
+ */
+async function signDelegatedLifecycle(args: {
+  delegated: DelegatedAuthorizer;
+  extra: NormalizedAuthCaptureExtra;
+  chainId: number;
+  paymentInfoHash: `0x${string}`;
+  payload: PaymentPayload;
+  requirements: PaymentRequirements;
+  wirePayload: AuthCaptureLifecyclePayload;
+  context?: FacilitatorContext;
+}): Promise<{ payload: SignedLifecyclePayload } | { failure: DelegatedLifecycleFailure }> {
+  const { delegated, extra, chainId, paymentInfoHash, wirePayload } = args;
+  const network = args.requirements.network;
+
+  const identity = await resolveDelegatedCallerIdentity(delegated, {
+    step: wirePayload.type,
+    paymentInfoHash,
+    network,
+    payer: wirePayload.paymentInfo.payer,
+    payload: args.payload,
+    requirements: args.requirements,
+    facilitatorContext: args.context,
+  });
+  if (!identity) {
+    return { failure: { reason: Errors.ErrUnauthenticatedAuthorizerRequest } };
+  }
+
+  try {
+    const binding = await delegated.storage.get(network, paymentInfoHash);
+    const bound =
+      binding !== undefined &&
+      binding.expiresAt > Math.floor(Date.now() / 1000) &&
+      binding.callerIdentity === identity;
+    if (!bound) {
+      return { failure: { reason: Errors.ErrUnauthenticatedAuthorizerRequest } };
+    }
+  } catch (error) {
+    return {
+      failure: {
+        reason: Errors.ErrDelegatedAuthUnavailable,
+        message: `failed to read delegated auth binding: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      },
+    };
+  }
+
+  const domainArgs = [delegated.signer, chainId, extra.captureAuthorizer] as const;
+  switch (wirePayload.type) {
+    case "void": {
+      const authorizerSignature = await signVoid(...domainArgs, paymentInfoHash);
+      return { payload: { ...wirePayload, authorizerSignature } };
+    }
+    case "refund": {
+      const authorizerSignature = await signRefund(...domainArgs, {
+        paymentInfoHash,
+        amount: wirePayload.amount,
+        tokenCollector: extra.deployment.operatorRefundCollector,
+        expectedCapturableAmount: wirePayload.expectedCapturableAmount,
+        expectedRefundableAmount: wirePayload.expectedRefundableAmount,
+      });
+      return { payload: { ...wirePayload, authorizerSignature } };
+    }
+    case "capture": {
+      const captureFee = captureFeeFromPayload(extra, wirePayload);
+      if (!captureFee) {
+        return { failure: { reason: Errors.ErrInvalidPayloadFormat } };
+      }
+      const authorizerSignature = await signCapture(
+        ...domainArgs,
+        extra.deployment,
+        captureDigestFor(captureFee, paymentInfoHash, wirePayload),
+      );
+      const { voidRemainder, ...capture } = wirePayload;
+      return {
+        payload: {
+          ...capture,
+          authorizerSignature,
+          ...(voidRemainder
+            ? { voidAuthorizerSignature: await signVoid(...domainArgs, paymentInfoHash) }
+            : {}),
+        },
+      };
+    }
+    default: {
+      const exhaustive: never = wirePayload;
+      throw new Error(`unexpected lifecycle payload ${String(exhaustive)}`);
+    }
+  }
+}
+
+/**
+ * EIP-712 Capture digest for the deployment's fee encoding.
+ *
+ * @param captureFee - Submitted capture fee.
+ * @param paymentInfoHash - Escrow payment identifier.
+ * @param wirePayload - Capture envelope.
+ * @returns Digest to sign or verify.
+ */
+function captureDigestFor(
+  captureFee: SubmittedFee,
+  paymentInfoHash: `0x${string}`,
+  wirePayload: CapturePayload,
+): CaptureDigest {
+  const base = {
+    paymentInfoHash,
+    amount: wirePayload.amount,
+    feeReceiver: captureFee.feeReceiver,
+    expectedCapturableAmount: wirePayload.expectedCapturableAmount,
+    expectedRefundableAmount: wirePayload.expectedRefundableAmount,
+  };
+  return captureFee.version === "v1.0"
+    ? { ...base, feeBps: captureFee.feeBps }
+    : { ...base, feeAmount: captureFee.feeAmount };
 }
 
 /**
@@ -226,7 +408,8 @@ async function awaitLifecycleSettlement(
 }
 
 /**
- * Re-verify and settle a lifecycle payload.
+ * Re-verify and settle a lifecycle payload. A delegated authorizer's signature is produced
+ * first, so the pending-settlement key derives from it and a retry reconciles.
  *
  * @param signers - Facilitator signer set.
  * @param config - Facilitator config.
@@ -238,6 +421,130 @@ async function awaitLifecycleSettlement(
  * @returns SettleResponse.
  */
 export async function settleLifecycle(
+  signers: readonly FacilitatorEvmSigner[],
+  config: AuthCaptureFacilitatorConfig | undefined,
+  payload: PaymentPayload,
+  requirements: PaymentRequirements,
+  wirePayload: AuthCaptureLifecyclePayload,
+  store: PendingSettlementStore,
+  context?: FacilitatorContext,
+): Promise<SettleResponse> {
+  const parsed = parseAuthCaptureExtra(requirements.extra);
+  const extra = "extra" in parsed ? parsed.extra : undefined;
+  const delegated = extra ? getDelegatedAuthorizer(config, extra.receiverAuthorizer) : undefined;
+
+  let settleable = wirePayload;
+  if (!hasAuthorizerSignature(wirePayload) && extra && delegated) {
+    const chainId = getEvmChainId(requirements.network);
+    const signed = await signDelegatedLifecycle({
+      delegated,
+      extra,
+      chainId,
+      paymentInfoHash: computePaymentInfoHash(
+        chainId,
+        wirePayload.paymentInfo,
+        extra.deployment.escrow,
+      ),
+      payload,
+      requirements,
+      wirePayload,
+      context,
+    });
+    if ("failure" in signed) {
+      return {
+        success: false,
+        errorReason: signed.failure.reason,
+        errorMessage: signed.failure.message,
+        transaction: "",
+        network: requirements.network,
+        payer: wirePayload.paymentInfo.payer,
+      };
+    }
+    settleable = signed.payload;
+  }
+
+  const result = await settleVerifiedLifecycle(
+    signers,
+    config,
+    payload,
+    requirements,
+    settleable,
+    store,
+    context,
+  );
+  if (result.success && extra && delegated && hasAuthorizerSignature(settleable)) {
+    await releaseTerminalBinding(signers, delegated, extra, requirements, settleable);
+  }
+  return result;
+}
+
+/**
+ * Delete the caller binding once the payment has nothing left to relay: no capturable hold
+ * and nothing refundable. Best effort, so a storage failure never fails a confirmed settle.
+ * Balances come from the signed expectations; a void leg is not known locally, so those
+ * cases read `paymentState` once, and a stale read just leaves the row to expire.
+ *
+ * @param signers - Facilitator signer set.
+ * @param delegated - Delegated-authorizer wiring.
+ * @param extra - Normalized extra.
+ * @param requirements - Published requirements.
+ * @param settled - The lifecycle payload that just settled.
+ */
+async function releaseTerminalBinding(
+  signers: readonly FacilitatorEvmSigner[],
+  delegated: DelegatedAuthorizer,
+  extra: NormalizedAuthCaptureExtra,
+  requirements: PaymentRequirements,
+  settled: SignedLifecyclePayload,
+): Promise<void> {
+  const chainId = getEvmChainId(requirements.network);
+  const paymentInfoHash = computePaymentInfoHash(
+    chainId,
+    settled.paymentInfo,
+    extra.deployment.escrow,
+  );
+
+  let remaining: { capturableAmount: bigint; refundableAmount: bigint } | undefined;
+  if (settled.type === "refund") {
+    remaining = {
+      capturableAmount: BigInt(settled.expectedCapturableAmount),
+      refundableAmount: BigInt(settled.expectedRefundableAmount) - BigInt(settled.amount),
+    };
+  } else if (settled.type === "capture" && !settled.voidAuthorizerSignature) {
+    remaining = {
+      capturableAmount: BigInt(settled.expectedCapturableAmount) - BigInt(settled.amount),
+      refundableAmount: BigInt(settled.expectedRefundableAmount) + BigInt(settled.amount),
+    };
+  } else {
+    const submitter = resolveSubmitter(signers, extra);
+    remaining =
+      submitter &&
+      (await readPaymentStateOnce(submitter, paymentInfoHash, extra.deployment.escrow));
+  }
+  if (!remaining || remaining.capturableAmount !== 0n || remaining.refundableAmount !== 0n) {
+    return;
+  }
+
+  try {
+    await delegated.storage.delete(requirements.network, paymentInfoHash);
+  } catch (error) {
+    reportDelegatedStorageError(delegated, error, requirements.network, paymentInfoHash);
+  }
+}
+
+/**
+ * Re-verify and settle a lifecycle payload whose authorizer signature is present.
+ *
+ * @param signers - Facilitator signer set.
+ * @param config - Facilitator config.
+ * @param payload - Wire payment envelope.
+ * @param requirements - Published requirements.
+ * @param wirePayload - Payload with a lifecycle `type`.
+ * @param store - Pending-settlement store keyed by authorizerSignature.
+ * @param context - Optional facilitator context for extension hooks.
+ * @returns SettleResponse.
+ */
+async function settleVerifiedLifecycle(
   signers: readonly FacilitatorEvmSigner[],
   config: AuthCaptureFacilitatorConfig | undefined,
   payload: PaymentPayload,
@@ -299,7 +606,14 @@ export async function settleLifecycle(
     }
   }
 
-  const verification = await verifyLifecycle(signers, config, payload, requirements, wirePayload);
+  const verification = await verifyLifecycle(
+    signers,
+    config,
+    payload,
+    requirements,
+    wirePayload,
+    context,
+  );
   if (!verification.isValid) {
     return {
       success: false,
@@ -518,7 +832,7 @@ async function verifyCapturePayload(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
   paymentInfoHash: `0x${string}`,
-  wirePayload: CapturePayload,
+  wirePayload: CapturePayload & { authorizerSignature: `0x${string}` },
   now: number,
 ): Promise<VerifyResponse> {
   const payer = paymentInfo.payer;
@@ -527,32 +841,13 @@ async function verifyCapturePayload(
     return { isValid: false, invalidReason: Errors.ErrInvalidPayloadFormat, payer };
   }
 
-  const captureDigest =
-    captureFee.version === "v1.0"
-      ? {
-          paymentInfoHash,
-          amount: wirePayload.amount,
-          feeBps: captureFee.feeBps,
-          feeReceiver: captureFee.feeReceiver,
-          expectedCapturableAmount: wirePayload.expectedCapturableAmount,
-          expectedRefundableAmount: wirePayload.expectedRefundableAmount,
-        }
-      : {
-          paymentInfoHash,
-          amount: wirePayload.amount,
-          feeAmount: captureFee.feeAmount,
-          feeReceiver: captureFee.feeReceiver,
-          expectedCapturableAmount: wirePayload.expectedCapturableAmount,
-          expectedRefundableAmount: wirePayload.expectedRefundableAmount,
-        };
-
   const ok = await verifyCapture(
     signer,
     extra.receiverAuthorizer,
     chainId,
     extra.captureAuthorizer,
     extra.deployment,
-    captureDigest,
+    captureDigestFor(captureFee, paymentInfoHash, wirePayload),
     wirePayload.authorizerSignature,
   );
   if (!ok) {
@@ -654,7 +949,7 @@ async function verifyVoidPayload(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
   paymentInfoHash: `0x${string}`,
-  wirePayload: VoidPayload,
+  wirePayload: VoidPayload & { authorizerSignature: `0x${string}` },
 ): Promise<VerifyResponse> {
   const payer = paymentInfo.payer;
   const ok = await verifyVoid(
@@ -710,7 +1005,7 @@ async function verifyRefundPayload(
   chainId: number,
   paymentInfo: PaymentInfoStruct,
   paymentInfoHash: `0x${string}`,
-  wirePayload: RefundPayload,
+  wirePayload: RefundPayload & { authorizerSignature: `0x${string}` },
   now: number,
 ): Promise<VerifyResponse> {
   const payer = paymentInfo.payer;

@@ -12,11 +12,12 @@ import type {
   Price,
   SchemeNetworkServer,
   SchemeServerHooks,
+  SupportedKind,
 } from "@x402/core/types";
 import type { FacilitatorClient } from "@x402/core/server";
 import type { VerifiedPaymentCanceledContext } from "@x402/core/server";
 import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
-import { getAddress, isAddressEqual } from "viem";
+import { getAddress, isAddressEqual, zeroAddress } from "viem";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AssetTransferMethod } from "../../types";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
@@ -30,6 +31,13 @@ import { InMemoryAuthorizedPaymentStorage, type AuthorizedPaymentStorage } from 
 export interface AuthCaptureServerConfig {
   storage?: AuthorizedPaymentStorage;
   receiverAuthorizerSigner?: AuthorizerSigner;
+  /**
+   * When true, skip startup checks that the facilitator advertises
+   * `extra.receiverAuthorizer` when no local signer is configured. Use only when
+   * every route is collect-only (escrow + deferred + explicit `receiverAuthorizer:
+   * zeroAddress`).
+   */
+  collectOnlyRoutes?: boolean;
 }
 
 /** Align relative deadline conversion so repeated 402s in the same minute share values. */
@@ -98,6 +106,16 @@ function assertAuthCaptureMerchantExtraComplete(extra: Record<string, unknown>):
 }
 
 /**
+ * A non-empty string `extra` value as a checksummed address.
+ *
+ * @param value - Untrusted `extra` field.
+ * @returns The address, or undefined when absent or empty.
+ */
+function nonEmptyAddress(value: unknown): `0x${string}` | undefined {
+  return typeof value === "string" && value.length > 0 ? getAddress(value) : undefined;
+}
+
+/**
  * Server-side implementation of the auth-capture scheme.
  */
 export class AuthCaptureEvmScheme implements SchemeNetworkServer {
@@ -116,6 +134,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   private moneyParsers: MoneyParser[] = [];
   private readonly storage: AuthorizedPaymentStorage;
   private readonly receiverAuthorizerSigner: AuthorizerSigner | undefined;
+  private readonly collectOnlyRoutes: boolean;
   private readonly settlementHooks: AuthCaptureSettlementHooks;
 
   /**
@@ -126,6 +145,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
   constructor(config?: AuthCaptureServerConfig) {
     this.storage = config?.storage ?? new InMemoryAuthorizedPaymentStorage();
     this.receiverAuthorizerSigner = config?.receiverAuthorizerSigner;
+    this.collectOnlyRoutes = config?.collectOnlyRoutes === true;
     this.settlementHooks = new AuthCaptureSettlementHooks({
       storage: this.storage,
       receiverAuthorizerSigner: this.receiverAuthorizerSigner,
@@ -278,30 +298,17 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       }
     }
 
-    const signerAddress = this.receiverAuthorizerSigner?.address;
-    const routeReceiverAuthorizer = requirements.extra?.receiverAuthorizer;
-    if (
-      signerAddress &&
-      typeof routeReceiverAuthorizer === "string" &&
-      isNonZeroAddress(routeReceiverAuthorizer) &&
-      !isAddressEqual(routeReceiverAuthorizer as `0x${string}`, signerAddress)
-    ) {
-      throw new Error(
-        `AuthCapture extra.receiverAuthorizer (${routeReceiverAuthorizer}) does not match the ` +
-          `scheme's receiverAuthorizerSigner (${signerAddress}).`,
-      );
-    }
-
-    const receiverAuthorizer = signerAddress ?? merged.receiverAuthorizer;
-    if (typeof receiverAuthorizer === "string" && receiverAuthorizer.length > 0) {
-      merged.receiverAuthorizer = getAddress(receiverAuthorizer);
-    }
-
     assertAuthCaptureMerchantExtraComplete(merged);
+
+    merged.receiverAuthorizer = this.resolveReceiverAuthorizer(
+      requirements.extra?.receiverAuthorizer,
+      supportedKind.extra?.receiverAuthorizer,
+    );
 
     const paymentFlow = merged.paymentFlow === "authorization" ? "authorization" : "escrow";
     merged.paymentFlow = paymentFlow;
 
+    const collectOnly = !isNonZeroAddress(merged.receiverAuthorizer as `0x${string}`);
     if (paymentFlow === "authorization") {
       if (merged.captureMode !== undefined) {
         throw new Error(
@@ -309,12 +316,11 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
             "authorization has no hold to finalize.",
         );
       }
-      if (
-        typeof merged.receiverAuthorizer !== "string" ||
-        !isNonZeroAddress(merged.receiverAuthorizer)
-      ) {
+      if (collectOnly) {
         throw new Error(
-          'AuthCapture paymentFlow "authorization" requires a non-zero receiverAuthorizer',
+          'AuthCapture paymentFlow "authorization" requires a non-zero receiverAuthorizer ' +
+            "(extra.receiverAuthorizer: zeroAddress is collect-only, valid only for escrow with " +
+            'captureMode "deferred")',
         );
       }
     } else {
@@ -323,8 +329,11 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
       if (captureMode === "sync" && operatorType === "custom") {
         throw new Error('AuthCapture operatorType "custom" is collect-only');
       }
-      if (captureMode === "sync" && !this.receiverAuthorizerSigner) {
-        throw new Error("AuthCapture escrow sync routes require a receiverAuthorizerSigner");
+      if (captureMode === "sync" && collectOnly) {
+        throw new Error(
+          "AuthCapture escrow sync routes require a non-zero receiverAuthorizer " +
+            '(extra.receiverAuthorizer: zeroAddress is collect-only, valid only with captureMode "deferred")',
+        );
       }
     }
 
@@ -374,6 +383,99 @@ export class AuthCaptureEvmScheme implements SchemeNetworkServer {
    */
   createLifecycleManager(facilitator: FacilitatorClient): AuthCaptureLifecycleManager {
     return new AuthCaptureLifecycleManager({ scheme: this, facilitator });
+  }
+
+  /**
+   * Fail server startup when the facilitator does not advertise a usable
+   * `captureAuthorizer`, or when this server delegates receiver signing but the
+   * facilitator does not advertise a non-zero `receiverAuthorizer`.
+   *
+   * @param network - The network identifier being validated.
+   * @param supportedKind - The facilitator's advertised kind for this scheme/network.
+   * @param _ - Extensions advertised by the facilitator (unused).
+   * @returns A problem message when misconfigured, or void when valid.
+   */
+  validateFacilitatorSupport(
+    network: Network,
+    supportedKind: SupportedKind,
+    _: string[],
+  ): string | void {
+    const captureAuthorizer = supportedKind.extra?.captureAuthorizer;
+    if (typeof captureAuthorizer !== "string" || !isNonZeroAddress(getAddress(captureAuthorizer))) {
+      return (
+        `facilitator does not advertise a valid captureAuthorizer for auth-capture on ${network}; ` +
+        `delegated routes copy it from GET /supported extra.captureAuthorizer`
+      );
+    }
+
+    if (this.receiverAuthorizerSigner || this.collectOnlyRoutes) {
+      return;
+    }
+
+    const advertised = supportedKind.extra?.receiverAuthorizer;
+    const hasValidReceiver =
+      typeof advertised === "string" && isNonZeroAddress(getAddress(advertised));
+
+    if (!hasValidReceiver) {
+      return (
+        `no receiverAuthorizerSigner is configured and the facilitator does not advertise a ` +
+        `receiverAuthorizer on ${network}. Configure a receiverAuthorizerSigner, use a ` +
+        `facilitator that advertises one, or set collectOnlyRoutes: true when every route is ` +
+        `collect-only (escrow + deferred + extra.receiverAuthorizer zeroAddress).`
+      );
+    }
+  }
+
+  /**
+   * Resolve who authorizes facilitator-relayed `charge` and lifecycle, strictly and in order:
+   * the scheme signer (self-managed); else the route's own `receiverAuthorizer` (`zeroAddress`
+   * is explicit collect-only, the facilitator-advertised address is delegated, anything else
+   * has no way to be signed); else the facilitator-advertised address. Throws instead of
+   * silently falling back to collect-only.
+   *
+   * @param routeReceiverAuthorizer - `receiverAuthorizer` from the route's `extra`.
+   * @param advertisedReceiverAuthorizer - `receiverAuthorizer` from the facilitator's `/supported` extra.
+   * @returns The checksummed address to publish in `extra.receiverAuthorizer`.
+   * @throws If no signer, route value, or facilitator advertisement can produce signatures.
+   */
+  private resolveReceiverAuthorizer(
+    routeReceiverAuthorizer: unknown,
+    advertisedReceiverAuthorizer: unknown,
+  ): `0x${string}` {
+    const route = nonEmptyAddress(routeReceiverAuthorizer);
+    const advertised = nonEmptyAddress(advertisedReceiverAuthorizer);
+    const advertisedNonZero = advertised && isNonZeroAddress(advertised) ? advertised : undefined;
+
+    const signerAddress = this.receiverAuthorizerSigner?.address;
+    if (signerAddress) {
+      if (route && isNonZeroAddress(route) && !isAddressEqual(route, signerAddress)) {
+        throw new Error(
+          `AuthCapture extra.receiverAuthorizer (${route}) does not match the ` +
+            `scheme's receiverAuthorizerSigner (${signerAddress}).`,
+        );
+      }
+      return getAddress(signerAddress);
+    }
+
+    if (route) {
+      if (!isNonZeroAddress(route)) return zeroAddress;
+      if (advertisedNonZero && isAddressEqual(route, advertisedNonZero)) return route;
+      throw new Error(
+        `AuthCapture extra.receiverAuthorizer (${route}) can not be signed: the scheme has no ` +
+          "receiverAuthorizerSigner and the facilitator does not advertise that address. " +
+          "Configure a receiverAuthorizerSigner, omit the field to use the facilitator's " +
+          'authorizer, or set it to zeroAddress for collect-only with captureMode "deferred".',
+      );
+    }
+
+    if (advertisedNonZero) return advertisedNonZero;
+    throw new Error(
+      "AuthCapture has no receiverAuthorizer: the route sets none, the scheme has no " +
+        "receiverAuthorizerSigner, and the facilitator advertises none. Fix one of: " +
+        "(1) configure a receiverAuthorizerSigner on the scheme, " +
+        "(2) use a facilitator that delegates the authorizer (advertises extra.receiverAuthorizer), " +
+        'or (3) set extra.receiverAuthorizer to zeroAddress with captureMode "deferred" (collect-only).',
+    );
   }
 
   /**

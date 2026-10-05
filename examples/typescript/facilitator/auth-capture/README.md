@@ -9,9 +9,61 @@ See the [v1.1 proposed specification](../../../../specs/proposed/scheme_auth_cap
 | Env var | Role | Onchain effect |
 | --- | --- | --- |
 | `EVM_PRIVATE_KEY` | **Relayer** — submits transactions | Pays gas; for `"delegated"` routes this address is `extra.captureAuthorizer` |
-| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** (optional) | When set, advertised in `/supported` as `extra.receiverAuthorizer` for servers that delegate lifecycle signatures |
+| `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | **Receiver authorizer** (optional) | When set, advertised in `/supported` as `extra.receiverAuthorizer`. Resource servers that omit their own authorizer key send unsigned payloads; this facilitator signs after `resolveCallerIdentity` authenticates the caller |
 
-For local delegated **sync** flows, the server still needs its own authorizer key to sign capture/void during the request. The facilitator key is only advertised so merchants can omit `extra.receiverAuthorizer` when they prefer facilitator-delegated signing — this example keeps keys separate to mirror production separation of duties.
+Without `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`, `/supported` advertises only `extra.captureAuthorizer`. Resource servers must configure `receiverAuthorizerSigner` locally.
+
+## Receiver authorizer delegation (optional)
+
+To let resource servers delegate capture/void/refund signing to this facilitator, set `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` (recommended: a key separate from the relayer). `GET /supported` then includes `extra.receiverAuthorizer`:
+
+```json
+{
+  "kinds": [
+    {
+      "scheme": "auth-capture",
+      "network": "eip155:84532",
+      "extra": {
+        "captureAuthorizer": "...",
+        "receiverAuthorizer": "..."
+      }
+    }
+  ]
+}
+```
+
+This example wires the facilitator SDK opt-in (all four fields required):
+
+- `authorizerSigner` from `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`
+- `resolveCallerIdentity` — implemented on `AuthCaptureEvmScheme` config; invoked by the SDK during delegated settles with a `DelegatedSettleContext` (`step`, `paymentInfoHash`, `payload`, `requirements`, optional `facilitatorContext`)
+- `delegatedAuthStorage` — this example uses `InMemoryAuthCaptureDelegatedAuthStorage` for local testing only
+- `onStorageError` — reports binding revert/delete failures
+
+`POST /settle` is a thin wrapper around `facilitator.settle()`; it does not implement custom identity plumbing. Caller authentication belongs in `resolveCallerIdentity` (see the [scheme README](../../../../typescript/packages/mechanisms/evm/src/auth-capture/README.md#receiver-authorizer-modes)).
+
+```typescript
+import type { DelegatedSettleContext } from "@x402/evm/auth-capture/facilitator";
+
+new AuthCaptureEvmScheme(evmSigner, {
+  authorizerSigner,
+  delegatedAuthStorage,
+  onStorageError: (error, network, paymentInfoHash) => {
+    /* ... */
+  },
+  resolveCallerIdentity: async (ctx: DelegatedSettleContext) => {
+    // Authenticate the resource server (API key, mTLS, JWT, etc.) using ctx and/or
+    // ctx.facilitatorContext?.getExtension(...). Return a stable merchant id, or
+    // undefined to reject. Local testing only:
+    return "example-local-caller";
+  },
+});
+```
+
+The first authenticated caller to settle a payment is bound to its `paymentInfoHash`; later lifecycle settles must resolve to the same identity. For production, replace the in-memory store with a durable, atomic implementation (Redis, SQL, etc.) when more than one facilitator process serves the same payments.
+
+> ⚠️ **Local testing only:** this example returns a fixed identity from `resolveCallerIdentity`. Do not advertise `receiverAuthorizer` without real authentication.
+
+Pair with the [auth-capture server example](../../servers/auth-capture/): run this facilitator with `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` set and omit `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` on the resource server for facilitator-delegated sync/deferred flows.
 
 ## Custom-operator allowlist
 

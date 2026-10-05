@@ -52,27 +52,97 @@ describe("AuthCaptureSettlementHooks", () => {
     signTypedData: vi.fn().mockResolvedValue("0xsig" as `0x${string}`),
   };
 
-  it("does not enrich when no receiver-authorizer signer is configured", async () => {
+  const delegatedRequirements = (extraOverrides: Record<string, unknown> = {}) => ({
+    scheme: "auth-capture",
+    network: "eip155:84532" as const,
+    amount: "1000000",
+    asset: BASE_SEPOLIA_USDC,
+    payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    maxTimeoutSeconds: 300,
+    extra: escrowExtra(extraOverrides),
+  });
+
+  it("does not enrich a collect-only (zero receiver authorizer) route", async () => {
     const hooks = new AuthCaptureSettlementHooks({
       storage: new InMemoryAuthorizedPaymentStorage(),
     });
-    const requirements = {
-      scheme: "auth-capture",
-      network: "eip155:84532" as const,
-      amount: "1000000",
-      asset: BASE_SEPOLIA_USDC,
-      payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      maxTimeoutSeconds: 300,
-      extra: escrowExtra(),
-    };
-    expect(
-      await hooks.enrichSettlementPayload({
-        phase: "after-handler",
-        paymentPayload: { payload: collectPayload() },
-        requirements,
-        declaredExtensions: {},
-      } as never),
-    ).toBeUndefined();
+    const requirements = delegatedRequirements({
+      captureMode: "deferred",
+      receiverAuthorizer: zeroAddress,
+    });
+    for (const phase of ["after-handler", "cancel"] as const) {
+      expect(
+        await hooks.enrichSettlementPayload({
+          phase,
+          paymentPayload: { payload: collectPayload() },
+          requirements,
+          declaredExtensions: {},
+        } as never),
+      ).toBeUndefined();
+    }
+  });
+
+  it("enriches an unsigned capture when the authorizer is delegated to the facilitator", async () => {
+    const hooks = new AuthCaptureSettlementHooks({
+      storage: new InMemoryAuthorizedPaymentStorage(),
+    });
+    const enrichment = await hooks.enrichSettlementPayload({
+      phase: "after-handler",
+      paymentPayload: { payload: collectPayload() },
+      requirements: { ...delegatedRequirements(), amount: "400000" },
+      declaredExtensions: {},
+    } as never);
+    expect(enrichment).toMatchObject({
+      type: "capture",
+      amount: "400000",
+      expectedCapturableAmount: "1000000",
+      expectedRefundableAmount: "0",
+      voidRemainder: true,
+    });
+    expect(enrichment).not.toHaveProperty("authorizerSignature");
+    expect(enrichment).not.toHaveProperty("voidAuthorizerSignature");
+  });
+
+  it("omits voidRemainder for a full unsigned capture", async () => {
+    const hooks = new AuthCaptureSettlementHooks({
+      storage: new InMemoryAuthorizedPaymentStorage(),
+    });
+    const enrichment = await hooks.enrichSettlementPayload({
+      phase: "after-handler",
+      paymentPayload: { payload: collectPayload() },
+      requirements: delegatedRequirements(),
+      declaredExtensions: {},
+    } as never);
+    expect(enrichment).toMatchObject({ type: "capture", amount: "1000000" });
+    expect(enrichment).not.toHaveProperty("voidRemainder");
+  });
+
+  it("enriches an unsigned void on cancel when delegated", async () => {
+    const hooks = new AuthCaptureSettlementHooks({
+      storage: new InMemoryAuthorizedPaymentStorage(),
+    });
+    const enrichment = await hooks.enrichSettlementPayload({
+      phase: "cancel",
+      paymentPayload: { payload: collectPayload() },
+      requirements: delegatedRequirements(),
+      declaredExtensions: {},
+    } as never);
+    expect(enrichment).toMatchObject({ type: "void" });
+    expect(enrichment).not.toHaveProperty("authorizerSignature");
+  });
+
+  it("enriches unsigned charge completion fields when delegated", async () => {
+    const hooks = new AuthCaptureSettlementHooks({
+      storage: new InMemoryAuthorizedPaymentStorage(),
+    });
+    const enrichment = await hooks.enrichSettlementPayload({
+      phase: "after-handler",
+      paymentPayload: { payload: collectPayload() },
+      requirements: delegatedRequirements({ paymentFlow: "authorization", captureMode: undefined }),
+      declaredExtensions: {},
+    } as never);
+    expect(enrichment).toMatchObject({ amount: "1000000" });
+    expect(enrichment).not.toHaveProperty("authorizerSignature");
   });
 
   it("does not enrich before-handler or when extra is invalid", async () => {
@@ -236,25 +306,17 @@ describe("AuthCaptureSettlementHooks", () => {
     ).toBeUndefined();
   });
 
-  it("settleOnCancel returns nothing without a configured signer", async () => {
+  it("settleOnCancel returns requirements without a signer when the authorizer is delegated", async () => {
     const hooks = new AuthCaptureSettlementHooks({
       storage: new InMemoryAuthorizedPaymentStorage(),
     });
-    const requirements = {
-      scheme: "auth-capture",
-      network: "eip155:84532" as const,
-      amount: "1",
-      asset: BASE_SEPOLIA_USDC,
-      payTo: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      maxTimeoutSeconds: 60,
-      extra: escrowExtra(),
-    };
+    const requirements = delegatedRequirements();
     expect(
       await hooks.settleOnCancel({
         requirements,
         paymentPayload: { payload: collectPayload() },
       } as never),
-    ).toBeUndefined();
+    ).toEqual(requirements);
   });
 
   it("settleOnCancel only returns requirements for escrow with receiver authorizer", async () => {

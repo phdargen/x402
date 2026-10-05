@@ -120,16 +120,9 @@ describe("verifyLifecycle", () => {
     expect(result.invalidReason).toBe(Errors.ErrRefundFundingUnavailable);
   });
 
-  it("returns unauthenticated lifecycle when signature is missing but facilitator controls receiver authorizer", async () => {
-    const accepted = {
-      ...mockRequirements,
-      extra: {
-        ...mockRequirements.extra,
-        receiverAuthorizer: CAPTURE_AUTHORIZER,
-      },
-    };
-    const facilitatorBoundSalt = deriveBoundSalt(CAPTURE_AUTHORIZER, zeroAddress, SALT_NONCE);
-    const info = { ...paymentInfo(), salt: facilitatorBoundSalt };
+  it("rejects a missing signature when no delegated authorizer is configured", async () => {
+    const accepted = mockRequirements;
+    const info = paymentInfo();
     const result = await verifyLifecycle(
       [signer],
       undefined,
@@ -143,7 +136,7 @@ describe("verifyLifecycle", () => {
       },
     );
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe(Errors.ErrUnauthenticatedLifecycleRequest);
+    expect(result.invalidReason).toBe(Errors.ErrAuthorizerSignature);
   });
 
   it("rejects malformed void payloads that carry voidAuthorizerSignature", async () => {

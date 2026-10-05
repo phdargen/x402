@@ -40,7 +40,7 @@ client.register("eip155:*", new AuthCaptureEvmScheme(account));
 
 Register `AuthCaptureEvmScheme` with an `x402ResourceServer` and publish payment requirements with the spec-mandated `extra` fields. `paymentFlows` is static: both collectors support `"escrow"` (default) and `"authorization"`. Choose the flow and capture mode on the route's `extra`.
 
-The example below is collect-only escrow (`captureMode: "deferred"`): the facilitator relays `authorize`, and later lifecycle runs out of band (or through `createLifecycleManager` once you add a `receiverAuthorizerSigner`).
+The example below is collect-only escrow (`captureMode: "deferred"`): the facilitator relays `authorize`, and later lifecycle runs out of band (or through `createLifecycleManager` once the route has a [receiver authorizer](#receiver-authorizer-modes)).
 
 ```typescript
 import { HTTPFacilitatorClient } from "@x402/core/server";
@@ -84,7 +84,7 @@ app.use(
 );
 ```
 
-Import `AuthCaptureRouteExtra` from `@x402/evm/auth-capture/server` if you want the compiler to reject forbidden combinations (`captureMode` on an authorization route, mixed absolute/relative deadlines). `PaymentOption.extra` is `Record<string, unknown>` on the wire, so the `satisfies` check only applies to the literal you write. Escrow sync and authorization routes derive `receiverAuthorizer` from the scheme's `receiverAuthorizerSigner` when the route omits it.
+Import `AuthCaptureRouteExtra` from `@x402/evm/auth-capture/server` if you want the compiler to reject forbidden combinations (`captureMode` on an authorization route, mixed absolute/relative deadlines). `PaymentOption.extra` is `Record<string, unknown>` on the wire, so the `satisfies` check only applies to the literal you write. Escrow sync and authorization routes resolve `receiverAuthorizer` as described in [Receiver authorizer modes](#receiver-authorizer-modes).
 
 ### Required `extra` fields
 
@@ -118,7 +118,7 @@ The server-side fail-fast also covers the other directly-merchant-set fields (`c
 | --- | --- | --- |
 | `paymentFlow` | `"escrow"` | `"escrow"` → `authorize` then capture/void. `"authorization"` → terminal `charge`. Written back onto extra so core cannot drop it. |
 | `captureMode` | `"sync"` | Escrow only. `"sync"` authors a signed capture (or void) on the after-handler settle. `"deferred"` skips that settle; capture later via helpers. Forbidden on `"authorization"`. Must be `"deferred"` for `operatorType: "custom"`, which is collect-only. |
-| `receiverAuthorizer` | zero address | Signer of facilitator-relayed `charge` / `capture` / `void` / `refund`. Derived from `receiverAuthorizerSigner.address` when that signer is configured. Must be non-zero for every authorization route and for escrow + sync. Non-zero turns salt binding on. |
+| `receiverAuthorizer` | resolved per [Receiver authorizer modes](#receiver-authorizer-modes) | Signer of facilitator-relayed `charge` / `capture` / `void` / `refund`. Zero means collect-only, which is valid only for escrow + deferred. Must be non-zero for every authorization route and for escrow + sync. Non-zero turns salt binding on. |
 | `policy` | zero address | Reserved. Non-zero is rejected for `"delegated"` and `"custom"` (`operatorType: "policy"` is not implemented). Still bound into the salt derivation. |
 | `operatorType` | `"delegated"` | `"delegated"` (facilitator is the operator) or `"custom"` (allowlisted contract operator). `"policy"` is rejected. |
 | `assetTransferMethod` | `"eip3009"` | `"eip3009"` (ERC-3009) or `"permit2"` (Uniswap Permit2). See [Asset Transfer Methods](#asset-transfer-methods). |
@@ -127,17 +127,63 @@ The server-side fail-fast also covers the other directly-merchant-set fields (`c
 Fail-fast in `enhancePaymentRequirements`:
 
 - escrow + sync on an `operatorType: "custom"` route (collect-only: the facilitator refuses relayed capture/void, so the hold could never be finalized)
-- escrow + sync without a `receiverAuthorizerSigner` on the scheme
-- an authorization route without a non-zero `receiverAuthorizer` from the route, configured signer, or facilitator
+- an authorization route, or escrow + sync, with no non-zero `receiverAuthorizer` (none from the scheme signer, the route, or the facilitator's `/supported`; a route that sets the zero address explicitly is also rejected)
 - a route `receiverAuthorizer` that conflicts with `receiverAuthorizerSigner.address`
+- a non-zero route `receiverAuthorizer` that is neither the scheme signer's address nor the facilitator-advertised address (the server holds no key for it)
 - `captureMode` set on an authorization route
 - `autoCapture` present at all
 
-Escrow + deferred is allowed without a `receiverAuthorizer`: that is collect-only, whose lifecycle runs out of band. With a `receiverAuthorizerSigner` configured, escrow + deferred also derives the field so later `createLifecycleManager` captures have salt binding on.
+Escrow + deferred with an explicit `receiverAuthorizer: zeroAddress` is collect-only: its lifecycle runs out of band. Omitting the field no longer implies collect-only; it resolves to the scheme signer or the facilitator-advertised authorizer, and throws when neither exists.
+
+## Receiver authorizer modes
+
+`receiverAuthorizer` is the address whose EIP-712 signature the escrow operator needs for `charge`, `capture`, `void`, and `refund`. Three modes exist, and the server picks one per route.
+
+| Mode | `receiverAuthorizer` | Who signs | Wire payloads |
+| --- | --- | --- | --- |
+| Self | The scheme's `receiverAuthorizerSigner.address` | The server | Signed (`authorizerSignature`, and `voidAuthorizerSignature` when a capture also voids) |
+| Delegated | A non-zero address the server holds no key for, normally the one the facilitator advertises in `/supported` | The facilitator, after authenticating the caller | Unsigned: the server omits the signatures |
+| Collect-only | `zeroAddress` | Nobody onchain (escrow + deferred only) | None: lifecycle runs out of band |
+
+The server resolves the mode in this order:
+
+1. A configured `receiverAuthorizerSigner` wins. A route value that differs from its address throws.
+2. Otherwise a route value of `zeroAddress` is collect-only, and a route value equal to the facilitator-advertised address is delegated. Any other non-zero route value throws, because nobody could sign for it.
+3. Otherwise the facilitator-advertised non-zero address is used (delegated).
+4. Otherwise `enhancePaymentRequirements` throws. Set a `receiverAuthorizerSigner`, set `receiverAuthorizer: zeroAddress` on an escrow + deferred route, or point the server at a facilitator that advertises one.
+
+In delegated mode the facilitator's signature no longer proves the server's intent, so the facilitator authenticates each settle out of band. Opt in by configuring all four fields together (construction throws if any piece is missing):
+
+```typescript
+new AuthCaptureEvmScheme(evmSigner, {
+  authorizerSigner: { address: account.address, signTypedData: params => account.signTypedData(params) },
+  // Return a stable identity for the caller (for example from an API key or mTLS client
+  // certificate), or undefined to reject. A throw also rejects.
+  resolveCallerIdentity: async ({ step, paymentInfoHash, payload }) => lookupMerchant(payload),
+  delegatedAuthStorage: new MyDelegatedAuthStorage(),
+  onStorageError: (error, network, paymentInfoHash) => reportBindingFailure(error, network, paymentInfoHash),
+  // refundFunding: true, // needed to relay delegated refunds
+});
+```
+
+How the facilitator uses the identity:
+
+- `/verify` never resolves identity and never writes a binding.
+- On `/settle` of an `authorize`, or of a `charge` with `refundFunding`, the facilitator re-verifies, resolves the identity, binds it to the `paymentInfoHash` (with `expiresAt` set to `refundDeadline`), then broadcasts. If the bind fails (another identity already holds it, or the storage is down) nothing is broadcast and the settle fails with `invalid_auth_capture_evm_unauthenticated_authorizer_request` or `invalid_auth_capture_evm_delegated_auth_unavailable`.
+- The binding is reverted only when this call created it and the send failed or the transaction reverted onchain. It is kept when the outcome is unknown, such as a receipt timeout.
+- Each later `capture`, `void`, or `refund` must resolve to the bound identity before the facilitator signs. A missing, expired, or different binding is rejected.
+- A confirmed settle that leaves nothing capturable or refundable deletes the binding early. This is best effort and failures are reported through `onStorageError`.
+- A capture that also voids the remainder carries `voidRemainder: true` instead of `voidAuthorizerSignature`; the facilitator signs both legs.
+
+Operational notes:
+
+- Without `delegatedAuthStorage` and `onStorageError`, facilitator-delegated signing is off (`getDelegatedAuthorizer` returns undefined). Use a durable store with an atomic insert-if-absent `bind` when more than one process serves the same payments.
+- Identity is first-writer-wins, so anyone who can present the same credential can drive that payment's lifecycle. Give each merchant its own credential.
+- `validateFacilitatorSupport` (same hook as SVM `upto` and EVM batch-settlement) runs during `x402ResourceServer.initialize()` and fails fast when the facilitator omits `captureAuthorizer` or, for delegated receiver signing, `receiverAuthorizer`. Collect-only merchants whose routes always set `receiverAuthorizer: zeroAddress` may pass `collectOnlyRoutes: true` on the scheme constructor to skip the receiver check. Route-specific mistakes (for example escrow + sync without any authorizer) still surface in `enhancePaymentRequirements`.
 
 ## Deferred lifecycle: storage and helpers
 
-Pass `receiverAuthorizerSigner` (and optional `storage`) to the scheme constructor. Successful collect settles persist an `AuthorizedPayment` record via `onAfterSettle` (the before-handler `authorize` under escrow, or the after-handler `charge` under authorization). Sync routes persist too, because a later refund still needs durable state.
+Pass `receiverAuthorizerSigner` (self mode) or rely on a delegated authorizer, plus an optional `storage`, to the scheme constructor. `createLifecycleManager` supports self and delegated routes; delegated payloads are sent unsigned, and it throws for a collect-only route. Successful collect settles persist an `AuthorizedPayment` record via `onAfterSettle` (the before-handler `authorize` under escrow, or the after-handler `charge` under authorization). Sync routes persist too, because a later refund still needs durable state.
 
 Out-of-band `capture` / `void` / `refund` go through `scheme.createLifecycleManager(facilitator)`. In-request hooks stay on the scheme.
 
@@ -160,7 +206,7 @@ await lifecycle.getAuthorizedPayment(paymentInfoHash);
 await lifecycle.listAuthorizedPayments();
 ```
 
-Each helper builds the lifecycle payload, signs it with the receiver authorizer, POSTs it to the facilitator's `/settle`, and writes the new balances back. `voidPayment` rather than `void` because `void` is a reserved word.
+Each helper builds the lifecycle payload, signs it with the receiver authorizer (self mode; delegated payloads go out unsigned for the facilitator to sign), POSTs it to the facilitator's `/settle`, and writes the new balances back. `voidPayment` rather than `void` because `void` is a reserved word.
 
 Sync escrow routes author the signed capture in `enrichSettlementPayload` (additive: `type`, `paymentInfo`, amounts, fees, signatures — never re-emitting `saltNonce`). Deferred routes implement `onBeforeSettle` and return `{ skip: true, result }` so core never calls the facilitator for that after-handler settle. Handler failures go through `settleOnCancel`, which returns requirements for a void.
 
@@ -250,9 +296,9 @@ Requires the canonical `AuthCaptureEscrow` and EIP-3009 / Permit2 / operator-ref
 
 | `paymentFlow` | `captureMode` | First settle | After the resource |
 | --- | --- | --- | --- |
-| `"escrow"` (default) | `"sync"` (default) | `escrow.authorize(...)` | Second settle relays signed `capture` / `void`. Requires `receiverAuthorizerSigner` on the scheme. |
+| `"escrow"` (default) | `"sync"` (default) | `escrow.authorize(...)` | Second settle relays `capture` / `void`. Requires a non-zero `receiverAuthorizer` (self or delegated). |
 | `"escrow"` | `"deferred"` | `escrow.authorize(...)` | After-handler settle is skipped. Capture later via `createLifecycleManager(facilitator).capture` / `voidPayment` / `refund`, or out of band. |
-| `"authorization"` | n/a | (verify only) | `escrow.charge(...)` with an authorizer-signed completion. A non-zero `receiverAuthorizer` is required and `captureMode` must be omitted. |
+| `"authorization"` | n/a | (verify only) | `escrow.charge(...)` with an authorizer-signed (or, when delegated, facilitator-signed) completion. A non-zero `receiverAuthorizer` is required and `captureMode` must be omitted. |
 
 ## Operator types
 

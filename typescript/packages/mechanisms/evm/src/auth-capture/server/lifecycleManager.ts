@@ -2,7 +2,7 @@ import type { PaymentPayload, PaymentRequirements, SettleResponse } from "@x402/
 import type { FacilitatorClient } from "@x402/core/server";
 import { getEvmChainId } from "../../utils";
 import { AUTH_CAPTURE_SCHEME } from "../constants";
-import { parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
+import { authorizerMode, parseAuthCaptureExtra, type NormalizedAuthCaptureExtra } from "../extra";
 import { buildCapturePayload, buildRefundPayload, buildVoidPayload } from "../lifecyclePayload";
 import type {
   AuthorizerSigner,
@@ -21,7 +21,8 @@ export interface AuthCaptureLifecycleManagerConfig {
 
 /**
  * Out-of-band capture / void / refund against stored authorized payments.
- * Storage and the receiver-authorizer signer are read through the scheme.
+ * Storage and the receiver-authorizer signer are read through the scheme. Payments whose
+ * authorizer is delegated to the facilitator are sent unsigned.
  */
 export class AuthCaptureLifecycleManager {
   /**
@@ -52,7 +53,7 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireSigner(),
+      signer: this.signerFor(record),
       chainId,
       amount,
       feeBps: opts?.feeBps,
@@ -88,7 +89,7 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireSigner(),
+      signer: this.signerFor(record),
       chainId: getEvmChainId(record.network),
     });
     const response = await this.settleLifecycle(record, payload);
@@ -122,7 +123,7 @@ export class AuthCaptureLifecycleManager {
         saltNonce: this.requireSaltNonce(record),
       },
       extra,
-      signer: this.requireSigner(),
+      signer: this.signerFor(record),
       chainId: getEvmChainId(record.network),
       amount: opts.amount,
     });
@@ -208,18 +209,31 @@ export class AuthCaptureLifecycleManager {
   }
 
   /**
-   * Receiver-authorizer signer from the scheme, or throw if helpers were called without it.
+   * Signer for a stored payment's lifecycle payloads: the scheme signer when it is the
+   * payment's authorizer, none when the authorizer is delegated to the facilitator (which
+   * signs the unsigned payload), and an error when the payment is collect-only.
    *
-   * @returns Authorizer signer.
+   * @param record - Stored payment.
+   * @returns The authorizer signer, or undefined to send unsigned payloads.
    */
-  private requireSigner(): AuthorizerSigner {
+  private signerFor(record: AuthorizedPayment): AuthorizerSigner | undefined {
     const signer = this.config.scheme.getReceiverAuthorizerSigner();
-    if (!signer) {
-      throw new Error(
-        "AuthCapture lifecycle helpers require a receiverAuthorizerSigner on AuthCaptureEvmScheme",
-      );
+    const mode = authorizerMode(record.receiverAuthorizer, signer);
+    switch (mode) {
+      case "self":
+        return signer;
+      case "delegated":
+        return undefined;
+      case "collect-only":
+        throw new Error(
+          `AuthCapture: payment ${record.paymentInfoHash} is collect-only (zero receiverAuthorizer); ` +
+            "its lifecycle is out of band",
+        );
+      default: {
+        const exhaustive: never = mode;
+        throw new Error(`unexpected authorizer mode ${String(exhaustive)}`);
+      }
     }
-    return signer;
   }
 }
 

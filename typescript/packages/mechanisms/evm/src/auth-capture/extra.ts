@@ -7,6 +7,8 @@ import type {
   AuthCaptureExtra,
   AuthCaptureFacilitatorConfig,
   AuthCapturePaymentFlow,
+  AuthorizerMode,
+  AuthorizerSigner,
   OperatorAllowlistEntry,
 } from "./types";
 import { isAuthCaptureExtra } from "./types";
@@ -488,4 +490,19 @@ export function chargeFeeFromCollectPayload(
     feeAmount: wirePayload.feeAmount as string,
     feeReceiver: wirePayload.feeReceiver as `0x${string}`,
   };
+}
+
+/**
+ * Select the authorizer mode for a resolved `receiverAuthorizer`.
+ *
+ * @param receiverAuthorizer - `extra.receiverAuthorizer` after enhancement (or the stored one).
+ * @param signer - The scheme's receiver-authorizer signer, if any.
+ * @returns The mode.
+ */
+export function authorizerMode(
+  receiverAuthorizer: `0x${string}`,
+  signer: AuthorizerSigner | undefined,
+): AuthorizerMode {
+  if (!isNonZeroAddress(receiverAuthorizer)) return "collect-only";
+  return signer && isAddressEqual(signer.address, receiverAuthorizer) ? "self" : "delegated";
 }

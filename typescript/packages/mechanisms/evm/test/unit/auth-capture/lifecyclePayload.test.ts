@@ -12,7 +12,7 @@ import {
   buildRefundPayload,
   buildVoidEnrichment,
   buildVoidPayload,
-  signCaptureFields,
+  buildCaptureFields,
 } from "../../../src/auth-capture/lifecyclePayload";
 import type { NormalizedAuthCaptureExtra } from "../../../src/auth-capture/extra";
 import type { PaymentInfoStruct } from "../../../src/auth-capture/types";
@@ -62,13 +62,13 @@ const paymentInfo: PaymentInfoStruct = {
   salt: "0x" + "44".repeat(32),
 };
 
-describe("signCaptureFields", () => {
+describe("buildCaptureFields", () => {
   it("rejects implicit void on full capture but signs void when capture is partial", async () => {
     const signer = mockSigner();
     const extra = normalizedExtra();
     const hash = "0x" + "aa".repeat(32);
 
-    const full = await signCaptureFields({
+    const full = await buildCaptureFields({
       signer,
       chainId: CHAIN_ID,
       extra,
@@ -80,7 +80,7 @@ describe("signCaptureFields", () => {
     });
     expect(full.voidAuthorizerSignature).toBeUndefined();
 
-    const partial = await signCaptureFields({
+    const partial = await buildCaptureFields({
       signer,
       chainId: CHAIN_ID,
       extra,
@@ -97,7 +97,7 @@ describe("signCaptureFields", () => {
   it("uses v1.0 feeBps wire when deployment is pinned to v1.0", async () => {
     const signer = mockSigner();
     const extra = normalizedExtra({ authCaptureEscrow: AUTH_CAPTURE_ESCROW_V1_0_ADDRESS });
-    const fields = await signCaptureFields({
+    const fields = await buildCaptureFields({
       signer,
       chainId: CHAIN_ID,
       extra,
@@ -118,7 +118,7 @@ describe("signCaptureFields", () => {
   it("derives v1.1 feeAmount from feeBps when feeAmount is omitted", async () => {
     const signer = mockSigner();
     const extra = normalizedExtra();
-    const fields = await signCaptureFields({
+    const fields = await buildCaptureFields({
       signer,
       chainId: CHAIN_ID,
       extra,
@@ -136,7 +136,7 @@ describe("signCaptureFields", () => {
   it("honors explicit v1.1 feeAmount override", async () => {
     const signer = mockSigner();
     const extra = normalizedExtra();
-    const fields = await signCaptureFields({
+    const fields = await buildCaptureFields({
       signer,
       chainId: CHAIN_ID,
       extra,
@@ -246,6 +246,66 @@ describe("lifecycle payload builders", () => {
     });
     expect(payload.voidAuthorizerSignature).toBe("0xsig");
     expect(payload.amount).toBe("250000");
+  });
+
+  describe("without a local signer (authorizer delegated to the facilitator)", () => {
+    const extra = normalizedExtra();
+    const record = {
+      paymentInfo,
+      paymentInfoHash: ("0x" + "ee".repeat(32)) as `0x${string}`,
+      capturableAmount: "1000000",
+      refundableAmount: "0",
+      saltNonce: ("0x" + "22".repeat(32)) as `0x${string}`,
+    };
+
+    it("omits every signature and flags the void leg with voidRemainder", async () => {
+      const payload = await buildCapturePayload({
+        record,
+        extra,
+        chainId: CHAIN_ID,
+        amount: "250000",
+        voidRemainder: true,
+      });
+      expect(payload).toMatchObject({ type: "capture", amount: "250000", voidRemainder: true });
+      expect(payload).not.toHaveProperty("authorizerSignature");
+      expect(payload).not.toHaveProperty("voidAuthorizerSignature");
+    });
+
+    it("builds unsigned void, refund, void enrichment, and charge completion", async () => {
+      const voidPayload = await buildVoidPayload({ record, extra, chainId: CHAIN_ID });
+      expect(voidPayload).not.toHaveProperty("authorizerSignature");
+      expect(voidPayload.saltNonce).toBe(record.saltNonce);
+
+      const refundPayload = await buildRefundPayload({
+        record,
+        extra,
+        chainId: CHAIN_ID,
+        amount: "1",
+      });
+      expect(refundPayload).not.toHaveProperty("authorizerSignature");
+      expect(refundPayload.expectedCapturableAmount).toBe("1000000");
+
+      const voidEnrichment = await buildVoidEnrichment({
+        paymentInfo,
+        extra,
+        chainId: CHAIN_ID,
+        paymentInfoHash: record.paymentInfoHash,
+      });
+      expect(voidEnrichment).toEqual({ type: "void", paymentInfo });
+
+      const completion = await buildChargeCompletionEnrichment({
+        collect,
+        requirements,
+        extra,
+        chainId: CHAIN_ID,
+        amount: "1000000",
+      });
+      expect(completion).toEqual({
+        amount: "1000000",
+        feeAmount: "10000",
+        feeReceiver: extra.feeRecipient,
+      });
+    });
   });
 
   it("buildCaptureEnrichment uses stored balances when present", async () => {

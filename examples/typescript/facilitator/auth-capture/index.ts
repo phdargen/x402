@@ -1,3 +1,12 @@
+/**
+ * Auth-capture facilitator example (EVM)
+ *
+ * Registers {@link AuthCaptureEvmScheme} on Base Sepolia. When
+ * `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is set, advertises `extra.receiverAuthorizer`
+ * and signs delegated lifecycle payloads with explicit {@link InMemoryAuthCaptureDelegatedAuthStorage}
+ * and {@link AuthCaptureFacilitatorConfig.onStorageError} (required to opt in).
+ */
+
 import { x402Facilitator } from "@x402/core/facilitator";
 import {
   PaymentPayload,
@@ -6,7 +15,10 @@ import {
   VerifyResponse,
 } from "@x402/core/types";
 import { type AuthorizerSigner, toFacilitatorEvmSigner } from "@x402/evm";
-import { AuthCaptureEvmScheme } from "@x402/evm/auth-capture/facilitator";
+import {
+  AuthCaptureEvmScheme,
+  InMemoryAuthCaptureDelegatedAuthStorage,
+} from "@x402/evm/auth-capture/facilitator";
 import dotenv from "dotenv";
 import express from "express";
 import { createWalletClient, getAddress, http, nonceManager, publicActions } from "viem";
@@ -66,8 +78,9 @@ if (malformedOperator) {
 console.info(`EVM Facilitator relayer: ${evmAccount.address}`);
 if (authorizerSigner) {
   console.info(`EVM Receiver authorizer: ${authorizerSigner.address}`);
+  console.info("Delegated auth bindings: InMemoryAuthCaptureDelegatedAuthStorage (process-local)");
 } else {
-  console.info("EVM Receiver authorizer: not configured");
+  console.info("EVM Receiver authorizer: not configured (resource servers must self-sign)");
 }
 console.info(
   customOperators.length > 0
@@ -102,7 +115,21 @@ const evmSigner = toFacilitatorEvmSigner({
 const facilitator = new x402Facilitator();
 
 const authCaptureConfig = {
-  ...(authorizerSigner ? { receiverAuthorizer: authorizerSigner.address } : {}),
+  ...(authorizerSigner
+    ? {
+        authorizerSigner,
+        delegatedAuthStorage: new InMemoryAuthCaptureDelegatedAuthStorage(),
+        // SDK hook: called during delegated /settle (see DelegatedSettleContext in @x402/evm/auth-capture/facilitator).
+        resolveCallerIdentity: async () => "example-local-caller",
+        onStorageError: (error: unknown, network: string, paymentInfoHash: string) => {
+          console.warn("[delegated-auth-storage]", {
+            network,
+            paymentInfoHash,
+            error: error instanceof Error ? error.message : error,
+          });
+        },
+      }
+    : {}),
   ...(minFeeBps > 0 || maxFeeBps > 0 || feeRecipient !== zeroAddress
     ? { feeTerms: { feeRecipient, minFeeBps, maxFeeBps } }
     : {}),
@@ -222,4 +249,9 @@ app.get("/supported", async (_req, res) => {
 app.listen(parseInt(PORT), () => {
   console.log(`Auth-capture facilitator listening on http://localhost:${PORT}`);
   console.log(`  Relayer (extra.captureAuthorizer for delegated): ${evmAccount.address}`);
+  if (authorizerSigner) {
+    console.log(
+      "  Delegated settles: resolveCallerIdentity returns example-local-caller (local only)",
+    );
+  }
 });
