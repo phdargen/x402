@@ -53,6 +53,7 @@ type mockFacSigner struct {
 	isValidSignatureResult interface{}
 	stateReads             int
 	readFroms              []string
+	writeFroms             []string
 
 	readFunctions []string
 	tokenBalance  *big.Int            // balanceOf through ReadContract
@@ -122,6 +123,12 @@ func (m *mockFacSigner) ReadContract(_ context.Context, _ string, abiJSON []byte
 func (m *mockFacSigner) ReadContractFrom(ctx context.Context, from, address string, abiJSON []byte, functionName string, args ...interface{}) (interface{}, error) {
 	m.readFroms = append(m.readFroms, from)
 	return m.ReadContract(ctx, address, abiJSON, functionName, args...)
+}
+
+// WriteContractFrom records the sender so tests can assert it is the operator.
+func (m *mockFacSigner) WriteContractFrom(ctx context.Context, from, target string, abiJSON []byte, function string, dataSuffix []byte, args ...interface{}) (string, error) {
+	m.writeFroms = append(m.writeFroms, from)
+	return m.WriteContract(ctx, target, abiJSON, function, dataSuffix, args...)
 }
 
 func (m *mockFacSigner) VerifyTypedData(context.Context, string, evm.TypedDataDomain, map[string][]evm.TypedDataField, string, map[string]interface{}, []byte) (bool, error) {
@@ -297,7 +304,12 @@ func facBaseRequirements(captureAuthorizer string, extraOverrides map[string]int
 }
 
 func newScheme(signer *mockFacSigner, config AuthCaptureEvmSchemeConfig) *AuthCaptureEvmScheme {
-	config.CaptureAuthorizer = facCaptureAuthorizer
+	// The constructor rejects a captureAuthorizer the signer does not hold.
+	for _, address := range signer.addresses {
+		if strings.EqualFold(address, facCaptureAuthorizer) {
+			config.CaptureAuthorizer = facCaptureAuthorizer
+		}
+	}
 	return NewAuthCaptureEvmScheme(signer, config)
 }
 

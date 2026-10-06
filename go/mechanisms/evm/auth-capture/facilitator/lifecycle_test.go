@@ -325,7 +325,7 @@ func TestSettleCapture(t *testing.T) {
 		signer := fx.signer()
 		scheme := newScheme(signer, AuthCaptureEvmSchemeConfig{})
 		wire := fx.buildCapture(t, captureOpts{})
-		require.NoError(t, scheme.pendingStore.Set(context.Background(), wire["authorizerSignature"].(string), signer.writeTx))
+		require.NoError(t, scheme.pendingStore.Set(context.Background(), scheme.pendingKey(fx.payload(wire), fx.requirements), signer.writeTx))
 
 		resp, err := scheme.Settle(context.Background(), fx.payload(wire), fx.requirements, nil)
 		require.NoError(t, err)
@@ -537,13 +537,6 @@ func TestLifecycle_SimulationsRunAsTheOperator(t *testing.T) {
 	for _, from := range signer.readFroms {
 		assert.True(t, strings.EqualFold(fx.paymentInfo.Operator, from), "simulated from %s, want the operator %s", from, fx.paymentInfo.Operator)
 	}
-
-	t.Run("a signer without SenderReader still simulates", func(t *testing.T) {
-		plain := struct{ evm.FacilitatorEvmSigner }{fx.signer()}
-		_, err := NewAuthCaptureEvmScheme(plain, AuthCaptureEvmSchemeConfig{CaptureAuthorizer: facCaptureAuthorizer}).
-			Verify(context.Background(), fx.payload(wire), fx.requirements, nil)
-		require.NoError(t, err)
-	})
 }
 
 func TestVerifyLifecycle_RejectsAMissingSignatureWhenNoDelegatedAuthorizerIsConfigured(t *testing.T) {

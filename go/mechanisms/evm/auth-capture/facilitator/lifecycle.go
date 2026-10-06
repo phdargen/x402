@@ -172,7 +172,7 @@ func (f *AuthCaptureEvmScheme) writeLifecycle(
 	if err != nil {
 		return "", toSettleError(err, x402.Network(payload.Accepted.Network), lc.paymentInfo.Payer)
 	}
-	return f.writeEscrow(ctx, fctx, payload, requirements, &lc.deployment, lc.paymentInfo.Payer, function, append([]interface{}{tuple}, args...)...)
+	return f.writeEscrow(ctx, fctx, payload, requirements, &lc.deployment, lc.paymentInfo.Operator, lc.paymentInfo.Payer, function, append([]interface{}{tuple}, args...)...)
 }
 
 // capturePreconditions is the verified state verifyCapture derives and settleCapture reuses.
@@ -780,7 +780,9 @@ func (f *AuthCaptureEvmScheme) releaseTerminalBinding(
 	}
 
 	network := x402.Network(requirements.Network)
-	if err := delegated.storage.Delete(ctx, network, lc.paymentInfoHash); err != nil {
+	cleanupCtx, cancel := detachedCleanupContext(ctx)
+	defer cancel()
+	if err := delegated.storage.Delete(cleanupCtx, network, lc.paymentInfoHash); err != nil {
 		reportDelegatedStorageError(delegated, err, network, lc.paymentInfoHash)
 	}
 }

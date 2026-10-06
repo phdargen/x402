@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -152,12 +153,10 @@ func errorRevertData(err error) []byte {
 }
 
 // simulateEscrowCall eth_calls an AuthCaptureEscrow function as the operator and returns a typed
-// VerifyError when it reverts. The escrow gates authorize, capture and void on msg.sender, so
-// the call goes through SenderReader when the signer has it, else through ReadContract, which
-// then has to call from the operator itself.
+// VerifyError when it reverts. The escrow gates authorize, capture and void on msg.sender.
 func simulateEscrowCall(
 	ctx context.Context,
-	signer evm.FacilitatorEvmSigner,
+	signer Signer,
 	deployment *authcapture.AuthCaptureDeployment,
 	operator string,
 	payer string,
@@ -165,13 +164,7 @@ func simulateEscrowCall(
 	args ...interface{},
 ) error {
 	escrowABI := authcapture.EscrowABIForDeployment(deployment)
-	var err error
-	if sender, ok := signer.(SenderReader); ok {
-		_, err = sender.ReadContractFrom(ctx, operator, deployment.Escrow, escrowABI, function, args...)
-	} else {
-		_, err = signer.ReadContract(ctx, deployment.Escrow, escrowABI, function, args...)
-	}
-	if err != nil {
+	if _, err := signer.ReadContractFrom(ctx, operator, deployment.Escrow, escrowABI, function, args...); err != nil {
 		return x402.NewVerifyError(revertReason(deployment, errorRevertData(err)), payer, err.Error())
 	}
 	return nil
@@ -276,28 +269,31 @@ func asBigInt(value interface{}) *big.Int {
 	}
 }
 
-// writeEscrow submits an AuthCaptureEscrow call, mapping a revert to its typed reason.
+// writeEscrow submits an AuthCaptureEscrow call from operator, mapping a revert to its typed reason.
 func (f *AuthCaptureEvmScheme) writeEscrow(
 	ctx context.Context,
 	fctx *x402.FacilitatorContext,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	deployment *authcapture.AuthCaptureDeployment,
+	operator string,
 	payer string,
 	function string,
 	args ...interface{},
 ) (string, error) {
-	return f.submitEscrowCall(ctx, fctx, payload, requirements, deployment, payer, deployment.Escrow, 0, function, args...)
+	return f.submitEscrowCall(ctx, fctx, payload, requirements, deployment, operator, payer, deployment.Escrow, 0, function, args...)
 }
 
 // submitEscrowCall submits an escrow-ABI call to target, the escrow itself or a custom operator
-// forwarding to it. A non-zero gas caps the call, which needs a GasLimitWriter signer.
+// forwarding to it. A non-empty from is the sender. A non-zero gas caps the call, needs a
+// GasLimitWriter signer and ignores from.
 func (f *AuthCaptureEvmScheme) submitEscrowCall(
 	ctx context.Context,
 	fctx *x402.FacilitatorContext,
 	payload types.PaymentPayload,
 	requirements types.PaymentRequirements,
 	deployment *authcapture.AuthCaptureDeployment,
+	from string,
 	payer string,
 	target string,
 	gas uint64,
@@ -311,13 +307,16 @@ func (f *AuthCaptureEvmScheme) submitEscrowCall(
 	}
 	escrowABI := authcapture.EscrowABIForDeployment(deployment)
 	var txHash string
-	if gas > 0 {
+	switch {
+	case gas > 0:
 		writer, ok := f.signer.(GasLimitWriter)
 		if !ok {
 			return "", x402.NewSettleError(ErrSimulationFailed, payer, network, "", "signer cannot cap gas for a custom operator")
 		}
 		txHash, err = writer.WriteContractWithGas(ctx, target, escrowABI, function, dataSuffix, gas, args...)
-	} else {
+	case from != "":
+		txHash, err = f.signer.WriteContractFrom(ctx, from, target, escrowABI, function, dataSuffix, args...)
+	default:
 		txHash, err = f.signer.WriteContract(ctx, target, escrowABI, function, dataSuffix, args...)
 	}
 	if err != nil {
@@ -326,7 +325,49 @@ func (f *AuthCaptureEvmScheme) submitEscrowCall(
 	return txHash, nil
 }
 
-// settlementKey is the pending-settlement store key: the payload's client or authorizer signature.
+// pendingKey is the pending-settlement store key: the payload's signature, except for a lifecycle
+// payload whose authorizer is delegated to this facilitator. The facilitator produced that
+// signature, which may differ between attempts, so the key is what the payload does to which payment.
+func (f *AuthCaptureEvmScheme) pendingKey(payload types.PaymentPayload, requirements types.PaymentRequirements) string {
+	switch payload.Payload["type"] {
+	case opCapture, opVoid, opRefund:
+		extra, _, err := authcapture.ParseAuthCaptureExtra(requirements)
+		if err == nil && getDelegatedAuthorizer(f.config, extra.ReceiverAuthorizer) != nil {
+			return lifecycleSettlementKey(payload, requirements)
+		}
+	}
+	return settlementKey(payload.Payload)
+}
+
+// lifecycleSettlementKey is network, paymentInfoHash, type, amount and expected balances, or ""
+// when the payload cannot be read.
+func lifecycleSettlementKey(payload types.PaymentPayload, requirements types.PaymentRequirements) string {
+	_, deployment, err := authcapture.ParseAuthCaptureExtra(requirements)
+	if err != nil {
+		return ""
+	}
+	chainID, err := evm.GetEvmChainId(requirements.Network)
+	if err != nil {
+		return ""
+	}
+	paymentInfo, err := lifecyclePaymentInfo(payload.Payload)
+	if err != nil {
+		return ""
+	}
+	paymentInfoHash, err := authcapture.ComputePaymentInfoHash(chainID, paymentInfo, paymentInfo.Payer, deployment.Escrow)
+	if err != nil {
+		return ""
+	}
+	operation, _ := payload.Payload["type"].(string)
+	amount, _ := payload.Payload["amount"].(string)
+	expectedCapturable, _ := payload.Payload["expectedCapturableAmount"].(string)
+	expectedRefundable, _ := payload.Payload["expectedRefundableAmount"].(string)
+	return strings.Join([]string{
+		requirements.Network, strings.ToLower(paymentInfoHash), operation, amount, expectedCapturable, expectedRefundable,
+	}, "|")
+}
+
+// settlementKey is the pending-settlement key of a collect payload: its signature.
 func settlementKey(payload map[string]interface{}) string {
 	if sig, ok := payload["signature"].(string); ok {
 		return sig
@@ -371,7 +412,7 @@ func (f *AuthCaptureEvmScheme) resumePending(
 	requirements types.PaymentRequirements,
 	check receiptCheck,
 ) (*x402.SettleResponse, error) {
-	key := settlementKey(payload.Payload)
+	key := f.pendingKey(payload, requirements)
 	if key == "" {
 		return nil, nil
 	}
@@ -398,7 +439,7 @@ func (f *AuthCaptureEvmScheme) awaitSettlement(
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(payload.Accepted.Network)
 	receipt, err := evm.WaitForSettleReceiptWithPendingStore(
-		ctx, f.pendingStore, settlementKey(payload.Payload), f.signer, txHash, payer, network,
+		ctx, f.pendingStore, f.pendingKey(payload, requirements), f.signer, txHash, payer, network,
 		ErrTransactionReverted, ErrTransactionReverted,
 	)
 	if err != nil {

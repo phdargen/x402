@@ -2378,3 +2378,13 @@ func TestEVMIntegrationV2UptoPermit2_SettlementPendingReconciliation(t *testing.
 			firstTxHash, settleResponse.Transaction)
 	}
 }
+
+// ReadContractFrom ignores from: this signer holds a single address.
+func (r *realFacilitatorEvmSigner) ReadContractFrom(ctx context.Context, _, address string, abiJSON []byte, functionName string, args ...interface{}) (interface{}, error) {
+	return r.ReadContract(ctx, address, abiJSON, functionName, args...)
+}
+
+// WriteContractFrom ignores from: this signer holds a single address.
+func (r *realFacilitatorEvmSigner) WriteContractFrom(ctx context.Context, _, address string, abiJSON []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
+	return r.WriteContract(ctx, address, abiJSON, functionName, dataSuffix, args...)
+}

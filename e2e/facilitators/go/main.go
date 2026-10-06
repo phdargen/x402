@@ -1482,3 +1482,8 @@ func main() {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
+
+// WriteContractFrom ignores from: this signer holds a single address.
+func (r *realFacilitatorEvmSigner) WriteContractFrom(ctx context.Context, _, address string, abiJSON []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
+	return r.WriteContract(ctx, address, abiJSON, functionName, dataSuffix, args...)
+}

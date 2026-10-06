@@ -200,7 +200,7 @@ func TestSettleRefund(t *testing.T) {
 		signer := fx.refundSigner()
 		scheme := newScheme(signer, AuthCaptureEvmSchemeConfig{RefundFunding: true})
 		wire := fx.buildRefund(t, refundOpts{})
-		require.NoError(t, scheme.pendingStore.Set(context.Background(), wire["authorizerSignature"].(string), signer.writeTx))
+		require.NoError(t, scheme.pendingStore.Set(context.Background(), scheme.pendingKey(fx.payload(wire), fx.requirements), signer.writeTx))
 
 		resp, err := scheme.Settle(context.Background(), fx.payload(wire), fx.requirements, nil)
 		require.NoError(t, err)

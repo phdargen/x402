@@ -161,6 +161,15 @@ type bindThenBroadcastResult[T any] struct {
 	Err    error
 }
 
+// bindingCleanupTimeout bounds a binding revert or delete.
+const bindingCleanupTimeout = 5 * time.Second
+
+// detachedCleanupContext keeps ctx's values but not its cancellation, so a client disconnect
+// cannot leave a stale binding behind.
+func detachedCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), bindingCleanupTimeout)
+}
+
 // bindThenBroadcast binds the caller to the payment, then runs broadcast.
 //
 // The bind is fail-closed: a storage error or an identity conflict returns without calling
@@ -183,33 +192,33 @@ func bindThenBroadcast[T any](
 
 	value, disposition := broadcast()
 	if disposition == bindRevert {
-		if err := delegated.storage.RevertBind(ctx, write); err != nil {
+		cleanupCtx, cancel := detachedCleanupContext(ctx)
+		defer cancel()
+		if err := delegated.storage.RevertBind(cleanupCtx, write); err != nil {
 			reportDelegatedStorageError(delegated, err, record.Network, record.PaymentInfoHash)
 		}
 	}
 	return bindThenBroadcastResult[T]{OK: true, Value: value}
 }
 
-// assertDelegatedReceiverAuthorizerConfig fails fast when facilitator-delegated receiver
-// authorization is only partially configured.
-func assertDelegatedReceiverAuthorizerConfig(config AuthCaptureEvmSchemeConfig) {
+// validateDelegatedReceiverAuthorizerConfig rejects a partial delegated-authorizer config.
+func validateDelegatedReceiverAuthorizerConfig(config AuthCaptureEvmSchemeConfig) error {
 	anyDelegation := config.AuthorizerSigner != nil || config.ResolveCallerIdentity != nil ||
 		config.DelegatedAuthStorage != nil || config.OnStorageError != nil
 	if !anyDelegation {
-		return
+		return nil
 	}
-	if config.AuthorizerSigner == nil {
-		panic("facilitator-delegated receiver authorization requires AuthorizerSigner")
+	switch {
+	case config.AuthorizerSigner == nil:
+		return errors.New("facilitator-delegated receiver authorization requires AuthorizerSigner")
+	case config.ResolveCallerIdentity == nil:
+		return errors.New("AuthorizerSigner requires ResolveCallerIdentity")
+	case config.DelegatedAuthStorage == nil:
+		return errors.New("AuthorizerSigner requires DelegatedAuthStorage")
+	case config.OnStorageError == nil:
+		return errors.New("AuthorizerSigner requires OnStorageError")
 	}
-	if config.ResolveCallerIdentity == nil {
-		panic("AuthorizerSigner requires ResolveCallerIdentity")
-	}
-	if config.DelegatedAuthStorage == nil {
-		panic("AuthorizerSigner requires DelegatedAuthStorage")
-	}
-	if config.OnStorageError == nil {
-		panic("AuthorizerSigner requires OnStorageError")
-	}
+	return nil
 }
 
 // delegatedAuthRow is one stored binding and the token that reverts it.

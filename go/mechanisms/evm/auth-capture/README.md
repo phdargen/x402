@@ -116,21 +116,25 @@ import (
     authcapturefacilitator "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/facilitator"
 )
 
-scheme := authcapturefacilitator.NewAuthCaptureEvmScheme(signer, authcapturefacilitator.AuthCaptureEvmSchemeConfig{
-    CaptureAuthorizer: signer.GetAddresses()[0],
+scheme, err := authcapturefacilitator.NewAuthCaptureEvmSchemeWithError(signer, authcapturefacilitator.AuthCaptureEvmSchemeConfig{
+    CaptureAuthorizers: signer.GetAddresses(),
 })
 ```
 
-`CaptureAuthorizer` must be one of the signer's addresses. The escrow gates `authorize`, `capture` and `void` on `msg.sender`, so simulations must `eth_call` from that address. A signer that implements the optional `SenderReader` (`ReadContractFrom`) is called with the operator as the sender explicitly. Otherwise its `ReadContract` must itself call from the operator. Simulation failures map to the spec's `invalid_auth_capture_evm_*` reasons. For counterfactual payers, list the wallet factories in `EIP6492AllowedFactories`; verification then simulates only the factory deployment, since the collect cannot be simulated before the wallet exists.
+`NewAuthCaptureEvmSchemeWithError` returns a misconfiguration as an error; `NewAuthCaptureEvmScheme` panics instead.
+
+`CaptureAuthorizers` is the pool of operator addresses, each one of the signer's addresses (`CaptureAuthorizer` is a one-element shorthand). Each `/supported` response advertises one pool member, picked at random or by `SelectCaptureAuthorizer`. That address is committed onchain as the payment's operator, so every pool member must stay usable, and funded when `RefundFunding` is on, until its payments pass `refundDeadline`.
+
+The escrow gates `authorize`, `capture` and `void` on `msg.sender`, so simulations and writes are sent from the operator through the signer's `ReadContractFrom` and `WriteContractFrom`. Simulation failures map to the spec's `invalid_auth_capture_evm_*` reasons. For counterfactual payers, list the wallet factories in `EIP6492AllowedFactories`; verification then simulates only the factory deployment, since the collect cannot be simulated before the wallet exists.
 
 ### Delegated receiver authorizer
 
-To let servers omit their own authorizer key, configure all four fields together (`NewAuthCaptureEvmScheme` panics if any piece is missing):
+To let servers omit their own authorizer key, configure all four fields together (a partial configuration is rejected):
 
 ```go
 scheme := authcapturefacilitator.NewAuthCaptureEvmScheme(signer, authcapturefacilitator.AuthCaptureEvmSchemeConfig{
-    CaptureAuthorizer: signer.GetAddresses()[0],
-    AuthorizerSigner:  authorizerSigner, // advertised in /supported as extra.receiverAuthorizer
+    CaptureAuthorizers: signer.GetAddresses(),
+    AuthorizerSigner:   authorizerSigner, // advertised in /supported as extra.receiverAuthorizer
     // Return a stable identity for the caller (for example from an API key or mTLS client
     // certificate). An empty string or an error rejects the settle.
     ResolveCallerIdentity: func(ctx context.Context, settle authcapturefacilitator.DelegatedSettleContext) (string, error) {
@@ -164,4 +168,4 @@ A custom operator is a contract that forwards to the escrow. The facilitator rel
 
 ### Refund funding
 
-The refund collector pulls the refunded tokens from the `CaptureAuthorizer`. Set `RefundFunding` only with an out-of-band funding agreement that keeps every advertised submitter funded and approved. Without it a delegated operator's refund is rejected with `invalid_auth_capture_evm_refund_funding_unavailable`.
+The refund collector pulls the refunded tokens from the payment's operator, any member of `CaptureAuthorizers`. Set `RefundFunding` only with an out-of-band funding agreement that keeps every advertised submitter funded and approved. Without it a delegated operator's refund is rejected with `invalid_auth_capture_evm_refund_funding_unavailable`.

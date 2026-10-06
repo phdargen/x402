@@ -50,7 +50,8 @@ func newCustomRun(t *testing.T, charge bool) *customRun {
 
 	signer := newMockFacSigner(customSubmitter)
 	signer.tokenStore = customTokenStore
-	scheme := newScheme(signer, AuthCaptureEvmSchemeConfig{Operators: allowAllCustomOperators})
+	// The custom operator is not a signer address, so the scheme is relay-only.
+	scheme := NewAuthCaptureEvmScheme(signer, AuthCaptureEvmSchemeConfig{Operators: allowAllCustomOperators})
 	pre, err := scheme.checkCollectPreconditions(context.Background(), payload, requirements, charge)
 	require.NoError(t, err)
 
@@ -460,13 +461,12 @@ func TestSettleCustomCollect(t *testing.T) {
 
 func TestCustomOperatorRequiresASimulatingSigner(t *testing.T) {
 	run := newCustomRun(t, false)
-	plain := &plainSigner{FacilitatorEvmSigner: run.signer}
-	scheme := newScheme(nil, AuthCaptureEvmSchemeConfig{Operators: allowAllCustomOperators})
-	scheme.signer = plain
+	plain := &plainSigner{Signer: run.signer}
+	scheme := NewAuthCaptureEvmScheme(plain, AuthCaptureEvmSchemeConfig{Operators: allowAllCustomOperators})
 
 	err := scheme.simulateCustomCollect(context.Background(), run.pre)
 	assertVerifyReason(t, err, ErrOperatorNotAdmitted)
 }
 
 // plainSigner hides the optional simulator and gas-limit capabilities.
-type plainSigner struct{ evm.FacilitatorEvmSigner }
+type plainSigner struct{ Signer }

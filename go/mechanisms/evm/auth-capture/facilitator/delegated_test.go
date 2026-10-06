@@ -401,6 +401,32 @@ func TestDelegatedLifecycle(t *testing.T) {
 		assert.Equal(t, []string{"capture", "void"}, h.signer.writtenFunctions)
 	})
 
+	t.Run("rejects voidRemainder combined with a signature as a malformed payload", func(t *testing.T) {
+		fx, h := newDelegatedLifecycle(t, delegatedOpts{})
+		h.bindRow(t, fx.paymentHash, delegatedCaller, fx.extra.RefundDeadline)
+		payload := unsignedCapture(t, fx, captureOpts{amount: "600000"}, true)
+		payload.Payload["voidAuthorizerSignature"] = fx.voidSignature(t)
+
+		_, err := h.scheme.Verify(context.Background(), payload, fx.requirements, nil)
+		assertVerifyReason(t, err, ErrPayloadFormat)
+		_, err = h.scheme.Settle(context.Background(), payload, fx.requirements, nil)
+		assertSettleReason(t, err, ErrPayloadFormat)
+
+		signed := fx.buildCapture(t, captureOpts{amount: "600000"})
+		signed["voidRemainder"] = true
+		_, err = h.scheme.Settle(context.Background(), fx.payload(signed), fx.requirements, nil)
+		assertSettleReason(t, err, ErrPayloadFormat)
+		assert.Empty(t, h.signer.writtenFunctions)
+	})
+
+	t.Run("rejects voidRemainder when the authorizer is not delegated", func(t *testing.T) {
+		fx := newLifecycleFixture(t, nil)
+		payload := unsignedCapture(t, fx, captureOpts{amount: "600000"}, true)
+
+		_, err := newScheme(fx.signer(), AuthCaptureEvmSchemeConfig{}).Verify(context.Background(), payload, fx.requirements, nil)
+		assertVerifyReason(t, err, ErrAuthorizerSignature)
+	})
+
 	t.Run("signs an unsigned void and releases the binding once nothing is left", func(t *testing.T) {
 		fx, h := newDelegatedLifecycle(t, delegatedOpts{})
 		h.bindRow(t, fx.paymentHash, delegatedCaller, fx.extra.RefundDeadline)

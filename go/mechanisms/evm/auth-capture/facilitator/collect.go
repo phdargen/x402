@@ -716,7 +716,7 @@ func (f *AuthCaptureEvmScheme) broadcastCollect(
 		return notBroadcast(toSettleError(err, network, pre.payer))
 	}
 	if !custom {
-		txHash, err := f.writeEscrow(ctx, fctx, payload, requirements, &pre.deployment, pre.payer, pre.function, args...)
+		txHash, err := f.writeEscrow(ctx, fctx, payload, requirements, &pre.deployment, pre.paymentInfo.Operator, pre.payer, pre.function, args...)
 		if err != nil {
 			return notBroadcast(err)
 		}
@@ -727,7 +727,7 @@ func (f *AuthCaptureEvmScheme) broadcastCollect(
 	if err != nil {
 		return notBroadcast(toSettleError(err, network, pre.payer))
 	}
-	txHash, err := f.submitEscrowCall(ctx, fctx, payload, requirements, &pre.deployment, pre.payer,
+	txHash, err := f.submitEscrowCall(ctx, fctx, payload, requirements, &pre.deployment, "", pre.payer,
 		pre.extra.CaptureAuthorizer, f.customGasLimit(), pre.function, args...)
 	if err != nil {
 		return notBroadcast(err)

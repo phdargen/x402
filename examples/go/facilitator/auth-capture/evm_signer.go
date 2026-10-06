@@ -422,3 +422,8 @@ func toHexBigInt(v interface{}) *math.HexOrDecimal256 {
 	}
 	return (*math.HexOrDecimal256)(big.NewInt(0))
 }
+
+// WriteContractFrom ignores from: this signer holds a single address.
+func (r *facilitatorEvmSigner) WriteContractFrom(ctx context.Context, _, address string, abiJSON []byte, functionName string, dataSuffix []byte, args ...interface{}) (string, error) {
+	return r.WriteContract(ctx, address, abiJSON, functionName, dataSuffix, args...)
+}

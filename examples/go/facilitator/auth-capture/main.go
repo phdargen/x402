@@ -50,10 +50,11 @@ func main() {
 	maxFeeBps := atoiOr("MAX_FEE_BPS", 0)
 
 	config := authcapturefac.AuthCaptureEvmSchemeConfig{
-		CaptureAuthorizer: evmSigner.GetAddresses()[0],
-		FeeRecipient:      feeRecipient,
-		MinFeeBps:         uint16(minFeeBps),
-		MaxFeeBps:         uint16(maxFeeBps),
+		// /supported advertises one of the signer's addresses per response.
+		CaptureAuthorizers: evmSigner.GetAddresses(),
+		FeeRecipient:       feeRecipient,
+		MinFeeBps:          uint16(minFeeBps),
+		MaxFeeBps:          uint16(maxFeeBps),
 	}
 
 	// Custom operators are admitted per address. An empty list admits none, leaving
@@ -100,11 +101,14 @@ func main() {
 		}
 	}
 
+	scheme, err := authcapturefac.NewAuthCaptureEvmSchemeWithError(evmSigner, config)
+	if err != nil {
+		fmt.Printf("Invalid auth-capture facilitator config: %v\n", err)
+		os.Exit(1)
+	}
+
 	facilitator := x402.Newx402Facilitator()
-	facilitator.Register(
-		[]x402.Network{"eip155:84532"},
-		authcapturefac.NewAuthCaptureEvmScheme(evmSigner, config),
-	)
+	facilitator.Register([]x402.Network{"eip155:84532"}, scheme)
 
 	facilitator.OnAfterVerify(func(ctx x402.FacilitatorVerifyResultContext) error {
 		fmt.Printf("Payment verified\n")
@@ -156,7 +160,7 @@ func main() {
 	})
 
 	fmt.Printf("Auth-capture facilitator listening on http://localhost:%s\n", port)
-	fmt.Printf("  Capture authorizer (operator): %s\n", config.CaptureAuthorizer)
+	fmt.Printf("  Capture authorizer pool (operator): %s\n", strings.Join(config.CaptureAuthorizers, ", "))
 	if receiverAuthorizer != nil {
 		fmt.Printf("  Receiver authorizer: %s\n", receiverAuthorizer.Address())
 		fmt.Println("  Delegated auth bindings: InMemoryAuthCaptureDelegatedAuthStorage (process-local)")
