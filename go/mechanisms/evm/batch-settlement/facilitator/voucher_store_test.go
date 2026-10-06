@@ -2061,6 +2061,125 @@ func TestVerifyManaged_ForgedAcceptedAmountRejectedBeforeAcquire(t *testing.T) {
 	})
 }
 
+// A forged channelConfig must be rejected before the lock is taken.
+func TestVerifyManaged_ForgedChannelConfigRejectedBeforeAcquire(t *testing.T) {
+	auth := managedAuthorizer()
+	reqs := managedRequirements(auth.addr)
+	cfg := managedConfig(auth.addr, "00")
+	otherCfg := managedConfig(auth.addr, "01")
+	otherId := mustChannelId(t, otherCfg)
+
+	wrongReceiver := managedConfig(auth.addr, "02")
+	wrongReceiver.Receiver = "0x1111111111111111111111111111111111111111"
+	wrongReceiverId := mustChannelId(t, wrongReceiver)
+
+	cases := []struct {
+		name   string
+		cfg    batchsettlement.ChannelConfig
+		id     string
+		reason string
+		build  func(cfg batchsettlement.ChannelConfig, id string) types.PaymentPayload
+	}{
+		{name: "voucher channelId mismatch", cfg: cfg, id: otherId, reason: ErrChannelIdMismatch, build: func(c batchsettlement.ChannelConfig, id string) types.PaymentPayload {
+			return voucherEnvelope(c, voucherFields(id, "1000", dummySig), "")
+		}},
+		{name: "voucher receiver mismatch", cfg: wrongReceiver, id: wrongReceiverId, reason: ErrReceiverMismatch, build: func(c batchsettlement.ChannelConfig, id string) types.PaymentPayload {
+			return voucherEnvelope(c, voucherFields(id, "1000", dummySig), "")
+		}},
+		{name: "refund channelId mismatch", cfg: cfg, id: otherId, reason: ErrChannelIdMismatch, build: func(c batchsettlement.ChannelConfig, id string) types.PaymentPayload {
+			return refundEnvelope(c, voucherFields(id, "1000", dummySig), "", "", "")
+		}},
+		{name: "deposit channelId mismatch", cfg: cfg, id: otherId, reason: ErrChannelIdMismatch, build: managedDepositEnvelope},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+			store := &hookStore{inner: inner}
+			payload := tc.build(tc.cfg, tc.id)
+			caseReqs := reqs
+			if batchsettlement.IsRefundPayload(payload.Payload) {
+				caseReqs.Amount = "0"
+				payload.Accepted.Amount = "0"
+			}
+			runForgedConfigCase(t, store, inner, auth, payload, caseReqs, tc.id, tc.reason)
+		})
+	}
+}
+
+func runForgedConfigCase(
+	t *testing.T,
+	store *hookStore,
+	inner *storage.InMemoryChannelStorage[*FacilitatorChannel],
+	auth *fakeAuthorizerSigner,
+	payload types.PaymentPayload,
+	reqs types.PaymentRequirements,
+	channelId, wantReason string,
+) {
+	t.Helper()
+	rpc := &managedRPC{}
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, newManagedSigner(t, rpc)), payload, reqs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != wantReason {
+		t.Fatalf("got %+v, want reason %s", resp, wantReason)
+	}
+	if store.acquireCalls != 0 || rpc.tryAggregate != 0 {
+		t.Fatalf("acquire calls = %d, tryAggregate = %d, want none before stateless validation", store.acquireCalls, rpc.tryAggregate)
+	}
+	if held, _ := inner.IsHeld(context.Background(), channelId, ""); held {
+		t.Fatal("lock must stay free")
+	}
+}
+
+func TestVerifyManaged_ForgedEoaRefundRejectedBeforeAcquire(t *testing.T) {
+	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	store := &hookStore{inner: inner}
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	cfg.PayerAuthorizer = managedPayer
+	channelId := mustChannelId(t, cfg)
+	forged := voucherFields(channelId, "1000", eoaVoucherSignature(t, channelId, "999", managedNetwork))
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "0"
+	payload := refundEnvelope(cfg, forged, "", "", "")
+	payload.Accepted.Amount = "0"
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil), payload, reqs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrVoucherSignatureInvalid {
+		t.Fatalf("got %+v", resp)
+	}
+	if store.acquireCalls != 0 {
+		t.Fatalf("acquire calls = %d, want 0", store.acquireCalls)
+	}
+	if held, _ := inner.IsHeld(context.Background(), channelId, ""); held {
+		t.Fatal("lock must stay free")
+	}
+}
+
+func TestVerifyManaged_ClearedEoaRefundSkipsTypedDataCheck(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	cfg.PayerAuthorizer = managedPayer
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargedCumulativeAmount: "1000"}))
+	sig := eoaVoucherSignature(t, channelId, "1000", managedNetwork)
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "0"
+	payload := refundEnvelope(cfg, voucherFields(channelId, "1000", sig), "", "", "")
+	payload.Accepted.Amount = "0"
+	signer := chainIdFailingSigner{newManagedSigner(t, &managedRPC{})}
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, signer), payload, reqs, nil)
+	if err != nil || !resp.IsValid {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+}
+
 func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {
 	auth := managedAuthorizer()
 	reqs := managedRequirements(auth.addr)
@@ -2083,7 +2202,7 @@ func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {
 			return resp.InvalidReason, nil
 		}},
 		{name: "refund verify", run: func(deps VoucherStoreDeps) (string, error) {
-			resp, err := VerifyManaged(context.Background(), deps, refundEnvelope(eoaCfg, eoaVoucher, "", "", ""), reqs, nil)
+			resp, err := VerifyManaged(context.Background(), deps, refundEnvelope(zeroCfg, voucherFields(zeroId, "2000", dummySig), "", "", ""), reqs, nil)
 			if err != nil {
 				return "", err
 			}

@@ -162,17 +162,18 @@ func VerifyManaged(
 		}
 	}
 
-	var clearance eoaSignatureClearance
-	if batchsettlement.IsVoucherPayload(raw) && !strings.EqualFold(channelConfig.PayerAuthorizer, zeroAddress) {
-		vp, parseErr := batchsettlement.VoucherPayloadFromMap(raw)
-		if parseErr != nil || !batchsettlement.VerifyEoaVoucherSignature(vp, requirements.Network) {
-			return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrVoucherSignatureInvalid, Payer: payer}, nil
-		}
-		clearance = eoaSignatureClearance{
-			channelId:    vp.Voucher.ChannelId,
-			maxClaimable: vp.Voucher.MaxClaimableAmount,
-			signature:    vp.Voucher.Signature,
-		}
+	// Stateless checks run before the lock so a forged payload cannot contend it.
+	if configErr := batchsettlement.ValidateChannelConfig(channelConfig, voucher.ChannelId, requirements); configErr != "" {
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: configErr, Payer: payer}, nil
+	}
+
+	vp, parseErr := parseVoucherOrRefund(raw)
+	if parseErr != nil {
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload, Payer: payer}, nil
+	}
+	clearance, clearanceErr := eoaClearance(vp, requirements.Network)
+	if clearanceErr != "" {
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: clearanceErr, Payer: payer}, nil
 	}
 
 	channelId := voucher.ChannelId
@@ -198,7 +199,7 @@ func VerifyManaged(
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrRpcReadFailed, Payer: payer}, nil
 	}
 
-	verified, verifyErr := verifyManagedPayload(ctx, deps, payload, requirements, fctx, stored, clearance)
+	verified, verifyErr := verifyManagedPayload(ctx, deps, payload, vp, requirements, fctx, stored, clearance)
 	if impl := storage.RethrowLockImplementationError(verifyErr); impl != nil {
 		return nil, impl
 	}
@@ -729,34 +730,27 @@ func verifyManagedPayload(
 	ctx context.Context,
 	deps VoucherStoreDeps,
 	payload types.PaymentPayload,
+	vp *batchsettlement.BatchSettlementVoucherPayload,
 	requirements types.PaymentRequirements,
 	fctx *x402.FacilitatorContext,
 	stored *FacilitatorChannel,
 	clearance eoaSignatureClearance,
 ) (*x402.VerifyResponse, error) {
 	raw := payload.Payload
-	if batchsettlement.IsDepositPayload(raw) {
+	if vp == nil {
 		dp, err := batchsettlement.DepositPayloadFromMap(raw)
 		if err != nil {
 			return nil, x402.NewVerifyError(ErrInvalidPayload, payloadPayer(raw), err.Error())
 		}
 		return VerifyDeposit(ctx, deps.Signer, dp, requirements, payload.Extensions, fctx, deps.EIP6492AllowedFactories)
 	}
-	if batchsettlement.IsVoucherPayload(raw) {
-		vp, err := batchsettlement.VoucherPayloadFromMap(raw)
-		if err != nil {
-			return nil, x402.NewVerifyError(ErrInvalidPayload, payloadPayer(raw), err.Error())
-		}
-		if cached := batchsettlement.EvaluateVoucherAgainstCachedState(vp, requirements, cachedOnchain(stored), time.Now().UnixMilli(), onchainStateTtlMs(deps)); cached != nil {
-			return cached, nil
-		}
-		return verifyVoucherFields(ctx, deps.Signer, &vp.Voucher, vp.ChannelConfig, requirements, false, clearance)
+	if batchsettlement.IsRefundPayload(raw) {
+		return verifyVoucherFields(ctx, deps.Signer, &vp.Voucher, vp.ChannelConfig, requirements, true, clearance)
 	}
-	rp, err := batchsettlement.RefundPayloadFromMap(raw)
-	if err != nil {
-		return nil, x402.NewVerifyError(ErrInvalidPayload, payloadPayer(raw), err.Error())
+	if cached := batchsettlement.EvaluateVoucherAgainstCachedState(vp, requirements, cachedOnchain(stored), time.Now().UnixMilli(), onchainStateTtlMs(deps)); cached != nil {
+		return cached, nil
 	}
-	return VerifyRefundVoucher(ctx, deps.Signer, rp, requirements, rp.ChannelConfig)
+	return verifyVoucherFields(ctx, deps.Signer, &vp.Voucher, vp.ChannelConfig, requirements, false, clearance)
 }
 
 func managedRequirementError(deps VoucherStoreDeps, salt string, requirements types.PaymentRequirements) string {

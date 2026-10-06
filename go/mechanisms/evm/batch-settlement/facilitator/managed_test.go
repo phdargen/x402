@@ -528,6 +528,7 @@ type hookStore struct {
 	inner          *storage.InMemoryChannelStorage[*FacilitatorChannel]
 	getErr         error
 	acquireErr     error
+	acquireCalls   int
 	releaseErr     error
 	isHeldErr      error
 	updateErr      error
@@ -557,6 +558,7 @@ func (s *hookStore) UpdateChannel(ctx context.Context, channelId string, update 
 	return s.inner.UpdateChannel(ctx, channelId, update)
 }
 func (s *hookStore) Acquire(ctx context.Context, channelId, pendingId string, ttlMs int64) (bool, error) {
+	s.acquireCalls++
 	if s.acquireErr != nil {
 		return false, s.acquireErr
 	}
