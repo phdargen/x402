@@ -2276,9 +2276,14 @@ func newHotRefund(t *testing.T, fields *channelFields, planted *PendingClaim, wr
 
 func (h *hotRefund) settle(amount string) (*x402.SettleResponse, error) {
 	h.t.Helper()
+	return h.settleWithPendingID(amount, "")
+}
+
+func (h *hotRefund) settleWithPendingID(amount, pendingID string) (*x402.SettleResponse, error) {
+	h.t.Helper()
 	_, sig := signRefundConsent(h.t, h.channelID, amount, "0", managedNetwork)
 	return SettleManaged(context.Background(), h.deps,
-		refundEnvelope(h.cfg, voucherFields(h.channelID, h.charged, dummySig), amount, "", sig),
+		refundEnvelope(h.cfg, voucherFields(h.channelID, h.charged, dummySig), amount, pendingID, sig),
 		h.reqs, nil, nil)
 }
 

@@ -95,6 +95,26 @@ func acquireAdmission(
 	return pendingId, owner, nil
 }
 
+// holdForOnchainSettle keeps the channel lock across an on-chain deposit or refund.
+// The verify hold can lapse before the broadcast, and a voucher admitted in that gap
+// would commit against escrow the refund is about to return. The settle's own verify
+// hold is released and a fresh one is acquired for ttlMs, which only has to cover the
+// broadcast and confirmation. Another live holder fails closed with pending_id_mismatch.
+// The returned owner is what the caller must release, and is empty when nothing is held.
+func holdForOnchainSettle(
+	ctx context.Context,
+	deps VoucherStoreDeps,
+	voucher batchsettlement.BatchSettlementVoucherFields,
+	owner string,
+	ttlMs int64,
+) (held string, err error) {
+	if impl := storage.RethrowLockImplementationError(releaseAdmission(ctx, deps, voucher.ChannelId, owner)); impl != nil {
+		return owner, impl
+	}
+	_, fresh, err := acquireAdmission(ctx, deps, voucher, ttlMs, ErrPendingIdMismatch)
+	return fresh, err
+}
+
 func onchainStateTtlMs(deps VoucherStoreDeps) int64 {
 	if deps.OnchainStateTtlMs != nil {
 		return *deps.OnchainStateTtlMs
@@ -434,9 +454,9 @@ func settleManagedDeposit(
 	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	channelId := raw.Voucher.ChannelId
-	owner := boundAdmissionOwner(raw.PendingId, raw.Voucher)
+	held := boundAdmissionOwner(raw.PendingId, raw.Voucher)
 	defer func() {
-		_ = releaseAdmission(ctx, deps, channelId, owner)
+		_ = releaseAdmission(ctx, deps, channelId, held)
 	}()
 
 	// Reject an actual above the accepted maximum before broadcast. The commit
@@ -444,6 +464,12 @@ func settleManagedDeposit(
 	increment, signedCap, expectedCharged, boundReason := settleChargeBounds(payment.Accepted.Amount, requirements.Amount, raw.Voucher.MaxClaimableAmount)
 	if boundReason != "" {
 		return failSettle(requirements, boundReason), nil
+	}
+
+	var holdErr error
+	held, holdErr = holdForOnchainSettle(ctx, deps, raw.Voucher, held, storage.PendingTtlMs(requirements.MaxTimeoutSeconds))
+	if resp, settleErr := failSettleFromErr(requirements, holdErr); settleErr != nil || resp != nil {
+		return resp, settleErr
 	}
 
 	identity, bindErr := ResolveDepositDelegatedCaller(ctx, deps.ResolveCallerIdentity, deps.DelegatedAuthStore,
@@ -518,14 +544,21 @@ func settleManagedRefund(
 	dataSuffix []byte,
 ) (*x402.SettleResponse, error) {
 	channelId := raw.Voucher.ChannelId
-	owner := boundAdmissionOwner(raw.PendingId, raw.Voucher)
+	held := boundAdmissionOwner(raw.PendingId, raw.Voucher)
 	defer func() {
-		_ = releaseAdmission(ctx, deps, channelId, owner)
+		_ = releaseAdmission(ctx, deps, channelId, held)
 	}()
 
 	if amountError := refundAmountError(raw.Amount); amountError != "" {
 		return failSettle(requirements, amountError), nil
 	}
+
+	var holdErr error
+	held, holdErr = holdForOnchainSettle(ctx, deps, raw.Voucher, held, storage.PendingTtlMs(requirements.MaxTimeoutSeconds))
+	if resp, settleErr := failSettleFromErr(requirements, holdErr); settleErr != nil || resp != nil {
+		return resp, settleErr
+	}
+
 	stored, err := deps.Storage.Get(ctx, channelId)
 	if err != nil {
 		return failSettle(requirements, ErrRpcReadFailed), nil

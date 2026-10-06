@@ -263,6 +263,51 @@ func TestInMemorySettleTargetStorage_ZeroPendingDeleteRespectsFence(t *testing.T
 	}
 }
 
+func TestInMemorySettleTargetStorage_PositiveObserveRespectsFence(t *testing.T) {
+	store := NewInMemorySettleTargetStorage()
+	target := SettleTarget{Network: settleTargetTestNetwork, Receiver: settleAddr(11), Token: settleAddr(12)}
+	key := settleTargetKey(target.Network, target.Receiver, target.Token)
+	readAt := time.Now().UnixMilli()
+	applySettleDelta(t, store, target.Receiver, target.Token, 5)
+
+	// A claim landed at or after the read, so the stale onchain value must not overwrite it.
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        target,
+		Pending:       big.NewInt(1),
+		UpdatedBefore: readAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.entries[key].pendingAmount; got.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("stale positive observe overwrote the claim delta: %s", got)
+	}
+
+	// A row older than the fence is overwritten.
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        target,
+		Pending:       big.NewInt(2),
+		UpdatedBefore: time.Now().UnixMilli() + 1000,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.entries[key].pendingAmount; got.Cmp(big.NewInt(2)) != 0 {
+		t.Fatalf("older row was not overwritten: %s", got)
+	}
+
+	// A missing row is created even when fenced.
+	missing := SettleTarget{Network: settleTargetTestNetwork, Receiver: settleAddr(13), Token: settleAddr(14)}
+	if err := store.ObserveSettlePending(context.Background(), []SettleTargetObservation{{
+		Target:        missing,
+		Pending:       big.NewInt(3),
+		UpdatedBefore: readAt,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.entries[settleTargetKey(missing.Network, missing.Receiver, missing.Token)]; got == nil || got.pendingAmount.Cmp(big.NewInt(3)) != 0 {
+		t.Fatalf("missing row was not created: %+v", got)
+	}
+}
+
 func TestInMemorySettleTargetStorage_ZeroPendingDeletesMissingUpdatedAt(t *testing.T) {
 	store := NewInMemorySettleTargetStorage()
 	target := SettleTarget{Network: settleTargetTestNetwork, Receiver: settleAddr(9), Token: settleAddr(10)}

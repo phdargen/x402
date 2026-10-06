@@ -563,7 +563,7 @@ Verifies a deposit, voucher, or refund payment payload. Returns the onchain chan
 }
 ```
 
-Facilitator-managed `/verify` also returns the offchain watermark and `extra.pendingId` (server-authored reservation; not a PAYMENT-RESPONSE field). A client-supplied `pendingId` or `cancel` MUST be rejected. The facilitator MUST take a short-lived exclusive lock per `channelId`, bound to the verified voucher so a replayed or guessed `pendingId` cannot admit a different voucher. A second in-flight request returns `invalid_batch_settlement_evm_channel_busy` (retryable). The lock is not a payment commit — watermark does not advance until `/settle`. TTL is the advertised `maxTimeoutSeconds` clamped to 5s–600s; servers SHOULD advertise their real handler budget.
+Facilitator-managed `/verify` also returns the offchain watermark and `extra.pendingId` (server-authored reservation; not a PAYMENT-RESPONSE field). A client-supplied `pendingId` or `cancel` MUST be rejected. The facilitator MUST take a short-lived exclusive lock per `channelId`, bound to the verified voucher so a replayed or guessed `pendingId` cannot admit a different voucher. A second in-flight request returns `invalid_batch_settlement_evm_channel_busy` (retryable). The lock is not a payment commit — watermark does not advance until `/settle`. Managed `deposit` and `refund` `/settle` MUST hold the channel lock from before the onchain submission until the result is persisted, so a voucher cannot commit against escrow the transaction is about to move. A reservation that lapsed before `/settle` is re-acquired; another live holder fails the settle with `invalid_batch_settlement_evm_pending_id_mismatch`.
 
 ```json
 {

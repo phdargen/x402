@@ -25,8 +25,9 @@ type SettleTargetObservation struct {
 	Target   SettleTarget
 	Pending  *big.Int
 	AtMillis int64
-	// UpdatedBefore limits a zero-pending delete to rows whose updatedAt is strictly older.
-	// Zero deletes by key. A claim that upserts the row after the receivers() read keeps its delta.
+	// UpdatedBefore limits both the zero-pending delete and the positive overwrite to rows
+	// whose updatedAt is strictly older, or missing. Zero applies by key. A claim that
+	// upserts the row after the receivers() read keeps its delta.
 	UpdatedBefore int64
 }
 
@@ -184,6 +185,9 @@ func (s *InMemorySettleTargetStorage) ObserveSettlePending(_ context.Context, ob
 			continue
 		}
 		entry := s.entries[key]
+		if entry != nil && item.UpdatedBefore > 0 && entry.updatedAt >= item.UpdatedBefore {
+			continue
+		}
 		if entry == nil {
 			entry = &inMemorySettleTargetEntry{
 				network:  item.Target.Network,
