@@ -203,10 +203,11 @@ func TestSettleDeposit_PendingSettlementStore_NilStoreDisablesFastPath(t *testin
 // spyDelegatedAuth records bound and reverted open tokens and can inject failures.
 type spyDelegatedAuth struct {
 	*storage.InMemoryDelegatedAuthStore
-	bindErr       error
-	revertErr     error
-	boundTokens   []string
-	revertedToken []string
+	bindErr        error
+	revertErr      error
+	boundTokens    []string
+	boundReceivers []string
+	revertedToken  []string
 }
 
 func newSpyDelegatedAuth() *spyDelegatedAuth {
@@ -218,6 +219,7 @@ func (s *spyDelegatedAuth) Bind(ctx context.Context, binding storage.DelegatedAu
 		return false, s.bindErr
 	}
 	s.boundTokens = append(s.boundTokens, binding.OpenToken)
+	s.boundReceivers = append(s.boundReceivers, binding.Receiver)
 	return s.InMemoryDelegatedAuthStore.Bind(ctx, binding)
 }
 
@@ -354,6 +356,10 @@ func TestSettleDeposit_BroadcastFailureRevertsCreatedBinding(t *testing.T) {
 	requireDelegatedBinding(t, auth, payload.Voucher.ChannelId, "")
 	if len(auth.boundTokens) != 1 || auth.boundTokens[0] != depositOpenToken(sig) {
 		t.Fatalf("bound tokens = %v, want derived token for the authorization", auth.boundTokens)
+	}
+	wantReceiver := payload.ChannelConfig.Receiver
+	if len(auth.boundReceivers) != 1 || wantReceiver == "" || auth.boundReceivers[0] != wantReceiver {
+		t.Fatalf("bound receivers = %v, want %q", auth.boundReceivers, wantReceiver)
 	}
 }
 

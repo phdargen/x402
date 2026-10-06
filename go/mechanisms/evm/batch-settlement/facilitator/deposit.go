@@ -93,12 +93,13 @@ func depositOpenToken(cacheKey string) string {
 func bindDelegatedAuthForDeposit(
 	ctx context.Context,
 	binding *DelegatedDepositBinding,
-	openToken, channelId, network, payer string,
+	openToken, channelId, network, payer, receiver string,
 ) (bool, error) {
 	created, err := binding.Store.Bind(ctx, storage.DelegatedAuthBinding{
 		ChannelId:      channelId,
 		Network:        network,
 		CallerIdentity: binding.CallerIdentity,
+		Receiver:       receiver,
 		OpenToken:      openToken,
 	})
 	if err == nil {
@@ -578,7 +579,7 @@ func SettleDeposit(
 	created := false
 	openToken := depositOpenToken(cacheKey)
 	if delegated != nil {
-		created, err = bindDelegatedAuthForDeposit(ctx, delegated, openToken, channelId, networkStr, config.Payer)
+		created, err = bindDelegatedAuthForDeposit(ctx, delegated, openToken, channelId, networkStr, config.Payer, config.Receiver)
 		if err != nil {
 			return nil, 0, err
 		}

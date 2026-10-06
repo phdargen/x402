@@ -12,6 +12,7 @@ type DelegatedAuthBinding struct {
 	ChannelId      string
 	Network        string
 	CallerIdentity string
+	Receiver       string
 	// OpenToken identifies the deposit that created the binding. Get does not return it.
 	OpenToken string
 }
