@@ -45,7 +45,7 @@ EVM_REFUND_AUTHORIZER_PRIVATE_KEY=0x...
 
 See the [scheme README](../../../../typescript/packages/mechanisms/evm/src/batch-settlement/README.md#facilitator-managed-custody) for production notes (shared Redis locks, `refundAuth`, retention).
 
-Optional `FACILITATOR_BUILDER_CODE` registers `BuilderCodeFacilitatorExtension` so scheduled claims append an ERC-8021 suffix **after** the `x402ChargeCounts` attestation. The manager `onClaim` hook parses both from the claim transaction (and joins `Claimed` logs by `channelId`). Builder-code is omitted when the env var is unset; the hook still logs charge counts.
+With `VOUCHER_STORE` enabled, claims carry their charge counts in the `m.x402ChargeCounts` field of a single ERC-8021 suffix. No builder code is needed: the example registers `BuilderCodeFacilitatorExtension` without one just to encode that suffix. Optional `FACILITATOR_BUILDER_CODE` adds a wallet code (`w`) to the same suffix. The manager `onClaim` / `onRefund` hooks parse the suffix from the transaction and join counts to channels by `channelId` (claim rows and `Claimed` logs); a row without a `Claimed` log is not attested.
 
 ## Setup
 

@@ -6,6 +6,7 @@
  * storage so abandoned channels are sealed and rent is reclaimed asynchronously.
  */
 
+import { inspect } from "node:util";
 import { base58 } from "@scure/base";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { x402Facilitator } from "@x402/core/facilitator";
@@ -98,6 +99,8 @@ function logVerifyLine(payload: PaymentPayload, response: VerifyResponse): void 
 /**
  * Logs claim attestation for a settlement transaction using the single SDK helper
  * {@link decodeClaimAttestation} (handles `claim` and bundled `multicall([claim, refund])`).
+ * Charge counts come from the ERC-8021 `m.x402ChargeCounts` metadata and are joined to
+ * channels by `channelId` through the claim rows and `Claimed` logs.
  *
  * @param label - Log label (`Claim` for `onClaim`, `Refund` for `onRefund`).
  * @param result - Channel-manager result with the settlement transaction hash and network.
@@ -123,12 +126,13 @@ async function logSettlementAttestation(
     client.getTransaction({ hash }),
     client.getTransactionReceipt({ hash }),
   ]);
+  const builderCode = parseBuilderCodeSuffixFromCalldata(tx.input);
   const attestation = decodeClaimAttestation(
     tx.input,
     receipt.logs,
     result.network,
+    builderCode?.m,
   );
-  const builderCode = parseBuilderCodeSuffixFromCalldata(tx.input);
 
   if (label === "Refund") {
     const refunded = parseEventLogs({
@@ -140,11 +144,10 @@ async function logSettlementAttestation(
     const refundLog = refunded.find(
       (entry) => entry.args.channelId?.toLowerCase() === channel.toLowerCase(),
     );
-    console.log("[voucher store] Refund attestation", {
+    logExpanded("[voucher store] Refund attestation", {
       tx: hash,
       channelId: channel,
       functionName: attestation.functionName,
-      claimFunctionName: attestation.claimFunctionName ?? null,
       chargeCounts:
         attestation.chargeCounts?.map((count: bigint) => count.toString()) ??
         null,
@@ -156,16 +159,25 @@ async function logSettlementAttestation(
     return;
   }
 
-  console.log("[voucher store] Claim attestation", {
+  logExpanded("[voucher store] Claim attestation", {
     tx: hash,
     functionName: attestation.functionName,
-    claimFunctionName: attestation.claimFunctionName ?? null,
     chargeCounts:
       attestation.chargeCounts?.map((count: bigint) => count.toString()) ??
       null,
     builderCode: builderCode ?? null,
     channels: attestation.channels,
   });
+}
+
+/**
+ * Logs a label followed by the value with nested arrays and objects fully expanded.
+ *
+ * @param label - Log line prefix
+ * @param value - Value to print without Node's default depth truncation
+ */
+function logExpanded(label: string, value: unknown): void {
+  console.log(label, inspect(value, { depth: null }));
 }
 
 function logSettleLine(payload: PaymentPayload, response: SettleResponse): void {
@@ -250,12 +262,20 @@ const facilitator = new x402Facilitator()
     debugLog("Settle failure", context);
   });
 
+// Claim charge counts ride in the ERC-8021 `m` field. That only reuses the suffix format, so
+// the extension is registered without a builder code whenever the voucher store is enabled.
 const facilitatorBuilderCode = process.env.FACILITATOR_BUILDER_CODE?.trim();
-if (facilitatorBuilderCode) {
+if (facilitatorBuilderCode || voucherStoreEnabled) {
   facilitator.registerExtension(
-    new BuilderCodeFacilitatorExtension({ builderCode: facilitatorBuilderCode }),
+    new BuilderCodeFacilitatorExtension(
+      facilitatorBuilderCode ? { builderCode: facilitatorBuilderCode } : {},
+    ),
   );
-  console.info(`Facilitator builder code: ${facilitatorBuilderCode}`);
+  console.info(
+    facilitatorBuilderCode
+      ? `Facilitator builder code: ${facilitatorBuilderCode}`
+      : "Facilitator builder code: none (suffix carries charge counts only)",
+  );
 }
 
 let rentCleanupManager: BatchSvmRentCleanupManager | undefined;

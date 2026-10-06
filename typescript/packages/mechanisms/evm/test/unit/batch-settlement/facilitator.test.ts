@@ -187,6 +187,24 @@ function buildSettledLog(
   } as Log;
 }
 
+function buildClaimedLog(channelId: `0x${string}`): Log {
+  return {
+    address: BATCH_SETTLEMENT_ADDRESS,
+    topics: encodeEventTopics({
+      abi: batchSettlementABI,
+      eventName: "Claimed",
+      args: { channelId, sender: FACILITATOR_ADDRESS },
+    }),
+    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, 1n]),
+    blockHash: null,
+    blockNumber: null,
+    logIndex: null,
+    transactionHash: null,
+    transactionIndex: null,
+    removed: false,
+  } as Log;
+}
+
 function envelopeVoucher(
   payload: BatchSettlementVoucherPayload,
   acceptedAmount?: string,
@@ -2999,13 +3017,17 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
 
   it("applies afterClaim on a successful managed type:claim", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
-    const signer = buildSigner();
-    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
-      voucherStore: { storage },
-    });
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
     const stored = buildStoredChannel(config);
     await storage.updateChannel(stored.channelId, () => stored);
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi
+        .fn()
+        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId)] }),
+    });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
+      voucherStore: { storage },
+    });
 
     const result = await scheme.settle(
       envelopeSettle({
@@ -3034,19 +3056,55 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };
-    expect(write.dataSuffix?.startsWith("0x50b180c6")).toBe(true);
+    // No builder-code extension is registered, so there is no suffix to carry the counts.
+    expect(write.dataSuffix).toBeUndefined();
   });
 
-  it("composes charge-count and builder-code suffixes on a managed type:claim", async () => {
+  it("keeps the count pending when a managed type:claim row emitted no Claimed event", async () => {
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
-    const signer = buildSigner();
+    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const stored = buildStoredChannel(config, { chargeCount: 4 });
+    await storage.updateChannel(stored.channelId, () => stored);
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", logs: [] }),
+    });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       voucherStore: { storage },
     });
+
+    const result = await scheme.settle(
+      envelopeSettle({
+        type: "claim",
+        claims: [
+          {
+            voucher: { channel: config, maxClaimableAmount: "1000" },
+            signature: "0xcafe",
+            totalClaimed: "1000",
+          },
+        ],
+      }),
+      makeRequirements({ extra: { ...makeRequirements().extra, voucherStore: true } }),
+    );
+
+    expect(result.success).toBe(true);
+    expect((await storage.get(stored.channelId))?.chargeCount).toBe(4);
+  });
+
+  it("carries charge counts as m in the builder-code suffix on a managed type:claim", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
     const stored = buildStoredChannel(config, { chargeCount: 6 });
     await storage.updateChannel(stored.channelId, () => stored);
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi
+        .fn()
+        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId)] }),
+    });
+    const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
+      voucherStore: { storage },
+    });
     const builderSuffix = "0x8021abcd" as `0x${string}`;
+    const recorded: unknown[] = [];
 
     const result = await scheme.settle(
       envelopeSettle({
@@ -3068,7 +3126,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
       {
         getExtension: () => ({
           key: "builder-code",
-          buildDataSuffix: () => builderSuffix,
+          buildDataSuffix: (ctx: { metadata?: unknown }) => {
+            recorded.push(ctx.metadata);
+            return builderSuffix;
+          },
         }),
       },
     );
@@ -3077,8 +3138,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };
-    expect(write.dataSuffix?.startsWith("0x50b180c6")).toBe(true);
-    expect(write.dataSuffix?.endsWith("8021abcd")).toBe(true);
+    expect(write.dataSuffix).toBe(builderSuffix);
+    // The first resolution is the generic one without metadata; the claim adds the counts.
+    expect(recorded.at(-1)).toEqual({ x402ChargeCounts: [6n] });
+    expect((await storage.get(stored.channelId))?.chargeCount).toBe(0);
   });
 
   it("leaves the store unchanged when a managed claim fails simulation", async () => {
@@ -3868,9 +3931,15 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       "0",
       NETWORK,
     );
-    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
-      voucherStore: { storage },
-    });
+    const scheme = new BatchSettlementEvmScheme(
+      buildSigner({
+        waitForTransactionReceipt: vi
+          .fn()
+          .mockResolvedValue({ status: "success", logs: [buildClaimedLog(channelId)] }),
+      }),
+      authorizer,
+      { voucherStore: { storage } },
+    );
     const payload = envelopeRefund({
       type: "refund",
       channelConfig: config,

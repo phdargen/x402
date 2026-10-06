@@ -24,6 +24,10 @@ function attestedMap(...channels: FacilitatorChannel[]): Map<string, number> {
   return new Map(channels.map(channel => [channel.channelId.toLowerCase(), channel.chargeCount]));
 }
 
+function claimedIds(...channels: FacilitatorChannel[]): Set<string> {
+  return new Set(channels.map(channel => channel.channelId.toLowerCase()));
+}
+
 function buildChannel(overrides: Partial<FacilitatorChannel> = {}): FacilitatorChannel {
   const channelConfig = overrides.channelConfig ?? buildConfig();
   const channelId = overrides.channelId ?? computeChannelId(channelConfig, NETWORK);
@@ -62,6 +66,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
     );
 
@@ -89,6 +94,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
     );
 
@@ -112,6 +118,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
       "when-unused",
     );
@@ -139,6 +146,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
       "forever",
     );
@@ -162,10 +170,64 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       new Map([[channel.channelId.toLowerCase(), 3]]),
+      claimedIds(channel),
       undefined,
     );
 
     expect(await storage.get(channel.channelId)).toBeUndefined();
+  });
+
+  it("keeps the count pending for a row that did not emit Claimed", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const claimedChannel = buildChannel({ balance: "10000", chargeCount: 4 });
+    const noOpChannel = buildChannel({
+      channelConfig: buildConfig("01"),
+      balance: "10000",
+      chargeCount: 2,
+    });
+    await storage.updateChannel(claimedChannel.channelId, () => claimedChannel);
+    await storage.updateChannel(noOpChannel.channelId, () => noOpChannel);
+
+    await afterClaim(
+      storage,
+      storage,
+      [claimedChannel, noOpChannel].map(channel => ({
+        voucher: { channel: channel.channelConfig, maxClaimableAmount: "5000" },
+        signature: "0xdeadbeef" as const,
+        totalClaimed: "5000",
+      })),
+      NETWORK,
+      attestedMap(claimedChannel, noOpChannel),
+      claimedIds(claimedChannel),
+      undefined,
+    );
+
+    expect((await storage.get(claimedChannel.channelId))?.chargeCount).toBe(0);
+    expect((await storage.get(noOpChannel.channelId))?.chargeCount).toBe(2);
+  });
+
+  it("subtracts nothing when the receipt has no Claimed events", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const channel = buildChannel({ balance: "10000", chargeCount: 3 });
+    await storage.updateChannel(channel.channelId, () => channel);
+
+    await afterClaim(
+      storage,
+      storage,
+      [
+        {
+          voucher: { channel: channel.channelConfig, maxClaimableAmount: "5000" },
+          signature: "0xdeadbeef",
+          totalClaimed: "5000",
+        },
+      ],
+      NETWORK,
+      attestedMap(channel),
+      new Set(),
+      undefined,
+    );
+
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(3);
   });
 
   it("does not delete a closed row while an admission lock is held", async () => {
@@ -186,6 +248,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
     );
 
@@ -216,6 +279,7 @@ describe("afterClaim", () => {
       ],
       NETWORK,
       attestedMap(channel),
+      claimedIds(channel),
       undefined,
     );
 

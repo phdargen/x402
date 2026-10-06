@@ -5,6 +5,12 @@ import type { AuthorizerSigner } from "../types";
 /** How the facilitator submits `claim` / `refund` transactions. */
 export type SubmitMode = "relay" | "direct";
 
+/**
+ * Receives the lowercase `channelId`s that emitted `Claimed` once a claim or bundled
+ * claim+refund confirms. Rows that did not emit `Claimed` were no-ops and are absent.
+ */
+export type OnClaimedChannels = (claimedChannelIds: ReadonlySet<string>) => void;
+
 /** Signers and mode used by claim and refund dispatchers. */
 export type SubmitContext = {
   submitMode?: SubmitMode;

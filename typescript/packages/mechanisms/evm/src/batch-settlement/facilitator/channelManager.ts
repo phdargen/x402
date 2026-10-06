@@ -17,7 +17,7 @@ import { computeChannelId } from "../utils";
 import type { ChannelLockStorage, ChannelQuery, ChannelStorage } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { isChannelLockStorage, queryChannels, querySettleTargets } from "../storage/channel";
-import { composeClaimDataSuffix, encodeChargeCountsSuffix } from "../chargeCounts";
+import { chargeCountsMetadata } from "../chargeCounts";
 import { submitClaim } from "./claim";
 import { submitRefund } from "./refund";
 import { executeSettle } from "./settle";
@@ -127,7 +127,9 @@ export interface FacilitatorChannelManagerConfig {
   retention?: FacilitatorRetention;
   /**
    * Optional facilitator extension context so scheduled claim, settle, and
-   * refund txs can append builder-code (`w` / `serviceCode` only).
+   * refund txs can append the ERC-8021 suffix: builder-code (`w` / `serviceCode`)
+   * and, on claims, the `m.x402ChargeCounts` attestation. Register the builder-code
+   * extension for the latter; no builder code needs to be configured.
    */
   context?: FacilitatorContext;
   delegatedAuthStore?: DelegatedAuthStore;
@@ -213,6 +215,9 @@ async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promi
  * @param claims - Submitted claims.
  * @param network - Network for channel-id recomputation.
  * @param attested - Charge-count snapshot encoded on the claim (do not re-read the store).
+ * @param claimedChannelIds - Lowercase channel ids that emitted `Claimed` in the receipt. Only
+ *   these rows were attested onchain, so only their snapshots are subtracted; a no-op row keeps
+ *   its count pending for the channel's next claim.
  * @param delegatedAuthStore - Optional store; bindings are removed when a closed row is deleted.
  * @param retention - Row retention policy.
  */
@@ -222,6 +227,7 @@ export async function afterClaim(
   claims: BatchSettlementVoucherClaim[],
   network: Network,
   attested: ReadonlyMap<string, number>,
+  claimedChannelIds: ReadonlySet<string>,
   delegatedAuthStore: DelegatedAuthStore | undefined,
   retention: FacilitatorRetention = "when-unused",
 ): Promise<void> {
@@ -230,7 +236,8 @@ export async function afterClaim(
 
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
-    const snapshot = attested.get(channelId.toLowerCase()) ?? 0;
+    const key = channelId.toLowerCase();
+    const snapshot = claimedChannelIds.has(key) ? (attested.get(key) ?? 0) : 0;
     await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
@@ -244,7 +251,8 @@ export async function afterClaim(
 /**
  * Snapshots each claim row's unattested `chargeCount` in batch order.
  *
- * Encode this snapshot on the claim, then pass the same map to {@link afterClaim}.
+ * Carry `counts` in the suffix `m.x402ChargeCounts`, then pass the same map to {@link afterClaim}
+ * together with the channels that emitted `Claimed`.
  *
  * Pass `known` when the caller already holds the rows the claims were selected
  * from: the attested count then agrees with the `totalClaimed` those same rows
@@ -354,7 +362,11 @@ export class FacilitatorChannelManager {
 
       for (let i = 0; i < claims.length; i += maxClaimsPerBatch) {
         const batch = claims.slice(i, i + maxClaimsPerBatch);
-        const { result, attested } = await this.submitClaimBatch(network, batch, group);
+        const { result, attested, claimedChannelIds } = await this.submitClaimBatch(
+          network,
+          batch,
+          group,
+        );
         results.push(result);
         await afterClaim(
           this.storage,
@@ -362,6 +374,7 @@ export class FacilitatorChannelManager {
           batch,
           network,
           attested,
+          claimedChannelIds,
           this.delegatedAuthStore,
           this.retention,
         );
@@ -497,27 +510,40 @@ export class FacilitatorChannelManager {
    * @param network - Network for this batch.
    * @param claims - Voucher claims.
    * @param rows - Rows these claims were selected from.
-   * @returns Per-batch claim summary.
+   * @returns Per-batch claim summary, the snapshot, and the channels that emitted `Claimed`.
    */
   private async submitClaimBatch(
     network: Network,
     claims: BatchSettlementVoucherClaim[],
     rows: readonly FacilitatorChannel[],
-  ): Promise<{ result: FacilitatorClaimResult; attested: Map<string, number> }> {
+  ): Promise<{
+    result: FacilitatorClaimResult;
+    attested: Map<string, number>;
+    claimedChannelIds: ReadonlySet<string>;
+  }> {
     const { counts, attested } = await snapshotClaimChargeCounts(
       this.storage,
       claims,
       network,
       rows,
     );
-    const builderSuffix = await this.resolveBuilderSuffix(
+    const dataSuffix = await this.resolveBuilderSuffix(
       network,
       { type: "claim", claims },
       claims[0]?.voucher.channel.token ?? "0x0000000000000000000000000000000000000000",
       claims[0]?.voucher.channel.receiver ?? "0x0000000000000000000000000000000000000000",
+      chargeCountsMetadata(counts),
     );
+    let claimedChannelIds: ReadonlySet<string> = new Set();
     const response = await submitClaim(
-      { network, claims, dataSuffix: composeClaimDataSuffix(counts, builderSuffix) },
+      {
+        network,
+        claims,
+        dataSuffix,
+        onClaimed: claimed => {
+          claimedChannelIds = claimed;
+        },
+      },
       this.submitContext(),
     );
     if (!response.success) {
@@ -526,6 +552,7 @@ export class FacilitatorChannelManager {
     return {
       result: { network, vouchers: claims.length, transaction: response.transaction },
       attested,
+      claimedChannelIds,
     };
   }
 
@@ -566,13 +593,18 @@ export class FacilitatorChannelManager {
     }
 
     if (refundAmount <= 0n) {
-      const { result, attested } = await this.submitClaimBatch(target.network, claims, [target]);
+      const { result, attested, claimedChannelIds } = await this.submitClaimBatch(
+        target.network,
+        claims,
+        [target],
+      );
       await afterClaim(
         this.storage,
         this.lockStorage,
         claims,
         target.network,
         attested,
+        claimedChannelIds,
         this.delegatedAuthStore,
         this.retention,
       );
@@ -600,15 +632,17 @@ export class FacilitatorChannelManager {
       payload,
       target.channelConfig.token,
       target.channelConfig.receiver,
+      claims.length > 0 ? chargeCountsMetadata([target.chargeCount]) : undefined,
     );
+    let claimedChannelIds: ReadonlySet<string> = new Set();
     const response = await submitRefund(
       {
         network: target.network,
         payload,
         dataSuffix,
-        ...(claims.length > 0
-          ? { claimDataSuffix: encodeChargeCountsSuffix([target.chargeCount]) }
-          : {}),
+        onClaimed: claimed => {
+          claimedChannelIds = claimed;
+        },
       },
       this.submitContext(),
     );
@@ -616,7 +650,7 @@ export class FacilitatorChannelManager {
       throw new Error(formatFailure("Refund", response));
     }
 
-    await this.afterRefund(target, claims, response);
+    await this.afterRefund(target, claims, response, claimedChannelIds);
     return {
       network: target.network,
       channel: target.channelId,
@@ -625,20 +659,24 @@ export class FacilitatorChannelManager {
   }
 
   /**
-   * Subtracts attested `chargeCount` when a claim was bundled, mirrors refunded
-   * escrow, and deletes the row when closed.
+   * Subtracts attested `chargeCount` when the bundled claim emitted `Claimed`, mirrors
+   * refunded escrow, and deletes the row when closed.
    *
    * @param target - Channel that was refunded.
    * @param claims - Claims bundled into the refund transaction.
    * @param response - Successful refund settle response.
+   * @param claimedChannelIds - Lowercase channel ids that emitted `Claimed` in the receipt.
    */
   private async afterRefund(
     target: FacilitatorChannel,
     claims: BatchSettlementVoucherClaim[],
     response: SettleResponse,
+    claimedChannelIds: ReadonlySet<string>,
   ): Promise<void> {
     if (claims.length > 0) {
-      const attested = target.chargeCount;
+      const attested = claimedChannelIds.has(target.channelId.toLowerCase())
+        ? target.chargeCount
+        : 0;
       await applyClaimedTotals(this.storage, claims, target.network);
       await this.storage.updateChannel(target.channelId, current => {
         if (!current) {
@@ -885,6 +923,7 @@ export class FacilitatorChannelManager {
    * @param payload - Synthetic payload (`type` plus operation fields).
    * @param asset - Token address used as `accepted.asset`.
    * @param payTo - Receiver address used as `accepted.payTo`.
+   * @param metadata - Optional settlement metadata encoded as ERC-8021 `m`.
    * @returns ERC-8021 suffix, or `undefined` when no extension produces one.
    */
   private async resolveBuilderSuffix(
@@ -892,8 +931,12 @@ export class FacilitatorChannelManager {
     payload: Record<string, unknown>,
     asset: `0x${string}`,
     payTo: `0x${string}`,
+    metadata?: DataSuffixContext["metadata"],
   ): Promise<`0x${string}` | undefined> {
-    return resolveDataSuffix(this.context, scheduledSuffixContext(network, payload, asset, payTo));
+    return resolveDataSuffix(
+      this.context,
+      scheduledSuffixContext(network, payload, asset, payTo, metadata),
+    );
   }
 
   /**
@@ -918,6 +961,7 @@ export class FacilitatorChannelManager {
  * @param payload - Synthetic payload body.
  * @param asset - Token address.
  * @param payTo - Receiver address.
+ * @param metadata - Optional settlement metadata encoded as ERC-8021 `m`.
  * @returns Context passed to `resolveDataSuffix`.
  */
 function scheduledSuffixContext(
@@ -925,6 +969,7 @@ function scheduledSuffixContext(
   payload: Record<string, unknown>,
   asset: `0x${string}`,
   payTo: `0x${string}`,
+  metadata?: DataSuffixContext["metadata"],
 ): DataSuffixContext {
   const accepted: PaymentRequirements = {
     scheme: BATCH_SETTLEMENT_SCHEME,
@@ -942,6 +987,7 @@ function scheduledSuffixContext(
       payload,
     },
     paymentRequirements: accepted,
+    ...(metadata ? { metadata } : {}),
   };
 }
 

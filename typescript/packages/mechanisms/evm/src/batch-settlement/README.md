@@ -306,6 +306,12 @@ Facilitator-initiated refunds claim the store voucher first, then return `balanc
 
 Construction throws when `voucherStore` is set without `authorizerSigner`, or when `storage` does not implement `ChannelLockStorage` and no `lockStorage` is passed.
 
+#### Claim attestation
+
+Each claim attests its unattested `chargeCount` deltas onchain in the `m` field of the ERC-8021 calldata suffix: `m = { x402ChargeCounts: [c0, c1, ...] }`, one count per claim row in call order. This only reuses the builder-code suffix format. No builder code is needed, and `m` shares one suffix with `w` / `a` / `s` when those are configured. The suffix is produced by the registered `builder-code` facilitator extension (`new BuilderCodeFacilitatorExtension()` with no config is enough), so register it on the facilitator and pass `getExtension` to `createChannelManager()`.
+
+Read it back with `decodeClaimAttestation(txInput, receipt.logs, network, parseBuilderCodeSuffixFromCalldata(txInput)?.m)`. It decodes the claim rows (including those inside `multicall`), recomputes each `channelId`, and joins the row to the `Claimed` event of that `channelId`. A row with no `Claimed` event was a no-op and attests nothing; counts are never paired with logs by position. The facilitator applies the same rule when subtracting snapshots: only channels that emitted `Claimed` are subtracted.
+
 ### Server
 
 Opt in with `voucherStoreMode: "facilitator"`. Mode is constructor-wide — it is not inferred from `/supported`. `initialize()` fails if the facilitator does not advertise `voucherStore`, a non-zero `receiverAuthorizer`, and an in-range `withdrawDelay`. The 402 copies those three fields from `/supported` (the server must not override `withdrawDelay`) and sets `voucherStore: true`.

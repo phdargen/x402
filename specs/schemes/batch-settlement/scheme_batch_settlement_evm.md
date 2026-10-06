@@ -90,7 +90,7 @@ The scheme has two voucher-custody modes, selected by `PaymentRequirements.extra
 
 In facilitator-managed mode the resource server is a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. The facilitator verifies every payload (no local EOA short-circuit), serializes per-channel requests at `/verify`, persists vouchers, `chargedCumulativeAmount`, and `chargeCount` on `/settle`, and claims/settles on a schedule — including before a timed withdrawal finalizes. The facilitator SHOULD run stateless checks (`channelConfig` against the `channelId` and requirements, EOA voucher signatures) before acquiring the per-channel lock.
 
-**Charge count.** `chargeCount` is the unattested delta since the last confirmed onchain claim, not a lifetime total. On each paid offchain commit (`type: "voucher"`, and the voucher persisted with `type: "deposit"`), the facilitator increments it. Zero-charge refunds and cancel settles do not. Facilitator-managed `/settle` responses MUST include the current delta as `extra.chargeCount`. After a claim confirms, subtract the attested snapshot from the stored count so in-flight commits remain. The facilitator attests this delta onchain at claim time (see Claim & Settlement Strategy).
+**Charge count.** `chargeCount` is the unattested delta since the last confirmed onchain claim, not a lifetime total. On each paid offchain commit (`type: "voucher"`, and the voucher persisted with `type: "deposit"`), the facilitator increments it. Zero-charge refunds and cancel settles do not. Facilitator-managed `/settle` responses MUST include the current delta as `extra.chargeCount`. After a claim confirms, subtract the attested snapshot from the stored count, only for channels whose claim row emitted `Claimed`, so in-flight commits remain. The facilitator attests this delta onchain at claim time in the ERC-8021 `m.x402ChargeCounts` metadata of the claim transaction; no builder code is needed (see Claim & Settlement Strategy).
 
 **Managed refund consent.** `/settle` is otherwise unauthenticated. The server sets `extra.refundAuthorizer` on the 402 (stable per receiver until rotation) unless the facilitator advertised `refundAuth: true` and the server relies on that path. The client packs that address into `ChannelConfig.salt` (see 402). On `type: "refund"` `/settle`, the server attaches `refundAuthorizerSignature` over the EIP-712 `Refund` digest (`Refund(bytes32 channelId,uint256 nonce,uint128 amount)`). The facilitator unpacks the address from `salt`, requires it equals `extra.refundAuthorizer`, recovers the signer, then submits `refundWithSignature` as `receiverAuthorizer`. The facilitator MUST still accept the signature path when `extra.refundAuthorizer` is present.
 
@@ -875,15 +875,43 @@ In self-managed mode the server runs this strategy. In facilitator-managed mode 
 
 `claim(voucherClaims)` validates payer voucher signatures and updates accounting for multiple channels; `msg.sender` must be `receiver` or `receiverAuthorizer` for every row. `claimWithSignature(claims, signature)` is the relay-friendly variant: anyone can submit it with a valid EIP-712 `ClaimBatch` signature from `receiverAuthorizer` covering all rows (all rows must share the same `receiverAuthorizer`). No token transfer occurs in either path.
 
-**Claim attestation.** In facilitator-managed mode, the facilitator SHOULD append a charge-count suffix to `claim` / `claimWithSignature` calldata after the encoded function arguments:
+**Claim attestation.** In facilitator-managed mode, the facilitator SHOULD attest the charge counts of a claim onchain by carrying them in the settlement metadata field `m` of the transaction's [ERC-8021](https://eips.ethereum.org/EIPS/eip-8021) Schema 2 calldata suffix. The contract is unchanged: it ignores trailing calldata and does not validate the suffix.
 
-`[function args][magic][abi.encode(uint64[] chargeCounts)][any further suffix]`
+This only reuses the ERC-8021 / x402 `builder-code` suffix *format* (CBOR map with an `m` entry, followed by the ERC-8021 marker) as a carrier for facilitator-authored metadata:
 
-`magic` is `0x50b180c6` (`bytes4(keccak256("x402ChargeCounts(uint64[])"))`). `chargeCounts` has one entry per `voucherClaims` row — that row's unattested delta (`chargeCount`), not a lifetime aggregate. Length MUST equal `voucherClaims.length`. Solidity ignores trailing calldata; the contract is unchanged and does not validate the suffix. When `builder-code` is also present, its ERC-8021 suffix is appended after this blob so the ERC-8021 marker remains at the end of calldata.
+- **No builder code is required.** The facilitator does not need a `w` code, and no `a` or `s` codes are involved. A suffix that carries only `m` is valid.
+- **It composes with builder codes.** When the facilitator also configures a builder code, or the payment carries client/server attribution, `m` rides in the same single suffix next to `w` / `a` / `s`. The two are independent; neither changes the meaning of the other.
+- **Single suffix, at the end of the top-level calldata.** ERC-8021 parsers only read the end of the transaction input, so the suffix is appended once to the outer call. Inner `multicall` legs carry no suffix.
 
-When a claim is batched with a refund via `multicall(bytes[])`, the suffix stays on the inner `claim` / `claimWithSignature` bytes, not the outer transaction. Indexers unwrap `multicall` first (first inner claim wins; production batches `[claim, refund]`), then ABI-decode the inner claim and read the leftover magic as below.
+*Encoding.* `m` has one key:
 
-Indexers ABI-decode the function (unwrapping `multicall` first), then if leftover starts with `magic`, decode the following `uint64[]` (stop before any later suffix) and join `chargeCounts[i]` to `voucherClaims[i]` by `channelId`, then to that channel's `Claimed` event in the same transaction. Empty leftover or no `magic` means no attestation. After the claim confirms, subtract each attested snapshot from the stored `chargeCount`; do not zero the field, or in-flight commits are lost.
+```
+m = { "x402ChargeCounts": [c0, c1, ..., c(n-1)] }
+```
+
+- The array has one entry per claim row, across all `claim` / `claimWithSignature` legs of the transaction, in call order (leg order, then row order within a leg). Entry `ci` is the unattested delta (`chargeCount`) of row `i`, not a lifetime aggregate.
+- Entries are unsigned integers in shortest-form CBOR: 1 byte up to 23, 2 bytes up to 255, 3 bytes up to 65,535. Zero counts stay in the array so positions remain aligned with rows.
+- The key MUST be omitted when the transaction has no claim leg (refund-only, `settle`, `deposit`).
+- Overhead is about 22 bytes plus 1–3 bytes per row; 100 rows fit in roughly 120–320 bytes.
+
+Example: for rows with counts `3`, `0`, `41`, the `m` entry of the CBOR suffix map is `616d a1 70<"x402ChargeCounts"> 83 03 00 1829` (25 bytes). Together with a facilitator code the full map is `{"w":"bc_myfacilitator","m":{"x402ChargeCounts":[3,0,41]}}`.
+
+*Row selection.* The facilitator MUST only include rows that advance `totalClaimed` (`chargedCumulativeAmount > totalClaimed`) and MUST NOT include the same `channelId` twice in one transaction. Every such row emits exactly one `Claimed` event, in row order, except when execution races with an out-of-band claim or the batch was already applied (a no-op row emits no `Claimed`).
+
+*Indexer decoding (row join).* Indexers MUST join counts to channels by `channelId`, never by event position:
+
+1. Parse the ERC-8021 suffix from the top-level transaction input and read `m.x402ChargeCounts`. If it is absent, there is no attestation.
+2. ABI-decode the top-level call. Unwrap `multicall(bytes[])` and collect the rows of every `claim` / `claimWithSignature` leg in call order. If the array length does not equal the total row count, ignore the attestation.
+3. Compute each row's `channelId` from its channel config (EIP-712 hash, chain-bound).
+4. Match each row's `channelId` against the `Claimed(channelId, ...)` events emitted by `x402BatchSettlement` in the same receipt. A row with a `Claimed` event attests `chargeCounts[i]` to that channel. A row without one was a no-op and attests nothing.
+
+Pairing counts with `Claimed` logs by position is not allowed: a single no-op row shifts every later pairing and attributes counts to the wrong channels.
+
+A batch that was already applied emits no `Claimed` events and therefore attests nothing. Counts of rows that did not emit `Claimed` stay pending in the facilitator and are attested by that channel's next claim.
+
+After the claim confirms, the facilitator subtracts the attested snapshot from the stored `chargeCount` only for channels whose row emitted `Claimed`; do not zero the field, or in-flight commits are lost. Charges of zero amount increment `chargeCount` without creating a claim row and are attested with the channel's next claim.
+
+Facilitators claim and refund in one transaction via `multicall(bytes[])` of `[claim, refund]`; the layout above applies unchanged, with `m` on the outer suffix and a bare inner claim. Indexers MUST support a direct `claim` / `claimWithSignature` call and `multicall(bytes[])`. Other wrappers (for example Multicall3 or smart-account `execute`) can only be attested by indexers that know how to unwrap them.
 
 `settle(receiver, token)` transfers all claimed-but-unsettled funds for a receiver+token pair to the receiver in one transfer. Permissionless.
 
@@ -1115,5 +1143,5 @@ The `x402BatchSettlement` contract uses `ReentrancyGuardTransient` (EIP-1153 tra
 
 | Version | Date       | Changes                                              | Authors                                 |
 | ------- | ---------- | ---------------------------------------------------- | --------------------------------------- |
-| v1.1    | 2026-08-25 | Facilitator-managed voucher custody (`voucherStore`); `/supported` `refundAuth` | @phdargen                               |
+| v1.1    | 2026-10-06 | Facilitator-managed voucher custody (`voucherStore`); `/supported` `refundAuth` | @phdargen                               |
 | v1.0    | 2025-04-28 | Initial draft                                        | @phdargen @CarsonRoscoen @ilikesymmetry |

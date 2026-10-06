@@ -1,6 +1,5 @@
 import { type Network, type SettleResponse } from "@x402/core/types";
 import { encodeFunctionData, getAddress, type Hex } from "viem";
-import { appendDataSuffix } from "../../shared/extensions";
 import { FacilitatorEvmSigner } from "../../signer";
 import type {
   AuthorizerSigner,
@@ -18,8 +17,9 @@ import { signClaimBatch, signRefund } from "../authorizerSigner";
 import * as Errors from "../errors";
 import { truncateErrorMessage } from "../../utils";
 import { waitAndReturnSettleResponse } from "../../shared/settleReceipt";
+import { claimedChannelIdsFromLogs } from "../attestation";
 import { buildVoucherClaimArgs } from "./claim";
-import { shouldRelaySubmit, type SubmitContext } from "./submit";
+import { shouldRelaySubmit, type OnClaimedChannels, type SubmitContext } from "./submit";
 import { readChannelState, toContractChannelConfig } from "./utils";
 
 type RefundSettlementExtra = {
@@ -190,7 +190,6 @@ function buildRefundExtraFromPostState(
  * @param mode - Direct (`refund` / `claim`) or relay (`*WithSignature`).
  * @param refundSig - Authorizer signature required for the relay refund leg.
  * @param claimSig - Authorizer signature required for a relay claim leg.
- * @param claimDataSuffix - Optional charge-count suffix on the inner claim only.
  * @returns Function name and args for simulation and broadcast.
  */
 function buildRefundCall(
@@ -198,7 +197,6 @@ function buildRefundCall(
   mode: "direct" | "relay",
   refundSig?: `0x${string}`,
   claimSig?: `0x${string}`,
-  claimDataSuffix?: Hex,
 ): RefundCall {
   const config = toContractChannelConfig(payload.channelConfig);
   const amount = BigInt(payload.amount);
@@ -226,7 +224,7 @@ function buildRefundCall(
     };
   }
 
-  const claimCalldata = appendDataSuffix(
+  const claimCalldata: Hex =
     mode === "direct"
       ? encodeFunctionData({
           abi: batchSettlementABI,
@@ -237,9 +235,7 @@ function buildRefundCall(
           abi: batchSettlementABI,
           functionName: "claimWithSignature",
           args: [buildVoucherClaimArgs(payload.claims), claimSig ?? "0x"],
-        }),
-    claimDataSuffix,
-  );
+        });
 
   return { functionName: "multicall", args: [[claimCalldata, refundCalldata]] };
 }
@@ -252,6 +248,7 @@ function buildRefundCall(
  * @param network - CAIP-2 network identifier.
  * @param call - Encoded onchain call.
  * @param dataSuffix - Optional hex suffix appended to the refund transaction.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed` in a bundled claim.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 async function submitRefundTransaction(
@@ -260,6 +257,7 @@ async function submitRefundTransaction(
   network: Network,
   call: RefundCall,
   dataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   try {
     const channelId = computeChannelId(payload.channelConfig, network);
@@ -304,7 +302,8 @@ async function submitRefundTransaction(
 
     return await waitAndReturnSettleResponse(signer, tx, network, payload.channelConfig.payer, {
       failedStatusReason: Errors.ErrRefundTransactionFailed,
-      onSuccess: async () => {
+      onSuccess: async receipt => {
+        onClaimed?.(claimedChannelIdsFromLogs(receipt.logs));
         const postState =
           preState && preState.withdrawRequestedAt !== 0
             ? await readPostRefundState(signer, channelId, payload.refundNonce)
@@ -352,7 +351,7 @@ async function submitRefundTransaction(
  * @param authorizerSigner - Optional dedicated key for producing EIP-712 signatures.
  *   When omitted, the payload must already carry the required authorizer signatures.
  * @param dataSuffix - Optional hex suffix appended to the outer refund transaction.
- * @param claimDataSuffix - Optional charge-count suffix on a bundled inner claim.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed` in a bundled claim.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeRefundWithSignature(
@@ -361,7 +360,7 @@ export async function executeRefundWithSignature(
   network: Network,
   authorizerSigner: AuthorizerSigner | undefined,
   dataSuffix?: `0x${string}`,
-  claimDataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   const hasClientSig = payload.refundAuthorizerSignature !== undefined;
 
@@ -409,8 +408,9 @@ export async function executeRefundWithSignature(
     signer,
     payload,
     network,
-    buildRefundCall(payload, "relay", refundSig, claimSig, claimDataSuffix),
+    buildRefundCall(payload, "relay", refundSig, claimSig),
     dataSuffix,
+    onClaimed,
   );
 }
 
@@ -424,7 +424,7 @@ export async function executeRefundWithSignature(
  * @param payload - Refund payload with amount, nonce, and optional bundled claims.
  * @param network - CAIP-2 network identifier.
  * @param dataSuffix - Optional hex suffix appended to the outer refund transaction.
- * @param claimDataSuffix - Optional charge-count suffix on a bundled inner claim.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed` in a bundled claim.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeRefund(
@@ -432,14 +432,15 @@ export async function executeRefund(
   payload: BatchSettlementEnrichedRefundPayload,
   network: Network,
   dataSuffix?: `0x${string}`,
-  claimDataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   return submitRefundTransaction(
     signer,
     payload,
     network,
-    buildRefundCall(payload, "direct", undefined, claimDataSuffix),
+    buildRefundCall(payload, "direct"),
     dataSuffix,
+    onClaimed,
   );
 }
 
@@ -454,7 +455,7 @@ export async function executeRefund(
  * @param input.network - CAIP-2 network identifier.
  * @param input.payload - Enriched refund payload with amount, nonce, and optional claims.
  * @param input.dataSuffix - Optional hex suffix appended to the outer refund transaction.
- * @param input.claimDataSuffix - Optional charge-count suffix on a bundled inner claim.
+ * @param input.onClaimed - Optional receiver of the channel ids that emitted `Claimed` in a bundled claim.
  * @param ctx - Regular signer pool, dedicated authorizer, and submit mode.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
@@ -463,7 +464,7 @@ export async function submitRefund(
     network: Network;
     payload: BatchSettlementEnrichedRefundPayload;
     dataSuffix?: `0x${string}`;
-    claimDataSuffix?: `0x${string}`;
+    onClaimed?: OnClaimedChannels;
   },
   ctx: SubmitContext,
 ): Promise<SettleResponse> {
@@ -478,7 +479,7 @@ export async function submitRefund(
       input.network,
       ctx.authorizerSigner,
       input.dataSuffix,
-      input.claimDataSuffix,
+      input.onClaimed,
     );
   }
 
@@ -496,6 +497,6 @@ export async function submitRefund(
     input.payload,
     input.network,
     input.dataSuffix,
-    input.claimDataSuffix,
+    input.onClaimed,
   );
 }

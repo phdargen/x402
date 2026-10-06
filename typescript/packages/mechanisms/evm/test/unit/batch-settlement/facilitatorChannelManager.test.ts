@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { MockedFunction } from "vitest";
-import { encodeFunctionData } from "viem";
+import {
+  decodeFunctionData,
+  encodeAbiParameters,
+  encodeEventTopics,
+  encodeFunctionData,
+  type Hex,
+  type Log,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   FacilitatorChannelManager,
@@ -8,13 +15,8 @@ import {
 } from "../../../src/batch-settlement/facilitator/channelManager";
 import type { FacilitatorChannel } from "../../../src/batch-settlement/facilitator/types";
 import { InMemoryChannelStorage } from "../../../src/batch-settlement/storage/channel";
-import {
-  CHARGE_COUNTS_MAGIC,
-  parseChargeCountsFromCalldata,
-  parseChargeCountsSuffix,
-} from "../../../src/batch-settlement/chargeCounts";
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
-import { appendDataSuffix } from "../../../src/shared/extensions";
+import { BATCH_SETTLEMENT_ADDRESS } from "../../../src/batch-settlement/constants";
 import { computeChannelId as computeChannelIdForNetwork } from "../../../src/batch-settlement/utils";
 import type { AuthorizerSigner, ChannelConfig } from "../../../src/batch-settlement/types";
 import type { FacilitatorContext } from "@x402/core/types";
@@ -88,14 +90,102 @@ function buildChannel(overrides: Partial<FacilitatorChannel> = {}): FacilitatorC
   };
 }
 
+type WriteCall = { functionName: string; args: readonly unknown[] };
+type ContractClaimRow = { voucher: { channel: ChannelConfig } };
+
+/**
+ * Returns the claim rows of a claim or `multicall([claim, refund])` write, in call order.
+ *
+ * @param write - Arguments of a `writeContract` call.
+ * @returns Claim rows.
+ */
+function claimRowsOf(write: WriteCall): readonly ContractClaimRow[] {
+  if (write.functionName === "claim" || write.functionName === "claimWithSignature") {
+    return write.args[0] as readonly ContractClaimRow[];
+  }
+  if (write.functionName === "multicall") {
+    return (write.args[0] as readonly Hex[]).flatMap(data => {
+      const decoded = decodeFunctionData({ abi: batchSettlementABI, data });
+      return decoded.functionName === "claim" || decoded.functionName === "claimWithSignature"
+        ? (decoded.args[0] as readonly ContractClaimRow[])
+        : [];
+    });
+  }
+  return [];
+}
+
+function buildClaimedLog(channelId: `0x${string}`): Log {
+  return {
+    address: BATCH_SETTLEMENT_ADDRESS,
+    topics: encodeEventTopics({
+      abi: batchSettlementABI,
+      eventName: "Claimed",
+      args: { channelId, sender: RECEIVER },
+    }),
+    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, 1n]),
+    blockHash: null,
+    blockNumber: null,
+    logIndex: null,
+    transactionHash: null,
+    transactionIndex: null,
+    removed: false,
+  } as Log;
+}
+
+/**
+ * Builds a receipt in which every claim row of the write emitted `Claimed`.
+ *
+ * @param write - Arguments of a `writeContract` call.
+ * @param skip - Channel ids whose rows were a no-op and emitted nothing.
+ * @returns Successful receipt with the `Claimed` logs.
+ */
+function claimedReceipt(write: WriteCall, skip: readonly `0x${string}`[] = []) {
+  const skipped = new Set(skip.map(id => id.toLowerCase()));
+  const logs = claimRowsOf(write)
+    .map(row => computeChannelIdForNetwork(row.voucher.channel, NETWORK))
+    .filter(channelId => !skipped.has(channelId.toLowerCase()))
+    .map(buildClaimedLog);
+  return { status: "success", logs };
+}
+
+/**
+ * Builds a builder-code extension context that records the `m` metadata it is asked to encode.
+ *
+ * @param suffix - Suffix returned whenever metadata is present.
+ * @returns Facilitator context and the recorded metadata per resolution.
+ */
+function metadataContext(suffix: `0x${string}` = "0x8021abcd") {
+  const recorded: unknown[] = [];
+  const context: FacilitatorContext = {
+    getExtension: () => ({
+      key: "builder-code",
+      buildDataSuffix: (ctx: { metadata?: unknown }) => {
+        recorded.push(ctx.metadata);
+        return ctx.metadata ? suffix : undefined;
+      },
+    }),
+  } as unknown as FacilitatorContext;
+  return { context, recorded, suffix };
+}
+
 function buildSigner(overrides: Partial<FacilitatorEvmSigner> = {}): FacilitatorEvmSigner {
+  const writeContract =
+    overrides.writeContract ??
+    (vi.fn().mockResolvedValue(("0x" + "ab".repeat(32)) as `0x${string}`) as ReturnType<
+      typeof vi.fn
+    >);
+  const lastWrite = (): WriteCall | undefined =>
+    (writeContract as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
   return {
     getAddresses: () => [FACILITATOR_ADDRESS],
     readContract: vi.fn().mockResolvedValue(undefined),
     verifyTypedData: vi.fn().mockResolvedValue(true),
-    writeContract: vi.fn().mockResolvedValue(("0x" + "ab".repeat(32)) as `0x${string}`),
+    writeContract,
     sendTransaction: vi.fn(),
-    waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success" }),
+    waitForTransactionReceipt: vi.fn().mockImplementation(async () => {
+      const write = lastWrite();
+      return write ? claimedReceipt(write) : { status: "success" };
+    }),
     getCode: vi.fn().mockResolvedValue("0x6080604052"),
     ...overrides,
   };
@@ -142,7 +232,8 @@ describe("FacilitatorChannelManager — claim()", () => {
   });
 
   it("claims, applies totals, and subtracts attested chargeCount", async () => {
-    const { manager, storage, authorizer, signer } = buildManager();
+    const { context, recorded, suffix } = metadataContext();
+    const { manager, storage, authorizer, signer } = buildManager({ context });
     const config = buildChannelConfig();
     config.receiverAuthorizer = authorizer.address;
     const channel = buildChannel({
@@ -165,20 +256,12 @@ describe("FacilitatorChannelManager — claim()", () => {
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };
-    expect(write.dataSuffix?.startsWith(CHARGE_COUNTS_MAGIC)).toBe(true);
-    expect(parseChargeCountsSuffix(write.dataSuffix!)).toEqual([3n]);
+    expect(write.dataSuffix).toBe(suffix);
+    expect(recorded).toEqual([{ x402ChargeCounts: [3n] }]);
   });
 
-  it("appends builder-code after the charge-count suffix when context is provided", async () => {
-    const builderSuffix = "0x8021abcd" as `0x${string}`;
-    const { manager, storage, authorizer, signer } = buildManager({
-      context: {
-        getExtension: () => ({
-          key: "builder-code",
-          buildDataSuffix: () => builderSuffix,
-        }),
-      },
-    });
+  it("sends no suffix when no builder-code extension is registered", async () => {
+    const { manager, storage, authorizer, signer } = buildManager();
     const config = buildChannelConfig();
     config.receiverAuthorizer = authorizer.address;
     const channel = buildChannel({
@@ -194,9 +277,97 @@ describe("FacilitatorChannelManager — claim()", () => {
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };
-    expect(write.dataSuffix?.startsWith(CHARGE_COUNTS_MAGIC)).toBe(true);
-    expect(write.dataSuffix?.endsWith("8021abcd")).toBe(true);
-    expect(parseChargeCountsSuffix(write.dataSuffix!)).toEqual([1n]);
+    expect(write.dataSuffix).toBeUndefined();
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(0);
+  });
+
+  it("carries one count per row in a single suffix next to builder-code", async () => {
+    const { context, recorded, suffix } = metadataContext("0x8021beef");
+    const { manager, storage, authorizer, signer } = buildManager({ context });
+    const counts = [1, 5];
+    for (const [index, chargeCount] of counts.entries()) {
+      const config = buildChannelConfig(`0${index + 1}`);
+      config.receiverAuthorizer = authorizer.address;
+      await storeChannel(
+        storage,
+        buildChannel({
+          channelConfig: config,
+          channelId: computeChannelId(config),
+          chargedCumulativeAmount: "5000",
+          signedMaxClaimable: "5000",
+          chargeCount,
+        }),
+      );
+    }
+
+    await manager.claim();
+    const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+      dataSuffix?: `0x${string}`;
+    };
+    expect(write.dataSuffix).toBe(suffix);
+    const [metadata] = recorded as [{ x402ChargeCounts: bigint[] }];
+    expect([...metadata.x402ChargeCounts].sort()).toEqual([1n, 5n]);
+  });
+
+  it("subtracts only rows that emitted Claimed and keeps no-op counts pending", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const authorizer = buildAuthorizerSigner();
+    const channels: FacilitatorChannel[] = [];
+    for (const [index, chargeCount] of [4, 2, 7].entries()) {
+      const config = buildChannelConfig(`0${index + 1}`);
+      config.receiverAuthorizer = authorizer.address;
+      const channel = buildChannel({
+        channelConfig: config,
+        channelId: computeChannelId(config),
+        chargedCumulativeAmount: "5000",
+        signedMaxClaimable: "5000",
+        chargeCount,
+      });
+      channels.push(channel);
+      await storeChannel(storage, channel);
+    }
+    // The second channel's row turned into a no-op onchain: it emits no `Claimed`.
+    const noOp = channels[1].channelId;
+    const writeContract = vi.fn().mockResolvedValue(("0x" + "ab".repeat(32)) as `0x${string}`);
+    const signer = buildSigner({
+      writeContract,
+      waitForTransactionReceipt: vi
+        .fn()
+        .mockImplementation(async () => claimedReceipt(writeContract.mock.calls[0][0], [noOp])),
+    });
+    const { manager } = buildManager({ signer, authorizerSigner: authorizer, storage });
+
+    await manager.claim();
+
+    const counts = await Promise.all(
+      channels.map(async channel => (await storage.get(channel.channelId))?.chargeCount),
+    );
+    expect(counts).toEqual([0, 2, 0]);
+  });
+
+  it("subtracts nothing when the claim emitted no Claimed events", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const authorizer = buildAuthorizerSigner();
+    const config = buildChannelConfig();
+    config.receiverAuthorizer = authorizer.address;
+    const channel = buildChannel({
+      channelConfig: config,
+      channelId: computeChannelId(config),
+      chargedCumulativeAmount: "5000",
+      signedMaxClaimable: "5000",
+      chargeCount: 3,
+    });
+    await storeChannel(storage, channel);
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", logs: [] }),
+    });
+    const { manager } = buildManager({ signer, authorizerSigner: authorizer, storage });
+
+    await manager.claim();
+
+    const stored = await storage.get(channel.channelId);
+    expect(stored?.totalClaimed).toBe("5000");
+    expect(stored?.chargeCount).toBe(3);
   });
 
   it("preserves in-flight chargeCount increments across the encoded snapshot", async () => {
@@ -220,15 +391,13 @@ describe("FacilitatorChannelManager — claim()", () => {
         return ("0x" + "ab".repeat(32)) as `0x${string}`;
       }),
     });
-    const { manager } = buildManager({ signer, authorizerSigner: authorizer, storage });
+    const { context, recorded } = metadataContext();
+    const { manager } = buildManager({ signer, authorizerSigner: authorizer, storage, context });
 
     await manager.claim();
 
     expect((await storage.get(channel.channelId))?.chargeCount).toBe(2);
-    const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
-      dataSuffix?: `0x${string}`;
-    };
-    expect(parseChargeCountsSuffix(write.dataSuffix!)).toEqual([3n]);
+    expect(recorded).toEqual([{ x402ChargeCounts: [3n] }]);
   });
 
   it("batches claims according to maxClaimsPerBatch", async () => {
@@ -564,7 +733,8 @@ describe("FacilitatorChannelManager — refund()", () => {
   });
 
   it("claims outstanding value without refunding when escrow is fully earmarked", async () => {
-    const { manager, storage, authorizer, signer } = buildManager();
+    const { context, recorded, suffix } = metadataContext();
+    const { manager, storage, authorizer, signer } = buildManager({ context });
     const config = buildChannelConfig();
     config.receiverAuthorizer = authorizer.address;
     const channel = buildChannel({
@@ -593,16 +763,18 @@ describe("FacilitatorChannelManager — refund()", () => {
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       dataSuffix?: `0x${string}`;
     };
-    expect(parseChargeCountsSuffix(write.dataSuffix!)).toEqual([2n]);
+    expect(write.dataSuffix).toBe(suffix);
+    expect(recorded).toEqual([{ x402ChargeCounts: [2n] }]);
   });
 
-  it("attests charge counts on the inner claim of a refund multicall", async () => {
+  it("carries charge counts in m on the outer suffix of a refund multicall", async () => {
     mockedMulticall.mockResolvedValue([
       { status: "success", result: [10000n, 0n] },
       { status: "success", result: [0n, 0n] },
       { status: "success", result: 0n },
     ]);
-    const { manager, storage, authorizer, signer } = buildManager();
+    const { context, recorded, suffix } = metadataContext();
+    const { manager, storage, authorizer, signer } = buildManager({ context });
     const config = buildChannelConfig();
     config.receiverAuthorizer = authorizer.address;
     const channel = buildChannel({
@@ -624,27 +796,33 @@ describe("FacilitatorChannelManager — refund()", () => {
       dataSuffix?: `0x${string}`;
     };
     expect(write.functionName).toBe("multicall");
-    expect(write.dataSuffix).toBeUndefined();
+    expect(write.dataSuffix).toBe(suffix);
+    expect(recorded).toEqual([{ x402ChargeCounts: [4n] }]);
+
+    // The inner claim leg is bare: re-encoding the decoded call reproduces it exactly.
     const claimCalldata = (write.args[0] as `0x${string}`[])[0];
-    expect(parseChargeCountsFromCalldata(claimCalldata)).toEqual([4n]);
-    const txInput = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "multicall",
-      args: write.args as [`0x${string}`[]],
-    });
-    expect(parseChargeCountsFromCalldata(txInput)).toEqual([4n]);
+    const decoded = decodeFunctionData({ abi: batchSettlementABI, data: claimCalldata });
+    expect(decoded.functionName).toBe("claimWithSignature");
+    expect(
+      encodeFunctionData({
+        abi: batchSettlementABI,
+        functionName: "claimWithSignature",
+        args: decoded.args as never,
+      }),
+    ).toBe(claimCalldata);
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(0);
   });
 
-  it("appends builder-code on the outer refund tx when context is provided", async () => {
-    const builderSuffix = "0x8021abcd" as `0x${string}`;
-    const { manager, storage, authorizer, signer } = buildManager({
-      context: {
-        getExtension: () => ({
-          key: "builder-code",
-          buildDataSuffix: () => builderSuffix,
-        }),
-      },
+  it("keeps the count pending when the bundled claim emitted no Claimed event", async () => {
+    mockedMulticall.mockResolvedValue([
+      { status: "success", result: [10000n, 0n] },
+      { status: "success", result: [0n, 0n] },
+      { status: "success", result: 0n },
+    ]);
+    const signer = buildSigner({
+      waitForTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", logs: [] }),
     });
+    const { manager, storage, authorizer } = buildManager({ signer });
     const config = buildChannelConfig();
     config.receiverAuthorizer = authorizer.address;
     const channel = buildChannel({
@@ -661,21 +839,9 @@ describe("FacilitatorChannelManager — refund()", () => {
     await manager.refund();
     const write = (signer.writeContract as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
       functionName: string;
-      args: readonly unknown[];
-      dataSuffix?: `0x${string}`;
     };
     expect(write.functionName).toBe("multicall");
-    expect(write.dataSuffix).toBe(builderSuffix);
-    expect(parseChargeCountsFromCalldata((write.args[0] as `0x${string}`[])[0])).toEqual([4n]);
-    const txInput = appendDataSuffix(
-      encodeFunctionData({
-        abi: batchSettlementABI,
-        functionName: "multicall",
-        args: write.args as [`0x${string}`[]],
-      }),
-      write.dataSuffix,
-    );
-    expect(parseChargeCountsFromCalldata(txInput)).toEqual([4n]);
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(4);
   });
 
   it("does not idle-refund channels whose escrow balance is zero", async () => {

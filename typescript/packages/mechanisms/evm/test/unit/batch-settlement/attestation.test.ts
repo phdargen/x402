@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, type Log } from "viem";
 import { batchSettlementABI } from "../../../src/batch-settlement/abi";
-import { decodeClaimAttestation } from "../../../src/batch-settlement/attestation";
 import {
-  encodeChargeCountsSuffix,
-  parseChargeCountsFromCalldata,
-} from "../../../src/batch-settlement/chargeCounts";
-import { appendDataSuffix } from "../../../src/shared/extensions";
+  claimedChannelIdsFromLogs,
+  decodeClaimAttestation,
+} from "../../../src/batch-settlement/attestation";
+import { BATCH_SETTLEMENT_ADDRESS } from "../../../src/batch-settlement/constants";
+import { chargeCountsMetadata } from "../../../src/batch-settlement/chargeCounts";
 import type { ChannelConfig } from "../../../src/batch-settlement/types";
 import { toContractChannelConfig } from "../../../src/batch-settlement/facilitator/utils";
 import { computeChannelId } from "../../../src/batch-settlement/utils";
@@ -14,27 +14,39 @@ import { computeChannelId } from "../../../src/batch-settlement/utils";
 const ZERO = "0x0000000000000000000000000000000000000000" as const;
 const NETWORK = "eip155:84532";
 
-const CHANNEL: ChannelConfig = {
-  payer: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-  payerAuthorizer: ZERO,
-  receiver: "0x9876543210987654321098765432109876543210",
-  receiverAuthorizer: "0x1111111111111111111111111111111111111111",
-  token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-  withdrawDelay: 900,
-  salt: `0x${"00".repeat(32)}`,
-};
+function channelWithSalt(saltSuffix: string): ChannelConfig {
+  return {
+    payer: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+    payerAuthorizer: ZERO,
+    receiver: "0x9876543210987654321098765432109876543210",
+    receiverAuthorizer: "0x1111111111111111111111111111111111111111",
+    token: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    withdrawDelay: 900,
+    salt: `0x${"00".repeat(31)}${saltSuffix}`,
+  };
+}
 
-function claimCalldata(functionName: "claim" | "claimWithSignature" = "claim"): `0x${string}` {
-  const claims = [
-    {
-      voucher: {
-        channel: toContractChannelConfig(CHANNEL),
-        maxClaimableAmount: 1000n,
-      },
-      signature: "0xcafe" as `0x${string}`,
-      totalClaimed: 1000n,
+const CHANNEL = channelWithSalt("00");
+const CHANNEL_A = channelWithSalt("0a");
+const CHANNEL_B = channelWithSalt("0b");
+const CHANNEL_C = channelWithSalt("0c");
+
+function claimRows(channels: readonly ChannelConfig[]) {
+  return channels.map(channel => ({
+    voucher: {
+      channel: toContractChannelConfig(channel),
+      maxClaimableAmount: 1000n,
     },
-  ];
+    signature: "0xcafe" as `0x${string}`,
+    totalClaimed: 1000n,
+  }));
+}
+
+function claimCalldata(
+  functionName: "claim" | "claimWithSignature" = "claim",
+  channels: readonly ChannelConfig[] = [CHANNEL],
+): `0x${string}` {
+  const claims = claimRows(channels);
   return functionName === "claim"
     ? encodeFunctionData({ abi: batchSettlementABI, functionName, args: [claims] })
     : encodeFunctionData({
@@ -44,15 +56,26 @@ function claimCalldata(functionName: "claim" | "claimWithSignature" = "claim"): 
       });
 }
 
-const BATCH_SETTLEMENT_ADDRESS = "0x0000000000000000000000000000000000000001" as const;
+function refundCalldata(): `0x${string}` {
+  return encodeFunctionData({
+    abi: batchSettlementABI,
+    functionName: "refund",
+    args: [toContractChannelConfig(CHANNEL), 100n],
+  });
+}
+
+function multicallCalldata(inner: readonly `0x${string}`[]): `0x${string}` {
+  return encodeFunctionData({ abi: batchSettlementABI, functionName: "multicall", args: [inner] });
+}
 
 function buildClaimedLog(
   channelId: `0x${string}`,
   claimAmount: bigint,
   newTotalClaimed: bigint,
+  address: `0x${string}` = BATCH_SETTLEMENT_ADDRESS,
 ): Log {
   return {
-    address: BATCH_SETTLEMENT_ADDRESS,
+    address,
     topics: encodeEventTopics({
       abi: batchSettlementABI,
       eventName: "Claimed",
@@ -75,54 +98,155 @@ function buildClaimedLog(
 }
 
 describe("decodeClaimAttestation", () => {
-  it("decodes a standalone claim with charge counts and channel rows", () => {
-    const calldata = appendDataSuffix(claimCalldata(), encodeChargeCountsSuffix([4]));
-    const attestation = decodeClaimAttestation(calldata, [], NETWORK);
-    expect(attestation.functionName).toBe("claim");
-    expect(attestation.claimFunctionName).toBe("claim");
-    expect(attestation.chargeCounts).toEqual([4n]);
-    expect(attestation.channels).toHaveLength(1);
-    expect(attestation.channels?.[0].channelId.toLowerCase()).toBe(
-      computeChannelId(CHANNEL, NETWORK).toLowerCase(),
+  it("joins a standalone claim to its Claimed event by channelId", () => {
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const attestation = decodeClaimAttestation(
+      claimCalldata(),
+      [buildClaimedLog(channelId, 500n, 1500n)],
+      NETWORK,
+      chargeCountsMetadata([4]),
     );
-    expect(attestation.channels?.[0].chargeCount).toBe("4");
+    expect(attestation.functionName).toBe("claim");
+    expect(attestation.chargeCounts).toEqual([4n]);
+    expect(attestation.channels).toEqual([
+      {
+        channelId,
+        claimed: true,
+        chargeCount: "4",
+        claimAmount: "500",
+        newTotalClaimed: "1500",
+      },
+    ]);
   });
 
-  it("unwraps multicall([claim+suffix, refund]) into claim rows", () => {
-    const innerClaim = appendDataSuffix(claimCalldata(), encodeChargeCountsSuffix([4]));
-    const refund = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "refund",
-      args: [toContractChannelConfig(CHANNEL), 100n],
-    });
-    const outer = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "multicall",
-      args: [[innerClaim, refund]],
-    });
-    // Sanity: the shared parser also sees the inner suffix from the outer input.
-    expect(parseChargeCountsFromCalldata(outer)).toEqual([4n]);
+  it("unwraps multicall([claim, refund]) into claim rows with m on the outer input", () => {
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const outer = multicallCalldata([claimCalldata(), refundCalldata()]);
 
-    const attestation = decodeClaimAttestation(outer, [], NETWORK);
+    const attestation = decodeClaimAttestation(
+      outer,
+      [buildClaimedLog(channelId, 1n, 1n)],
+      NETWORK,
+      chargeCountsMetadata([4]),
+    );
     expect(attestation.functionName).toBe("multicall");
-    expect(attestation.claimFunctionName).toBe("claim");
     expect(attestation.chargeCounts).toEqual([4n]);
-    expect(attestation.channels).toHaveLength(1);
-    expect(attestation.channels?.[0].chargeCount).toBe("4");
+    expect(attestation.channels).toEqual([
+      { channelId, claimed: true, claimAmount: "1", newTotalClaimed: "1", chargeCount: "4" },
+    ]);
+  });
+
+  it("collects rows across every claim leg in call order", () => {
+    const outer = multicallCalldata([
+      claimCalldata("claim", [CHANNEL_A, CHANNEL_B]),
+      claimCalldata("claimWithSignature", [CHANNEL_C]),
+    ]);
+    const logs = [CHANNEL_A, CHANNEL_B, CHANNEL_C].map(channel =>
+      buildClaimedLog(computeChannelId(channel, NETWORK), 1n, 1n),
+    );
+
+    const attestation = decodeClaimAttestation(
+      outer,
+      logs,
+      NETWORK,
+      chargeCountsMetadata([1, 2, 3]),
+    );
+    expect(attestation.channels?.map(row => (row.claimed ? row.chargeCount : undefined))).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+    expect(attestation.channels?.map(row => row.channelId)).toEqual(
+      [CHANNEL_A, CHANNEL_B, CHANNEL_C].map(channel => computeChannelId(channel, NETWORK)),
+    );
+  });
+
+  it("attests nothing for a no-op row and never shifts counts onto other channels", () => {
+    const idA = computeChannelId(CHANNEL_A, NETWORK);
+    const idB = computeChannelId(CHANNEL_B, NETWORK);
+    const idC = computeChannelId(CHANNEL_C, NETWORK);
+    // Row B was a no-op: only A and C emitted Claimed. A position-based zip would give
+    // C the count of B.
+    const attestation = decodeClaimAttestation(
+      claimCalldata("claim", [CHANNEL_A, CHANNEL_B, CHANNEL_C]),
+      [buildClaimedLog(idA, 1n, 1n), buildClaimedLog(idC, 1n, 1n)],
+      NETWORK,
+      chargeCountsMetadata([4, 2, 7]),
+    );
+    expect(attestation.channels).toEqual([
+      { channelId: idA, claimed: true, claimAmount: "1", newTotalClaimed: "1", chargeCount: "4" },
+      { channelId: idB, claimed: false },
+      { channelId: idC, claimed: true, claimAmount: "1", newTotalClaimed: "1", chargeCount: "7" },
+    ]);
+  });
+
+  it("attests nothing for a retried batch that emitted no Claimed events", () => {
+    const attestation = decodeClaimAttestation(
+      claimCalldata(),
+      [],
+      NETWORK,
+      chargeCountsMetadata([4]),
+    );
+    expect(attestation.channels).toEqual([
+      { channelId: computeChannelId(CHANNEL, NETWORK), claimed: false },
+    ]);
+  });
+
+  it("ignores Claimed events from other emitters", () => {
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const forged = buildClaimedLog(channelId, 1n, 1n, "0x0000000000000000000000000000000000000001");
+    const attestation = decodeClaimAttestation(
+      claimCalldata(),
+      [forged],
+      NETWORK,
+      chargeCountsMetadata([4]),
+    );
+    expect(attestation.channels).toEqual([{ channelId, claimed: false }]);
+  });
+
+  it("ignores counts whose length differs from the number of claim rows", () => {
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const attestation = decodeClaimAttestation(
+      claimCalldata(),
+      [buildClaimedLog(channelId, 1n, 1n)],
+      NETWORK,
+      chargeCountsMetadata([4, 9]),
+    );
+    expect(attestation.chargeCounts).toBeUndefined();
+    expect(attestation.channels).toEqual([
+      { channelId, claimed: true, claimAmount: "1", newTotalClaimed: "1" },
+    ]);
+  });
+
+  it("decodes claim rows when no metadata is present", () => {
+    const attestation = decodeClaimAttestation(claimCalldata(), [], NETWORK);
+    expect(attestation.chargeCounts).toBeUndefined();
+    expect(attestation.channels).toEqual([
+      { channelId: computeChannelId(CHANNEL, NETWORK), claimed: false },
+    ]);
+  });
+
+  it("decodes claimWithSignature", () => {
+    const channelId = computeChannelId(CHANNEL, NETWORK);
+    const attestation = decodeClaimAttestation(
+      claimCalldata("claimWithSignature"),
+      [buildClaimedLog(channelId, 500n, 1500n)],
+      NETWORK,
+      chargeCountsMetadata([2]),
+    );
+    expect(attestation.functionName).toBe("claimWithSignature");
+    expect(attestation.channels).toEqual([
+      { channelId, claimed: true, claimAmount: "500", newTotalClaimed: "1500", chargeCount: "2" },
+    ]);
   });
 
   it("returns null channels for refund-only multicall", () => {
-    const refund = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "refund",
-      args: [toContractChannelConfig(CHANNEL), 100n],
-    });
-    const outer = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "multicall",
-      args: [[refund]],
-    });
-    const attestation = decodeClaimAttestation(outer, [], NETWORK);
+    const attestation = decodeClaimAttestation(
+      multicallCalldata([refundCalldata()]),
+      [],
+      NETWORK,
+      chargeCountsMetadata([1]),
+    );
     expect(attestation.functionName).toBe("multicall");
     expect(attestation.channels).toBeNull();
   });
@@ -133,42 +257,38 @@ describe("decodeClaimAttestation", () => {
     expect(attestation.channels).toBeNull();
   });
 
-  it("omits claim amounts when receipt logs cannot be parsed", () => {
-    const calldata = appendDataSuffix(claimCalldata(), encodeChargeCountsSuffix([1]));
-    const attestation = decodeClaimAttestation(calldata, [{ not: "a log" }], NETWORK);
-    expect(attestation.channels?.[0].claimAmount).toBeUndefined();
-    expect(attestation.channels?.[0].newTotalClaimed).toBeUndefined();
+  it("marks rows unclaimed when receipt logs cannot be parsed", () => {
+    const attestation = decodeClaimAttestation(
+      claimCalldata(),
+      [{ not: "a log" }],
+      NETWORK,
+      chargeCountsMetadata([1]),
+    );
+    expect(attestation.channels).toEqual([
+      { channelId: computeChannelId(CHANNEL, NETWORK), claimed: false },
+    ]);
   });
 
-  it("returns null channels when multicall inner calldata is not a claim", () => {
-    const outer = encodeFunctionData({
-      abi: batchSettlementABI,
-      functionName: "multicall",
-      args: [["0xdeadbeef"]],
-    });
-    const attestation = decodeClaimAttestation(outer, [], NETWORK);
+  it("returns null channels when a multicall leg is not decodable", () => {
+    const attestation = decodeClaimAttestation(multicallCalldata(["0xdeadbeef"]), [], NETWORK);
     expect(attestation.functionName).toBe("multicall");
     expect(attestation.channels).toBeNull();
   });
+});
 
-  it("decodes claimWithSignature and joins Claimed receipt logs", () => {
-    const calldata = appendDataSuffix(
-      claimCalldata("claimWithSignature"),
-      encodeChargeCountsSuffix([2]),
-    );
-    const channelId = computeChannelId(CHANNEL, NETWORK);
-    const logs = [buildClaimedLog(channelId, 500n, 1500n)];
-    const attestation = decodeClaimAttestation(calldata, logs, NETWORK);
-    expect(attestation.functionName).toBe("claimWithSignature");
-    expect(attestation.claimFunctionName).toBe("claimWithSignature");
-    expect(attestation.channels?.[0].claimAmount).toBe("500");
-    expect(attestation.channels?.[0].newTotalClaimed).toBe("1500");
+describe("claimedChannelIdsFromLogs", () => {
+  it("returns lowercase channel ids of Claimed events from the contract only", () => {
+    const idA = computeChannelId(CHANNEL_A, NETWORK);
+    const idB = computeChannelId(CHANNEL_B, NETWORK);
+    const ids = claimedChannelIdsFromLogs([
+      buildClaimedLog(idA, 1n, 1n),
+      buildClaimedLog(idB, 1n, 1n, "0x0000000000000000000000000000000000000001"),
+    ]);
+    expect([...ids]).toEqual([idA.toLowerCase()]);
   });
 
-  it("decodes claim rows without a charge-count suffix", () => {
-    const calldata = claimCalldata();
-    const attestation = decodeClaimAttestation(calldata, [], NETWORK);
-    expect(attestation.chargeCounts).toBeUndefined();
-    expect(attestation.channels?.[0].chargeCount).toBeUndefined();
+  it("returns an empty set for missing or unparseable logs", () => {
+    expect(claimedChannelIdsFromLogs(undefined).size).toBe(0);
+    expect(claimedChannelIdsFromLogs([{ not: "a log" }]).size).toBe(0);
   });
 });

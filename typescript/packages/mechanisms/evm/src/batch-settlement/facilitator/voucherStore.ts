@@ -53,7 +53,8 @@ import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { resolveDepositDelegatedCaller, settleDeposit, verifyDeposit } from "./deposit";
 import { parseRequirementsAmount, readChannelState } from "./utils";
 import { verifyVoucher } from "./voucher";
-import { encodeChargeCountsSuffix } from "../chargeCounts";
+import { chargeCountsMetadata } from "../chargeCounts";
+import { resolveDataSuffix } from "../../shared/extensions";
 import { submitRefund } from "./refund";
 import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
 import { shouldDeleteNeverClaimedRefundRow, type FacilitatorRetention } from "./channelManager";
@@ -670,7 +671,6 @@ async function settleManagedRefund(
     }
 
     const claims = rebuildClaims(stored);
-    const attested = claims.length > 0 ? stored.chargeCount : 0;
     const amount = resolveRefundAmount(raw, stored);
     const nonce = String(stored.refundNonce ?? 0);
     const enriched: BatchSettlementEnrichedRefundPayload = {
@@ -682,12 +682,25 @@ async function settleManagedRefund(
     delete (enriched as { refundAuthorizerSignature?: `0x${string}` }).refundAuthorizerSignature;
     delete (enriched as { claimAuthorizerSignature?: `0x${string}` }).claimAuthorizerSignature;
 
+    const claimSuffix =
+      claims.length > 0
+        ? await resolveDataSuffix(context, {
+            paymentPayload: payment,
+            paymentRequirements: requirements,
+            metadata: chargeCountsMetadata([stored.chargeCount]),
+          })
+        : dataSuffix;
+    let claimedChannelIds: ReadonlySet<string> = new Set();
+    // The claim leg may be a no-op (no `Claimed` event). Capture which channels actually
+    // claimed so the local charge count is only decremented when an indexer would credit it.
     const settled = await submitRefund(
       {
         network: requirements.network,
         payload: enriched,
-        dataSuffix,
-        ...(claims.length > 0 ? { claimDataSuffix: encodeChargeCountsSuffix([attested]) } : {}),
+        dataSuffix: claimSuffix,
+        onClaimed: claimed => {
+          claimedChannelIds = claimed;
+        },
       },
       {
         submitMode: deps.submitMode,
@@ -700,6 +713,8 @@ async function settleManagedRefund(
       return settled;
     }
 
+    const attested =
+      claims.length > 0 && claimedChannelIds.has(channelId.toLowerCase()) ? stored.chargeCount : 0;
     const extraState = settled.extra as { channelState?: Record<string, unknown> } | undefined;
     const balance = String(extraState?.channelState?.balance ?? stored.balance);
     const totalClaimed = String(extraState?.channelState?.totalClaimed ?? stored.totalClaimed);

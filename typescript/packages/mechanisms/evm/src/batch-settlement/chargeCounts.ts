@@ -1,208 +1,64 @@
 /**
- * @file Onchain `x402ChargeCounts` calldata suffix for batch-settlement claims.
+ * @file Claim charge counts carried in ERC-8021 settlement metadata (`m`).
  *
- * Spec layout: `[function args][magic][abi.encode(uint64[] chargeCounts)][any further suffix]`.
- * `chargeCounts[i]` is the unattested delta for `voucherClaims[i]`, not a lifetime total.
+ * `m = { "x402ChargeCounts": [c0, c1, ...] }` has one unsigned integer per claim row, across
+ * all `claim` / `claimWithSignature` legs in call order. `ci` is the unattested delta for that
+ * row, not a lifetime total.
  *
- * Encoding is produced by the facilitator when submitting claims; decoding helpers are
- * neutral and can be used by clients, indexers, or any third party reading settlement
- * transactions.
+ * This only reuses the ERC-8021 / builder-code metadata format as a carrier. No builder code
+ * is needed, and the metadata composes with `w` / `a` / `s` in the same suffix. The suffix
+ * itself is built by `resolveDataSuffix` from the metadata returned here.
  */
-import {
-  decodeAbiParameters,
-  decodeFunctionData,
-  encodeAbiParameters,
-  encodeFunctionData,
-  type Hex,
-} from "viem";
-import { appendDataSuffix } from "../shared/extensions";
-import { batchSettlementABI } from "./abi";
 
-/** `bytes4(keccak256("x402ChargeCounts(uint64[])"))`. */
-export const CHARGE_COUNTS_MAGIC = "0x50b180c6" as const;
+/** Key of the charge-count array inside the ERC-8021 `m` field. */
+export const CHARGE_COUNTS_METADATA_KEY = "x402ChargeCounts" as const;
 
-const CHARGE_COUNTS_ABI = [{ type: "uint64[]" }] as const;
-
-/** Offset word + length word preceding a dynamic ABI array. */
-const DYNAMIC_ARRAY_HEADER_BYTES = 64;
-
-/** One word per `uint64` element (left-padded). */
-const WORD_BYTES = 32;
+/** Settlement metadata carrying one charge-count delta per claim row. */
+export type ChargeCountsMetadata = {
+  readonly [CHARGE_COUNTS_METADATA_KEY]?: unknown;
+};
 
 /**
- * Encodes the scheme-local charge-count suffix: `magic || abi.encode(uint64[])`.
+ * Builds the `m` metadata for a claim transaction.
  *
- * @param counts - One unattested delta per `voucherClaims` row, in batch order.
- * @returns Hex suffix to append after the claim function arguments.
+ * @param counts - One unattested delta per claim row, in call order.
+ * @returns Metadata for `resolveDataSuffix`, or `undefined` when there are no claim rows.
  */
-export function encodeChargeCountsSuffix(counts: readonly (number | bigint)[]): Hex {
-  const encoded = encodeAbiParameters(CHARGE_COUNTS_ABI, [
-    counts.map(count => BigInt(count)),
-  ] as const);
-  return `${CHARGE_COUNTS_MAGIC}${encoded.slice(2)}` as Hex;
+export function chargeCountsMetadata(
+  counts: readonly (number | bigint)[],
+): { readonly x402ChargeCounts: readonly bigint[] } | undefined {
+  if (counts.length === 0) {
+    return undefined;
+  }
+  return { [CHARGE_COUNTS_METADATA_KEY]: counts.map(count => BigInt(count)) };
 }
 
 /**
- * Composes the claim `dataSuffix`: charge-count first, optional builder-code second.
+ * Reads the charge counts from a parsed ERC-8021 `m` field.
  *
- * Builder-code is appended last so the ERC-8021 marker stays at the end of calldata.
+ * Accepts the values a CBOR parser returns (unsigned integers as `bigint`) and plain
+ * non-negative safe integers.
  *
- * @param chargeCounts - One unattested delta per `voucherClaims` row.
- * @param builderSuffix - Optional ERC-8021 suffix from `resolveDataSuffix`.
- * @returns Combined hex suffix for `writeContract({ dataSuffix })`.
+ * @param metadata - Parsed `m` field of the top-level suffix, if any.
+ * @returns Counts in claim-row order, or `undefined` when absent or malformed.
  */
-export function composeClaimDataSuffix(
-  chargeCounts: readonly (number | bigint)[],
-  builderSuffix?: Hex,
-): Hex {
-  return appendDataSuffix(encodeChargeCountsSuffix(chargeCounts), builderSuffix);
-}
-
-/**
- * Extracts the inner `claim` / `claimWithSignature` calldata from full transaction input.
- *
- * Production refunds batch `[claim+suffix, refund]` via `multicall(bytes[])`, with the
- * charge-count suffix kept on the inner claim bytes (the outer `dataSuffix` stays
- * ERC-8021 builder-code). This helper unwraps one level of `multicall` recursively and
- * returns the first inner claim found, so indexers and loggers can ABI-decode the claim
- * and its leftover magic without custom unwrap logic.
- *
- * @param calldata - Full transaction input (may be a top-level `multicall`).
- * @returns Inner claim calldata, or `undefined` when no claim leg is present.
- */
-export function extractClaimCalldata(calldata: Hex): Hex | undefined {
-  let decoded: ReturnType<typeof decodeFunctionData<typeof batchSettlementABI>>;
-  try {
-    decoded = decodeFunctionData({ abi: batchSettlementABI, data: calldata });
-  } catch {
+export function parseChargeCountsMetadata(
+  metadata: ChargeCountsMetadata | undefined,
+): bigint[] | undefined {
+  const value = metadata?.[CHARGE_COUNTS_METADATA_KEY];
+  if (!Array.isArray(value)) {
     return undefined;
   }
 
-  if (decoded.functionName === "claim" || decoded.functionName === "claimWithSignature") {
-    return calldata;
-  }
-
-  if (decoded.functionName === "multicall") {
-    const inner = decoded.args[0] as readonly Hex[];
-    for (const item of inner) {
-      const found = extractClaimCalldata(item);
-      if (found !== undefined) {
-        return found;
-      }
+  const counts: bigint[] = [];
+  for (const entry of value) {
+    if (typeof entry === "bigint" && entry >= 0n) {
+      counts.push(entry);
+    } else if (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0) {
+      counts.push(BigInt(entry));
+    } else {
+      return undefined;
     }
-    return undefined;
   }
-
-  return undefined;
-}
-
-/**
- * ABI-decodes a `claim` / `claimWithSignature` transaction and reads the charge-count suffix.
- *
- * Full transaction input is accepted, including a top-level `multicall(bytes[])` that
- * batches `[claim+suffix, refund]`: the inner claim is unwrapped via
- * {@link extractClaimCalldata} first, then the existing leftover + magic parse runs.
- * The suffix lives on the inner claim bytes, not the outer tx; builder-code stays on
- * the outer tx.
- *
- * Empty leftover or no magic means no attestation. A later suffix (including ERC-8021)
- * is ignored: the `uint64[]` is sized as `64 + n*32` bytes after the magic.
- *
- * @param calldata - Full transaction input.
- * @returns Decoded counts, or `undefined` when the calldata is not a claim or has no suffix.
- */
-export function parseChargeCountsFromCalldata(calldata: Hex): bigint[] | undefined {
-  const claimCalldata = extractClaimCalldata(calldata);
-  if (claimCalldata === undefined) {
-    return undefined;
-  }
-  const leftover = leftoverAfterClaimArgs(claimCalldata);
-  if (leftover === undefined) {
-    return undefined;
-  }
-  return parseChargeCountsSuffix(leftover);
-}
-
-/**
- * Decodes `magic || abi.encode(uint64[])` from the start of a leftover blob.
- *
- * @param leftover - Bytes after the claim function arguments (may continue into another suffix).
- * @returns Decoded counts, or `undefined` when the leftover does not start with the magic.
- */
-export function parseChargeCountsSuffix(leftover: Hex): bigint[] | undefined {
-  const hex = strip0x(leftover).toLowerCase();
-  const magic = strip0x(CHARGE_COUNTS_MAGIC).toLowerCase();
-  if (hex.length < magic.length || !hex.startsWith(magic)) {
-    return undefined;
-  }
-
-  const encoded = hex.slice(magic.length);
-  if (encoded.length < DYNAMIC_ARRAY_HEADER_BYTES * 2) {
-    return undefined;
-  }
-
-  const length = Number(
-    BigInt(`0x${encoded.slice(WORD_BYTES * 2, DYNAMIC_ARRAY_HEADER_BYTES * 2)}`),
-  );
-  if (!Number.isSafeInteger(length) || length < 0) {
-    return undefined;
-  }
-
-  const sizedBytes = DYNAMIC_ARRAY_HEADER_BYTES + length * WORD_BYTES;
-  if (encoded.length < sizedBytes * 2) {
-    return undefined;
-  }
-
-  try {
-    const [counts] = decodeAbiParameters(
-      CHARGE_COUNTS_ABI,
-      `0x${encoded.slice(0, sizedBytes * 2)}`,
-    );
-    return [...counts];
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Returns the bytes after a `claim` / `claimWithSignature` encoding, if any.
- *
- * @param calldata - Full transaction input.
- * @returns Leftover hex (may be `0x`), or `undefined` when the selector is not a claim.
- */
-function leftoverAfterClaimArgs(calldata: Hex): Hex | undefined {
-  let decoded: ReturnType<typeof decodeFunctionData<typeof batchSettlementABI>>;
-  try {
-    decoded = decodeFunctionData({ abi: batchSettlementABI, data: calldata });
-  } catch {
-    return undefined;
-  }
-
-  if (decoded.functionName !== "claim" && decoded.functionName !== "claimWithSignature") {
-    return undefined;
-  }
-
-  const encoded = encodeFunctionData({
-    abi: batchSettlementABI,
-    functionName: decoded.functionName,
-    args: decoded.args,
-  });
-
-  const callHex = strip0x(calldata).toLowerCase();
-  const encodedHex = strip0x(encoded).toLowerCase();
-  if (!callHex.startsWith(encodedHex)) {
-    return undefined;
-  }
-
-  return `0x${callHex.slice(encodedHex.length)}` as Hex;
-}
-
-/**
- * Strips an optional `0x` prefix.
- *
- * @param hex - Hex string.
- * @returns Hex without prefix.
- */
-function strip0x(hex: string): string {
-  return hex.startsWith("0x") || hex.startsWith("0X") ? hex.slice(2) : hex;
+  return counts;
 }

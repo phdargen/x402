@@ -17,13 +17,11 @@ export { createBatchSettlementClientHooks } from "./hooks";
 export { computeChannelId, normalizeChannelSalt } from "../utils";
 export type { ChannelSalt } from "../utils";
 export {
-  CHARGE_COUNTS_MAGIC,
-  composeClaimDataSuffix,
-  encodeChargeCountsSuffix,
-  extractClaimCalldata,
-  parseChargeCountsFromCalldata,
-  parseChargeCountsSuffix,
+  CHARGE_COUNTS_METADATA_KEY,
+  chargeCountsMetadata,
+  parseChargeCountsMetadata,
 } from "../chargeCounts";
+export type { ChargeCountsMetadata } from "../chargeCounts";
 export { decodeClaimAttestation } from "../attestation";
 export type { ClaimAttestation, ClaimAttestationRow } from "../attestation";
 

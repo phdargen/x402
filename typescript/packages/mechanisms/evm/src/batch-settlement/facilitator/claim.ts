@@ -8,8 +8,9 @@ import { signClaimBatch } from "../authorizerSigner";
 import * as Errors from "../errors";
 import { truncateErrorMessage } from "../../utils";
 import { waitAndReturnSettleResponse } from "../../shared/settleReceipt";
+import { claimedChannelIdsFromLogs } from "../attestation";
 import { toContractChannelConfig } from "./utils";
-import { shouldRelaySubmit, type SubmitContext } from "./submit";
+import { shouldRelaySubmit, type OnClaimedChannels, type SubmitContext } from "./submit";
 
 /**
  * Converts an array of {@link BatchSettlementVoucherClaim} into the onchain tuple format
@@ -43,6 +44,7 @@ export function buildVoucherClaimArgs(claims: BatchSettlementClaimPayload["claim
  * @param authorizerSigner - Optional dedicated key for producing `ClaimBatch` EIP-712 signatures.
  *   When omitted, the payload must already carry a `claimAuthorizerSignature`.
  * @param dataSuffix - Optional hex suffix appended to the claim transaction.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed`.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeClaimWithSignature(
@@ -51,6 +53,7 @@ export async function executeClaimWithSignature(
   network: Network,
   authorizerSigner: AuthorizerSigner | undefined,
   dataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   const claimArgs = buildVoucherClaimArgs(payload.claims);
 
@@ -87,6 +90,7 @@ export async function executeClaimWithSignature(
     "claimWithSignature",
     [claimArgs, sig],
     dataSuffix,
+    onClaimed,
   );
 }
 
@@ -100,6 +104,7 @@ export async function executeClaimWithSignature(
  * @param payload - Claim payload containing voucher claims.
  * @param network - CAIP-2 network identifier.
  * @param dataSuffix - Optional hex suffix appended to the claim transaction.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed`.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 export async function executeClaim(
@@ -107,6 +112,7 @@ export async function executeClaim(
   payload: BatchSettlementClaimPayload,
   network: Network,
   dataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   return submitClaimTransaction(
     signer,
@@ -114,6 +120,7 @@ export async function executeClaim(
     "claim",
     [buildVoucherClaimArgs(payload.claims)],
     dataSuffix,
+    onClaimed,
   );
 }
 
@@ -128,6 +135,7 @@ export async function executeClaim(
  * @param input.claims - Voucher claims to submit.
  * @param input.signature - Optional pre-signed `ClaimBatch` authorizer signature.
  * @param input.dataSuffix - Optional hex suffix appended to the claim transaction.
+ * @param input.onClaimed - Optional receiver of the channel ids that emitted `Claimed`.
  * @param ctx - Regular signer pool, dedicated authorizer, and submit mode.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
@@ -137,6 +145,7 @@ export async function submitClaim(
     claims: BatchSettlementClaimPayload["claims"];
     signature?: `0x${string}`;
     dataSuffix?: `0x${string}`;
+    onClaimed?: OnClaimedChannels;
   },
   ctx: SubmitContext,
 ): Promise<SettleResponse> {
@@ -153,6 +162,7 @@ export async function submitClaim(
       input.network,
       ctx.authorizerSigner,
       input.dataSuffix,
+      input.onClaimed,
     );
   }
 
@@ -165,7 +175,13 @@ export async function submitClaim(
     };
   }
 
-  return executeClaim(ctx.authorizerSubmitter, payload, input.network, input.dataSuffix);
+  return executeClaim(
+    ctx.authorizerSubmitter,
+    payload,
+    input.network,
+    input.dataSuffix,
+    input.onClaimed,
+  );
 }
 
 /**
@@ -176,6 +192,7 @@ export async function submitClaim(
  * @param functionName - Onchain claim function.
  * @param args - ABI-encoded function arguments.
  * @param dataSuffix - Optional hex suffix appended to the claim transaction.
+ * @param onClaimed - Optional receiver of the channel ids that emitted `Claimed`.
  * @returns A {@link SettleResponse} with the transaction hash on success.
  */
 async function submitClaimTransaction(
@@ -184,6 +201,7 @@ async function submitClaimTransaction(
   functionName: "claim" | "claimWithSignature",
   args: readonly unknown[],
   dataSuffix?: `0x${string}`,
+  onClaimed?: OnClaimedChannels,
 ): Promise<SettleResponse> {
   try {
     await signer.readContract({
@@ -213,6 +231,10 @@ async function submitClaimTransaction(
 
     return await waitAndReturnSettleResponse(signer, tx, network, undefined, {
       failedStatusReason: Errors.ErrClaimTransactionFailed,
+      onSuccess: receipt => {
+        onClaimed?.(claimedChannelIdsFromLogs(receipt.logs));
+        return { success: true, transaction: tx, network, payer: undefined };
+      },
     });
   } catch (e) {
     return {

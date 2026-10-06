@@ -30,7 +30,7 @@ import { submitRefund } from "./refund";
 import { resolveDataSuffix } from "../../shared/extensions";
 import * as Errors from "../errors";
 import { settleManaged, verifyManaged, type VoucherStoreDeps } from "./voucherStore";
-import { composeClaimDataSuffix } from "../chargeCounts";
+import { chargeCountsMetadata } from "../chargeCounts";
 import {
   afterClaim,
   FacilitatorChannelManager,
@@ -377,14 +377,22 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           requirements.network,
         );
         attested = snapshot.attested;
-        claimSuffix = composeClaimDataSuffix(snapshot.counts, dataSuffix);
+        claimSuffix = await resolveDataSuffix(context, {
+          paymentPayload: payload,
+          paymentRequirements: requirements,
+          metadata: chargeCountsMetadata(snapshot.counts),
+        });
       }
+      let claimedChannelIds: ReadonlySet<string> = new Set();
       const settled = await submitClaim(
         {
           network: requirements.network,
           claims: rawPayload.claims,
           signature: rawPayload.claimAuthorizerSignature,
           dataSuffix: claimSuffix,
+          onClaimed: claimed => {
+            claimedChannelIds = claimed;
+          },
         },
         this.submitContext(),
       );
@@ -395,6 +403,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           rawPayload.claims,
           requirements.network,
           attested,
+          claimedChannelIds,
           this.delegatedAuthStore,
           this.voucherStore.retention,
         );
