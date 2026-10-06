@@ -2447,7 +2447,7 @@ func TestSettleManaged_RefundWithLiveWorkerMarkerSendsRefundOnly(t *testing.T) {
 		t.Fatalf("voucher not kept for the worker: %+v", got)
 	}
 	item := attestedClaim{ChannelID: h.channelID, Count: marker.AttestedCount, ClaimedTo: marker.ClaimedTo, StartedAt: marker.StartedAt}
-	if err := finishAttestedClaim(context.Background(), h.inner, h.channelID, "3000", item); err != nil {
+	if err := finishAttestedClaim(context.Background(), h.inner, h.channelID, "3000", item, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 2 {
@@ -2491,6 +2491,46 @@ func TestSettleManaged_RefundBundlesClaimWhenIdle(t *testing.T) {
 	}
 	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 0 || got.TotalClaimed != "5000" {
 		t.Fatalf("after bundled claim: %+v", got)
+	}
+}
+
+func TestSettleManaged_RefundAttestsChargeCountInMetadata(t *testing.T) {
+	h := newHotRefund(t, unclaimedFields(), nil, nil)
+	stub := &stubBuilderCode{}
+	_, sig := signRefundConsent(h.t, h.channelID, "5000", "0", managedNetwork)
+	resp, err := SettleManaged(context.Background(), h.deps,
+		refundEnvelope(h.cfg, voucherFields(h.channelID, h.charged, dummySig), "5000", "", sig),
+		h.reqs, recordingContext(stub), nil)
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if counts := stub.chargeCounts(); !reflect.DeepEqual(counts, []uint64{6}) {
+		t.Fatalf("counts = %v, want [6]", counts)
+	}
+	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 0 {
+		t.Fatalf("after bundled claim: %+v", got)
+	}
+}
+
+func TestSettleManaged_RefundNoOpClaimLegKeepsChargeCountPending(t *testing.T) {
+	h := newHotRefund(t, unclaimedFields(), nil, nil)
+	orig := h.signer.waitForReceipt
+	h.signer.waitForReceipt = func(txHash string) (*evm.TransactionReceipt, error) {
+		receipt, err := orig(txHash)
+		if receipt == nil {
+			return receipt, err
+		}
+		// The claim leg emitted no Claimed event.
+		stripped := *receipt
+		stripped.Logs = nil
+		return &stripped, err
+	}
+	resp, err := h.settle("5000")
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("refund %+v %v", resp, err)
+	}
+	if got := h.row(); got.PendingClaim != nil || got.ChargeCount != 6 {
+		t.Fatalf("a no-op claim leg must keep its count pending: %+v", got)
 	}
 }
 

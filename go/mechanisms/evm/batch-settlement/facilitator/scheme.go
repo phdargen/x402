@@ -294,7 +294,6 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidClaimPayload, "", network, "",
 				fmt.Sprintf("failed to parse claim payload: %s", err))
 		}
-		claimSuffix := dataSuffix
 		if managed && f.voucherStore != nil {
 			begun := make([]attestedClaim, 0, len(claimPayload.Claims))
 			counts := make([]uint64, 0, len(claimPayload.Claims))
@@ -327,17 +326,22 @@ func (f *BatchSettlementEvmScheme) Settle(
 				begun = append(begun, one)
 				counts = append(counts, chargeCountUint(one.Count))
 			}
-			composed, composeErr := batchsettlement.ComposeClaimDataSuffix(counts, dataSuffix)
-			if composeErr != nil {
+			claimSuffix, suffixErr := evm.ResolveDataSuffix(fctx, evm.DataSuffixContext{
+				Payload:      payload,
+				Requirements: requirements,
+				Metadata:     batchsettlement.ChargeCountsMetadata(counts),
+			})
+			if suffixErr != nil {
 				_ = abortAttestedClaims(ctx, f.voucherStore.storage, begun)
-				return nil, composeErr
+				return nil, x402.NewSettleError(ErrInvalidPayload, "", network, "", suffixErr.Error())
 			}
-			claimSuffix = composed
+			claimed := map[string]struct{}{}
 			settled, err := SubmitClaim(ctx, SubmitClaimInput{
 				Network:    requirements.Network,
 				Claims:     claimPayload.Claims,
 				Signature:  claimPayload.ClaimAuthorizerSignature,
 				DataSuffix: claimSuffix,
+				OnClaimed:  func(ids map[string]struct{}) { claimed = ids },
 			}, f.submitContext())
 			landed, releaseErr := releaseAttestedClaims(ctx, f.voucherStore.storage, begun, err, settled)
 			if err != nil {
@@ -352,7 +356,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 				}
 				return settled, nil
 			}
-			if afterErr := afterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage, nil, begun); afterErr != nil || releaseErr != nil {
+			if afterErr := afterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage, nil, begun, claimed); afterErr != nil || releaseErr != nil {
 				logger := f.logger
 				if logger == nil {
 					logger = slog.Default()
@@ -366,7 +370,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			Network:    requirements.Network,
 			Claims:     claimPayload.Claims,
 			Signature:  claimPayload.ClaimAuthorizerSignature,
-			DataSuffix: claimSuffix,
+			DataSuffix: dataSuffix,
 		}, f.submitContext())
 		if err != nil {
 			return nil, err

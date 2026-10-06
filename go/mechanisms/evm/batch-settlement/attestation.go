@@ -1,47 +1,55 @@
 package batchsettlement
 
 import (
-	"fmt"
 	"math/big"
 	"reflect"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	goethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
-// ClaimAttestationRow is one attested voucherClaims row joined to its Claimed event.
+// ClaimAttestationRow is one claim row joined to its onchain Claimed event.
+// A row without the event was a no-op: Claimed is false and the other fields are empty.
 type ClaimAttestationRow struct {
 	ChannelId       string
-	ChargeCount     string
+	Claimed         bool
 	ClaimAmount     string
 	NewTotalClaimed string
+	// ChargeCount is the attested charge-count delta. It is empty when the row was not
+	// claimed or when `m` carries no valid counts for this calldata.
+	ChargeCount string
 }
 
 // ClaimAttestation is the decoded attestation for a settlement transaction.
-// Channels is nil when the transaction carries no claim. FunctionName is
+// Channels is nil when the transaction carries no claim row. FunctionName is
 // "unknown" when the outer calldata cannot be decoded.
 type ClaimAttestation struct {
-	FunctionName      string
-	ClaimFunctionName string
-	ClaimCalldata     []byte
-	ChargeCounts      []uint64
-	Channels          []ClaimAttestationRow
+	FunctionName string
+	// ChargeCounts are the deltas from m.x402ChargeCounts in claim-row order, set only when
+	// their length equals the number of claim rows.
+	ChargeCounts []uint64
+	Channels     []ClaimAttestationRow
 }
 
 // ReceiptLog is the subset of an Ethereum receipt log needed to join Claimed events.
+// Address is the emitter; only logs emitted by x402BatchSettlement count.
 type ReceiptLog struct {
-	Topics []common.Hash
-	Data   []byte
+	Address common.Address
+	Topics  []common.Hash
+	Data    []byte
 }
 
 type claimedLog struct {
-	ChannelId       string
 	ClaimAmount     *big.Int
 	NewTotalClaimed *big.Int
 }
 
-var claimedEvent abi.Event
+var (
+	claimedEvent     abi.Event
+	batchCallMethods map[string]abi.Method
+)
 
 func init() {
 	parsed, err := abi.JSON(strings.NewReader(string(BatchSettlementClaimedEventABI)))
@@ -49,36 +57,165 @@ func init() {
 		panic("Claimed event ABI: " + err.Error())
 	}
 	claimedEvent = parsed.Events["Claimed"]
+
+	batchCallMethods = make(map[string]abi.Method)
+	registerMethods(BatchSettlementClaimABI)
+	registerMethods(BatchSettlementClaimWithSignatureABI)
+	registerMethods(BatchSettlementMulticallABI)
+	registerMethods(BatchSettlementRefundABI)
+	registerMethods(BatchSettlementRefundWithSignatureABI)
+	registerMethods(BatchSettlementSettleABI)
+	registerMethods(BatchSettlementDepositABI)
 }
 
-// DecodeClaimAttestation decodes claim attestation from full transaction input
-// and receipt logs. It never returns an error: undecodable input yields
-// functionName "unknown" and a nil Channels slice.
-func DecodeClaimAttestation(calldata []byte, receiptLogs []ReceiptLog, network string) ClaimAttestation {
-	outerName := "unknown"
-	if outer, ok := decodeBatchCall(calldata); ok {
-		outerName = outer.Name
-	} else {
-		return ClaimAttestation{FunctionName: outerName}
+func registerMethods(abiJSON []byte) {
+	parsed, err := abi.JSON(strings.NewReader(string(abiJSON)))
+	if err != nil {
+		panic("batch-settlement ABI: " + err.Error())
+	}
+	for _, method := range parsed.Methods {
+		batchCallMethods[string(method.ID)] = method
+	}
+}
+
+type decodedBatchCall struct {
+	Name   string
+	Method abi.Method
+	Args   []interface{}
+}
+
+func decodeBatchCall(calldata []byte) (decodedBatchCall, bool) {
+	if len(calldata) < 4 {
+		return decodedBatchCall{}, false
+	}
+	method, ok := batchCallMethods[string(calldata[:4])]
+	if !ok {
+		return decodedBatchCall{}, false
+	}
+	args, err := method.Inputs.Unpack(calldata[4:])
+	if err != nil {
+		return decodedBatchCall{}, false
+	}
+	return decodedBatchCall{Name: method.Name, Method: method, Args: args}, true
+}
+
+// collectClaimConfigs collects the channel configs of the claim rows of a transaction in call
+// order. It handles a direct claim / claimWithSignature call and a (possibly nested)
+// multicall(bytes[]); non-claim legs such as refund contribute no rows. The second result is
+// false when any leg cannot be ABI-decoded.
+func collectClaimConfigs(calldata []byte) ([]ChannelConfig, bool) {
+	decoded, ok := decodeBatchCall(calldata)
+	if !ok {
+		return nil, false
+	}
+	switch decoded.Name {
+	case "claim", "claimWithSignature":
+		configs := channelConfigsFromClaimArgs(decoded.Args)
+		if configs == nil {
+			return nil, false
+		}
+		return configs, true
+	case "multicall":
+		if len(decoded.Args) == 0 {
+			return nil, false
+		}
+		var out []ChannelConfig
+		for _, inner := range bytesSliceArg(decoded.Args[0]) {
+			configs, ok := collectClaimConfigs(inner)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, configs...)
+		}
+		return out, true
+	default:
+		return nil, true
+	}
+}
+
+// readClaimedEvents reads the Claimed events emitted by the x402BatchSettlement contract,
+// keyed by lowercase channelId. Logs from other emitters are ignored, so an unrelated contract
+// in the same transaction cannot forge a Claimed for a channel.
+func readClaimedEvents(logs []ReceiptLog) map[string]claimedLog {
+	out := make(map[string]claimedLog)
+	contract := common.HexToAddress(BatchSettlementAddress)
+	for _, log := range logs {
+		if log.Address != contract || len(log.Topics) < 3 || log.Topics[0] != claimedEvent.ID {
+			continue
+		}
+		values, err := claimedEvent.Inputs.NonIndexed().Unpack(log.Data)
+		if err != nil || len(values) < 2 {
+			continue
+		}
+		entry := claimedLog{}
+		if n, ok := values[0].(*big.Int); ok {
+			entry.ClaimAmount = n
+		}
+		if n, ok := values[1].(*big.Int); ok {
+			entry.NewTotalClaimed = n
+		}
+		out[strings.ToLower(log.Topics[1].Hex())] = entry
+	}
+	return out
+}
+
+// ReceiptLogsFromEvm converts go-ethereum receipt logs to ReceiptLog values.
+func ReceiptLogsFromEvm(logs []*goethtypes.Log) []ReceiptLog {
+	out := make([]ReceiptLog, 0, len(logs))
+	for _, log := range logs {
+		if log == nil {
+			continue
+		}
+		out = append(out, ReceiptLog{Address: log.Address, Topics: log.Topics, Data: log.Data})
+	}
+	return out
+}
+
+// ClaimedChannelIds returns the lowercase channelIds that emitted Claimed from
+// x402BatchSettlement in a receipt. The result is never nil.
+//
+// Facilitators use it to subtract an attested chargeCount only for rows that were actually
+// claimed.
+func ClaimedChannelIds(logs []*goethtypes.Log) map[string]struct{} {
+	events := readClaimedEvents(ReceiptLogsFromEvm(logs))
+	out := make(map[string]struct{}, len(events))
+	for channelId := range events {
+		out[channelId] = struct{}{}
+	}
+	return out
+}
+
+// DecodeClaimAttestation decodes claim attestation from full transaction input, the parsed
+// ERC-8021 `m` metadata, and receipt logs.
+//
+// It handles standalone claim / claimWithSignature transactions and bundled
+// multicall([claim, refund]) transactions. metadata is the `m` field of the suffix on the
+// top-level input (for example buildercode.ParseBuilderCodeSuffixFromCalldata(input).M). No
+// builder code is needed: a suffix carrying only `m` is enough.
+//
+// Rows are joined to Claimed events by channelId, never by position. A row without a Claimed
+// event was a no-op and attests nothing. Counts whose length differs from the number of claim
+// rows are ignored.
+//
+// It never returns an error: undecodable input yields FunctionName "unknown" and a nil Channels
+// slice, and unparseable receipt logs yield rows with Claimed false.
+func DecodeClaimAttestation(calldata []byte, receiptLogs []ReceiptLog, network string, metadata map[string]any) ClaimAttestation {
+	outer, ok := decodeBatchCall(calldata)
+	if !ok {
+		return ClaimAttestation{FunctionName: "unknown"}
 	}
 
-	chargeCounts := ParseChargeCountsFromCalldata(calldata)
-	claimCalldata := ExtractClaimCalldata(calldata)
-	if claimCalldata == nil {
-		return ClaimAttestation{FunctionName: outerName, ChargeCounts: chargeCounts}
+	configs, ok := collectClaimConfigs(calldata)
+	if !ok || len(configs) == 0 {
+		return ClaimAttestation{FunctionName: outer.Name}
 	}
 
-	decoded, ok := decodeBatchCall(claimCalldata)
-	if !ok || (decoded.Name != "claim" && decoded.Name != "claimWithSignature") {
-		return ClaimAttestation{FunctionName: outerName, ChargeCounts: chargeCounts}
+	var chargeCounts []uint64
+	if parsed := ParseChargeCountsMetadata(metadata); len(parsed) == len(configs) {
+		chargeCounts = parsed
 	}
+	claimed := readClaimedEvents(receiptLogs)
 
-	configs := channelConfigsFromClaimArgs(decoded.Args)
-	if configs == nil {
-		return ClaimAttestation{FunctionName: outerName, ChargeCounts: chargeCounts}
-	}
-
-	claimed := parseClaimedLogs(receiptLogs)
 	channels := make([]ClaimAttestationRow, len(configs))
 	for i, cfg := range configs {
 		channelId, err := ComputeChannelId(cfg, network)
@@ -86,55 +223,41 @@ func DecodeClaimAttestation(calldata []byte, receiptLogs []ReceiptLog, network s
 			channelId = ""
 		}
 		row := ClaimAttestationRow{ChannelId: channelId}
-		if i < len(chargeCounts) {
-			row.ChargeCount = fmt.Sprintf("%d", chargeCounts[i])
-		}
-		for _, log := range claimed {
-			if channelId != "" && strings.EqualFold(log.ChannelId, channelId) {
-				if log.ClaimAmount != nil {
-					row.ClaimAmount = log.ClaimAmount.String()
-				}
-				if log.NewTotalClaimed != nil {
-					row.NewTotalClaimed = log.NewTotalClaimed.String()
-				}
-				break
+		if event, ok := claimed[strings.ToLower(channelId)]; ok && channelId != "" {
+			row.Claimed = true
+			if event.ClaimAmount != nil {
+				row.ClaimAmount = event.ClaimAmount.String()
+			}
+			if event.NewTotalClaimed != nil {
+				row.NewTotalClaimed = event.NewTotalClaimed.String()
+			}
+			if chargeCounts != nil {
+				row.ChargeCount = new(big.Int).SetUint64(chargeCounts[i]).String()
 			}
 		}
 		channels[i] = row
 	}
 
-	return ClaimAttestation{
-		FunctionName:      outerName,
-		ClaimFunctionName: decoded.Name,
-		ClaimCalldata:     claimCalldata,
-		ChargeCounts:      chargeCounts,
-		Channels:          channels,
-	}
+	return ClaimAttestation{FunctionName: outer.Name, ChargeCounts: chargeCounts, Channels: channels}
 }
 
-func parseClaimedLogs(logs []ReceiptLog) []claimedLog {
-	if len(logs) == 0 {
+func bytesSliceArg(v interface{}) [][]byte {
+	switch x := v.(type) {
+	case [][]byte:
+		return x
+	case []interface{}:
+		out := make([][]byte, 0, len(x))
+		for _, item := range x {
+			b, ok := item.([]byte)
+			if !ok {
+				return nil
+			}
+			out = append(out, b)
+		}
+		return out
+	default:
 		return nil
 	}
-	out := make([]claimedLog, 0, len(logs))
-	for _, log := range logs {
-		if len(log.Topics) < 3 || log.Topics[0] != claimedEvent.ID {
-			continue
-		}
-		values, err := claimedEvent.Inputs.NonIndexed().Unpack(log.Data)
-		if err != nil || len(values) < 2 {
-			continue
-		}
-		entry := claimedLog{ChannelId: log.Topics[1].Hex()}
-		if n, ok := values[0].(*big.Int); ok {
-			entry.ClaimAmount = n
-		}
-		if n, ok := values[1].(*big.Int); ok {
-			entry.NewTotalClaimed = n
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func channelConfigsFromClaimArgs(args []interface{}) []ChannelConfig {

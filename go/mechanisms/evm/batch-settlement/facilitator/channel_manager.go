@@ -184,7 +184,7 @@ func formatFailure(operation string, response *x402.SettleResponse) string {
 
 // AfterClaim records settle targets, then merges claimed totals and subtracts each pending claim marker.
 // The marker is matched on ClaimedTo == claim.TotalClaimed.
-// Call only after a successful onchain claim.
+// Call only after a successful onchain claim whose rows all emitted Claimed.
 func AfterClaim(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
@@ -192,11 +192,14 @@ func AfterClaim(
 	network string,
 	targetStore storage.SettleTargetStorage,
 ) error {
-	return afterClaim(ctx, store, claims, network, targetStore, nil, nil)
+	return afterClaim(ctx, store, claims, network, targetStore, nil, nil, nil)
 }
 
 // afterClaim records settle-target deltas, then applies each channel marker.
 // begun holds the markers this caller wrote. A channel without an entry matches its marker on ClaimedTo.
+// claimed holds the lowercase channelIds that emitted Claimed in the receipt. Only those rows were
+// attested onchain, so only their markers are subtracted; a no-op row keeps its count pending for
+// the channel's next claim. A nil claimed means every row emitted Claimed.
 // Deltas come from the pre-finish watermark. A crash replay may add a delta twice.
 // ObserveSettlePending replaces the cache with the onchain pending, so the extra amount does not stick.
 func afterClaim(
@@ -207,6 +210,7 @@ func afterClaim(
 	targetStore storage.SettleTargetStorage,
 	known []*FacilitatorChannel,
 	begun []attestedClaim,
+	claimed map[string]struct{},
 ) error {
 	items := make(map[string]attestedClaim, len(begun))
 	for _, item := range begun {
@@ -233,16 +237,27 @@ func afterClaim(
 			finishErrs[i] = err
 			return
 		}
-		claimed := claims[i].TotalClaimed
+		claimedTo := claims[i].TotalClaimed
 		item, ok := items[strings.ToLower(channelID)]
 		if !ok {
-			item = attestedClaim{ChannelID: channelID, ClaimedTo: claimed}
+			item = attestedClaim{ChannelID: channelID, ClaimedTo: claimedTo}
 		}
+		attested := channelEmittedClaimed(claimed, channelID)
 		finishErrs[i] = retryChannelUpdate(ctx, func() error {
-			return finishAttestedClaim(ctx, store, channelID, claimed, item)
+			return finishAttestedClaim(ctx, store, channelID, claimedTo, item, attested)
 		})
 	})
 	return errors.Join(finishErrs...)
+}
+
+// channelEmittedClaimed reports whether channelID's claim row was attested onchain. A nil claimed
+// means the caller did not gate on the receipt, so every row counts.
+func channelEmittedClaimed(claimed map[string]struct{}, channelID string) bool {
+	if claimed == nil {
+		return true
+	}
+	_, ok := claimed[strings.ToLower(channelID)]
+	return ok
 }
 
 func rowLookup(
@@ -565,7 +580,7 @@ func (m *FacilitatorChannelManager) Settle(
 				Receiver: eligible[0].Receiver,
 				Token:    eligible[0].Token,
 			}
-			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), eligible[0].Token, eligible[0].Receiver)
+			dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), eligible[0].Token, eligible[0].Receiver, nil)
 			if err != nil {
 				if ctx.Err() != nil {
 					return results, ctx.Err()
@@ -998,11 +1013,10 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 		RefundNonce: fmt.Sprintf("%d", target.RefundNonce),
 		Claims:      claims,
 	}
-	dataSuffix, err := m.resolveBuilderSuffix(target.Network, payload.ToMap(), target.ChannelConfig.Token, target.ChannelConfig.Receiver)
+	dataSuffix, err := m.resolveBuilderSuffix(target.Network, payload.ToMap(), target.ChannelConfig.Token, target.ChannelConfig.Receiver, nil)
 	if err != nil {
 		return nil, err
 	}
-	var claimSuffix []byte
 	var begun []attestedClaim
 	if len(claims) > 0 {
 		one, result, beginErr := beginAttestedClaim(ctx, m.storage, target.ChannelId, claims[0], time.Now().UnixMilli())
@@ -1017,17 +1031,19 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 			return nil, fmt.Errorf("unexpected begin result %d", result)
 		}
 		begun = []attestedClaim{one}
-		claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
+		dataSuffix, err = m.resolveBuilderSuffix(target.Network, payload.ToMap(), target.ChannelConfig.Token, target.ChannelConfig.Receiver,
+			batchsettlement.ChargeCountsMetadata([]uint64{chargeCountUint(one.Count)}))
 		if err != nil {
 			_ = abortAttestedClaims(ctx, m.storage, begun)
 			return nil, err
 		}
 	}
+	claimed := map[string]struct{}{}
 	response, err := SubmitRefund(ctx, SubmitRefundInput{
-		Network:         target.Network,
-		Payload:         payload,
-		DataSuffix:      dataSuffix,
-		ClaimDataSuffix: claimSuffix,
+		Network:    target.Network,
+		Payload:    payload,
+		DataSuffix: dataSuffix,
+		OnClaimed:  func(ids map[string]struct{}) { claimed = ids },
 	}, m.submitContext())
 	landed, releaseErr := releaseAttestedClaims(ctx, m.storage, begun, err, response)
 	if err != nil {
@@ -1042,7 +1058,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 	if !landed {
 		return nil, fmt.Errorf("%s", formatFailure("Refund", response))
 	}
-	if err := m.afterRefund(ctx, target, claims, begun, response); err != nil {
+	if err := m.afterRefund(ctx, target, claims, begun, claimed, response); err != nil {
 		return nil, err
 	}
 	if releaseErr != nil {
@@ -1060,6 +1076,7 @@ func (m *FacilitatorChannelManager) afterRefund(
 	target *FacilitatorChannel,
 	claims []batchsettlement.BatchSettlementVoucherClaim,
 	begun []attestedClaim,
+	claimed map[string]struct{},
 	response *x402.SettleResponse,
 ) error {
 	var refunded map[string]interface{}
@@ -1083,7 +1100,7 @@ func (m *FacilitatorChannelManager) afterRefund(
 		if len(begun) > 0 {
 			item = begun[0]
 		}
-		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed, item); err != nil {
+		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed, item, channelEmittedClaimed(claimed, target.ChannelId)); err != nil {
 			return err
 		}
 	}
@@ -1179,8 +1196,9 @@ func (m *FacilitatorChannelManager) resolveBuilderSuffix(
 	payload map[string]interface{},
 	asset string,
 	payTo string,
+	metadata map[string]any,
 ) ([]byte, error) {
-	return evm.ResolveDataSuffix(m.context, scheduledSuffixContext(network, payload, asset, payTo))
+	return evm.ResolveDataSuffix(m.context, scheduledSuffixContext(network, payload, asset, payTo, metadata))
 }
 
 func (m *FacilitatorChannelManager) submitContext() SubmitContext {
@@ -1192,7 +1210,9 @@ func (m *FacilitatorChannelManager) submitContext() SubmitContext {
 	}
 }
 
-func scheduledSuffixContext(network string, payload map[string]interface{}, asset, payTo string) evm.DataSuffixContext {
+// scheduledSuffixContext builds the suffix context for a facilitator-initiated transaction.
+// metadata is the optional ERC-8021 `m` field (for example the claim charge counts).
+func scheduledSuffixContext(network string, payload map[string]interface{}, asset, payTo string, metadata map[string]any) evm.DataSuffixContext {
 	accepted := types.PaymentRequirements{
 		Scheme:            batchsettlement.SchemeBatched,
 		Network:           network,
@@ -1209,6 +1229,7 @@ func scheduledSuffixContext(network string, payload map[string]interface{}, asse
 			Payload:     payload,
 		},
 		Requirements: accepted,
+		Metadata:     metadata,
 	}
 }
 

@@ -155,7 +155,8 @@ func TestScheme_ManagedClaimAfterClaim(t *testing.T) {
 		Claims: []batchsettlement.BatchSettlementVoucherClaim{claim},
 	}).ToMap())
 
-	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), nil)
+	stub := &stubBuilderCode{}
+	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), recordingContext(stub))
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
@@ -163,8 +164,45 @@ func TestScheme_ManagedClaimAfterClaim(t *testing.T) {
 	if got.TotalClaimed != "1000" || got.ChargeCount != 0 {
 		t.Fatalf("stored %+v", got)
 	}
-	if !bytes.HasPrefix(signer.lastDataSuffix, []byte{0x50, 0xb1, 0x80, 0xc6}) {
-		t.Fatalf("dataSuffix = %x", signer.lastDataSuffix)
+	if counts := stub.chargeCounts(); len(counts) != 1 || counts[0] != 4 {
+		t.Fatalf("attested counts = %v", counts)
+	}
+}
+
+func TestScheme_ManagedClaimNoOpRowKeepsChargeCountPending(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "1000",
+		Signature:               "0xcafe",
+		ChargeCount:             4,
+	}))
+	// The claim lands but its row emits no Claimed event, as if an out-of-band claim won the race.
+	signer := newManagedSigner(t, &managedRPC{noopChannels: map[string]struct{}{strings.ToLower(channelId): {}}})
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
+		VoucherStore: &VoucherStoreConfig{Storage: store},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := batchsettlement.BatchSettlementVoucherClaim{Signature: "0xcafe", TotalClaimed: "1000"}
+	claim.Voucher.Channel = cfg
+	claim.Voucher.MaxClaimableAmount = "1000"
+	payload := managedEnvelope((&batchsettlement.BatchSettlementClaimPayload{
+		Type:   "claim",
+		Claims: []batchsettlement.BatchSettlementVoucherClaim{claim},
+	}).ToMap())
+
+	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), builderContext(nil))
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargeCount != 4 || got.PendingClaim != nil {
+		t.Fatalf("no-op row must keep its count pending and clear the marker: %+v", got)
 	}
 }
 
@@ -200,15 +238,16 @@ func TestScheme_ManagedClaimComposesBuilderSuffix(t *testing.T) {
 		Claims: []batchsettlement.BatchSettlementVoucherClaim{claim},
 	}).ToMap())
 	builder := []byte{0x80, 0x21, 0xab, 0xcd}
+	stub := &stubBuilderCode{suffix: builder}
 
-	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), builderContext(builder))
+	resp, err := scheme.Settle(context.Background(), payload, managedRequirements(auth.addr), recordingContext(stub))
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
-	if !bytes.Contains(signer.lastDataSuffix, builder) {
-		t.Fatalf("missing builder suffix in %x", signer.lastDataSuffix)
+	if !bytes.Equal(signer.lastDataSuffix, builder) {
+		t.Fatalf("suffix = %x, want the single resolved suffix %x", signer.lastDataSuffix, builder)
 	}
-	counts := batchsettlement.ParseChargeCountsSuffix(signer.lastDataSuffix)
+	counts := stub.chargeCounts()
 	if len(counts) != 1 || counts[0] != 6 || attested != 6 {
 		t.Fatalf("counts = %v attested = %d", counts, attested)
 	}

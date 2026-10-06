@@ -238,7 +238,7 @@ func (s *facilitatorEvmSigner) ReceiptLogs(ctx context.Context, txHash string) (
 	for i, log := range receipt.Logs {
 		topics := make([]common.Hash, len(log.Topics))
 		copy(topics, log.Topics)
-		out[i] = batchsettlement.ReceiptLog{Topics: topics, Data: log.Data}
+		out[i] = batchsettlement.ReceiptLog{Address: log.Address, Topics: topics, Data: log.Data}
 	}
 	return out, nil
 }

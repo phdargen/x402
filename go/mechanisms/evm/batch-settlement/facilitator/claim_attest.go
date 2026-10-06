@@ -264,11 +264,14 @@ func ownsMarker(current *FacilitatorChannel, item attestedClaim) bool {
 // finishAttestedClaim merges totalClaimed and, only when the stored marker is item's own,
 // subtracts its count and clears it. A late or replayed finish therefore cannot subtract
 // a newer marker; it only moves totalClaimed forward.
+// attested is false when the row emitted no Claimed event (a no-op): the marker is still cleared,
+// but its count stays pending so the channel's next claim attests it.
 func finishAttestedClaim(
 	ctx context.Context,
 	store storage.ChannelStorage[*FacilitatorChannel],
 	channelID, claimed string,
 	item attestedClaim,
+	attested bool,
 ) error {
 	return updateChannelStrict(ctx, store, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
 		if current == nil {
@@ -281,12 +284,14 @@ func finishAttestedClaim(
 			changed = true
 		}
 		if ownsMarker(current, item) {
-			count := current.ChargeCount - current.PendingClaim.AttestedCount
-			if count < 0 {
-				count = 0
-			}
-			if count != current.ChargeCount {
-				next.ChargeCount = count
+			if attested {
+				count := current.ChargeCount - current.PendingClaim.AttestedCount
+				if count < 0 {
+					count = 0
+				}
+				if count != current.ChargeCount {
+					next.ChargeCount = count
+				}
 			}
 			next.PendingClaim = nil
 			changed = true
@@ -381,7 +386,8 @@ func (m *FacilitatorChannelManager) resolvePendingClaim(
 	}
 	if landed {
 		claimed := storageMaxUint(marker.ClaimedTo, onchain.String())
-		return false, finishAttestedClaim(ctx, m.storage, channelID, claimed, item)
+		// Recovery has no receipt logs in hand, so a landed marker is treated as attested.
+		return false, finishAttestedClaim(ctx, m.storage, channelID, claimed, item, true)
 	}
 	aged := time.Now().UnixMilli()-marker.StartedAt >= pendingClaimResolveAge.Milliseconds()
 	if reverted || (aged && onchain.Cmp(claimedTo) < 0) {

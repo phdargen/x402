@@ -65,13 +65,20 @@ func main() {
 	facilitator := x402.Newx402Facilitator()
 
 	var fctx *x402.FacilitatorContext
-	if builderCode := strings.TrimSpace(os.Getenv("FACILITATOR_BUILDER_CODE")); builderCode != "" {
+	// Claim charge counts ride in the ERC-8021 `m` field. That only reuses the suffix format, so the
+	// extension is registered without a builder code whenever the voucher store is enabled.
+	builderCode := strings.TrimSpace(os.Getenv("FACILITATOR_BUILDER_CODE"))
+	if builderCode != "" || voucherStoreEnabled {
 		ext := &buildercode.BuilderCodeFacilitatorExtension{BuilderCode: builderCode}
 		facilitator.RegisterExtension(ext)
 		fctx = x402.NewFacilitatorContext(map[string]x402.FacilitatorExtension{
 			ext.Key(): ext,
 		})
-		fmt.Printf("Facilitator builder code: %s\n", builderCode)
+		if builderCode != "" {
+			fmt.Printf("Facilitator builder code: %s\n", builderCode)
+		} else {
+			fmt.Println("Facilitator builder code: none (suffix carries charge counts only)")
+		}
 	}
 
 	var channelManager *batchedfac.FacilitatorChannelManager

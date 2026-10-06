@@ -1,16 +1,16 @@
 package batchsettlement
 
 import (
-	"bytes"
 	"encoding/hex"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 
+	"github.com/x402-foundation/x402/go/v2/extensions/buildercode"
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm"
 )
 
@@ -26,214 +26,150 @@ var chargeCountChannel = ChannelConfig{
 	Salt:               "0x" + strings.Repeat("00", 32),
 }
 
-func TestChargeCountsMagic_EqualsBytes4Keccak(t *testing.T) {
-	hash := crypto.Keccak256([]byte("x402ChargeCounts(uint64[])"))
-	want := "0x" + hex.EncodeToString(hash[:4])
-	if ChargeCountsMagic != want {
-		t.Fatalf("ChargeCountsMagic = %q, want %q", ChargeCountsMagic, want)
-	}
-	if ChargeCountsMagic != "0x50b180c6" {
-		t.Fatalf("ChargeCountsMagic = %q, want 0x50b180c6", ChargeCountsMagic)
+func TestChargeCountsMetadataKey(t *testing.T) {
+	if ChargeCountsMetadataKey != "x402ChargeCounts" {
+		t.Fatalf("ChargeCountsMetadataKey = %q", ChargeCountsMetadataKey)
 	}
 }
 
-func TestEncodeParseChargeCountsSuffix_RoundTripNonEmpty(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix([]uint64{0, 4, 12})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
+func TestChargeCountsMetadata_WrapsCountsUnderKey(t *testing.T) {
+	got := ChargeCountsMetadata([]uint64{3, 0, 41})
+	want := map[string]any{"x402ChargeCounts": []uint64{3, 0, 41}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata = %#v, want %#v", got, want)
 	}
-	if !bytes.HasPrefix(suffix, chargeCountsMagicBytes()) {
-		t.Fatal("suffix missing magic")
+}
+
+func TestChargeCountsMetadata_NilWhenNoClaimRows(t *testing.T) {
+	if ChargeCountsMetadata(nil) != nil || ChargeCountsMetadata([]uint64{}) != nil {
+		t.Fatal("expected nil metadata for zero claim rows")
 	}
-	got := ParseChargeCountsSuffix(suffix)
-	if !uint64sEqual(got, []uint64{0, 4, 12}) {
+}
+
+func TestChargeCountsMetadata_CopiesInput(t *testing.T) {
+	counts := []uint64{1, 2}
+	metadata := ChargeCountsMetadata(counts)
+	counts[0] = 99
+	if !uint64sEqual(ParseChargeCountsMetadata(metadata), []uint64{1, 2}) {
+		t.Fatalf("metadata aliases the input slice: %v", metadata)
+	}
+}
+
+func TestParseChargeCountsMetadata_RoundTripsBuiltMetadata(t *testing.T) {
+	got := ParseChargeCountsMetadata(ChargeCountsMetadata([]uint64{3, 0, 41}))
+	if !uint64sEqual(got, []uint64{3, 0, 41}) {
 		t.Fatalf("got %v", got)
 	}
 }
 
-func TestEncodeParseChargeCountsSuffix_RoundTripEmpty(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix(nil)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	got := ParseChargeCountsSuffix(suffix)
-	if got == nil || len(got) != 0 {
-		t.Fatalf("got %v, want empty list", got)
-	}
-}
-
-func TestParseChargeCountsSuffix_EmptyOrNoMagic(t *testing.T) {
-	if ParseChargeCountsSuffix(nil) != nil {
-		t.Fatal("empty leftover should be nil")
-	}
-	if ParseChargeCountsSuffix(common.FromHex("0xdeadbeef")) != nil {
-		t.Fatal("no-magic leftover should be nil")
-	}
-}
-
-func TestParseChargeCountsSuffix_TruncatedOrUnsafeLength(t *testing.T) {
-	magic := chargeCountsMagicBytes()
-	if ParseChargeCountsSuffix(append(append([]byte{}, magic...), bytes.Repeat([]byte{0x00}, 16)...)) != nil {
-		t.Fatal("short header should be nil")
-	}
-	unsafe := append(append([]byte{}, magic...), bytes.Repeat([]byte{0x00}, 32)...)
-	unsafe = append(unsafe, bytes.Repeat([]byte{0xff}, 32)...)
-	if ParseChargeCountsSuffix(unsafe) != nil {
-		t.Fatal("unsafe length should be nil")
-	}
-	one, err := EncodeChargeCountsSuffix([]uint64{1})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	if ParseChargeCountsSuffix(one[:len(one)-1]) != nil {
-		t.Fatal("one-byte-short suffix should be nil")
-	}
-}
-
-func TestParseChargeCountsSuffix_UppercaseHexPrefix(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix([]uint64{8})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	hexStr := "0X" + hex.EncodeToString(suffix)
-	got := ParseChargeCountsSuffix(common.FromHex(hexStr))
-	if !uint64sEqual(got, []uint64{8}) {
+func TestParseChargeCountsMetadata_AcceptsParsedCborValues(t *testing.T) {
+	got := ParseChargeCountsMetadata(map[string]any{"x402ChargeCounts": []any{uint64(1), 2, uint(3)}})
+	if !uint64sEqual(got, []uint64{1, 2, 3}) {
 		t.Fatalf("got %v", got)
 	}
 }
 
-func TestComposeClaimDataSuffix_PlacesChargeCountsBeforeBuilder(t *testing.T) {
-	builder := common.FromHex("0x8021abcd")
-	composed, err := ComposeClaimDataSuffix([]uint64{3, 7}, builder)
-	if err != nil {
-		t.Fatalf("compose: %v", err)
-	}
-	if !bytes.HasPrefix(composed, chargeCountsMagicBytes()) {
-		t.Fatal("composed missing magic")
-	}
-	if !bytes.HasSuffix(composed, []byte{0x80, 0x21, 0xab, 0xcd}) {
-		t.Fatalf("composed = %x", composed)
-	}
-	if !uint64sEqual(ParseChargeCountsSuffix(composed), []uint64{3, 7}) {
-		t.Fatalf("parse composed = %v", ParseChargeCountsSuffix(composed))
+func TestParseChargeCountsMetadata_AbsentKey(t *testing.T) {
+	if ParseChargeCountsMetadata(nil) != nil || ParseChargeCountsMetadata(map[string]any{}) != nil {
+		t.Fatal("expected nil when the key is absent")
 	}
 }
 
-func TestParseChargeCountsFromCalldata_RoundTripClaimAndClaimWithSignature(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix([]uint64{2, 9})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	for _, fn := range []string{"claim", "claimWithSignature"} {
-		calldata := evm.AppendDataSuffix(mustClaimCalldata(t, fn), suffix)
-		got := ParseChargeCountsFromCalldata(calldata)
-		if !uint64sEqual(got, []uint64{2, 9}) {
-			t.Fatalf("%s: got %v", fn, got)
+func TestParseChargeCountsMetadata_MalformedValues(t *testing.T) {
+	for name, value := range map[string]any{
+		"string":        "3",
+		"map":           map[string]any{"0": uint64(3)},
+		"negative":      []any{uint64(1), -1},
+		"text entry":    []any{"1"},
+		"float entry":   []any{1.5},
+		"nested array":  []any{[]any{uint64(1)}},
+		"oversized big": []any{new(big.Int).Lsh(big.NewInt(1), 70)},
+	} {
+		if got := ParseChargeCountsMetadata(map[string]any{"x402ChargeCounts": value}); got != nil {
+			t.Fatalf("%s: got %v, want nil", name, got)
 		}
 	}
 }
 
-func TestParseChargeCountsFromCalldata_EmptyLeftover(t *testing.T) {
-	if ParseChargeCountsFromCalldata(mustClaimCalldata(t, "claim")) != nil {
-		t.Fatal("expected nil when leftover is empty")
+func TestParseChargeCountsMetadata_EmptyArrayStaysEmpty(t *testing.T) {
+	got := ParseChargeCountsMetadata(map[string]any{"x402ChargeCounts": []any{}})
+	if got == nil || len(got) != 0 {
+		t.Fatalf("got %v, want empty non-nil list", got)
 	}
 }
 
-func TestParseChargeCountsFromCalldata_LeftoverHasNoMagic(t *testing.T) {
-	calldata := evm.AppendDataSuffix(mustClaimCalldata(t, "claim"), common.FromHex("0xdeadbeef"))
-	if ParseChargeCountsFromCalldata(calldata) != nil {
-		t.Fatal("expected nil when leftover has no magic")
-	}
-}
-
-func TestParseChargeCountsFromCalldata_StopsBeforeTrailingBuilderCode(t *testing.T) {
-	composed, err := ComposeClaimDataSuffix([]uint64{5}, common.FromHex("0x80218021802180218021802180218021"))
+// metadataSuffixHex encodes metadata into an ERC-8021 suffix through the builder-code package
+// and returns it as hex.
+func metadataSuffixHex(t *testing.T, data buildercode.BuilderCodeSuffixData) string {
+	t.Helper()
+	suffix, err := buildercode.EncodeBuilderCodeSuffix(data)
 	if err != nil {
-		t.Fatalf("compose: %v", err)
+		t.Fatalf("encode suffix: %v", err)
 	}
-	calldata := evm.AppendDataSuffix(mustClaimCalldata(t, "claimWithSignature"), composed)
-	if !uint64sEqual(ParseChargeCountsFromCalldata(calldata), []uint64{5}) {
-		t.Fatalf("got %v", ParseChargeCountsFromCalldata(calldata))
+	return hex.EncodeToString(suffix)
+}
+
+func TestChargeCountsMetadata_ExampleVector(t *testing.T) {
+	// The m entry of the spec example: 616d a1 70<"x402ChargeCounts"> 83 03 00 1829 (25 bytes).
+	wantEntry := "616d" + "a1" + "70" + hex.EncodeToString([]byte("x402ChargeCounts")) + "83" + "03" + "00" + "1829"
+	if len(wantEntry) != 25*2 {
+		t.Fatalf("example m entry is %d bytes, want 25", len(wantEntry)/2)
+	}
+
+	metadataOnly := metadataSuffixHex(t, buildercode.BuilderCodeSuffixData{M: ChargeCountsMetadata([]uint64{3, 0, 41})})
+	if !strings.HasPrefix(metadataOnly, "a1"+wantEntry) {
+		t.Fatalf("metadata-only map = %s, want prefix a1%s", metadataOnly, wantEntry)
+	}
+
+	withCode := buildercode.BuilderCodeSuffixData{M: ChargeCountsMetadata([]uint64{3, 0, 41})}
+	withCode.W = "bc_myfacilitator"
+	hexSuffix := metadataSuffixHex(t, withCode)
+	if !strings.Contains(hexSuffix, wantEntry) {
+		t.Fatalf("suffix %s does not contain m entry %s", hexSuffix, wantEntry)
+	}
+	parsed, ok := buildercode.ParseBuilderCodeSuffixFromCalldata("0xdeadbeef" + hexSuffix)
+	if !ok {
+		t.Fatal("expected a valid suffix")
+	}
+	if parsed.W != "bc_myfacilitator" || !uint64sEqual(ParseChargeCountsMetadata(parsed.M), []uint64{3, 0, 41}) {
+		t.Fatalf("parsed = %+v", parsed)
 	}
 }
 
-func TestParseChargeCountsFromCalldata_NotAFunctionEncoding(t *testing.T) {
-	if ParseChargeCountsFromCalldata(common.FromHex("0xabcd")) != nil {
-		t.Fatal("expected nil")
+func TestChargeCountsMetadata_SizeAt100Rows(t *testing.T) {
+	counts := make([]uint64, 100)
+	for i := range counts {
+		counts[i] = uint64(i % 24)
+	}
+	smallest := len(metadataSuffixHex(t, buildercode.BuilderCodeSuffixData{M: ChargeCountsMetadata(counts)})) / 2
+	if smallest >= 350 {
+		t.Fatalf("100 one-byte counts take %d bytes, want < 350", smallest)
+	}
+
+	for i := range counts {
+		counts[i] = 65535
+	}
+	largest := len(metadataSuffixHex(t, buildercode.BuilderCodeSuffixData{M: ChargeCountsMetadata(counts)})) / 2
+	if largest >= 350 {
+		t.Fatalf("100 three-byte counts take %d bytes, want < 350", largest)
 	}
 }
 
-func TestParseChargeCountsFromCalldata_NonClaimFunction(t *testing.T) {
-	settle := mustPack(t, BatchSettlementSettleABI, "settle",
-		common.HexToAddress(chargeCountChannel.Receiver),
-		common.HexToAddress(chargeCountChannel.Token),
-	)
-	suffix, err := EncodeChargeCountsSuffix([]uint64{1})
+func TestChargeCountsMetadata_SurvivesTopLevelSuffixOnClaimCalldata(t *testing.T) {
+	suffix, err := buildercode.EncodeBuilderCodeSuffix(buildercode.BuilderCodeSuffixData{M: ChargeCountsMetadata([]uint64{2, 9})})
 	if err != nil {
-		t.Fatalf("encode: %v", err)
+		t.Fatalf("encode suffix: %v", err)
 	}
-	if ParseChargeCountsFromCalldata(evm.AppendDataSuffix(settle, suffix)) != nil {
-		t.Fatal("expected nil for settle")
+	for _, fn := range []string{"claim", "claimWithSignature"} {
+		calldata := evm.AppendDataSuffix(mustClaimCalldata(t, fn), suffix)
+		parsed, ok := buildercode.ParseBuilderCodeSuffixFromCalldata("0x" + hex.EncodeToString(calldata))
+		if !ok {
+			t.Fatalf("%s: expected a valid suffix", fn)
+		}
+		if !uint64sEqual(ParseChargeCountsMetadata(parsed.M), []uint64{2, 9}) {
+			t.Fatalf("%s: counts = %v", fn, ParseChargeCountsMetadata(parsed.M))
+		}
 	}
-}
-
-func TestParseChargeCountsFromCalldata_UnwrapsMulticallClaimAndRefund(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix([]uint64{4})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	innerClaim := evm.AppendDataSuffix(mustClaimCalldata(t, "claim"), suffix)
-	refund := mustPack(t, BatchSettlementRefundABI, "refund", toContractChannelConfig(chargeCountChannel), big.NewInt(100))
-	outer := mustPack(t, BatchSettlementMulticallABI, "multicall", [][]byte{innerClaim, refund})
-	if !bytes.Equal(ExtractClaimCalldata(outer), innerClaim) {
-		t.Fatalf("extract = %x, want %x", ExtractClaimCalldata(outer), innerClaim)
-	}
-	if !uint64sEqual(ParseChargeCountsFromCalldata(outer), []uint64{4}) {
-		t.Fatalf("got %v", ParseChargeCountsFromCalldata(outer))
-	}
-}
-
-func TestParseChargeCountsFromCalldata_UnwrapsMulticallWithOuterBuilderCode(t *testing.T) {
-	suffix, err := EncodeChargeCountsSuffix([]uint64{4})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	innerClaim := evm.AppendDataSuffix(mustClaimCalldata(t, "claimWithSignature"), suffix)
-	refund := mustPack(t, BatchSettlementRefundABI, "refund", toContractChannelConfig(chargeCountChannel), big.NewInt(100))
-	outer := evm.AppendDataSuffix(
-		mustPack(t, BatchSettlementMulticallABI, "multicall", [][]byte{innerClaim, refund}),
-		common.FromHex("0x8021abcd"),
-	)
-	if !uint64sEqual(ParseChargeCountsFromCalldata(outer), []uint64{4}) {
-		t.Fatalf("got %v", ParseChargeCountsFromCalldata(outer))
-	}
-}
-
-func TestParseChargeCountsFromCalldata_RefundOnlyAndNonClaimMulticall(t *testing.T) {
-	refund := mustPack(t, BatchSettlementRefundABI, "refund", toContractChannelConfig(chargeCountChannel), big.NewInt(100))
-	refundOnly := mustPack(t, BatchSettlementMulticallABI, "multicall", [][]byte{refund})
-	if ExtractClaimCalldata(refundOnly) != nil {
-		t.Fatal("expected no claim in refund-only multicall")
-	}
-	if ParseChargeCountsFromCalldata(refundOnly) != nil {
-		t.Fatal("expected nil counts for refund-only multicall")
-	}
-
-	settle := mustPack(t, BatchSettlementSettleABI, "settle",
-		common.HexToAddress(chargeCountChannel.Receiver),
-		common.HexToAddress(chargeCountChannel.Token),
-	)
-	nonClaim := mustPack(t, BatchSettlementMulticallABI, "multicall", [][]byte{settle, refund})
-	if ExtractClaimCalldata(nonClaim) != nil {
-		t.Fatal("expected no claim in settle+refund multicall")
-	}
-	if ParseChargeCountsFromCalldata(nonClaim) != nil {
-		t.Fatal("expected nil counts for non-claim multicall")
-	}
-}
-
-func chargeCountsMagicBytes() []byte {
-	return common.FromHex(ChargeCountsMagic)
 }
 
 func uint64sEqual(got, want []uint64) bool {
@@ -281,15 +217,29 @@ func toContractChannelConfig(c ChannelConfig) contractChannelConfig {
 	}
 }
 
-func mustClaimCalldata(t *testing.T, functionName string) []byte {
-	t.Helper()
-	claim := voucherClaimArg{
-		Signature:    common.FromHex("0xcafe"),
-		TotalClaimed: big.NewInt(1000),
+// channelWithSalt returns chargeCountChannel with the last salt byte set to suffix.
+func channelWithSalt(suffix byte) ChannelConfig {
+	channel := chargeCountChannel
+	channel.Salt = "0x" + strings.Repeat("00", 31) + hex.EncodeToString([]byte{suffix})
+	return channel
+}
+
+func claimRows(channels []ChannelConfig) []voucherClaimArg {
+	claims := make([]voucherClaimArg, len(channels))
+	for i, channel := range channels {
+		claims[i] = voucherClaimArg{
+			Signature:    common.FromHex("0xcafe"),
+			TotalClaimed: big.NewInt(1000),
+		}
+		claims[i].Voucher.Channel = toContractChannelConfig(channel)
+		claims[i].Voucher.MaxClaimableAmount = big.NewInt(1000)
 	}
-	claim.Voucher.Channel = toContractChannelConfig(chargeCountChannel)
-	claim.Voucher.MaxClaimableAmount = big.NewInt(1000)
-	claims := []voucherClaimArg{claim}
+	return claims
+}
+
+func mustClaimCalldataFor(t *testing.T, functionName string, channels ...ChannelConfig) []byte {
+	t.Helper()
+	claims := claimRows(channels)
 	switch functionName {
 	case "claim":
 		return mustPack(t, BatchSettlementClaimABI, "claim", claims)
@@ -299,6 +249,11 @@ func mustClaimCalldata(t *testing.T, functionName string) []byte {
 		t.Fatalf("unknown function %s", functionName)
 		return nil
 	}
+}
+
+func mustClaimCalldata(t *testing.T, functionName string) []byte {
+	t.Helper()
+	return mustClaimCalldataFor(t, functionName, chargeCountChannel)
 }
 
 func mustPack(t *testing.T, abiJSON []byte, name string, args ...interface{}) []byte {

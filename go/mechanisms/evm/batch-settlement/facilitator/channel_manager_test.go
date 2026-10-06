@@ -3,6 +3,7 @@ package facilitator
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -163,6 +164,11 @@ func newTestManager(t *testing.T, signer evm.FacilitatorEvmSigner, store storage
 	if store == nil {
 		store = storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	}
+	if fctx == nil {
+		// Charge counts only reach the chain through the registered builder-code extension. The
+		// stub adds no suffix bytes but records the metadata it was asked to encode.
+		fctx = builderContext(nil)
+	}
 	mgr, err := NewFacilitatorChannelManager(FacilitatorChannelManagerConfig{
 		Storage:          store,
 		Signer:           signer,
@@ -231,13 +237,20 @@ func TestFacilitatorChannelManager_ClaimAppendsBuilderSuffix(t *testing.T) {
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(signer.lastDataSuffix, suffix) {
-		t.Fatalf("suffix missing from %x", signer.lastDataSuffix)
+	if !bytes.Equal(signer.lastDataSuffix, suffix) {
+		t.Fatalf("suffix = %x, want %x", signer.lastDataSuffix, suffix)
 	}
-	counts := batchsettlement.ParseChargeCountsSuffix(signer.lastDataSuffix)
+	counts := managerChargeCounts(t, mgr)
 	if len(counts) != 1 || counts[0] != 2 {
 		t.Fatalf("counts = %v", counts)
 	}
+}
+
+// managerChargeCounts returns the charge counts the manager last asked the builder-code
+// extension to encode into ERC-8021 `m`.
+func managerChargeCounts(t *testing.T, mgr *FacilitatorChannelManager) []uint64 {
+	t.Helper()
+	return contextStub(t, mgr.context).chargeCounts()
 }
 
 func TestFacilitatorChannelManager_ClaimPreservesInFlightChargeCount(t *testing.T) {
@@ -275,7 +288,7 @@ func TestFacilitatorChannelManager_ClaimPreservesInFlightChargeCount(t *testing.
 	if got.ChargeCount != 2 {
 		t.Fatalf("chargeCount = %d, want 2", got.ChargeCount)
 	}
-	counts := batchsettlement.ParseChargeCountsSuffix(signer.lastDataSuffix)
+	counts := managerChargeCounts(t, mgr)
 	if len(counts) != 1 || counts[0] != 3 {
 		t.Fatalf("attested counts = %v", counts)
 	}
@@ -2279,28 +2292,31 @@ func snapHas(snaps []int, want int) bool {
 	return false
 }
 
-func claimSuffixCount(suffix []byte) uint64 {
-	counts := batchsettlement.ParseChargeCountsSuffix(suffix)
+func claimSuffixCount(t *testing.T, mgr *FacilitatorChannelManager) uint64 {
+	t.Helper()
+	counts := managerChargeCounts(t, mgr)
 	if len(counts) != 1 {
 		return ^uint64(0)
 	}
 	return counts[0]
 }
 
-func bundleChargeCounts(args []interface{}) []uint64 {
-	if len(args) == 0 {
-		return nil
-	}
+// erc8021Marker is the 16-byte ERC-8021 marker that ends a builder-code suffix.
+const erc8021Marker = "80218021802180218021802180218021"
+
+// assertBareMulticallLegs fails when an inner multicall leg carries an ERC-8021 suffix:
+// only the top-level calldata is read by indexers.
+func assertBareMulticallLegs(t *testing.T, args []interface{}) {
+	t.Helper()
 	calls, ok := args[0].([][]byte)
 	if !ok {
-		return nil
+		t.Fatalf("multicall args[0] is %T", args[0])
 	}
 	for _, call := range calls {
-		if parsed := batchsettlement.ParseChargeCountsFromCalldata(call); len(parsed) > 0 {
-			return parsed
+		if strings.HasSuffix(hex.EncodeToString(call), erc8021Marker) {
+			t.Fatalf("inner multicall leg carries an ERC-8021 suffix: %x", call)
 		}
 	}
-	return nil
 }
 
 func TestClaim_HotChannelRepairsSkippedFinish(t *testing.T) {
@@ -2333,8 +2349,8 @@ func TestClaim_HotChannelRepairsSkippedFinish(t *testing.T) {
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if attested != 30 || claimSuffixCount(signer.lastDataSuffix) != 30 {
-		t.Fatalf("attested=%d suffix=%d snaps=%v", attested, claimSuffixCount(signer.lastDataSuffix), snaps.snaps)
+	if attested != 30 || claimSuffixCount(t, mgr) != 30 {
+		t.Fatalf("attested=%d suffix=%d snaps=%v", attested, claimSuffixCount(t, mgr), snaps.snaps)
 	}
 	if !snapHas(snaps.snaps, 30) || snaps.snaps[len(snaps.snaps)-1] != 0 {
 		t.Fatalf("snaps=%v", snaps.snaps)
@@ -2443,8 +2459,8 @@ func TestClaim_AgedMarkerClearsWithoutSubtract(t *testing.T) {
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if claimSuffixCount(signer.lastDataSuffix) != 80 || snapHas(snaps.snaps, 30) {
-		t.Fatalf("suffix=%d snaps=%v", claimSuffixCount(signer.lastDataSuffix), snaps.snaps)
+	if claimSuffixCount(t, mgr) != 80 || snapHas(snaps.snaps, 30) {
+		t.Fatalf("suffix=%d snaps=%v", claimSuffixCount(t, mgr), snaps.snaps)
 	}
 	got, _ := inner.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 0 || got.PendingClaim != nil {
@@ -2466,19 +2482,20 @@ func TestClaim_RevertedReceiptClearsWithoutSubtract(t *testing.T) {
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, &managedRPC{balance: big.NewInt(10000), totalClaimed: big.NewInt(0)})
 	lookups := 0
+	defaultReceipt := signer.waitForReceipt
 	signer.waitForReceipt = func(txHash string) (*evm.TransactionReceipt, error) {
 		lookups++
 		if lookups == 1 {
 			return &evm.TransactionReceipt{Status: evm.TxStatusFailed, TxHash: txHash}, nil
 		}
-		return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash}, nil
+		return defaultReceipt(txHash)
 	}
 	mgr := newTestManager(t, signer, store, auth, false, nil)
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if claimSuffixCount(signer.lastDataSuffix) != 80 {
-		t.Fatalf("suffix=%d", claimSuffixCount(signer.lastDataSuffix))
+	if claimSuffixCount(t, mgr) != 80 {
+		t.Fatalf("suffix=%d", claimSuffixCount(t, mgr))
 	}
 	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 0 || got.PendingClaim != nil {
@@ -2503,8 +2520,8 @@ func TestClaim_SuccessfulReceiptLandsWhenOnchainLags(t *testing.T) {
 	if _, err := mgr.Claim(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if claimSuffixCount(signer.lastDataSuffix) != 30 {
-		t.Fatalf("suffix=%d", claimSuffixCount(signer.lastDataSuffix))
+	if claimSuffixCount(t, mgr) != 30 {
+		t.Fatalf("suffix=%d", claimSuffixCount(t, mgr))
 	}
 	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 0 || got.PendingClaim != nil || got.TotalClaimed != "8000" {
@@ -2666,7 +2683,7 @@ func TestBeginAttestedClaim_StaleClaimedToAfterVoucherCommit(t *testing.T) {
 	if err != nil || result != beginStarted || one.Count != 5 {
 		t.Fatalf("fresh begin %+v result=%v err=%v", one, result, err)
 	}
-	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, fresh.TotalClaimed, one); err != nil {
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, fresh.TotalClaimed, one, true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = store.Get(context.Background(), ch.ChannelId)
@@ -2715,7 +2732,7 @@ func TestFinishAttestedClaim_NonMatchingItemKeepsMarker(t *testing.T) {
 	plantClaimMarker(ch, 3, "900")
 	seedManagedChannel(t, store, ch)
 	stranger := attestedClaim{ChannelID: ch.ChannelId, Count: 4, ClaimedTo: "1000", StartedAt: ch.PendingClaim.StartedAt - 1}
-	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", stranger); err != nil {
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", stranger, true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := store.Get(context.Background(), ch.ChannelId)
@@ -2726,7 +2743,7 @@ func TestFinishAttestedClaim_NonMatchingItemKeepsMarker(t *testing.T) {
 		t.Fatalf("totalClaimed = %s, want merged 1000", got.TotalClaimed)
 	}
 	owner := attestedClaim{ChannelID: ch.ChannelId, Count: 3, ClaimedTo: "900", StartedAt: ch.PendingClaim.StartedAt}
-	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", owner); err != nil {
+	if err := finishAttestedClaim(context.Background(), store, ch.ChannelId, "1000", owner, true); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = store.Get(context.Background(), ch.ChannelId)
@@ -2776,7 +2793,6 @@ func TestRefund_BundleCalldataMatchesMarker(t *testing.T) {
 	seedManagedChannel(t, store, ch)
 	signer := newManagedSigner(t, nil)
 	var attested int
-	var counts []uint64
 	orig := signer.writeContract
 	signer.writeContract = func(functionName string, args ...interface{}) (string, error) {
 		row, err := store.Get(context.Background(), ch.ChannelId)
@@ -2786,7 +2802,9 @@ func TestRefund_BundleCalldataMatchesMarker(t *testing.T) {
 		if row.PendingClaim != nil {
 			attested = row.PendingClaim.AttestedCount
 		}
-		counts = bundleChargeCounts(args)
+		if functionName == "multicall" {
+			assertBareMulticallLegs(t, args)
+		}
 		return orig(functionName, args...)
 	}
 	mgr := newTestManager(t, signer, store, auth, false, nil)
@@ -2794,8 +2812,12 @@ func TestRefund_BundleCalldataMatchesMarker(t *testing.T) {
 	if err != nil || len(results) != 1 {
 		t.Fatalf("results=%+v err=%v", results, err)
 	}
+	counts := managerChargeCounts(t, mgr)
 	if attested != 4 || len(counts) != 1 || counts[0] != 4 {
 		t.Fatalf("attested=%d counts=%v", attested, counts)
+	}
+	if signer.writeFns[len(signer.writeFns)-1] != "multicall" {
+		t.Fatalf("writes = %v, want a multicall of claim and refund", signer.writeFns)
 	}
 	got, _ := store.Get(context.Background(), ch.ChannelId)
 	if got.ChargeCount != 0 || got.PendingClaim != nil {
@@ -2894,6 +2916,104 @@ func TestClaimSlice_SkipsBeginConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertClaimedAlone(t, inner, first, second, results, signer)
+}
+
+// threeChannelClaimFixture seeds channels A, B, C with charge counts 4, 2, 7 and returns the
+// store, authorizer, rows, and claims in that order.
+func threeChannelClaimFixture(t *testing.T) (storage.ChannelStorage[*FacilitatorChannel], *fakeAuthorizerSigner, []*FacilitatorChannel, []batchsettlement.BatchSettlementVoucherClaim) {
+	t.Helper()
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	rows := make([]*FacilitatorChannel, 0, 3)
+	claims := make([]batchsettlement.BatchSettlementVoucherClaim, 0, 3)
+	for i, count := range []int{4, 2, 7} {
+		row := managerChannel(t, auth, fmt.Sprintf("b%d", i), &channelFields{
+			ChargedCumulativeAmount: "1000",
+			SignedMaxClaimable:      "1000",
+			ChargeCount:             count,
+		})
+		seedManagedChannel(t, store, row)
+		rows = append(rows, row)
+		claims = append(claims, claimFromRow(t, row))
+	}
+	return store, auth, rows, claims
+}
+
+func assertChargeCounts(t *testing.T, store storage.ChannelStorage[*FacilitatorChannel], rows []*FacilitatorChannel, want []int) {
+	t.Helper()
+	for i, row := range rows {
+		got, err := store.Get(context.Background(), row.ChannelId)
+		if err != nil || got == nil {
+			t.Fatalf("row %d: %+v %v", i, got, err)
+		}
+		if got.ChargeCount != want[i] || got.PendingClaim != nil {
+			t.Fatalf("row %d chargeCount = %d, marker = %+v, want count %d and no marker", i, got.ChargeCount, got.PendingClaim, want[i])
+		}
+	}
+}
+
+func TestClaimSlice_AttestsOneCountPerRowInCallOrder(t *testing.T) {
+	store, auth, rows, claims := threeChannelClaimFixture(t)
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	if _, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if counts := managerChargeCounts(t, mgr); !reflect.DeepEqual(counts, []uint64{4, 2, 7}) {
+		t.Fatalf("counts = %v, want [4 2 7]", counts)
+	}
+	assertChargeCounts(t, store, rows, []int{0, 0, 0})
+}
+
+func TestClaimSlice_NoOpRowKeepsOnlyItsOwnCountPending(t *testing.T) {
+	store, auth, rows, claims := threeChannelClaimFixture(t)
+	// Row B emits no Claimed event; A and C do. Only B's count stays pending for its next claim.
+	signer := newManagedSigner(t, &managedRPC{noopChannels: map[string]struct{}{strings.ToLower(rows[1].ChannelId): {}}})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if counts := managerChargeCounts(t, mgr); !reflect.DeepEqual(counts, []uint64{4, 2, 7}) {
+		t.Fatalf("counts = %v, want [4 2 7]", counts)
+	}
+	assertChargeCounts(t, store, rows, []int{0, 2, 0})
+}
+
+func TestClaimSlice_RetriedBatchWithNoClaimedEventsSubtractsNothing(t *testing.T) {
+	store, auth, rows, claims := threeChannelClaimFixture(t)
+	signer := newManagedSigner(t, &managedRPC{suppressClaimed: true})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	if _, err := mgr.claimSlice(context.Background(), managedNetwork, claims, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertChargeCounts(t, store, rows, []int{4, 2, 7})
+}
+
+func TestRefund_NoOpClaimLegKeepsChargeCountPending(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	ch := managerChannel(t, auth, "rn", &channelFields{
+		ChargedCumulativeAmount: "5000",
+		SignedMaxClaimable:      "5000",
+		Balance:                 "10000",
+		ChargeCount:             4,
+		LastRequestTimestamp:    time.Now().UnixMilli() - 120_000,
+	})
+	seedManagedChannel(t, store, ch)
+	signer := newManagedSigner(t, &managedRPC{noopChannels: map[string]struct{}{strings.ToLower(ch.ChannelId): {}}})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	results, err := refundIdle(mgr)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results=%+v err=%v", results, err)
+	}
+	if counts := managerChargeCounts(t, mgr); !reflect.DeepEqual(counts, []uint64{4}) {
+		t.Fatalf("counts = %v, want [4]", counts)
+	}
+	got, _ := store.Get(context.Background(), ch.ChannelId)
+	if got == nil || got.ChargeCount != 4 || got.PendingClaim != nil {
+		t.Fatalf("a no-op claim leg must keep its count pending: %+v", got)
+	}
 }
 
 func TestClaimSlice_ResolvePendingConflictDoesNotFailPass(t *testing.T) {

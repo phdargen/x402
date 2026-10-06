@@ -11,6 +11,14 @@ import (
 	batchedfac "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/facilitator"
 )
 
+// metadataOf returns the ERC-8021 `m` field of a parsed suffix, or nil when no suffix was found.
+func metadataOf(suffix *buildercode.BuilderCodeSuffixData) map[string]any {
+	if suffix == nil {
+		return nil
+	}
+	return suffix.M
+}
+
 func logClaimAttestation(
 	ctx context.Context,
 	result batchedfac.FacilitatorClaimResult,
@@ -30,8 +38,8 @@ func logClaimAttestation(
 		fmt.Printf("[voucher store] Failed to load claim receipt %s: %v\n", hash, err)
 		return
 	}
-	attestation := batchsettlement.DecodeClaimAttestation(input, logs, result.Network)
 	builderCode, _ := buildercode.ParseBuilderCodeSuffixFromCalldata("0x" + hex.EncodeToString(input))
+	attestation := batchsettlement.DecodeClaimAttestation(input, logs, result.Network, metadataOf(builderCode))
 
 	chargeCounts := make([]string, len(attestation.ChargeCounts))
 	for i, c := range attestation.ChargeCounts {
@@ -39,15 +47,11 @@ func logClaimAttestation(
 	}
 
 	payload := map[string]interface{}{
-		"tx":                hash,
-		"functionName":      attestation.FunctionName,
-		"claimFunctionName": nil,
-		"chargeCounts":      chargeCounts,
-		"builderCode":       nil,
-		"channels":          attestation.Channels,
-	}
-	if attestation.ClaimFunctionName != "" {
-		payload["claimFunctionName"] = attestation.ClaimFunctionName
+		"tx":           hash,
+		"functionName": attestation.FunctionName,
+		"chargeCounts": chargeCounts,
+		"builderCode":  nil,
+		"channels":     attestation.Channels,
 	}
 	if builderCode != nil {
 		payload["builderCode"] = builderCode
@@ -75,8 +79,8 @@ func logRefundSettlementAttestation(
 		fmt.Printf("[voucher store] Failed to load refund receipt %s: %v\n", hash, err)
 		return
 	}
-	attestation := batchsettlement.DecodeClaimAttestation(input, logs, result.Network)
 	builderCode, _ := buildercode.ParseBuilderCodeSuffixFromCalldata("0x" + hex.EncodeToString(input))
+	attestation := batchsettlement.DecodeClaimAttestation(input, logs, result.Network, metadataOf(builderCode))
 
 	chargeCounts := make([]string, len(attestation.ChargeCounts))
 	for i, c := range attestation.ChargeCounts {
@@ -84,16 +88,12 @@ func logRefundSettlementAttestation(
 	}
 
 	payload := map[string]interface{}{
-		"tx":                hash,
-		"channelId":         result.Channel,
-		"functionName":      attestation.FunctionName,
-		"claimFunctionName": nil,
-		"chargeCounts":      chargeCounts,
-		"builderCode":       nil,
-		"channels":          attestation.Channels,
-	}
-	if attestation.ClaimFunctionName != "" {
-		payload["claimFunctionName"] = attestation.ClaimFunctionName
+		"tx":           hash,
+		"channelId":    result.Channel,
+		"functionName": attestation.FunctionName,
+		"chargeCounts": chargeCounts,
+		"builderCode":  nil,
+		"channels":     attestation.Channels,
 	}
 	if builderCode != nil {
 		payload["builderCode"] = builderCode

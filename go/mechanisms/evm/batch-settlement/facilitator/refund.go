@@ -57,8 +57,8 @@ func getRefundableAmount(
 
 // ExecuteRefundWithSignature executes a cooperative refund using receiverAuthorizer signature.
 // If RefundAuthorizerSignature or ClaimAuthorizerSignature are absent, the
-// authorizerSigner auto-signs them. claimDataSuffix is an optional charge-count
-// suffix on a bundled inner claim.
+// authorizerSigner auto-signs them. An optional onClaimed callback receives the channelIds that
+// emitted Claimed in a bundled claim once the refund confirms.
 func ExecuteRefundWithSignature(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
@@ -66,9 +66,9 @@ func ExecuteRefundWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
-	claimDataSuffix ...[]byte,
+	onClaimed ...OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
-	return executeRefundWithSignature(ctx, signer, payload, requirements, authorizerSigner, dataSuffix, firstSuffix(claimDataSuffix))
+	return executeRefundWithSignature(ctx, signer, payload, requirements, authorizerSigner, dataSuffix, firstOnClaimed(onClaimed))
 }
 
 func executeRefundWithSignature(
@@ -78,7 +78,7 @@ func executeRefundWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
-	claimDataSuffix []byte,
+	onClaimed OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -188,7 +188,6 @@ func executeRefundWithSignature(
 			return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", network, "",
 				fmt.Sprintf("failed to encode claim calldata: %s", err))
 		}
-		claimCalldata = evm.AppendDataSuffix(claimCalldata, claimDataSuffix)
 
 		refundAbi, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementRefundWithSignatureABI)))
 		if err != nil {
@@ -231,10 +230,12 @@ func executeRefundWithSignature(
 			return nil, x402.NewSettleError(ErrRefundTransactionFailed, "", network, "",
 				fmt.Sprintf("multicall (claim+refund) transaction failed: %s", err))
 		}
-		if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, payload.ChannelConfig.Payer, network,
-			ErrRefundTransactionFailed, ErrTransactionReverted); err != nil {
+		receipt, err := evm.WaitForSettleReceipt(ctx, signer, txHash, payload.ChannelConfig.Payer, network,
+			ErrRefundTransactionFailed, ErrTransactionReverted)
+		if err != nil {
 			return nil, err
 		}
+		notifyClaimed(onClaimed, receipt)
 
 		details := computeRefundSettlementDetails(ctx, signer, payload, channelId, preState, refundAmount)
 		return buildRefundResponse(txHash, network, payload.ChannelConfig.Payer, details), nil
@@ -437,22 +438,25 @@ func buildRefundResponse(
 	}
 }
 
-// SubmitRefundInput is the network, refund payload, and optional suffixes.
+// SubmitRefundInput is the network, refund payload, and optional data suffix. OnClaimed, when
+// set, receives the channelIds that emitted Claimed in a bundled claim once the refund confirms.
 type SubmitRefundInput struct {
-	Network         string
-	Payload         *batchsettlement.BatchSettlementEnrichedRefundPayload
-	DataSuffix      []byte
-	ClaimDataSuffix []byte
+	Network    string
+	Payload    *batchsettlement.BatchSettlementEnrichedRefundPayload
+	DataSuffix []byte
+	OnClaimed  OnClaimedChannels
 }
 
-// ExecuteRefund executes a cooperative refund via refund() as msg.sender.
+// ExecuteRefund executes a cooperative refund via refund() as msg.sender. An optional onClaimed
+// callback receives the channelIds that emitted Claimed in a bundled claim once the refund
+// confirms.
 func ExecuteRefund(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
 	payload *batchsettlement.BatchSettlementEnrichedRefundPayload,
 	network string,
 	dataSuffix []byte,
-	claimDataSuffix []byte,
+	onClaimed ...OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	reqs := types.PaymentRequirements{Network: network}
 	refundAmount, ok := new(big.Int).SetString(payload.Amount, 10)
@@ -461,11 +465,11 @@ func ExecuteRefund(
 			fmt.Sprintf("invalid refund amount: %s", payload.Amount))
 	}
 	configTuple := ToContractChannelConfig(payload.ChannelConfig)
-	call, err := buildDirectRefundCall(payload, configTuple, refundAmount, claimDataSuffix)
+	call, err := buildDirectRefundCall(payload, configTuple, refundAmount)
 	if err != nil {
 		return nil, x402.NewSettleError(ErrInvalidRefundPayload, "", x402.Network(network), "", err.Error())
 	}
-	return submitRefundCall(ctx, signer, payload, reqs, call.abiJSON, call.functionName, call.args, dataSuffix, refundAmount)
+	return submitRefundCall(ctx, signer, payload, reqs, call.abiJSON, call.functionName, call.args, dataSuffix, refundAmount, firstOnClaimed(onClaimed))
 }
 
 // SubmitRefund dispatches a refund through the relay or direct submit path.
@@ -475,7 +479,7 @@ func SubmitRefund(ctx context.Context, input SubmitRefundInput, submitCtx Submit
 	hasAuthorizerSignature := input.Payload.RefundAuthorizerSignature != "" || input.Payload.ClaimAuthorizerSignature != ""
 	reqs := types.PaymentRequirements{Network: input.Network}
 	if ShouldRelaySubmit(submitCtx.SubmitMode, hasAuthorizerSignature) {
-		return executeRefundWithSignature(ctx, submitCtx.Signer, input.Payload, reqs, submitCtx.AuthorizerSigner, input.DataSuffix, input.ClaimDataSuffix)
+		return executeRefundWithSignature(ctx, submitCtx.Signer, input.Payload, reqs, submitCtx.AuthorizerSigner, input.DataSuffix, input.OnClaimed)
 	}
 	if submitCtx.AuthorizerSubmitter == nil {
 		return &x402.SettleResponse{
@@ -485,7 +489,7 @@ func SubmitRefund(ctx context.Context, input SubmitRefundInput, submitCtx Submit
 			Network:     x402.Network(input.Network),
 		}, nil
 	}
-	return ExecuteRefund(ctx, submitCtx.AuthorizerSubmitter, input.Payload, input.Network, input.DataSuffix, input.ClaimDataSuffix)
+	return ExecuteRefund(ctx, submitCtx.AuthorizerSubmitter, input.Payload, input.Network, input.DataSuffix, input.OnClaimed)
 }
 
 type refundCall struct {
@@ -498,7 +502,6 @@ func buildDirectRefundCall(
 	payload *batchsettlement.BatchSettlementEnrichedRefundPayload,
 	configTuple ContractChannelConfigTuple,
 	refundAmount *big.Int,
-	claimDataSuffix []byte,
 ) (refundCall, error) {
 	if len(payload.Claims) == 0 {
 		return refundCall{
@@ -516,7 +519,6 @@ func buildDirectRefundCall(
 	if err != nil {
 		return refundCall{}, fmt.Errorf("failed to encode claim calldata: %s", err)
 	}
-	claimCalldata = evm.AppendDataSuffix(claimCalldata, claimDataSuffix)
 
 	refundAbi, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementRefundABI)))
 	if err != nil {
@@ -543,6 +545,7 @@ func submitRefundCall(
 	args []interface{},
 	dataSuffix []byte,
 	refundAmount *big.Int,
+	onClaimed OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 	channelId, err := batchsettlement.ComputeChannelId(payload.ChannelConfig, string(network))
@@ -576,17 +579,12 @@ func submitRefundCall(
 		return nil, x402.NewSettleError(ErrRefundTransactionFailed, "", network, "",
 			fmt.Sprintf("%s transaction failed: %s", functionName, err))
 	}
-	if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, payload.ChannelConfig.Payer, network,
-		ErrRefundTransactionFailed, ErrTransactionReverted); err != nil {
+	receipt, err := evm.WaitForSettleReceipt(ctx, signer, txHash, payload.ChannelConfig.Payer, network,
+		ErrRefundTransactionFailed, ErrTransactionReverted)
+	if err != nil {
 		return nil, err
 	}
+	notifyClaimed(onClaimed, receipt)
 	details := computeRefundSettlementDetails(ctx, signer, payload, channelId, preState, refundAmount)
 	return buildRefundResponse(txHash, network, payload.ChannelConfig.Payer, details), nil
-}
-
-func firstSuffix(suffixes [][]byte) []byte {
-	if len(suffixes) == 0 {
-		return nil
-	}
-	return suffixes[0]
 }

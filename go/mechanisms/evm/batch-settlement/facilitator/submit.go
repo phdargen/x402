@@ -18,6 +18,24 @@ const (
 	SubmitModeDirect SubmitMode = "direct"
 )
 
+// OnClaimedChannels receives the lowercase channelIds that emitted Claimed once a claim or a
+// bundled claim+refund confirms. Rows that did not emit Claimed were no-ops and are absent.
+type OnClaimedChannels func(claimed map[string]struct{})
+
+func notifyClaimed(onClaimed OnClaimedChannels, receipt *evm.TransactionReceipt) {
+	if onClaimed == nil || receipt == nil {
+		return
+	}
+	onClaimed(batchsettlement.ClaimedChannelIds(receipt.Logs))
+}
+
+func firstOnClaimed(callbacks []OnClaimedChannels) OnClaimedChannels {
+	if len(callbacks) == 0 {
+		return nil
+	}
+	return callbacks[0]
+}
+
 // SubmitContext is the signers and mode used by claim and refund dispatchers.
 type SubmitContext struct {
 	SubmitMode          SubmitMode

@@ -592,10 +592,7 @@ func settleManagedRefund(
 	enriched.RefundAuthorizerSignature = ""
 	enriched.ClaimAuthorizerSignature = ""
 
-	var (
-		claimSuffix []byte
-		begun       []attestedClaim
-	)
+	var begun []attestedClaim
 	if len(claims) > 0 {
 		one, result, beginErr := beginAttestedClaim(ctx, deps.Storage, channelId, claims[0], time.Now().UnixMilli())
 		if beginErr != nil {
@@ -604,7 +601,11 @@ func settleManagedRefund(
 		switch result {
 		case beginStarted:
 			begun = []attestedClaim{one}
-			claimSuffix, err = batchsettlement.EncodeChargeCountsSuffix([]uint64{chargeCountUint(one.Count)})
+			dataSuffix, err = evm.ResolveDataSuffix(fctx, evm.DataSuffixContext{
+				Payload:      payment,
+				Requirements: requirements,
+				Metadata:     batchsettlement.ChargeCountsMetadata([]uint64{chargeCountUint(one.Count)}),
+			})
 			if err != nil {
 				_ = abortAttestedClaims(ctx, deps.Storage, begun)
 				return failSettle(requirements, ErrRpcReadFailed), nil
@@ -622,11 +623,14 @@ func settleManagedRefund(
 			return nil, fmt.Errorf("unexpected begin result %d", result)
 		}
 	}
+	// The claim leg may be a no-op (no Claimed event). Capture which channels actually claimed so
+	// the local charge count is only decremented when an indexer would credit it.
+	claimed := map[string]struct{}{}
 	settled, err := SubmitRefund(ctx, SubmitRefundInput{
-		Network:         requirements.Network,
-		Payload:         &enriched,
-		DataSuffix:      dataSuffix,
-		ClaimDataSuffix: claimSuffix,
+		Network:    requirements.Network,
+		Payload:    &enriched,
+		DataSuffix: dataSuffix,
+		OnClaimed:  func(ids map[string]struct{}) { claimed = ids },
 	}, SubmitContext{
 		SubmitMode:          deps.SubmitMode,
 		Signer:              deps.Signer,
@@ -653,7 +657,7 @@ func settleManagedRefund(
 		if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
 			return settled, nil
 		}
-		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed, begun[0]); finishErr != nil {
+		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed, begun[0], channelEmittedClaimed(claimed, channelId)); finishErr != nil {
 			voucherStoreLogger(deps).Warn("batch-settlement: refund landed but attested claim was not applied", "channel_id", channelId, "error", finishErr)
 		}
 	}

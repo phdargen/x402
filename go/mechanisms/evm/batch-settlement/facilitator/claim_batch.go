@@ -380,26 +380,23 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 	asset := kept[0].Voucher.Channel.Token
 	payTo := kept[0].Voucher.Channel.Receiver
 	payload := &batchsettlement.BatchSettlementClaimPayload{Type: "claim", Claims: kept}
-	builderSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), asset, payTo)
+	dataSuffix, err := m.resolveBuilderSuffix(network, payload.ToMap(), asset, payTo, batchsettlement.ChargeCountsMetadata(counts))
 	if err != nil {
 		_ = abortAttestedClaims(ctx, m.storage, begun)
 		return nil, err
 	}
-	dataSuffix, err := batchsettlement.ComposeClaimDataSuffix(counts, builderSuffix)
-	if err != nil {
-		_ = abortAttestedClaims(ctx, m.storage, begun)
-		return nil, err
-	}
+	claimed := map[string]struct{}{}
 	response, err := SubmitClaim(ctx, SubmitClaimInput{
 		Network:    network,
 		Claims:     kept,
 		DataSuffix: dataSuffix,
+		OnClaimed:  func(ids map[string]struct{}) { claimed = ids },
 	}, m.submitContext())
 	landed, releaseErr := releaseAttestedClaims(ctx, m.storage, begun, err, response)
 	if landed {
 		afterCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterClaimTimeout)
 		defer cancel()
-		if afterErr := afterClaim(afterCtx, m.storage, kept, network, m.settleTargetStorage, rows, begun); afterErr != nil {
+		if afterErr := afterClaim(afterCtx, m.storage, kept, network, m.settleTargetStorage, rows, begun, claimed); afterErr != nil {
 			return nil, afterErr
 		}
 		if releaseErr != nil {

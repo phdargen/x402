@@ -142,7 +142,7 @@ func TestAfterClaim_RecordsTargetsBeforeFinishingChannels(t *testing.T) {
 	log = nil
 	claims := []batchsettlement.BatchSettlementVoucherClaim{afterClaimVoucher(first), claimSecond}
 	known := []*FacilitatorChannel{first, second}
-	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, targets, known, nil); err != nil {
+	if err := afterClaim(context.Background(), &channels, claims, afterClaimNetwork, targets, known, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(log) != 3 || log[0] != "target" || log[1] != "channel" || log[2] != "channel" {

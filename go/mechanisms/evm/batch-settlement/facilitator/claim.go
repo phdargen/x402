@@ -13,17 +13,20 @@ import (
 )
 
 // SubmitClaimInput is the network, claims, optional pre-signed authorizer
-// signature, and data suffix for SubmitClaim.
+// signature, and data suffix for SubmitClaim. OnClaimed, when set, receives the channelIds that
+// emitted Claimed once the claim confirms.
 type SubmitClaimInput struct {
 	Network    string
 	Claims     []batchsettlement.BatchSettlementVoucherClaim
 	Signature  string
 	DataSuffix []byte
+	OnClaimed  OnClaimedChannels
 }
 
 // ExecuteClaimWithSignature executes a batch claim with receiverAuthorizer signature.
 // If ClaimAuthorizerSignature is absent from the payload, the authorizerSigner
-// auto-signs the ClaimBatch digest.
+// auto-signs the ClaimBatch digest. An optional onClaimed callback receives the channelIds that
+// emitted Claimed once the claim confirms.
 func ExecuteClaimWithSignature(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
@@ -31,6 +34,7 @@ func ExecuteClaimWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
+	onClaimed ...OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -70,21 +74,23 @@ func ExecuteClaimWithSignature(
 	return submitClaimTransaction(ctx, signer, string(network), "claimWithSignature",
 		batchsettlement.BatchSettlementClaimWithSignatureABI,
 		[]interface{}{buildVoucherClaimArgs(payload.Claims), sigBytes},
-		dataSuffix)
+		dataSuffix, firstOnClaimed(onClaimed))
 }
 
-// ExecuteClaim submits a batch claim via claim() as msg.sender.
+// ExecuteClaim submits a batch claim via claim() as msg.sender. An optional onClaimed callback
+// receives the channelIds that emitted Claimed once the claim confirms.
 func ExecuteClaim(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
 	payload *batchsettlement.BatchSettlementClaimPayload,
 	network string,
 	dataSuffix []byte,
+	onClaimed ...OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	return submitClaimTransaction(ctx, signer, network, "claim",
 		batchsettlement.BatchSettlementClaimABI,
 		[]interface{}{buildVoucherClaimArgs(payload.Claims)},
-		dataSuffix)
+		dataSuffix, firstOnClaimed(onClaimed))
 }
 
 // SubmitClaim dispatches a claim through the relay or direct submit path.
@@ -101,7 +107,7 @@ func SubmitClaim(ctx context.Context, input SubmitClaimInput, submitCtx SubmitCo
 
 	reqs := types.PaymentRequirements{Network: input.Network}
 	if ShouldRelaySubmit(submitCtx.SubmitMode, input.Signature != "") {
-		return ExecuteClaimWithSignature(ctx, submitCtx.Signer, payload, reqs, submitCtx.AuthorizerSigner, input.DataSuffix)
+		return ExecuteClaimWithSignature(ctx, submitCtx.Signer, payload, reqs, submitCtx.AuthorizerSigner, input.DataSuffix, input.OnClaimed)
 	}
 	if submitCtx.AuthorizerSubmitter == nil {
 		return &x402.SettleResponse{
@@ -111,7 +117,7 @@ func SubmitClaim(ctx context.Context, input SubmitClaimInput, submitCtx SubmitCo
 			Network:     x402.Network(input.Network),
 		}, nil
 	}
-	return ExecuteClaim(ctx, submitCtx.AuthorizerSubmitter, payload, input.Network, input.DataSuffix)
+	return ExecuteClaim(ctx, submitCtx.AuthorizerSubmitter, payload, input.Network, input.DataSuffix, input.OnClaimed)
 }
 
 func submitClaimTransaction(
@@ -122,6 +128,7 @@ func submitClaimTransaction(
 	abiJSON []byte,
 	args []interface{},
 	dataSuffix []byte,
+	onClaimed OnClaimedChannels,
 ) (*x402.SettleResponse, error) {
 	net := x402.Network(network)
 	if _, simErr := signer.ReadContract(ctx, batchsettlement.BatchSettlementAddress, abiJSON, functionName, args...); simErr != nil {
@@ -139,10 +146,12 @@ func submitClaimTransaction(
 		return nil, x402.NewSettleError(ErrClaimTransactionFailed, "", net, "",
 			fmt.Sprintf("%s transaction failed: %s", functionName, err))
 	}
-	if _, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", net,
-		ErrClaimTransactionFailed, ErrTransactionReverted); err != nil {
+	receipt, err := evm.WaitForSettleReceipt(ctx, signer, txHash, "", net,
+		ErrClaimTransactionFailed, ErrTransactionReverted)
+	if err != nil {
 		return nil, err
 	}
+	notifyClaimed(onClaimed, receipt)
 
 	return &x402.SettleResponse{
 		Success:     true,

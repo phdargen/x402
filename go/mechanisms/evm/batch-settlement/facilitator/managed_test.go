@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common"
+	goethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -264,6 +267,79 @@ type managedRPC struct {
 	receiverSettledByAddr map[string]*big.Int
 	// resyncView overrides the 3-call channel-state read used after a failed claim.
 	resyncView *managedChainView
+	// noopChannels marks lowercase channel ids whose claim row emits no Claimed event.
+	noopChannels map[string]struct{}
+	// suppressClaimed makes every claim row a no-op (for example a retried batch that already landed).
+	suppressClaimed bool
+}
+
+// claimedEventABI is the Claimed event used to build receipt logs.
+var claimedEventABI = func() abi.Event {
+	parsed, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementClaimedEventABI)))
+	if err != nil {
+		panic(err)
+	}
+	return parsed.Events["Claimed"]
+}()
+
+// claimedReceiptLog builds a Claimed log emitted by x402BatchSettlement.
+func claimedReceiptLog(t *testing.T, channelId string) *goethtypes.Log {
+	t.Helper()
+	data, err := claimedEventABI.Inputs.NonIndexed().Pack(big.NewInt(1), big.NewInt(1))
+	if err != nil {
+		t.Fatalf("pack Claimed data: %v", err)
+	}
+	return &goethtypes.Log{
+		Address: common.HexToAddress(batchsettlement.BatchSettlementAddress),
+		Topics: []common.Hash{
+			claimedEventABI.ID,
+			common.HexToHash(channelId),
+			common.BytesToHash(common.LeftPadBytes(common.HexToAddress(managedFacilitator).Bytes(), 32)),
+		},
+		Data: data,
+	}
+}
+
+// managedClaimedLogs returns the receipt logs the contract would emit for a claim, claim with
+// signature, or multicall write: one Claimed per claim row unless the row is marked a no-op.
+func managedClaimedLogs(t *testing.T, rpc *managedRPC, functionName string, args []interface{}) []*goethtypes.Log {
+	t.Helper()
+	if rpc.suppressClaimed {
+		return nil
+	}
+	var legs [][]byte
+	switch functionName {
+	case "claim", "claimWithSignature":
+		abiJSON := batchsettlement.BatchSettlementClaimABI
+		if functionName == "claimWithSignature" {
+			abiJSON = batchsettlement.BatchSettlementClaimWithSignatureABI
+		}
+		parsed, err := abi.JSON(strings.NewReader(string(abiJSON)))
+		if err != nil {
+			t.Fatalf("abi: %v", err)
+		}
+		calldata, err := parsed.Pack(functionName, args...)
+		if err != nil {
+			t.Fatalf("pack %s: %v", functionName, err)
+		}
+		legs = [][]byte{calldata}
+	case "multicall":
+		if len(args) > 0 {
+			legs, _ = args[0].([][]byte)
+		}
+	default:
+		return nil
+	}
+	var logs []*goethtypes.Log
+	for _, leg := range legs {
+		for _, row := range batchsettlement.DecodeClaimAttestation(leg, nil, managedNetwork, nil).Channels {
+			if _, noop := rpc.noopChannels[strings.ToLower(row.ChannelId)]; noop {
+				continue
+			}
+			logs = append(logs, claimedReceiptLog(t, row.ChannelId))
+		}
+	}
+	return logs
 }
 
 func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
@@ -287,6 +363,7 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 	if rpc.receiverSettled == nil {
 		rpc.receiverSettled = big.NewInt(0)
 	}
+	var lastLogs []*goethtypes.Log
 	return &fakeFacilitatorSigner{
 		addresses: []string{managedFacilitator},
 		chainId:   big.NewInt(84532),
@@ -315,7 +392,8 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 			}
 			return nil, nil
 		},
-		writeContract: func(functionName string, _ ...interface{}) (string, error) {
+		writeContract: func(functionName string, args ...interface{}) (string, error) {
+			lastLogs = managedClaimedLogs(t, rpc, functionName, args)
 			if functionName == "refundWithSignature" || functionName == "refund" || functionName == "multicall" {
 				if rpc.balance.Sign() > 0 && rpc.totalClaimed != nil {
 					remain := new(big.Int).Sub(rpc.balance, rpc.totalClaimed)
@@ -331,7 +409,7 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 			return successTxHash, nil
 		},
 		waitForReceipt: func(txHash string) (*evm.TransactionReceipt, error) {
-			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash}, nil
+			return &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: txHash, Logs: lastLogs}, nil
 		},
 	}
 }
@@ -605,19 +683,48 @@ func (s *recordingSettleTargets) RemoveSettleTarget(context.Context, storage.Set
 	return nil
 }
 
+// stubBuilderCode stands in for the builder-code facilitator extension. It returns a fixed suffix
+// (nil for none) and records the metadata of every context so tests can assert what the
+// facilitator would encode into ERC-8021 `m`.
 type stubBuilderCode struct {
-	suffix []byte
+	suffix   []byte
+	metadata []map[string]any
 }
 
 func (s *stubBuilderCode) Key() string { return evm.BuilderCodeKey }
-func (s *stubBuilderCode) BuildDataSuffix(evm.DataSuffixContext) ([]byte, error) {
+func (s *stubBuilderCode) BuildDataSuffix(ctx evm.DataSuffixContext) ([]byte, error) {
+	s.metadata = append(s.metadata, ctx.Metadata)
 	return s.suffix, nil
 }
 
+// chargeCounts returns the counts of the most recent context that carried any.
+func (s *stubBuilderCode) chargeCounts() []uint64 {
+	for i := len(s.metadata) - 1; i >= 0; i-- {
+		if counts := batchsettlement.ParseChargeCountsMetadata(s.metadata[i]); counts != nil {
+			return counts
+		}
+	}
+	return nil
+}
+
 func builderContext(suffix []byte) *x402.FacilitatorContext {
+	return recordingContext(&stubBuilderCode{suffix: suffix})
+}
+
+func recordingContext(stub *stubBuilderCode) *x402.FacilitatorContext {
 	return x402.NewFacilitatorContext(map[string]x402.FacilitatorExtension{
-		evm.BuilderCodeKey: &stubBuilderCode{suffix: suffix},
+		evm.BuilderCodeKey: stub,
 	})
+}
+
+// contextStub returns the recording builder-code stub registered on fctx.
+func contextStub(t *testing.T, fctx *x402.FacilitatorContext) *stubBuilderCode {
+	t.Helper()
+	stub, ok := fctx.GetExtension(evm.BuilderCodeKey).(*stubBuilderCode)
+	if !ok {
+		t.Fatal("facilitator context has no recording builder-code stub")
+	}
+	return stub
 }
 
 func syntaxLockErr() error {
