@@ -1158,7 +1158,7 @@ export function routeDiscoveryOutput(): {
   return { example, schema: { properties, required: Object.keys(example) } };
 }
 
-const HARNESS_PAYMENT_SCHEMES = ['exact', 'upto', 'batch-settlement'] as const;
+const HARNESS_PAYMENT_SCHEMES = ['exact', 'upto', 'batch-settlement', 'auth-capture'] as const;
 
 /** Merge component-level and run-level route exclusions (union of exclude lists). */
 export function mergeRouteFilters(...filters: (RouteFilter | undefined)[]): RouteFilter {
