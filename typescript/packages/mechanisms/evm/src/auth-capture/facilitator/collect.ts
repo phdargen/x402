@@ -7,7 +7,14 @@ import type {
   VerifyResponse,
 } from "@x402/core/types";
 import type { PendingSettlementStore } from "@x402/core/facilitator";
-import { encodeFunctionData, hexToBigInt, isAddressEqual, parseEventLogs, type Log } from "viem";
+import {
+  encodeFunctionData,
+  hexToBigInt,
+  isAddressEqual,
+  parseEventLogs,
+  size,
+  type Log,
+} from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import {
   ERC20_BALANCE_OF_ABI,
@@ -138,6 +145,24 @@ function chargeDigestFor(
 }
 
 /**
+ * Reason a payer signature failed verification. A signature that is not 65-byte ECDSA, from a
+ * payer with no code and no ERC-6492 envelope, is an undeployed smart wallet whose signature
+ * cannot be checked; anything else is simply invalid.
+ *
+ * @param isDeployedAtPayer - Whether the payer address has code.
+ * @param innerSignature - Signature with any ERC-6492 wrapper removed.
+ * @returns The stable `invalidReason`.
+ */
+function invalidPayerSignatureReason(
+  isDeployedAtPayer: boolean,
+  innerSignature: `0x${string}`,
+): string {
+  return !isDeployedAtPayer && size(innerSignature) !== 65
+    ? Errors.ErrUndeployedSmartWallet
+    : Errors.ErrInvalidAuthCaptureSignature;
+}
+
+/**
  * Verify a collect (authorize / charge) payload.
  *
  * @param signers - Facilitator signer set.
@@ -252,11 +277,8 @@ export async function verifyCollect(
 
   // The canonical collectors strip the ERC-6492 wrapper onchain, so pre-verify checks the
   // inner signature while settlement forwards the wrapper untouched.
-  const { isCounterfactual, innerSignature, eip6492Deployment } = await classifyErc6492Payer(
-    submitter,
-    wirePayload.signature,
-    payer,
-  );
+  const { isCounterfactual, isDeployedAtPayer, innerSignature, eip6492Deployment } =
+    await classifyErc6492Payer(submitter, wirePayload.signature, payer);
 
   if (isCounterfactual) {
     // An undeployed wallet has no isValidSignature to call, so the simulation below is the
@@ -289,7 +311,11 @@ export async function verifyCollect(
           );
 
     if (!signatureValid) {
-      return { isValid: false, invalidReason: Errors.ErrInvalidAuthCaptureSignature, payer };
+      return {
+        isValid: false,
+        invalidReason: invalidPayerSignatureReason(isDeployedAtPayer, innerSignature),
+        payer,
+      };
     }
   }
 

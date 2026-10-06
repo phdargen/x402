@@ -162,7 +162,7 @@ export async function verifyLifecycle(
   }
 
   if (!paymentInfoMatchesRequirements(paymentInfo, payload.accepted, extra)) {
-    return { isValid: false, invalidReason: Errors.ErrInvalidAuthCaptureExtra };
+    return { isValid: false, invalidReason: Errors.ErrPaymentInfoMismatch };
   }
 
   const chainId = getEvmChainId(requirements.network);
@@ -529,6 +529,45 @@ async function releaseTerminalBinding(
 }
 
 /**
+ * Pending-settlement key of a lifecycle payload: its authorizer signature, except when the
+ * authorizer is delegated to this facilitator. The facilitator produced that signature, and a
+ * non-deterministic signer may produce a different one on a retry, so the key is instead what
+ * the payload does to which payment: network, paymentInfoHash, type, amount and expected
+ * balances.
+ *
+ * @param config - Facilitator config.
+ * @param requirements - Published requirements.
+ * @param wirePayload - Signed lifecycle payload.
+ * @returns The store key, or undefined when none can be derived.
+ */
+function lifecyclePendingKey(
+  config: AuthCaptureFacilitatorConfig | undefined,
+  requirements: PaymentRequirements,
+  wirePayload: AuthCaptureLifecyclePayload,
+): string | undefined {
+  const parsed = parseAuthCaptureExtra(requirements.extra);
+  if ("error" in parsed || !getDelegatedAuthorizer(config, parsed.extra.receiverAuthorizer)) {
+    return wirePayload.authorizerSignature;
+  }
+  const paymentInfoHash = computePaymentInfoHash(
+    getEvmChainId(requirements.network),
+    wirePayload.paymentInfo,
+    parsed.extra.deployment.escrow,
+  );
+  const balances =
+    wirePayload.type === "void"
+      ? ["", "", ""]
+      : [
+          wirePayload.amount,
+          wirePayload.expectedCapturableAmount,
+          wirePayload.expectedRefundableAmount,
+        ];
+  return [requirements.network, paymentInfoHash.toLowerCase(), wirePayload.type, ...balances].join(
+    "|",
+  );
+}
+
+/**
  * Re-verify and settle a lifecycle payload whose authorizer signature is present.
  *
  * @param signers - Facilitator signer set.
@@ -549,7 +588,7 @@ async function settleVerifiedLifecycle(
   store: PendingSettlementStore,
   context?: FacilitatorContext,
 ): Promise<SettleResponse> {
-  const pendingKey = wirePayload.authorizerSignature;
+  const pendingKey = lifecyclePendingKey(config, requirements, wirePayload);
   const payer = wirePayload.paymentInfo.payer;
 
   if (pendingKey) {

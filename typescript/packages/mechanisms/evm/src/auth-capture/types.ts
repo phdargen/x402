@@ -138,6 +138,22 @@ export type AuthCaptureFacilitatorConfig = {
   feeTerms?: AuthCaptureFeeTerms;
   operators?: OperatorAllowlistEntry[];
   /**
+   * Operator addresses `/supported` advertises one at a time as `extra.captureAuthorizer`.
+   * Each MUST be an address of one of the facilitator signers, and stay usable (and funded
+   * when {@link refundFunding} is on) until its payments pass `refundDeadline`. Omitted or
+   * empty advertises every signer address. Settlement still accepts any signer address, so
+   * narrowing the pool retires an address from new payments without stranding old ones.
+   */
+  captureAuthorizers?: `0x${string}`[];
+  /**
+   * Picks the pool member for one `/supported` response. An omitted selector, or a result
+   * outside `candidates`, falls back to a random pick.
+   */
+  selectCaptureAuthorizer?: (
+    network: string,
+    candidates: readonly `0x${string}`[],
+  ) => `0x${string}` | undefined;
+  /**
    * Enables facilitator-delegated receiver authorization. Advertised as `/supported`
    * `extra.receiverAuthorizer`; the facilitator signs `charge` and lifecycle digests with it
    * when the server omits `authorizerSignature`. Requires {@link resolveCallerIdentity}.

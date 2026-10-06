@@ -46,6 +46,8 @@ export const ErrAmountMismatch = "invalid_auth_capture_evm_amount_mismatch";
 export const ErrNonceMismatch = "invalid_auth_capture_evm_nonce_mismatch";
 export const ErrInsufficientBalance = "invalid_auth_capture_evm_insufficient_balance";
 export const ErrSimulationFailed = "invalid_auth_capture_evm_simulation_failed";
+export const ErrPaymentInfoMismatch = "invalid_auth_capture_evm_payment_info_mismatch";
+export const ErrUndeployedSmartWallet = "invalid_auth_capture_evm_payload_undeployed_smart_wallet";
 
 // Typed simulation reverts
 export const ErrPaymentAlreadyCollected = "invalid_auth_capture_evm_payment_already_collected";

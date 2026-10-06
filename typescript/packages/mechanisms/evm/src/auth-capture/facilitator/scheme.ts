@@ -26,7 +26,7 @@ import { AUTH_CAPTURE_SCHEME } from "../constants";
 import type { AuthCaptureFacilitatorConfig } from "../types";
 import { isAuthCaptureCollectPayload, isLifecyclePayload } from "../types";
 import * as Errors from "../errors";
-import { facilitatorAddresses } from "./utils";
+import { facilitatorAddresses, pickCaptureAuthorizer, resolveCaptureAuthorizerPool } from "./utils";
 import { verifyCollect, settleCollect } from "./collect";
 import { verifyLifecycle, settleLifecycle } from "./lifecycle";
 import { assertDelegatedAuthStorage } from "./delegatedAuth";
@@ -85,6 +85,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   private readonly signers: readonly FacilitatorEvmSigner[];
   private readonly pendingStore: PendingSettlementStore;
   private readonly config: AuthCaptureFacilitatorConfig | undefined;
+  private readonly captureAuthorizers: readonly `0x${string}`[];
 
   /**
    * Construct a facilitator-side auth-capture scheme bound to one or more signers.
@@ -94,7 +95,8 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
    * @param signer - Facilitator signer, or a set of signers to rotate across.
    * @param config - Optional fee terms, operator allowlist, delegated refund funding, and
    *                 the facilitator-delegated receiver authorizer.
-   * @throws If facilitator-delegated receiver authorization is only partially configured.
+   * @throws If facilitator-delegated receiver authorization is only partially configured, or
+   *         `captureAuthorizers` names an address no signer holds.
    */
   constructor(
     signer: FacilitatorEvmSigner | readonly FacilitatorEvmSigner[],
@@ -104,6 +106,7 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
     this.signers = Array.isArray(signer) ? [...signer] : [signer];
     this.pendingStore = config?.pendingSettlementStore ?? new InMemoryPendingSettlementStore();
     this.config = config;
+    this.captureAuthorizers = resolveCaptureAuthorizerPool(this.signers, config);
   }
 
   /**
@@ -117,18 +120,23 @@ export class AuthCaptureEvmScheme implements SchemeNetworkFacilitator {
   }
 
   /**
-   * Facilitator-injected `extra` fields for `/supported`: a randomly selected
-   * `captureAuthorizer`, the receiver authorizer when this facilitator can authenticate
-   * delegated requests, grouped fee terms, and the custom-operator allowlist.
+   * Facilitator-injected `extra` fields for `/supported`: a `captureAuthorizer` picked from
+   * the pool (randomly, or by `selectCaptureAuthorizer`), the receiver authorizer when this
+   * facilitator can authenticate delegated requests, grouped fee terms, and the
+   * custom-operator allowlist.
    *
-   * @param _ - Unused network argument (interface compatibility).
+   * @param network - CAIP-2 network being advertised.
    * @returns Extra to merge into payment requirements, or undefined when empty.
    */
-  getExtra(_: string): Record<string, unknown> | undefined {
+  getExtra(network: string): Record<string, unknown> | undefined {
     const extra: Record<string, unknown> = {};
-    const addresses = facilitatorAddresses(this.signers);
-    if (addresses.length > 0) {
-      extra.captureAuthorizer = addresses[Math.floor(Math.random() * addresses.length)];
+    const captureAuthorizer = pickCaptureAuthorizer(
+      this.captureAuthorizers,
+      network,
+      this.config?.selectCaptureAuthorizer,
+    );
+    if (captureAuthorizer) {
+      extra.captureAuthorizer = captureAuthorizer;
     }
     if (this.config?.authorizerSigner) {
       extra.receiverAuthorizer = getAddress(this.config.authorizerSigner.address);

@@ -228,4 +228,30 @@ describe("verifyLifecycle", () => {
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(Errors.ErrOperatorMismatch);
   });
+
+  it("rejects capture payloads whose paymentInfo differs from the requirements", async () => {
+    const accepted = mockRequirements;
+    const result = await verifyLifecycle(
+      [signer],
+      undefined,
+      { x402Version: 2, accepted, payload: {} },
+      accepted,
+      {
+        type: "capture",
+        paymentInfo: {
+          ...paymentInfo(),
+          receiver: "0xcccccccccccccccccccccccccccccccccccccccc",
+        },
+        saltNonce: SALT_NONCE,
+        amount: "500000",
+        feeAmount: "0",
+        feeReceiver: FEE_RECIPIENT,
+        expectedCapturableAmount: "1000000",
+        expectedRefundableAmount: "0",
+        authorizerSignature: "0xabcd",
+      },
+    );
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(Errors.ErrPaymentInfoMismatch);
+  });
 });

@@ -12,6 +12,10 @@ import {
   type Log,
   zeroAddress,
 } from "viem";
+import {
+  InMemoryPendingSettlementStore,
+  type PendingSettlementStore,
+} from "@x402/core/facilitator";
 import { AuthCaptureEvmScheme } from "../../../src/auth-capture/facilitator/scheme";
 import {
   InMemoryAuthCaptureDelegatedAuthStorage,
@@ -1121,6 +1125,15 @@ describe("AuthCaptureEvmScheme", () => {
       expect(result.invalidReason).toBe("invalid_auth_capture_evm_signature");
     });
 
+    it("should report an undeployed smart wallet whose signature cannot be checked", async () => {
+      // No code at the payer and a non-ECDSA signature without an ERC-6492 envelope.
+      mockSigner.getCode.mockImplementation(async () => "0x");
+      const scheme = new AuthCaptureEvmScheme(mockSigner);
+      const result = await scheme.verify(buildEip3009Payload(), mockRequirements);
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe(Errors.ErrUndeployedSmartWallet);
+    });
+
     it("should run signature verification through the strict primitive (getCode + isValidSignature)", async () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner);
       await scheme.verify(buildEip3009Payload(), mockRequirements);
@@ -1542,6 +1555,70 @@ describe("AuthCaptureEvmScheme", () => {
       expect(signerWithSim.getAddresses()).toContain(extra?.captureAuthorizer);
     });
 
+    describe("captureAuthorizers pool", () => {
+      const ADDR_A = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+      const ADDR_B = "0x2222222222222222222222222222222222222222" as `0x${string}`;
+      const ADDR_C = "0x3333333333333333333333333333333333333333" as `0x${string}`;
+      const signerAt = (address: `0x${string}`) => ({
+        ...mockSigner,
+        getAddresses: () => [address] as readonly `0x${string}`[],
+      });
+      const signers = [signerAt(ADDR_A), signerAt(ADDR_B), signerAt(ADDR_C)];
+
+      it("advertises only configured pool members", () => {
+        const scheme = new AuthCaptureEvmScheme(signers, { captureAuthorizers: [ADDR_B] });
+        for (let i = 0; i < 10; i++) {
+          expect(scheme.getExtra("eip155:8453")?.captureAuthorizer).toBe(getAddress(ADDR_B));
+        }
+      });
+
+      it("still submits from signer addresses outside the pool", () => {
+        const scheme = new AuthCaptureEvmScheme(signers, { captureAuthorizers: [ADDR_B] });
+        expect(scheme.getSigners("eip155:8453")).toEqual([ADDR_A, ADDR_B, ADDR_C]);
+      });
+
+      it("uses selectCaptureAuthorizer and falls back to a pool member for a stranger", () => {
+        const select = vi.fn().mockReturnValueOnce(ADDR_C).mockReturnValue(ADDR_A.toLowerCase());
+        const scheme = new AuthCaptureEvmScheme(signers, {
+          captureAuthorizers: [ADDR_B, ADDR_C],
+          selectCaptureAuthorizer: select,
+        });
+        expect(scheme.getExtra("eip155:8453")?.captureAuthorizer).toBe(getAddress(ADDR_C));
+        expect(select).toHaveBeenCalledWith("eip155:8453", [
+          getAddress(ADDR_B),
+          getAddress(ADDR_C),
+        ]);
+        expect([getAddress(ADDR_B), getAddress(ADDR_C)]).toContain(
+          scheme.getExtra("eip155:8453")?.captureAuthorizer,
+        );
+      });
+
+      it("deduplicates the pool", () => {
+        const select = vi.fn();
+        const scheme = new AuthCaptureEvmScheme(signers, {
+          captureAuthorizers: [ADDR_A, ADDR_A.toLowerCase() as `0x${string}`],
+          selectCaptureAuthorizer: select,
+        });
+        expect(scheme.getExtra("eip155:8453")?.captureAuthorizer).toBe(getAddress(ADDR_A));
+        expect(select).not.toHaveBeenCalled();
+      });
+
+      it("rejects a pool address no signer holds", () => {
+        expect(
+          () =>
+            new AuthCaptureEvmScheme(signers, {
+              captureAuthorizers: [ADDR_A, "0x4444444444444444444444444444444444444444"],
+            }),
+        ).toThrow("is not one of the signers' addresses");
+      });
+
+      it.each([zeroAddress, "not-an-address"])("rejects the invalid pool address %s", bad => {
+        expect(
+          () => new AuthCaptureEvmScheme(signers, { captureAuthorizers: [bad as `0x${string}`] }),
+        ).toThrow("empty or zero address");
+      });
+    });
+
     it("should omit operators from getExtra when simulateCalls is unavailable", () => {
       const scheme = new AuthCaptureEvmScheme(mockSigner, {
         operators: [{ address: "*", operatorType: "custom" }],
@@ -1568,6 +1645,7 @@ describe("AuthCaptureEvmScheme", () => {
         identity?: string | undefined;
         storage?: AuthCaptureDelegatedAuthStorage;
         refundFunding?: boolean;
+        pendingSettlementStore?: PendingSettlementStore;
       } = {},
     ) {
       const storage = overrides.storage ?? new InMemoryAuthCaptureDelegatedAuthStorage();
@@ -1582,6 +1660,7 @@ describe("AuthCaptureEvmScheme", () => {
         delegatedAuthStorage: storage,
         onStorageError,
         refundFunding: overrides.refundFunding ?? true,
+        pendingSettlementStore: overrides.pendingSettlementStore,
       });
       return { scheme, storage, signer, resolveCallerIdentity, onStorageError };
     }
@@ -1838,6 +1917,24 @@ describe("AuthCaptureEvmScheme", () => {
           (call: [{ functionName: string }]) => call[0].functionName,
         );
         expect(names).toEqual(["capture"]);
+      });
+
+      it("reconciles a retried delegated capture even when the facilitator signs differently", async () => {
+        const pendingSettlementStore = new InMemoryPendingSettlementStore();
+        const { scheme, storage, signer } = makeDelegated({ pendingSettlementStore });
+        await bindRow(storage);
+        const envelope = lifecycleEnvelope({});
+
+        mockSigner.waitForTransactionReceipt.mockRejectedValueOnce(new Error("rpc timeout"));
+        const first = await scheme.settle(envelope, envelope.accepted);
+        expect(first.errorReason).toBe(Errors.ErrSettlementPending);
+        expect(first.transaction).toBe(MOCK_TX_HASH);
+
+        signer.signTypedData.mockResolvedValue("0xbeef" as `0x${string}`);
+        const retry = await scheme.settle(envelope, envelope.accepted);
+        expect(retry.success).toBe(true);
+        expect(retry.transaction).toBe(MOCK_TX_HASH);
+        expect(mockSigner.writeContract).toHaveBeenCalledTimes(1);
       });
 
       it("verifies an unsigned capture for the bound caller and rejects everyone else", async () => {

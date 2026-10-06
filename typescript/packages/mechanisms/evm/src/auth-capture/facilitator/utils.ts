@@ -1,9 +1,21 @@
-import { BaseError, ContractFunctionRevertedError, isAddressEqual, type Log } from "viem";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  getAddress,
+  isAddress,
+  isAddressEqual,
+  type Log,
+} from "viem";
 import type { FacilitatorEvmSigner } from "../../signer";
 import { escrowAbiWithErrorsForDeployment } from "../abi";
 import { ESCROW_VIEW_ABI } from "../abi";
 import type { AuthCaptureDeployment } from "../constants";
-import type { AuthCaptureCollectPayload, PaymentState } from "../types";
+import { isNonZeroAddress } from "../nonce";
+import type {
+  AuthCaptureCollectPayload,
+  AuthCaptureFacilitatorConfig,
+  PaymentState,
+} from "../types";
 import { isEip3009Payload } from "../types";
 import { ESCROW_ERROR_TO_INVALID_REASON, ErrSimulationFailed } from "../errors";
 
@@ -27,6 +39,62 @@ export function facilitatorAddresses(
     }
   }
   return seen;
+}
+
+/**
+ * Resolve the deduplicated pool of `captureAuthorizer` addresses to advertise, checked
+ * against the signer set. Defaults to every signer address.
+ *
+ * @param signers - Facilitator signers.
+ * @param config - Facilitator config carrying the optional `captureAuthorizers`.
+ * @returns Checksummed pool addresses in first-seen order.
+ * @throws When a configured address is invalid, zero, or not held by any signer.
+ */
+export function resolveCaptureAuthorizerPool(
+  signers: readonly FacilitatorEvmSigner[],
+  config: AuthCaptureFacilitatorConfig | undefined,
+): readonly `0x${string}`[] {
+  const configured = config?.captureAuthorizers;
+  if (!configured || configured.length === 0) {
+    return facilitatorAddresses(signers).map(address => getAddress(address));
+  }
+
+  const pool: `0x${string}`[] = [];
+  for (const candidate of configured) {
+    if (!isAddress(candidate, { strict: false }) || !isNonZeroAddress(candidate)) {
+      throw new Error(`captureAuthorizers contains an empty or zero address: "${candidate}"`);
+    }
+    if (!selectSubmitter(signers, candidate)) {
+      throw new Error(`captureAuthorizer ${candidate} is not one of the signers' addresses`);
+    }
+    const checksummed = getAddress(candidate);
+    if (!pool.some(existing => isAddressEqual(existing, checksummed))) {
+      pool.push(checksummed);
+    }
+  }
+  return pool;
+}
+
+/**
+ * Pick the `captureAuthorizer` one `/supported` response advertises.
+ *
+ * @param pool - Pool from {@link resolveCaptureAuthorizerPool}.
+ * @param network - CAIP-2 network being advertised.
+ * @param select - Optional config selector.
+ * @returns A pool member, or undefined for an empty pool.
+ */
+export function pickCaptureAuthorizer(
+  pool: readonly `0x${string}`[],
+  network: string,
+  select: AuthCaptureFacilitatorConfig["selectCaptureAuthorizer"],
+): `0x${string}` | undefined {
+  if (pool.length <= 1) return pool[0];
+  const selected = select?.(network, [...pool]);
+  if (selected && isAddress(selected, { strict: false })) {
+    const member = pool.find(candidate => isAddressEqual(candidate, selected));
+    if (member) return member;
+  }
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 /**
