@@ -197,9 +197,9 @@ func AfterClaim(
 
 // afterClaim records settle-target deltas, then applies each channel marker.
 // begun holds the markers this caller wrote. A channel without an entry matches its marker on ClaimedTo.
-// claimed holds the lowercase channelIds that emitted Claimed in the receipt. Only those rows were
-// attested onchain, so only their markers are subtracted; a no-op row keeps its count pending for
-// the channel's next claim. A nil claimed means every row emitted Claimed.
+// claimed holds the ClaimRowKeys of the Claimed events in the receipt. Only the rows they match
+// were attested onchain (each event once), so only those markers are subtracted; a no-op row keeps
+// its count pending for the channel's next claim. A nil claimed means every row emitted Claimed.
 // Deltas come from the pre-finish watermark. A crash replay may add a delta twice.
 // ObserveSettlePending replaces the cache with the onchain pending, so the extra amount does not stick.
 func afterClaim(
@@ -230,6 +230,7 @@ func afterClaim(
 			}
 		}
 	}
+	attestedChannels := attestedChannelIDs(claims, network, claimed)
 	finishErrs := make([]error, len(claims))
 	forEachChannel(len(claims), func(i int) {
 		channelID, err := batchsettlement.ComputeChannelId(claims[i].Voucher.Channel, network)
@@ -242,7 +243,7 @@ func afterClaim(
 		if !ok {
 			item = attestedClaim{ChannelID: channelID, ClaimedTo: claimedTo}
 		}
-		attested := channelEmittedClaimed(claimed, channelID)
+		attested := attestedChannels[strings.ToLower(channelID)]
 		finishErrs[i] = retryChannelUpdate(ctx, func() error {
 			return finishAttestedClaim(ctx, store, channelID, claimedTo, item, attested)
 		})
@@ -250,13 +251,46 @@ func afterClaim(
 	return errors.Join(finishErrs...)
 }
 
-// channelEmittedClaimed reports whether channelID's claim row was attested onchain. A nil claimed
-// means the caller did not gate on the receipt, so every row counts.
-func channelEmittedClaimed(claimed map[string]struct{}, channelID string) bool {
+// attestedChannelIDs returns the lowercase channelIds with at least one claim row that emitted
+// Claimed. A row matches the event with the same (channelId, totalClaimed), and each event matches
+// at most one row, so a no-op duplicate row never attests. A channel's rows are snapshots of one
+// counter and share one marker, so it is subtracted once per channel. A nil claimed means the
+// caller did not gate on the receipt, so every row counts.
+func attestedChannelIDs(
+	claims []batchsettlement.BatchSettlementVoucherClaim,
+	network string,
+	claimed map[string]struct{},
+) map[string]bool {
+	out := make(map[string]bool, len(claims))
+	unconsumed := make(map[string]struct{}, len(claimed))
+	for key := range claimed {
+		unconsumed[key] = struct{}{}
+	}
+	for _, claim := range claims {
+		channelID, err := batchsettlement.ComputeChannelId(claim.Voucher.Channel, network)
+		if err != nil {
+			continue
+		}
+		if claimed == nil {
+			out[strings.ToLower(channelID)] = true
+			continue
+		}
+		rowKey := batchsettlement.ClaimRowKey(channelID, claim.TotalClaimed)
+		if _, ok := unconsumed[rowKey]; ok {
+			delete(unconsumed, rowKey)
+			out[strings.ToLower(channelID)] = true
+		}
+	}
+	return out
+}
+
+// rowEmittedClaimed reports whether the claim row for channelID set totalClaimed and emitted
+// Claimed. A nil claimed means the caller did not gate on the receipt, so every row counts.
+func rowEmittedClaimed(claimed map[string]struct{}, channelID, totalClaimed string) bool {
 	if claimed == nil {
 		return true
 	}
-	_, ok := claimed[strings.ToLower(channelID)]
+	_, ok := claimed[batchsettlement.ClaimRowKey(channelID, totalClaimed)]
 	return ok
 }
 
@@ -1100,7 +1134,7 @@ func (m *FacilitatorChannelManager) afterRefund(
 		if len(begun) > 0 {
 			item = begun[0]
 		}
-		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed, item, channelEmittedClaimed(claimed, target.ChannelId)); err != nil {
+		if err := finishAttestedClaim(ctx, m.storage, target.ChannelId, newClaimed, item, rowEmittedClaimed(claimed, target.ChannelId, claims[0].TotalClaimed)); err != nil {
 			return err
 		}
 	}

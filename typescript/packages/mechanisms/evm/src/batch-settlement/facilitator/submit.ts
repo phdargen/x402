@@ -6,10 +6,10 @@ import type { AuthorizerSigner } from "../types";
 export type SubmitMode = "relay" | "direct";
 
 /**
- * Receives the lowercase `channelId`s that emitted `Claimed` once a claim or bundled
- * claim+refund confirms. Rows that did not emit `Claimed` were no-ops and are absent.
+ * Receives the `claimKey(channelId, newTotalClaimed)` of each `Claimed` event once a claim or
+ * bundled claim+refund confirms. Rows that did not emit `Claimed` were no-ops and are absent.
  */
-export type OnClaimedChannels = (claimedChannelIds: ReadonlySet<string>) => void;
+export type OnClaimedRows = (claimedRowKeys: ReadonlySet<string>) => void;
 
 /** Signers and mode used by claim and refund dispatchers. */
 export type SubmitContext = {

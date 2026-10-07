@@ -30,7 +30,7 @@ func TestDecodeClaimAttestation_JoinsStandaloneClaimToClaimedEvent(t *testing.T)
 	channelId := mustChannelId(t, chargeCountChannel)
 	attestation := DecodeClaimAttestation(
 		mustClaimCalldata(t, "claim"),
-		[]ReceiptLog{mustClaimedLog(t, channelId, 500, 1500)},
+		[]ReceiptLog{mustClaimedLog(t, channelId, 500, 1)},
 		attestationNetwork,
 		ChargeCountsMetadata([]uint64{4}),
 	)
@@ -40,7 +40,7 @@ func TestDecodeClaimAttestation_JoinsStandaloneClaimToClaimedEvent(t *testing.T)
 	if !uint64sEqual(attestation.ChargeCounts, []uint64{4}) {
 		t.Fatalf("chargeCounts = %v", attestation.ChargeCounts)
 	}
-	want := []ClaimAttestationRow{{ChannelId: channelId, Claimed: true, ClaimAmount: "500", NewTotalClaimed: "1500", ChargeCount: "4"}}
+	want := []ClaimAttestationRow{{ChannelId: channelId, Claimed: true, ClaimAmount: "500", NewTotalClaimed: "1", ChargeCount: "4"}}
 	if !rowsEqual(attestation.Channels, want) {
 		t.Fatalf("channels = %+v, want %+v", attestation.Channels, want)
 	}
@@ -111,6 +111,87 @@ func TestDecodeClaimAttestation_NoOpRowNeverShiftsCountsOntoOtherChannels(t *tes
 	}
 }
 
+func TestDecodeClaimAttestation_AttributesBothRowsWhenSameChannelClaimedTwiceWithIncreasingTotals(t *testing.T) {
+	channel := channelWithSalt(0x0a)
+	idA := mustChannelId(t, channel)
+	attestation := DecodeClaimAttestation(
+		mustClaimCalldataWithTotals(t, "claim", []ChannelConfig{channel, channel}, 5, 8),
+		[]ReceiptLog{mustClaimedLog(t, idA, 5, 5), mustClaimedLog(t, idA, 3, 8)},
+		attestationNetwork,
+		ChargeCountsMetadata([]uint64{3, 2}),
+	)
+	want := []ClaimAttestationRow{
+		{ChannelId: idA, Claimed: true, ClaimAmount: "5", NewTotalClaimed: "5", ChargeCount: "3"},
+		{ChannelId: idA, Claimed: true, ClaimAmount: "3", NewTotalClaimed: "8", ChargeCount: "2"},
+	}
+	if !rowsEqual(attestation.Channels, want) {
+		t.Fatalf("channels = %+v, want %+v", attestation.Channels, want)
+	}
+}
+
+func TestDecodeClaimAttestation_AttestsOnlyAppliedRowWhenLaterDuplicateIsNoOp(t *testing.T) {
+	channel := channelWithSalt(0x0a)
+	idA := mustChannelId(t, channel)
+	// Row 2 (total 5) is below the total row 1 already set (8), so it emits no Claimed.
+	attestation := DecodeClaimAttestation(
+		mustClaimCalldataWithTotals(t, "claim", []ChannelConfig{channel, channel}, 8, 5),
+		[]ReceiptLog{mustClaimedLog(t, idA, 8, 8)},
+		attestationNetwork,
+		ChargeCountsMetadata([]uint64{3, 2}),
+	)
+	want := []ClaimAttestationRow{
+		{ChannelId: idA, Claimed: true, ClaimAmount: "8", NewTotalClaimed: "8", ChargeCount: "3"},
+		{ChannelId: idA},
+	}
+	if !rowsEqual(attestation.Channels, want) {
+		t.Fatalf("channels = %+v, want %+v", attestation.Channels, want)
+	}
+}
+
+func TestDecodeClaimAttestation_ConsumesEachClaimedEventOnceWhenIdenticalRowsRepeat(t *testing.T) {
+	channel := channelWithSalt(0x0a)
+	idA := mustChannelId(t, channel)
+	attestation := DecodeClaimAttestation(
+		mustClaimCalldataWithTotals(t, "claim", []ChannelConfig{channel, channel}, 5, 5),
+		[]ReceiptLog{mustClaimedLog(t, idA, 5, 5)},
+		attestationNetwork,
+		ChargeCountsMetadata([]uint64{3, 2}),
+	)
+	want := []ClaimAttestationRow{
+		{ChannelId: idA, Claimed: true, ClaimAmount: "5", NewTotalClaimed: "5", ChargeCount: "3"},
+		{ChannelId: idA},
+	}
+	if !rowsEqual(attestation.Channels, want) {
+		t.Fatalf("channels = %+v, want %+v", attestation.Channels, want)
+	}
+}
+
+func TestDecodeClaimAttestation_WithholdsChargeCountWhenSenderNotTrusted(t *testing.T) {
+	channelId := mustChannelId(t, chargeCountChannel)
+	logs := []ReceiptLog{mustClaimedLog(t, channelId, 1, 1)}
+	metadata := ChargeCountsMetadata([]uint64{4})
+	row := ClaimAttestationRow{ChannelId: channelId, Claimed: true, ClaimAmount: "1", NewTotalClaimed: "1"}
+
+	untrusted := DecodeClaimAttestation(mustClaimCalldata(t, "claim"), logs, attestationNetwork, metadata,
+		WithTrustedSenders("0x0000000000000000000000000000000000000001"))
+	if !rowsEqual(untrusted.Channels, []ClaimAttestationRow{row}) {
+		t.Fatalf("untrusted channels = %+v", untrusted.Channels)
+	}
+
+	none := DecodeClaimAttestation(mustClaimCalldata(t, "claim"), logs, attestationNetwork, metadata, WithTrustedSenders())
+	if !rowsEqual(none.Channels, []ClaimAttestationRow{row}) {
+		t.Fatalf("no trusted senders channels = %+v", none.Channels)
+	}
+
+	trustedRow := row
+	trustedRow.ChargeCount = "4"
+	trusted := DecodeClaimAttestation(mustClaimCalldata(t, "claim"), logs, attestationNetwork, metadata,
+		WithTrustedSenders("0x"+strings.ToUpper(claimedSender[2:])))
+	if !rowsEqual(trusted.Channels, []ClaimAttestationRow{trustedRow}) {
+		t.Fatalf("trusted channels = %+v", trusted.Channels)
+	}
+}
+
 func TestDecodeClaimAttestation_RetriedBatchWithNoClaimedEventsAttestsNothing(t *testing.T) {
 	attestation := DecodeClaimAttestation(mustClaimCalldata(t, "claim"), nil, attestationNetwork, ChargeCountsMetadata([]uint64{4}))
 	want := []ClaimAttestationRow{{ChannelId: mustChannelId(t, chargeCountChannel)}}
@@ -162,14 +243,14 @@ func TestDecodeClaimAttestation_ClaimWithSignatureJoinsClaimedLogs(t *testing.T)
 	channelId := mustChannelId(t, chargeCountChannel)
 	attestation := DecodeClaimAttestation(
 		mustClaimCalldataFor(t, "claimWithSignature", chargeCountChannel),
-		[]ReceiptLog{mustClaimedLog(t, channelId, 500, 1500)},
+		[]ReceiptLog{mustClaimedLog(t, channelId, 500, 1)},
 		attestationNetwork,
 		ChargeCountsMetadata([]uint64{2}),
 	)
 	if attestation.FunctionName != "claimWithSignature" {
 		t.Fatalf("functionName = %q", attestation.FunctionName)
 	}
-	want := []ClaimAttestationRow{{ChannelId: channelId, Claimed: true, ClaimAmount: "500", NewTotalClaimed: "1500", ChargeCount: "2"}}
+	want := []ClaimAttestationRow{{ChannelId: channelId, Claimed: true, ClaimAmount: "500", NewTotalClaimed: "1", ChargeCount: "2"}}
 	if !rowsEqual(attestation.Channels, want) {
 		t.Fatalf("channels = %+v, want %+v", attestation.Channels, want)
 	}
@@ -245,26 +326,35 @@ func TestDecodeClaimAttestation_ToleratesTopLevelSuffix(t *testing.T) {
 	}
 }
 
-func TestClaimedChannelIds_ReturnsLowercaseIdsFromContractOnly(t *testing.T) {
+func TestClaimedRowKeys_ReturnsRowKeysFromContractOnly(t *testing.T) {
 	idA := mustChannelId(t, channelWithSalt(0x0a))
 	idB := mustChannelId(t, channelWithSalt(0x0b))
 	forged := mustClaimedLog(t, idB, 1, 1)
 	forged.Address = common.HexToAddress("0x0000000000000000000000000000000000000001")
 
-	got := ClaimedChannelIds(goEthLogs(mustClaimedLog(t, idA, 1, 1), forged))
-	want := map[string]struct{}{strings.ToLower(idA): {}}
+	got := ClaimedRowKeys(goEthLogs(mustClaimedLog(t, idA, 1, 7), mustClaimedLog(t, idA, 1, 9), forged))
+	want := map[string]struct{}{ClaimRowKey(idA, "7"): {}, ClaimRowKey(idA, "9"): {}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
 
-func TestClaimedChannelIds_EmptyForMissingOrUnparseableLogs(t *testing.T) {
-	if got := ClaimedChannelIds(nil); got == nil || len(got) != 0 {
+func TestClaimedRowKeys_EmptyForMissingOrUnparseableLogs(t *testing.T) {
+	if got := ClaimedRowKeys(nil); got == nil || len(got) != 0 {
 		t.Fatalf("nil logs: got %v, want empty non-nil set", got)
 	}
 	junk := []*goethtypes.Log{nil, {Address: common.HexToAddress(BatchSettlementAddress), Data: []byte{0x01}}}
-	if got := ClaimedChannelIds(junk); got == nil || len(got) != 0 {
+	if got := ClaimedRowKeys(junk); got == nil || len(got) != 0 {
 		t.Fatalf("junk logs: got %v, want empty non-nil set", got)
+	}
+}
+
+func TestClaimRowKey_NormalizesCaseAndLeadingZeros(t *testing.T) {
+	if ClaimRowKey("0xABCD", "0007") != ClaimRowKey("0xabcd", "7") {
+		t.Fatal("keys differ for equal channel and total")
+	}
+	if ClaimRowKey("0xabcd", "7") == ClaimRowKey("0xabcd", "8") {
+		t.Fatal("keys equal for different totals")
 	}
 }
 
@@ -293,14 +383,20 @@ func rowsEqual(got, want []ClaimAttestationRow) bool {
 	return true
 }
 
+const claimedSender = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+
 func mustClaimedLog(t *testing.T, channelId string, claimAmount, newTotalClaimed int64) ReceiptLog {
+	t.Helper()
+	return mustClaimedLogFrom(t, channelId, claimedSender, claimAmount, newTotalClaimed)
+}
+
+func mustClaimedLogFrom(t *testing.T, channelId, sender string, claimAmount, newTotalClaimed int64) ReceiptLog {
 	t.Helper()
 	data, err := claimedEvent.Inputs.NonIndexed().Pack(big.NewInt(claimAmount), big.NewInt(newTotalClaimed))
 	if err != nil {
 		t.Fatalf("pack Claimed data: %v", err)
 	}
-	senderTopic := common.BytesToHash(common.LeftPadBytes(
-		common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8").Bytes(), 32))
+	senderTopic := common.BytesToHash(common.LeftPadBytes(common.HexToAddress(sender).Bytes(), 32))
 	return ReceiptLog{
 		Address: common.HexToAddress(BatchSettlementAddress),
 		Topics: []common.Hash{

@@ -13,19 +13,19 @@ import (
 )
 
 // SubmitClaimInput is the network, claims, optional pre-signed authorizer
-// signature, and data suffix for SubmitClaim. OnClaimed, when set, receives the channelIds that
+// signature, and data suffix for SubmitClaim. OnClaimed, when set, receives the row keys that
 // emitted Claimed once the claim confirms.
 type SubmitClaimInput struct {
 	Network    string
 	Claims     []batchsettlement.BatchSettlementVoucherClaim
 	Signature  string
 	DataSuffix []byte
-	OnClaimed  OnClaimedChannels
+	OnClaimed  OnClaimedRows
 }
 
 // ExecuteClaimWithSignature executes a batch claim with receiverAuthorizer signature.
 // If ClaimAuthorizerSignature is absent from the payload, the authorizerSigner
-// auto-signs the ClaimBatch digest. An optional onClaimed callback receives the channelIds that
+// auto-signs the ClaimBatch digest. An optional onClaimed callback receives the row keys that
 // emitted Claimed once the claim confirms.
 func ExecuteClaimWithSignature(
 	ctx context.Context,
@@ -34,7 +34,7 @@ func ExecuteClaimWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
-	onClaimed ...OnClaimedChannels,
+	onClaimed ...OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -78,14 +78,14 @@ func ExecuteClaimWithSignature(
 }
 
 // ExecuteClaim submits a batch claim via claim() as msg.sender. An optional onClaimed callback
-// receives the channelIds that emitted Claimed once the claim confirms.
+// receives the row keys that emitted Claimed once the claim confirms.
 func ExecuteClaim(
 	ctx context.Context,
 	signer evm.FacilitatorEvmSigner,
 	payload *batchsettlement.BatchSettlementClaimPayload,
 	network string,
 	dataSuffix []byte,
-	onClaimed ...OnClaimedChannels,
+	onClaimed ...OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	return submitClaimTransaction(ctx, signer, network, "claim",
 		batchsettlement.BatchSettlementClaimABI,
@@ -128,7 +128,7 @@ func submitClaimTransaction(
 	abiJSON []byte,
 	args []interface{},
 	dataSuffix []byte,
-	onClaimed OnClaimedChannels,
+	onClaimed OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	net := x402.Network(network)
 	if _, simErr := signer.ReadContract(ctx, batchsettlement.BatchSettlementAddress, abiJSON, functionName, args...); simErr != nil {

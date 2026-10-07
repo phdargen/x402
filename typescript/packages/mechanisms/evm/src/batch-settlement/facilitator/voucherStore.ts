@@ -51,6 +51,7 @@ import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { resolveDepositDelegatedCaller, settleDeposit, verifyDeposit } from "./deposit";
 import { parseRequirementsAmount, readChannelState } from "./utils";
 import { verifyVoucher } from "./voucher";
+import { claimKey } from "../attestation";
 import { chargeCountsMetadata } from "../chargeCounts";
 import { resolveDataSuffix } from "../../shared/extensions";
 import { submitRefund } from "./refund";
@@ -691,7 +692,7 @@ async function settleManagedRefund(
             metadata: chargeCountsMetadata([stored.chargeCount]),
           })
         : dataSuffix;
-    let claimedChannelIds: ReadonlySet<string> = new Set();
+    let claimedRowKeys: ReadonlySet<string> = new Set();
     // The claim leg may be a no-op (no `Claimed` event). Capture which channels actually
     // claimed so the local charge count is only decremented when an indexer would credit it.
     const settled = await submitRefund(
@@ -700,7 +701,7 @@ async function settleManagedRefund(
         payload: enriched,
         dataSuffix: claimSuffix,
         onClaimed: claimed => {
-          claimedChannelIds = claimed;
+          claimedRowKeys = claimed;
         },
       },
       {
@@ -715,7 +716,9 @@ async function settleManagedRefund(
     }
 
     const attested =
-      claims.length > 0 && claimedChannelIds.has(channelId.toLowerCase()) ? stored.chargeCount : 0;
+      claims.length > 0 && claimedRowKeys.has(claimKey(channelId, claims[0].totalClaimed))
+        ? stored.chargeCount
+        : 0;
     const extraState = settled.extra as { channelState?: Record<string, unknown> } | undefined;
     const balance = String(extraState?.channelState?.balance ?? stored.balance);
     const totalClaimed = String(extraState?.channelState?.totalClaimed ?? stored.totalClaimed);

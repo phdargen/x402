@@ -1,11 +1,13 @@
 package facilitator
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -310,10 +312,11 @@ var claimedEventABI = func() abi.Event {
 	return parsed.Events["Claimed"]
 }()
 
-// claimedReceiptLog builds a Claimed log emitted by x402BatchSettlement.
-func claimedReceiptLog(t *testing.T, channelId string) *goethtypes.Log {
+// claimedReceiptLog builds a Claimed log emitted by x402BatchSettlement. newTotalClaimed is the
+// totalClaimed of the row that applied.
+func claimedReceiptLog(t *testing.T, channelId string, newTotalClaimed *big.Int) *goethtypes.Log {
 	t.Helper()
-	data, err := claimedEventABI.Inputs.NonIndexed().Pack(big.NewInt(1), big.NewInt(1))
+	data, err := claimedEventABI.Inputs.NonIndexed().Pack(big.NewInt(1), newTotalClaimed)
 	if err != nil {
 		t.Fatalf("pack Claimed data: %v", err)
 	}
@@ -360,14 +363,50 @@ func managedClaimedLogs(t *testing.T, rpc *managedRPC, functionName string, args
 	}
 	var logs []*goethtypes.Log
 	for _, leg := range legs {
-		for _, row := range batchsettlement.DecodeClaimAttestation(leg, nil, managedNetwork, nil).Channels {
+		rows := batchsettlement.DecodeClaimAttestation(leg, nil, managedNetwork, nil).Channels
+		totals := claimRowTotals(t, leg)
+		if len(totals) != len(rows) {
+			t.Fatalf("claim leg has %d totals for %d rows", len(totals), len(rows))
+		}
+		for i, row := range rows {
 			if _, noop := rpc.noopChannels[strings.ToLower(row.ChannelId)]; noop {
 				continue
 			}
-			logs = append(logs, claimedReceiptLog(t, row.ChannelId))
+			logs = append(logs, claimedReceiptLog(t, row.ChannelId, totals[i]))
 		}
 	}
 	return logs
+}
+
+// claimRowTotals returns the totalClaimed of each row of a claim / claimWithSignature leg, in row
+// order. Other legs (for example refund) have no rows.
+func claimRowTotals(t *testing.T, leg []byte) []*big.Int {
+	t.Helper()
+	if len(leg) < 4 {
+		return nil
+	}
+	for _, abiJSON := range [][]byte{batchsettlement.BatchSettlementClaimABI, batchsettlement.BatchSettlementClaimWithSignatureABI} {
+		parsed, err := abi.JSON(strings.NewReader(string(abiJSON)))
+		if err != nil {
+			t.Fatalf("abi: %v", err)
+		}
+		for _, method := range parsed.Methods {
+			if !bytes.Equal(method.ID, leg[:4]) {
+				continue
+			}
+			values, err := method.Inputs.Unpack(leg[4:])
+			if err != nil {
+				t.Fatalf("unpack %s: %v", method.Name, err)
+			}
+			claims := reflect.ValueOf(values[0])
+			totals := make([]*big.Int, claims.Len())
+			for i := range totals {
+				totals[i] = claims.Index(i).FieldByName("TotalClaimed").Interface().(*big.Int)
+			}
+			return totals
+		}
+	}
+	return nil
 }
 
 func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {

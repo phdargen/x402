@@ -57,7 +57,7 @@ func getRefundableAmount(
 
 // ExecuteRefundWithSignature executes a cooperative refund using receiverAuthorizer signature.
 // If RefundAuthorizerSignature or ClaimAuthorizerSignature are absent, the
-// authorizerSigner auto-signs them. An optional onClaimed callback receives the channelIds that
+// authorizerSigner auto-signs them. An optional onClaimed callback receives the row keys that
 // emitted Claimed in a bundled claim once the refund confirms.
 func ExecuteRefundWithSignature(
 	ctx context.Context,
@@ -66,7 +66,7 @@ func ExecuteRefundWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
-	onClaimed ...OnClaimedChannels,
+	onClaimed ...OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	return executeRefundWithSignature(ctx, signer, payload, requirements, authorizerSigner, dataSuffix, firstOnClaimed(onClaimed))
 }
@@ -78,7 +78,7 @@ func executeRefundWithSignature(
 	requirements types.PaymentRequirements,
 	authorizerSigner batchsettlement.AuthorizerSigner,
 	dataSuffix []byte,
-	onClaimed OnClaimedChannels,
+	onClaimed OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 
@@ -439,16 +439,16 @@ func buildRefundResponse(
 }
 
 // SubmitRefundInput is the network, refund payload, and optional data suffix. OnClaimed, when
-// set, receives the channelIds that emitted Claimed in a bundled claim once the refund confirms.
+// set, receives the row keys that emitted Claimed in a bundled claim once the refund confirms.
 type SubmitRefundInput struct {
 	Network    string
 	Payload    *batchsettlement.BatchSettlementEnrichedRefundPayload
 	DataSuffix []byte
-	OnClaimed  OnClaimedChannels
+	OnClaimed  OnClaimedRows
 }
 
 // ExecuteRefund executes a cooperative refund via refund() as msg.sender. An optional onClaimed
-// callback receives the channelIds that emitted Claimed in a bundled claim once the refund
+// callback receives the row keys that emitted Claimed in a bundled claim once the refund
 // confirms.
 func ExecuteRefund(
 	ctx context.Context,
@@ -456,7 +456,7 @@ func ExecuteRefund(
 	payload *batchsettlement.BatchSettlementEnrichedRefundPayload,
 	network string,
 	dataSuffix []byte,
-	onClaimed ...OnClaimedChannels,
+	onClaimed ...OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	reqs := types.PaymentRequirements{Network: network}
 	refundAmount, ok := new(big.Int).SetString(payload.Amount, 10)
@@ -545,7 +545,7 @@ func submitRefundCall(
 	args []interface{},
 	dataSuffix []byte,
 	refundAmount *big.Int,
-	onClaimed OnClaimedChannels,
+	onClaimed OnClaimedRows,
 ) (*x402.SettleResponse, error) {
 	network := x402.Network(requirements.Network)
 	channelId, err := batchsettlement.ComputeChannelId(payload.ChannelConfig, string(network))

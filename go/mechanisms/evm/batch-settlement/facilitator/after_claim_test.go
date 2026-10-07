@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -299,5 +300,67 @@ func TestUnreconciledClaimDelta(t *testing.T) {
 	channel.TotalClaimed = "5"
 	if unreconciledClaimDelta(channel, big.NewInt(5)) {
 		t.Fatal("equal totals are reconciled")
+	}
+}
+
+func TestAttestedChannelIDs_MatchesRowsByChannelAndTotal(t *testing.T) {
+	t.Parallel()
+	channel := afterClaimChannel("10000", 3)
+	row := func(total string) batchsettlement.BatchSettlementVoucherClaim {
+		claim := afterClaimVoucher(channel)
+		claim.TotalClaimed = total
+		return claim
+	}
+	id := channel.ChannelId
+	key := strings.ToLower(id)
+
+	cases := []struct {
+		name    string
+		claims  []batchsettlement.BatchSettlementVoucherClaim
+		claimed map[string]struct{}
+		want    bool
+	}{
+		{"nil claimed attests every row", []batchsettlement.BatchSettlementVoucherClaim{row("5")}, nil, true},
+		{"event for the row total attests", []batchsettlement.BatchSettlementVoucherClaim{row("5")}, map[string]struct{}{batchsettlement.ClaimRowKey(id, "5"): {}}, true},
+		{"event for another total does not attest", []batchsettlement.BatchSettlementVoucherClaim{row("5")}, map[string]struct{}{batchsettlement.ClaimRowKey(id, "8"): {}}, false},
+		{"no events attests nothing", []batchsettlement.BatchSettlementVoucherClaim{row("5")}, map[string]struct{}{}, false},
+		{"no-op duplicate row does not hide the applied row", []batchsettlement.BatchSettlementVoucherClaim{row("5"), row("8")}, map[string]struct{}{batchsettlement.ClaimRowKey(id, "8"): {}}, true},
+	}
+	for _, tc := range cases {
+		got := attestedChannelIDs(tc.claims, afterClaimNetwork, tc.claimed)[key]
+		if got != tc.want {
+			t.Errorf("%s: attested = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestAfterClaim_SubtractsSnapshotOnceWhenChannelRepeats(t *testing.T) {
+	t.Parallel()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	targets := storage.NewInMemorySettleTargetStorage()
+	channel := afterClaimChannel("10000", 6)
+	plantClaimMarker(channel, 6, "8000")
+	if err := seedChannel(store, channel); err != nil {
+		t.Fatal(err)
+	}
+	row := func(total string) batchsettlement.BatchSettlementVoucherClaim {
+		claim := afterClaimVoucher(channel)
+		claim.TotalClaimed = total
+		return claim
+	}
+	claimed := map[string]struct{}{
+		batchsettlement.ClaimRowKey(channel.ChannelId, "5000"): {},
+		batchsettlement.ClaimRowKey(channel.ChannelId, "8000"): {},
+	}
+	claims := []batchsettlement.BatchSettlementVoucherClaim{row("5000"), row("8000")}
+	if err := afterClaim(context.Background(), store, claims, afterClaimNetwork, targets, nil, nil, claimed); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(context.Background(), channel.ChannelId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ChargeCount != 0 || got.PendingClaim != nil || got.TotalClaimed != "8000" {
+		t.Fatalf("chargeCount=%d marker=%v totalClaimed=%s, want 0, nil, 8000", got.ChargeCount, got.PendingClaim, got.TotalClaimed)
 	}
 }

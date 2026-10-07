@@ -29,10 +29,28 @@ type ClaimRow = {
       salt: `0x${string}`;
     };
   };
+  totalClaimed: bigint;
 };
 
-/** Fields of a `Claimed` event keyed by its (lowercase) `channelId`. */
-type ClaimedEntry = { claimAmount: bigint; newTotalClaimed: bigint };
+/** Fields of a `Claimed` event; `channelId` and `sender` are lowercase. */
+type ClaimedEntry = {
+  channelId: string;
+  sender: string;
+  claimAmount: bigint;
+  newTotalClaimed: bigint;
+};
+
+/**
+ * Key an applied row shares with its `Claimed` event: the row's `totalClaimed` is the event's
+ * `newTotalClaimed`.
+ *
+ * @param channelId - Channel id of the row or event.
+ * @param totalClaimed - Row `totalClaimed`, or event `newTotalClaimed`.
+ * @returns Join key.
+ */
+export function claimKey(channelId: string, totalClaimed: bigint | string): string {
+  return `${channelId.toLowerCase()}:${BigInt(totalClaimed)}`;
+}
 
 /**
  * One claim row joined to its onchain `Claimed` event. A row without the event was a no-op
@@ -102,16 +120,16 @@ function collectClaimRows(calldata: Hex): ClaimRow[] | undefined {
  * transaction cannot forge a `Claimed` for a channel.
  *
  * @param receiptLogs - Receipt `logs` for the transaction.
- * @returns `Claimed` fields keyed by lowercase `channelId`.
+ * @returns The contract's `Claimed` events, in log order.
  */
-function readClaimedEvents(receiptLogs: readonly unknown[]): Map<string, ClaimedEntry> {
+function readClaimedEvents(receiptLogs: readonly unknown[]): ClaimedEntry[] {
   const contract = BATCH_SETTLEMENT_ADDRESS.toLowerCase();
   const fromContract = receiptLogs.filter(log => {
     const address = (log as { address?: unknown } | null)?.address;
     return typeof address === "string" && address.toLowerCase() === contract;
   });
 
-  const claimed = new Map<string, ClaimedEntry>();
+  const claimed: ClaimedEntry[] = [];
   try {
     const events = parseEventLogs({
       abi: batchSettlementABI,
@@ -119,30 +137,34 @@ function readClaimedEvents(receiptLogs: readonly unknown[]): Map<string, Claimed
       logs: fromContract as Parameters<typeof parseEventLogs>[0]["logs"],
     });
     for (const { args } of events) {
-      claimed.set(args.channelId.toLowerCase(), {
+      claimed.push({
+        channelId: args.channelId.toLowerCase(),
+        sender: args.sender.toLowerCase(),
         claimAmount: args.claimAmount,
         newTotalClaimed: args.newTotalClaimed,
       });
     }
   } catch {
-    return new Map();
+    return [];
   }
   return claimed;
 }
 
 /**
- * Returns the `channelId`s that emitted `Claimed` in a receipt.
+ * Returns the {@link claimKey}s of the rows that emitted `Claimed` in a receipt.
  *
  * Facilitators use this to subtract an attested `chargeCount` only for rows that were
- * actually claimed.
+ * actually applied: a row applied when `claimKey(row.channelId, row.totalClaimed)` is in the set.
  *
  * @param receiptLogs - Receipt `logs` for the transaction.
- * @returns Lowercase `channelId`s with a `Claimed` event from `x402BatchSettlement`.
+ * @returns Keys of `Claimed` events emitted by `x402BatchSettlement`.
  */
-export function claimedChannelIdsFromLogs(
-  receiptLogs: readonly unknown[] | undefined,
-): Set<string> {
-  return new Set(readClaimedEvents(receiptLogs ?? []).keys());
+export function claimedRowKeysFromLogs(receiptLogs: readonly unknown[] | undefined): Set<string> {
+  return new Set(
+    readClaimedEvents(receiptLogs ?? []).map(event =>
+      claimKey(event.channelId, event.newTotalClaimed),
+    ),
+  );
 }
 
 /**
@@ -154,9 +176,19 @@ export function claimedChannelIdsFromLogs(
  * `parseBuilderCodeSuffixFromCalldata(input)?.m` from `@x402/extensions/builder-code`).
  * No builder code is needed: a suffix carrying only `m` is enough.
  *
- * Rows are joined to `Claimed` events by `channelId`. A row without a `Claimed` event was a
- * no-op and attests nothing. Counts whose length differs from the number of claim rows
- * are ignored.
+ * Rows are joined to `Claimed` events by `(channelId, totalClaimed)`: a row that applied emits
+ * `Claimed` with `newTotalClaimed` equal to the row's `totalClaimed`, and each event matches at
+ * most one row. A row without a matching event was a no-op (for example a repeated or lower
+ * total for a channel already claimed in the same batch) and attests nothing. Counts whose
+ * length differs from the number of claim rows are ignored.
+ *
+ * Counts of rows that share a channel are snapshots of one counter, so a consumer crediting the
+ * channel should take their maximum, not their sum.
+ *
+ * The counts are written by whoever submitted the transaction, and `claimWithSignature` is
+ * permissionless. Pass `trustedSenders` (the facilitator's submitting addresses) to attribute
+ * `chargeCount` only for rows whose `Claimed.sender` is in that list. Without it, no sender
+ * check is made.
  *
  * Never throws: undecodable input yields `{ functionName: "unknown", channels: null }`,
  * and unparseable receipt logs yield rows with `claimed: false`.
@@ -165,6 +197,7 @@ export function claimedChannelIdsFromLogs(
  * @param receiptLogs - Receipt `logs` for the transaction.
  * @param network - CAIP-2 network identifier used to compute channel ids.
  * @param metadata - Parsed ERC-8021 `m` field of the top-level suffix, when present.
+ * @param trustedSenders - Optional addresses allowed to attest; see above.
  * @returns Decoded attestation with joined channel rows.
  */
 export function decodeClaimAttestation(
@@ -172,6 +205,7 @@ export function decodeClaimAttestation(
   receiptLogs: readonly unknown[],
   network: string,
   metadata?: ChargeCountsMetadata,
+  trustedSenders?: readonly string[],
 ): ClaimAttestation {
   let functionName: string;
   try {
@@ -187,7 +221,13 @@ export function decodeClaimAttestation(
 
   const parsedCounts = parseChargeCountsMetadata(metadata);
   const chargeCounts = parsedCounts?.length === rows.length ? parsedCounts : undefined;
-  const claimedEvents = readClaimedEvents(receiptLogs);
+  const claimedEvents = new Map(
+    readClaimedEvents(receiptLogs).map(event => [
+      claimKey(event.channelId, event.newTotalClaimed),
+      event,
+    ]),
+  );
+  const trusted = trustedSenders?.map(sender => sender.toLowerCase());
 
   const channels = rows.map((row, index): ClaimAttestationRow => {
     const channel = row.voucher.channel;
@@ -203,16 +243,19 @@ export function decodeClaimAttestation(
       },
       network,
     );
-    const event = claimedEvents.get(channelId.toLowerCase());
+    const key = claimKey(channelId, row.totalClaimed);
+    const event = claimedEvents.get(key);
     if (!event) {
       return { channelId, claimed: false };
     }
+    claimedEvents.delete(key);
+    const senderTrusted = trusted === undefined || trusted.includes(event.sender);
     return {
       channelId,
       claimed: true,
       claimAmount: event.claimAmount.toString(),
       newTotalClaimed: event.newTotalClaimed.toString(),
-      chargeCount: chargeCounts?.[index].toString(),
+      chargeCount: senderTrusted ? chargeCounts?.[index].toString() : undefined,
     };
   });
 

@@ -91,7 +91,7 @@ function buildChannel(overrides: Partial<FacilitatorChannel> = {}): FacilitatorC
 }
 
 type WriteCall = { functionName: string; args: readonly unknown[] };
-type ContractClaimRow = { voucher: { channel: ChannelConfig } };
+type ContractClaimRow = { voucher: { channel: ChannelConfig }; totalClaimed: bigint };
 
 /**
  * Returns the claim rows of a claim or `multicall([claim, refund])` write, in call order.
@@ -114,7 +114,7 @@ function claimRowsOf(write: WriteCall): readonly ContractClaimRow[] {
   return [];
 }
 
-function buildClaimedLog(channelId: `0x${string}`): Log {
+function buildClaimedLog(channelId: `0x${string}`, newTotalClaimed: bigint): Log {
   return {
     address: BATCH_SETTLEMENT_ADDRESS,
     topics: encodeEventTopics({
@@ -122,7 +122,7 @@ function buildClaimedLog(channelId: `0x${string}`): Log {
       eventName: "Claimed",
       args: { channelId, sender: RECEIVER },
     }),
-    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, 1n]),
+    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, newTotalClaimed]),
     blockHash: null,
     blockNumber: null,
     logIndex: null,
@@ -142,9 +142,12 @@ function buildClaimedLog(channelId: `0x${string}`): Log {
 function claimedReceipt(write: WriteCall, skip: readonly `0x${string}`[] = []) {
   const skipped = new Set(skip.map(id => id.toLowerCase()));
   const logs = claimRowsOf(write)
-    .map(row => computeChannelIdForNetwork(row.voucher.channel, NETWORK))
-    .filter(channelId => !skipped.has(channelId.toLowerCase()))
-    .map(buildClaimedLog);
+    .map(row => ({
+      channelId: computeChannelIdForNetwork(row.voucher.channel, NETWORK),
+      totalClaimed: row.totalClaimed,
+    }))
+    .filter(({ channelId }) => !skipped.has(channelId.toLowerCase()))
+    .map(({ channelId, totalClaimed }) => buildClaimedLog(channelId, totalClaimed));
   return { status: "success", logs };
 }
 

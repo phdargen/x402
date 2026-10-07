@@ -18,18 +18,19 @@ const (
 	SubmitModeDirect SubmitMode = "direct"
 )
 
-// OnClaimedChannels receives the lowercase channelIds that emitted Claimed once a claim or a
-// bundled claim+refund confirms. Rows that did not emit Claimed were no-ops and are absent.
-type OnClaimedChannels func(claimed map[string]struct{})
+// OnClaimedRows receives the ClaimRowKey(channelId, newTotalClaimed) of each Claimed event once a
+// claim or a bundled claim+refund confirms. Rows that did not emit Claimed were no-ops and are
+// absent.
+type OnClaimedRows func(claimed map[string]struct{})
 
-func notifyClaimed(onClaimed OnClaimedChannels, receipt *evm.TransactionReceipt) {
+func notifyClaimed(onClaimed OnClaimedRows, receipt *evm.TransactionReceipt) {
 	if onClaimed == nil || receipt == nil {
 		return
 	}
-	onClaimed(batchsettlement.ClaimedChannelIds(receipt.Logs))
+	onClaimed(batchsettlement.ClaimedRowKeys(receipt.Logs))
 }
 
-func firstOnClaimed(callbacks []OnClaimedChannels) OnClaimedChannels {
+func firstOnClaimed(callbacks []OnClaimedRows) OnClaimedRows {
 	if len(callbacks) == 0 {
 		return nil
 	}

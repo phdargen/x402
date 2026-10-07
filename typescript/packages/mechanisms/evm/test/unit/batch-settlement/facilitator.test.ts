@@ -187,7 +187,7 @@ function buildSettledLog(
   } as Log;
 }
 
-function buildClaimedLog(channelId: `0x${string}`): Log {
+function buildClaimedLog(channelId: `0x${string}`, newTotalClaimed: bigint): Log {
   return {
     address: BATCH_SETTLEMENT_ADDRESS,
     topics: encodeEventTopics({
@@ -195,7 +195,7 @@ function buildClaimedLog(channelId: `0x${string}`): Log {
       eventName: "Claimed",
       args: { channelId, sender: FACILITATOR_ADDRESS },
     }),
-    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, 1n]),
+    data: encodeAbiParameters([{ type: "uint128" }, { type: "uint128" }], [1n, newTotalClaimed]),
     blockHash: null,
     blockNumber: null,
     logIndex: null,
@@ -3046,7 +3046,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
     const signer = buildSigner({
       waitForTransactionReceipt: vi
         .fn()
-        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId)] }),
+        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId, 1000n)] }),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       voucherStore: { storage },
@@ -3121,7 +3121,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
     const signer = buildSigner({
       waitForTransactionReceipt: vi
         .fn()
-        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId)] }),
+        .mockResolvedValue({ status: "success", logs: [buildClaimedLog(stored.channelId, 1000n)] }),
     });
     const scheme = new BatchSettlementEvmScheme(signer, authorizer, {
       voucherStore: { storage },
@@ -3985,7 +3985,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       buildSigner({
         waitForTransactionReceipt: vi
           .fn()
-          .mockResolvedValue({ status: "success", logs: [buildClaimedLog(channelId)] }),
+          .mockResolvedValue({ status: "success", logs: [buildClaimedLog(channelId, 5000n)] }),
       }),
       authorizer,
       { voucherStore: { storage } },

@@ -628,7 +628,7 @@ func settleManagedRefund(
 			return nil, fmt.Errorf("unexpected begin result %d", result)
 		}
 	}
-	// The claim leg may be a no-op (no Claimed event). Capture which channels actually claimed so
+	// The claim leg may be a no-op (no Claimed event). Capture which rows actually claimed so
 	// the local charge count is only decremented when an indexer would credit it.
 	claimed := map[string]struct{}{}
 	settled, err := SubmitRefund(ctx, SubmitRefundInput{
@@ -662,7 +662,7 @@ func settleManagedRefund(
 		if deltaErr := applyClaimedSettleDelta(ctx, deps.SettleTargetStorage, requirements.Network, stored.ChannelConfig.Receiver, stored.ChannelConfig.Token, newClaimed, stored.TotalClaimed); deltaErr != nil {
 			return settled, nil
 		}
-		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed, begun[0], channelEmittedClaimed(claimed, channelId)); finishErr != nil {
+		if finishErr := finishAttestedClaim(ctx, deps.Storage, channelId, newClaimed, begun[0], rowEmittedClaimed(claimed, channelId, claims[0].TotalClaimed)); finishErr != nil {
 			voucherStoreLogger(deps).Warn("batch-settlement: refund landed but attested claim was not applied", "channel_id", channelId, "error", finishErr)
 		}
 	}

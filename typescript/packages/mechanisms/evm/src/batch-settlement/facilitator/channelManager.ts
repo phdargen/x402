@@ -17,6 +17,7 @@ import { computeChannelId } from "../utils";
 import type { ChannelLockStorage, ChannelQuery, ChannelStorage } from "../storage/channel";
 import type { DelegatedAuthStore } from "../storage/delegatedAuth";
 import { isChannelLockStorage, queryChannels, querySettleTargets } from "../storage/channel";
+import { claimKey } from "../attestation";
 import { chargeCountsMetadata } from "../chargeCounts";
 import { submitClaim } from "./claim";
 import { submitRefund } from "./refund";
@@ -214,10 +215,12 @@ async function channelIsHeld(lock: ChannelLockStorage, channelId: string): Promi
  * @param lockStorage - Optional admission lock store used for closed-row deletion.
  * @param claims - Submitted claims.
  * @param network - Network for channel-id recomputation.
- * @param attested - Charge-count snapshot encoded on the claim (do not re-read the store).
- * @param claimedChannelIds - Lowercase channel ids that emitted `Claimed` in the receipt. Only
- *   these rows were attested onchain, so only their snapshots are subtracted; a no-op row keeps
- *   its count pending for the channel's next claim.
+ * @param attested - Charge-count snapshot encoded on the claim, keyed by {@link claimKey} of each
+ *   row (do not re-read the store).
+ * @param claimedRowKeys - {@link claimKey}s of the `Claimed` events in the receipt. Only the rows
+ *   they match were attested onchain, so only those snapshots are subtracted (each event once;
+ *   the largest per channel if it repeats); a no-op row keeps its count pending for the
+ *   channel's next claim.
  * @param delegatedAuthStore - Optional store; bindings are removed when a closed row is deleted.
  * @param retention - Row retention policy.
  */
@@ -227,17 +230,30 @@ export async function afterClaim(
   claims: BatchSettlementVoucherClaim[],
   network: Network,
   attested: ReadonlyMap<string, number>,
-  claimedChannelIds: ReadonlySet<string>,
+  claimedRowKeys: ReadonlySet<string>,
   delegatedAuthStore: DelegatedAuthStore | undefined,
   retention: FacilitatorRetention = "when-unused",
 ): Promise<void> {
   void retention;
   await applyClaimedTotals(storage, claims, network);
 
+  // Rows of one channel are snapshots of the same counter, so subtract the largest applied
+  // snapshot once per channel, not their sum.
+  const unconsumed = new Set(claimedRowKeys);
+  const snapshots = new Map<string, number>();
+  for (const claim of claims) {
+    const channelId = computeChannelId(claim.voucher.channel, network);
+    const rowKey = claimKey(channelId, claim.totalClaimed);
+    if (unconsumed.delete(rowKey)) {
+      const key = channelId.toLowerCase();
+      snapshots.set(key, Math.max(snapshots.get(key) ?? 0, attested.get(rowKey) ?? 0));
+    }
+  }
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
     const key = channelId.toLowerCase();
-    const snapshot = claimedChannelIds.has(key) ? (attested.get(key) ?? 0) : 0;
+    const snapshot = snapshots.get(key) ?? 0;
+    snapshots.delete(key);
     await storage.updateChannel(channelId, current => {
       if (!current) {
         return current;
@@ -252,7 +268,7 @@ export async function afterClaim(
  * Snapshots each claim row's unattested `chargeCount` in batch order.
  *
  * Carry `counts` in the suffix `m.x402ChargeCounts`, then pass the same map to {@link afterClaim}
- * together with the channels that emitted `Claimed`.
+ * together with the row keys that emitted `Claimed`.
  *
  * Pass `known` when the caller already holds the rows the claims were selected
  * from: the attested count then agrees with the `totalClaimed` those same rows
@@ -279,11 +295,10 @@ export async function snapshotClaimChargeCounts(
   );
   for (const claim of claims) {
     const channelId = computeChannelId(claim.voucher.channel, network);
-    const key = channelId.toLowerCase();
-    const stored = rows.get(key) ?? (await storage.get(channelId));
+    const stored = rows.get(channelId.toLowerCase()) ?? (await storage.get(channelId));
     const count = stored?.chargeCount ?? 0;
     counts.push(BigInt(count));
-    attested.set(key, count);
+    attested.set(claimKey(channelId, claim.totalClaimed), count);
   }
   return { counts, attested };
 }
@@ -362,7 +377,7 @@ export class FacilitatorChannelManager {
 
       for (let i = 0; i < claims.length; i += maxClaimsPerBatch) {
         const batch = claims.slice(i, i + maxClaimsPerBatch);
-        const { result, attested, claimedChannelIds } = await this.submitClaimBatch(
+        const { result, attested, claimedRowKeys } = await this.submitClaimBatch(
           network,
           batch,
           group,
@@ -374,7 +389,7 @@ export class FacilitatorChannelManager {
           batch,
           network,
           attested,
-          claimedChannelIds,
+          claimedRowKeys,
           this.delegatedAuthStore,
           this.retention,
         );
@@ -519,7 +534,7 @@ export class FacilitatorChannelManager {
   ): Promise<{
     result: FacilitatorClaimResult;
     attested: Map<string, number>;
-    claimedChannelIds: ReadonlySet<string>;
+    claimedRowKeys: ReadonlySet<string>;
   }> {
     const { counts, attested } = await snapshotClaimChargeCounts(
       this.storage,
@@ -534,14 +549,14 @@ export class FacilitatorChannelManager {
       claims[0]?.voucher.channel.receiver ?? "0x0000000000000000000000000000000000000000",
       chargeCountsMetadata(counts),
     );
-    let claimedChannelIds: ReadonlySet<string> = new Set();
+    let claimedRowKeys: ReadonlySet<string> = new Set();
     const response = await submitClaim(
       {
         network,
         claims,
         dataSuffix,
         onClaimed: claimed => {
-          claimedChannelIds = claimed;
+          claimedRowKeys = claimed;
         },
       },
       this.submitContext(),
@@ -552,7 +567,7 @@ export class FacilitatorChannelManager {
     return {
       result: { network, vouchers: claims.length, transaction: response.transaction },
       attested,
-      claimedChannelIds,
+      claimedRowKeys,
     };
   }
 
@@ -593,7 +608,7 @@ export class FacilitatorChannelManager {
     }
 
     if (refundAmount <= 0n) {
-      const { result, attested, claimedChannelIds } = await this.submitClaimBatch(
+      const { result, attested, claimedRowKeys } = await this.submitClaimBatch(
         target.network,
         claims,
         [target],
@@ -604,7 +619,7 @@ export class FacilitatorChannelManager {
         claims,
         target.network,
         attested,
-        claimedChannelIds,
+        claimedRowKeys,
         this.delegatedAuthStore,
         this.retention,
       );
@@ -634,14 +649,14 @@ export class FacilitatorChannelManager {
       target.channelConfig.receiver,
       claims.length > 0 ? chargeCountsMetadata([target.chargeCount]) : undefined,
     );
-    let claimedChannelIds: ReadonlySet<string> = new Set();
+    let claimedRowKeys: ReadonlySet<string> = new Set();
     const response = await submitRefund(
       {
         network: target.network,
         payload,
         dataSuffix,
         onClaimed: claimed => {
-          claimedChannelIds = claimed;
+          claimedRowKeys = claimed;
         },
       },
       this.submitContext(),
@@ -650,7 +665,7 @@ export class FacilitatorChannelManager {
       throw new Error(formatFailure("Refund", response));
     }
 
-    await this.afterRefund(target, claims, response, claimedChannelIds);
+    await this.afterRefund(target, claims, response, claimedRowKeys);
     return {
       network: target.network,
       channel: target.channelId,
@@ -665,16 +680,16 @@ export class FacilitatorChannelManager {
    * @param target - Channel that was refunded.
    * @param claims - Claims bundled into the refund transaction.
    * @param response - Successful refund settle response.
-   * @param claimedChannelIds - Lowercase channel ids that emitted `Claimed` in the receipt.
+   * @param claimedRowKeys - {@link claimKey}s of the `Claimed` events in the receipt.
    */
   private async afterRefund(
     target: FacilitatorChannel,
     claims: BatchSettlementVoucherClaim[],
     response: SettleResponse,
-    claimedChannelIds: ReadonlySet<string>,
+    claimedRowKeys: ReadonlySet<string>,
   ): Promise<void> {
     if (claims.length > 0) {
-      const attested = claimedChannelIds.has(target.channelId.toLowerCase())
+      const attested = claimedRowKeys.has(claimKey(target.channelId, claims[0].totalClaimed))
         ? target.chargeCount
         : 0;
       await applyClaimedTotals(this.storage, claims, target.network);

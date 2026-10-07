@@ -392,7 +392,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           metadata: chargeCountsMetadata(snapshot.counts),
         });
       }
-      let claimedChannelIds: ReadonlySet<string> = new Set();
+      let claimedRowKeys: ReadonlySet<string> = new Set();
       const settled = await submitClaim(
         {
           network: requirements.network,
@@ -400,7 +400,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           signature: rawPayload.claimAuthorizerSignature,
           dataSuffix: claimSuffix,
           onClaimed: claimed => {
-            claimedChannelIds = claimed;
+            claimedRowKeys = claimed;
           },
         },
         this.submitContext(),
@@ -412,7 +412,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
           rawPayload.claims,
           requirements.network,
           attested,
-          claimedChannelIds,
+          claimedRowKeys,
           this.delegatedAuthStore,
           this.voucherStore.retention,
         );

@@ -224,12 +224,17 @@ func channelWithSalt(suffix byte) ChannelConfig {
 	return channel
 }
 
-func claimRows(channels []ChannelConfig) []voucherClaimArg {
+// claimRows builds claim rows for channels. totals[i] is row i's totalClaimed, default 1.
+func claimRows(channels []ChannelConfig, totals ...int64) []voucherClaimArg {
 	claims := make([]voucherClaimArg, len(channels))
 	for i, channel := range channels {
+		total := int64(1)
+		if i < len(totals) {
+			total = totals[i]
+		}
 		claims[i] = voucherClaimArg{
 			Signature:    common.FromHex("0xcafe"),
-			TotalClaimed: big.NewInt(1000),
+			TotalClaimed: big.NewInt(total),
 		}
 		claims[i].Voucher.Channel = toContractChannelConfig(channel)
 		claims[i].Voucher.MaxClaimableAmount = big.NewInt(1000)
@@ -239,7 +244,12 @@ func claimRows(channels []ChannelConfig) []voucherClaimArg {
 
 func mustClaimCalldataFor(t *testing.T, functionName string, channels ...ChannelConfig) []byte {
 	t.Helper()
-	claims := claimRows(channels)
+	return mustClaimCalldataWithTotals(t, functionName, channels)
+}
+
+func mustClaimCalldataWithTotals(t *testing.T, functionName string, channels []ChannelConfig, totals ...int64) []byte {
+	t.Helper()
+	claims := claimRows(channels, totals...)
 	switch functionName {
 	case "claim":
 		return mustPack(t, BatchSettlementClaimABI, "claim", claims)

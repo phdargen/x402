@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { claimKey } from "../../../src/batch-settlement/attestation";
 import { afterClaim } from "../../../src/batch-settlement/facilitator/channelManager";
 import { InMemoryChannelStorage } from "../../../src/batch-settlement/storage/channel";
 import type { FacilitatorChannel } from "../../../src/batch-settlement/facilitator/types";
@@ -20,12 +21,16 @@ function buildConfig(saltSuffix = "00"): ChannelConfig {
   };
 }
 
+const TOTAL = "5000";
+
 function attestedMap(...channels: FacilitatorChannel[]): Map<string, number> {
-  return new Map(channels.map(channel => [channel.channelId.toLowerCase(), channel.chargeCount]));
+  return new Map(
+    channels.map(channel => [claimKey(channel.channelId, TOTAL), channel.chargeCount]),
+  );
 }
 
 function claimedIds(...channels: FacilitatorChannel[]): Set<string> {
-  return new Set(channels.map(channel => channel.channelId.toLowerCase()));
+  return new Set(channels.map(channel => claimKey(channel.channelId, TOTAL)));
 }
 
 function buildChannel(overrides: Partial<FacilitatorChannel> = {}): FacilitatorChannel {
@@ -169,7 +174,7 @@ describe("afterClaim", () => {
         },
       ],
       NETWORK,
-      new Map([[channel.channelId.toLowerCase(), 3]]),
+      new Map([[claimKey(channel.channelId, TOTAL), 3]]),
       claimedIds(channel),
       undefined,
     );
@@ -284,5 +289,31 @@ describe("afterClaim", () => {
     );
 
     expect(await storage.get(channel.channelId)).toBeDefined();
+  });
+
+  it("subtracts the largest applied snapshot once when a channel repeats", async () => {
+    const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+    const channel = buildChannel({ balance: "10000", chargeCount: 6 });
+    await storage.updateChannel(channel.channelId, () => channel);
+    const row = (totalClaimed: string) => ({
+      voucher: { channel: channel.channelConfig, maxClaimableAmount: "8000" },
+      signature: "0xdeadbeef" as const,
+      totalClaimed,
+    });
+
+    // Two views of one counter (3, then 4 after a charge): attested 4, not 3 + 4.
+    await afterClaim(
+      storage,
+      storage,
+      [row("5000"), row("8000")],
+      NETWORK,
+      new Map([
+        [claimKey(channel.channelId, "5000"), 3],
+        [claimKey(channel.channelId, "8000"), 4],
+      ]),
+      new Set([claimKey(channel.channelId, "5000"), claimKey(channel.channelId, "8000")]),
+      undefined,
+    );
+    expect((await storage.get(channel.channelId))?.chargeCount).toBe(2);
   });
 });
