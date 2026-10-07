@@ -965,6 +965,29 @@ func TestOnVerifyFailureHook_ClearsPendingRequest(t *testing.T) {
 	}
 }
 
+func TestAfterVerifyHook_FacilitatorRejectionReleasesAdmissionLock(t *testing.T) {
+	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
+	fx := newSignedVoucherFixture(t)
+	stub := &stubPayload{data: fx.payload(t, "10")}
+	if res := runBeforeVerify(t, s, stub); res != nil {
+		t.Fatalf("BeforeVerify: %+v", res)
+	}
+	if !lockHeld(t, s, fx.channelId, "") {
+		t.Fatal("expected BeforeVerify to hold the admission lock")
+	}
+
+	rejected := &x402.VerifyResponse{IsValid: false, InvalidReason: "invalid_signature"}
+	if res := runAfterVerify(t, s, stub, rejected); res != nil {
+		t.Fatalf("AfterVerify: %+v", res)
+	}
+	if lockHeld(t, s, fx.channelId, "") {
+		t.Fatal("admission lock not released after facilitator rejection")
+	}
+	if s.requestContextCount() != 0 {
+		t.Fatalf("expected request context map empty, got %d", s.requestContextCount())
+	}
+}
+
 func TestOnVerifiedPaymentCanceled_AfterVerifyAbortedClearsPending(t *testing.T) {
 	s := NewBatchSettlementEvmScheme("0xreceiver", nil)
 	fx := newSignedVoucherFixture(t)

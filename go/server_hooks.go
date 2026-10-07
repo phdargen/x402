@@ -202,6 +202,17 @@ type VerifiedPaymentCanceledContext struct {
 	SettledPhases  []SettlePhase
 }
 
+// SettledPhasesContain reports whether phases includes want. Schemes use it in
+// SettleOnCancel to settle only when the matching phase already completed.
+func SettledPhasesContain(phases []SettlePhase, want SettlePhase) bool {
+	for _, p := range phases {
+		if p == want {
+			return true
+		}
+	}
+	return false
+}
+
 // VerifiedPaymentCancelOptions describes a single cancellation event.
 type VerifiedPaymentCancelOptions struct {
 	Reason         VerifiedPaymentCancellationReason
@@ -270,8 +281,9 @@ type SettleFailureHookResult struct {
 // and an invalid VerifyResponse will be returned with the provided reason
 type BeforeVerifyHook func(VerifyContext) (*BeforeHookResult, error)
 
-// AfterVerifyHook is called after successful payment verification (including
-// BeforeVerify skip and onVerifyFailure recovery).
+// AfterVerifyHook is called after payment verification returns a result
+// (including BeforeVerify skip, onVerifyFailure recovery, and a facilitator
+// response with IsValid=false).
 // Any error returned will be logged but will not affect the verification result.
 // Returning an AfterVerifyResult with Abort=true fails verification closed and
 // dispatches after_verify_aborted cancellation.
@@ -280,7 +292,9 @@ type BeforeVerifyHook func(VerifyContext) (*BeforeHookResult, error)
 // The last hook to return a SkipHandler directive wins (unless a later hook aborts).
 type AfterVerifyHook func(VerifyResultContext) (*AfterVerifyResult, error)
 
-// OnVerifyFailureHook is called when payment verification fails
+// OnVerifyFailureHook is called when payment verification returns an error.
+// It does not run for a facilitator response with IsValid=false; use
+// AfterVerifyHook to react to that rejection.
 // If it returns a result with Recovered=true, the provided VerifyResponse
 // will be returned instead of the error
 type OnVerifyFailureHook func(VerifyFailureContext) (*VerifyFailureHookResult, error)
