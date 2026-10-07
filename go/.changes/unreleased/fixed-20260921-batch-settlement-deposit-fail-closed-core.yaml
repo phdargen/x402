@@ -1,0 +1,7 @@
+kind: fixed
+body: Core AfterSettle abort (AfterSettleAbortError) fails a deposit closed; other
+  hook errors stay non-fatal. When an afterSettle hook aborts after an onchain
+  success, SettlePayment flips the result to success:false keeping the
+  transaction, amount, payer, and onchain extra, with errorReason from the abort.
+  Abort is honored on both the normal settle path and the beforeSettle skip path.
+time: 2026-09-21T12:00:00Z
