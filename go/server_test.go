@@ -922,20 +922,29 @@ func TestSettleOnCancel_SkipsWhenVoid(t *testing.T) {
 	}
 }
 
-func TestSettleOnCancel_SkipsWithoutBeforeHandlerDeposit(t *testing.T) {
+func TestSettleOnCancel_SettlesWithoutBeforeHandlerDeposit(t *testing.T) {
 	ctx := context.Background()
 	var settleCalls int
 	mockClient := &mockFacilitatorClient{
 		kinds: []SupportedKind{
-			{X402Version: 2, Scheme: "upto", Network: "eip155:8453"},
+			{X402Version: 2, Scheme: "exact", Network: "eip155:8453"},
 		},
 		settle: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*SettleResponse, error) {
 			settleCalls++
-			return &SettleResponse{Success: true, Transaction: "0x", Network: "eip155:8453"}, nil
+			var reqs types.PaymentRequirements
+			if err := json.Unmarshal(requirementsBytes, &reqs); err != nil {
+				t.Fatalf("unmarshal requirements: %v", err)
+			}
+			return &SettleResponse{
+				Success:     true,
+				Amount:      reqs.Amount,
+				Transaction: "0xcancel",
+				Network:     "eip155:8453",
+			}, nil
 		},
 	}
 	scheme := &mockSettleOnCancelScheme{
-		mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "upto"},
+		mockSchemeNetworkServer: mockSchemeNetworkServer{scheme: "exact"},
 		settleOnCancel: func(c VerifiedPaymentCanceledContext) (*types.PaymentRequirements, error) {
 			reqs := c.Requirements.(types.PaymentRequirements)
 			reqs.Amount = "0"
@@ -947,14 +956,15 @@ func TestSettleOnCancel_SkipsWithoutBeforeHandlerDeposit(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	requirements := types.PaymentRequirements{Scheme: "upto", Network: "eip155:8453", Asset: "USDC", Amount: "1", PayTo: "0x"}
+	requirements := types.PaymentRequirements{Scheme: "exact", Network: "eip155:8453", Asset: "USDC", Amount: "1", PayTo: "0x"}
 	payload := types.PaymentPayload{X402Version: 2, Accepted: requirements, Payload: map[string]interface{}{}}
 	cancellation := server.CreatePaymentCancellationDispatcherWithExtensions(ctx, payload, requirements, nil, nil)
-	if got := cancellation.Cancel(VerifiedPaymentCancelOptions{Reason: CancellationReasonHandlerFailed, ResponseStatus: 500}); got != nil {
-		t.Fatalf("expected nil cancel result, got %+v", got)
+	got := cancellation.Cancel(VerifiedPaymentCancelOptions{Reason: CancellationReasonHandlerFailed, ResponseStatus: 500})
+	if got == nil || !got.Success || got.Transaction != "0xcancel" {
+		t.Fatalf("expected cancel settle without before-handler deposit, got %+v", got)
 	}
-	if settleCalls != 0 {
-		t.Fatalf("expected 0 settle calls, got %d", settleCalls)
+	if settleCalls != 1 {
+		t.Fatalf("expected 1 settle call, got %d", settleCalls)
 	}
 }
 
@@ -1053,6 +1063,17 @@ func TestBuildFailurePathSettlementResponse_EchoesBeforeHandler(t *testing.T) {
 	got := BuildFailurePathSettlementResponse(nil, before, nil)
 	if got == nil || got.Transaction != "0xdeposit" {
 		t.Fatalf("expected before-handler echo, got %+v", got)
+	}
+}
+
+func TestBuildFailurePathSettlementResponse_OmitsLockOnlyCancel(t *testing.T) {
+	cancel := &SettleResponse{
+		Success:     true,
+		Transaction: "0xcancel",
+		Network:     "eip155:8453",
+	}
+	if got := BuildFailurePathSettlementResponse(cancel, nil, nil); got != nil {
+		t.Fatalf("expected lock-only cancel omitted, got %+v", got)
 	}
 }
 
