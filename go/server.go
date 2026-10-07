@@ -1393,9 +1393,13 @@ func settleResponseToError(result *SettleResponse) error {
 // when an afterSettle hook aborts. Transaction/amount/payer/onchain extra are
 // kept so callers retain proof funds moved.
 func applyAfterSettleAbort(result *SettleResponse, reason, message string) {
+	if result == nil {
+		return
+	}
 	result.Success = false
 	result.ErrorReason = reason
 	result.ErrorMessage = message
+	result.AfterSettleAborted = true
 }
 
 // SettlePayment settles a V2 payment with no declared extensions.
@@ -1515,6 +1519,7 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 							applyAfterSettleAbort(result.SkipResult, abort.Reason, abort.Message)
 							break
 						}
+						log.Printf("[x402] afterSettle hook error: %v", hookErr)
 					}
 				}
 				return result.SkipResult, nil
@@ -1602,9 +1607,14 @@ func (s *x402ResourceServer) SettlePaymentWithExtensions(
 		if hookErr := lh.Hook(resultCtx); hookErr != nil {
 			var abort *AfterSettleAbortError
 			if errors.As(hookErr, &abort) {
+				if settleResult == nil {
+					return nil, NewSettleError(abort.Reason, "", network, "", abort.Message)
+				}
 				applyAfterSettleAbort(settleResult, abort.Reason, abort.Message)
-				break
+				// Enrichment must not replace the aborted receipt, which carries the onchain transaction.
+				return settleResult, nil
 			}
+			log.Printf("[x402] afterSettle hook error: %v", hookErr)
 		}
 	}
 

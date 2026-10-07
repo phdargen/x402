@@ -138,7 +138,7 @@ func (s *UptoSvmScheme) ValidateFacilitatorSupport(
 // A cancel before the before-handler deposit settled no escrow, so there is
 // nothing to refund.
 func (s *UptoSvmScheme) SettleOnCancel(ctx x402.VerifiedPaymentCanceledContext) (*types.PaymentRequirements, error) {
-	if !containsSettlePhase(ctx.SettledPhases, x402.SettlePhaseBeforeHandler) {
+	if !x402.SettledPhasesContain(ctx.SettledPhases, x402.SettlePhaseBeforeHandler) {
 		return nil, nil
 	}
 	switch ctx.Reason {
@@ -405,16 +405,6 @@ func (s *UptoSvmScheme) defaultMoneyConversion(
 		Asset:  assetInfo.Asset,
 		Extra:  make(map[string]interface{}),
 	}, nil
-}
-
-// containsSettlePhase reports whether phases contains phase.
-func containsSettlePhase(phases []x402.SettlePhase, phase x402.SettlePhase) bool {
-	for _, p := range phases {
-		if p == phase {
-			return true
-		}
-	}
-	return false
 }
 
 // requirementsFromView rebuilds concrete requirements from the version-agnostic
