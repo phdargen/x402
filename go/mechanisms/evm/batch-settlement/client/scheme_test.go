@@ -282,6 +282,7 @@ func TestBuildChannelConfig_PacksRefundAuthorizerIntoSalt(t *testing.T) {
 	refundAuthorizer := "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
 	scheme := NewBatchSettlementEvmScheme(&mockSigner{address: "0x1"}, &BatchSettlementEvmSchemeOptions{Salt: salt})
 	req := defaultRequirements()
+	req.Extra["voucherManager"] = batchsettlement.VoucherManagerFacilitator
 	req.Extra["refundAuthorizer"] = refundAuthorizer
 	cfg, err := scheme.BuildChannelConfig(req)
 	if err != nil {
@@ -299,9 +300,53 @@ func TestBuildChannelConfig_PacksRefundAuthorizerIntoSalt(t *testing.T) {
 	}
 }
 
+func TestBuildChannelConfig_SelfManagedNeverPacksSalt(t *testing.T) {
+	salt := "0xabc1230000000000000000000000000000000000000000000000000000000099"
+	refundAuthorizer := "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
+	scheme := NewBatchSettlementEvmScheme(&mockSigner{address: "0x1"}, &BatchSettlementEvmSchemeOptions{Salt: salt})
+
+	base, err := scheme.BuildChannelConfig(defaultRequirements())
+	if err != nil {
+		t.Fatalf("BuildChannelConfig: %v", err)
+	}
+	baseId, err := batchsettlement.ComputeChannelId(base, testNetwork)
+	if err != nil {
+		t.Fatalf("ComputeChannelId: %v", err)
+	}
+
+	cases := map[string]map[string]interface{}{
+		"voucherManager omitted":     {"refundAuthorizer": refundAuthorizer},
+		"voucherManager server":      {"voucherManager": batchsettlement.VoucherManagerServer, "refundAuthorizer": refundAuthorizer},
+		"facilitator without refund": {"voucherManager": batchsettlement.VoucherManagerFacilitator},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := defaultRequirements()
+			for k, v := range extra {
+				req.Extra[k] = v
+			}
+			cfg, err := scheme.BuildChannelConfig(req)
+			if err != nil {
+				t.Fatalf("BuildChannelConfig: %v", err)
+			}
+			if cfg.Salt != salt {
+				t.Fatalf("salt = %s, want the raw salt %s", cfg.Salt, salt)
+			}
+			id, err := batchsettlement.ComputeChannelId(cfg, testNetwork)
+			if err != nil {
+				t.Fatalf("ComputeChannelId: %v", err)
+			}
+			if !strings.EqualFold(id, baseId) {
+				t.Fatalf("channelId = %s, want unchanged %s", id, baseId)
+			}
+		})
+	}
+}
+
 func TestBuildChannelConfig_PackedSaltsYieldDistinctChannelIds(t *testing.T) {
 	refundAuthorizer := "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd"
 	req := defaultRequirements()
+	req.Extra["voucherManager"] = batchsettlement.VoucherManagerFacilitator
 	req.Extra["refundAuthorizer"] = refundAuthorizer
 	saltA := "0x0000000000000000000000000000000000000000000000000000000000000011"
 	saltB := "0x0000000000000000000000000000000000000000000000000000000000000012"

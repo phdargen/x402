@@ -18,7 +18,7 @@ import type {
 } from "@x402/core/server";
 import { convertToTokenAmount, parseMoney } from "@x402/core/utils";
 import type { FacilitatorClient } from "@x402/core/server";
-import { getAddress } from "viem";
+import { getAddress, isAddress } from "viem";
 import { BatchSettlementChannelManager } from "./channelManager";
 import { findDefaultAsset, getDefaultAsset } from "../../defaultAssets";
 import type { AuthorizerSigner, BatchSettlementAssetTransferMethod } from "../types";
@@ -28,7 +28,12 @@ import {
   MAX_WITHDRAW_DELAY,
   MIN_WITHDRAW_DELAY,
 } from "../constants";
-import { defaultOnchainStateTtlMs, voucherStoreMode, type VoucherStoreMode } from "../voucherStore";
+import {
+  advertisedVoucherManagers,
+  defaultOnchainStateTtlMs,
+  voucherStoreMode,
+  type VoucherStoreMode,
+} from "../voucherStore";
 import * as Errors from "../errors";
 import type { BatchSettlementChannelStateExtra, BatchSettlementVoucherStateExtra } from "../types";
 import {
@@ -69,6 +74,11 @@ import {
 
 export type { VoucherStoreMode };
 
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const REFUND_CONSENT_UNAVAILABLE =
+  "Facilitator-managed mode needs a refund consent path: configure a refundAuthorizerSigner " +
+  "or use a facilitator that advertises delegatedRefund: true";
+
 type BatchSettlementEvmSchemeServerConfigBase = {
   storage?: ChannelStorage;
   onchainStateTtlMs?: number;
@@ -90,6 +100,12 @@ export type BatchSettlementSelfManagedServerConfig = BatchSettlementEvmSchemeSer
 export type BatchSettlementFacilitatorManagedServerConfig =
   BatchSettlementEvmSchemeServerConfigBase & {
     voucherStoreMode: "facilitator";
+    /**
+     * Server-owned refund authorizer announced as `extra.refundAuthorizer` and packed into the
+     * channel salt. When omitted, the 402 omits `extra.refundAuthorizer` and refunds are
+     * authorized by the authenticated `/settle` caller, which requires the facilitator to
+     * advertise `extra.delegatedRefund: true`.
+     */
     refundAuthorizerSigner?: AuthorizerSigner;
   };
 
@@ -464,13 +480,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 
     switch (this.configuredMode) {
       case "facilitator": {
-        if (supportedKind.extra?.voucherStore !== true) {
-          throw new Error("Facilitator-managed mode requires advertised extra.voucherStore");
+        if (!advertisedVoucherManagers(supportedKind.extra).includes("facilitator")) {
+          throw new Error(
+            'Facilitator-managed mode requires advertised extra.voucherManager to include "facilitator"',
+          );
         }
         const advertisedAuthorizer = supportedKind.extra?.receiverAuthorizer;
         if (
           typeof advertisedAuthorizer !== "string" ||
-          getAddress(advertisedAuthorizer) === "0x0000000000000000000000000000000000000000"
+          getAddress(advertisedAuthorizer) === ZERO_ADDRESS
         ) {
           throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
         }
@@ -478,14 +496,22 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         if (typeof advertisedDelay !== "number") {
           throw new Error("Facilitator-managed mode requires advertised extra.withdrawDelay");
         }
+        // extra.refundAuthorizer is set only for a server-owned refund key. Otherwise the 402
+        // omits it and refunds rely on the facilitator's delegatedRefund.
+        if (!this.refundAuthorizerSigner && supportedKind.extra?.delegatedRefund !== true) {
+          throw new Error(REFUND_CONSENT_UNAVAILABLE);
+        }
+        const { refundAuthorizer: _ignoredRefundAuthorizer, ...baseExtra } =
+          paymentRequirements.extra ?? {};
+        void _ignoredRefundAuthorizer;
 
         return {
           ...paymentRequirements,
           extra: {
-            ...paymentRequirements.extra,
+            ...baseExtra,
             receiverAuthorizer: getAddress(advertisedAuthorizer),
             withdrawDelay: advertisedDelay,
-            voucherStore: true,
+            voucherManager: "facilitator",
             ...(this.refundAuthorizerSigner
               ? { refundAuthorizer: getAddress(this.refundAuthorizerSigner.address) }
               : {}),
@@ -494,16 +520,18 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         };
       }
       case "self": {
+        if (!advertisedVoucherManagers(supportedKind.extra).includes("server")) {
+          throw new Error(
+            'Self-managed mode requires advertised extra.voucherManager to include "server"',
+          );
+        }
         const receiverAuthorizer =
           this.receiverAuthorizerSigner?.address ??
           (typeof supportedKind.extra?.receiverAuthorizer === "string"
             ? supportedKind.extra.receiverAuthorizer
             : undefined);
 
-        if (
-          !receiverAuthorizer ||
-          getAddress(receiverAuthorizer) === "0x0000000000000000000000000000000000000000"
-        ) {
+        if (!receiverAuthorizer || getAddress(receiverAuthorizer) === ZERO_ADDRESS) {
           throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
         }
 
@@ -541,14 +569,16 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
     const advertised = supportedKind.extra?.receiverAuthorizer;
     const hasValidAuthorizer =
       typeof advertised === "string" &&
-      getAddress(advertised) !== "0x0000000000000000000000000000000000000000";
+      isAddress(advertised) &&
+      getAddress(advertised) !== ZERO_ADDRESS;
+    const managers = advertisedVoucherManagers(supportedKind.extra);
 
     switch (this.configuredMode) {
       case "facilitator": {
-        if (supportedKind.extra?.voucherStore !== true) {
+        if (!managers.includes("facilitator")) {
           return (
             `voucherStoreMode "facilitator" is configured but the facilitator does not ` +
-            `advertise voucherStore on ${network}.`
+            `advertise voucherManager "facilitator" on ${network}.`
           );
         }
         if (!hasValidAuthorizer) {
@@ -558,16 +588,22 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
         if (typeof delay !== "number" || delay < MIN_WITHDRAW_DELAY || delay > MAX_WITHDRAW_DELAY) {
           return `voucherStore mode requires an in-range advertised withdrawDelay on ${network}.`;
         }
-        if (!this.refundAuthorizerSigner && supportedKind.extra?.refundAuth !== true) {
+        if (!this.refundAuthorizerSigner && supportedKind.extra?.delegatedRefund !== true) {
           return (
             `no refundAuthorizerSigner is configured and the facilitator does not advertise ` +
-            `refundAuth on ${network}. Configure a refundAuthorizerSigner or use a facilitator ` +
-            `that advertises refundAuth.`
+            `delegatedRefund: true on ${network}. Configure a refundAuthorizerSigner or use a ` +
+            `facilitator that advertises delegatedRefund: true.`
           );
         }
         return;
       }
       case "self": {
+        if (!managers.includes("server")) {
+          return (
+            `the facilitator advertises voucherManager without "server" on ${network}, ` +
+            `so a self-managed server cannot use it.`
+          );
+        }
         if (this.receiverAuthorizerSigner) return;
 
         if (!hasValidAuthorizer) {
@@ -575,6 +611,15 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
             `no receiverAuthorizerSigner is configured and the facilitator does not advertise a ` +
             `receiverAuthorizer on ${network}. Configure a receiverAuthorizerSigner or use a ` +
             `facilitator that advertises one.`
+          );
+        }
+        // Delegated receiverAuthorizer: refunds rely on the facilitator honoring unsigned
+        // caller-identity refunds. An absent field is a legacy facilitator and passes.
+        if (supportedKind.extra?.delegatedRefund === false) {
+          return (
+            `the facilitator explicitly advertises delegatedRefund: false on ${network}, so ` +
+            `refunds on channels with a delegated receiverAuthorizer cannot work. Configure a ` +
+            `receiverAuthorizerSigner or use a facilitator that supports delegated refunds.`
           );
         }
         return;
@@ -806,7 +851,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Returns this instance's handler table when request extras match constructor mode.
    *
-   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @param requirements - Payment requirements carrying `extra.voucherManager`.
    * @returns The configured-mode handlers, or `undefined` on mismatch.
    */
   private handlersFor(requirements: PaymentRequirements): VoucherStoreHandlers | undefined {
@@ -819,7 +864,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Runs a hook against the configured handler table, or the mismatch fallback.
    *
-   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @param requirements - Payment requirements carrying `extra.voucherManager`.
    * @param run - Hook invocation on the matched handler table.
    * @param onMismatch - Value used when extras disagree with constructor mode.
    * @returns The hook result, always as a Promise so `SchemeServerHooks` type-checks.
@@ -836,7 +881,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
   /**
    * Returns the configured handler table, or throws on mode mismatch.
    *
-   * @param requirements - Payment requirements carrying `extra.voucherStore`.
+   * @param requirements - Payment requirements carrying `extra.voucherManager`.
    * @returns The configured-mode handlers.
    */
   private requireHandlers(requirements: PaymentRequirements): VoucherStoreHandlers {
@@ -849,7 +894,7 @@ export class BatchSettlementEvmScheme implements SchemeNetworkServer {
 }
 
 /**
- * Abort used when request `extra.voucherStore` disagrees with constructor mode.
+ * Abort used when request `extra.voucherManager` disagrees with constructor mode.
  *
  * @returns Lifecycle abort for verify/settle hooks.
  */
@@ -861,6 +906,6 @@ function voucherStoreModeMismatchAbort(): {
   return {
     abort: true,
     reason: Errors.ErrVoucherStoreModeMismatch,
-    message: "Payment requirements voucherStore does not match the server voucherStoreMode",
+    message: "Payment requirements voucherManager does not match the server voucherStoreMode",
   };
 }

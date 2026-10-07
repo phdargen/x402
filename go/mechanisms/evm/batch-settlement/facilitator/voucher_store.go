@@ -473,7 +473,13 @@ func settleManagedDeposit(
 		return resp, settleErr
 	}
 
-	identity, bindErr := ResolveDepositDelegatedCaller(ctx, deps.ResolveCallerIdentity, deps.DelegatedAuthStore,
+	// Identity is only bound when refunds will be authorized by caller identity, i.e. when the
+	// 402 omits extra.refundAuthorizer (the server brings no refund key of its own).
+	resolveIdentity := deps.ResolveCallerIdentity
+	if announced, _ := requirements.Extra["refundAuthorizer"].(string); announced != "" {
+		resolveIdentity = nil
+	}
+	identity, bindErr := ResolveDepositDelegatedCaller(ctx, resolveIdentity, deps.DelegatedAuthStore,
 		payment, raw, requirements, fctx)
 	if bindErr != nil {
 		var se *x402.SettleError
@@ -585,12 +591,11 @@ func settleManagedRefund(
 		return failSettle(requirements, capErr), nil
 	}
 	nonce := fmt.Sprintf("%d", stored.RefundNonce)
-	enriched := *raw
+	// Consent has passed; the facilitator signs the onchain Refund/ClaimBatch digests itself.
+	enriched := *StripAuthorizerSignatures(raw)
 	enriched.Amount = amount
 	enriched.RefundNonce = nonce
 	enriched.Claims = claims
-	enriched.RefundAuthorizerSignature = ""
-	enriched.ClaimAuthorizerSignature = ""
 
 	var begun []attestedClaim
 	if len(claims) > 0 {
@@ -771,15 +776,23 @@ func managedRequirementError(deps VoucherStoreDeps, salt string, requirements ty
 		return ErrWithdrawDelayMismatch
 	}
 	refundAuthorizer, _ := extra["refundAuthorizer"].(string)
-	if refundAuthorizer != "" {
-		unpacked := batchsettlement.UnpackRefundAuthorizer(salt)
-		if !sameAddress(unpacked, refundAuthorizer) {
-			return ErrRefundAuthorizerMismatch
+	if refundAuthorizer == "" {
+		// No server-owned refund key: consent is the authenticated /settle caller, which
+		// this facilitator can only honor when it resolves caller identity.
+		if deps.ResolveCallerIdentity == nil {
+			return ErrRefundAuthorizerSignature
 		}
+		return ""
+	}
+	unpacked := batchsettlement.UnpackRefundAuthorizer(salt)
+	if !sameAddress(unpacked, refundAuthorizer) {
+		return ErrRefundAuthorizerMismatch
 	}
 	return ""
 }
 
+// checkRefundConsent checks managed refund consent. The facilitator is always the receiver
+// authorizer here, so consent is the shared CheckDelegatedRefundConsent check.
 func checkRefundConsent(
 	ctx context.Context,
 	deps VoucherStoreDeps,
@@ -792,61 +805,14 @@ func checkRefundConsent(
 	if amountError := refundAmountError(raw.Amount); amountError != "" {
 		return amountError
 	}
-	extra := requirements.Extra
-	if extra == nil {
-		extra = map[string]interface{}{}
+	nonce := "0"
+	if stored != nil {
+		nonce = fmt.Sprintf("%d", stored.RefundNonce)
 	}
-	refundAuthorizer, _ := extra["refundAuthorizer"].(string)
-	if refundAuthorizer != "" {
-		unpacked := batchsettlement.UnpackRefundAuthorizer(raw.ChannelConfig.Salt)
-		if !sameAddress(unpacked, refundAuthorizer) {
-			return ErrRefundAuthorizerMismatch
-		}
-		signature := raw.RefundAuthorizerSignature
-		if signature == "" {
-			if v, ok := payment.Payload["refundAuthorizerSignature"].(string); ok {
-				signature = v
-			}
-		}
-		if signature == "" {
-			return ErrRefundAuthorizerSignature
-		}
-		amount := resolveRefundAmount(raw.Amount, stored)
-		nonce := "0"
-		if stored != nil {
-			nonce = fmt.Sprintf("%d", stored.RefundNonce)
-		}
-		if !verifyRefundAuthorizerSignature(signature, refundAuthorizer, raw.Voucher.ChannelId, amount, nonce, requirements.Network) {
-			return ErrRefundAuthorizerSignature
-		}
-		return ""
-	}
-
-	if deps.ResolveCallerIdentity == nil {
-		return ErrRefundAuthorizerSignature
-	}
-	identity, err := resolveIdentity(deps, DelegatedSettleContext{
-		Ctx:                ctx,
-		Step:               DelegatedSettleStepRefund,
-		ChannelId:          raw.Voucher.ChannelId,
-		Network:            requirements.Network,
-		Payer:              raw.ChannelConfig.Payer,
-		Payload:            payment,
-		Requirements:       requirements,
-		FacilitatorContext: fctx,
-	})
-	if err != nil || identity == "" {
-		return ErrRefundAuthorizerSignature
-	}
-
-	if deps.DelegatedAuthStore == nil {
-		return ErrRefundAuthorizerSignature
-	}
-	binding, getErr := deps.DelegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
-	if getErr != nil || binding == nil || binding.CallerIdentity != identity {
-		return ErrRefundAuthorizerSignature
-	}
-	return ""
+	return CheckDelegatedRefundConsent(ctx, RefundConsentDeps{
+		ResolveCallerIdentity: deps.ResolveCallerIdentity,
+		DelegatedAuthStore:    deps.DelegatedAuthStore,
+	}, payment, raw, RefundConsentAmounts{Amount: resolveRefundAmount(raw.Amount, stored), Nonce: nonce}, requirements, fctx)
 }
 
 func verifyRefundAuthorizerSignature(signature, refundAuthorizer, channelId, amount, nonce, network string) bool {
@@ -877,13 +843,6 @@ func verifyRefundAuthorizerSignature(signature, refundAuthorizer, channelId, amo
 	}
 	ok, err = evm.VerifyEOASignature(hash, common.FromHex(signature), common.HexToAddress(refundAuthorizer))
 	return err == nil && ok
-}
-
-func resolveIdentity(deps VoucherStoreDeps, settleCtx DelegatedSettleContext) (string, error) {
-	if deps.ResolveCallerIdentity == nil {
-		return "", nil
-	}
-	return deps.ResolveCallerIdentity(settleCtx)
 }
 
 func releaseLock(ctx context.Context, deps VoucherStoreDeps, channelId, owner string) error {

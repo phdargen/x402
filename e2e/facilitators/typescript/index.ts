@@ -718,6 +718,9 @@ let batchChannelManager: FacilitatorChannelManager | undefined;
 // Register each configured family (exact CAIP-2 from catalog / env)
 if (evmSigner && authorizerSigner) {
   const batchScheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
+    // Advertises delegatedRefund: true. The harness has no real caller authentication, so
+    // every settle caller resolves to one identity.
+    resolveCallerIdentity: async () => "x402-e2e",
     ...(facilitatorVoucherStoreEnabled
       ? {
           voucherStore: {

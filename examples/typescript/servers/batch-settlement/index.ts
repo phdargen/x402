@@ -294,9 +294,7 @@ async function main() {
         if (refundAuthorizerSigner) {
           console.log(`  EVM refund authorizer: local signer ${refundAuthorizerSigner.address}`);
         } else {
-          console.log(
-            "  EVM refund authorizer: facilitator refundAuth (requires resolveCallerIdentity)",
-          );
+          console.log("  EVM refund authorizer: facilitator delegatedRefund (402 omits refundAuthorizer)");
         }
       } else if (receiverAuthorizerSigner) {
         console.log(`  EVM receiver authorizer: local signer ${receiverAuthorizerSigner.address}`);

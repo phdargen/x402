@@ -28,9 +28,10 @@ export interface BatchSettlementClientDeps {
  * Constructs the immutable {@link ChannelConfig} from payment requirements and
  * a client deps bag (signer, salt, optional payerAuthorizer / voucherSigner).
  *
- * When `extra.refundAuthorizer` is present, the channel salt is
- * `bytes12(entropy) || bytes20(refundAuthorizer)` so `recoverChannel` and
- * `refund()` recompute the same `channelId`. Left-padded indexes (`0`, `1`,
+ * When `extra.voucherManager` is `"facilitator"` and a non-zero `extra.refundAuthorizer` is
+ * present, the channel salt is `bytes12(entropy) || bytes20(refundAuthorizer)` so
+ * `recoverChannel` and `refund()` recompute the same `channelId`. Self-managed channels never
+ * pack. Left-padded indexes (`0`, `1`,
  * `2`) use the low 96 bits as entropy; a full `bytes32` with a nonzero
  * 12-byte prefix keeps the first 12 bytes.
  *
@@ -53,9 +54,12 @@ export function buildChannelConfig(
     throw new Error("Payment requirements must include a non-zero extra.receiverAuthorizer");
   }
 
+  // Only facilitator-managed channels pack. Self-managed channelIds stay derived from the raw salt.
   const refundAuthorizer = extra?.refundAuthorizer;
   const salt =
-    typeof refundAuthorizer === "string"
+    extra?.voucherManager === "facilitator" &&
+    typeof refundAuthorizer === "string" &&
+    getAddress(refundAuthorizer) !== "0x0000000000000000000000000000000000000000"
       ? packRefundAuthorizerSalt(deps.salt, refundAuthorizer)
       : deps.salt;
 

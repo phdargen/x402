@@ -6,7 +6,7 @@ import type {
   SettleResponse,
   VerifyResponse,
 } from "@x402/core/types";
-import { getAddress, isAddressEqual, recoverTypedDataAddress } from "viem";
+import { getAddress, isAddressEqual } from "viem";
 import type { PendingSettlementStore } from "@x402/core/facilitator";
 import type { FacilitatorEvmSigner } from "../../signer";
 import type { AuthorizerSigner } from "../types";
@@ -26,16 +26,14 @@ import type {
   BatchSettlementVoucherClaim,
   BatchSettlementVoucherPayload,
 } from "../types";
-import { refundTypes } from "../constants";
 import * as Errors from "../errors";
 import {
   evaluateVoucherAgainstCachedState,
-  getBatchSettlementEip712Domain,
   unpackRefundAuthorizer,
   validateChannelConfig,
   verifyEoaVoucherSignature,
 } from "../utils";
-import { createNonce, getEvmChainId } from "../../utils";
+import { createNonce } from "../../utils";
 import {
   admissionOwner,
   channelStateExtra,
@@ -56,15 +54,14 @@ import { verifyVoucher } from "./voucher";
 import { chargeCountsMetadata } from "../chargeCounts";
 import { resolveDataSuffix } from "../../shared/extensions";
 import { submitRefund } from "./refund";
-import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
+import type { FacilitatorChannel, ResolveCallerIdentity } from "./types";
+import { checkDelegatedRefundConsent, stripAuthorizerSignatures } from "./refundConsent";
 import { shouldDeleteNeverClaimedRefundRow, type FacilitatorRetention } from "./channelManager";
 import type { SubmitMode } from "./submit";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
-export type ResolveCallerIdentity = (
-  ctx: DelegatedSettleContext,
-) => Promise<string | undefined> | string | undefined;
+export type { ResolveCallerIdentity };
 
 export type VoucherStoreDeps = {
   signer: FacilitatorEvmSigner;
@@ -178,7 +175,7 @@ async function releaseAdmission(
  *
  * @param deps - Store, lock, and signer dependencies.
  * @param payload - Payment envelope.
- * @param requirements - Payment requirements (must have `voucherStore: true`).
+ * @param requirements - Payment requirements (must have `extra.voucherManager: "facilitator"`).
  * @param context - Optional facilitator extension context.
  * @returns Verify response with watermark extras.
  */
@@ -552,8 +549,13 @@ async function settleManagedDeposit(
       return failSettle(requirements, bounds.errorReason);
     }
 
+    // Identity is only bound when refunds will be authorized by caller identity, i.e. when the
+    // 402 omits extra.refundAuthorizer (the server brings no refund key of its own).
+    const announcedRefundAuthorizer = requirements.extra?.refundAuthorizer;
     const resolved = await resolveDepositDelegatedCaller(
-      deps.resolveCallerIdentity,
+      typeof announcedRefundAuthorizer === "string" && announcedRefundAuthorizer !== ""
+        ? undefined
+        : deps.resolveCallerIdentity,
       deps.delegatedAuthStore,
       payment,
       raw,
@@ -673,14 +675,13 @@ async function settleManagedRefund(
     const claims = rebuildClaims(stored);
     const amount = resolveRefundAmount(raw, stored);
     const nonce = String(stored.refundNonce ?? 0);
-    const enriched: BatchSettlementEnrichedRefundPayload = {
+    // Consent has passed; the facilitator signs the onchain Refund/ClaimBatch digests itself.
+    const enriched = stripAuthorizerSignatures({
       ...raw,
       amount,
       refundNonce: nonce,
       claims,
-    };
-    delete (enriched as { refundAuthorizerSignature?: `0x${string}` }).refundAuthorizerSignature;
-    delete (enriched as { claimAuthorizerSignature?: `0x${string}` }).claimAuthorizerSignature;
+    });
 
     const claimSuffix =
       claims.length > 0
@@ -799,20 +800,24 @@ function managedRequirementError(
     return Errors.ErrWithdrawDelayMismatch;
   }
   const refundAuthorizer = extra.refundAuthorizer;
-  if (typeof refundAuthorizer === "string") {
-    try {
-      if (!isAddressEqual(unpackRefundAuthorizer(salt), getAddress(refundAuthorizer))) {
-        return Errors.ErrRefundAuthorizerMismatch;
-      }
-    } catch {
+  if (typeof refundAuthorizer !== "string" || refundAuthorizer === "") {
+    // No server-owned refund key: consent is the authenticated /settle caller, which this
+    // facilitator can only honor when it resolves caller identity.
+    return deps.resolveCallerIdentity ? undefined : Errors.ErrRefundAuthorizerSignature;
+  }
+  try {
+    if (!isAddressEqual(unpackRefundAuthorizer(salt), getAddress(refundAuthorizer))) {
       return Errors.ErrRefundAuthorizerMismatch;
     }
+  } catch {
+    return Errors.ErrRefundAuthorizerMismatch;
   }
   return undefined;
 }
 
 /**
- * Checks managed refund consent (signature path and/or caller identity).
+ * Checks managed refund consent. The facilitator is always the receiver authorizer here, so
+ * consent is the shared {@link checkDelegatedRefundConsent} check.
  *
  * @param deps - Store dependencies.
  * @param payment - Payment envelope.
@@ -834,101 +839,14 @@ async function checkRefundConsent(
   if (amountError) {
     return amountError;
   }
-  const extra = requirements.extra ?? {};
-  const refundAuthorizer = extra.refundAuthorizer;
-  if (typeof refundAuthorizer === "string") {
-    try {
-      if (
-        !isAddressEqual(
-          unpackRefundAuthorizer(raw.channelConfig.salt),
-          getAddress(refundAuthorizer),
-        )
-      ) {
-        return Errors.ErrRefundAuthorizerMismatch;
-      }
-    } catch {
-      return Errors.ErrRefundAuthorizerMismatch;
-    }
-    const signature = (raw as BatchSettlementEnrichedRefundPayload).refundAuthorizerSignature;
-    if (!signature) {
-      return Errors.ErrRefundAuthorizerSignature;
-    }
-    const amount = resolveRefundAmount(raw, stored);
-    const nonce = String(stored?.refundNonce ?? 0);
-    try {
-      const recovered = await recoverTypedDataAddress({
-        domain: getBatchSettlementEip712Domain(getEvmChainId(requirements.network)),
-        types: refundTypes,
-        primaryType: "Refund",
-        message: {
-          channelId: raw.voucher.channelId,
-          nonce: BigInt(nonce),
-          amount: BigInt(amount),
-        },
-        signature,
-      });
-      if (!isAddressEqual(recovered, getAddress(refundAuthorizer))) {
-        return Errors.ErrRefundAuthorizerSignature;
-      }
-    } catch {
-      return Errors.ErrRefundAuthorizerSignature;
-    }
-    return undefined;
-  }
-
-  if (!deps.resolveCallerIdentity) {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-
-  let identity: string | undefined;
-  try {
-    identity = await resolveIdentity(deps, {
-      step: "refund",
-      channelId: raw.voucher.channelId,
-      network: requirements.network,
-      payer: raw.channelConfig.payer,
-      payload: payment,
-      requirements,
-      facilitatorContext: context,
-    });
-  } catch {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-  if (!identity) {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-
-  if (!deps.delegatedAuthStore) {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-  let storeIdentity: string | undefined;
-  try {
-    storeIdentity = (await deps.delegatedAuthStore.get(raw.voucher.channelId, requirements.network))
-      ?.callerIdentity;
-  } catch {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-  if (!storeIdentity || storeIdentity !== identity) {
-    return Errors.ErrRefundAuthorizerSignature;
-  }
-  return undefined;
-}
-
-/**
- * Resolves caller identity when the hook is configured.
- *
- * @param deps - Store dependencies.
- * @param ctx - Settle identity context.
- * @returns Identity string, or undefined.
- */
-async function resolveIdentity(
-  deps: VoucherStoreDeps,
-  ctx: DelegatedSettleContext,
-): Promise<string | undefined> {
-  if (!deps.resolveCallerIdentity) {
-    return undefined;
-  }
-  return deps.resolveCallerIdentity(ctx);
+  return checkDelegatedRefundConsent(
+    deps,
+    payment,
+    raw as BatchSettlementEnrichedRefundPayload,
+    { amount: resolveRefundAmount(raw, stored), nonce: String(stored?.refundNonce ?? 0) },
+    requirements,
+    context,
+  );
 }
 
 /**

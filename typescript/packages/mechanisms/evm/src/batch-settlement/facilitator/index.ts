@@ -20,7 +20,7 @@ export type {
   FacilitatorRetention,
   FacilitatorSettleResult,
 } from "./channelManager";
-export type { DelegatedSettleContext, FacilitatorChannel } from "./types";
+export type { DelegatedSettleContext, FacilitatorChannel, ResolveCallerIdentity } from "./types";
 export type { SubmitContext, SubmitMode } from "./submit";
 export { InMemoryChannelStorage } from "../storage/channel";
 export type {

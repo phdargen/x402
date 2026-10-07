@@ -38,7 +38,7 @@ Set `VOUCHER_STORE_MODE=facilitator` and run a facilitator with `VOUCHER_STORE=t
 ```typescript
 new BatchSettlementEvmScheme(evmAddress, {
   voucherStoreMode: "facilitator",
-  refundAuthorizerSigner, // or rely on facilitator refundAuth
+  refundAuthorizerSigner, // or rely on the facilitator's delegatedRefund: true
   storage: new FileChannelStorage({ directory: "./channels" }), // optional replica
 });
 ```
@@ -121,6 +121,6 @@ demo for stable assertions across stacks.
 | `FACILITATOR_URL` | yes | Batch-settlement facilitator endpoint |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key (omit to delegate to facilitator; incompatible with `VOUCHER_STORE_MODE=facilitator`) |
 | `VOUCHER_STORE_MODE` | no | `facilitator` for facilitator-managed custody; default is self-managed |
-| `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` | no | Managed mode only: signs cooperative refunds when the facilitator does not advertise `refundAuth` |
+| `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` | no | Managed mode only: signs cooperative refunds when the facilitator does not advertise `delegatedRefund: true` |
 | `STORAGE_DIR` | no | Persist channel sessions on disk (defaults to in-memory) |
 | `DEFERRED_WITHDRAW_DELAY_SECONDS` | no | Self-managed channel `withdrawDelay`; ignored in facilitator-managed mode (facilitator advertises `withdrawDelay`) |

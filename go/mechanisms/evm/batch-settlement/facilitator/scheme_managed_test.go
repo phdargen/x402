@@ -51,8 +51,15 @@ func TestScheme_GetExtraAdvertisesVoucherStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := scheme.GetExtra(x402.Network(managedNetwork))
-	if got["voucherStore"] != true {
+	managers, _ := got["voucherManager"].([]string)
+	if len(managers) != 2 || managers[0] != "server" || managers[1] != "facilitator" {
 		t.Fatalf("extra = %+v", got)
+	}
+	if _, has := got["voucherStore"]; has {
+		t.Fatalf("legacy voucherStore must not be advertised: %+v", got)
+	}
+	if _, has := got["refundAuthorizer"]; has {
+		t.Fatalf("refundAuthorizer must be omitted when not configured: %+v", got)
 	}
 	if got["withdrawDelay"] != 900 {
 		t.Fatalf("withdrawDelay = %v", got["withdrawDelay"])
@@ -294,7 +301,8 @@ func TestScheme_ManagedClaimSimulationLeavesStore(t *testing.T) {
 func TestScheme_ManagedVoucherSettleIncrementsChargeCount(t *testing.T) {
 	auth := managedAuthorizer()
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
-	cfg := managedConfig(auth.addr, "00")
+	serverEOA := addressOfKey(t, serverRefundKeyHex)
+	cfg := managedConfigWithRefundAuthorizer(t, auth.addr, serverEOA)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargeCount: 2}))
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{
@@ -306,6 +314,7 @@ func TestScheme_ManagedVoucherSettleIncrementsChargeCount(t *testing.T) {
 	voucher := voucherFields(channelId, "2000", dummySig)
 	acquireBound(t, store, "0xpending", voucher)
 	reqs := managedRequirements(auth.addr)
+	reqs.Extra["refundAuthorizer"] = serverEOA
 	reqs.Amount = "1000"
 
 	resp, err := scheme.Settle(context.Background(), voucherEnvelope(cfg, voucher, "0xpending"), reqs, nil)
@@ -495,17 +504,40 @@ func TestScheme_DirectModeRelaysPresignedClaim(t *testing.T) {
 	}
 }
 
-func TestScheme_GetExtraAdvertisesRefundAuth(t *testing.T) {
-	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), managedAuthorizer(), &BatchSettlementEvmSchemeConfig{
-		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
-		DelegatedAuthStore:    storage.NewInMemoryDelegatedAuthStore(),
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestScheme_GetExtraDelegatedRefundTracksCallerIdentity(t *testing.T) {
+	cases := []struct {
+		name   string
+		config *BatchSettlementEvmSchemeConfig
+		want   bool
+	}{
+		{
+			name: "caller identity configured",
+			config: &BatchSettlementEvmSchemeConfig{
+				ResolveCallerIdentity: identityResolver("svc"),
+				DelegatedAuthStore:    storage.NewInMemoryDelegatedAuthStore(),
+			},
+			want: true,
+		},
+		{name: "no caller identity", config: &BatchSettlementEvmSchemeConfig{}, want: false},
+		{name: "nil config", config: nil, want: false},
 	}
-	got := scheme.GetExtra(x402.Network(managedNetwork))
-	if got["refundAuth"] != true {
-		t.Fatalf("extra = %+v", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), managedAuthorizer(), tc.config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := scheme.GetExtra(x402.Network(managedNetwork))
+			if got["delegatedRefund"] != tc.want {
+				t.Fatalf("delegatedRefund = %v, want %v", got["delegatedRefund"], tc.want)
+			}
+			if _, has := got["refundAuthorizer"]; has {
+				t.Fatalf("refundAuthorizer must never be advertised: %+v", got)
+			}
+			if _, has := got["refundAuth"]; has {
+				t.Fatalf("legacy refundAuth must not be advertised: %+v", got)
+			}
+		})
 	}
 }
 
@@ -515,66 +547,6 @@ func TestScheme_ResolveCallerIdentityRequiresDelegatedAuthStore(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected constructor error without a DelegatedAuthStore")
-	}
-}
-
-func TestAcceptRefundAuthorizerConsent_StripsOffchainSignature(t *testing.T) {
-	receiverAuthorizer := "0x1111111111111111111111111111111111111111"
-	cfg := batchsettlement.ChannelConfig{
-		Payer:              "0x2222222222222222222222222222222222222222",
-		PayerAuthorizer:    "0x2222222222222222222222222222222222222222",
-		Receiver:           managedReceiver,
-		ReceiverAuthorizer: receiverAuthorizer,
-		Token:              managedToken,
-		WithdrawDelay:      900,
-		Salt:               "0x" + strings.Repeat("00", 32),
-	}
-	channelID, err := batchsettlement.ComputeChannelId(cfg, managedNetwork)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const amount, nonce = "1000", "0"
-	refundAuthorizer, _ := signRefundConsent(t, channelID, amount, nonce, managedNetwork)
-	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("ab", 12), refundAuthorizer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Salt = packed
-	// Channel id in the signed digest is independent of salt; recompute only for the payload field.
-	channelID, err = batchsettlement.ComputeChannelId(cfg, managedNetwork)
-	if err != nil {
-		t.Fatal(err)
-	}
-	refundAuthorizer, sig := signRefundConsent(t, channelID, amount, nonce, managedNetwork)
-	raw := &batchsettlement.BatchSettlementEnrichedRefundPayload{
-		ChannelConfig:             cfg,
-		Voucher:                   batchsettlement.BatchSettlementVoucherFields{ChannelId: channelID},
-		Amount:                    amount,
-		RefundNonce:               nonce,
-		RefundAuthorizerSignature: sig,
-	}
-	reqs := types.PaymentRequirements{
-		Network: managedNetwork,
-		Extra:   map[string]interface{}{"refundAuthorizer": refundAuthorizer},
-	}
-
-	consented, errCode := acceptRefundAuthorizerConsent(raw, reqs)
-	if !consented || errCode != "" {
-		t.Fatalf("consent = %v %q", consented, errCode)
-	}
-	if raw.RefundAuthorizerSignature != "" {
-		t.Fatal("off-chain refundAuthorizer signature must be cleared so the facilitator signs as receiverAuthorizer")
-	}
-
-	raw.RefundAuthorizerSignature = sig
-	cfg.ReceiverAuthorizer = refundAuthorizer
-	raw.ChannelConfig = cfg
-	consented, errCode = acceptRefundAuthorizerConsent(raw, reqs)
-	if !consented || errCode != "" {
-		t.Fatalf("same-key consent = %v %q", consented, errCode)
-	}
-	if raw.RefundAuthorizerSignature == "" {
-		t.Fatal("signature from receiverAuthorizer must be kept for on-chain submission")
 	}
 }
 

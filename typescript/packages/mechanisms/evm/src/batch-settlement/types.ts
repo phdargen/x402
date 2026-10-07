@@ -51,6 +51,9 @@ export type BatchSettlementPermit2Authorization = {
 
 export type BatchSettlementAssetTransferMethod = "eip3009" | "permit2";
 
+/** Voucher-management mode named on the wire (`extra.voucherManager`). */
+export type BatchSettlementVoucherManager = "server" | "facilitator";
+
 export type BatchSettlementDepositAuthorization =
   | {
       erc3009Authorization: BatchSettlementErc3009Authorization;
@@ -119,9 +122,10 @@ export type BatchSettlementPaymentRequirementsExtra = {
   name: string;
   version: string;
   assetTransferMethod?: BatchSettlementAssetTransferMethod;
-  voucherStore?: boolean;
+  /** Who manages vouchers for this 402. Omitted means `"server"`. */
+  voucherManager?: BatchSettlementVoucherManager;
+  /** Address that consents to cooperative refunds. See spec "Refund authorizer". */
   refundAuthorizer?: `0x${string}`;
-  refundAuth?: boolean;
   channelState?: BatchSettlementChannelStateExtra;
   voucherState?: BatchSettlementVoucherStateExtra;
 };

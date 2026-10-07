@@ -122,7 +122,7 @@ async function registerFamilySchemes(
             `Batch-settlement refund authorizer (facilitator-managed): ${refundAuthorizerSigner.address}`,
           );
         } else {
-          console.info('Batch-settlement refund authorizer: facilitator refundAuth (no local signer)');
+          console.info('Batch-settlement refund authorizer: facilitator delegatedRefund (no local signer, 402 omits refundAuthorizer)');
         }
         console.info('Batch-settlement voucher custody: facilitator-managed (pass-through verify/settle)');
         server.register(

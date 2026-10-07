@@ -23,9 +23,9 @@ Listens on `http://localhost:4022` by default (`PORT` overrides). Env keys match
 
 ## Facilitator-managed voucher custody (optional)
 
-Spec v1.1 lets this facilitator own the voucher store, per-channel locks, and the claim/settle/refund schedule. Set `VOUCHER_STORE=true` (requires `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`). Storage defaults to **in-memory**; set `VOUCHER_STORE_DIR` only when you need persistence across restarts. The example then registers a `VoucherStore`, advertises `extra.voucherStore: true` on `/supported`, and starts a `FacilitatorChannelManager` loop (same intervals as the [server example](../../servers/batch-settlement) demo).
+Spec v1.1 lets this facilitator own the voucher store, per-channel locks, and the claim/settle/refund schedule. Set `VOUCHER_STORE=true` (requires `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY`). Storage defaults to **in-memory**; set `VOUCHER_STORE_DIR` only when you need persistence across restarts. The example then registers a `VoucherStore`, advertises `extra.voucherManager: ["server", "facilitator"]` on `/supported`, and starts a `FacilitatorChannelManager` loop (same intervals as the [server example](../../servers/batch-settlement) demo).
 
-Pair with the server example using `VOUCHER_STORE_MODE=facilitator` and **without** `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` on the server. For cooperative refunds without implementing `ResolveCallerIdentity`, set `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` on the server.
+Pair with the server example using `VOUCHER_STORE_MODE=facilitator` and **without** `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` on the server. This example does not authenticate `/settle` callers, so `/supported` advertises `delegatedRefund: false`; set `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` on the server so it can consent to cooperative refunds itself.
 
 ```bash
 # facilitator .env
@@ -39,7 +39,7 @@ VOUCHER_STORE_MODE=facilitator
 EVM_REFUND_AUTHORIZER_PRIVATE_KEY=0x...
 ```
 
-See the [scheme README](../../../../go/mechanisms/evm/batch-settlement/README.md#facilitator-managed-custody) for production notes (shared Redis locks, `refundAuth`, retention).
+See the [scheme README](../../../../go/mechanisms/evm/batch-settlement/README.md#facilitator-managed-custody) for production notes (shared Redis locks, `delegatedRefund`, retention).
 
 With `VOUCHER_STORE` enabled, claims carry their charge counts in the `m.x402ChargeCounts` field of a single ERC-8021 suffix. No builder code is needed: the example registers `BuilderCodeFacilitatorExtension` without one just to encode that suffix. Optional `FACILITATOR_BUILDER_CODE` adds a wallet code (`w`) to the same suffix. The manager `OnClaim` / `OnRefund` hooks parse the suffix from the transaction and join counts to channels by `channelId` (claim rows and `Claimed` logs); a row without a `Claimed` log is not attested.
 
@@ -61,4 +61,4 @@ With `VOUCHER_STORE` enabled, claims carry their charge counts in the `m.x402Cha
 | `VOUCHER_STORE_WITHDRAW_DELAY_SECONDS` | Withdraw delay advertised in `/supported` (default `900`) |
 | `FACILITATOR_BUILDER_CODE` | Optional ERC-8021 builder code appended on scheduled claims (EVM) |
 
-`GET /supported` includes `extra.receiverAuthorizer` when `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is set. With `VOUCHER_STORE=true`, it also includes `voucherStore: true` and `withdrawDelay`.
+`GET /supported` includes `extra.receiverAuthorizer` when `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` is set. With `VOUCHER_STORE=true`, it also includes `voucherManager: ["server", "facilitator"]` and `withdrawDelay`.

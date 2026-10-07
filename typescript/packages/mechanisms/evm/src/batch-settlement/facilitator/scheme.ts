@@ -17,7 +17,11 @@ import {
   isBatchSettlementRefundPayload,
   isBatchSettlementEnrichedRefundPayload,
 } from "../types";
-import type { AuthorizerSigner, BatchSettlementEnrichedRefundPayload } from "../types";
+import type {
+  AuthorizerSigner,
+  BatchSettlementEnrichedRefundPayload,
+  BatchSettlementVoucherManager,
+} from "../types";
 import { isFacilitatorManaged } from "../voucherStore";
 import { InMemoryDelegatedAuthStore, type DelegatedAuthStore } from "../storage/delegatedAuth";
 import type { ChannelLockStorage, ChannelStorage } from "../storage/channel";
@@ -37,7 +41,7 @@ import {
   snapshotClaimChargeCounts,
   type FacilitatorRetention,
 } from "./channelManager";
-import type { DelegatedSettleContext, FacilitatorChannel } from "./types";
+import type { DelegatedSettleContext, FacilitatorChannel, ResolveCallerIdentity } from "./types";
 import { assertDirectAuthorizerSubmitter, type SubmitContext, type SubmitMode } from "./submit";
 
 export type { DelegatedSettleContext, FacilitatorChannel };
@@ -79,12 +83,12 @@ export interface BatchSettlementEvmSchemeConfig {
     retention?: FacilitatorRetention;
   };
   /**
-   * Resolves a stable caller identity for a delegated settle. Presence of this
-   * hook enables unsigned refunds (`/supported` `refundAuth: true`).
+   * Resolves a stable caller identity for a delegated settle. When set, `/supported` advertises
+   * `extra.delegatedRefund: true`. Self-managed: an unsigned cooperative refund is accepted only
+   * from the caller that created the channel. Facilitator-managed: also authorizes refunds on
+   * channels whose 402 omits `extra.refundAuthorizer`.
    */
-  resolveCallerIdentity?: (
-    ctx: DelegatedSettleContext,
-  ) => Promise<string | undefined> | string | undefined;
+  resolveCallerIdentity?: ResolveCallerIdentity;
   /**
    * Stores `channelId → caller identity` bindings written at self-managed
    * deposit and checked at unsigned refund. Defaults to
@@ -201,18 +205,20 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
    * Returns facilitator-specific extra fields to be merged into payment requirements.
    *
    * Exposes the configured `receiverAuthorizer` address so the server and client can
-   * embed it in `ChannelConfig`. Returns `undefined` when no authorizer signer is
-   * configured, signalling that servers must supply their own authorizer signatures.
+   * embed it in `ChannelConfig`, and `delegatedRefund` (`true` iff `resolveCallerIdentity` is
+   * configured, so unsigned caller-identity refunds are honored). Returns `undefined` when no
+   * authorizer signer is configured, signalling that servers must supply their own authorizer
+   * signatures.
    *
    * @param _ - Network identifier (unused).
-   * @returns Extra fields containing `receiverAuthorizer`, or `undefined`.
+   * @returns Extra fields containing `receiverAuthorizer` and `delegatedRefund`, or `undefined`.
    */
   getExtra(_: string):
     | {
         receiverAuthorizer: `0x${string}`;
+        delegatedRefund: boolean;
         withdrawDelay?: number;
-        voucherStore?: true;
-        refundAuth?: true;
+        voucherManager?: BatchSettlementVoucherManager[];
       }
     | undefined {
     if (!this.authorizerSigner) {
@@ -220,10 +226,13 @@ export class BatchSettlementEvmScheme implements SchemeNetworkFacilitator {
     }
     return {
       receiverAuthorizer: this.authorizerSigner.address,
+      delegatedRefund: this.resolveCallerIdentity !== undefined,
       ...(this.voucherStore
-        ? { withdrawDelay: this.voucherStore.withdrawDelay, voucherStore: true as const }
+        ? {
+            withdrawDelay: this.voucherStore.withdrawDelay,
+            voucherManager: ["server", "facilitator"] satisfies BatchSettlementVoucherManager[],
+          }
         : {}),
-      ...(this.resolveCallerIdentity ? { refundAuth: true as const } : {}),
     };
   }
 

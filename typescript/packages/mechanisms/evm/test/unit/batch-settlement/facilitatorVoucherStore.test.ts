@@ -42,6 +42,8 @@ const RECEIVER = "0x9876543210987654321098765432109876543210" as `0x${string}`;
 const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as `0x${string}`;
 const RECEIVER_AUTHORIZER = "0x1111111111111111111111111111111111111111" as `0x${string}`;
 const FACILITATOR = "0xFAC11174700123456789012345678901234aBCDe" as `0x${string}`;
+/** Raw (unpacked) channel salt: the server brings no refund key, so refunds use caller identity. */
+const RAW_SALT = `0x${"ab".repeat(32)}` as `0x${string}`;
 
 function buildAuthorizer(): AuthorizerSigner {
   const account = privateKeyToAccount(
@@ -67,7 +69,7 @@ function buildConfig(overrides: Partial<ChannelConfig> = {}): ChannelConfig {
     receiverAuthorizer: RECEIVER_AUTHORIZER,
     token: TOKEN,
     withdrawDelay: 900,
-    salt: "0x0000000000000000000000000000000000000000000000000000000000000000",
+    salt: RAW_SALT,
     ...overrides,
   };
 }
@@ -102,7 +104,7 @@ function managedRequirements(authorizer: AuthorizerSigner): PaymentRequirements 
       receiverAuthorizer: authorizer.address,
       assetTransferMethod: "eip3009",
       withdrawDelay: 900,
-      voucherStore: true,
+      voucherManager: "facilitator",
     },
   };
 }
@@ -118,6 +120,8 @@ function buildDeps(
     storage,
     lockStorage: storage,
     withdrawDelay: 900,
+    // Default consent path for 402s that omit extra.refundAuthorizer.
+    resolveCallerIdentity: async () => "svc",
     eip6492AllowedFactories: [],
     pendingStore: new InMemoryPendingSettlementStore(),
     delegatedAuthStore: new InMemoryDelegatedAuthStore(),
@@ -3150,6 +3154,204 @@ describe("facilitator verifyManaged / settleManaged", () => {
       balance: "10000",
       totalClaimed: "3000",
       refundNonce: "2",
+    });
+  });
+
+  describe("refund consent and deposit identity binding", () => {
+    const EOA_REFUND_AUTHORIZER = privateKeyToAccount(
+      "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+    );
+
+    function seedRefundChannel(config: ChannelConfig, channelId: `0x${string}`) {
+      const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+      mockedMulticall
+        .mockResolvedValueOnce([
+          { status: "success", result: [10_000n, 5_000n] },
+          { status: "success", result: [0n, 0n] },
+          { status: "success", result: 0n },
+        ])
+        .mockResolvedValue([
+          { status: "success", result: [5_000n, 5_000n] },
+          { status: "success", result: [0n, 0n] },
+          { status: "success", result: 1n },
+        ]);
+      return storage
+        .updateChannel(channelId, () => ({
+          channelId,
+          channelConfig: config,
+          chargedCumulativeAmount: "5000",
+          signedMaxClaimable: "5000",
+          signature: "0xdead",
+          balance: "10000",
+          totalClaimed: "0",
+          withdrawRequestedAt: 0,
+          refundNonce: 0,
+          lastRequestTimestamp: Date.now(),
+          network: NETWORK,
+          chargeCount: 0,
+        }))
+        .then(() => storage);
+    }
+
+    function refundPayload(
+      config: ChannelConfig,
+      channelId: `0x${string}`,
+      extra: Record<string, unknown> = {},
+    ) {
+      return envelope({
+        type: "refund",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "5000", signature: "0xdead" },
+        ...extra,
+      });
+    }
+
+    it("rejects a managed refund when the 402 omits extra.refundAuthorizer and the facilitator resolves no caller identity", async () => {
+      const config = buildConfig({ receiverAuthorizer: authorizer.address });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = await seedRefundChannel(config, channelId);
+      const deps = buildDeps(storage, authorizer);
+      deps.resolveCallerIdentity = undefined;
+      await bindIdentity(deps, channelId, "service-bound");
+
+      const result = await settleManaged(deps, refundPayload(config, channelId), {
+        ...managedRequirements(authorizer),
+        amount: "0",
+      });
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+    });
+
+    it("rejects managed verify when the 402 omits extra.refundAuthorizer and the facilitator resolves no caller identity", async () => {
+      const config = buildConfig({ receiverAuthorizer: authorizer.address });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+      const deps = buildDeps(storage, authorizer);
+      deps.resolveCallerIdentity = undefined;
+
+      const result = await verifyManaged(
+        deps,
+        envelope(depositFor(config, channelId) as unknown as Record<string, unknown>),
+        { ...managedRequirements(authorizer), amount: "1000" },
+      );
+      expect(result.isValid).toBe(false);
+      expect(result.invalidReason).toBe(Errors.ErrRefundAuthorizerSignature);
+    });
+
+    it("authorizes a managed refund by caller identity when the 402 omits extra.refundAuthorizer", async () => {
+      const config = buildConfig({ receiverAuthorizer: authorizer.address });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = await seedRefundChannel(config, channelId);
+      const deps = buildDeps(storage, authorizer);
+      deps.resolveCallerIdentity = async () => "service-bound";
+      await bindIdentity(deps, channelId, "service-bound");
+
+      const result = await settleManaged(deps, refundPayload(config, channelId), {
+        ...managedRequirements(authorizer),
+        amount: "0",
+      });
+      expect(result.errorReason).not.toBe(Errors.ErrRefundAuthorizerSignature);
+      expect(result.errorReason).not.toBe(Errors.ErrRefundAuthorizerMismatch);
+    });
+
+    it("requires a signature, not caller identity, when the refund authorizer is not the facilitator's", async () => {
+      const salt = packRefundAuthorizerSalt("0x00", EOA_REFUND_AUTHORIZER.address);
+      const config = buildConfig({ receiverAuthorizer: authorizer.address, salt });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = await seedRefundChannel(config, channelId);
+      const deps = buildDeps(storage, authorizer);
+      const resolve = vi.fn(async () => "service-bound");
+      deps.resolveCallerIdentity = resolve;
+      await bindIdentity(deps, channelId, "service-bound");
+
+      const requirements = {
+        ...managedRequirements(authorizer),
+        amount: "0",
+        extra: {
+          ...managedRequirements(authorizer).extra,
+          refundAuthorizer: EOA_REFUND_AUTHORIZER.address,
+        },
+      };
+      const result = await settleManaged(deps, refundPayload(config, channelId), requirements);
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    function depositFor(config: ChannelConfig, channelId: `0x${string}`) {
+      const now = Math.floor(Date.now() / 1000);
+      return {
+        type: "deposit",
+        channelConfig: config,
+        voucher: { channelId, maxClaimableAmount: "1000", signature: "0xcafe" },
+        deposit: {
+          amount: "1000",
+          authorization: {
+            erc3009Authorization: {
+              validAfter: String(now - 600),
+              validBefore: String(now + 3600),
+              salt: "0x01",
+              signature: "0xfeedface",
+            },
+          },
+        },
+      } satisfies BatchSettlementDepositPayload;
+    }
+
+    it("skips identity binding at deposit when the 402 carries a server-owned refundAuthorizer", async () => {
+      const salt = packRefundAuthorizerSalt("0x00", EOA_REFUND_AUTHORIZER.address);
+      const config = buildConfig({ receiverAuthorizer: authorizer.address, salt });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+      const deps = buildDeps(storage, authorizer);
+      const resolve = vi.fn(async () => {
+        throw new Error("must not be called");
+      });
+      deps.resolveCallerIdentity = resolve;
+      const settleSpy = vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValue({
+        success: false,
+        errorReason: "stop",
+        transaction: "",
+        network: NETWORK,
+      });
+
+      await settleManaged(
+        deps,
+        envelope(depositFor(config, channelId) as unknown as Record<string, unknown>),
+        {
+          ...managedRequirements(authorizer),
+          amount: "1000",
+          extra: {
+            ...managedRequirements(authorizer).extra,
+            refundAuthorizer: EOA_REFUND_AUTHORIZER.address,
+          },
+        },
+      );
+      expect(resolve).not.toHaveBeenCalled();
+      expect(settleSpy.mock.calls[0]?.at(-1)).toBe("");
+      settleSpy.mockRestore();
+    });
+
+    it("binds the resolved identity at deposit when the 402 omits refundAuthorizer", async () => {
+      const config = buildConfig({ receiverAuthorizer: authorizer.address });
+      const channelId = computeChannelId(config, NETWORK);
+      const storage = new InMemoryChannelStorage<FacilitatorChannel>();
+      const deps = buildDeps(storage, authorizer);
+      deps.resolveCallerIdentity = async () => "service-bound";
+      const settleSpy = vi.spyOn(facilitatorDeposit, "settleDeposit").mockResolvedValue({
+        success: false,
+        errorReason: "stop",
+        transaction: "",
+        network: NETWORK,
+      });
+
+      await settleManaged(
+        deps,
+        envelope(depositFor(config, channelId) as unknown as Record<string, unknown>),
+        { ...managedRequirements(authorizer), amount: "1000" },
+      );
+      expect(settleSpy.mock.calls[0]?.at(-1)).toBe("service-bound");
+      settleSpy.mockRestore();
     });
   });
 });

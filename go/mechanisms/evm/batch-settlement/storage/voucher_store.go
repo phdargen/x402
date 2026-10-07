@@ -64,13 +64,54 @@ type CommitVoucherChargeResult[T ChannelRecord[T]] struct {
 	Current  T
 }
 
-// IsFacilitatorManaged reports whether extra.voucherStore is the boolean true.
+// IsFacilitatorManaged reports whether extra.voucherManager is "facilitator".
+// An omitted voucherManager means "server".
 func IsFacilitatorManaged(extra map[string]interface{}) bool {
 	if extra == nil {
 		return false
 	}
-	v, ok := extra["voucherStore"].(bool)
-	return ok && v
+	v, ok := extra["voucherManager"].(string)
+	return ok && v == batchsettlement.VoucherManagerFacilitator
+}
+
+// AdvertisedVoucherManagers reads the voucher-management modes a facilitator advertises
+// in its /supported kind extra. extra.voucherManager is an array there; omitting it means
+// ["server"]. A malformed (non-array) value advertises nothing. Unknown values are dropped.
+func AdvertisedVoucherManagers(extra map[string]interface{}) []string {
+	advertised, present := extra["voucherManager"]
+	if !present {
+		return []string{batchsettlement.VoucherManagerServer}
+	}
+	var items []interface{}
+	switch v := advertised.(type) {
+	case []string:
+		for _, s := range v {
+			items = append(items, s)
+		}
+	case []interface{}:
+		items = v
+	default:
+		return []string{}
+	}
+	managers := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if ok && (s == batchsettlement.VoucherManagerServer || s == batchsettlement.VoucherManagerFacilitator) {
+			managers = append(managers, s)
+		}
+	}
+	return managers
+}
+
+// AdvertisesVoucherManager reports whether the facilitator's /supported kind extra
+// advertises the given voucher-management mode.
+func AdvertisesVoucherManager(extra map[string]interface{}, manager string) bool {
+	for _, m := range AdvertisedVoucherManagers(extra) {
+		if m == manager {
+			return true
+		}
+	}
+	return false
 }
 
 // VoucherStoreModeOf resolves VoucherStoreMode from payment requirements.

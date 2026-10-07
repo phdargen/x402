@@ -1036,15 +1036,24 @@ func main() {
 			log.Fatalf("Failed to create batch-settlement authorizer: %v", err)
 		}
 		log.Printf("EVM Receiver Authorizer (batch-settlement): %s", batchedAuthorizer.Address())
+		// ResolveCallerIdentity makes /supported advertise delegatedRefund: true for the
+		// caller-authenticated refund path. The harness has no real caller authentication, so
+		// every settle caller resolves to one identity.
+		batchRefundIdentity := batchedevm.BatchSettlementEvmSchemeConfig{
+			ResolveCallerIdentity: func(_ batchedevm.DelegatedSettleContext) (string, error) {
+				return "x402-e2e", nil
+			},
+			DelegatedAuthStore: channelstorage.NewInMemoryDelegatedAuthStore(),
+		}
 		if voucherStoreEnabled {
 			store := channelstorage.NewInMemoryChannelStorage[*batchedevm.FacilitatorChannel]()
-			batchScheme, err := batchedevm.NewBatchSettlementEvmSchemeWithConfig(evmSigner, batchedAuthorizer, &batchedevm.BatchSettlementEvmSchemeConfig{
-				VoucherStore: &batchedevm.VoucherStoreConfig{
-					Storage:             store,
-					WithdrawDelay:       900,
-					SettleTargetStorage: channelstorage.NewInMemorySettleTargetStorage(),
-				},
-			})
+			batchConfig := batchRefundIdentity
+			batchConfig.VoucherStore = &batchedevm.VoucherStoreConfig{
+				Storage:             store,
+				WithdrawDelay:       900,
+				SettleTargetStorage: channelstorage.NewInMemorySettleTargetStorage(),
+			}
+			batchScheme, err := batchedevm.NewBatchSettlementEvmSchemeWithConfig(evmSigner, batchedAuthorizer, &batchConfig)
 			if err != nil {
 				log.Fatalf("Failed to create batch-settlement scheme with voucher store: %v", err)
 			}
@@ -1078,9 +1087,13 @@ func main() {
 			})
 			log.Printf("Facilitator voucher store: enabled (in-memory, withdrawDelay 900s)")
 		} else {
+			batchScheme, err := batchedevm.NewBatchSettlementEvmSchemeWithConfig(evmSigner, batchedAuthorizer, &batchRefundIdentity)
+			if err != nil {
+				log.Fatalf("Failed to create batch-settlement scheme: %v", err)
+			}
 			facilitator.Register(
 				[]x402.Network{x402.Network(evmNetwork)},
-				batchedevm.NewBatchSettlementEvmScheme(evmSigner, batchedAuthorizer),
+				batchScheme,
 			)
 		}
 

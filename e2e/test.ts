@@ -989,18 +989,17 @@ async function runTest() {
   }
 
   // Facilitator-managed batch preflight: every managed scenario settles through a
-  // facilitator voucher store, so the server needs a refund-authorizer key to sign
-  // managed refund consent (`extra.refundAuthorizer` → client salt packing).
+  // facilitator voucher store. Refund consent is either the server-owned refund key
+  // (SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY: `extra.refundAuthorizer` →
+  // client salt packing) or, when unset, the facilitator's `delegatedRefund: true`
+  // (402 omits `extra.refundAuthorizer`, raw salt).
   const hasManagedBatchScenarios = filteredScenarios.some(scenario =>
     endpointUsesFacilitatorManagedBatch(scenario.endpoint),
   );
   if (hasManagedBatchScenarios) {
     log('🗄️ Facilitator-managed batch scenarios detected — facilitator voucher store + dual servers enabled');
     if (!process.env.SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY?.trim()) {
-      errorLog(
-        '❌ Facilitator-managed batch scenarios require SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY',
-      );
-      process.exit(1);
+      log('ℹ️ No refund authorizer key set — managed refunds use the facilitator delegatedRefund path');
     }
   }
 
@@ -1315,7 +1314,7 @@ async function runTest() {
   // cannot mix self-managed and facilitator-managed batch routes. Spawn two
   // servers per (server, facilitator) pair when both sides are in scope; a single
   // facilitator with a voucher store serves both (discriminant is
-  // `extra.voucherStore` on each 402).
+  // `extra.voucherManager` on each 402).
   interface ServerFacilitatorCombo {
     serverName: string;
     facilitatorName: string | undefined;
@@ -1767,8 +1766,9 @@ async function runTest() {
     // Optional SERVER_EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY (server role only) opts
     // into self-managed batch-settlement claim/refund signing; omit to delegate
     // to the facilitator's /supported receiverAuthorizer. Managed-batch servers
-    // must not set it (GenericServerProxy strips it from the child env); they use
-    // SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY instead.
+    // must not set it (GenericServerProxy strips it from the child env); they may set
+    // SERVER_EVM_BATCH_SETTLEMENT_REFUND_AUTHORIZER_PRIVATE_KEY instead, or rely on the
+    // facilitator's delegatedRefund.
     const serverConfig: ServerConfig = {
       port,
       networks,

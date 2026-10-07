@@ -601,7 +601,7 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         await pipeline.server.initialize();
 
         const accepts = await managedAccepts(pipeline.server, pipeline.receiverAddress);
-        expect(accepts[0].extra?.voucherStore).toBe(true);
+        expect(accepts[0].extra?.voucherManager).toBe("facilitator");
         expect(typeof accepts[0].extra?.withdrawDelay).toBe("number");
         expect(typeof accepts[0].extra?.refundAuthorizer).toBe("string");
 
@@ -841,7 +841,7 @@ describe("Batch-Settlement EVM Integration Tests", () => {
         const paymentRequired = httpClient.getPaymentRequiredResponse(
           name => response402.headers[name],
         );
-        expect(paymentRequired.accepts[0].extra?.voucherStore).toBe(true);
+        expect(paymentRequired.accepts[0].extra?.voucherManager).toBe("facilitator");
 
         const paymentPayload = await httpClient.createPaymentPayload(paymentRequired);
         const requestHeaders = await httpClient.encodePaymentSignatureHeader(paymentPayload);

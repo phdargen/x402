@@ -24,3 +24,8 @@ export type DelegatedSettleContext = {
   requirements: PaymentRequirements;
   facilitatorContext?: FacilitatorContext;
 };
+
+/** Resolves the authenticated `/settle` caller. See `resolveCallerIdentity`. */
+export type ResolveCallerIdentity = (
+  ctx: DelegatedSettleContext,
+) => Promise<string | undefined> | string | undefined;

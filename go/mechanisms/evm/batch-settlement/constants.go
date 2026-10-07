@@ -28,6 +28,15 @@ const (
 	// DefaultServerMinDepositMultiplier is the default server SDK multiplier for
 	// extra.minDeposit when no floor is configured.
 	DefaultServerMinDepositMultiplier = 10
+
+	// VoucherManagerServer is the extra.voucherManager value for a resource server that
+	// owns the voucher store. On a 402 an omitted voucherManager means this.
+	VoucherManagerServer = "server"
+
+	// VoucherManagerFacilitator is the extra.voucherManager value for a facilitator
+	// that owns the voucher store. Clients read it only to gate packing the refund
+	// authorizer into the channel salt.
+	VoucherManagerFacilitator = "facilitator"
 )
 
 // ChannelConfigTypeString is the EIP-712 typed-data primary type string used

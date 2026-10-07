@@ -141,7 +141,7 @@ function cancelContext(
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     },
     declaredExtensions: {},
     phase: "cancel" as const,
@@ -173,7 +173,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true },
+        extra: { voucherManager: "facilitator" },
       },
     } as never);
     expect(result).toMatchObject({
@@ -204,7 +204,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true },
+        extra: { voucherManager: "facilitator" },
       },
     } as never);
     expect(result).toMatchObject({
@@ -235,7 +235,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true, minDeposit: "10000" },
+        extra: { voucherManager: "facilitator", minDeposit: "10000" },
       },
     } as never);
     expect(result).toMatchObject({
@@ -266,7 +266,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true, minDeposit: "0" },
+        extra: { voucherManager: "facilitator", minDeposit: "0" },
       },
     } as never);
     expect(result).toMatchObject({
@@ -295,7 +295,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true },
+        extra: { voucherManager: "facilitator" },
       },
     } as never);
     expect(result).toBeUndefined();
@@ -330,7 +330,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     const paymentPayload = voucherPayload(channelId);
     server.mergeRequestContext(paymentPayload, {
@@ -597,7 +597,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true },
+        extra: { voucherManager: "facilitator" },
       };
       expect(handleManagedSettleOnCancel(cancelContext(voucherPayload(channelId), reason))).toEqual(
         expected,
@@ -835,7 +835,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     const paymentPayload = voucherPayload(channelId);
     server.mergeRequestContext(paymentPayload, {
@@ -884,7 +884,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     const paymentPayload = voucherPayload(channelId);
     server.mergeRequestContext(paymentPayload, {
@@ -1174,7 +1174,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
 
     await handleManagedEnrichPaymentRequiredResponse(server, {
@@ -1200,7 +1200,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     await handleManagedEnrichPaymentRequiredResponse(server, {
       requirements: [requirements],
@@ -1227,7 +1227,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     const paymentPayload = voucherPayload(channelId);
     server.mergeRequestContext(paymentPayload, {
@@ -1268,7 +1268,7 @@ describe("facilitator-managed server hooks", () => {
       asset: TOKEN,
       payTo: RECEIVER,
       maxTimeoutSeconds: 3600,
-      extra: { voucherStore: true },
+      extra: { voucherManager: "facilitator" },
     };
     const paymentPayload = voucherPayload(channelId);
     server.mergeRequestContext(paymentPayload, {
@@ -1319,7 +1319,7 @@ describe("facilitator-managed server hooks", () => {
         asset: TOKEN,
         payTo: RECEIVER,
         maxTimeoutSeconds: 3600,
-        extra: { voucherStore: true, minDeposit: "0" },
+        extra: { voucherManager: "facilitator", minDeposit: "0" },
       },
     } as never);
     expect(result).toBeUndefined();

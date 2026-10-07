@@ -29,6 +29,8 @@ const (
 	managedToken       = "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
 	managedFacilitator = "0xFAC11174700123456789012345678901234aBCDe"
 	managedAuthKeyHex  = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+	// serverRefundKeyHex is a server-owned refund authorizer EOA, distinct from the facilitator's.
+	serverRefundKeyHex = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 	dummySig           = "0xfeedface"
 	successTxHash      = "0xabababababababababababababababababababababababababababababababab"
 )
@@ -66,6 +68,18 @@ func managedConfig(authorizer string, saltSuffix string) batchsettlement.Channel
 	}
 }
 
+// managedConfigWithRefundAuthorizer is managedConfig with refundAuthorizer packed into the salt.
+func managedConfigWithRefundAuthorizer(t *testing.T, authorizer, refundAuthorizer string) batchsettlement.ChannelConfig {
+	t.Helper()
+	cfg := managedConfig(authorizer, "00")
+	salt, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("ab", 12), refundAuthorizer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Salt = salt
+	return cfg
+}
+
 func mustChannelId(t *testing.T, cfg batchsettlement.ChannelConfig) string {
 	t.Helper()
 	id, err := batchsettlement.ComputeChannelId(cfg, managedNetwork)
@@ -89,9 +103,23 @@ func managedRequirements(authorizer string) types.PaymentRequirements {
 			"receiverAuthorizer":  authorizer,
 			"assetTransferMethod": "eip3009",
 			"withdrawDelay":       900,
-			"voucherStore":        true,
+			"voucherManager":      "facilitator",
 		},
 	}
+}
+
+// managedIdentityConfig is a channel config with a raw (unpacked) salt: the server brings no
+// refund key, so refunds are authorized by caller identity.
+func managedIdentityConfig(authorizer string) batchsettlement.ChannelConfig {
+	cfg := managedConfig(authorizer, "00")
+	cfg.Salt = "0x" + strings.Repeat("ab", 32)
+	return cfg
+}
+
+// managedIdentityRequirements is managedRequirements without extra.refundAuthorizer, so a
+// refund is authorized by caller identity.
+func managedIdentityRequirements(authorizer string) types.PaymentRequirements {
+	return managedRequirements(authorizer)
 }
 
 func managedEnvelope(payload map[string]interface{}) types.PaymentPayload {
@@ -432,6 +460,8 @@ func managedDeps(t *testing.T, store storage.ChannelStorage[*FacilitatorChannel]
 		WithdrawDelay:      900,
 		PendingStore:       x402.NewInMemoryPendingSettlementStore(),
 		DelegatedAuthStore: storage.NewInMemoryDelegatedAuthStore(),
+		// Default consent path for 402s that omit extra.refundAuthorizer.
+		ResolveCallerIdentity: identityResolver("svc"),
 	}
 }
 
@@ -464,7 +494,23 @@ func extraString(m map[string]interface{}, key string) string {
 
 func signRefundConsent(t *testing.T, channelId, amount, nonce, network string) (authorizer string, signature string) {
 	t.Helper()
-	key, err := crypto.HexToECDSA(managedAuthKeyHex)
+	return signRefundWithKey(t, managedAuthKeyHex, channelId, amount, nonce, network)
+}
+
+// addressOfKey returns the checksummed address of a hex private key.
+func addressOfKey(t *testing.T, keyHex string) string {
+	t.Helper()
+	key, err := crypto.HexToECDSA(keyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return crypto.PubkeyToAddress(key.PublicKey).Hex()
+}
+
+// signRefundWithKey signs the EIP-712 Refund digest with the given key.
+func signRefundWithKey(t *testing.T, keyHex, channelId, amount, nonce, network string) (authorizer string, signature string) {
+	t.Helper()
+	key, err := crypto.HexToECDSA(keyHex)
 	if err != nil {
 		t.Fatal(err)
 	}

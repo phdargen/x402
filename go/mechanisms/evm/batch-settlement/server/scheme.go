@@ -76,7 +76,12 @@ type BatchSettlementEvmSchemeServerConfig struct {
 	// VoucherStoreMode selects self-managed (default) or facilitator-managed
 	// voucher custody. Facilitator-managed treats Storage as a post-settle replica.
 	VoucherStoreMode VoucherStoreMode
-	// RefundAuthorizerSigner signs managed refund consent. Ignored in self-managed mode.
+	// RefundAuthorizerSigner is the server-owned refund authorizer for facilitator-managed mode.
+	// Its address is announced as extra.refundAuthorizer, is packed into the channel salt, and
+	// its signature on a refund is the consent the facilitator checks. When omitted, the 402
+	// omits extra.refundAuthorizer and refunds are authorized by the authenticated /settle
+	// caller, which requires the facilitator to advertise extra.delegatedRefund: true.
+	// Ignored in self-managed mode.
 	RefundAuthorizerSigner AuthorizerSigner
 }
 
@@ -580,16 +585,8 @@ func voucherStoreModeMismatchAbort() *x402.BeforeHookResult {
 	return &x402.BeforeHookResult{
 		Abort:   true,
 		Reason:  batchsettlement.ErrVoucherStoreModeMismatch,
-		Message: "Payment requirements voucherStore does not match the server voucherStoreMode",
+		Message: "Payment requirements voucherManager does not match the server voucherStoreMode",
 	}
-}
-
-func extraBool(extra map[string]interface{}, key string) bool {
-	if extra == nil {
-		return false
-	}
-	v, ok := extra[key].(bool)
-	return ok && v
 }
 
 func extraInt(extra map[string]interface{}, key string) (int, bool) {
@@ -621,9 +618,9 @@ func (s *BatchSettlementEvmScheme) ValidateFacilitatorSupport(
 
 	switch s.configuredMode {
 	case VoucherStoreModeFacilitator:
-		if !extraBool(supportedKind.Extra, "voucherStore") {
+		if !storage.AdvertisesVoucherManager(supportedKind.Extra, batchsettlement.VoucherManagerFacilitator) {
 			return fmt.Errorf(
-				`voucherStoreMode "facilitator" is configured but the facilitator does not advertise voucherStore on %s`,
+				`voucherStoreMode "facilitator" is configured but the facilitator does not advertise voucherManager "facilitator" on %s`,
 				network,
 			)
 		}
@@ -634,19 +631,31 @@ func (s *BatchSettlementEvmScheme) ValidateFacilitatorSupport(
 		if !ok || delay < batchsettlement.MinWithdrawDelay || delay > batchsettlement.MaxWithdrawDelay {
 			return fmt.Errorf("voucherStore mode requires an in-range advertised withdrawDelay on %s", network)
 		}
-		if s.refundAuthorizerSigner == nil && !extraBool(supportedKind.Extra, "refundAuth") {
-			return fmt.Errorf(
-				"no refundAuthorizerSigner is configured and the facilitator does not advertise refundAuth on %s. "+
-					"Configure a refundAuthorizerSigner or use a facilitator that advertises refundAuth",
-				network,
-			)
+		if s.refundAuthorizerSigner == nil && !advertisesDelegatedRefund(supportedKind.Extra) {
+			return fmt.Errorf(errRefundConsentUnavailable, network)
 		}
 		return nil
 	case VoucherStoreModeSelf:
+		if !storage.AdvertisesVoucherManager(supportedKind.Extra, batchsettlement.VoucherManagerServer) {
+			return fmt.Errorf(
+				`the facilitator advertises voucherManager without "server" on %s, so a self-managed server cannot use it`,
+				network,
+			)
+		}
 		if s.receiverAuthorizerSigner != nil {
 			return nil
 		}
 		if hasValidAuthorizer {
+			// Delegated receiverAuthorizer: refunds rely on the facilitator honoring unsigned
+			// caller-identity refunds. An absent field is a legacy facilitator and passes.
+			if explicitlyNoDelegatedRefund(supportedKind.Extra) {
+				return fmt.Errorf(
+					"the facilitator explicitly advertises delegatedRefund: false on %s, so refunds "+
+						"on channels with a delegated receiverAuthorizer cannot work. Configure a "+
+						"ReceiverAuthorizerSigner or use a facilitator that supports delegated refunds",
+					network,
+				)
+			}
 			return nil
 		}
 		return fmt.Errorf(
@@ -767,8 +776,8 @@ func (s *BatchSettlementEvmScheme) EnhancePaymentRequirements(
 
 	switch s.configuredMode {
 	case VoucherStoreModeFacilitator:
-		if !extraBool(supportedKind.Extra, "voucherStore") {
-			return requirements, fmt.Errorf("facilitator-managed mode requires advertised extra.voucherStore")
+		if !storage.AdvertisesVoucherManager(supportedKind.Extra, batchsettlement.VoucherManagerFacilitator) {
+			return requirements, fmt.Errorf(`facilitator-managed mode requires advertised extra.voucherManager to include "facilitator"`)
 		}
 		advertisedAuthorizer, _ := supportedKind.Extra["receiverAuthorizer"].(string)
 		if advertisedAuthorizer == "" || strings.EqualFold(common.HexToAddress(advertisedAuthorizer).Hex(), zeroAddress) {
@@ -780,12 +789,20 @@ func (s *BatchSettlementEvmScheme) EnhancePaymentRequirements(
 		}
 		requirements.Extra["receiverAuthorizer"] = common.HexToAddress(advertisedAuthorizer).Hex()
 		requirements.Extra["withdrawDelay"] = advertisedDelay
-		requirements.Extra["voucherStore"] = true
+		requirements.Extra["voucherManager"] = batchsettlement.VoucherManagerFacilitator
+		// extra.refundAuthorizer is set only for a server-owned refund key. Otherwise the 402
+		// omits it and refunds rely on the facilitator's delegatedRefund.
+		delete(requirements.Extra, "refundAuthorizer")
 		if s.refundAuthorizerSigner != nil {
 			requirements.Extra["refundAuthorizer"] = common.HexToAddress(s.refundAuthorizerSigner.Address()).Hex()
+		} else if !advertisesDelegatedRefund(supportedKind.Extra) {
+			return requirements, fmt.Errorf(errRefundConsentUnavailable, requirements.Network)
 		}
 		requirements.Extra["minDeposit"] = minDeposit
 	case VoucherStoreModeSelf:
+		if !storage.AdvertisesVoucherManager(supportedKind.Extra, batchsettlement.VoucherManagerServer) {
+			return requirements, fmt.Errorf(`self-managed mode requires advertised extra.voucherManager to include "server"`)
+		}
 		// Receiver authorizer resolution order:
 		//   1. Pre-existing requirements.Extra["receiverAuthorizer"] (caller override).
 		//   2. Locally-configured ReceiverAuthorizerSigner address.
@@ -819,6 +836,30 @@ func (s *BatchSettlementEvmScheme) EnhancePaymentRequirements(
 	}
 
 	return requirements, nil
+}
+
+// errRefundConsentUnavailable is the format for a facilitator-managed server that has neither
+// a refund key nor a facilitator that honors caller-identity refunds. It takes the network.
+const errRefundConsentUnavailable = "facilitator-managed mode needs a refund consent path on %s: " +
+	"configure a RefundAuthorizerSigner or use a facilitator that advertises delegatedRefund: true"
+
+// delegatedRefundField reads the facilitator's extra.delegatedRefund. ok is false when the
+// field is absent or not a boolean (a legacy facilitator).
+func delegatedRefundField(supportedExtra map[string]interface{}) (value, ok bool) {
+	value, ok = supportedExtra["delegatedRefund"].(bool)
+	return value, ok
+}
+
+// advertisesDelegatedRefund reports whether the facilitator explicitly advertises delegatedRefund: true.
+func advertisesDelegatedRefund(supportedExtra map[string]interface{}) bool {
+	value, ok := delegatedRefundField(supportedExtra)
+	return ok && value
+}
+
+// explicitlyNoDelegatedRefund reports whether the facilitator explicitly advertises delegatedRefund: false.
+func explicitlyNoDelegatedRefund(supportedExtra map[string]interface{}) bool {
+	value, ok := delegatedRefundField(supportedExtra)
+	return ok && !value
 }
 
 // SignRefund signs a cooperative refund EIP-712 message.

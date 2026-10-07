@@ -119,3 +119,9 @@ func TestErrorCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestVoucherManagerValues(t *testing.T) {
+	if VoucherManagerServer != "server" || VoucherManagerFacilitator != "facilitator" {
+		t.Fatalf("voucher manager values = %q, %q", VoucherManagerServer, VoucherManagerFacilitator)
+	}
+}

@@ -33,7 +33,7 @@ func managedReqs() stubRequirements {
 		extra: map[string]interface{}{
 			"receiverAuthorizer": cfg.ReceiverAuthorizer,
 			"withdrawDelay":      cfg.WithdrawDelay,
-			"voucherStore":       true,
+			"voucherManager":     "facilitator",
 		},
 	}
 }
@@ -194,7 +194,7 @@ func TestManagedEnrichPaymentRequired_MissingVoucherProof(t *testing.T) {
 		},
 	})
 	reqs := []types.PaymentRequirements{{
-		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherStore": true},
+		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherManager": "facilitator"},
 	}}
 	handleManagedEnrichPaymentRequiredResponse(s, x402.PaymentRequiredContext{
 		Requirements:   reqs,
@@ -583,7 +583,7 @@ func TestManagedEnrichPaymentRequired_CopiesCorrectiveExtras(t *testing.T) {
 		},
 	})
 	reqs := []types.PaymentRequirements{{
-		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherStore": true},
+		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherManager": "facilitator"},
 	}}
 	handleManagedEnrichPaymentRequiredResponse(s, x402.PaymentRequiredContext{
 		Requirements:   reqs,
@@ -609,7 +609,7 @@ func TestManagedEnrichPaymentRequired_CopiesCorrectiveExtrasBelowClaimed(t *test
 		},
 	})
 	reqs := []types.PaymentRequirements{{
-		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherStore": true},
+		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherManager": "facilitator"},
 	}}
 	handleManagedEnrichPaymentRequiredResponse(s, x402.PaymentRequiredContext{
 		Requirements:   reqs,
@@ -963,7 +963,7 @@ func TestManagedSchemeHooks_EnrichPaymentRequiredFromStash(t *testing.T) {
 	s := buildManagedServer(t, nil, false)
 	id := testChannelId(t)
 	pp := managedPayload(voucherPayload(id, "7000", "0xdeadbeef"))
-	pp.Accepted.Extra = map[string]interface{}{"voucherStore": true}
+	pp.Accepted.Extra = map[string]interface{}{"voucherManager": "facilitator"}
 	s.MergeRequestContext(pp, BatchSettlementRequestContext{
 		CorrectiveChannelState: &batchsettlement.BatchSettlementChannelStateExtra{
 			ChannelId: id, Balance: "10000", ChargedCumulativeAmount: "5000",
@@ -973,7 +973,7 @@ func TestManagedSchemeHooks_EnrichPaymentRequiredFromStash(t *testing.T) {
 		},
 	})
 	reqs := []types.PaymentRequirements{{
-		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherStore": true},
+		Scheme: batchsettlement.SchemeBatched, Network: "eip155:8453", Extra: map[string]interface{}{"voucherManager": "facilitator"},
 	}}
 	s.EnrichPaymentRequiredResponse(x402.PaymentRequiredContext{
 		Requirements:   reqs,

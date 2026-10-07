@@ -1,6 +1,10 @@
 import type { PaymentRequirements } from "@x402/core/types";
 import { keccak256, toHex } from "viem";
-import type { BatchSettlementPaymentResponseExtra, BatchSettlementVoucherFields } from "./types";
+import type {
+  BatchSettlementPaymentResponseExtra,
+  BatchSettlementVoucherFields,
+  BatchSettlementVoucherManager,
+} from "./types";
 import type { Channel, ChannelStorage } from "./storage/channel";
 
 const MIN_PENDING_TTL_MS = 5_000;
@@ -37,20 +41,45 @@ export type CommitVoucherChargeResult<T extends Channel = Channel> =
  * Returns whether this request uses a facilitator voucher store.
  *
  * @param requirements - Payment requirements (or any object with `extra`).
- * @param requirements.extra - Optional extra record that may contain `voucherStore`.
- * @returns True when `extra.voucherStore === true`.
+ * @param requirements.extra - Optional extra record that may contain `voucherManager`.
+ * @returns True when `extra.voucherManager === "facilitator"` (omitted means `"server"`).
  */
 export function isFacilitatorManaged(requirements: {
   extra?: Record<string, unknown> | undefined;
 }): boolean {
-  return requirements.extra?.voucherStore === true;
+  return requirements.extra?.voucherManager === "facilitator";
+}
+
+/**
+ * Reads the voucher-management modes a facilitator advertises on `/supported`.
+ *
+ * `extra.voucherManager` is an array on `/supported`; omitting it means `["server"]`.
+ * A malformed (non-array) value advertises nothing.
+ *
+ * @param extra - The `/supported` kind `extra` record.
+ * @returns The advertised modes, restricted to known values.
+ */
+export function advertisedVoucherManagers(
+  extra: Record<string, unknown> | undefined,
+): BatchSettlementVoucherManager[] {
+  const advertised = extra?.voucherManager;
+  if (advertised === undefined) {
+    return ["server"];
+  }
+  if (!Array.isArray(advertised)) {
+    return [];
+  }
+  return advertised.filter(
+    (value): value is BatchSettlementVoucherManager =>
+      value === "server" || value === "facilitator",
+  );
 }
 
 /**
  * Resolves {@link VoucherStoreMode} from payment requirements.
  *
  * @param requirements - Current request payment requirements.
- * @returns `"facilitator"` when `extra.voucherStore === true`, otherwise `"self"`.
+ * @returns `"facilitator"` when `extra.voucherManager === "facilitator"`, otherwise `"self"`.
  */
 export function voucherStoreMode(requirements: PaymentRequirements): VoucherStoreMode {
   return isFacilitatorManaged(requirements) ? "facilitator" : "self";

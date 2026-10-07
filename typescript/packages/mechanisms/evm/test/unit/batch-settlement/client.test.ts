@@ -345,7 +345,7 @@ describe("buildChannelConfig", () => {
     expect(cfg.salt).toBe(salt);
   });
 
-  it("packs extra.refundAuthorizer into salt", () => {
+  it("packs extra.refundAuthorizer into salt for facilitator-managed 402s", () => {
     const signer = buildSigner(PAYER_PRIVATE_KEY);
     const salt =
       "0xabc1230000000000000000000000000000000000000000000000000000000099" as `0x${string}`;
@@ -356,12 +356,39 @@ describe("buildChannelConfig", () => {
         extra: {
           receiverAuthorizer: RECEIVER_AUTHORIZER,
           withdrawDelay: 900,
+          voucherManager: "facilitator",
           refundAuthorizer,
         },
       }),
     );
     expect(cfg.salt).toBe(packRefundAuthorizerSalt(salt, refundAuthorizer));
     expect(unpackRefundAuthorizer(cfg.salt)).toBe(getAddress(refundAuthorizer));
+  });
+
+  it("never packs the salt for self-managed 402s, keeping the channelId stable", () => {
+    const signer = buildSigner(PAYER_PRIVATE_KEY);
+    const salt =
+      "0xabc1230000000000000000000000000000000000000000000000000000000099" as `0x${string}`;
+    const refundAuthorizer = "0xaaaabbbbccccddddeeeeffffaaaabbbbccccdddd" as `0x${string}`;
+    const base = buildChannelConfig(
+      makeDeps({ signer, salt }),
+      makeRequirements({ extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, withdrawDelay: 900 } }),
+    );
+    const extras: Record<string, unknown>[] = [
+      { refundAuthorizer },
+      { voucherManager: "server", refundAuthorizer },
+      { voucherManager: "facilitator" },
+    ];
+    for (const extra of extras) {
+      const cfg = buildChannelConfig(
+        makeDeps({ signer, salt }),
+        makeRequirements({
+          extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, withdrawDelay: 900, ...extra },
+        }),
+      );
+      expect(cfg.salt).toBe(salt);
+      expect(computeChannelId(cfg)).toBe(computeChannelId(base));
+    }
   });
 
   it("packs increment-style salts to distinct channel ids when refundAuthorizer is set", () => {
@@ -371,6 +398,7 @@ describe("buildChannelConfig", () => {
       extra: {
         receiverAuthorizer: RECEIVER_AUTHORIZER,
         withdrawDelay: 900,
+        voucherManager: "facilitator",
         refundAuthorizer,
       },
     });

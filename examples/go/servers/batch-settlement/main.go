@@ -363,7 +363,7 @@ func main() {
 			if strings.TrimSpace(os.Getenv("EVM_REFUND_AUTHORIZER_PRIVATE_KEY")) != "" {
 				fmt.Println("  EVM refund authorizer: local signer configured")
 			} else {
-				fmt.Println("  EVM refund authorizer: facilitator refundAuth (requires resolveCallerIdentity)")
+				fmt.Println("  EVM refund authorizer: facilitator delegatedRefund (402 omits refundAuthorizer)")
 			}
 		case strings.TrimSpace(os.Getenv("EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY")) != "":
 			fmt.Println("  EVM receiver authorizer: local signer configured")

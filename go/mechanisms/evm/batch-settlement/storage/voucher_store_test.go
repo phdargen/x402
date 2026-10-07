@@ -134,17 +134,67 @@ func TestAdmissionOwner_NormalizesLowercase(t *testing.T) {
 	}
 }
 
-func TestIsFacilitatorManaged_OnlyExplicitTrue(t *testing.T) {
-	if !IsFacilitatorManaged(map[string]interface{}{"voucherStore": true}) {
-		t.Fatal("true should be managed")
+func TestAdvertisedVoucherManagers(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]interface{}
+		want  []string
+	}{
+		{"omitted means server", map[string]interface{}{}, []string{"server"}},
+		{"nil extra means server", nil, []string{"server"}},
+		{"string slice", map[string]interface{}{"voucherManager": []string{"server", "facilitator"}}, []string{"server", "facilitator"}},
+		{"interface slice", map[string]interface{}{"voucherManager": []interface{}{"facilitator"}}, []string{"facilitator"}},
+		{"unknown values dropped", map[string]interface{}{"voucherManager": []interface{}{"server", "bogus", 1}}, []string{"server"}},
+		{"non-array advertises nothing", map[string]interface{}{"voucherManager": "facilitator"}, []string{}},
 	}
-	if IsFacilitatorManaged(map[string]interface{}{"voucherStore": false}) {
-		t.Fatal("false should not be managed")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := AdvertisedVoucherManagers(tc.extra)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestAdvertisesVoucherManager(t *testing.T) {
+	if !AdvertisesVoucherManager(map[string]interface{}{}, "server") {
+		t.Fatal("omitted advertises server")
+	}
+	if AdvertisesVoucherManager(map[string]interface{}{}, "facilitator") {
+		t.Fatal("omitted does not advertise facilitator")
+	}
+	both := map[string]interface{}{"voucherManager": []interface{}{"server", "facilitator"}}
+	if !AdvertisesVoucherManager(both, "facilitator") || !AdvertisesVoucherManager(both, "server") {
+		t.Fatal("both advertised")
+	}
+	if AdvertisesVoucherManager(map[string]interface{}{"voucherManager": []interface{}{"facilitator"}}, "server") {
+		t.Fatal("facilitator-only does not advertise server")
+	}
+}
+
+func TestIsFacilitatorManaged_OnlyExplicitFacilitator(t *testing.T) {
+	if !IsFacilitatorManaged(map[string]interface{}{"voucherManager": "facilitator"}) {
+		t.Fatal("facilitator should be managed")
+	}
+	if IsFacilitatorManaged(map[string]interface{}{"voucherManager": "server"}) {
+		t.Fatal("server should not be managed")
+	}
+	if IsFacilitatorManaged(map[string]interface{}{"voucherManager": true}) {
+		t.Fatal("non-string should not be managed")
+	}
+	if IsFacilitatorManaged(map[string]interface{}{"voucherStore": true}) {
+		t.Fatal("legacy voucherStore flag must be ignored")
 	}
 	if IsFacilitatorManaged(map[string]interface{}{}) {
 		t.Fatal("empty extra should not be managed")
 	}
-	if VoucherStoreModeOf(types.PaymentRequirements{Extra: map[string]interface{}{"voucherStore": true}}) != VoucherStoreModeFacilitator {
+	if VoucherStoreModeOf(types.PaymentRequirements{Extra: map[string]interface{}{"voucherManager": "facilitator"}}) != VoucherStoreModeFacilitator {
 		t.Fatal("expected facilitator mode")
 	}
 	if VoucherStoreModeOf(types.PaymentRequirements{Extra: map[string]interface{}{}}) != VoucherStoreModeSelf {

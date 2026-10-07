@@ -267,7 +267,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — construction & metadata", (
 
   it("getExtra returns the receiver-authorizer address from authorizerSigner", () => {
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer);
-    expect(scheme.getExtra(NETWORK)).toEqual({ receiverAuthorizer: authorizer.address });
+    expect(scheme.getExtra(NETWORK)).toEqual({
+      receiverAuthorizer: authorizer.address,
+      delegatedRefund: false,
+    });
   });
 
   it("getExtra returns undefined when no authorizerSigner is configured", () => {
@@ -299,15 +302,35 @@ describe("BatchSettlementEvmScheme (Facilitator) — construction & metadata", (
     ).toThrow("authorizerSubmitter.getAddresses() must be exactly [authorizerSigner.address]");
   });
 
-  it("advertises voucherStore and withdrawDelay when a managed store is configured", () => {
+  it("advertises voucherManager and withdrawDelay when a managed store is configured", () => {
     const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
       voucherStore: { storage: new InMemoryChannelStorage() },
     });
     expect(scheme.getExtra(NETWORK)).toEqual({
       receiverAuthorizer: authorizer.address,
+      delegatedRefund: false,
       withdrawDelay: 900,
-      voucherStore: true,
+      voucherManager: ["server", "facilitator"],
     });
+  });
+
+  it("advertises delegatedRefund: true when resolveCallerIdentity is configured", () => {
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      resolveCallerIdentity: async () => "svc",
+    });
+    const extra = scheme.getExtra(NETWORK);
+    expect(extra).toEqual({ receiverAuthorizer: authorizer.address, delegatedRefund: true });
+    expect(extra).not.toHaveProperty("refundAuthorizer");
+  });
+
+  it("advertises delegatedRefund: false when resolveCallerIdentity is not configured", () => {
+    const scheme = new BatchSettlementEvmScheme(buildSigner(), authorizer, {
+      voucherStore: { storage: new InMemoryChannelStorage() },
+    });
+    const extra = scheme.getExtra(NETWORK);
+    expect(extra?.delegatedRefund).toBe(false);
+    expect(extra).not.toHaveProperty("refundAuthorizer");
+    expect(extra).not.toHaveProperty("refundAuth");
   });
 });
 
@@ -3043,7 +3066,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
       makeRequirements({
         extra: {
           ...makeRequirements().extra,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
     );
@@ -3083,7 +3106,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
           },
         ],
       }),
-      makeRequirements({ extra: { ...makeRequirements().extra, voucherStore: true } }),
+      makeRequirements({ extra: { ...makeRequirements().extra, voucherManager: "facilitator" } }),
     );
 
     expect(result.success).toBe(true);
@@ -3120,7 +3143,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
       makeRequirements({
         extra: {
           ...makeRequirements().extra,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
       {
@@ -3175,7 +3198,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
       makeRequirements({
         extra: {
           ...makeRequirements().extra,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
     );
@@ -3190,6 +3213,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed HTTP afterClaim", (
 
 describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after prior claim", () => {
   const authorizer = buildAuthorizerSigner();
+  const refundAuthorizer = buildAuthorizerSigner();
+  const ownedRefundSalt = packRefundAuthorizerSalt("0x00", refundAuthorizer.address);
 
   function managedRequirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
     return makeRequirements({
@@ -3200,7 +3225,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
         receiverAuthorizer: authorizer.address,
         assetTransferMethod: "eip3009",
         withdrawDelay: 900,
-        voucherStore: true,
+        voucherManager: "facilitator",
+        refundAuthorizer: refundAuthorizer.address,
       },
       ...overrides,
     });
@@ -3211,7 +3237,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
     channelId: `0x${string}`;
     config: ChannelConfig;
   } {
-    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const config = buildChannelConfig({
+      receiverAuthorizer: authorizer.address,
+      salt: ownedRefundSalt,
+    });
     const channelId = computeChannelId(config);
     const now = Math.floor(Date.now() / 1000);
     const dp: BatchSettlementDepositPayload = {
@@ -3392,6 +3421,8 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed watermark after pri
 describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge cases", () => {
   const authorizer = buildAuthorizerSigner();
   const refundAuthorizer = buildAuthorizerSigner();
+  /** Server-owned refund key packed into the default channel salt and announced on the 402. */
+  const ownedRefundSalt = packRefundAuthorizerSalt("0x00", refundAuthorizer.address);
 
   function managedRequirements(overrides: Partial<PaymentRequirements> = {}): PaymentRequirements {
     return makeRequirements({
@@ -3402,10 +3433,21 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
         receiverAuthorizer: authorizer.address,
         assetTransferMethod: "eip3009",
         withdrawDelay: 900,
-        voucherStore: true,
+        voucherManager: "facilitator",
+        refundAuthorizer: refundAuthorizer.address,
       },
       ...overrides,
     });
+  }
+
+  /** A 402 without extra.refundAuthorizer: refunds are authorized by caller identity. */
+  function managedIdentityRequirements(
+    overrides: Partial<PaymentRequirements> = {},
+  ): PaymentRequirements {
+    const base = managedRequirements(overrides);
+    const { refundAuthorizer: _omitted, ...extra } = base.extra ?? {};
+    void _omitted;
+    return { ...base, extra };
   }
 
   function mockOpenChannelMulticall(balance = 10_000n, totalClaimed = 0n): void {
@@ -3422,6 +3464,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
   ): { payload: PaymentPayload; channelId: `0x${string}`; config: ChannelConfig } {
     const config = buildChannelConfig({
       receiverAuthorizer: authorizer.address,
+      salt: ownedRefundSalt,
       ...configOverrides,
     });
     const channelId = computeChannelId(config);
@@ -3489,7 +3532,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: RECEIVER_AUTHORIZER,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
     );
@@ -3531,7 +3574,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: RECEIVER_AUTHORIZER,
         },
       }),
@@ -3546,7 +3589,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       voucherStore: { storage },
     });
     mockOpenChannelMulticall();
-    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const config = buildChannelConfig({
+      receiverAuthorizer: authorizer.address,
+      salt: ownedRefundSalt,
+    });
     await seedStoredChannel(storage, config);
     const channelId = computeChannelId(config);
     const payload = envelopeRefund({
@@ -3636,7 +3682,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3674,7 +3720,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3712,7 +3758,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3777,7 +3823,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3801,7 +3847,11 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       ]);
     const storage = new InMemoryChannelStorage<FacilitatorChannel>();
     const delegatedAuthStore = new InMemoryDelegatedAuthStore();
-    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    // Raw salt and a 402 without extra.refundAuthorizer: the server relies on delegatedRefund.
+    const config = buildChannelConfig({
+      receiverAuthorizer: authorizer.address,
+      salt: "0x0000000000000000000000000000000000000000000000000000000000000001",
+    });
     const channelId = computeChannelId(config);
     await seedStoredChannel(storage, config, {
       chargedCumulativeAmount: "5000",
@@ -3828,7 +3878,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       amount: "5000",
     });
 
-    const result = await scheme.settle(payload, managedRequirements({ amount: "0" }));
+    const result = await scheme.settle(payload, managedIdentityRequirements({ amount: "0" }));
     expect(result.success).toBe(true);
     expect(await storage.get(channelId)).toBeDefined();
   });
@@ -3887,7 +3937,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3958,7 +4008,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
           refundAuthorizer: refundAuthorizer.address,
         },
       }),
@@ -3976,7 +4026,10 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       voucherStore: { storage },
     });
     mockOpenChannelMulticall();
-    const config = buildChannelConfig({ receiverAuthorizer: authorizer.address });
+    const config = buildChannelConfig({
+      receiverAuthorizer: authorizer.address,
+      salt: ownedRefundSalt,
+    });
     await seedStoredChannel(storage, config, {
       signedMaxClaimable: "5000",
       signature: "0xstoredsig",
@@ -4027,7 +4080,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed voucher store edge 
       amount: "1000",
     });
 
-    const result = await scheme.settle(payload, managedRequirements({ amount: "0" }));
+    const result = await scheme.settle(payload, managedIdentityRequirements({ amount: "0" }));
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(Errors.ErrRefundAuthorizerSignature);
   });
@@ -4079,7 +4132,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed store availability"
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
     );
@@ -4107,7 +4160,7 @@ describe("BatchSettlementEvmScheme (Facilitator) — managed store availability"
           receiverAuthorizer: authorizer.address,
           assetTransferMethod: "eip3009",
           withdrawDelay: 900,
-          voucherStore: true,
+          voucherManager: "facilitator",
         },
       }),
     );

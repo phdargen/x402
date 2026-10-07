@@ -87,7 +87,7 @@ await scheme.refund(url, { amount: "1000000" });
 
 The server claims any outstanding vouchers and then executes `refundWithSignature` to return `balance - totalClaimed` or `amount` to the payer.
 
-When the 402 includes `extra.refundAuthorizer` (facilitator-managed refunds), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
+When the 402 has `extra.voucherManager: "facilitator"` and includes a non-zero `extra.refundAuthorizer` (a server-owned refund key), the client packs that address into `ChannelConfig.salt` as `bytes12(entropy) || bytes20(refundAuthorizer)`. Pass `salt` as a channel index (`0`, `1`, `2`); incrementing opens a distinct channel. A full `bytes32` hex salt is still accepted. `createPaymentPayload`, `recoverChannel`, and `refund()` all go through `buildChannelConfig`, so the same `channelId` is recomputed. Changing `refundAuthorizer` opens a new channel — finish or refund existing channels first.
 
 ### Persistence
 
@@ -247,7 +247,7 @@ The optional `authorizerSigner` is a **dedicated, unrotated** `receiverAuthorize
 
 A payload that already carries `claimAuthorizerSignature` / `refundAuthorizerSignature` always relays (server-owned key or pre-signed). `settle` is permissionless and always uses the regular signer pool.
 
-A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). Wire that via `resolveCallerIdentity` (and a shared `delegatedAuthStore` on multi-replica hosts); `/supported` then includes `extra.refundAuth: true`. If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
+A facilitator that advertises a `receiverAuthorizer` (so servers can delegate to it) must authenticate that each cooperative refund request originates from the service that created the channel (e.g. SIWX, JWT, or an API credential bound at channel-creation time). Wire that via `resolveCallerIdentity` (and a shared `delegatedAuthStore` on multi-replica hosts). If the facilitator has no such authentication mechanism, omit `authorizerSigner` so no `receiverAuthorizer` is advertised in `/supported`; servers then supply their own authorizer signatures for claims and refunds.
 
 ```typescript
 const scheme = new BatchSettlementEvmScheme(evmSigner, authorizerSigner, {
@@ -260,11 +260,11 @@ The default identity store is in-memory. A multi-replica facilitator must inject
 
 ## Facilitator-managed custody
 
-Spec v1.1 lets the facilitator own the durable voucher store, per-channel lock, watermark, and claim/settle schedule. The resource server becomes a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. A single facilitator instance can serve both modes; the per-request discriminant is `requirements.extra.voucherStore === true`.
+Spec v1.1 lets the facilitator own the durable voucher store, per-channel lock, watermark, and claim/settle schedule. The resource server becomes a pass-through: it calls `/verify` then `/settle` for every payload (including `voucher`) and uses the settle result as the payment response. A single facilitator instance can serve both modes; the per-request discriminant is `requirements.extra.voucherManager === "facilitator"` (omitted or `"server"` means self-managed).
 
 ### Facilitator
 
-Configure a `voucherStore` (requires `authorizerSigner`). `/supported` then advertises `receiverAuthorizer`, `withdrawDelay`, and `voucherStore: true`. Add `resolveCallerIdentity` to also advertise `refundAuth: true` and accept unsigned cooperative refunds.
+Configure a `voucherStore` (requires `authorizerSigner`). `/supported` then advertises `receiverAuthorizer`, `withdrawDelay`, and `voucherManager: ["server", "facilitator"]`. `/supported` also always carries `delegatedRefund`: `true` when `resolveCallerIdentity` is configured (the facilitator authenticates `/settle` callers and honors unsigned refunds from the service that created the channel), `false` otherwise.
 
 ```typescript
 import { x402Facilitator } from "@x402/core/facilitator";
@@ -302,6 +302,12 @@ manager.start({
 
 When `resolveCallerIdentity` is configured, the facilitator ties each channel to the authenticated caller before the deposit is broadcast. Deposits fail if identity cannot be established or does not match an existing channel on that id. Cooperative refunds are accepted only from that same caller.
 
+**Managed refund consent.** The 402's `extra.refundAuthorizer` selects the path:
+
+- Omitted: the `/settle` caller must resolve (via `resolveCallerIdentity`) to the identity bound at deposit. No signature is expected; any attached one is ignored. Identity is bound at managed deposit whenever the 402 omits `extra.refundAuthorizer`. A 402 that omits it is rejected on `/verify` and `/settle` (`ErrRefundAuthorizerSignature`) when `resolveCallerIdentity` is not configured.
+- Present: let `R` be the refund authorizer packed in `channelConfig.salt`. `R` must equal `extra.refundAuthorizer` (else `ErrRefundAuthorizerMismatch`), and a `refundAuthorizerSignature` recovering to `R` over the EIP-712 `Refund` digest is required.
+- After consent the facilitator strips the client's signatures and signs the onchain digests itself as `receiverAuthorizer`.
+
 Facilitator-initiated refunds claim the store voucher first, then return `balance - chargedCumulativeAmount`. Client `type: "refund"` through `/verify` + `/settle` stays on the voucher-store path. The managed server replica must not refund.
 
 Construction throws when `voucherStore` is set without `authorizerSigner`, or when `storage` does not implement `ChannelLockStorage` and no `lockStorage` is passed.
@@ -314,17 +320,17 @@ Read it back with `decodeClaimAttestation(txInput, receipt.logs, network, parseB
 
 ### Server
 
-Opt in with `voucherStoreMode: "facilitator"`. Mode is constructor-wide — it is not inferred from `/supported`. `initialize()` fails if the facilitator does not advertise `voucherStore`, a non-zero `receiverAuthorizer`, and an in-range `withdrawDelay`. The 402 copies those three fields from `/supported` (the server must not override `withdrawDelay`) and sets `voucherStore: true`.
+Opt in with `voucherStoreMode: "facilitator"`. Mode is constructor-wide — it is not inferred from `/supported`. `initialize()` fails if the facilitator does not advertise `voucherManager` including `"facilitator"`, a non-zero `receiverAuthorizer`, and an in-range `withdrawDelay`. The 402 copies `receiverAuthorizer` and `withdrawDelay` from `/supported` (the server must not override `withdrawDelay`) and sets `voucherManager: "facilitator"`. A self-managed server tolerates a facilitator `voucherManager` array only if it includes `"server"`. A self-managed server that delegates `receiverAuthorizer` to the facilitator (no `receiverAuthorizerSigner`) relies on the facilitator's caller authentication: `initialize()` fails when `/supported` explicitly advertises `delegatedRefund: false`, and passes when it is `true` or absent (a legacy facilitator).
 
-Refund consent is one of:
+The refund consent path in facilitator-managed mode is one of:
 
-- `refundAuthorizerSigner` — the 402 includes `extra.refundAuthorizer`; the client packs it into salt; `/settle` attaches `refundAuthorizerSignature`. Changing this key opens new channels.
-- facilitator `refundAuth` — omit `refundAuthorizerSigner`; `initialize()` fails unless `/supported` advertises `refundAuth: true`
+- `refundAuthorizerSigner` — the server's own refund key. The 402 carries `extra.refundAuthorizer`, the client packs it into the salt, and `/settle` attaches `refundAuthorizerSignature`. Changing this key opens new channels. No `delegatedRefund` signal is needed.
+- the facilitator's `delegatedRefund: true` — omit `refundAuthorizerSigner`; the 402 omits `extra.refundAuthorizer` and the salt stays raw. `initialize()` fails unless `/supported` advertises `delegatedRefund: true` (an absent field counts as unsupported).
 
 ```typescript
 const scheme = new BatchSettlementEvmScheme(receiverAddress, {
   voucherStoreMode: "facilitator",
-  refundAuthorizerSigner, // omit when relying on facilitator refundAuth
+  refundAuthorizerSigner, // omit when relying on the facilitator's delegatedRefund
   storage: new FileChannelStorage({ directory: "./channels" }), // replica only
 });
 ```

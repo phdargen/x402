@@ -25,7 +25,12 @@ type BatchSettlementEvmSchemeConfig struct {
 	PendingSettlementStore  x402.PendingSettlementStore
 	// VoucherStore enables facilitator-managed custody. Nil keeps self-managed mode.
 	// Every field on VoucherStoreConfig is read only when this is set.
-	VoucherStore          *VoucherStoreConfig
+	VoucherStore *VoucherStoreConfig
+	// ResolveCallerIdentity resolves a stable caller identity for a delegated settle.
+	// When set, /supported advertises extra.delegatedRefund: true. Self-managed: an unsigned
+	// cooperative refund is accepted only from the caller that created the channel.
+	// Facilitator-managed: also authorizes refunds on channels whose 402 omits
+	// extra.refundAuthorizer.
 	ResolveCallerIdentity ResolveCallerIdentity
 	DelegatedAuthStore    storage.DelegatedAuthStore
 	SubmitMode            SubmitMode
@@ -170,13 +175,13 @@ func (f *BatchSettlementEvmScheme) GetExtra(_ x402.Network) map[string]interface
 	}
 	extra := map[string]interface{}{
 		"receiverAuthorizer": f.authorizerSigner.Address(),
+		// true iff /settle callers are authenticated, so unsigned (caller-identity)
+		// refunds are honored for the service that created the channel.
+		"delegatedRefund": f.resolveCallerIdentity != nil,
 	}
 	if f.voucherStore != nil {
 		extra["withdrawDelay"] = f.voucherStore.withdrawDelay
-		extra["voucherStore"] = true
-	}
-	if f.resolveCallerIdentity != nil {
-		extra["refundAuth"] = true
+		extra["voucherManager"] = []string{batchsettlement.VoucherManagerServer, batchsettlement.VoucherManagerFacilitator}
 	}
 	return extra
 }
@@ -471,13 +476,6 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 	if amountErr := refundAmountError(raw.Amount); amountErr != "" {
 		return amountErr
 	}
-	// extra.refundAuthorizer is off-chain consent. A signature from that key
-	// is not the on-chain Refund signature unless it is also receiverAuthorizer.
-	if consented, consentErr := acceptRefundAuthorizerConsent(raw, requirements); consentErr != "" {
-		return consentErr
-	} else if consented {
-		return ""
-	}
 	if raw.RefundAuthorizerSignature != "" || f.resolveCallerIdentity == nil {
 		return ""
 	}
@@ -506,45 +504,4 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 		return ErrRefundAuthorizerSignature
 	}
 	return ""
-}
-
-// acceptRefundAuthorizerConsent checks a self-managed refund that carries
-// extra.refundAuthorizer. The address unpacked from channel salt must match,
-// and refundAuthorizerSignature must recover to that address. When the consent
-// key is not the channel's receiverAuthorizer, the signature is removed so the
-// facilitator signs the on-chain Refund as receiverAuthorizer.
-//
-// Returns consented=false when extra.refundAuthorizer is absent.
-func acceptRefundAuthorizerConsent(
-	raw *batchsettlement.BatchSettlementEnrichedRefundPayload,
-	requirements types.PaymentRequirements,
-) (bool, string) {
-	if requirements.Extra == nil {
-		return false, ""
-	}
-	refundAuthorizer, _ := requirements.Extra["refundAuthorizer"].(string)
-	if refundAuthorizer == "" {
-		return false, ""
-	}
-	unpacked := batchsettlement.UnpackRefundAuthorizer(raw.ChannelConfig.Salt)
-	if !sameAddress(unpacked, refundAuthorizer) {
-		return false, ErrRefundAuthorizerMismatch
-	}
-	if raw.RefundAuthorizerSignature == "" {
-		return false, ErrRefundAuthorizerSignature
-	}
-	if !verifyRefundAuthorizerSignature(
-		raw.RefundAuthorizerSignature,
-		refundAuthorizer,
-		raw.Voucher.ChannelId,
-		raw.Amount,
-		raw.RefundNonce,
-		requirements.Network,
-	) {
-		return false, ErrRefundAuthorizerSignature
-	}
-	if !sameAddress(refundAuthorizer, raw.ChannelConfig.ReceiverAuthorizer) {
-		raw.RefundAuthorizerSignature = ""
-	}
-	return true, ""
 }

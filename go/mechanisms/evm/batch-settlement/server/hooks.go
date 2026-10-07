@@ -572,7 +572,7 @@ func voucherStoreModeMismatchAbortAfter() *x402.AfterVerifyResult {
 	return &x402.AfterVerifyResult{
 		Abort:   true,
 		Reason:  batchsettlement.ErrVoucherStoreModeMismatch,
-		Message: "Payment requirements voucherStore does not match the server voucherStoreMode",
+		Message: "Payment requirements voucherManager does not match the server voucherStoreMode",
 	}
 }
 

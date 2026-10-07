@@ -187,16 +187,20 @@ type BatchSettlementPaymentResponseExtra struct {
 // `channelState` (channel snapshot) and `voucherState` (latest signed voucher
 // proof).
 type BatchSettlementPaymentRequirementsExtra struct {
-	ReceiverAuthorizer  string                            `json:"receiverAuthorizer"`
-	WithdrawDelay       int                               `json:"withdrawDelay"`
-	Name                string                            `json:"name"`
-	Version             string                            `json:"version"`
-	AssetTransferMethod string                            `json:"assetTransferMethod,omitempty"` // "eip3009" or "permit2"
-	VoucherStore        *bool                             `json:"voucherStore,omitempty"`
-	RefundAuthorizer    string                            `json:"refundAuthorizer,omitempty"`
-	RefundAuth          *bool                             `json:"refundAuth,omitempty"`
-	ChannelState        *BatchSettlementChannelStateExtra `json:"channelState,omitempty"`
-	VoucherState        *BatchSettlementVoucherStateExtra `json:"voucherState,omitempty"`
+	ReceiverAuthorizer  string `json:"receiverAuthorizer"`
+	WithdrawDelay       int    `json:"withdrawDelay"`
+	Name                string `json:"name"`
+	Version             string `json:"version"`
+	AssetTransferMethod string `json:"assetTransferMethod,omitempty"` // "eip3009" or "permit2"
+	// VoucherManager is "server" or "facilitator". Omitted means "server".
+	VoucherManager string `json:"voucherManager,omitempty"`
+	// RefundAuthorizer is the server-owned EOA that consents to cooperative refunds. Set only
+	// when VoucherManager is "facilitator" and the server signs refunds with its own key; it
+	// is then packed into the channel salt. Omitted when the server relies on the
+	// facilitator's delegatedRefund (caller-identity refunds, raw salt).
+	RefundAuthorizer string                            `json:"refundAuthorizer,omitempty"`
+	ChannelState     *BatchSettlementChannelStateExtra `json:"channelState,omitempty"`
+	VoucherState     *BatchSettlementVoucherStateExtra `json:"voucherState,omitempty"`
 }
 
 // FileChannelStorageOptions configures file-backed channel storage.

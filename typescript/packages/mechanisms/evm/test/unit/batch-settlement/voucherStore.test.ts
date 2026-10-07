@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   admissionOwner,
+  advertisedVoucherManagers,
   channelStateExtra,
   commitVoucherCharge,
   defaultOnchainStateTtlMs,
@@ -100,14 +101,30 @@ describe("voucherStore helpers — admissionOwner", () => {
 });
 
 describe("voucherStore helpers — mode detection", () => {
-  it("treats only explicit true as facilitator-managed", () => {
-    expect(isFacilitatorManaged({ extra: { voucherStore: true } })).toBe(true);
-    expect(isFacilitatorManaged({ extra: { voucherStore: false } })).toBe(false);
+  it('treats only voucherManager "facilitator" as facilitator-managed', () => {
+    expect(isFacilitatorManaged({ extra: { voucherManager: "facilitator" } })).toBe(true);
+    expect(isFacilitatorManaged({ extra: { voucherManager: "server" } })).toBe(false);
+    expect(isFacilitatorManaged({ extra: { voucherManager: ["facilitator"] } })).toBe(false);
+    expect(isFacilitatorManaged({ extra: { voucherStore: true } })).toBe(false);
     expect(isFacilitatorManaged({ extra: {} })).toBe(false);
-    expect(voucherStoreMode({ extra: { voucherStore: true } } as PaymentRequirements)).toBe(
-      "facilitator",
+    expect(isFacilitatorManaged({})).toBe(false);
+    expect(
+      voucherStoreMode({ extra: { voucherManager: "facilitator" } } as PaymentRequirements),
+    ).toBe("facilitator");
+    expect(voucherStoreMode({ extra: { voucherManager: "server" } } as PaymentRequirements)).toBe(
+      "self",
     );
     expect(voucherStoreMode({ extra: {} } as PaymentRequirements)).toBe("self");
+  });
+});
+
+describe("voucherStore helpers — advertisedVoucherManagers", () => {
+  it("defaults to server, filters unknown values, and rejects non-arrays", () => {
+    expect(advertisedVoucherManagers(undefined)).toEqual(["server"]);
+    expect(advertisedVoucherManagers({ voucherManager: ["facilitator", "bogus", 1] })).toEqual([
+      "facilitator",
+    ]);
+    expect(advertisedVoucherManagers({ voucherManager: "facilitator" })).toEqual([]);
   });
 });
 

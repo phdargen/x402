@@ -311,7 +311,7 @@ func TestSettleManaged_InvalidSignatureWithoutLock(t *testing.T) {
 func TestSettleManaged_RefundWatermarkMismatch(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargedCumulativeAmount: "1000"}))
 	deps := managedDeps(t, store, store, auth, nil)
@@ -320,7 +320,7 @@ func TestSettleManaged_RefundWatermarkMismatch(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,14 +494,14 @@ func depositSignerWithBalances(t *testing.T, prior int64, postWrite ...int64) *f
 func TestSettleManagedDeposit_IdentityErrorFailsClosed(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "02")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "", errors.New("idp down") }
 
 	resp, err := SettleManaged(context.Background(), deps,
 		managedDepositEnvelope(cfg, channelId),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,14 +528,14 @@ func (updateFailingStorage) UpdateChannel(context.Context, string, func(*Facilit
 func TestSettleManagedDeposit_VoucherCommitFailureReportsTxAndKeepsBinding(t *testing.T) {
 	mem := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "05")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	deps := managedDeps(t, updateFailingStorage{ChannelStorage: mem}, mem, auth, managedDepositSigner(t))
 	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) { return "svc", nil }
 
 	resp, err := SettleManaged(context.Background(), deps,
 		signedManagedDeposit(t, cfg, channelId),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestSettleManagedDeposit_VoucherCommitFailureReportsTxAndKeepsBinding(t *te
 func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "03")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	signer := managedDepositSigner(t)
 	deps := managedDeps(t, store, store, auth, signer)
@@ -563,7 +563,7 @@ func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) 
 
 	_, err := SettleManaged(context.Background(), deps,
 		signedManagedDeposit(t, cfg, channelId),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	var se *x402.SettleError
 	if !errors.As(err, &se) || se.ErrorReason != ErrDelegatedSettleUnauthenticated {
 		t.Fatalf("binding conflict must fail before broadcast, got %v", err)
@@ -580,7 +580,7 @@ func TestSettleManagedDeposit_BindingConflictFailsBeforeBroadcast(t *testing.T) 
 func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "04")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
 	if _, err := deps.DelegatedAuthStore.Bind(context.Background(), storage.DelegatedAuthBinding{
@@ -592,7 +592,7 @@ func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		signedManagedDeposit(t, cfg, channelId),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,6 +606,33 @@ func TestSettleManagedDeposit_SameIdentityRebindsIdempotently(t *testing.T) {
 	binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork)
 	if binding == nil || binding.CallerIdentity != "svc" {
 		t.Fatalf("delegated binding = %+v, want svc", binding)
+	}
+}
+
+func TestSettleManagedDeposit_ServerRefundKeyDoesNotBindIdentity(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	serverEOA := addressOfKey(t, serverRefundKeyHex)
+	cfg := managedConfigWithRefundAuthorizer(t, auth.addr, serverEOA)
+	channelId := mustChannelId(t, cfg)
+	deps := managedDeps(t, store, store, auth, managedDepositSigner(t))
+	resolved := false
+	deps.ResolveCallerIdentity = func(DelegatedSettleContext) (string, error) {
+		resolved = true
+		return "svc", nil
+	}
+	reqs := managedRequirements(auth.addr)
+	reqs.Extra["refundAuthorizer"] = serverEOA
+
+	resp, err := SettleManaged(context.Background(), deps, signedManagedDeposit(t, cfg, channelId), reqs, nil, nil)
+	if err != nil || !resp.Success {
+		t.Fatalf("got %+v %v", resp, err)
+	}
+	if resolved {
+		t.Fatal("identity must not be resolved when the 402 names a server refund key")
+	}
+	if binding, _ := deps.DelegatedAuthStore.Get(context.Background(), channelId, managedNetwork); binding != nil {
+		t.Fatalf("unexpected binding %+v", binding)
 	}
 }
 
@@ -1202,38 +1229,10 @@ func TestSettleManaged_RefundZeroAmount(t *testing.T) {
 	}
 }
 
-func TestSettleManaged_RefundAuthorizerConsent(t *testing.T) {
-	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
-	auth := managedAuthorizer()
-	refundAuth := auth.addr
-	packed, err := batchsettlement.PackRefundAuthorizerSalt("0x"+strings.Repeat("ab", 12), refundAuth)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := managedConfig(auth.addr, "00")
-	cfg.Salt = packed
-	channelId := mustChannelId(t, cfg)
-	_, sig := signRefundConsent(t, channelId, "1000", "0", managedNetwork)
-	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
-		ChargedCumulativeAmount: "1000",
-		ChargeCount:             0,
-	}))
-	reqs := managedRequirements(auth.addr)
-	reqs.Extra["refundAuthorizer"] = refundAuth
-	reqs.Amount = "0"
-
-	resp, err := SettleManaged(context.Background(), managedDeps(t, store, store, auth, nil),
-		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", sig),
-		reqs, nil, nil)
-	if err != nil || !resp.Success {
-		t.Fatalf("got %+v %v", resp, err)
-	}
-}
-
 func TestSettleManaged_RefundCallerIdentity(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
 		ChargedCumulativeAmount: "1000",
@@ -1244,7 +1243,7 @@ func TestSettleManaged_RefundCallerIdentity(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil || !resp.Success {
 		t.Fatalf("got %+v %v", resp, err)
 	}
@@ -1253,7 +1252,7 @@ func TestSettleManaged_RefundCallerIdentity(t *testing.T) {
 func TestSettleManaged_RefundIdentityMismatch(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, nil))
 	deps := managedDeps(t, store, store, auth, nil)
@@ -1262,7 +1261,7 @@ func TestSettleManaged_RefundIdentityMismatch(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1274,7 +1273,7 @@ func TestSettleManaged_RefundIdentityMismatch(t *testing.T) {
 func TestSettleManaged_RefundIdentityResolutionError(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, nil))
 	deps := managedDeps(t, store, store, auth, nil)
@@ -1282,7 +1281,7 @@ func TestSettleManaged_RefundIdentityResolutionError(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1294,7 +1293,7 @@ func TestSettleManaged_RefundIdentityResolutionError(t *testing.T) {
 func TestSettleManaged_RefundDelegatedAuthLookupFailure(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, nil))
 	deps := managedDeps(t, store, store, auth, nil)
@@ -1303,7 +1302,7 @@ func TestSettleManaged_RefundDelegatedAuthLookupFailure(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,7 +1314,7 @@ func TestSettleManaged_RefundDelegatedAuthLookupFailure(t *testing.T) {
 func TestSettleManaged_RefundMissingDelegatedAuthBinding(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
 		ChargedCumulativeAmount: "5000",
@@ -1326,7 +1325,7 @@ func TestSettleManaged_RefundMissingDelegatedAuthBinding(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "5000", dummySig), "5000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2234,7 +2233,7 @@ func TestManaged_UnclearedVouchersRunTypedDataCheck(t *testing.T) {
 func TestSettleManaged_RefundReadFailureFailsClosed(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
-	cfg := managedConfig(auth.addr, "00")
+	cfg := managedIdentityConfig(auth.addr)
 	channelId := mustChannelId(t, cfg)
 	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{
 		ChargedCumulativeAmount: "1000",
@@ -2248,7 +2247,7 @@ func TestSettleManaged_RefundReadFailureFailsClosed(t *testing.T) {
 
 	resp, err := SettleManaged(context.Background(), deps,
 		refundEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "1000", "", ""),
-		managedRequirements(auth.addr), nil, nil)
+		managedIdentityRequirements(auth.addr), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

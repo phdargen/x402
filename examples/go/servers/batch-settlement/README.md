@@ -27,7 +27,7 @@ Set `VOUCHER_STORE_MODE=facilitator` and run a facilitator with `VOUCHER_STORE=t
 | `SVM_ADDRESS` | one of EVM/SVM | Solana `payTo` |
 | `FACILITATOR_URL` | yes | Batch-settlement facilitator endpoint (e.g. `http://localhost:4022`) |
 | `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | no | Self-managed authorizer key. **Recommended** — channels survive facilitator changes when you control this key. Omit to delegate to the facilitator's advertised authorizer. Incompatible with `VOUCHER_STORE_MODE=facilitator`. |
-| `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` | no | Refund consent key for facilitator-managed mode (402 `extra.refundAuthorizer`) |
+| `EVM_REFUND_AUTHORIZER_PRIVATE_KEY` | no | Refund consent key for facilitator-managed mode (402 `extra.refundAuthorizer`); omit to rely on the facilitator's `delegatedRefund: true` (the 402 then omits `extra.refundAuthorizer`) |
 | `VOUCHER_STORE_MODE` | no | `facilitator` for facilitator-managed custody; default is self-managed |
 | `SVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` | when `SVM_ADDRESS` is set | Base58 receiver authorizer |
 | `SVM_OPERATOR_PRIVATE_KEY` | no | SVM operator for server-signed metering (base58) |

@@ -20,13 +20,47 @@ const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
 const storageDir = process.env.STORAGE_DIR;
-const channelSaltBase = (process.env.CHANNEL_SALT ??
-  "0x0000000000000000000000000000000000000000000000000000000000000000") as `0x${string}`;
+// Channel indices are the low 96 bits of the salt. When a facilitator-managed 402 carries
+// refundAuthorizer the SDK packs `bytes12(entropy) || bytes20(refundAuthorizer)`: a salt with non-zero high 12 bytes keeps
+// only those bytes and drops the low 20, so `base + index` would collapse into ONE channel.
+const UINT96_MAX = (1n << 96n) - 1n;
+// Dedicated env var (not CHANNEL_SALT) so this example never shares a channel with `pnpm start`.
+const concurrentChannelSaltRaw = process.env.CONCURRENT_CHANNEL_SALT?.trim() || "0x1000";
 const numberOfRequests = Number(process.env.NUMBER_OF_REQUESTS ?? "3");
 const numberOfChannels = Number(process.env.NUMBER_OF_CHANNELS ?? "3");
 const refundAfterRequests = process.env.REFUND_AFTER_REQUESTS === "true";
 const refundAmount = process.env.REFUND_AMOUNT;
 const depositMultiplier = Number(process.env.DEPOSIT_MULTIPLIER ?? "5");
+
+/**
+ * Derives one distinct channel salt per slot (`base + index`), guaranteed to open distinct channels.
+ *
+ * @param raw - `CONCURRENT_CHANNEL_SALT` value (decimal or 0x-hex channel index).
+ * @param count - Number of channels to open in parallel.
+ * @returns One salt per channel; all fit in 96 bits so the SDK treats them as channel indices.
+ */
+function deriveChannelSalts(raw: string, count: number): bigint[] {
+  let base: bigint;
+  try {
+    base = BigInt(raw);
+  } catch {
+    throw new Error(`CONCURRENT_CHANNEL_SALT must be a decimal or 0x-hex integer, got "${raw}"`);
+  }
+  if (!Number.isInteger(count) || count <= 0) {
+    throw new Error("NUMBER_OF_CHANNELS must be a positive integer");
+  }
+  if (base < 0n || base + BigInt(count - 1) > UINT96_MAX) {
+    throw new Error(
+      `CONCURRENT_CHANNEL_SALT (${raw}) + ${count - 1} must fit in 96 bits (< 2^96): larger salts ` +
+        "are truncated by refundAuthorizer packing and would collapse into a single channel",
+    );
+  }
+  const salts = Array.from({ length: count }, (_, index) => base + BigInt(index));
+  if (new Set(salts).size !== salts.length) {
+    throw new Error("Derived channel salts are not distinct");
+  }
+  return salts;
+}
 
 type ClientContext = {
   signer: ClientEvmSigner;
@@ -142,6 +176,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let channelSalts: bigint[];
+  try {
+    channelSalts = deriveChannelSalts(concurrentChannelSaltRaw, numberOfChannels);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+
   const account = privateKeyToAccount(evmPrivateKey);
   const publicClient = createPublicClient({
     chain: baseSepolia,
@@ -159,13 +201,13 @@ async function main(): Promise<void> {
   console.log("payer (same EOA, distinct channels via salt):", signer.address);
   console.log("payerAuthorizer:", voucherSigner?.address ?? signer.address);
   console.log(
-    `Channels: ${numberOfChannels} (salts ${channelSaltBase} + 0..${numberOfChannels - 1})`,
+    `Channels: ${numberOfChannels} (salts ${concurrentChannelSaltRaw} + 0..${numberOfChannels - 1})`,
   );
   console.log(`Payments per channel: ${numberOfRequests}\n`);
 
   await Promise.all(
     Array.from({ length: numberOfChannels }, async (_, channelIndex) => {
-      const salt = BigInt(channelSaltBase) + BigInt(channelIndex);
+      const salt = channelSalts[channelIndex];
       const batchedScheme = createBatchedScheme(ctx, salt, channelIndex);
       const label = `Channel ${channelIndex + 1}/${numberOfChannels}`;
 

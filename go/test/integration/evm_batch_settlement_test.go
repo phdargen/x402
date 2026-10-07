@@ -416,7 +416,8 @@ func (p *managedBatchedPipeline) managedRequirements(amount string) types.Paymen
 	if req.Extra == nil {
 		req.Extra = map[string]interface{}{}
 	}
-	req.Extra["voucherStore"] = true
+	req.Extra["voucherManager"] = batchsettlement.VoucherManagerFacilitator
+	req.Extra["refundAuthorizer"] = p.authorizerSigner.Address()
 	return req
 }
 
@@ -425,8 +426,8 @@ func runManagedDepositAndVoucher(ctx context.Context, t *testing.T, pipe *manage
 	accepts := []types.PaymentRequirements{pipe.managedRequirements("1000")}
 	resource := batchedResourceInfo()
 	prr := pipe.x402Server.CreatePaymentRequiredResponse(accepts, resource, "", nil)
-	if extra, _ := prr.Accepts[0].Extra["voucherStore"].(bool); !extra {
-		t.Fatal("expected managed accepts to advertise voucherStore")
+	if manager, _ := prr.Accepts[0].Extra["voucherManager"].(string); manager != batchsettlement.VoucherManagerFacilitator {
+		t.Fatal("expected managed accepts to advertise voucherManager=facilitator")
 	}
 
 	depositPayload, err := pipe.x402Client.CreatePaymentPayload(ctx, accepts[0], resource, prr.Extensions)
@@ -959,7 +960,8 @@ func startManagedBatchedHTTPServer(t *testing.T, pipe *managedBatchedPipeline, r
 						"version":             "2",
 						"assetTransferMethod": "eip3009",
 						"receiverAuthorizer":  pipe.authorizerSigner.Address(),
-						"voucherStore":        true,
+						"voucherManager":      "facilitator",
+						"refundAuthorizer":    pipe.authorizerSigner.Address(),
 					},
 				},
 			},

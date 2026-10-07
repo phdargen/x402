@@ -311,9 +311,11 @@ func (c *BatchSettlementEvmScheme) normalizedConfigSalt() (string, error) {
 // or zero — without it the derived channelId would not match the onchain
 // channel and the deposit transaction would revert.
 //
-// When requirements advertise extra.refundAuthorizer, the config salt becomes
+// When requirements carry extra.voucherManager "facilitator" and a non-zero
+// extra.refundAuthorizer, the config salt becomes
 // bytes12(entropy) || bytes20(refundAuthorizer) so channelId matches server
-// and facilitator expectations.
+// and facilitator expectations. Self-managed channels never pack, so their
+// channelId stays derived from the raw salt.
 func (c *BatchSettlementEvmScheme) BuildChannelConfig(requirements types.PaymentRequirements) (batchsettlement.ChannelConfig, error) {
 	var receiverAuthorizer string
 	if requirements.Extra != nil {
@@ -330,7 +332,7 @@ func (c *BatchSettlementEvmScheme) BuildChannelConfig(requirements types.Payment
 		return batchsettlement.ChannelConfig{}, fmt.Errorf("invalid salt: %w", err)
 	}
 	channelSalt := baseSalt
-	if requirements.Extra != nil {
+	if requirements.Extra != nil && requirements.Extra["voucherManager"] == batchsettlement.VoucherManagerFacilitator {
 		if refundAuthorizer, ok := requirements.Extra["refundAuthorizer"].(string); ok &&
 			refundAuthorizer != "" &&
 			!strings.EqualFold(refundAuthorizer, "0x0000000000000000000000000000000000000000") {

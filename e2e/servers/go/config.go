@@ -153,7 +153,7 @@ func SchemeBindings(cfg Config) []SchemeBinding {
 							batchedCfg.RefundAuthorizerSigner = refundAuth
 							fmt.Printf("Batch-settlement refund authorizer (facilitator-managed): %s\n", refundAuth.Address())
 						} else {
-							fmt.Println("Batch-settlement refund authorizer: facilitator refundAuth (no local signer)")
+							fmt.Println("Batch-settlement refund authorizer: facilitator delegatedRefund (no local signer, 402 omits refundAuthorizer)")
 						}
 						fmt.Println("Batch-settlement voucher custody: facilitator-managed (pass-through verify/settle)")
 					} else {

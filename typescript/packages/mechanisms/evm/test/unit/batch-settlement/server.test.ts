@@ -4093,6 +4093,84 @@ describe("BatchSettlementChannelManager — getWithdrawalPendingSessions", () =>
   });
 });
 
+describe("BatchSettlementEvmScheme — self-managed voucherManager tolerance", () => {
+  const supported = (voucherManager?: string[]) => ({
+    x402Version: 2 as const,
+    scheme: "batch-settlement",
+    network: NETWORK,
+    extra: {
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
+      ...(voucherManager ? { voucherManager } : {}),
+    },
+  });
+
+  it("accepts an advertised voucherManager that includes server and adds no wire fields", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    const enhanced = await server.enhancePaymentRequirements(
+      makeRequirements(),
+      supported(["server", "facilitator"]),
+      [],
+    );
+    expect(enhanced.extra).not.toHaveProperty("voucherManager");
+    expect(enhanced.extra).not.toHaveProperty("refundAuthorizer");
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supported(["server", "facilitator"]) as never, []),
+    ).toBeUndefined();
+  });
+
+  it("rejects an advertised voucherManager without server", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    await expect(
+      server.enhancePaymentRequirements(makeRequirements(), supported(["facilitator"]), []),
+    ).rejects.toThrow(/voucherManager/);
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supported(["facilitator"]) as never, []),
+    ).toMatch(/voucherManager/);
+  });
+});
+
+describe("BatchSettlementEvmScheme — self-managed delegation and delegatedRefund", () => {
+  const supported = (delegatedRefund?: boolean) => ({
+    x402Version: 2 as const,
+    scheme: "batch-settlement",
+    network: NETWORK,
+    extra: {
+      receiverAuthorizer: RECEIVER_AUTHORIZER,
+      ...(delegatedRefund === undefined ? {} : { delegatedRefund }),
+    },
+  });
+
+  it("starts when the facilitator advertises delegatedRefund: true", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supported(true) as never, []),
+    ).toBeUndefined();
+  });
+
+  it("starts when delegatedRefund is absent (legacy facilitator)", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supported(undefined) as never, []),
+    ).toBeUndefined();
+  });
+
+  it("fails startup when delegatedRefund is explicitly false", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER);
+    expect(server.validateFacilitatorSupport(NETWORK, supported(false) as never, [])).toMatch(
+      /delegatedRefund: false/,
+    );
+  });
+
+  it("skips the check when the server owns the receiverAuthorizerSigner", () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      receiverAuthorizerSigner: buildAuthorizerSigner(),
+    });
+    expect(
+      server.validateFacilitatorSupport(NETWORK, supported(false) as never, []),
+    ).toBeUndefined();
+  });
+});
+
 describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () => {
   const refundSigner = buildAuthorizerSigner();
 
@@ -4104,13 +4182,13 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
       extra: {
         receiverAuthorizer: RECEIVER_AUTHORIZER,
         withdrawDelay: 900,
-        voucherStore: true,
+        voucherManager: ["server", "facilitator"],
         ...extra,
       },
     };
   }
 
-  it("throws at enhance time when the facilitator did not advertise voucherStore", async () => {
+  it("throws at enhance time when the facilitator did not advertise voucherManager facilitator", async () => {
     const server = new BatchSettlementEvmScheme(RECEIVER, {
       voucherStoreMode: "facilitator",
       refundAuthorizerSigner: refundSigner,
@@ -4118,13 +4196,13 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     await expect(
       server.enhancePaymentRequirements(
         makeRequirements(),
-        managedSupportedKind({ voucherStore: false }),
+        managedSupportedKind({ voucherManager: ["server"] }),
         [],
       ),
-    ).rejects.toThrow(/advertised extra\.voucherStore/);
+    ).rejects.toThrow(/advertised extra\.voucherManager/);
   });
 
-  it("copies facilitator withdrawDelay and sets voucherStore on the 402", async () => {
+  it("copies facilitator withdrawDelay and sets voucherManager on the 402", async () => {
     const server = new BatchSettlementEvmScheme(RECEIVER, {
       voucherStoreMode: "facilitator",
       refundAuthorizerSigner: refundSigner,
@@ -4134,15 +4212,69 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
       managedSupportedKind({ withdrawDelay: 1200 }),
       [],
     );
-    expect(enhanced.extra?.voucherStore).toBe(true);
+    expect(enhanced.extra?.voucherManager).toBe("facilitator");
     expect(enhanced.extra?.withdrawDelay).toBe(1200);
     expect(enhanced.extra?.refundAuthorizer).toBe(refundSigner.address);
   });
 
+  it("omits extra.refundAuthorizer when relying on the facilitator's delegatedRefund", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStoreMode: "facilitator" });
+    const enhanced = await server.enhancePaymentRequirements(
+      makeRequirements(),
+      managedSupportedKind({ delegatedRefund: true }),
+      [],
+    );
+    expect(enhanced.extra?.voucherManager).toBe("facilitator");
+    expect(enhanced.extra).not.toHaveProperty("refundAuthorizer");
+    expect(server.getRefundAuthorizerSigner()).toBeUndefined();
+    expect(
+      server.validateFacilitatorSupport(
+        NETWORK,
+        managedSupportedKind({ delegatedRefund: true }) as never,
+        [],
+      ),
+    ).toBeUndefined();
+  });
+
+  it("announces its own refund key without needing delegatedRefund", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, {
+      voucherStoreMode: "facilitator",
+      refundAuthorizerSigner: refundSigner,
+    });
+    for (const extra of [{ delegatedRefund: false }, {}]) {
+      const enhanced = await server.enhancePaymentRequirements(
+        makeRequirements(),
+        managedSupportedKind(extra),
+        [],
+      );
+      expect(enhanced.extra?.refundAuthorizer).toBe(refundSigner.address);
+      expect(
+        server.validateFacilitatorSupport(NETWORK, managedSupportedKind(extra) as never, []),
+      ).toBeUndefined();
+    }
+  });
+
+  it("throws at enhance time when neither a signer nor delegatedRefund: true is available", async () => {
+    const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStoreMode: "facilitator" });
+    // An absent field counts as unsupported: managed mode has no legacy deployments.
+    for (const extra of [{ delegatedRefund: false }, {}]) {
+      await expect(
+        server.enhancePaymentRequirements(makeRequirements(), managedSupportedKind(extra), []),
+      ).rejects.toThrow(/delegatedRefund/);
+    }
+  });
+
   it("reports startup problems when refund consent is not configured", () => {
     const server = new BatchSettlementEvmScheme(RECEIVER, { voucherStoreMode: "facilitator" });
-    const problem = server.validateFacilitatorSupport(NETWORK, managedSupportedKind() as never, []);
-    expect(problem).toMatch(/refundAuthorizerSigner|refundAuth/);
+    for (const extra of [{ delegatedRefund: false }, {}]) {
+      const problem = server.validateFacilitatorSupport(
+        NETWORK,
+        managedSupportedKind(extra) as never,
+        [],
+      );
+      expect(problem).toMatch(/refundAuthorizerSigner/);
+      expect(problem).toMatch(/delegatedRefund/);
+    }
   });
 
   it("does not abort voucher settle locally when the replica store is empty", async () => {
@@ -4155,7 +4287,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const requirements = makeRequirements({
-      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherManager: "facilitator",
+        withdrawDelay: 900,
+      },
     });
     const paymentPayload = buildVoucherPayload(channelId, "1000", config);
 
@@ -4176,7 +4312,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const paymentPayload = buildRefundPayload(channelId, "5000", config);
     const requirements = makeRequirements({
       amount: "0",
-      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherManager: "facilitator",
+        withdrawDelay: 900,
+      },
     });
     await runBeforeVerify(server, paymentPayload, requirements);
 
@@ -4211,7 +4351,7 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const managedReq = makeRequirements({
       extra: {
         receiverAuthorizer: RECEIVER_AUTHORIZER,
-        voucherStore: true,
+        voucherManager: "facilitator",
         withdrawDelay: 900,
       },
     });
@@ -4269,7 +4409,7 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
       requirements: makeRequirements({
         extra: {
           receiverAuthorizer: RECEIVER_AUTHORIZER,
-          voucherStore: true,
+          voucherManager: "facilitator",
           withdrawDelay: 900,
         },
       }),
@@ -4308,7 +4448,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     await server.schemeHooks.onAfterVerify!({
       paymentPayload,
       requirements: makeRequirements({
-        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherManager: "facilitator",
+          withdrawDelay: 900,
+        },
       }),
       result: {
         isValid: false,
@@ -4373,7 +4517,7 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
         amount: "0",
         extra: {
           receiverAuthorizer: RECEIVER_AUTHORIZER,
-          voucherStore: true,
+          voucherManager: "facilitator",
           withdrawDelay: 900,
         },
       }),
@@ -4407,7 +4551,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const paymentPayload = buildRefundPayload(channelId, "5000", config);
     const requirements = makeRequirements({
       amount: "0",
-      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherManager: "facilitator",
+        withdrawDelay: 900,
+      },
     });
     server.mergeRequestContext(paymentPayload, {
       channelSnapshot: {
@@ -4450,7 +4598,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const result = await server.schemeHooks.onBeforeVerify!({
       paymentPayload,
       requirements: makeRequirements({
-        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherManager: "facilitator",
+          withdrawDelay: 900,
+        },
       }),
     } as never);
 
@@ -4468,7 +4620,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const channelId = computeChannelId(config);
     const paymentPayload = buildVoucherPayload(channelId, "1000", config);
     const requirements = makeRequirements({
-      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherManager: "facilitator",
+        withdrawDelay: 900,
+      },
     });
     await runBeforeVerify(server, paymentPayload, requirements);
 
@@ -4506,7 +4662,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     await server.schemeHooks.onAfterVerify!({
       paymentPayload,
       requirements: makeRequirements({
-        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherManager: "facilitator",
+          withdrawDelay: 900,
+        },
       }),
       result: {
         isValid: false,
@@ -4530,7 +4690,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     const config = buildChannelConfig();
     const channelId = computeChannelId(config);
     const requirements = makeRequirements({
-      extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+      extra: {
+        receiverAuthorizer: RECEIVER_AUTHORIZER,
+        voucherManager: "facilitator",
+        withdrawDelay: 900,
+      },
     });
     const paymentPayload = buildVoucherPayload(channelId, "1000", config);
     server.mergeRequestContext(paymentPayload, {
@@ -4586,7 +4750,11 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
     await server.schemeHooks.onAfterSettle!({
       paymentPayload,
       requirements: makeRequirements({
-        extra: { receiverAuthorizer: RECEIVER_AUTHORIZER, voucherStore: true, withdrawDelay: 900 },
+        extra: {
+          receiverAuthorizer: RECEIVER_AUTHORIZER,
+          voucherManager: "facilitator",
+          withdrawDelay: 900,
+        },
       }),
       result: {
         success: false,
@@ -4642,7 +4810,7 @@ describe("BatchSettlementEvmScheme — facilitator-managed voucher store", () =>
         amount: "0",
         extra: {
           receiverAuthorizer: RECEIVER_AUTHORIZER,
-          voucherStore: true,
+          voucherManager: "facilitator",
           withdrawDelay: 900,
         },
       }),
