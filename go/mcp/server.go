@@ -74,7 +74,7 @@ func NewPaymentWrapper(server *x402.X402ResourceServer, config PaymentWrapperCon
 //  7. OnBeforeExecution hook (if configured)
 //  8. Executes the original handler
 //  9. OnAfterExecution hook (if configured), including IsError results
-//  10. On handler throw / IsError, Cancel (lock-only cancel receipts are omitted)
+//  10. On handler throw / IsError, Cancel and return an internal error result
 //  11. Settles after the handler when the flow requires it (else echoes before-handler settle)
 //  12. OnAfterSettlement hook (if configured)
 //  13. Returns result with settlement info in _meta
@@ -194,6 +194,7 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 		// Execute the original handler
 		result, err := handler(ctx, request)
 		if err != nil {
+			log.Printf("[x402] MCP handler error: %v", err)
 			cancelSettlement := dispatcher.Cancel(x402.VerifiedPaymentCancelOptions{
 				Reason: x402.CancellationReasonHandlerThrew,
 				Err:    err,
@@ -201,7 +202,7 @@ func (w *PaymentWrapper) Wrap(handler ToolHandler) ToolHandler {
 			receipt := x402.BuildFailurePathSettlementResponse(
 				cancelSettlement, beforeHandlerSettlement, &payload,
 			)
-			return w.internalServerErrorResult(receipt), nil //nolint:nilerr // handler errors are MCP IsError results, matching TS
+			return w.internalServerErrorResult(receipt), nil
 		}
 
 		// OnAfterExecution hook (including IsError results; skipped on handler throw)
