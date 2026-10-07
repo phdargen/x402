@@ -91,10 +91,9 @@ type CompletedSettlement struct {
 
 // BuildFailurePathSettlementResponse picks the settlement receipt to return when
 // the resource handler fails after a verified (and possibly before-handler settled)
-// payment. Prefers cancel/refund settle when a before-handler deposit exists; on
-// failed cancel, attaches deposit recovery facts in extra. Lock-only cancels (no
-// before-handler settle) are omitted so failed handlers do not grow a
-// PAYMENT-RESPONSE. Otherwise echoes the before-handler deposit receipt.
+// payment. A cancel settle is included only when a before-handler settlement
+// exists; a failed cancel attaches deposit recovery facts in extra. Otherwise
+// the before-handler deposit receipt is echoed, or nil when there is none.
 func BuildFailurePathSettlementResponse(
 	cancelSettlement *SettleResponse,
 	beforeHandlerSettlement *CompletedSettlement,

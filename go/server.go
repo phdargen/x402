@@ -678,8 +678,8 @@ func (s *x402ResourceServer) CreatePaymentCancellationDispatcherWithExtensions(
 }
 
 // settleOnCancelAfterHooks asks the matched scheme for cancel settle requirements
-// and settles once when provided. After-handler schemes (no before-handler
-// deposit) still run this path so they can release admission locks. Settlement
+// and settles once when provided, including when no before-handler settle has
+// completed. The scheme decides whether cancel settle applies. Settlement
 // errors become a failed receipt.
 func (s *x402ResourceServer) settleOnCancelAfterHooks(
 	ctx context.Context,
