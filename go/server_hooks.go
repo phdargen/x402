@@ -91,17 +91,16 @@ type CompletedSettlement struct {
 
 // BuildFailurePathSettlementResponse picks the settlement receipt to return when
 // the resource handler fails after a verified (and possibly before-handler settled)
-// payment. Preference order matches HTTP PAYMENT-RESPONSE headers:
-//  1. successful cancel settle
-//  2. failed cancel settle with deposit-recovery extras
-//  3. before-handler settle echo
-//  4. nil when nothing is available
+// payment. Prefers cancel/refund settle when a before-handler deposit exists; on
+// failed cancel, attaches deposit recovery facts in extra. Lock-only cancels (no
+// before-handler settle) are omitted so failed handlers do not grow a
+// PAYMENT-RESPONSE. Otherwise echoes the before-handler deposit receipt.
 func BuildFailurePathSettlementResponse(
 	cancelSettlement *SettleResponse,
 	beforeHandlerSettlement *CompletedSettlement,
 	paymentPayload *types.PaymentPayload,
 ) *SettleResponse {
-	if cancelSettlement != nil {
+	if cancelSettlement != nil && beforeHandlerSettlement != nil {
 		if cancelSettlement.Success {
 			return cancelSettlement
 		}
@@ -293,8 +292,30 @@ type OnVerifyFailureHook func(VerifyFailureContext) (*VerifyFailureHookResult, e
 type BeforeSettleHook func(SettleContext) (*BeforeHookResult, error)
 
 // AfterSettleHook is called after successful payment settlement
-// Any error returned will be logged but will not affect the settlement result
+// Any error returned will be logged but will not affect the settlement result,
+// except *AfterSettleAbortError which fails the settle closed (success:false)
+// while keeping transaction/amount/payer/onchain extra.
 type AfterSettleHook func(SettleResultContext) error
+
+// AfterSettleAbortError fails a successful settle closed after onchain funds
+// moved but the voucher was not persisted.
+type AfterSettleAbortError struct {
+	Reason  string
+	Message string
+}
+
+func (e *AfterSettleAbortError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Reason
+}
+
+// NewAfterSettleAbort returns an abort error for AfterSettleHook deposit persist
+// failures.
+func NewAfterSettleAbort(reason, message string) *AfterSettleAbortError {
+	return &AfterSettleAbortError{Reason: reason, Message: message}
+}
 
 // OnSettleFailureHook is called when payment settlement fails
 // If it returns a result with Recovered=true, the provided SettleResponse
