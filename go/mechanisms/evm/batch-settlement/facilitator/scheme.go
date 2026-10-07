@@ -112,10 +112,7 @@ func NewBatchSettlementEvmSchemeWithConfig(
 		s.logger = config.Logger
 		s.onStorageError = config.OnStorageError
 		if config.VoucherStore != nil {
-			lockStorage := config.VoucherStore.LockStorage
-			if lockStorage == nil && storage.IsChannelLockStorage(config.VoucherStore.Storage) {
-				lockStorage = config.VoucherStore.Storage.(storage.ChannelLockStorage)
-			}
+			lockStorage := channelLockStorage(config.VoucherStore.LockStorage, config.VoucherStore.Storage)
 			if lockStorage == nil {
 				return nil, fmt.Errorf("voucherStore.lockStorage is required when storage does not implement ChannelLockStorage")
 			}
@@ -141,6 +138,14 @@ func NewBatchSettlementEvmSchemeWithConfig(
 		s.onStorageError = s.logStorageError
 	}
 	return s, nil
+}
+
+func channelLockStorage(explicit storage.ChannelLockStorage, store any) storage.ChannelLockStorage {
+	if explicit != nil {
+		return explicit
+	}
+	lockStorage, _ := store.(storage.ChannelLockStorage)
+	return lockStorage
 }
 
 func (f *BatchSettlementEvmScheme) logStorageError(err error, network, channelId string) {
@@ -299,7 +304,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 			return nil, x402.NewSettleError(ErrInvalidClaimPayload, "", network, "",
 				fmt.Sprintf("failed to parse claim payload: %s", err))
 		}
-		if managed && f.voucherStore != nil {
+		if managed {
 			begun := make([]attestedClaim, 0, len(claimPayload.Claims))
 			counts := make([]uint64, 0, len(claimPayload.Claims))
 			now := time.Now().UnixMilli()

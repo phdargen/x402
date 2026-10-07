@@ -467,7 +467,7 @@ func (m *FacilitatorChannelManager) syncClaimMirror(
 		next := current.Clone()
 		changed := false
 		if totalClaimed != nil {
-			merged := storageMaxUint(current.TotalClaimed, totalClaimed.String())
+			merged := storage.MaxUint256String(current.TotalClaimed, totalClaimed.String())
 			if merged != current.TotalClaimed {
 				next.TotalClaimed = merged
 				changed = true
@@ -509,12 +509,4 @@ func (m *FacilitatorChannelManager) applyPreflightSettleDelta(
 		storedClaimed = stored.TotalClaimed
 	}
 	return applyClaimedSettleDelta(ctx, m.settleTargetStorage, network, receiver, token, onchain.String(), storedClaimed)
-}
-
-func storageMaxUint(current, next string) string {
-	cmp, ok := storage.Uint256Cmp(current, next)
-	if !ok || cmp >= 0 {
-		return current
-	}
-	return next
 }

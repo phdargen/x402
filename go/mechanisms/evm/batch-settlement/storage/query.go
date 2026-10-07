@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"math/big"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -134,32 +135,7 @@ func SortChannels[T ChannelRecord[T]](channels []T, filter ChannelQuery) []T {
 	out := append([]T(nil), channels...)
 	switch filter.Kind {
 	case QueryKindClaimable:
-		stableSortChannels(out, func(a, b T) bool {
-			pendingA := 1
-			if a.Base().WithdrawRequestedAt > 0 {
-				pendingA = 0
-			}
-			pendingB := 1
-			if b.Base().WithdrawRequestedAt > 0 {
-				pendingB = 0
-			}
-			if pendingA != pendingB {
-				return pendingA < pendingB
-			}
-			if filter.UnclaimedDesc {
-				return UnclaimedAmount(a.Base()).Cmp(UnclaimedAmount(b.Base())) > 0
-			}
-			if filter.OldestFirst {
-				baseA := a.Base()
-				baseB := b.Base()
-				if baseA.WithdrawRequestedAt > 0 && baseB.WithdrawRequestedAt > 0 &&
-					baseA.WithdrawRequestedAt != baseB.WithdrawRequestedAt {
-					return baseA.WithdrawRequestedAt < baseB.WithdrawRequestedAt
-				}
-				return baseA.LastRequestTimestamp < baseB.LastRequestTimestamp
-			}
-			return false
-		})
+		sortClaimable(out, filter)
 		return out
 	case QueryKindIdleRefundable, QueryKindWithdrawPending:
 		return out
@@ -348,13 +324,51 @@ func Uint256Cmp(a, b string) (int, bool) {
 	return ai.Cmp(bi), true
 }
 
-func stableSortChannels[T ChannelRecord[T]](channels []T, less func(a, b T) bool) {
-	// Insertion sort keeps equal-priority rows in input order.
-	for i := 1; i < len(channels); i++ {
-		j := i
-		for j > 0 && less(channels[j], channels[j-1]) {
-			channels[j], channels[j-1] = channels[j-1], channels[j]
-			j--
+// sortClaimable orders claimable rows: withdraw-pending first, then the active
+// tie-break. Equal keys stay in input order.
+func sortClaimable[T ChannelRecord[T]](channels []T, filter ChannelQuery) {
+	type key struct {
+		channel     T
+		pending     int
+		unclaimed   *big.Int
+		withdrawAt  int
+		lastRequest int64
+	}
+	keyed := make([]key, len(channels))
+	for i, channel := range channels {
+		base := channel.Base()
+		pending := 1
+		if base.WithdrawRequestedAt > 0 {
+			pending = 0
 		}
+		item := key{
+			channel:     channel,
+			pending:     pending,
+			withdrawAt:  base.WithdrawRequestedAt,
+			lastRequest: base.LastRequestTimestamp,
+		}
+		if filter.UnclaimedDesc {
+			item.unclaimed = UnclaimedAmount(base)
+		}
+		keyed[i] = item
+	}
+	sort.SliceStable(keyed, func(i, j int) bool {
+		a, b := keyed[i], keyed[j]
+		if a.pending != b.pending {
+			return a.pending < b.pending
+		}
+		if filter.UnclaimedDesc {
+			return a.unclaimed.Cmp(b.unclaimed) > 0
+		}
+		if filter.OldestFirst {
+			if a.withdrawAt > 0 && b.withdrawAt > 0 && a.withdrawAt != b.withdrawAt {
+				return a.withdrawAt < b.withdrawAt
+			}
+			return a.lastRequest < b.lastRequest
+		}
+		return false
+	})
+	for i := range channels {
+		channels[i] = keyed[i].channel
 	}
 }

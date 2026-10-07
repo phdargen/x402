@@ -10,12 +10,6 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-func isBatchSettlementPayload(raw map[string]interface{}) bool {
-	return batchsettlement.IsDepositPayload(raw) ||
-		batchsettlement.IsVoucherPayload(raw) ||
-		batchsettlement.IsRefundPayload(raw)
-}
-
 // isCorrectiveMismatch reports whether a verify rejection carries a
 // resyncable cumulative baseline. The facilitator emits
 // ErrCumulativeAmountMismatch for managed voucher-store drift, while the
@@ -32,7 +26,7 @@ func isCorrectiveMismatch(reason string) bool {
 // channel-id binding only. Admission stays with the facilitator.
 func handleManagedBeforeVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyContext) (*x402.BeforeHookResult, error) {
 	raw := ctx.Payload.GetPayload()
-	if !isBatchSettlementPayload(raw) {
+	if !batchsettlement.IsBatchedPayload(raw) {
 		return nil, nil
 	}
 	if abort := AbortIfUnexpectedServerAuthoredSettleFields(raw); abort != nil {
@@ -52,7 +46,7 @@ func handleManagedBeforeVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyConte
 // the replica, or corrective extras. Refunds skip the resource handler.
 func handleManagedAfterVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyResultContext) (*x402.AfterVerifyResult, error) {
 	raw := ctx.Payload.GetPayload()
-	if !isBatchSettlementPayload(raw) {
+	if !batchsettlement.IsBatchedPayload(raw) {
 		return nil, nil
 	}
 	if ctx.Result == nil {
@@ -160,7 +154,7 @@ func handleManagedSettleOnCancel(ctx x402.VerifiedPaymentCanceledContext) (*type
 	default:
 		return nil, nil
 	}
-	if ctx.Payload == nil || !isBatchSettlementPayload(ctx.Payload.GetPayload()) {
+	if ctx.Payload == nil || !batchsettlement.IsBatchedPayload(ctx.Payload.GetPayload()) {
 		return nil, nil
 	}
 	req := paymentRequirementsFromView(ctx.Requirements)
@@ -173,7 +167,7 @@ func handleManagedSettleOnCancel(ctx x402.VerifiedPaymentCanceledContext) (*type
 // releases the lock. Never sets claimAuthorizerSignature.
 func handleManagedEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.SettleContext) (map[string]interface{}, error) {
 	raw := ctx.Payload.GetPayload()
-	if !isBatchSettlementPayload(raw) {
+	if !batchsettlement.IsBatchedPayload(raw) {
 		return nil, nil
 	}
 
@@ -238,7 +232,7 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 		return nil
 	}
 	raw := ctx.Payload.GetPayload()
-	if !isBatchSettlementPayload(raw) {
+	if !batchsettlement.IsBatchedPayload(raw) {
 		return nil
 	}
 

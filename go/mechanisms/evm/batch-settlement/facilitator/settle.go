@@ -161,22 +161,7 @@ func readReceiverSettlementTotals(
 	if err != nil {
 		return nil, nil, err
 	}
-
-	outputs, ok := raw.([]interface{})
-	if !ok || len(outputs) < 2 {
-		return nil, nil, fmt.Errorf("receivers returned %T, want two uint128 values", raw)
-	}
-
-	totalClaimed, ok := outputs[0].(*big.Int)
-	if !ok {
-		return nil, nil, fmt.Errorf("receivers totalClaimed returned %T, want *big.Int", outputs[0])
-	}
-	totalSettled, ok := outputs[1].(*big.Int)
-	if !ok {
-		return nil, nil, fmt.Errorf("receivers totalSettled returned %T, want *big.Int", outputs[1])
-	}
-
-	return totalClaimed, totalSettled, nil
+	return parseReceiversMulticallResult(raw)
 }
 
 // ExecuteSettleBatch submits up to len(targets) settle(receiver, token) calls in one
@@ -262,9 +247,6 @@ func submitSettleMulticall(
 			return nil, []skippedSettleTarget{{target: targets[0], err: skipErr}}, nil
 		}
 		mid := len(targets) / 2
-		if mid < 1 {
-			mid = 1
-		}
 		left, leftSkipped, err := submitSettleMulticall(ctx, logger, signer, network, targets[:mid], dataSuffix)
 		if err != nil {
 			return left, leftSkipped, err

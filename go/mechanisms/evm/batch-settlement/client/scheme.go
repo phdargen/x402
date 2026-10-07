@@ -813,12 +813,7 @@ func (c *BatchSettlementEvmScheme) recoverFromSignature(
 		return false, nil //nolint:nilerr
 	}
 
-	domain := evm.TypedDataDomain{
-		Name:              batchsettlement.BatchSettlementDomain.Name,
-		Version:           batchsettlement.BatchSettlementDomain.Version,
-		ChainID:           chainId,
-		VerifyingContract: batchsettlement.BatchSettlementAddress,
-	}
+	domain := batchsettlement.GetBatchSettlementEip712Domain(chainId)
 
 	voucherSigner := c.signer
 	if c.config.VoucherSigner != nil {

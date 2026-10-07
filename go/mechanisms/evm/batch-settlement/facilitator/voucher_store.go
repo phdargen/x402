@@ -131,7 +131,7 @@ func VerifyManaged(
 	fctx *x402.FacilitatorContext,
 ) (*x402.VerifyResponse, error) {
 	raw := payload.Payload
-	if raw == nil || !isManagedClientPayload(raw) {
+	if raw == nil || !batchsettlement.IsBatchedPayload(raw) {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload}, nil
 	}
 	if _, ok := raw["cancel"]; ok {
@@ -148,14 +148,17 @@ func VerifyManaged(
 	}
 	// requirements.amount comes from the resource server and floors every paid request, so it is
 	// validated before any cached-state path can consume it. Refunds are zero-charge and skip it.
+	var requirementsAmount *big.Int
 	if !batchsettlement.IsRefundPayload(raw) {
-		if _, ok := parseRequirementsAmount(requirements.Amount); !ok {
+		amt, ok := parseRequirementsAmount(requirements.Amount)
+		if !ok {
 			reason := ErrInvalidVoucherPayload
 			if batchsettlement.IsDepositPayload(raw) {
 				reason = ErrInvalidDepositPayload
 			}
 			return &x402.VerifyResponse{IsValid: false, InvalidReason: reason, InvalidMessage: "invalid requirements amount", Payer: payer}, nil
 		}
+		requirementsAmount = amt
 		// accepted.amount is the priced maximum.
 		if payload.Accepted.Amount != requirements.Amount {
 			return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload, Payer: payer}, nil
@@ -220,7 +223,7 @@ func VerifyManaged(
 		charged = stored.ChargedCumulativeAmount
 	}
 	isRefund := batchsettlement.IsRefundPayload(raw)
-	chargedInt, chargedOk := parseManagedUint(charged)
+	chargedInt, chargedOk := storage.ParseUint256(charged)
 	if !chargedOk {
 		return &x402.VerifyResponse{
 			IsValid:       false,
@@ -233,18 +236,9 @@ func VerifyManaged(
 	if isRefund {
 		expected.Set(chargedInt)
 	} else {
-		amt, amtOk := parseManagedUint(requirements.Amount)
-		if !amtOk {
-			return &x402.VerifyResponse{
-				IsValid:       false,
-				InvalidReason: ErrCumulativeAmountMismatch,
-				Payer:         payer,
-				Extra:         mismatchVerifyExtra(channelId, verified.Extra, stored, charged),
-			}, nil
-		}
-		expected.Add(chargedInt, amt)
+		expected.Add(chargedInt, requirementsAmount)
 	}
-	maxClaimable, maxOk := parseManagedUint(voucher.MaxClaimableAmount)
+	maxClaimable, maxOk := storage.ParseUint256(voucher.MaxClaimableAmount)
 	if !maxOk || maxClaimable.Cmp(expected) != 0 {
 		return &x402.VerifyResponse{
 			IsValid:       false,
@@ -337,7 +331,7 @@ func settleChargeBounds(acceptedAmount, actualAmount, signedCap string) (increme
 	if !ok {
 		return nil, nil, nil, ErrInvalidPayload
 	}
-	cap, ok = parseManagedUint(signedCap)
+	cap, ok = storage.ParseUint256(signedCap)
 	if !ok {
 		return nil, nil, nil, ErrInvalidPayload
 	}
@@ -686,20 +680,12 @@ func settleManagedRefund(
 		}
 		next := current.Clone()
 		next.Balance = balance
-		next.TotalClaimed = storageMaxUint(current.TotalClaimed, totalClaimed)
+		next.TotalClaimed = storage.MaxUint256String(current.TotalClaimed, totalClaimed)
 		if extraState != nil {
 			if v, ok := extraNumber(extraState["withdrawRequestedAt"]); ok {
 				next.WithdrawRequestedAt = v
 			}
-			if v, ok := extraUintString(extraState["refundNonce"]); ok {
-				if n, ok := extraNumber(v); ok {
-					next.RefundNonce = n
-				}
-			} else if v, ok := extraNumber(extraState["refundNonce"]); ok {
-				next.RefundNonce = v
-			} else {
-				next.RefundNonce = current.RefundNonce + 1
-			}
+			next.RefundNonce = refundNonceFromExtra(current.RefundNonce, extraState)
 		} else {
 			next.RefundNonce = current.RefundNonce + 1
 		}
@@ -802,9 +788,6 @@ func checkRefundConsent(
 	fctx *x402.FacilitatorContext,
 	stored *FacilitatorChannel,
 ) string {
-	if amountError := refundAmountError(raw.Amount); amountError != "" {
-		return amountError
-	}
 	nonce := "0"
 	if stored != nil {
 		nonce = fmt.Sprintf("%d", stored.RefundNonce)
@@ -1104,17 +1087,17 @@ func extraUint(value interface{}) (*big.Int, bool) {
 	if s == nil {
 		return nil, false
 	}
-	return parseManagedUint(*s)
+	return storage.ParseUint256(*s)
 }
 
 func rebuildClaims(stored *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
 	if stored == nil {
 		return nil
 	}
-	if _, ok := parseManagedUint(stored.ChargedCumulativeAmount); !ok {
+	if _, ok := storage.ParseUint256(stored.ChargedCumulativeAmount); !ok {
 		return nil
 	}
-	if _, ok := parseManagedUint(stored.TotalClaimed); !ok {
+	if _, ok := storage.ParseUint256(stored.TotalClaimed); !ok {
 		return nil
 	}
 	if uintCmp(stored.ChargedCumulativeAmount, stored.TotalClaimed) <= 0 {
@@ -1147,7 +1130,7 @@ func refundAmountError(amount string) string {
 // The receiver's earned part stays in the channel whether or not a claim is bundled.
 // A non-positive cap fails with ErrRefundNoBalance.
 func capRefundAmount(amount string, onchainBalance *big.Int, charged string) (string, string) {
-	chargedInt, ok := parseManagedUint(charged)
+	chargedInt, ok := storage.ParseUint256(charged)
 	if !ok || onchainBalance == nil {
 		return "", ErrCumulativeAmountMismatch
 	}
@@ -1155,7 +1138,7 @@ func capRefundAmount(amount string, onchainBalance *big.Int, charged string) (st
 	if limit.Sign() <= 0 {
 		return "", ErrRefundNoBalance
 	}
-	if requested, ok := parseManagedUint(amount); ok && requested.Cmp(limit) > 0 {
+	if requested, ok := storage.ParseUint256(amount); ok && requested.Cmp(limit) > 0 {
 		return limit.String(), ""
 	}
 	return amount, ""
@@ -1194,7 +1177,7 @@ const maxSafeJSONInteger = float64(1<<53 - 1)
 func readExtraTotalClaimed(extra map[string]interface{}) (string, bool) {
 	switch v := extra["totalClaimed"].(type) {
 	case string:
-		n, ok := parseManagedUint(v)
+		n, ok := storage.ParseUint256(v)
 		if !ok || n.String() != v {
 			return "", false
 		}
@@ -1332,10 +1315,6 @@ func isCancelSettlePayload(raw map[string]interface{}) bool {
 	return cancel
 }
 
-func isManagedClientPayload(raw map[string]interface{}) bool {
-	return batchsettlement.IsDepositPayload(raw) || batchsettlement.IsVoucherPayload(raw) || batchsettlement.IsRefundPayload(raw)
-}
-
 func parseManagedChannel(raw map[string]interface{}) (batchsettlement.ChannelConfig, batchsettlement.BatchSettlementVoucherFields, string, error) {
 	var zero batchsettlement.ChannelConfig
 	var voucher batchsettlement.BatchSettlementVoucherFields
@@ -1351,16 +1330,7 @@ func parseManagedChannel(raw map[string]interface{}) (batchsettlement.ChannelCon
 	if !ok {
 		return config, voucher, config.Payer, errors.New("missing voucher")
 	}
-	if id, ok := voucherMap["channelId"].(string); ok {
-		voucher.ChannelId = id
-	}
-	if amt, ok := voucherMap["maxClaimableAmount"].(string); ok {
-		voucher.MaxClaimableAmount = amt
-	}
-	if sig, ok := voucherMap["signature"].(string); ok {
-		voucher.Signature = sig
-	}
-	return config, voucher, config.Payer, nil
+	return config, batchsettlement.VoucherFieldsFromMap(voucherMap), config.Payer, nil
 }
 
 func payloadPayer(raw map[string]interface{}) string {
@@ -1422,17 +1392,28 @@ func extraNumber(v interface{}) (int, bool) {
 	}
 }
 
-func extraUintString(v interface{}) (string, bool) {
-	s, ok := v.(string)
-	return s, ok
+// refundNonceFromExtra applies a channelState refundNonce.
+// A numeric value replaces the stored nonce. A non-numeric string leaves it.
+// Any other shape increments it.
+func refundNonceFromExtra(current int, extra map[string]interface{}) int {
+	if v, ok := extra["refundNonce"].(string); ok {
+		if n, ok := extraNumber(v); ok {
+			return n
+		}
+		return current
+	}
+	if n, ok := extraNumber(extra["refundNonce"]); ok {
+		return n
+	}
+	return current + 1
 }
 
 func sameUint(a, b string) bool {
-	ai, okA := parseManagedUint(a)
+	ai, okA := storage.ParseUint256(a)
 	if !okA {
 		return false
 	}
-	bi, okB := parseManagedUint(b)
+	bi, okB := storage.ParseUint256(b)
 	if !okB {
 		return false
 	}
@@ -1441,27 +1422,13 @@ func sameUint(a, b string) bool {
 
 // uintCmp compares decimal uint strings. Unparsable operands fail closed as
 // greater (1) so closed-channel checks never delete a corrupt row; claim
-// builders guard with parseManagedUint first and skip corrupt rows.
+// builders guard with storage.ParseUint256 first and skip corrupt rows.
 func uintCmp(a, b string) int {
-	ai, okA := parseManagedUint(a)
-	if !okA {
+	cmp, ok := storage.Uint256Cmp(a, b)
+	if !ok {
 		return 1
 	}
-	bi, okB := parseManagedUint(b)
-	if !okB {
-		return 1
-	}
-	return ai.Cmp(bi)
-}
-
-// parseManagedUint parses a non-negative decimal uint. ok=false means the
-// caller must fail closed (mismatch/skip), never treat the value as zero.
-func parseManagedUint(s string) (*big.Int, bool) {
-	v, ok := new(big.Int).SetString(s, 10)
-	if !ok || v.Sign() < 0 {
-		return nil, false
-	}
-	return v, true
+	return cmp
 }
 
 func channelStateFromMap(m map[string]interface{}) batchsettlement.BatchSettlementChannelStateExtra {

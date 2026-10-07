@@ -279,7 +279,7 @@ func finishAttestedClaim(
 		}
 		next := current.Clone()
 		changed := false
-		if merged := storageMaxUint(current.TotalClaimed, claimed); merged != current.TotalClaimed {
+		if merged := storage.MaxUint256String(current.TotalClaimed, claimed); merged != current.TotalClaimed {
 			next.TotalClaimed = merged
 			changed = true
 		}
@@ -324,17 +324,14 @@ func releaseAttestedClaims(
 		return landed, nil
 	}
 	hash := claimSubmitTxHash(submitErr, response)
-	if landed {
-		if hash == "" {
-			return true, nil
-		}
-		return true, noteAttestedClaimTxs(ctx, store, begun, hash)
+	if hash != "" {
+		return landed, noteAttestedClaimTxs(ctx, store, begun, hash)
 	}
-	if hash != "" || submitErr != nil {
-		if hash != "" {
-			return false, noteAttestedClaimTxs(ctx, store, begun, hash)
-		}
-		return false, nil
+	if landed {
+		return landed, nil
+	}
+	if submitErr != nil {
+		return false, submitErr
 	}
 	return false, abortAttestedClaims(ctx, store, begun)
 }
@@ -385,7 +382,7 @@ func (m *FacilitatorChannelManager) resolvePendingClaim(
 		StartedAt: marker.StartedAt,
 	}
 	if landed {
-		claimed := storageMaxUint(marker.ClaimedTo, onchain.String())
+		claimed := storage.MaxUint256String(marker.ClaimedTo, onchain.String())
 		// Recovery has no receipt logs in hand, so a landed marker is treated as attested.
 		return false, finishAttestedClaim(ctx, m.storage, channelID, claimed, item, true)
 	}

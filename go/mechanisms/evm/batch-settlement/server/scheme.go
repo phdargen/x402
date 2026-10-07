@@ -593,16 +593,7 @@ func extraInt(extra map[string]interface{}, key string) (int, bool) {
 	if extra == nil {
 		return 0, false
 	}
-	switch v := extra[key].(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	default:
-		return 0, false
-	}
+	return batchsettlement.ExtraInt(extra[key])
 }
 
 // ValidateFacilitatorSupport rejects startup when this scheme delegates the
@@ -894,12 +885,7 @@ func signRefundWith(ctx context.Context, signer AuthorizerSigner, channelId stri
 		return nil, err
 	}
 
-	domain := evm.TypedDataDomain{
-		Name:              batchsettlement.BatchSettlementDomain.Name,
-		Version:           batchsettlement.BatchSettlementDomain.Version,
-		ChainID:           chainId,
-		VerifyingContract: batchsettlement.BatchSettlementAddress,
-	}
+	domain := batchsettlement.GetBatchSettlementEip712Domain(chainId)
 
 	allTypes := map[string][]evm.TypedDataField{
 		"EIP712Domain": {
@@ -938,12 +924,7 @@ func signClaimBatchWith(ctx context.Context, signer AuthorizerSigner, claims []b
 		return nil, err
 	}
 
-	domain := evm.TypedDataDomain{
-		Name:              batchsettlement.BatchSettlementDomain.Name,
-		Version:           batchsettlement.BatchSettlementDomain.Version,
-		ChainID:           chainId,
-		VerifyingContract: batchsettlement.BatchSettlementAddress,
-	}
+	domain := batchsettlement.GetBatchSettlementEip712Domain(chainId)
 
 	allTypes := map[string][]evm.TypedDataField{
 		"EIP712Domain": {

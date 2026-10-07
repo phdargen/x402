@@ -180,7 +180,6 @@ func VerifyDeposit(
 	config := payload.ChannelConfig
 	channelId := payload.Voucher.ChannelId
 
-	// Validate channel config
 	if err := ValidateChannelConfig(config, channelId, requirements); err != nil {
 		return nil, err
 	}
@@ -191,14 +190,12 @@ func VerifyDeposit(
 		return nil, x402.NewVerifyError(ErrInvalidDepositPayload, config.Payer, "invalid requirements amount")
 	}
 
-	// Validate deposit amount
 	depositAmount, ok := new(big.Int).SetString(payload.Deposit.Amount, 10)
 	if !ok || depositAmount.Sign() <= 0 {
 		return nil, x402.NewVerifyError(ErrInvalidDepositPayload, config.Payer,
 			fmt.Sprintf("invalid deposit amount: %s", payload.Deposit.Amount))
 	}
 
-	// Get chain ID
 	chainId, err := signer.GetChainID(ctx)
 	if err != nil {
 		return nil, x402.NewVerifyError(ErrChannelStateReadFailed, config.Payer,
@@ -266,7 +263,6 @@ func VerifyDeposit(
 			fmt.Sprintf("unsupported assetTransferMethod: %s", transferMethod))
 	}
 
-	// Verify voucher signature
 	voucherValid, err := VerifyBatchedVoucherTypedData(
 		ctx, signer,
 		channelId,
@@ -285,7 +281,6 @@ func VerifyDeposit(
 			"voucher signature is invalid")
 	}
 
-	// Check payer balance
 	payerBalance, err := signer.GetBalance(ctx, config.Payer, config.Token)
 	if err != nil {
 		return nil, x402.NewVerifyError(ErrChannelStateReadFailed, config.Payer,
@@ -405,7 +400,6 @@ func VerifyDeposit(
 		}
 	}
 
-	// Return current onchain state
 	return &x402.VerifyResponse{
 		IsValid: true,
 		Payer:   config.Payer,
@@ -593,7 +587,6 @@ func SettleDeposit(
 		revertDelegatedBinding(ctx, delegated, channelId, networkStr, openToken)
 	}()
 
-	// Build channel config tuple for contract call
 	configTuple := ToContractChannelConfig(config)
 
 	// ERC-6492 counterfactual deposit: if the ERC-3009 authorization is wrapped with

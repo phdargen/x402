@@ -407,7 +407,7 @@ func ValidateChannelConfig(config ChannelConfig, channelId string, requirements 
 	}
 
 	if raw, ok := extra["withdrawDelay"]; ok && raw != nil {
-		delay, coerced := extraInt(raw)
+		delay, coerced := ExtraInt(raw)
 		if !coerced || config.WithdrawDelay != delay {
 			return ErrWithdrawDelayMismatch
 		}
@@ -441,8 +441,7 @@ func EvaluateVoucherAgainstCachedState(
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: configErr, Payer: payer}
 	}
 
-	computed, err := ComputeChannelId(raw.ChannelConfig, requirements.Network)
-	if err != nil || !strings.EqualFold(computed, channel.ChannelId) {
+	if !strings.EqualFold(raw.Voucher.ChannelId, channel.ChannelId) {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrChannelIdMismatch, Payer: payer}
 	}
 

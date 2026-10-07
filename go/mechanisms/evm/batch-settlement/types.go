@@ -348,8 +348,9 @@ func ChannelConfigFromMap(data map[string]interface{}) (ChannelConfig, error) {
 	return config, nil
 }
 
-// voucherFieldsFromMap parses BatchSettlementVoucherFields from a raw map.
-func voucherFieldsFromMap(data map[string]interface{}) BatchSettlementVoucherFields {
+// VoucherFieldsFromMap parses BatchSettlementVoucherFields from a raw map.
+// Absent or non-string fields stay empty.
+func VoucherFieldsFromMap(data map[string]interface{}) BatchSettlementVoucherFields {
 	v := BatchSettlementVoucherFields{}
 	v.ChannelId, _ = data["channelId"].(string)
 	v.MaxClaimableAmount, _ = data["maxClaimableAmount"].(string)
@@ -411,7 +412,7 @@ func DepositPayloadFromMap(data map[string]interface{}) (*BatchSettlementDeposit
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid voucher")
 	}
-	payload.Voucher = voucherFieldsFromMap(voucherMap)
+	payload.Voucher = VoucherFieldsFromMap(voucherMap)
 
 	depositMap, ok := data["deposit"].(map[string]interface{})
 	if !ok {
@@ -450,7 +451,7 @@ func VoucherPayloadFromMap(data map[string]interface{}) (*BatchSettlementVoucher
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid voucher")
 	}
-	payload.Voucher = voucherFieldsFromMap(voucherMap)
+	payload.Voucher = VoucherFieldsFromMap(voucherMap)
 	payload.PendingId, payload.Cancel = pendingFieldsFromMap(data)
 	return payload, nil
 }
@@ -473,7 +474,7 @@ func RefundPayloadFromMap(data map[string]interface{}) (*BatchSettlementRefundPa
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid voucher")
 	}
-	payload.Voucher = voucherFieldsFromMap(voucherMap)
+	payload.Voucher = VoucherFieldsFromMap(voucherMap)
 	payload.Amount, _ = data["amount"].(string)
 	payload.PendingId, payload.Cancel = pendingFieldsFromMap(data)
 	return payload, nil
@@ -560,7 +561,7 @@ func EnrichedRefundPayloadFromMap(data map[string]interface{}) (*BatchSettlement
 	if !ok {
 		return nil, fmt.Errorf("missing or invalid voucher")
 	}
-	payload.Voucher = voucherFieldsFromMap(voucherMap)
+	payload.Voucher = VoucherFieldsFromMap(voucherMap)
 
 	payload.Amount, _ = data["amount"].(string)
 	payload.RefundNonce, _ = data["refundNonce"].(string)
@@ -725,7 +726,8 @@ func writePendingFields(result map[string]interface{}, pendingId string, cancel 
 	}
 }
 
-func extraInt(v interface{}) (int, bool) {
+// ExtraInt reads a JSON number stored as int, int64, or float64.
+func ExtraInt(v interface{}) (int, bool) {
 	switch n := v.(type) {
 	case int:
 		return n, true
@@ -768,30 +770,11 @@ func (e *BatchSettlementPaymentResponseExtra) ToMap() map[string]interface{} {
 	if e.ChargeCount != nil {
 		out["chargeCount"] = *e.ChargeCount
 	}
-	if cs := e.ChannelState; cs != nil {
-		csMap := map[string]interface{}{
-			"channelId":           cs.ChannelId,
-			"balance":             cs.Balance,
-			"totalClaimed":        cs.TotalClaimed,
-			"withdrawRequestedAt": cs.WithdrawRequestedAt,
-			"refundNonce":         cs.RefundNonce,
-		}
-		if cs.ChargedCumulativeAmount != "" {
-			csMap["chargedCumulativeAmount"] = cs.ChargedCumulativeAmount
-		}
+	if csMap := e.ChannelState.ToMap(); csMap != nil {
 		out["channelState"] = csMap
 	}
-	if vs := e.VoucherState; vs != nil {
-		vsMap := map[string]interface{}{}
-		if vs.SignedMaxClaimable != "" {
-			vsMap["signedMaxClaimable"] = vs.SignedMaxClaimable
-		}
-		if vs.Signature != "" {
-			vsMap["signature"] = vs.Signature
-		}
-		if len(vsMap) > 0 {
-			out["voucherState"] = vsMap
-		}
+	if vsMap := e.VoucherState.ToMap(); vsMap != nil {
+		out["voucherState"] = vsMap
 	}
 	return out
 }
@@ -806,7 +789,7 @@ func PaymentResponseExtraFromMap(data map[string]interface{}) (*BatchSettlementP
 	if v, ok := data["chargedAmount"].(string); ok {
 		extra.ChargedAmount = v
 	}
-	if n, ok := extraInt(data["chargeCount"]); ok {
+	if n, ok := ExtraInt(data["chargeCount"]); ok {
 		extra.ChargeCount = &n
 	}
 	if csRaw, ok := data["channelState"].(map[string]interface{}); ok && csRaw != nil {

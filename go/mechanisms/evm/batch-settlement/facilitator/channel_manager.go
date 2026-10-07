@@ -455,10 +455,7 @@ func NewFacilitatorChannelManager(config FacilitatorChannelManagerConfig) (*Faci
 	if err := AssertDirectAuthorizerSubmitter(config.SubmitMode, config.AuthorizerSigner, config.AuthorizerSubmitter); err != nil {
 		return nil, err
 	}
-	lockStorage := config.LockStorage
-	if lockStorage == nil && storage.IsChannelLockStorage(config.Storage) {
-		lockStorage = config.Storage.(storage.ChannelLockStorage)
-	}
+	lockStorage := channelLockStorage(config.LockStorage, config.Storage)
 	submitMode := config.SubmitMode
 	if submitMode == "" {
 		submitMode = SubmitModeRelay
@@ -1006,7 +1003,7 @@ func newRefundLockOwner() (string, error) {
 }
 
 func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *FacilitatorChannel) (*FacilitatorRefundResult, error) {
-	claims := m.buildRefundClaims(target)
+	claims := rebuildClaims(target)
 	bal, _ := new(big.Int).SetString(target.Balance, 10)
 	charged, _ := new(big.Int).SetString(target.ChargedCumulativeAmount, 10)
 	if bal == nil {
@@ -1167,17 +1164,9 @@ func applyRefundChannel(
 			next.Balance = v
 		}
 		if v, ok := refunded["totalClaimed"].(string); ok {
-			next.TotalClaimed = storageMaxUint(next.TotalClaimed, v)
+			next.TotalClaimed = storage.MaxUint256String(next.TotalClaimed, v)
 		}
-		if v, ok := refunded["refundNonce"].(string); ok {
-			if n, ok := extraNumber(v); ok {
-				next.RefundNonce = n
-			}
-		} else if n, ok := extraNumber(refunded["refundNonce"]); ok {
-			next.RefundNonce = n
-		} else {
-			next.RefundNonce = current.RefundNonce + 1
-		}
+		next.RefundNonce = refundNonceFromExtra(current.RefundNonce, refunded)
 		if n, ok := extraNumber(refunded["withdrawRequestedAt"]); ok {
 			next.WithdrawRequestedAt = n
 		}
@@ -1201,28 +1190,6 @@ func applyClaimedAmount(next *FacilitatorChannel, claimed string) {
 		return
 	}
 	next.TotalClaimed = claimedAmount.String()
-}
-
-func (m *FacilitatorChannelManager) buildRefundClaims(channel *FacilitatorChannel) []batchsettlement.BatchSettlementVoucherClaim {
-	if channel == nil {
-		return nil
-	}
-	if _, ok := parseManagedUint(channel.ChargedCumulativeAmount); !ok {
-		return nil
-	}
-	if _, ok := parseManagedUint(channel.TotalClaimed); !ok {
-		return nil
-	}
-	if uintCmp(channel.ChargedCumulativeAmount, channel.TotalClaimed) <= 0 {
-		return nil
-	}
-	claim := batchsettlement.BatchSettlementVoucherClaim{
-		Signature:    channel.Signature,
-		TotalClaimed: channel.ChargedCumulativeAmount,
-	}
-	claim.Voucher.Channel = channel.ChannelConfig
-	claim.Voucher.MaxClaimableAmount = channel.SignedMaxClaimable
-	return []batchsettlement.BatchSettlementVoucherClaim{claim}
 }
 
 func (m *FacilitatorChannelManager) resolveBuilderSuffix(
