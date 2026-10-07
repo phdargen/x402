@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -84,14 +85,97 @@ type FacilitatorChannelManagerConfig struct {
 	Logger *slog.Logger
 }
 
+// atomicAmountPattern matches an integer atomic token amount. A leading "$" is rejected.
+var atomicAmountPattern = regexp.MustCompile(`^\d+$`)
+
+// TokenAmountGate is a per-token amount threshold for claim and settle.
+type TokenAmountGate struct {
+	// DefaultAssetAmount is a money string ("$1") for assets evm.FindDefaultAsset knows. Empty leaves them ungated.
+	DefaultAssetAmount string
+	// Assets override the dollar amount with an integer atomic threshold.
+	Assets []TokenAtomicAmount
+}
+
+// TokenAtomicAmount is an explicit atomic threshold for one network and asset.
+type TokenAtomicAmount struct {
+	Network string
+	Asset   string
+	// Amount is an integer atomic string. A dollar value is a config error.
+	Amount string
+}
+
+// Resolve returns the atomic threshold. ok is false when the token is ungated.
+func (g TokenAmountGate) Resolve(network, token string) (atomic *big.Int, ok bool, err error) {
+	for i := range g.Assets {
+		entry := g.Assets[i]
+		if !gateNetworkMatches(entry.Network, network) || !gateAssetMatches(entry.Asset, token, network) {
+			continue
+		}
+		if !atomicAmountPattern.MatchString(entry.Amount) {
+			return nil, false, fmt.Errorf(
+				"token amount gate: asset amount must be an integer atomic amount, not a dollar value; got %q",
+				entry.Amount,
+			)
+		}
+		parsed, parsedOK := new(big.Int).SetString(entry.Amount, 10)
+		if !parsedOK {
+			return nil, false, fmt.Errorf(
+				"token amount gate: asset amount must be an integer atomic amount, not a dollar value; got %q",
+				entry.Amount,
+			)
+		}
+		return parsed, true, nil
+	}
+
+	amount := strings.TrimSpace(g.DefaultAssetAmount)
+	if amount == "" {
+		return nil, false, nil
+	}
+	info := evm.FindDefaultAsset(token, network)
+	if info == nil {
+		return nil, false, nil
+	}
+	parsedMoney, err := x402.ParseMoneyString(amount)
+	if err != nil {
+		return nil, false, err
+	}
+	raw, err := x402.ConvertToTokenAmount(parsedMoney, info.Decimals)
+	if err != nil {
+		return nil, false, err
+	}
+	parsed, parsedOK := new(big.Int).SetString(raw, 10)
+	if !parsedOK {
+		return nil, false, fmt.Errorf("token amount gate: converted amount %q is not an integer", raw)
+	}
+	return parsed, true, nil
+}
+
+// active reports whether a dollar amount or an explicit asset is set.
+func (g TokenAmountGate) active() bool {
+	return strings.TrimSpace(g.DefaultAssetAmount) != "" || len(g.Assets) > 0
+}
+
+func gateNetworkMatches(pattern, network string) bool {
+	if strings.EqualFold(pattern, network) {
+		return true
+	}
+	return x402.MatchesNetwork(x402.Network(pattern), x402.Network(network))
+}
+
+func gateAssetMatches(entryAsset, token, network string) bool {
+	if strings.EqualFold(entryAsset, token) {
+		return true
+	}
+	info := evm.FindDefaultAsset(token, network)
+	return info != nil && strings.EqualFold(info.Symbol, entryAsset)
+}
+
 // FacilitatorClaimOptions is optional batching and idle filter for Claim.
 type FacilitatorClaimOptions struct {
 	MaxClaimsPerBatch int
 	IdleSecs          *int
-	// MinUnclaimed is an optional decimal uint256 threshold. Nil keeps any
-	// positive unclaimed. The default selector applies it. A custom selector
-	// sets ChannelQuery.MinUnclaimed on the queries that need it.
-	MinUnclaimed *string
+	// MinUnclaimed is the per-token unclaimed threshold. Zero keeps any positive amount.
+	MinUnclaimed TokenAmountGate
 	// UnclaimedDesc sorts claimable rows highest-unclaimed first.
 	UnclaimedDesc bool
 	// MaxTxsPerRun caps claim transactions per run. The default selector reads
@@ -114,9 +198,8 @@ type FacilitatorRefundOptions struct {
 
 // FacilitatorSettleOptions is optional batching and pending filters for Settle.
 type FacilitatorSettleOptions struct {
-	// MinPending skips receivers whose on-chain pending (totalClaimed-totalSettled)
-	// is at or below this decimal uint256 threshold.
-	MinPending          *string
+	// MinPending skips onchain pending at or below the per-token threshold. Zero settles any positive pending.
+	MinPending          TokenAmountGate
 	MaxSettlesPerTx     int
 	MaxTxsPerRun        int
 	SettleQueryPageSize int
@@ -552,16 +635,16 @@ type receiverPendingRead struct {
 
 // Settle settles eligible receiver pairs and cleans up when pending reaches zero.
 // One receivers() eth_call selects one settle tx. That tx submits the pairs
-// from that read that still have pending above MinPending, and does not take
-// pairs from the next read. A failed read is skipped when another batch
-// succeeds. Every read failing is returned.
+// from that read that are above MinPending, and does not take pairs from the
+// next read. A failed read is skipped when another batch succeeds. Every read
+// failing is returned.
 func (m *FacilitatorChannelManager) Settle(
 	ctx context.Context,
 	opts *FacilitatorSettleOptions,
 ) ([]FacilitatorSettleResult, error) {
-	maxSettlesPerTx, maxTxsPerRun, pageSize, minPending := settlePassLimits(opts)
+	maxSettlesPerTx, maxTxsPerRun, pageSize, gate := settlePassLimits(opts)
 	receiverBudget := maxSettlesPerTx * maxTxsPerRun
-	targets, err := m.collectSettleTargetPages(ctx, pageSize, receiverBudget, minPending)
+	targets, err := m.collectSettleTargetPages(ctx, pageSize, receiverBudget)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +685,10 @@ func (m *FacilitatorChannelManager) Settle(
 				continue
 			}
 			readAny = true
-			eligible := m.receiversToSettle(ctx, reads, minPending, opts, readAt)
+			eligible, err := m.receiversToSettle(ctx, reads, gate, opts, readAt)
+			if err != nil {
+				return results, err
+			}
 			if len(eligible) == 0 {
 				continue
 			}
@@ -658,10 +744,10 @@ func (m *FacilitatorChannelManager) Settle(
 func (m *FacilitatorChannelManager) receiversToSettle(
 	ctx context.Context,
 	reads []receiverPendingRead,
-	minPending *big.Int,
+	gate TokenAmountGate,
 	opts *FacilitatorSettleOptions,
 	readAt int64,
-) []storage.SettleTarget {
+) ([]storage.SettleTarget, error) {
 	m.observeSettlePending(ctx, reads, time.Now().UnixMilli(), readAt)
 	eligible := make([]storage.SettleTarget, 0, len(reads))
 	for _, row := range reads {
@@ -672,12 +758,16 @@ func (m *FacilitatorChannelManager) receiversToSettle(
 			}
 			continue
 		}
-		if minPending != nil && row.pending.Cmp(minPending) <= 0 {
+		atomic, gated, err := gate.Resolve(row.target.Network, row.target.Token)
+		if err != nil {
+			return nil, err
+		}
+		if gated && row.pending.Cmp(atomic) <= 0 {
 			continue
 		}
 		eligible = append(eligible, row.target)
 	}
-	return eligible
+	return eligible, nil
 }
 
 // confirmSettledTargets re-reads the pairs one settle tx just submitted.
@@ -726,7 +816,7 @@ func (m *FacilitatorChannelManager) observeSettlePending(ctx context.Context, re
 	}
 }
 
-func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPerRun, pageSize int, minPending *big.Int) {
+func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPerRun, pageSize int, gate TokenAmountGate) {
 	maxSettlesPerTx = 100
 	maxTxsPerRun = 100
 	pageSize = defaultSettleQueryPageSize
@@ -740,21 +830,15 @@ func settlePassLimits(opts *FacilitatorSettleOptions) (maxSettlesPerTx, maxTxsPe
 		if opts.SettleQueryPageSize > 0 {
 			pageSize = opts.SettleQueryPageSize
 		}
-		if opts.MinPending != nil {
-			parsed, ok := storage.ParseUint256(*opts.MinPending)
-			if ok {
-				minPending = parsed
-			}
-		}
+		gate = opts.MinPending
 	}
-	return maxSettlesPerTx, maxTxsPerRun, pageSize, minPending
+	return maxSettlesPerTx, maxTxsPerRun, pageSize, gate
 }
 
 func (m *FacilitatorChannelManager) collectSettleTargetPages(
 	ctx context.Context,
 	pageSize int,
 	budget int,
-	minPending *big.Int,
 ) ([]storage.SettleTarget, error) {
 	if budget <= 0 {
 		return nil, nil
@@ -766,10 +850,10 @@ func (m *FacilitatorChannelManager) collectSettleTargetPages(
 		if budget-len(out) < limit {
 			limit = budget - len(out)
 		}
+		// The per-token gate is applied after the on-chain read.
 		page, err := m.settleTargetStorage.ListSettleTargets(ctx, storage.SettleQuery{
-			Limit:      &limit,
-			Cursor:     cursor,
-			MinPending: minPending,
+			Limit:  &limit,
+			Cursor: cursor,
 		})
 		if err != nil {
 			return nil, err

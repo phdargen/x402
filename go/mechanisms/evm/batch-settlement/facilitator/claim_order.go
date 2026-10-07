@@ -132,20 +132,22 @@ func (m *FacilitatorChannelManager) loadClaimRows(
 	if capacity > 0 {
 		limit = capacity
 	}
-	filter := storage.ChannelQuery{Limit: &limit}
-	if opts != nil {
-		filter.UnclaimedDesc = opts.UnclaimedDesc
-		filter.MinUnclaimed = opts.MinUnclaimed
+	if opts == nil || !opts.MinUnclaimed.active() {
+		filter := storage.ChannelQuery{Limit: &limit}
+		if opts != nil {
+			filter.UnclaimedDesc = opts.UnclaimedDesc
+		}
+		items, err := query(filter)
+		if err != nil {
+			return nil, err
+		}
+		if capacity > 0 && len(items) > capacity {
+			items = items[:capacity]
+		}
+		sortClaimRows(items, nil)
+		return items, nil
 	}
-	items, err := query(filter)
-	if err != nil {
-		return nil, err
-	}
-	if capacity > 0 && len(items) > capacity {
-		items = items[:capacity]
-	}
-	sortClaimRows(items, nil)
-	return items, nil
+	return m.selectGatedClaimRows(ctx, opts, limit)
 }
 
 func claimCapacity(opts *FacilitatorClaimOptions, maxClaimsPerBatch int) int {
@@ -182,4 +184,87 @@ func (m *FacilitatorChannelManager) claimRowQuery(
 		}
 		return page.Items, nil
 	}
+}
+
+// selectGatedClaimRows applies MinUnclaimed per token.
+func (m *FacilitatorChannelManager) selectGatedClaimRows(
+	ctx context.Context,
+	opts *FacilitatorClaimOptions,
+	limit int,
+) ([]*FacilitatorChannel, error) {
+	if limit <= 0 {
+		limit = defaultSettleQueryPageSize
+	}
+	var idleAt *int64
+	if opts.IdleSecs != nil {
+		at := time.Now().UnixMilli() - int64(*opts.IdleSecs)*1000
+		idleAt = &at
+	}
+	pageSize := limit
+	if pageSize > defaultSettleQueryPageSize {
+		pageSize = defaultSettleQueryPageSize
+	}
+	kept := make([]*FacilitatorChannel, 0, pageSize)
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		size := pageSize
+		page, err := storage.QueryChannels(ctx, m.storage, storage.ChannelQuery{
+			Kind:          storage.QueryKindClaimable,
+			Limit:         &size,
+			Cursor:        cursor,
+			UnclaimedDesc: opts.UnclaimedDesc,
+		}, nil)
+		if err != nil {
+			return nil, err
+		}
+		if page == nil || len(page.Items) == 0 {
+			break
+		}
+		for _, row := range page.Items {
+			meets, err := claimRowMeetsAmountGate(row, opts.MinUnclaimed, idleAt)
+			if err != nil {
+				return nil, err
+			}
+			if meets {
+				kept = append(kept, row)
+			}
+		}
+		if len(kept) >= limit || page.Cursor == "" || page.Cursor == cursor {
+			break
+		}
+		cursor = page.Cursor
+	}
+	if len(kept) > limit {
+		kept = kept[:limit]
+	}
+	sortClaimRows(kept, nil)
+	return kept, nil
+}
+
+// claimRowMeetsAmountGate reports whether row meets the token threshold.
+func claimRowMeetsAmountGate(row *FacilitatorChannel, gate TokenAmountGate, idleAt *int64) (bool, error) {
+	if row == nil {
+		return false, nil
+	}
+	base := row.Base()
+	if base == nil {
+		return false, nil
+	}
+	if base.WithdrawRequestedAt > 0 {
+		return true, nil
+	}
+	if idleAt != nil && base.LastRequestTimestamp <= *idleAt {
+		return true, nil
+	}
+	atomic, gated, err := gate.Resolve(base.Network, base.ChannelConfig.Token)
+	if err != nil {
+		return false, err
+	}
+	if !gated {
+		return true, nil
+	}
+	return storage.UnclaimedAmount(base).Cmp(atomic) >= 0, nil
 }

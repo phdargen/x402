@@ -973,7 +973,7 @@ func TestFacilitatorChannelManager_PendingSettleSkipped(t *testing.T) {
 	}
 }
 
-func TestFacilitatorChannelManager_ClaimPassesThresholdOptions(t *testing.T) {
+func TestFacilitatorChannelManager_ClaimGateLeavesQueryMinUnset(t *testing.T) {
 	auth := managedAuthorizer()
 	inner := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	ch := managerChannel(t, auth, "01", &channelFields{
@@ -984,12 +984,14 @@ func TestFacilitatorChannelManager_ClaimPassesThresholdOptions(t *testing.T) {
 	signer := newManagedSigner(t, nil)
 	mgr := newTestManager(t, signer, store, auth, false, nil)
 
-	minUnclaimed := "1000"
-	if _, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{MinUnclaimed: &minUnclaimed, UnclaimedDesc: true}); err != nil {
+	if _, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
+		MinUnclaimed:  TokenAmountGate{DefaultAssetAmount: "$0.001"},
+		UnclaimedDesc: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if store.queryFilter.MinUnclaimed == nil || *store.queryFilter.MinUnclaimed != minUnclaimed {
-		t.Fatalf("MinUnclaimed = %+v, want %q", store.queryFilter.MinUnclaimed, minUnclaimed)
+	if store.queryFilter.MinUnclaimed != nil {
+		t.Fatalf("MinUnclaimed = %q, want nil", *store.queryFilter.MinUnclaimed)
 	}
 	if !store.queryFilter.UnclaimedDesc {
 		t.Fatal("UnclaimedDesc not passed through")
@@ -1029,6 +1031,11 @@ func TestFacilitatorChannelManager_SelectClaimRowsHonored(t *testing.T) {
 	_, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
 		MaxClaimsPerBatch: 1,
 		MaxTxsPerRun:      2,
+		MinUnclaimed: TokenAmountGate{Assets: []TokenAtomicAmount{{
+			Network: managedNetwork,
+			Asset:   managedToken,
+			Amount:  "999999999",
+		}}},
 		SelectClaimRows: func(ctx context.Context, query func(storage.ChannelQuery) ([]*FacilitatorChannel, error), capacity int) ([]*FacilitatorChannel, error) {
 			if capacity != 2 {
 				t.Fatalf("capacity = %d, want 2", capacity)
@@ -1073,7 +1080,6 @@ func TestClaimRowQuery_UsesMinUnclaimedFromTheQuery(t *testing.T) {
 	minUnclaimed := "1000"
 	_, err := mgr.loadClaimRows(context.Background(), &FacilitatorClaimOptions{
 		IdleSecs:          &idle,
-		MinUnclaimed:      &minUnclaimed,
 		MaxClaimsPerBatch: 1,
 		MaxTxsPerRun:      1,
 		SelectClaimRows: func(_ context.Context, query func(storage.ChannelQuery) ([]*FacilitatorChannel, error), _ int) ([]*FacilitatorChannel, error) {
@@ -1127,9 +1133,8 @@ func TestFacilitatorChannelManager_SettleMulticall(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	minPending := "1"
 	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
-		MinPending:      &minPending,
+		MinPending:      TokenAmountGate{DefaultAssetAmount: "$0.001"},
 		MaxSettlesPerTx: 10,
 		MaxTxsPerRun:    1,
 	})
@@ -1141,6 +1146,138 @@ func TestFacilitatorChannelManager_SettleMulticall(t *testing.T) {
 	}
 	if signer.writeFns[len(signer.writeFns)-1] != "multicall" {
 		t.Fatalf("writeFns = %v, want multicall", signer.writeFns)
+	}
+}
+
+func TestFacilitatorChannelManager_SettleAmountGate(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	usdcReceiver := "0x1111111111111111111111111111111111111111"
+	otherReceiver := "0x2222222222222222222222222222222222222222"
+	zeroReceiver := "0x3333333333333333333333333333333333333333"
+	otherToken := "0x0000000000000000000000000000000000000001"
+	signer := newManagedSigner(t, &managedRPC{
+		receiverClaimed: big.NewInt(1_000_000),
+		receiverSettled: big.NewInt(1_000_000),
+		receiverSettledByAddr: map[string]*big.Int{
+			usdcReceiver:  big.NewInt(0),
+			otherReceiver: big.NewInt(999_999),
+		},
+	})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	mgr.settleTargetStorage = storage.NewInMemorySettleTargetStorage()
+	for _, pair := range []struct{ receiver, token string }{
+		{usdcReceiver, managedToken},
+		{otherReceiver, otherToken},
+		{zeroReceiver, managedToken},
+	} {
+		if err := mgr.settleTargetStorage.RecordClaimed(context.Background(), storage.SettleTargetClaimDelta{
+			Network:  managedNetwork,
+			Receiver: pair.receiver,
+			Token:    pair.token,
+			Amount:   bigInt(1),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// RecordClaimed stamps updatedAt. A read in the same millisecond keeps the row.
+	time.Sleep(2 * time.Millisecond)
+
+	results, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MinPending: TokenAmountGate{DefaultAssetAmount: "$1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || signer.writeCalls != 1 {
+		t.Fatalf("results=%+v writes=%d", results, signer.writeCalls)
+	}
+	if !strings.EqualFold(results[0].Receiver, otherReceiver) || !strings.EqualFold(results[0].Token, otherToken) {
+		t.Fatalf("settled %+v, want ungated token", results[0])
+	}
+	page, err := mgr.settleTargetStorage.ListSettleTargets(context.Background(), storage.SettleQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page == nil || len(page.Items) != 2 {
+		t.Fatalf("remaining = %+v", page)
+	}
+	for _, item := range page.Items {
+		if strings.EqualFold(item.Receiver, zeroReceiver) {
+			t.Fatal("zero pending was not cleaned up")
+		}
+	}
+}
+
+func TestFacilitatorChannelManager_SettleRejectsDollarAssetAmount(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	signer := newManagedSigner(t, &managedRPC{receiverClaimed: bigInt(5000), receiverSettled: bigInt(0)})
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+	mgr.settleTargetStorage = storage.NewInMemorySettleTargetStorage()
+	if err := mgr.settleTargetStorage.RecordClaimed(context.Background(), storage.SettleTargetClaimDelta{
+		Network:  managedNetwork,
+		Receiver: managedReceiver,
+		Token:    managedToken,
+		Amount:   bigInt(1),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := mgr.Settle(context.Background(), &FacilitatorSettleOptions{
+		MinPending: TokenAmountGate{Assets: []TokenAtomicAmount{{
+			Network: managedNetwork,
+			Asset:   managedToken,
+			Amount:  "$1",
+		}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dollar") {
+		t.Fatalf("err = %v", err)
+	}
+	if signer.writeCalls != 0 {
+		t.Fatalf("writes = %d", signer.writeCalls)
+	}
+}
+
+func TestFacilitatorChannelManager_ClaimAmountGate(t *testing.T) {
+	auth := managedAuthorizer()
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	dust := managerChannel(t, auth, "01", &channelFields{
+		ChargedCumulativeAmount: "999",
+		SignedMaxClaimable:      "999",
+		ChargeCount:             1,
+	})
+	atThreshold := managerChannel(t, auth, "02", &channelFields{
+		ChargedCumulativeAmount: "1000",
+		SignedMaxClaimable:      "1000",
+		ChargeCount:             1,
+	})
+	cfg := managedConfig(auth.addr, "03")
+	cfg.Token = "0x0000000000000000000000000000000000000001"
+	ungated := storedManagedChannel(cfg, mustChannelId(t, cfg), &channelFields{
+		ChargedCumulativeAmount: "1",
+		SignedMaxClaimable:      "1",
+		ChargeCount:             1,
+	})
+	seedManagedChannel(t, store, dust)
+	seedManagedChannel(t, store, atThreshold)
+	seedManagedChannel(t, store, ungated)
+	signer := newManagedSigner(t, nil)
+	mgr := newTestManager(t, signer, store, auth, false, nil)
+
+	results, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
+		MinUnclaimed: TokenAmountGate{DefaultAssetAmount: "$0.001"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Vouchers != 2 {
+		t.Fatalf("results = %+v", results)
+	}
+	gotDust, _ := store.Get(context.Background(), dust.ChannelId)
+	gotAt, _ := store.Get(context.Background(), atThreshold.ChannelId)
+	gotUngated, _ := store.Get(context.Background(), ungated.ChannelId)
+	if gotDust.TotalClaimed != "0" || gotAt.TotalClaimed != "1000" || gotUngated.TotalClaimed != "1" {
+		t.Fatalf("dust=%s at=%s ungated=%s", gotDust.TotalClaimed, gotAt.TotalClaimed, gotUngated.TotalClaimed)
 	}
 }
 
@@ -1423,10 +1560,9 @@ func TestFacilitatorChannelManager_ClaimSubmitsActiveAndIdleRows(t *testing.T) {
 	signer := newManagedSigner(t, nil)
 	mgr := newTestManager(t, signer, store, auth, false, nil)
 	idleSecs := 86400
-	minUnclaimed := "1000"
 	results, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
 		IdleSecs:     &idleSecs,
-		MinUnclaimed: &minUnclaimed,
+		MinUnclaimed: TokenAmountGate{DefaultAssetAmount: "$0.001"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1458,10 +1594,9 @@ func TestFacilitatorChannelManager_ClaimSubmitsRecentWithdrawPendingBelowThresho
 	signer := newManagedSigner(t, nil)
 	mgr := newTestManager(t, signer, store, auth, false, nil)
 	idleSecs := 86400
-	minUnclaimed := "1000"
 	results, err := mgr.Claim(context.Background(), &FacilitatorClaimOptions{
 		IdleSecs:     &idleSecs,
-		MinUnclaimed: &minUnclaimed,
+		MinUnclaimed: TokenAmountGate{DefaultAssetAmount: "$0.001"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3042,6 +3177,110 @@ func TestClaimSlice_ResolvePendingConflictDoesNotFailPass(t *testing.T) {
 	if got.TotalClaimed != "1000" || got.ChargeCount != 0 {
 		t.Fatalf("first channel %+v", got)
 	}
+}
+
+func TestTokenAmountGateResolve(t *testing.T) {
+	base := evm.DefaultAssets["eip155:8453"][0]
+	sepolia := evm.DefaultAssets["eip155:84532"][0]
+	mezo := evm.DefaultAssets["eip155:31611"][0]
+	world := evm.DefaultAssets["eip155:480"][0]
+	unknown := "0x0000000000000000000000000000000000000001"
+
+	t.Run("dollar amount uses default asset decimals", func(t *testing.T) {
+		gate := TokenAmountGate{DefaultAssetAmount: "$1"}
+		got, ok, err := gate.Resolve("eip155:8453", base.Asset)
+		if err != nil || !ok || got.Cmp(big.NewInt(1_000_000)) != 0 {
+			t.Fatalf("base = %v ok=%v err=%v", got, ok, err)
+		}
+		got, ok, err = gate.Resolve("eip155:84532", strings.ToLower(sepolia.Asset))
+		if err != nil || !ok || got.Cmp(big.NewInt(1_000_000)) != 0 {
+			t.Fatalf("sepolia = %v ok=%v err=%v", got, ok, err)
+		}
+		got, ok, err = gate.Resolve("eip155:480", world.Asset)
+		if err != nil || !ok || got.Cmp(big.NewInt(1_000_000)) != 0 {
+			t.Fatalf("world = %v ok=%v err=%v", got, ok, err)
+		}
+		want, _ := new(big.Int).SetString("1000000000000000000", 10)
+		got, ok, err = gate.Resolve("eip155:31611", mezo.Asset)
+		if err != nil || !ok || got.Cmp(want) != 0 {
+			t.Fatalf("mezo = %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("explicit atomic amount beats the dollar amount", func(t *testing.T) {
+		gate := TokenAmountGate{
+			DefaultAssetAmount: "$1",
+			Assets: []TokenAtomicAmount{{
+				Network: "eip155:84532",
+				Asset:   strings.ToLower(sepolia.Asset),
+				Amount:  "42",
+			}},
+		}
+		got, ok, err := gate.Resolve("eip155:84532", sepolia.Asset)
+		if err != nil || !ok || got.Cmp(big.NewInt(42)) != 0 {
+			t.Fatalf("explicit = %v ok=%v err=%v", got, ok, err)
+		}
+		got, ok, err = gate.Resolve("eip155:8453", base.Asset)
+		if err != nil || !ok || got.Cmp(big.NewInt(1_000_000)) != 0 {
+			t.Fatalf("other network = %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("explicit symbol matches the default asset", func(t *testing.T) {
+		gate := TokenAmountGate{
+			DefaultAssetAmount: "$1",
+			Assets: []TokenAtomicAmount{{
+				Network: "eip155:84532",
+				Asset:   "USDC",
+				Amount:  "7",
+			}},
+		}
+		got, ok, err := gate.Resolve("eip155:84532", sepolia.Asset)
+		if err != nil || !ok || got.Cmp(big.NewInt(7)) != 0 {
+			t.Fatalf("symbol = %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("unknown token is ungated", func(t *testing.T) {
+		gate := TokenAmountGate{DefaultAssetAmount: "$1"}
+		got, ok, err := gate.Resolve("eip155:8453", unknown)
+		if err != nil || ok || got != nil {
+			t.Fatalf("unknown = %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("empty dollar amount leaves default assets ungated", func(t *testing.T) {
+		got, ok, err := (TokenAmountGate{}).Resolve("eip155:8453", base.Asset)
+		if err != nil || ok || got != nil {
+			t.Fatalf("zero gate = %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("dollar string in an explicit amount is rejected", func(t *testing.T) {
+		gate := TokenAmountGate{
+			DefaultAssetAmount: "$1",
+			Assets: []TokenAtomicAmount{{
+				Network: "eip155:8453",
+				Asset:   base.Asset,
+				Amount:  "$1",
+			}},
+		}
+		got, ok, err := gate.Resolve("eip155:8453", base.Asset)
+		if err == nil || ok || got != nil || !strings.Contains(err.Error(), "dollar") {
+			t.Fatalf("got %v ok=%v err=%v", got, ok, err)
+		}
+	})
+
+	t.Run("invalid dollar amount errors for a default asset only", func(t *testing.T) {
+		gate := TokenAmountGate{DefaultAssetAmount: "$nope"}
+		if _, ok, err := gate.Resolve("eip155:8453", base.Asset); err == nil || ok {
+			t.Fatalf("default asset err=%v ok=%v", err, ok)
+		}
+		got, ok, err := gate.Resolve("eip155:8453", unknown)
+		if err != nil || ok || got != nil {
+			t.Fatalf("unknown = %v ok=%v err=%v", got, ok, err)
+		}
+	})
 }
 
 func TestApplyRefundChannel_TotalClaimedIsMonotonic(t *testing.T) {
