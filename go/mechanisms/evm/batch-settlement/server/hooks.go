@@ -580,7 +580,11 @@ func handleAfterVerify(s *BatchSettlementEvmScheme, ctx x402.VerifyResultContext
 	if ctx.Requirements.GetScheme() != batchsettlement.SchemeBatched {
 		return nil, nil
 	}
-	if ctx.Result == nil || !ctx.Result.IsValid || ctx.Result.Payer == "" {
+	if ctx.Result != nil && !ctx.Result.IsValid {
+		// A structured facilitator rejection does not run OnVerifyFailure, so release the BeforeVerify admission lock here.
+		return nil, s.ClearPendingRequest(ctx.Payload)
+	}
+	if ctx.Result == nil || ctx.Result.Payer == "" {
 		return nil, nil
 	}
 
