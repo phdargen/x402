@@ -1005,7 +1005,7 @@ func (m *mockEscrowScheme) SettleOnCancel(ctx x402.VerifiedPaymentCanceledContex
 }
 
 // mockAfterHandlerCancelScheme is authorization-flow with SettleOnCancel so
-// cancel settle can run without a before-handler deposit (lock-only cancel).
+// cancel settle can run without a before-handler deposit.
 type mockAfterHandlerCancelScheme struct {
 	mockSchemeNetworkServer
 	settleOnCancel func(ctx x402.VerifiedPaymentCanceledContext) (*types.PaymentRequirements, error)
@@ -1349,7 +1349,7 @@ func TestPaymentWrapper_SettleOnCancelPrefersCancelReceipt(t *testing.T) {
 	}
 }
 
-func TestPaymentWrapper_LockOnlyCancelOnThrowOmitsPaymentMeta(t *testing.T) {
+func TestPaymentWrapper_CancelWithoutBeforeHandlerOmitsPaymentMeta(t *testing.T) {
 	var settleCalls int
 	mockFacilitator := &mockFacilitatorClient{
 		settleFunc: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*x402.SettleResponse, error) {
@@ -1407,11 +1407,11 @@ func TestPaymentWrapper_LockOnlyCancelOnThrowOmitsPaymentMeta(t *testing.T) {
 		t.Fatalf("expected Internal Server Error content, got %#v", result.Content[0])
 	}
 	if settleCalls != 1 {
-		t.Fatalf("expected lock-only cancel settle, got %d settle calls", settleCalls)
+		t.Fatalf("expected cancel settle without a before-handler deposit, got %d settle calls", settleCalls)
 	}
 	if result.Meta != nil {
 		if _, present := result.Meta[MCP_PAYMENT_RESPONSE_META_KEY]; present {
-			t.Fatalf("expected no payment-response meta on lock-only cancel, got %#v", result.Meta)
+			t.Fatalf("expected no payment-response meta without a before-handler settlement, got %#v", result.Meta)
 		}
 	}
 }

@@ -1066,14 +1066,14 @@ func TestBuildFailurePathSettlementResponse_EchoesBeforeHandler(t *testing.T) {
 	}
 }
 
-func TestBuildFailurePathSettlementResponse_OmitsLockOnlyCancel(t *testing.T) {
+func TestBuildFailurePathSettlementResponse_OmitsCancelWithoutBeforeHandler(t *testing.T) {
 	cancel := &SettleResponse{
 		Success:     true,
 		Transaction: "0xcancel",
 		Network:     "eip155:8453",
 	}
 	if got := BuildFailurePathSettlementResponse(cancel, nil, nil); got != nil {
-		t.Fatalf("expected lock-only cancel omitted, got %+v", got)
+		t.Fatalf("expected cancel without a before-handler settlement to be omitted, got %+v", got)
 	}
 }
 

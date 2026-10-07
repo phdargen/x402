@@ -1003,10 +1003,6 @@ func main() {
 	var evmSigner *realFacilitatorEvmSigner
 	var batchChannelManager *batchedevm.FacilitatorChannelManager
 
-	// E2E_FACILITATOR_VOUCHER_STORE=true enables facilitator-managed batch custody
-	// (in-memory voucher store + channel manager), mirroring
-	// examples/go/facilitator/batch-settlement. Unset keeps today's minimal
-	// self-managed registration.
 	voucherStoreEnabled := func() bool {
 		raw := strings.TrimSpace(strings.ToLower(os.Getenv("E2E_FACILITATOR_VOUCHER_STORE")))
 		return raw == "1" || raw == "true" || raw == "yes"
@@ -1036,9 +1032,7 @@ func main() {
 			log.Fatalf("Failed to create batch-settlement authorizer: %v", err)
 		}
 		log.Printf("EVM Receiver Authorizer (batch-settlement): %s", batchedAuthorizer.Address())
-		// ResolveCallerIdentity makes /supported advertise delegatedRefund: true for the
-		// caller-authenticated refund path. The harness has no real caller authentication, so
-		// every settle caller resolves to one identity.
+
 		batchRefundIdentity := batchedevm.BatchSettlementEvmSchemeConfig{
 			ResolveCallerIdentity: func(_ batchedevm.DelegatedSettleContext) (string, error) {
 				return "x402-e2e", nil
