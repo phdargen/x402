@@ -89,6 +89,7 @@ function isTransientPaymentFailure(error?: string): boolean {
     e.includes('replacement transaction') ||
     e.includes('underpriced') ||
     e.includes('insufficient allowance') ||
+    e.includes('allowance_required') ||
     e.includes('timeout') ||
     e.includes('timed out') ||
     e.includes('econnreset') ||
