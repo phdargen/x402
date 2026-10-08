@@ -180,6 +180,64 @@ func (m *mockValidatingScheme) ValidateFacilitatorSupport(_ Network, _ types.Sup
 	return errors.New(m.problem)
 }
 
+func TestFindSupportedKindPrefersEarlierFacilitator(t *testing.T) {
+	ctx := context.Background()
+	first := &mockServerFacilitatorClient{
+		kinds: []SupportedKind{{
+			X402Version: 2,
+			Scheme:      "batch-settlement",
+			Network:     "eip155:84532",
+			Extra:       map[string]interface{}{"receiverAuthorizer": "0xfirst"},
+		}},
+	}
+	second := &mockServerFacilitatorClient{
+		kinds: []SupportedKind{{
+			X402Version: 2,
+			Scheme:      "batch-settlement",
+			Network:     "eip155:84532",
+			Extra:       map[string]interface{}{"receiverAuthorizer": "0xsecond"},
+		}},
+	}
+	server := Newx402ResourceServer(
+		WithFacilitatorClient(first),
+		WithFacilitatorClient(second),
+		WithSchemeServer("eip155:84532", &mockSchemeNetworkServer{
+			scheme: "batch-settlement",
+			enhanceReqs: func(_ context.Context, base types.PaymentRequirements, supported types.SupportedKind, _ []string) (types.PaymentRequirements, error) {
+				if base.Extra == nil {
+					base.Extra = map[string]interface{}{}
+				}
+				base.Extra["receiverAuthorizer"] = supported.Extra["receiverAuthorizer"]
+				return base, nil
+			},
+		}),
+	)
+	if err := server.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	kind, _, found := server.findSupportedKind("eip155:84532", "batch-settlement")
+	if !found {
+		t.Fatal("expected a supported kind")
+	}
+	if kind.Extra["receiverAuthorizer"] != "0xfirst" {
+		t.Fatalf("findSupportedKind authorizer = %v, want 0xfirst", kind.Extra["receiverAuthorizer"])
+	}
+
+	reqs, err := server.BuildPaymentRequirementsFromConfig(ctx, ResourceConfig{
+		Scheme:  "batch-settlement",
+		Network: "eip155:84532",
+		PayTo:   "0xpayee",
+		Price:   "$0.001",
+	})
+	if err != nil {
+		t.Fatalf("BuildPaymentRequirementsFromConfig: %v", err)
+	}
+	if len(reqs) != 1 || reqs[0].Extra["receiverAuthorizer"] != "0xfirst" {
+		t.Fatalf("built requirements authorizer = %v, want 0xfirst", reqs[0].Extra["receiverAuthorizer"])
+	}
+}
+
 func TestServerInitializeRejectsCapabilityProblems(t *testing.T) {
 	ctx := context.Background()
 	mockClient := &mockServerFacilitatorClient{

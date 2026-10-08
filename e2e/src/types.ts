@@ -215,6 +215,10 @@ export interface TestEndpoint {
   extensions?: string[];
   /** Merged catalog `schemeExtra` for harness branching (auth-capture modes, etc.). */
   schemeExtra?: Record<string, string | number | boolean>;
+  /** Catalog SDKs that implement this route for every role. Absent on legacy endpoints. */
+  sdks?: string[];
+  /** Catalog SDKs that implement only the client role. */
+  clientSdks?: string[];
   /** For MCP tools: the tool name used in tools/call. Defaults to path if not specified. */
   toolName?: string;
   /** For MCP tools: expected MCP wire transport for discovery metadata. */
