@@ -195,6 +195,10 @@ type EndpointLike = {
   schemeOptions?: Record<string, boolean>;
   extensions?: string[];
   schemeExtra?: Record<string, string | number | boolean>;
+  /** Catalog SDKs that implement this route for every role. */
+  sdks?: SdkId[];
+  /** Catalog SDKs that implement only the client role. */
+  clientSdks?: SdkId[];
   health?: boolean;
   close?: boolean;
   /** MCP tool name, equal to `path` for MCP endpoints (`method: 'tool'`). */
@@ -408,6 +412,8 @@ export function sdkRouteToEndpoint(route: SdkRoute, transport: RouteTransport = 
       paymentFlow: route.paymentFlow,
       schemeOptions: route.schemeOptions,
       extensions: route.extensions,
+      sdks: route.sdks,
+      ...(route.clientSdks ? { clientSdks: route.clientSdks } : {}),
       ...(route.schemeExtra ? { schemeExtra: route.schemeExtra } : {}),
     };
   }
@@ -423,6 +429,8 @@ export function sdkRouteToEndpoint(route: SdkRoute, transport: RouteTransport = 
     paymentFlow: route.paymentFlow,
     schemeOptions: route.schemeOptions,
     extensions: route.extensions,
+    sdks: route.sdks,
+    ...(route.clientSdks ? { clientSdks: route.clientSdks } : {}),
     ...(route.schemeExtra ? { schemeExtra: route.schemeExtra } : {}),
   };
 }

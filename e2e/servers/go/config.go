@@ -2,8 +2,6 @@ package server
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	x402 "github.com/x402-foundation/x402/go/v2"
 	x402http "github.com/x402-foundation/x402/go/v2/http"
 	authcaptureserver "github.com/x402-foundation/x402/go/v2/mechanisms/evm/auth-capture/server"
@@ -15,6 +13,8 @@ import (
 	svm "github.com/x402-foundation/x402/go/v2/mechanisms/svm/exact/server"
 	uptosvm "github.com/x402-foundation/x402/go/v2/mechanisms/svm/upto/server"
 	svmsigners "github.com/x402-foundation/x402/go/v2/signers/svm"
+	"os"
+	"strings"
 )
 
 // Config holds shared env for Go e2e resource servers (gin/nethttp/echo).
@@ -77,6 +77,20 @@ func NewFacilitatorClient(cfg Config) *x402http.HTTPFacilitatorClient {
 	return x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
 		URL: cfg.FacilitatorURL,
 	})
+}
+
+// NewFacilitatorClients returns the real facilitator first, then the mock
+// fallback when MOCK_FACILITATOR_URL is set. The mock only fills /supported
+// gaps so startup validation can succeed for routes the real facilitator does
+// not implement. Verify and settle stay on the real facilitator.
+func NewFacilitatorClients(cfg Config) []x402.FacilitatorClient {
+	clients := []x402.FacilitatorClient{NewFacilitatorClient(cfg)}
+	if mockURL := strings.TrimSpace(os.Getenv("MOCK_FACILITATOR_URL")); mockURL != "" {
+		clients = append(clients, x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
+			URL: mockURL,
+		}))
+	}
+	return clients
 }
 
 // SchemeBatched is re-exported for route builders that need the scheme name.

@@ -120,16 +120,43 @@ type labeledHook[F any] struct {
 type SupportedCache struct {
 	mu     sync.RWMutex
 	data   map[string]SupportedResponse // key is facilitator identifier
+	order  []string                     // registration order; earlier facilitators win
 	expiry map[string]time.Time
 	ttl    time.Duration
 }
 
-// Set stores a supported response in the cache
+// Set stores a supported response in the cache.
+// The first Set for a key records registration order. Later facilitators that
+// advertise the same scheme are fallbacks, not replacements.
 func (c *SupportedCache) Set(key string, response SupportedResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, exists := c.data[key]; !exists {
+		c.order = append(c.order, key)
+	}
 	c.data[key] = response
 	c.expiry[key] = time.Now().Add(c.ttl)
+}
+
+// snapshotLocked returns cached responses in registration order.
+// The caller must hold c.mu.
+func (c *SupportedCache) snapshotLocked() []SupportedResponse {
+	if len(c.order) == 0 {
+		out := make([]SupportedResponse, 0, len(c.data))
+		for _, response := range c.data {
+			out = append(out, response)
+		}
+		return out
+	}
+	out := make([]SupportedResponse, 0, len(c.order))
+	for _, key := range c.order {
+		response, ok := c.data[key]
+		if !ok {
+			continue
+		}
+		out = append(out, response)
+	}
+	return out
 }
 
 // Get retrieves a supported response from the cache
@@ -157,6 +184,7 @@ func (c *SupportedCache) Clear() {
 
 	clear(c.data)
 	clear(c.expiry)
+	c.order = nil
 }
 
 // ResourceServerOption configures the server
@@ -280,7 +308,7 @@ func (s *x402ResourceServer) findSupportedKind(network Network, scheme string) (
 	s.supportedCache.mu.RLock()
 	defer s.supportedCache.mu.RUnlock()
 
-	for _, cachedResponse := range s.supportedCache.data {
+	for _, cachedResponse := range s.supportedCache.snapshotLocked() {
 		for _, kind := range cachedResponse.Kinds {
 			if kind.X402Version != 2 || kind.Scheme != scheme || string(kind.Network) != string(network) {
 				continue
@@ -1753,7 +1781,7 @@ func (s *x402ResourceServer) BuildPaymentRequirementsFromConfig(ctx context.Cont
 
 	// Check each cached facilitator response for matching supported kind
 	s.supportedCache.mu.RLock()
-	for _, cachedResponse := range s.supportedCache.data {
+	for _, cachedResponse := range s.supportedCache.snapshotLocked() {
 		// Iterate through flat kinds array (version is in each element)
 		for _, kind := range cachedResponse.Kinds {
 			// Match on scheme and network (only check V2 kinds)
