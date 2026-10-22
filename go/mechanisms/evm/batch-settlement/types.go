@@ -117,10 +117,6 @@ type BatchSettlementDepositPayload struct {
 	Cancel        bool                         `json:"cancel,omitempty"`
 }
 
-// BatchSettlementEnrichedDepositPayload is a deposit stamped with server/facilitator
-// custody fields. Same wire shape as the client payload plus optional pendingId/cancel.
-type BatchSettlementEnrichedDepositPayload = BatchSettlementDepositPayload
-
 // BatchSettlementVoucherPayload is sent on subsequent requests (no new deposit).
 type BatchSettlementVoucherPayload struct {
 	Type          string                       `json:"type"` // "voucher"
@@ -129,10 +125,6 @@ type BatchSettlementVoucherPayload struct {
 	PendingId     string                       `json:"pendingId,omitempty"`
 	Cancel        bool                         `json:"cancel,omitempty"`
 }
-
-// BatchSettlementEnrichedVoucherPayload is a voucher stamped with server/facilitator
-// custody fields. Same wire shape as the client payload plus optional pendingId/cancel.
-type BatchSettlementEnrichedVoucherPayload = BatchSettlementVoucherPayload
 
 // BatchSettlementRefundPayload is the client-side cooperative-refund request.
 // `Amount` is optional — when absent, it defaults to the full remaining balance.

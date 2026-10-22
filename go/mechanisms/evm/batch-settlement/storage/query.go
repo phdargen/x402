@@ -89,7 +89,7 @@ func MatchesChannelQuery(channel *Channel, filter ChannelQuery) bool {
 	if channel == nil {
 		return false
 	}
-	if filter.Network != "" && channelNetwork(channel) != filter.Network {
+	if filter.Network != "" && channel.Network != filter.Network {
 		return false
 	}
 
@@ -196,7 +196,7 @@ func QueryChannelsByReceiverToken[T ChannelRecord[T]](
 		if base == nil {
 			continue
 		}
-		if network != "" && channelNetwork(base) != network {
+		if network != "" && base.Network != network {
 			continue
 		}
 		if strings.ToLower(base.ChannelConfig.Receiver) != wantReceiver ||
@@ -255,13 +255,6 @@ func UnclaimedAmount(channel *Channel) *big.Int {
 		return new(big.Int)
 	}
 	return delta
-}
-
-func channelNetwork(channel *Channel) string {
-	if channel == nil {
-		return ""
-	}
-	return channel.Network
 }
 
 func PageItems[T any](items []T, limit *int, cursor string) *QueryPage[T] {

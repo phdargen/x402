@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"math/big"
 	"time"
 
 	batchsettlement "github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement"
@@ -62,16 +61,16 @@ func ApplyClaimedTotals[T ChannelRecord[T]](ctx context.Context, store ChannelSt
 		if err != nil {
 			return err
 		}
-		claimedAmount, ok := new(big.Int).SetString(claim.TotalClaimed, 10)
-		if !ok || claimedAmount.Sign() < 0 {
+		claimedAmount, ok := ParseUint256(claim.TotalClaimed)
+		if !ok {
 			continue
 		}
 		if _, err := store.UpdateChannel(ctx, channelId, func(current T) T {
 			if isZeroRecord(current) {
 				return current
 			}
-			currentClaimed, ok := new(big.Int).SetString(current.Base().TotalClaimed, 10)
-			if !ok || currentClaimed.Sign() < 0 {
+			currentClaimed, ok := ParseUint256(current.Base().TotalClaimed)
+			if !ok {
 				return current
 			}
 			if claimedAmount.Cmp(currentClaimed) <= 0 {

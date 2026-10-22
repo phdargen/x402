@@ -270,12 +270,6 @@ func (s *BatchSettlementEvmScheme) MergeRequestContext(payload any, partial Batc
 	s.requestContexts[key] = &merged
 }
 
-func (s *BatchSettlementEvmScheme) requestContextCount() int {
-	s.requestContextsMu.Lock()
-	defer s.requestContextsMu.Unlock()
-	return len(s.requestContexts)
-}
-
 // ReadRequestContext returns the per-payload request context without clearing it.
 func (s *BatchSettlementEvmScheme) ReadRequestContext(payload any) *BatchSettlementRequestContext {
 	key := requestContextKey(payload)
@@ -353,12 +347,8 @@ func (s *BatchSettlementEvmScheme) EnrichPaymentRequiredResponse(ctx x402.Paymen
 	switch s.configuredMode {
 	case VoucherStoreModeFacilitator:
 		handleManagedEnrichPaymentRequiredResponse(s, ctx)
-		return
 	case VoucherStoreModeSelf:
 		handleEnrichPaymentRequiredResponse(s, ctx)
-		return
-	default:
-		_ = s.configuredMode
 	}
 }
 
@@ -385,10 +375,7 @@ func handleEnrichPaymentRequiredResponse(s *BatchSettlementEvmScheme, ctx x402.P
 		}
 	}
 
-	var session *ChannelSession
-	if ctx.PaymentPayload != nil {
-		session = s.TakeChannelSnapshot(ctx.PaymentPayload)
-	}
+	session := s.TakeChannelSnapshot(ctx.PaymentPayload)
 	if session == nil {
 		stored, err := s.storage.Get(context.Background(), channelId)
 		if err != nil || stored == nil {
@@ -397,14 +384,7 @@ func handleEnrichPaymentRequiredResponse(s *BatchSettlementEvmScheme, ctx x402.P
 		session = stored
 	}
 
-	channelState := batchsettlement.BatchSettlementChannelStateExtra{
-		ChannelId:               session.ChannelId,
-		Balance:                 session.Balance,
-		TotalClaimed:            session.TotalClaimed,
-		WithdrawRequestedAt:     session.WithdrawRequestedAt,
-		RefundNonce:             fmt.Sprintf("%d", session.RefundNonce),
-		ChargedCumulativeAmount: session.ChargedCumulativeAmount,
-	}
+	channelState := storage.ChannelStateExtra(session, &session.ChargedCumulativeAmount)
 	voucherState := batchsettlement.BatchSettlementVoucherStateExtra{
 		SignedMaxClaimable: session.SignedMaxClaimable,
 		Signature:          session.Signature,
@@ -590,9 +570,6 @@ func voucherStoreModeMismatchAbort() *x402.BeforeHookResult {
 }
 
 func extraInt(extra map[string]interface{}, key string) (int, bool) {
-	if extra == nil {
-		return 0, false
-	}
 	return batchsettlement.ExtraInt(extra[key])
 }
 
@@ -996,7 +973,7 @@ func (s *BatchSettlementEvmScheme) ResolveMinDepositHint(requirements types.Paym
 
 	var configuredMin *big.Int
 	if override, isString := routeOverride.(string); isString {
-		if isAtomicMinDeposit(override) {
+		if isDecimalUint(override) {
 			parsed, err := parseAtomicMinDeposit(override)
 			if err != nil {
 				return "", err
@@ -1041,7 +1018,7 @@ func (s *BatchSettlementEvmScheme) resolveRouteMoneyMinDeposit(money string, req
 }
 
 func parseAtomicMinDeposit(amount string) (*big.Int, error) {
-	if !isAtomicMinDeposit(amount) {
+	if !isDecimalUint(amount) {
 		return nil, fmt.Errorf("minDeposit must resolve to a positive integer")
 	}
 	value, ok := new(big.Int).SetString(amount, 10)
@@ -1051,16 +1028,23 @@ func parseAtomicMinDeposit(amount string) (*big.Int, error) {
 	return value, nil
 }
 
-func isAtomicMinDeposit(amount string) bool {
-	if amount == "" {
+func isDecimalUint(value string) bool {
+	if value == "" {
 		return false
 	}
-	for i := 0; i < len(amount); i++ {
-		if amount[i] < '0' || amount[i] > '9' {
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
 			return false
 		}
 	}
 	return true
+}
+
+func bigOrZero(value string) *big.Int {
+	if n, ok := new(big.Int).SetString(value, 10); ok {
+		return n
+	}
+	return new(big.Int)
 }
 
 // Helper functions

@@ -106,7 +106,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 			if unreconciledClaimDelta(stored, view.totalClaimed) {
 				m.logger.Warn("batch-settlement: onchain totalClaimed advanced without an attested claim marker", "channel_id", channelID, "network", network)
 			}
-			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, rows); err != nil {
+			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, lookup); err != nil {
 				return nil, err
 			}
 			if err := m.syncClaimMirror(ctx, channelID, nil, view.totalClaimed, 0, false); err != nil {
@@ -120,7 +120,7 @@ func (m *FacilitatorChannelManager) prepareClaimBatch(
 		}
 		if view.balance.Cmp(view.totalClaimed) <= 0 {
 			m.logger.Info("batch-settlement: drained channel", "channel_id", channelID, "network", network)
-			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, rows); err != nil {
+			if err := m.applyPreflightSettleDelta(ctx, network, channelID, claim.Voucher.Channel.Receiver, claim.Voucher.Channel.Token, view.totalClaimed, lookup); err != nil {
 				return nil, err
 			}
 			if err := m.syncClaimMirror(ctx, channelID, view.balance, view.totalClaimed, view.withdrawAt, true); err != nil {
@@ -418,7 +418,7 @@ func (m *FacilitatorChannelManager) submitClaimLeaf(
 		return nil, releaseErr
 	}
 	if response == nil || response.ErrorReason != ErrClaimSimulationFailed {
-		return nil, fmt.Errorf("%s", formatFailure("Claim", response))
+		return nil, errors.New(formatFailure("Claim", response))
 	}
 	if len(kept) == 1 {
 		channelID, idErr := batchsettlement.ComputeChannelId(kept[0].Voucher.Channel, network)
@@ -495,13 +495,13 @@ func (m *FacilitatorChannelManager) applyPreflightSettleDelta(
 	ctx context.Context,
 	network, channelID, receiver, token string,
 	onchain *big.Int,
-	rows []*FacilitatorChannel,
+	lookup func(channelID string) (*FacilitatorChannel, error),
 ) error {
 	if onchain == nil {
 		return nil
 	}
 	storedClaimed := "0"
-	stored, err := rowLookup(ctx, m.storage, rows)(channelID)
+	stored, err := lookup(channelID)
 	if err != nil {
 		return err
 	}

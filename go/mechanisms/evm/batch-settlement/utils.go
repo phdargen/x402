@@ -155,89 +155,6 @@ func hexToBytes32(value string) ([32]byte, error) {
 	return result, nil
 }
 
-type channelSaltKind int
-
-const (
-	channelSaltDefault channelSaltKind = iota
-	channelSaltIndex
-	channelSaltHex
-	channelSaltBigInt
-)
-
-// ChannelSalt is a channel discriminator. Prefer a small index; bytes32 hex is
-// also supported. The zero value selects the default zero salt.
-type ChannelSalt struct {
-	kind  channelSaltKind
-	index uint64
-	hex   string
-	big   *big.Int
-}
-
-// ChannelSaltIndex returns a salt from a non-negative channel index.
-func ChannelSaltIndex(index uint64) ChannelSalt {
-	return ChannelSalt{kind: channelSaltIndex, index: index}
-}
-
-// ChannelSaltHex returns a salt from a 0x-prefixed hex value (short or bytes32).
-func ChannelSaltHex(hex string) ChannelSalt {
-	return ChannelSalt{kind: channelSaltHex, hex: hex}
-}
-
-// ChannelSaltBigInt returns a salt from a non-negative integer that fits in 32 bytes.
-func ChannelSaltBigInt(n *big.Int) ChannelSalt {
-	return ChannelSalt{kind: channelSaltBigInt, big: n}
-}
-
-// IsDefault reports whether the salt was omitted (default zero bytes32).
-func (s ChannelSalt) IsDefault() bool {
-	return s.kind == channelSaltDefault
-}
-
-// Equal reports whether two salts specify the same discriminator.
-func (s ChannelSalt) Equal(o ChannelSalt) bool {
-	if s.kind != o.kind {
-		return false
-	}
-	switch s.kind {
-	case channelSaltDefault:
-		return true
-	case channelSaltIndex:
-		return s.index == o.index
-	case channelSaltHex:
-		return s.hex == o.hex
-	case channelSaltBigInt:
-		if s.big == nil || o.big == nil {
-			return s.big == o.big
-		}
-		return s.big.Cmp(o.big) == 0
-	default:
-		var never = s.kind
-		_ = never
-		return false
-	}
-}
-
-// Normalize left-pads the salt to bytes32.
-func (s ChannelSalt) Normalize() (string, error) {
-	switch s.kind {
-	case channelSaltDefault:
-		return padBigToBytes32(big.NewInt(0)), nil
-	case channelSaltIndex:
-		if s.index > uint64(maxSafeInt) {
-			return "", fmt.Errorf("salt must be a non-negative safe integer")
-		}
-		return padBigToBytes32(new(big.Int).SetUint64(s.index)), nil
-	case channelSaltHex:
-		return normalizeChannelSaltHex(s.hex)
-	case channelSaltBigInt:
-		return normalizeChannelSaltBigInt(s.big)
-	default:
-		var never = s.kind
-		_ = never
-		return "", fmt.Errorf("invalid channel salt")
-	}
-}
-
 // ParseChannelSalt normalizes a caller-supplied channel salt string to bytes32.
 //
 // Accepted forms (whitespace is trimmed):
@@ -289,8 +206,6 @@ func NormalizeChannelSalt(salt interface{}) (string, error) {
 		return normalizeChannelSaltBigInt(v)
 	case string:
 		return normalizeChannelSaltHex(v)
-	case ChannelSalt:
-		return v.Normalize()
 	default:
 		return "", fmt.Errorf("salt must be a 0x-prefixed hex value")
 	}

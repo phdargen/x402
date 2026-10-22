@@ -38,6 +38,12 @@ func seedSession(t *testing.T, s *BatchSettlementEvmScheme, channelId string, se
 	}
 }
 
+func (s *BatchSettlementEvmScheme) requestContextCount() int {
+	s.requestContextsMu.Lock()
+	defer s.requestContextsMu.Unlock()
+	return len(s.requestContexts)
+}
+
 // seedStore upserts sess directly on a SessionStorage via UpdateChannel CAS.
 func seedStore(t *testing.T, store SessionStorage, channelId string, sess *ChannelSession) {
 	t.Helper()

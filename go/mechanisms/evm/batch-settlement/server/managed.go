@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"math/big"
+	"strconv"
 	"time"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -171,8 +172,9 @@ func handleManagedEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.
 		return nil, nil
 	}
 
+	rc := s.ReadRequestContext(ctx.Payload)
 	var pendingId string
-	if rc := s.ReadRequestContext(ctx.Payload); rc != nil {
+	if rc != nil {
 		pendingId = rc.PendingId
 	}
 	pendingFields := map[string]interface{}{}
@@ -189,7 +191,6 @@ func handleManagedEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.
 	}
 
 	if batchsettlement.IsRefundPayload(raw) {
-		rc := s.ReadRequestContext(ctx.Payload)
 		if rc == nil || rc.ChannelSnapshot == nil {
 			return nil, errors.New(batchsettlement.ErrMissingChannel)
 		}
@@ -263,19 +264,8 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 		if channelState != nil && channelState.Balance != "" {
 			balance = channelState.Balance
 		}
-		bal, _ := new(big.Int).SetString(balance, 10)
-		chg, _ := new(big.Int).SetString(charged, 10)
-		if bal == nil {
-			bal = big.NewInt(0)
-		}
-		if chg == nil {
-			chg = big.NewInt(0)
-		}
-		if bal.Cmp(chg) <= 0 {
-			_, err := s.GetStorage().UpdateChannel(ctx.Ctx, channelId, func(current *ChannelSession) *ChannelSession {
-				if current == nil {
-					return current
-				}
+		if bigOrZero(balance).Cmp(bigOrZero(charged)) <= 0 {
+			_, err := s.GetStorage().UpdateChannel(ctx.Ctx, channelId, func(*ChannelSession) *ChannelSession {
 				return nil
 			})
 			return err
@@ -307,16 +297,10 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 			LastRequestTimestamp:    now,
 		}
 		if base != nil {
-			if next.ChargedCumulativeAmount == "" {
-				next.ChargedCumulativeAmount = base.ChargedCumulativeAmount
-			}
 			next.Balance = base.Balance
 			next.TotalClaimed = base.TotalClaimed
 			next.WithdrawRequestedAt = base.WithdrawRequestedAt
 			next.RefundNonce = base.RefundNonce
-		}
-		if next.ChargedCumulativeAmount == "" {
-			next.ChargedCumulativeAmount = "0"
 		}
 		if channelState != nil {
 			if channelState.Balance != "" {
@@ -338,9 +322,6 @@ func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResult
 }
 
 func readCorrectiveChannelState(extra map[string]interface{}) *batchsettlement.BatchSettlementChannelStateExtra {
-	if extra == nil {
-		return nil
-	}
 	raw, ok := extra["channelState"].(map[string]interface{})
 	if !ok {
 		return nil
@@ -353,7 +334,7 @@ func readCorrectiveChannelState(extra map[string]interface{}) *batchsettlement.B
 	if v, ok := raw["refundNonce"].(string); ok {
 		out.RefundNonce = v
 	} else if v, ok := raw["refundNonce"].(float64); ok {
-		out.RefundNonce = formatInt(int(v))
+		out.RefundNonce = strconv.Itoa(int(v))
 	}
 	switch v := raw["withdrawRequestedAt"].(type) {
 	case float64:
@@ -365,9 +346,6 @@ func readCorrectiveChannelState(extra map[string]interface{}) *batchsettlement.B
 }
 
 func readCorrectiveVoucherState(extra map[string]interface{}) *batchsettlement.BatchSettlementVoucherStateExtra {
-	if extra == nil {
-		return nil
-	}
 	raw, ok := extra["voucherState"].(map[string]interface{})
 	if !ok {
 		return nil
@@ -376,8 +354,4 @@ func readCorrectiveVoucherState(extra map[string]interface{}) *batchsettlement.B
 	out.SignedMaxClaimable, _ = raw["signedMaxClaimable"].(string)
 	out.Signature, _ = raw["signature"].(string)
 	return out
-}
-
-func formatInt(n int) string {
-	return big.NewInt(int64(n)).String()
 }

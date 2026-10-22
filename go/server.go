@@ -141,20 +141,9 @@ func (c *SupportedCache) Set(key string, response SupportedResponse) {
 // snapshotLocked returns cached responses in registration order.
 // The caller must hold c.mu.
 func (c *SupportedCache) snapshotLocked() []SupportedResponse {
-	if len(c.order) == 0 {
-		out := make([]SupportedResponse, 0, len(c.data))
-		for _, response := range c.data {
-			out = append(out, response)
-		}
-		return out
-	}
 	out := make([]SupportedResponse, 0, len(c.order))
 	for _, key := range c.order {
-		response, ok := c.data[key]
-		if !ok {
-			continue
-		}
-		out = append(out, response)
+		out = append(out, c.data[key])
 	}
 	return out
 }
@@ -1421,9 +1410,6 @@ func settleResponseToError(result *SettleResponse) error {
 // when an afterSettle hook aborts. Transaction/amount/payer/onchain extra are
 // kept so callers retain proof funds moved.
 func applyAfterSettleAbort(result *SettleResponse, reason, message string) {
-	if result == nil {
-		return
-	}
 	result.Success = false
 	result.ErrorReason = reason
 	result.ErrorMessage = message

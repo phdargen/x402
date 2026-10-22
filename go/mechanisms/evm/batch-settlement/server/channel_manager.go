@@ -776,10 +776,7 @@ func (m *BatchSettlementChannelManager) refundChannel(ctx context.Context, targe
 	}
 
 	// Drop the session so it doesn't churn through future refund cycles.
-	_, _ = m.scheme.storage.UpdateChannel(ctx, normalizedId, func(current *ChannelSession) *ChannelSession {
-		if current == nil {
-			return current
-		}
+	_, _ = m.scheme.storage.UpdateChannel(ctx, normalizedId, func(*ChannelSession) *ChannelSession {
 		return nil
 	})
 
