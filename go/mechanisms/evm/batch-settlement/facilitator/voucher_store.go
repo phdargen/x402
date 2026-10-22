@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"math/big"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,8 +18,6 @@ import (
 	"github.com/x402-foundation/x402/go/v2/mechanisms/evm/batch-settlement/storage"
 	"github.com/x402-foundation/x402/go/v2/types"
 )
-
-var decimalUintRe = regexp.MustCompile(`^\d+$`)
 
 // createNonce generates the verify admission pendingId. It is a variable so
 // unit tests can force the crypto/rand failure path without stubbing.
@@ -829,11 +826,7 @@ func verifyRefundAuthorizerSignature(signature, refundAuthorizer, channelId, amo
 }
 
 func releaseLock(ctx context.Context, deps VoucherStoreDeps, channelId, owner string) error {
-	err := deps.LockStorage.Release(ctx, channelId, owner)
-	if impl := storage.RethrowLockImplementationError(err); impl != nil {
-		return impl
-	}
-	return nil
+	return storage.RethrowLockImplementationError(deps.LockStorage.Release(ctx, channelId, owner))
 }
 
 func incrementChargeCount(channel *FacilitatorChannel, network string) *FacilitatorChannel {
@@ -924,7 +917,7 @@ func readDepositConfirmState(extra map[string]interface{}) depositConfirmState {
 func optionalUintString(value interface{}) *string {
 	switch v := value.(type) {
 	case string:
-		if decimalUintRe.MatchString(v) {
+		if atomicAmountPattern.MatchString(v) {
 			s := v
 			return &s
 		}
@@ -951,7 +944,7 @@ func optionalUintNumber(value interface{}) *int {
 	if n, ok := extraNumber(value); ok && n >= 0 {
 		return &n
 	}
-	if s, ok := value.(string); ok && decimalUintRe.MatchString(s) {
+	if s, ok := value.(string); ok && atomicAmountPattern.MatchString(s) {
 		n := 0
 		_, _ = fmt.Sscanf(s, "%d", &n)
 		return &n
@@ -1094,13 +1087,7 @@ func rebuildClaims(stored *FacilitatorChannel) []batchsettlement.BatchSettlement
 	if stored == nil {
 		return nil
 	}
-	if _, ok := storage.ParseUint256(stored.ChargedCumulativeAmount); !ok {
-		return nil
-	}
-	if _, ok := storage.ParseUint256(stored.TotalClaimed); !ok {
-		return nil
-	}
-	if uintCmp(stored.ChargedCumulativeAmount, stored.TotalClaimed) <= 0 {
+	if cmp, ok := storage.Uint256Cmp(stored.ChargedCumulativeAmount, stored.TotalClaimed); !ok || cmp <= 0 {
 		return nil
 	}
 	claim := batchsettlement.BatchSettlementVoucherClaim{
@@ -1116,7 +1103,7 @@ func refundAmountError(amount string) string {
 	if amount == "" {
 		return ""
 	}
-	if !decimalUintRe.MatchString(amount) {
+	if !atomicAmountPattern.MatchString(amount) {
 		return ErrRefundAmountInvalid
 	}
 	n, ok := new(big.Int).SetString(amount, 10)
@@ -1145,7 +1132,7 @@ func capRefundAmount(amount string, onchainBalance *big.Int, charged string) (st
 }
 
 func resolveRefundAmount(amount string, stored *FacilitatorChannel) string {
-	if amount != "" && decimalUintRe.MatchString(amount) {
+	if amount != "" && atomicAmountPattern.MatchString(amount) {
 		return amount
 	}
 	if stored == nil {
@@ -1379,7 +1366,7 @@ func extraNumber(v interface{}) (int, bool) {
 	case float64:
 		return int(n), true
 	case string:
-		if !decimalUintRe.MatchString(n) {
+		if !atomicAmountPattern.MatchString(n) {
 			return 0, false
 		}
 		parsed := 0
@@ -1409,15 +1396,8 @@ func refundNonceFromExtra(current int, extra map[string]interface{}) int {
 }
 
 func sameUint(a, b string) bool {
-	ai, okA := storage.ParseUint256(a)
-	if !okA {
-		return false
-	}
-	bi, okB := storage.ParseUint256(b)
-	if !okB {
-		return false
-	}
-	return ai.Cmp(bi) == 0
+	cmp, ok := storage.Uint256Cmp(a, b)
+	return ok && cmp == 0
 }
 
 // uintCmp compares decimal uint strings. Unparsable operands fail closed as

@@ -88,8 +88,7 @@ const (
 	// EnforceMinDeposit; the facilitator never enforces this field.
 	ErrDepositBelowMinDeposit = "invalid_batch_settlement_evm_deposit_below_min_deposit"
 
-	// ── Shared validation reasons (duplicated from facilitator so root utils
-	// can return them without importing facilitator). Wire values match.
+	// ── Shared validation reasons, re-exported by the facilitator package.
 
 	ErrReceiverMismatch           = "invalid_batch_settlement_evm_receiver_mismatch"
 	ErrReceiverAuthorizerMismatch = "invalid_batch_settlement_evm_receiver_authorizer_mismatch"

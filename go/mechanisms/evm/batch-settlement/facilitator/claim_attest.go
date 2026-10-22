@@ -144,7 +144,7 @@ func beginAttestedClaim(
 ) (attestedClaim, beginResult, error) {
 	outcome := beginMissing
 	var started attestedClaim
-	res, err := store.UpdateChannel(ctx, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
+	err := updateChannelStrict(ctx, store, channelID, func(current *FacilitatorChannel) *FacilitatorChannel {
 		switch {
 		case current == nil:
 			outcome = beginMissing
@@ -181,9 +181,6 @@ func beginAttestedClaim(
 	})
 	if err != nil {
 		return attestedClaim{}, beginMissing, err
-	}
-	if res != nil && res.Status == storage.ChannelConflict {
-		return attestedClaim{}, beginMissing, fmt.Errorf("channel %s update conflict: %w", channelID, errChannelConflict)
 	}
 	if outcome == beginStarted {
 		return started, beginStarted, nil

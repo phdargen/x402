@@ -148,12 +148,15 @@ func channelLockStorage(explicit storage.ChannelLockStorage, store any) storage.
 	return lockStorage
 }
 
-func (f *BatchSettlementEvmScheme) logStorageError(err error, network, channelId string) {
-	logger := f.logger
-	if logger == nil {
-		logger = slog.Default()
+func (f *BatchSettlementEvmScheme) log() *slog.Logger {
+	if f.logger == nil {
+		return slog.Default()
 	}
-	logger.Error("batch-settlement: delegated auth store operation failed", "error", err, "network", network, "channelId", channelId)
+	return f.logger
+}
+
+func (f *BatchSettlementEvmScheme) logStorageError(err error, network, channelId string) {
+	f.log().Error("batch-settlement: delegated auth store operation failed", "error", err, "network", network, "channelId", channelId)
 }
 
 // SetPendingSettlementStore overrides the default in-memory PendingSettlementStore.
@@ -367,12 +370,7 @@ func (f *BatchSettlementEvmScheme) Settle(
 				return settled, nil
 			}
 			if afterErr := afterClaim(ctx, f.voucherStore.storage, claimPayload.Claims, requirements.Network, f.voucherStore.settleTargetStorage, nil, begun, claimed); afterErr != nil || releaseErr != nil {
-				logger := f.logger
-				if logger == nil {
-					logger = slog.Default()
-				}
-				logger.Error("batch-settlement: claim landed but attested bookkeeping failed", "error", errors.Join(afterErr, releaseErr), "network", requirements.Network)
-				return settled, nil
+				f.log().Error("batch-settlement: claim landed but attested bookkeeping failed", "error", errors.Join(afterErr, releaseErr), "network", requirements.Network)
 			}
 			return settled, nil
 		}
@@ -484,29 +482,6 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 	if raw.RefundAuthorizerSignature != "" || f.resolveCallerIdentity == nil {
 		return ""
 	}
-	if f.delegatedAuthStore == nil {
-		return ErrRefundAuthorizerSignature
-	}
-	identity, err := f.resolveCallerIdentity(DelegatedSettleContext{
-		Ctx:                ctx,
-		Step:               DelegatedSettleStepRefund,
-		ChannelId:          raw.Voucher.ChannelId,
-		Network:            requirements.Network,
-		Payer:              raw.ChannelConfig.Payer,
-		Amount:             raw.Amount,
-		Payload:            payload,
-		Requirements:       requirements,
-		FacilitatorContext: fctx,
-	})
-	if err != nil || identity == "" {
-		return ErrRefundAuthorizerSignature
-	}
-	binding, err := f.delegatedAuthStore.Get(ctx, raw.Voucher.ChannelId, requirements.Network)
-	if err != nil || binding == nil {
-		return ErrRefundAuthorizerSignature
-	}
-	if binding.CallerIdentity != identity {
-		return ErrRefundAuthorizerSignature
-	}
-	return ""
+	deps := RefundConsentDeps{ResolveCallerIdentity: f.resolveCallerIdentity, DelegatedAuthStore: f.delegatedAuthStore}
+	return checkRefundCallerIdentity(ctx, deps, payload, raw, raw.Amount, requirements, fctx)
 }

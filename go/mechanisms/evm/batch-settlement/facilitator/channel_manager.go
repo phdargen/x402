@@ -1171,7 +1171,7 @@ func (m *FacilitatorChannelManager) refundChannel(ctx context.Context, target *F
 		return nil, releaseErr
 	}
 	if !landed {
-		return nil, fmt.Errorf("%s", formatFailure("Refund", response))
+		return nil, errors.New(formatFailure("Refund", response))
 	}
 	if err := m.afterRefund(ctx, target, claims, begun, claimed, response); err != nil {
 		return nil, err
@@ -1262,15 +1262,12 @@ func applyRefundChannel(
 }
 
 func applyClaimedAmount(next *FacilitatorChannel, claimed string) {
-	claimedAmount, ok := new(big.Int).SetString(claimed, 10)
-	if !ok || claimedAmount.Sign() < 0 {
+	claimedAmount, ok := storage.ParseUint256(claimed)
+	if !ok {
 		return
 	}
-	currentClaimed, ok := new(big.Int).SetString(next.TotalClaimed, 10)
-	if !ok || currentClaimed.Sign() < 0 {
-		return
-	}
-	if claimedAmount.Cmp(currentClaimed) <= 0 {
+	currentClaimed, ok := storage.ParseUint256(next.TotalClaimed)
+	if !ok || claimedAmount.Cmp(currentClaimed) <= 0 {
 		return
 	}
 	next.TotalClaimed = claimedAmount.String()

@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -51,7 +50,7 @@ func (s *channelSettleTargets[T]) ListSettleTargets(ctx context.Context, q Settl
 		if receiver == "" || token == "" {
 			continue
 		}
-		key := strings.ToLower(base.Network) + ":" + receiver + ":" + token
+		key := settleTargetKey(base.Network, receiver, token)
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -66,20 +65,8 @@ func (s *channelSettleTargets[T]) ListSettleTargets(ctx context.Context, q Settl
 		items = append(items, target)
 	}
 	sortSettleTargets(items)
-	start := ParseQueryCursor(q.Cursor)
-	if start > len(items) {
-		start = len(items)
-	}
 	limit := settleQueryLimit(q.Limit)
-	end := start + limit
-	if end > len(items) {
-		end = len(items)
-	}
-	out := &QueryPage[SettleTarget]{Items: items[start:end]}
-	if end < len(items) {
-		out.Cursor = strconv.Itoa(end)
-	}
-	return out, nil
+	return PageItems(items, &limit, q.Cursor), nil
 }
 
 func sortSettleTargets(items []SettleTarget) {

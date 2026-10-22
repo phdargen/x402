@@ -97,9 +97,8 @@ func registerMethods(abiJSON []byte) {
 }
 
 type decodedBatchCall struct {
-	Name   string
-	Method abi.Method
-	Args   []interface{}
+	Name string
+	Args []interface{}
 }
 
 func decodeBatchCall(calldata []byte) (decodedBatchCall, bool) {
@@ -114,7 +113,7 @@ func decodeBatchCall(calldata []byte) (decodedBatchCall, bool) {
 	if err != nil {
 		return decodedBatchCall{}, false
 	}
-	return decodedBatchCall{Name: method.Name, Method: method, Args: args}, true
+	return decodedBatchCall{Name: method.Name, Args: args}, true
 }
 
 // collectClaimRows collects the claim rows of a transaction in call order. It handles a direct claim / claimWithSignature call and a (possibly nested)

@@ -54,19 +54,33 @@ func NewFileChannelStorage[T ChannelRecord[T]](opts batchsettlement.FileChannelS
 }
 
 func (s *FileChannelStorage[T]) filePath(channelId string) (string, error) {
-	id, err := batchsettlement.NormalizeChannelId(channelId)
-	if err != nil {
-		return "", err
-	}
-	return batchsettlement.ResolveWithinDir(filepath.Join(s.root, "server"), id+".json")
+	return s.channelPath(channelId, ".json")
 }
 
 func (s *FileChannelStorage[T]) holdPath(channelId string) (string, error) {
+	return s.channelPath(channelId, ".hold")
+}
+
+func (s *FileChannelStorage[T]) channelPath(channelId, ext string) (string, error) {
 	id, err := batchsettlement.NormalizeChannelId(channelId)
 	if err != nil {
 		return "", err
 	}
-	return batchsettlement.ResolveWithinDir(filepath.Join(s.root, "server"), id+".hold")
+	return batchsettlement.ResolveWithinDir(filepath.Join(s.root, "server"), id+ext)
+}
+
+func acquireLockFile(lockPath string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
+	}
+	lockFile, err := AcquireExclusiveFile(lockPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
+	}, nil
 }
 
 // Get loads a persisted channel record, or the zero T when the file is missing.
@@ -129,20 +143,11 @@ func (s *FileChannelStorage[T]) UpdateChannel(_ context.Context, channelId strin
 	if err != nil {
 		return nil, err
 	}
-	lockPath := path + ".lock"
-
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
-	}
-
-	lockFile, err := AcquireExclusiveFile(lockPath, nil)
+	release, err := acquireLockFile(path + ".lock")
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
+	defer release()
 
 	var current T
 	ok, err := batchsettlement.ReadJSONFile(path, &current)
@@ -297,18 +302,11 @@ func (s *FileChannelStorage[T]) withHoldLock(channelId string, fn func() error) 
 	if err != nil {
 		return err
 	}
-	lockPath := path + ".lock"
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(lockPath), err)
-	}
-	lockFile, err := AcquireExclusiveFile(lockPath, nil)
+	release, err := acquireLockFile(path + ".lock")
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = lockFile.Close()
-		_ = os.Remove(lockPath)
-	}()
+	defer release()
 	return fn()
 }
 

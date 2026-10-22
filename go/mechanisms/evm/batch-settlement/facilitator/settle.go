@@ -17,17 +17,6 @@ import (
 	"github.com/x402-foundation/x402/go/v2/types"
 )
 
-// SettleGasLimit is the per-settle gas budget used to estimate multicall limits.
-const SettleGasLimit uint64 = 120_000
-
-// SettleMulticallGasLimit estimates gas for a multicall of n settle() calls.
-func SettleMulticallGasLimit(settleCount int) uint64 {
-	if settleCount <= 0 {
-		return SettleGasLimit
-	}
-	return uint64(settleCount) * SettleGasLimit
-}
-
 // ExecuteSettle executes a settle action, transferring claimed funds to the receiver.
 // Calls settle(receiver, token) on the BatchSettlement contract.
 func ExecuteSettle(
@@ -164,20 +153,6 @@ func readReceiverSettlementTotals(
 	return parseReceiversMulticallResult(raw)
 }
 
-// ExecuteSettleBatch submits up to len(targets) settle(receiver, token) calls in one
-// multicall. On simulation revert with multiple targets, the batch is split recursively.
-func ExecuteSettleBatch(
-	ctx context.Context,
-	signer evm.FacilitatorEvmSigner,
-	network x402.Network,
-	targets []storage.SettleTarget,
-	dataSuffix []byte,
-) ([]FacilitatorSettleResult, error) {
-	submissions, _, err := submitSettleMulticall(ctx, slog.Default(), signer, network, targets, dataSuffix)
-	results := settleResultsFromSubmissions(string(network), submissions)
-	return results, err
-}
-
 type settleMulticallSubmission struct {
 	txHash  string
 	targets []storage.SettleTarget
@@ -213,9 +188,6 @@ func submitSettleMulticall(
 ) ([]settleMulticallSubmission, []skippedSettleTarget, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
-	}
-	if logger == nil {
-		logger = slog.Default()
 	}
 	if len(targets) == 0 {
 		return nil, nil, nil
