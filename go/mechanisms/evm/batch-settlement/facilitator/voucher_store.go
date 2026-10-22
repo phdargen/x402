@@ -550,6 +550,9 @@ func settleManagedRefund(
 	if amountError := refundAmountError(raw.Amount); amountError != "" {
 		return failSettle(requirements, amountError), nil
 	}
+	if bindErr := batchsettlement.ChannelIdBindingError(raw.ChannelConfig, channelId, requirements.Network); bindErr != "" {
+		return failSettle(requirements, bindErr), nil
+	}
 
 	var holdErr error
 	held, holdErr = holdForOnchainSettle(ctx, deps, raw.Voucher, held, storage.PendingTtlMs(requirements.MaxTimeoutSeconds))

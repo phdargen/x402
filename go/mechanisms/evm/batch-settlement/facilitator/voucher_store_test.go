@@ -2519,10 +2519,8 @@ func TestSettleManaged_RefundNoOpClaimLegKeepsChargeCountPending(t *testing.T) {
 		if receipt == nil {
 			return receipt, err
 		}
-		// The claim leg emitted no Claimed event.
-		stripped := *receipt
-		stripped.Logs = nil
-		return &stripped, err
+		// The claim leg emitted no Claimed event. Keep the Refunded log.
+		return withoutClaimedLogs(receipt), err
 	}
 	resp, err := h.settle("5000")
 	if err != nil || resp == nil || !resp.Success {

@@ -368,6 +368,50 @@ func TestScheme_SelfManagedRefundIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestScheme_SelfManagedRefundRejectsConfigForAnotherChannel(t *testing.T) {
+	auth := managedAuthorizer()
+	delegated := storage.NewInMemoryDelegatedAuthStore()
+	owned := managedConfig(auth.addr, "00")
+	ownedId := mustChannelId(t, owned)
+	if _, err := delegated.Bind(context.Background(), storage.DelegatedAuthBinding{
+		ChannelId: ownedId, Network: managedNetwork, CallerIdentity: "svc",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	signer := newManagedSigner(t, nil)
+	scheme, err := NewBatchSettlementEvmSchemeWithConfig(signer, auth, &BatchSettlementEvmSchemeConfig{
+		ResolveCallerIdentity: func(DelegatedSettleContext) (string, error) { return "svc", nil },
+		DelegatedAuthStore:    delegated,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := managedConfig(auth.addr, "01")
+	payload := managedEnvelope((&batchsettlement.BatchSettlementEnrichedRefundPayload{
+		Type:          "refund",
+		ChannelConfig: victim,
+		Voucher:       voucherFields(ownedId, "0", dummySig),
+		Amount:        "1000",
+		RefundNonce:   "0",
+	}).ToMap())
+	reqs := types.PaymentRequirements{
+		Scheme:  batchsettlement.SchemeBatched,
+		Network: managedNetwork,
+		Extra:   map[string]interface{}{"receiverAuthorizer": auth.addr},
+	}
+
+	resp, err := scheme.Settle(context.Background(), payload, reqs, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrChannelIdMismatch {
+		t.Fatalf("got %+v", resp)
+	}
+	if signer.writeCalls != 0 {
+		t.Fatalf("writes = %d, want none", signer.writeCalls)
+	}
+}
+
 func TestScheme_SelfManagedRefundMissingBinding(t *testing.T) {
 	auth := managedAuthorizer()
 	scheme, err := NewBatchSettlementEvmSchemeWithConfig(newManagedSigner(t, nil), auth, &BatchSettlementEvmSchemeConfig{

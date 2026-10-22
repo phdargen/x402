@@ -479,6 +479,9 @@ func (f *BatchSettlementEvmScheme) checkSelfManagedRefundCaller(
 	if amountErr := refundAmountError(raw.Amount); amountErr != "" {
 		return amountErr
 	}
+	if bindErr := batchsettlement.ChannelIdBindingError(raw.ChannelConfig, raw.Voucher.ChannelId, requirements.Network); bindErr != "" {
+		return bindErr
+	}
 	if raw.RefundAuthorizerSignature != "" || f.resolveCallerIdentity == nil {
 		return ""
 	}

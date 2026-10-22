@@ -331,6 +331,155 @@ func claimedReceiptLog(t *testing.T, channelId string, newTotalClaimed *big.Int)
 	}
 }
 
+// refundedEventABI is the Refunded event used to build receipt logs.
+var refundedEventABI = func() abi.Event {
+	parsed, err := abi.JSON(strings.NewReader(string(batchsettlement.BatchSettlementRefundedEventABI)))
+	if err != nil {
+		panic(err)
+	}
+	return parsed.Events["Refunded"]
+}()
+
+// refundedReceiptLog builds a Refunded log emitted by x402BatchSettlement for amount.
+func refundedReceiptLog(t *testing.T, channelId string, amount *big.Int) *goethtypes.Log {
+	t.Helper()
+	data, err := refundedEventABI.Inputs.NonIndexed().Pack(amount)
+	if err != nil {
+		t.Fatalf("pack Refunded data: %v", err)
+	}
+	return &goethtypes.Log{
+		Address: common.HexToAddress(batchsettlement.BatchSettlementAddress),
+		Topics: []common.Hash{
+			refundedEventABI.ID,
+			common.HexToHash(channelId),
+			common.BytesToHash(common.LeftPadBytes(common.HexToAddress(managedFacilitator).Bytes(), 32)),
+		},
+		Data: data,
+	}
+}
+
+func channelIDFromContractConfig(t *testing.T, cfg ContractChannelConfigTuple) string {
+	t.Helper()
+	delay := 0
+	if cfg.WithdrawDelay != nil {
+		delay = int(cfg.WithdrawDelay.Int64())
+	}
+	id, err := batchsettlement.ComputeChannelId(batchsettlement.ChannelConfig{
+		Payer:              cfg.Payer.Hex(),
+		PayerAuthorizer:    cfg.PayerAuthorizer.Hex(),
+		Receiver:           cfg.Receiver.Hex(),
+		ReceiverAuthorizer: cfg.ReceiverAuthorizer.Hex(),
+		Token:              cfg.Token.Hex(),
+		WithdrawDelay:      delay,
+		Salt:               "0x" + hex.EncodeToString(cfg.Salt[:]),
+	}, managedNetwork)
+	if err != nil {
+		t.Fatalf("channel id: %v", err)
+	}
+	return id
+}
+
+func refundCallFromArgs(args []interface{}) (ContractChannelConfigTuple, *big.Int, bool) {
+	if len(args) < 2 {
+		return ContractChannelConfigTuple{}, nil, false
+	}
+	cfg, ok := args[0].(ContractChannelConfigTuple)
+	if !ok {
+		return ContractChannelConfigTuple{}, nil, false
+	}
+	amount, ok := args[1].(*big.Int)
+	if !ok || amount == nil || amount.Sign() <= 0 {
+		return ContractChannelConfigTuple{}, nil, false
+	}
+	return cfg, new(big.Int).Set(amount), true
+}
+
+// refundedLogsFromWrite returns the Refunded logs a successful refund, refundWithSignature,
+// or multicall refund leg would emit. Claim legs contribute nothing.
+func refundedLogsFromWrite(t *testing.T, functionName string, args []interface{}) []*goethtypes.Log {
+	t.Helper()
+	switch functionName {
+	case "refund", "refundWithSignature":
+		cfg, amount, ok := refundCallFromArgs(args)
+		if !ok {
+			return nil
+		}
+		return []*goethtypes.Log{refundedReceiptLog(t, channelIDFromContractConfig(t, cfg), amount)}
+	case "multicall":
+		if len(args) == 0 {
+			return nil
+		}
+		legs, _ := args[0].([][]byte)
+		var logs []*goethtypes.Log
+		for _, leg := range legs {
+			cfg, amount, ok := unpackRefundLeg(t, leg)
+			if !ok {
+				continue
+			}
+			logs = append(logs, refundedReceiptLog(t, channelIDFromContractConfig(t, cfg), amount))
+		}
+		return logs
+	default:
+		return nil
+	}
+}
+
+func unpackRefundLeg(t *testing.T, leg []byte) (ContractChannelConfigTuple, *big.Int, bool) {
+	t.Helper()
+	if len(leg) < 4 {
+		return ContractChannelConfigTuple{}, nil, false
+	}
+	for _, spec := range []struct {
+		raw  []byte
+		name string
+	}{
+		{batchsettlement.BatchSettlementRefundABI, "refund"},
+		{batchsettlement.BatchSettlementRefundWithSignatureABI, "refundWithSignature"},
+	} {
+		parsed, err := abi.JSON(strings.NewReader(string(spec.raw)))
+		if err != nil {
+			t.Fatalf("abi: %v", err)
+		}
+		method, ok := parsed.Methods[spec.name]
+		if !ok || !bytes.Equal(method.ID, leg[:4]) {
+			continue
+		}
+		values, err := method.Inputs.Unpack(leg[4:])
+		if err != nil || len(values) < 2 {
+			t.Fatalf("unpack %s: %v", spec.name, err)
+		}
+		converted := abi.ConvertType(values[0], new(ContractChannelConfigTuple))
+		cfg, ok := converted.(*ContractChannelConfigTuple)
+		if !ok || cfg == nil {
+			t.Fatalf("unpack %s config: %T", spec.name, converted)
+		}
+		amount, ok := values[1].(*big.Int)
+		if !ok || amount == nil || amount.Sign() <= 0 {
+			return ContractChannelConfigTuple{}, nil, false
+		}
+		return *cfg, new(big.Int).Set(amount), true
+	}
+	return ContractChannelConfigTuple{}, nil, false
+}
+
+// withoutClaimedLogs copies receipt with Claimed logs removed. Refunded logs stay so a
+// bundled claim+refund can model a no-op claim leg without failing the refund closed.
+func withoutClaimedLogs(receipt *evm.TransactionReceipt) *evm.TransactionReceipt {
+	if receipt == nil {
+		return nil
+	}
+	stripped := *receipt
+	kept := make([]*goethtypes.Log, 0, len(receipt.Logs))
+	for _, lg := range receipt.Logs {
+		if lg != nil && len(lg.Topics) > 0 && lg.Topics[0] == claimedEventABI.ID {
+			continue
+		}
+		kept = append(kept, lg)
+	}
+	stripped.Logs = kept
+	return &stripped
+}
+
 // managedClaimedLogs returns the receipt logs the contract would emit for a claim, claim with
 // signature, or multicall write: one Claimed per claim row unless the row is marked a no-op.
 func managedClaimedLogs(t *testing.T, rpc *managedRPC, functionName string, args []interface{}) []*goethtypes.Log {
@@ -460,7 +609,7 @@ func newManagedSigner(t *testing.T, rpc *managedRPC) *fakeFacilitatorSigner {
 			return nil, nil
 		},
 		writeContract: func(functionName string, args ...interface{}) (string, error) {
-			lastLogs = managedClaimedLogs(t, rpc, functionName, args)
+			lastLogs = append(managedClaimedLogs(t, rpc, functionName, args), refundedLogsFromWrite(t, functionName, args)...)
 			if functionName == "refundWithSignature" || functionName == "refund" || functionName == "multicall" {
 				if rpc.balance.Sign() > 0 && rpc.totalClaimed != nil {
 					remain := new(big.Int).Sub(rpc.balance, rpc.totalClaimed)

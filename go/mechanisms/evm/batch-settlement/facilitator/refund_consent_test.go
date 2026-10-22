@@ -165,6 +165,60 @@ func TestSettleManaged_RefundFailsClosedWithoutConsentPath(t *testing.T) {
 	}
 }
 
+func TestSettleManaged_RefundRejectsConfigForAnotherChannel(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	owned := managedIdentityConfig(auth.addr)
+	ownedId := mustChannelId(t, owned)
+	seedManagedChannel(t, store, storedManagedChannel(owned, ownedId, &channelFields{ChargedCumulativeAmount: "1000"}))
+	deps := managedDeps(t, store, store, auth, nil)
+	bindManagedIdentity(t, deps.DelegatedAuthStore, ownedId, "svc")
+	signer := newManagedSigner(t, nil)
+	deps.Signer = signer
+
+	victim := owned
+	victim.Payer = common.HexToAddress("0x9999999999999999999999999999999999999999").Hex()
+
+	resp, err := SettleManaged(context.Background(), deps,
+		refundEnvelope(victim, voucherFields(ownedId, "1000", dummySig), "1000", "", ""),
+		managedIdentityRequirements(auth.addr), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Success || resp.ErrorReason != ErrChannelIdMismatch {
+		t.Fatalf("got %+v", resp)
+	}
+	if signer.writeCalls != 0 {
+		t.Fatalf("writes = %d, want none", signer.writeCalls)
+	}
+}
+
+func TestCheckDelegatedRefundConsent_RejectsConfigForAnotherChannel(t *testing.T) {
+	auth := managedAuthorizer()
+	owned := managedIdentityConfig(auth.addr)
+	ownedId := mustChannelId(t, owned)
+	delegated := storage.NewInMemoryDelegatedAuthStore()
+	bindManagedIdentity(t, delegated, ownedId, "svc")
+
+	victim := owned
+	victim.Payer = common.HexToAddress("0x9999999999999999999999999999999999999999").Hex()
+	raw := &batchsettlement.BatchSettlementEnrichedRefundPayload{
+		ChannelConfig: victim,
+		Voucher:       voucherFields(ownedId, "1000", dummySig),
+		Amount:        "1000",
+		RefundNonce:   "0",
+	}
+	reqs := types.PaymentRequirements{Network: managedNetwork, Extra: map[string]interface{}{}}
+
+	got := CheckDelegatedRefundConsent(context.Background(), RefundConsentDeps{
+		ResolveCallerIdentity: identityResolver("svc"),
+		DelegatedAuthStore:    delegated,
+	}, managedEnvelope(nil), raw, RefundConsentAmounts{Amount: "1000", Nonce: "0"}, reqs, nil)
+	if got != ErrChannelIdMismatch {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestCheckDelegatedRefundConsent_IdentityRequiresHooks(t *testing.T) {
 	auth := managedAuthorizer()
 	cfg := managedIdentityConfig(auth.addr)

@@ -54,6 +54,9 @@ func CheckDelegatedRefundConsent(
 	requirements types.PaymentRequirements,
 	fctx *x402.FacilitatorContext,
 ) string {
+	if bindErr := batchsettlement.ChannelIdBindingError(raw.ChannelConfig, raw.Voucher.ChannelId, requirements.Network); bindErr != "" {
+		return bindErr
+	}
 	announced, _ := requirements.Extra["refundAuthorizer"].(string)
 	if announced == "" {
 		return checkRefundCallerIdentity(ctx, deps, payment, raw, refund.Amount, requirements, fctx)
