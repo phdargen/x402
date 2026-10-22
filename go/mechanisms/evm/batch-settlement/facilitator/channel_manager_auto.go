@@ -92,20 +92,17 @@ func (m *FacilitatorChannelManager) drainJobs() {
 	}
 	m.drainingJobs = true
 	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		m.drainingJobs = false
-		m.mu.Unlock()
-	}()
 
 	for {
 		m.mu.Lock()
-		if !m.running || len(m.pendingJobs) == 0 {
-			m.mu.Unlock()
-			return
+		var job autoJob
+		if m.running {
+			job = m.nextPendingJobLocked()
 		}
-		job := m.nextPendingJobLocked()
 		if job == "" {
+			// Cleared under the same lock that observed the empty queue so a
+			// concurrent enqueueJob either sees draining=false or is drained here.
+			m.drainingJobs = false
 			m.mu.Unlock()
 			return
 		}

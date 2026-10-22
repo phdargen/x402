@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	x402 "github.com/x402-foundation/x402/go/v2"
@@ -367,6 +368,65 @@ func TestManagedLifecycleNoops(t *testing.T) {
 	}
 	if fields, err := handleManagedEnrichSettlementResponse(s, x402.SettleResultContext{}); err != nil || fields != nil {
 		t.Fatalf("got %v %v", fields, err)
+	}
+}
+
+func verifyManagedVoucher(t *testing.T, s *BatchSettlementEvmScheme, pp *types.PaymentPayload) {
+	t.Helper()
+	if _, err := handleManagedAfterVerify(s, x402.VerifyResultContext{
+		VerifyContext: x402.VerifyContext{Payload: pp, Requirements: managedReqs()},
+		Result: &x402.VerifyResponse{
+			IsValid: true, Payer: "0xpayer",
+			Extra: map[string]interface{}{"balance": "10000", "pendingId": "0xpending"},
+		},
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if s.requestContextCount() != 1 {
+		t.Fatalf("expected one request context after verify, got %d", s.requestContextCount())
+	}
+}
+
+func TestManagedSettle_ReleasesRequestContext(t *testing.T) {
+	cases := []struct {
+		name   string
+		phase  x402.SettlePhase
+		result *x402.SettleResponse
+	}{
+		{name: "success", phase: x402.SettlePhaseAfterHandler, result: &x402.SettleResponse{Success: true}},
+		{name: "cancel", phase: x402.SettlePhaseCancel, result: &x402.SettleResponse{Success: true}},
+		{name: "unsuccessful", phase: x402.SettlePhaseAfterHandler, result: &x402.SettleResponse{Success: false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := buildManagedServer(t, nil, false)
+			pp := managedPayload(voucherPayload(testChannelId(t), "1000", "0xdeadbeef"))
+			verifyManagedVoucher(t, s, pp)
+			if err := handleManagedAfterSettle(s, x402.SettleResultContext{
+				SettleContext: x402.SettleContext{Payload: pp, Requirements: managedReqs(), Phase: tc.phase},
+				Result:        tc.result,
+			}); err != nil {
+				t.Fatalf("after settle: %v", err)
+			}
+			if got := s.requestContextCount(); got != 0 {
+				t.Fatalf("expected request context map empty, got %d", got)
+			}
+		})
+	}
+}
+
+func TestManagedSettleFailure_ReleasesRequestContext(t *testing.T) {
+	s := buildManagedServer(t, nil, false)
+	pp := managedPayload(voucherPayload(testChannelId(t), "1000", "0xdeadbeef"))
+	verifyManagedVoucher(t, s, pp)
+	if _, err := handleManagedSettleFailure(s, x402.SettleFailureContext{
+		SettleContext: x402.SettleContext{Payload: pp, Requirements: managedReqs()},
+		Error:         errors.New("settle failed"),
+	}); err != nil {
+		t.Fatalf("settle failure: %v", err)
+	}
+	if got := s.requestContextCount(); got != 0 {
+		t.Fatalf("expected request context map empty, got %d", got)
 	}
 }
 

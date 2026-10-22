@@ -139,7 +139,8 @@ func handleManagedVerifyFailure(*BatchSettlementEvmScheme, x402.VerifyFailureCon
 	return nil, nil
 }
 
-func handleManagedSettleFailure(*BatchSettlementEvmScheme, x402.SettleFailureContext) (*x402.SettleFailureHookResult, error) {
+func handleManagedSettleFailure(s *BatchSettlementEvmScheme, ctx x402.SettleFailureContext) (*x402.SettleFailureHookResult, error) {
+	s.TakeRequestContext(ctx.Payload)
 	return nil, nil
 }
 
@@ -212,6 +213,7 @@ func handleManagedEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.
 			IncludeClaimAuthorizerSignature: false,
 		})
 		if err != nil {
+			s.TakeRequestContext(ctx.Payload)
 			return nil, err
 		}
 		for k, v := range pendingFields {
@@ -227,8 +229,10 @@ func handleManagedEnrichSettlementPayload(s *BatchSettlementEvmScheme, ctx x402.
 }
 
 // handleManagedAfterSettle upserts the replica after a successful managed
-// settle. Cancel settles leave the replica watermark unchanged.
+// settle. Cancel settles leave the replica watermark unchanged. Every managed
+// settle is terminal, so the request context is dropped on all paths.
 func handleManagedAfterSettle(s *BatchSettlementEvmScheme, ctx x402.SettleResultContext) error {
+	defer s.TakeRequestContext(ctx.Payload)
 	if ctx.Result == nil || !ctx.Result.Success || ctx.Phase == x402.SettlePhaseCancel {
 		return nil
 	}
