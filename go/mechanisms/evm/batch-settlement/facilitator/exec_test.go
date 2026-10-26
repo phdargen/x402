@@ -308,6 +308,62 @@ func TestExecuteRefundWithSignature_FailsClosedWithoutRefundedEvent(t *testing.T
 	}
 }
 
+func TestExecuteRefund_DirectPath_ReceiptWithoutRefundedEventFailsClosed(t *testing.T) {
+	cfg := validConfig()
+	txHash := "0x" + strings.Repeat("cd", 32)
+	var emitRefunded bool
+	channelId, err := batchsettlement.ComputeChannelId(cfg, testNetwork)
+	if err != nil {
+		t.Fatalf("channel id: %v", err)
+	}
+	signer := &fakeFacilitatorSigner{
+		addresses: []string{"0xfacilitator"},
+		readContract: func(functionName string, _ ...interface{}) (interface{}, error) {
+			if functionName == evm.FunctionTryAggregate {
+				return multicallChannelStateResult(t, big.NewInt(10000), big.NewInt(0), 0, big.NewInt(0)), nil
+			}
+			if functionName == "refund" {
+				return nil, nil
+			}
+			return nil, errors.New("unexpected rpc")
+		},
+		writeContract: func(string, ...interface{}) (string, error) { return txHash, nil },
+		waitForReceipt: func(got string) (*evm.TransactionReceipt, error) {
+			receipt := &evm.TransactionReceipt{Status: evm.TxStatusSuccess, TxHash: got}
+			if emitRefunded {
+				receipt.Logs = append(receipt.Logs, refundedReceiptLog(t, channelId, big.NewInt(1000)))
+			}
+			return receipt, nil
+		},
+	}
+	payload := &batchsettlement.BatchSettlementEnrichedRefundPayload{
+		Type:          "refund",
+		ChannelConfig: cfg,
+		Amount:        "1000",
+	}
+
+	// The tx succeeds but the contract returned early without a Refunded event.
+	resp, err := ExecuteRefund(context.Background(), signer, payload, testNetwork, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if resp.Success || resp.ErrorReason != ErrRefundedEventMismatch {
+		t.Fatalf("got %+v, want failure with %s", resp, ErrRefundedEventMismatch)
+	}
+	if resp.Transaction != txHash {
+		t.Fatalf("transaction = %q, want %q", resp.Transaction, txHash)
+	}
+
+	emitRefunded = true
+	resp, err = ExecuteRefund(context.Background(), signer, payload, testNetwork, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !resp.Success || resp.Amount != "1000" {
+		t.Fatalf("got %+v, want success with amount 1000", resp)
+	}
+}
+
 func TestExecuteRefundWithSignature_BadProvidedClaimSig(t *testing.T) {
 	scheme := newScheme()
 	cfg := validConfig()

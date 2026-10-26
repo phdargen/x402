@@ -643,6 +643,5 @@ func submitRefundCall(
 		return nil, err
 	}
 	notifyClaimed(onClaimed, receipt)
-	details := computeRefundSettlementDetails(ctx, signer, payload, channelId, preState, refundAmount)
-	return buildRefundResponse(txHash, network, payload.ChannelConfig.Payer, details), nil
+	return finishRefundAfterReceipt(ctx, signer, payload, channelId, preState, refundAmount, txHash, network, receipt)
 }
