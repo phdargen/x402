@@ -27,7 +27,8 @@
       "@x402/paywall",
       "@x402/fetch",
       "@x402/axios",
-      "@x402/mcp"
+      "@x402/mcp",
+      "@x402/cli"
     ]
   ],
   "access": "public",

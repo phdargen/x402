@@ -91,5 +91,6 @@ jobs:
           publish_package "packages/http/next"
           publish_package "packages/http/fastify"
           publish_package "packages/mcp"
+          publish_package "packages/cli"
 
           echo "=== All packages processed successfully ==="

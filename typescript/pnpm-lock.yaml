@@ -21,7 +21,7 @@ importers:
         version: 2.29.8(@types/node@22.19.17)
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -31,6 +31,82 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.2
+
+  packages/cli:
+    dependencies:
+      '@x402/core':
+        specifier: workspace:~
+        version: link:../core
+      '@x402/fetch':
+        specifier: workspace:~
+        version: link:../http/fetch
+      incur:
+        specifier: ^0.7.1
+        version: 0.7.1
+    devDependencies:
+      '@eslint/js':
+        specifier: ^9.24.0
+        version: 9.34.0
+      '@solana/kit':
+        specifier: ^5.3.0
+        version: 5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)
+      '@types/node':
+        specifier: ^22.13.4
+        version: 22.19.17
+      '@typescript-eslint/eslint-plugin':
+        specifier: ^8.29.1
+        version: 8.49.0(@typescript-eslint/parser@8.49.0(eslint@9.34.0)(typescript@5.9.2))(eslint@9.34.0)(typescript@5.9.2)
+      '@typescript-eslint/parser':
+        specifier: ^8.29.1
+        version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
+      '@vitest/coverage-v8':
+        specifier: ^3.2.7
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
+      '@x402/evm':
+        specifier: workspace:~
+        version: link:../mechanisms/evm
+      '@x402/svm':
+        specifier: workspace:~
+        version: link:../mechanisms/svm
+      eslint:
+        specifier: ^9.24.0
+        version: 9.34.0
+      eslint-plugin-import:
+        specifier: ^2.31.0
+        version: 2.32.0(@typescript-eslint/parser@8.49.0(eslint@9.34.0)(typescript@5.9.2))(eslint@9.34.0)
+      eslint-plugin-jsdoc:
+        specifier: ^50.6.9
+        version: 50.8.0(eslint@9.34.0)
+      eslint-plugin-prettier:
+        specifier: ^5.2.6
+        version: 5.5.4(eslint@9.34.0)(prettier@3.5.2)
+      eslint-plugin-sonarjs:
+        specifier: ^3.0.7
+        version: 3.0.7(eslint@9.34.0)
+      prettier:
+        specifier: 3.5.2
+        version: 3.5.2
+      tsup:
+        specifier: ^8.4.0
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.2
+      viem:
+        specifier: ^2.48.11
+        version: 2.48.11(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.6.7)
+      vite:
+        specifier: ^6.2.6
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
+      vite-tsconfig-paths:
+        specifier: ^5.1.4
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
+      vitest:
+        specifier: ^3.2.7
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/core:
     dependencies:
@@ -52,7 +128,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -73,7 +149,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -82,13 +158,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/extensions:
     dependencies:
@@ -134,7 +210,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -155,7 +231,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -164,13 +240,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/axios:
     dependencies:
@@ -192,7 +268,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       axios:
         specifier: ^1.7.9
         version: 1.11.0
@@ -216,7 +292,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -225,13 +301,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/express:
     dependencies:
@@ -262,7 +338,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -286,7 +362,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -295,13 +371,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/fastify:
     dependencies:
@@ -329,7 +405,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -353,7 +429,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -362,13 +438,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/fetch:
     dependencies:
@@ -390,7 +466,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -411,7 +487,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -420,13 +496,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/hono:
     dependencies:
@@ -454,7 +530,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -478,7 +554,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -487,13 +563,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/next:
     dependencies:
@@ -524,7 +600,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -545,7 +621,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -554,13 +630,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/http/paywall:
     dependencies:
@@ -654,7 +730,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       '@x402/avm':
         specifier: workspace:~
         version: link:../../mechanisms/avm
@@ -696,7 +772,7 @@ importers:
         version: 19.2.1(react@19.2.1)
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -705,13 +781,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402:
     dependencies:
@@ -814,7 +890,7 @@ importers:
         version: 19.2.1(react@19.2.1)
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -823,13 +899,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402-axios:
     dependencies:
@@ -875,7 +951,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -884,13 +960,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402-express:
     dependencies:
@@ -945,7 +1021,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -954,13 +1030,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402-fetch:
     dependencies:
@@ -1003,7 +1079,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1012,13 +1088,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402-hono:
     dependencies:
@@ -1070,7 +1146,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1079,13 +1155,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/legacy/x402-next:
     dependencies:
@@ -1137,7 +1213,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1146,19 +1222,19 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
-        version: 1.26.0(zod@3.25.76)
+        version: 1.26.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
       '@x402/core':
         specifier: workspace:~
         version: link:../core
@@ -1180,7 +1256,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       '@x402/evm':
         specifier: workspace:~
         version: link:../mechanisms/evm
@@ -1207,7 +1283,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1219,13 +1295,13 @@ importers:
         version: 2.48.11(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@3.25.76)
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/aptos:
     dependencies:
@@ -1250,7 +1326,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1271,7 +1347,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1280,13 +1356,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/avm:
     dependencies:
@@ -1311,7 +1387,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1332,7 +1408,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1341,13 +1417,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/cardano:
     dependencies:
@@ -1378,7 +1454,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1399,7 +1475,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1408,13 +1484,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/casper:
     dependencies:
@@ -1442,7 +1518,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1463,7 +1539,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1472,13 +1548,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/concordium:
     dependencies:
@@ -1503,7 +1579,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1524,7 +1600,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1533,13 +1609,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/evm:
     dependencies:
@@ -1567,7 +1643,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1588,7 +1664,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1597,13 +1673,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/hedera:
     dependencies:
@@ -1631,7 +1707,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1652,7 +1728,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1661,13 +1737,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/keeta:
     dependencies:
@@ -1695,7 +1771,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1716,7 +1792,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
@@ -1725,13 +1801,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/near:
     dependencies:
@@ -1774,7 +1850,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1795,7 +1871,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1804,13 +1880,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/stellar:
     dependencies:
@@ -1835,7 +1911,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1856,7 +1932,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1865,13 +1941,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/svm:
     dependencies:
@@ -1914,7 +1990,7 @@ importers:
         version: 8.42.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1935,7 +2011,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1944,13 +2020,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/tvm:
     dependencies:
@@ -1978,7 +2054,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -1999,7 +2075,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tweetnacl:
         specifier: ^1.0.3
         version: 1.0.3
@@ -2008,13 +2084,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   packages/mechanisms/xrpl:
     dependencies:
@@ -2039,7 +2115,7 @@ importers:
         version: 8.49.0(eslint@9.34.0)(typescript@5.9.2)
       '@vitest/coverage-v8':
         specifier: ^3.2.7
-        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       eslint:
         specifier: ^9.24.0
         version: 9.34.0
@@ -2060,7 +2136,7 @@ importers:
         version: 3.5.2
       tsup:
         specifier: ^8.4.0
-        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1)
+        version: 8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1)
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -2069,13 +2145,13 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vite-tsconfig-paths:
         specifier: ^5.1.4
-        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+        version: 5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   site:
     dependencies:
@@ -2138,7 +2214,7 @@ importers:
         version: 19.2.6(react@19.2.6)
       viem:
         specifier: ^2.48.11
-        version: 2.48.11(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.1.13)
+        version: 2.48.11(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.6.7)
     devDependencies:
       '@eslint/js':
         specifier: ^9.24.0
@@ -2181,10 +2257,10 @@ importers:
         version: 5.9.2
       vite:
         specifier: ^6.2.6
-        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       vitest:
         specifier: ^3.2.7
-        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
 packages:
 
@@ -2313,6 +2389,9 @@ packages:
 
   '@casperlabs/ts-results@3.3.5':
     resolution: {integrity: sha512-ymSQqqb4mOSet592li02u1Gd28LoOFJUm6R3jkdNQ+nqsnbHvN+izBigtP4aYmNwh6gFyCwDgjYporEJgDT4eA==}
+
+  '@cfworker/json-schema@4.1.1':
+    resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
   '@changesets/apply-release-plan@7.0.14':
     resolution: {integrity: sha512-ddBvf9PHdy2YY0OUiEl3TV78mH9sckndJR14QAt87KLEbIov81XO0q0QAmvooBxXlqRRP8I9B7XOzZwQG7JkWA==}
@@ -3399,6 +3478,10 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
+  '@modelcontextprotocol/server@2.0.0-alpha.4':
+    resolution: {integrity: sha512-/KEo3ZJ50HlagHp0lz2vPgfBZFtXHu6zTBXT9XqPc+4O9i4+IbBVWKq/a9yAfv/ifp0u3+mRo8SUk5kMKzhN8A==}
+    engines: {node: '>=20'}
+
   '@msgpack/msgpack@3.1.3':
     resolution: {integrity: sha512-47XIizs9XZXvuJgoaJUIE2lFoID8ugvc0jzSHP+Ptfk8nTbnR8g788wv48N03Kx0UkAv559HWRQ3yzOgzlRNUA==}
     engines: {node: '>= 18'}
@@ -4075,6 +4158,10 @@ packages:
   '@samchon/openapi@4.7.2':
     resolution: {integrity: sha512-yj6kGWHtKK85wfJXrSmWqLWjfCd98SAvCTsVDlej2s7OfXXHqA4hmgPRNrAPIQRVi00xn26qL1PChjq1MhzlRQ==}
 
+  '@scalar/openapi-types@0.8.0':
+    resolution: {integrity: sha512-WmaxVSfvY5K/TwcG2B2TU1WOe1As1uc2s7myswtP6dBlcjU3hM08SApxv/jmyGaCE8t4gO5BBhmHY4pDUfmr2g==}
+    engines: {node: '>=22'}
+
   '@scure/base@1.1.9':
     resolution: {integrity: sha512-8YKhl8GHiNI/pU2VMaofa2Tor7PJRAjwQLBBuilkJ9L5+13yVbC7JO/wS7piioAvPSwR3JKM1IJ/u4xQzbcXKg==}
 
@@ -4176,6 +4263,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/accounts@5.5.1':
+    resolution: {integrity: sha512-TfOY9xixg5rizABuLVuZ9XI2x2tmWUC/OoN556xwfDlhBHBjKfszicYYOyD6nbFmwTGYarCmyGIdteXxTXIdhQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/accounts@6.1.0':
     resolution: {integrity: sha512-0jhmhSSS71ClLtBQIDrLlhkiNER4M9RIXTl1eJ1yJoFlE608JaKHTjNWsdVKdke7uBD6exdjNZkIVmouQPHMcA==}
     engines: {node: '>=20.18.0'}
@@ -4203,6 +4299,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/addresses@5.5.1':
+    resolution: {integrity: sha512-5xoah3Q9G30HQghu/9BiHLb5pzlPKRC3zydQDmE3O9H//WfayxTFppsUDCL6FjYUHqj/wzK6CWHySglc2RkpdA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/addresses@6.1.0':
     resolution: {integrity: sha512-QT04Vie4iICaalQQRJFMGj/P56IxXiwFtVuZHu1qjZUNmuGTOvX6G98b27RaGtLzpJ3NIku/6OtKxLUBqAKAyQ==}
     engines: {node: '>=20.18.0'}
@@ -4229,6 +4334,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/assertions@5.5.1':
+    resolution: {integrity: sha512-YTCSWAlGwSlVPnWtWLm3ukz81wH4j2YaCveK+TjpvUU88hTy6fmUqxi0+hvAMAe4zKXpJyj3Az7BrLJRxbIm4Q==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/assertions@6.1.0':
     resolution: {integrity: sha512-pLgxB2xxTk2QfTaWpnRpSMYgaPkKYDQgptRvbwmuDQnOW1Zopg+42MT2UrDGd3UFMML1uOFPxIwKM6m51H0uXw==}
@@ -4270,6 +4384,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/codecs-core@5.5.1':
+    resolution: {integrity: sha512-TgBt//bbKBct0t6/MpA8ElaOA3sa8eYVvR7LGslCZ84WiAwwjCY0lW/lOYsFHJQzwREMdUyuEyy5YWBKtdh8Rw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/codecs-core@6.1.0':
     resolution: {integrity: sha512-5rNnDOOm2GRFMJbd9imYCPNvGOrQ+TZ53NCkFFWbbB7f+L9KkLeuuAsDMFN1lCziJFlymvN785YtDnMeWj2W+g==}
     engines: {node: '>=20.18.0'}
@@ -4302,6 +4425,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/codecs-data-structures@5.5.1':
+    resolution: {integrity: sha512-97bJWGyUY9WvBz3mX1UV3YPWGDTez6btCfD0ip3UVEXJbItVuUiOkzcO5iFDUtQT5riKT6xC+Mzl+0nO76gd0w==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/codecs-data-structures@6.1.0':
     resolution: {integrity: sha512-1cb9g5hrrucTuGkGxqVVq7dCwSMnn4YqwTe365iKkK8HBpLBmUl8XATf1MUs5UtDun1g9eNWOL72Psr8mIUqTQ==}
     engines: {node: '>=20.18.0'}
@@ -4333,6 +4465,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/codecs-numbers@5.5.1':
+    resolution: {integrity: sha512-rllMIZAHqmtvC0HO/dc/21wDuWaD0B8Ryv8o+YtsICQBuiL/0U4AGwH7Pi5GNFySYk0/crSuwfIqQFtmxNSPFw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/codecs-numbers@6.1.0':
     resolution: {integrity: sha512-YPQwwl6LE3igH23ah+d8kgpyE5xFcPbuwhxCDsLWqY/ESrvO/0YQSbsgIXahbhZxN59ZC4uq1LnHhBNbpCSVQg==}
@@ -4373,6 +4514,18 @@ packages:
       fastestsmallesttextencoderdecoder:
         optional: true
 
+  '@solana/codecs-strings@5.5.1':
+    resolution: {integrity: sha512-7klX4AhfHYA+uKKC/nxRGP2MntbYQCR3N6+v7bk1W/rSxYuhNmt+FN8aoThSZtWIKwN6BEyR1167ka8Co1+E7A==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      fastestsmallesttextencoderdecoder: ^1.0.22
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      fastestsmallesttextencoderdecoder:
+        optional: true
+      typescript:
+        optional: true
+
   '@solana/codecs-strings@6.1.0':
     resolution: {integrity: sha512-pRH5uAn4VCFUs2rYiDITyWsRnpvs3Uh/nhSc6OSP/kusghcCcCJcUzHBIjT4x08MVacXmGUlSLe/9qPQO+QK3Q==}
     engines: {node: '>=20.18.0'}
@@ -4401,6 +4554,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/codecs@5.5.1':
+    resolution: {integrity: sha512-Vea29nJub/bXjfzEV7ZZQ/PWr1pYLZo3z0qW0LQL37uKKVzVFRQlwetd7INk3YtTD3xm9WUYr7bCvYUk3uKy2g==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/codecs@6.1.0':
     resolution: {integrity: sha512-VHBS3t8fyVjE0Nqo6b4TUnzdwdRaVo+B5ufHhPLbbjkEXzz8HB4E/OBjgasn+zWGlfScfQAiBFOsfZjbVWu4XA==}
@@ -4438,6 +4600,16 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/errors@5.5.1':
+    resolution: {integrity: sha512-vFO3p+S7HoyyrcAectnXbdsMfwUzY2zYFUc2DEe5BwpiE9J1IAxPBGjOWO6hL1bbYdBrlmjNx8DXCslqS+Kcmg==}
+    engines: {node: '>=20.18.0'}
+    hasBin: true
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/errors@6.1.0':
     resolution: {integrity: sha512-cqSwcw3Rmn85UR7PyF5nKPdlQsRYBkx7YGRvFaJ6Sal1PM+bfolhL5iT7STQoXxdhXGYwHMPg7kZYxmMdjwnJA==}
     engines: {node: '>=20.18.0'}
@@ -4466,6 +4638,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/fast-stable-stringify@5.5.1':
+    resolution: {integrity: sha512-Ni7s2FN33zTzhTFgRjEbOVFO+UAmK8qi3Iu0/GRFYK4jN696OjKHnboSQH/EacQ+yGqS54bfxf409wU5dsLLCw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/fast-stable-stringify@6.1.0':
     resolution: {integrity: sha512-QXUfDFaJCFeARsxJgScWmJ153Tit7Cimk9y0UWWreNBr2Aphi67Nlcj/tr7UABTO0Qaw/0gwrK76zz3m1t3nIw==}
     engines: {node: '>=20.18.0'}
@@ -4493,6 +4674,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/functional@5.5.1':
+    resolution: {integrity: sha512-tTHoJcEQq3gQx5qsdsDJ0LEJeFzwNpXD80xApW9o/PPoCNimI3SALkZl+zNW8VnxRrV3l3yYvfHWBKe/X3WG3w==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/functional@6.1.0':
     resolution: {integrity: sha512-+Sm8ldVxSTHIKaZDvcBu81FPjknXx6OMPlakkKmXjKxPgVLl86ruqMo2yEwoDUHV7DysLrLLcRNn13rfulomRw==}
     engines: {node: '>=20.18.0'}
@@ -4513,6 +4703,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/instruction-plans@5.5.1':
+    resolution: {integrity: sha512-7z3CB7YMcFKuVvgcnNY8bY6IsZ8LG61Iytbz7HpNVGX2u1RthOs1tRW8luTzSG1MPL0Ox7afyAVMYeFqSPHnaQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/instruction-plans@6.1.0':
     resolution: {integrity: sha512-zcsHg544t1zn7LLOVUxOWYlsKn9gvT7R+pL3cTiP2wFNoUN0h9En87H6nVqkZ8LWw23asgW0uM5uJGwfBx2h1Q==}
@@ -4541,6 +4740,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/instructions@5.5.1':
+    resolution: {integrity: sha512-h0G1CG6S+gUUSt0eo6rOtsaXRBwCq1+Js2a+Ps9Bzk9q7YHNFA75/X0NWugWLgC92waRp66hrjMTiYYnLBoWOQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/instructions@6.1.0':
     resolution: {integrity: sha512-w1LdbJ3yanESckNTYC5KPckgN/25FyGCm07WWrs+dCnnpRNeLiVHIytXCPmArOVAXVkOYidXzhWmqCzqKUjYaA==}
     engines: {node: '>=20.18.0'}
@@ -4568,6 +4776,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/keys@5.5.1':
+    resolution: {integrity: sha512-KRD61cL7CRL+b4r/eB9dEoVxIf/2EJ1Pm1DmRYhtSUAJD2dJ5Xw8QFuehobOGm9URqQ7gaQl+Fkc1qvDlsWqKg==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/keys@6.1.0':
     resolution: {integrity: sha512-C/SGCl3VOgBQZ0mLrMxCcJYnMsGpgE8wbx29jqRY+R91m5YhS1f/GfXJPR1lN/h7QGrJ6YDm8eI0Y3AZ7goKHg==}
     engines: {node: '>=20.18.0'}
@@ -4588,6 +4805,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/kit@5.5.1':
+    resolution: {integrity: sha512-irKUGiV2yRoyf+4eGQ/ZeCRxa43yjFEL1DUI5B0DkcfZw3cr0VJtVJnrG8OtVF01vT0OUfYOcUn6zJW5TROHvQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/kit@6.1.0':
     resolution: {integrity: sha512-24exn11BPonquufyCkGgypVtmN4JOsdGMsbF3EZ4kFyk7ZNryCn/N8eELr1FCVrHWRXoc0xy/HFaESBULTMf6g==}
@@ -4616,6 +4842,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/nominal-types@5.5.1':
+    resolution: {integrity: sha512-I1ImR+kfrLFxN5z22UDiTWLdRZeKtU0J/pkWkO8qm/8WxveiwdIv4hooi8pb6JnlR4mSrWhq0pCIOxDYrL9GIQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/nominal-types@6.1.0':
     resolution: {integrity: sha512-+skHjN0arNNB9TLsGqA94VCx7euyGURI+qG6wck6E4D7hH6i6DxGiVrtKRghx+smJkkLtTm9BvdVKGoeNQYr7Q==}
     engines: {node: '>=20.18.0'}
@@ -4630,6 +4865,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/offchain-messages@5.5.1':
+    resolution: {integrity: sha512-g+xHH95prTU+KujtbOzj8wn+C7ZNoiLhf3hj6nYq3MTyxOXtBEysguc97jJveUZG0K97aIKG6xVUlMutg5yxhw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/offchain-messages@6.1.0':
     resolution: {integrity: sha512-jrUb7HGUnRA+k44upcqKeevtEdqMxYRSlFdE0JTctZunGlP3GCcTl12tFOpbnFHvBLt8RwS62+nyeES8zzNwXA==}
@@ -4657,8 +4901,26 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/options@5.5.1':
+    resolution: {integrity: sha512-eo971c9iLNLmk+yOFyo7yKIJzJ/zou6uKpy6mBuyb/thKtS/haiKIc3VLhyTXty3OH2PW8yOlORJnv4DexJB8A==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/options@6.1.0':
     resolution: {integrity: sha512-/4FtVfR6nkHkMCumyh7/lJ6jMqyES6tKUbOJRa6gJxcIUWeRDu+XrHTHLf3gRNUqDAbFvW8FMIrQm7PdreZgRA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
+  '@solana/plugin-core@5.5.1':
+    resolution: {integrity: sha512-VUZl30lDQFJeiSyNfzU1EjYt2QZvoBFKEwjn1lilUJw7KgqD5z7mbV7diJhT+dLFs36i0OsjXvq5kSygn8YJ3A==}
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: ^5.0.0
@@ -4705,6 +4967,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/programs@5.5.1':
+    resolution: {integrity: sha512-7U9kn0Jsx1NuBLn5HRTFYh78MV4XN145Yc3WP/q5BlqAVNlMoU9coG5IUTJIG847TUqC1lRto3Dnpwm6T4YRpA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/programs@6.1.0':
     resolution: {integrity: sha512-i4L4gSlIHDsdYRt3/YKVKMIN3UuYSKHRqK9B+AejcIc0y6Y/AXnHqzmpBRXEhvTXz18nt59MLXpVU4wu7ASjJA==}
     engines: {node: '>=20.18.0'}
@@ -4731,6 +5002,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/promises@5.5.1':
+    resolution: {integrity: sha512-T9lfuUYkGykJmppEcssNiCf6yiYQxJkhiLPP+pyAc2z84/7r3UVIb2tNJk4A9sucS66pzJnVHZKcZVGUUp6wzA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/promises@6.1.0':
     resolution: {integrity: sha512-/mUW6peXQiEOaylLpGv4vtkvPzQvSbfhX9j5PNIK/ry4S3SHRQ3j3W/oGy4y3LR5alwo7NcVbubrkh4e4xwcww==}
@@ -4759,6 +5039,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc-api@5.5.1':
+    resolution: {integrity: sha512-XWOQQPhKl06Vj0xi3RYHAc6oEQd8B82okYJ04K7N0Vvy3J4PN2cxeK7klwkjgavdcN9EVkYCChm2ADAtnztKnA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-api@6.1.0':
     resolution: {integrity: sha512-+hO5+kZjJHuUNATUQxlJ1+ztXFkgn1j46zRwt3X7kF+VHkW3wsQ7up0JTS+Xsacmkrj1WKfymQweq8JTrsAG8A==}
     engines: {node: '>=20.18.0'}
@@ -4785,6 +5074,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/rpc-parsed-types@5.5.1':
+    resolution: {integrity: sha512-HEi3G2nZqGEsa3vX6U0FrXLaqnUCg4SKIUrOe8CezD+cSFbRTOn3rCLrUmJrhVyXlHoQVaRO9mmeovk31jWxJg==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/rpc-parsed-types@6.1.0':
     resolution: {integrity: sha512-YKccynVgWt/gbs0tBYstNw6BSVuOeWdeAldTB2OgH95o2Q04DpO4v97X1MZDysA4SvSZM30Ek5Ni5ss3kskgdw==}
@@ -4813,6 +5111,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc-spec-types@5.5.1':
+    resolution: {integrity: sha512-6OFKtRpIEJQs8Jb2C4OO8KyP2h2Hy1MFhatMAoXA+0Ik8S3H+CicIuMZvGZ91mIu/tXicuOOsNNLu3HAkrakrw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-spec-types@6.1.0':
     resolution: {integrity: sha512-tldMv1b6VGcvcRrY5MDWKlsyEKH6K96zE7gAIpKDX2G4T47ZOV+OMA3nh6xQpRgtyCUBsej0t80qmvTBDX/5IQ==}
     engines: {node: '>=20.18.0'}
@@ -4840,6 +5147,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc-spec@5.5.1':
+    resolution: {integrity: sha512-m3LX2bChm3E3by4mQrH4YwCAFY57QBzuUSWqlUw7ChuZ+oLLOq7b2czi4i6L4Vna67j3eCmB3e+4tqy1j5wy7Q==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-spec@6.1.0':
     resolution: {integrity: sha512-RxpkIGizCYhXGUcap7npV2S/rAXZ7P/liozY/ExjMmCxYTDwGIW33kp/uH/JRxuzrL8+f8FqY76VsqqIe+2VZw==}
     engines: {node: '>=20.18.0'}
@@ -4866,6 +5182,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/rpc-subscriptions-api@5.5.1':
+    resolution: {integrity: sha512-5Oi7k+GdeS8xR2ly1iuSFkAv6CZqwG0Z6b1QZKbEgxadE1XGSDrhM2cn59l+bqCozUWCqh4c/A2znU/qQjROlw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/rpc-subscriptions-api@6.1.0':
     resolution: {integrity: sha512-I6J+3VU0dda6EySKbDyd+1urC7RGIRPRp0DcWRVcy68NOLbq0I5C40Dn9O2Zf8iCdK4PbQ7JKdCvZ/bDd45hdg==}
@@ -4900,6 +5225,15 @@ packages:
       ws:
         optional: true
 
+  '@solana/rpc-subscriptions-channel-websocket@5.5.1':
+    resolution: {integrity: sha512-7tGfBBrYY8TrngOyxSHoCU5shy86iA9SRMRrPSyBhEaZRAk6dnbdpmUTez7gtdVo0BCvh9nzQtUycKWSS7PnFQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-subscriptions-channel-websocket@6.1.0':
     resolution: {integrity: sha512-vsx9b+uyCr9L3giao/BTiBFA8DxV5+gDNFq0t5uL21uQ17JXzBektwzHuHoth9IjkvXV/h+IhwXfuLE9Qm4GQg==}
     engines: {node: '>=20.18.0'}
@@ -4926,6 +5260,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/rpc-subscriptions-spec@5.5.1':
+    resolution: {integrity: sha512-iq+rGq5fMKP3/mKHPNB6MC8IbVW41KGZg83Us/+LE3AWOTWV1WT20KT2iH1F1ik9roi42COv/TpoZZvhKj45XQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/rpc-subscriptions-spec@6.1.0':
     resolution: {integrity: sha512-P06jhqzHpZGaLeJmIQkpDeMDD1xUp53ARpmXMsduMC+U5ZKQt29CLo+JrR18boNtls6WfttjVMEbzF25/4UPVA==}
@@ -4954,6 +5297,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc-subscriptions@5.5.1':
+    resolution: {integrity: sha512-CTMy5bt/6mDh4tc6vUJms9EcuZj3xvK0/xq8IQ90rhkpYvate91RjBP+egvjgSayUg9yucU9vNuUpEjz4spM7w==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-subscriptions@6.1.0':
     resolution: {integrity: sha512-sqwj+cQinWcZ7M/9+cudKxMPTkTQyGP73980vPCWM7vCpPkp2qzgrEie4DdgDGo+NMwIjeFgu2kdUuLHI3GD/g==}
     engines: {node: '>=20.18.0'}
@@ -4980,6 +5332,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/rpc-transformers@5.5.1':
+    resolution: {integrity: sha512-OsWqLCQdcrRJKvHiMmwFhp9noNZ4FARuMkHT5us3ustDLXaxOjF0gfqZLnMkulSLcKt7TGXqMhBV+HCo7z5M8Q==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/rpc-transformers@6.1.0':
     resolution: {integrity: sha512-OsSuuRPmsmS02eR9Zz+4iTsr+21hvEMEex5vwbwN6LAGPFlQ4ohqGkxgZCwmYd+Q5HWpnn9Uuf1MDTLLrKQkig==}
@@ -5008,6 +5369,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc-transport-http@5.5.1':
+    resolution: {integrity: sha512-yv8GoVSHqEV0kUJEIhkdOVkR2SvJ6yoWC51cJn2rSV7plr6huLGe0JgujCmB7uZhhaLbcbP3zxXxu9sOjsi7Fg==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc-transport-http@6.1.0':
     resolution: {integrity: sha512-3ebaTYuglLJagaXtjwDPVI7SQeeeFN2fpetpGKsuMAiti4fzYqEkNN8FIo+nXBzqqG/cVc2421xKjXl6sO1k/g==}
     engines: {node: '>=20.18.0'}
@@ -5034,6 +5404,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/rpc-types@5.5.1':
+    resolution: {integrity: sha512-bibTFQ7PbHJJjGJPmfYC2I+/5CRFS4O2p9WwbFraX1Keeel+nRrt/NBXIy8veP5AEn2sVJIyJPpWBRpCx1oATA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/rpc-types@6.1.0':
     resolution: {integrity: sha512-lR+Cb3v5Rpl49HsXWASy++TSE1AD86eRKabY+iuWnbBMYVGI4MamAvYwgBiygsCNc30nyO2TFNj9STMeSD/gAg==}
@@ -5062,6 +5441,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/rpc@5.5.1':
+    resolution: {integrity: sha512-ku8zTUMrkCWci66PRIBC+1mXepEnZH/q1f3ck0kJZ95a06bOTl5KU7HeXWtskkyefzARJ5zvCs54AD5nxjQJ+A==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/rpc@6.1.0':
     resolution: {integrity: sha512-R3y5PklW9mPy5Y34hsXj40R28zN2N7AGLnHqYJVkXkllwVub/QCNpSdDxAnbbS5EGOYGoUOW8s5LFoXwMSr1LQ==}
     engines: {node: '>=20.18.0'}
@@ -5082,6 +5470,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/signers@5.5.1':
+    resolution: {integrity: sha512-FY0IVaBT2kCAze55vEieR6hag4coqcuJ31Aw3hqRH7mv6sV8oqwuJmUrx+uFwOp1gwd5OEAzlv6N4hOOple4sQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/signers@6.1.0':
     resolution: {integrity: sha512-WDPGZJr6jIe2dEChv/2KQBnaga8dqOjd6ceBj/HcDHxnCudo66t7GlyZ9+9jMO40AgOOb7EDE5FDqPMrHMg5Yw==}
@@ -5128,6 +5525,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/subscribable@5.5.1':
+    resolution: {integrity: sha512-9K0PsynFq0CsmK1CDi5Y2vUIJpCqkgSS5yfDN0eKPgHqEptLEaia09Kaxc90cSZDZU5mKY/zv1NBmB6Aro9zQQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/subscribable@6.1.0':
     resolution: {integrity: sha512-HiUfkxN7638uxPmY4t0gI4+yqnFLZYJKFaT9EpWIuGrOB1d9n+uOHNs3NU7cVMwWXgfZUbztTCKyCVTbcwesNg==}
     engines: {node: '>=20.18.0'}
@@ -5148,6 +5554,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/sysvars@5.5.1':
+    resolution: {integrity: sha512-k3Quq87Mm+geGUu1GWv6knPk0ALsfY6EKSJGw9xUJDHzY/RkYSBnh0RiOrUhtFm2TDNjOailg8/m0VHmi3reFA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/sysvars@6.1.0':
     resolution: {integrity: sha512-KwJyBBrAOx0BgkiZqOKAaySDb/0JrUFSBQL9/O1kSKGy9TCRX55Ytr1HxNTcTPppWNpbM6JZVK+yW3Ruey0HRw==}
@@ -5176,6 +5591,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/transaction-confirmation@5.5.1':
+    resolution: {integrity: sha512-j4mKlYPHEyu+OD7MBt3jRoX4ScFgkhZC6H65on4Fux6LMScgivPJlwnKoZMnsgxFgWds0pl+BYzSiALDsXlYtw==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/transaction-confirmation@6.1.0':
     resolution: {integrity: sha512-akSjcqAMOGPFvKctFDSzhjcRc/45WbEVdVQ9mjgH6OYo7B11WZZZaeGPlzAw5KyuG34Px941xmICkBmNqEH47Q==}
     engines: {node: '>=20.18.0'}
@@ -5203,6 +5627,15 @@ packages:
     peerDependencies:
       typescript: '>=5.3.3'
 
+  '@solana/transaction-messages@5.5.1':
+    resolution: {integrity: sha512-aXyhMCEaAp3M/4fP0akwBBQkFPr4pfwoC5CLDq999r/FUwDax2RE/h4Ic7h2Xk+JdcUwsb+rLq85Y52hq84XvQ==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   '@solana/transaction-messages@6.1.0':
     resolution: {integrity: sha512-Dpv54LRVcfFbFEa/uB53LaY/TRfKuPGMKR7Z4F290zBgkj9xkpZkI+WLiJBiSloI7Qo2KZqXj3514BIeZvJLcg==}
     engines: {node: '>=20.18.0'}
@@ -5229,6 +5662,15 @@ packages:
     engines: {node: '>=20.18.0'}
     peerDependencies:
       typescript: '>=5.3.3'
+
+  '@solana/transactions@5.5.1':
+    resolution: {integrity: sha512-8hHtDxtqalZ157pnx6p8k10D7J/KY/biLzfgh9R09VNLLY3Fqi7kJvJCr7M2ik3oRll56pxhraAGCC9yIT6eOA==}
+    engines: {node: '>=20.18.0'}
+    peerDependencies:
+      typescript: ^5.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@solana/transactions@6.1.0':
     resolution: {integrity: sha512-1dkiNJcTtlHm4Fvs5VohNVpv7RbvbUYYKV7lYXMPIskoLF1eZp0tVlEqD/cRl91RNz7HEysfHqBAwlcJcRmrRg==}
@@ -5289,6 +5731,9 @@ packages:
 
   '@ton/crypto@3.3.0':
     resolution: {integrity: sha512-/A6CYGgA/H36OZ9BbTaGerKtzWp50rg67ZCH2oIjV1NcrBaCK9Z343M+CxedvM7Haf3f/Ee9EhxyeTp0GKMUpA==}
+
+  '@toon-format/toon@2.3.1':
+    resolution: {integrity: sha512-sWqEMeAJGMda9qRrfPKrX3C4c33CO9SJuvJzzrcBEn5sbDB+k6pSLkDsfN0rVnLQwR97MV3sDgVbcxQNsq8xVw==}
 
   '@tootallnate/once@2.0.1':
     resolution: {integrity: sha512-HqmEUIGRJ5fSXchkVgR5F7qn48bDBzv0kWj/Kfu5e6uci4UlEeng4331LnBkWffb++Ei3FOVLxo8JJWMFBDMeQ==}
@@ -7504,6 +7949,11 @@ packages:
     resolution: {integrity: sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==}
     engines: {node: '>=0.8.19'}
 
+  incur@0.7.1:
+    resolution: {integrity: sha512-tXEStxASXtVWOjY7wNBBMy03+3HPpiLPkrEaqNb5iYerRNRWqTYqwdAEgLfU6Ga2OUrz9LpRuMWFvdj5kIaUlg==}
+    engines: {node: '>=22'}
+    hasBin: true
+
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
@@ -9552,6 +10002,9 @@ packages:
     resolution: {integrity: sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==}
     engines: {node: '>=0.6'}
 
+  tokenx@1.6.0:
+    resolution: {integrity: sha512-CKTjk345ajvBAUp5xUI9a5KKN0zU0lBueVHQbCskH1Hp6WkUKsPW2qGCYNs0pxNyfzxfo+IIjdt2W4sMbw/qBw==}
+
   tough-cookie@5.1.2:
     resolution: {integrity: sha512-FVDYdxtnj0G6Qm/DhNPSb8Ju59ULcup3tuJxkFb5K8Bv2pUXILbf0xZWU8PX8Ov19OXljbUyveOFwRMwkXzO+A==}
     engines: {node: '>=16'}
@@ -10213,6 +10666,11 @@ packages:
     engines: {node: '>= 14.6'}
     hasBin: true
 
+  yaml@2.9.1:
+    resolution: {integrity: sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yargs-parser@18.1.3:
     resolution: {integrity: sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ==}
     engines: {node: '>=6'}
@@ -10246,6 +10704,9 @@ packages:
 
   zod@4.1.13:
     resolution: {integrity: sha512-AvvthqfqrAhNH9dnfmrfKzX5upOdjUVJYFqNSlkmGf64gRaTzlPwz99IHYnVs28qYAybvAlBV+H7pn0saFY4Ig==}
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
   zustand@5.0.0:
     resolution: {integrity: sha512-LE+VcmbartOPM+auOjCCLQOsQ05zUTp8RkgwRzefUk+2jISdMMFnxvyTjA4YNWr5ZGXYbVsEMZosttuxUBkojQ==}
@@ -10561,6 +11022,8 @@ snapshots:
   '@casperlabs/ts-results@3.3.5':
     dependencies:
       tslib: 2.8.1
+
+  '@cfworker/json-schema@4.1.1': {}
 
   '@changesets/apply-release-plan@7.0.14':
     dependencies:
@@ -11963,7 +12426,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.26.0(zod@3.25.76)':
+  '@modelcontextprotocol/sdk@1.26.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.11.7)
       ajv: 8.17.1
@@ -11982,8 +12445,14 @@ snapshots:
       raw-body: 3.0.2
       zod: 3.25.76
       zod-to-json-schema: 3.25.1(zod@3.25.76)
+    optionalDependencies:
+      '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
       - supports-color
+
+  '@modelcontextprotocol/server@2.0.0-alpha.4':
+    dependencies:
+      zod: 4.6.7
 
   '@msgpack/msgpack@3.1.3': {}
 
@@ -13006,6 +13475,8 @@ snapshots:
 
   '@samchon/openapi@4.7.2': {}
 
+  '@scalar/openapi-types@0.8.0': {}
+
   '@scure/base@1.1.9': {}
 
   '@scure/base@1.2.6': {}
@@ -13137,6 +13608,19 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/accounts@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/accounts@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/addresses': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -13183,6 +13667,18 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/addresses@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/assertions': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/addresses@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/assertions': 6.1.0(typescript@5.9.2)
@@ -13208,6 +13704,12 @@ snapshots:
   '@solana/assertions@5.1.0(typescript@5.9.2)':
     dependencies:
       '@solana/errors': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+
+  '@solana/assertions@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/assertions@6.1.0(typescript@5.9.2)':
@@ -13252,6 +13754,12 @@ snapshots:
       '@solana/errors': 5.1.0(typescript@5.9.2)
       typescript: 5.9.2
 
+  '@solana/codecs-core@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/codecs-core@6.1.0(typescript@5.9.2)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -13286,6 +13794,14 @@ snapshots:
       '@solana/errors': 5.1.0(typescript@5.9.2)
       typescript: 5.9.2
 
+  '@solana/codecs-data-structures@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/codecs-data-structures@6.1.0(typescript@5.9.2)':
     dependencies:
       '@solana/codecs-core': 6.1.0(typescript@5.9.2)
@@ -13316,6 +13832,13 @@ snapshots:
     dependencies:
       '@solana/codecs-core': 5.1.0(typescript@5.9.2)
       '@solana/errors': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+
+  '@solana/codecs-numbers@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/codecs-numbers@6.1.0(typescript@5.9.2)':
@@ -13357,6 +13880,15 @@ snapshots:
       typescript: 5.9.2
     optionalDependencies:
       fastestsmallesttextencoderdecoder: 1.0.22
+
+  '@solana/codecs-strings@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      fastestsmallesttextencoderdecoder: 1.0.22
+      typescript: 5.9.2
 
   '@solana/codecs-strings@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
@@ -13400,6 +13932,18 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/codecs@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-data-structures': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/options': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/codecs@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/codecs-core': 6.1.0(typescript@5.9.2)
@@ -13436,6 +13980,13 @@ snapshots:
       commander: 14.0.2
       typescript: 5.9.2
 
+  '@solana/errors@5.5.1(typescript@5.9.2)':
+    dependencies:
+      chalk: 5.6.2
+      commander: 14.0.2
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/errors@6.1.0(typescript@5.9.2)':
     dependencies:
       chalk: 5.6.2
@@ -13455,6 +14006,10 @@ snapshots:
     dependencies:
       typescript: 5.9.2
 
+  '@solana/fast-stable-stringify@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/fast-stable-stringify@6.1.0(typescript@5.9.2)':
     optionalDependencies:
       typescript: 5.9.2
@@ -13469,6 +14024,10 @@ snapshots:
 
   '@solana/functional@5.1.0(typescript@5.9.2)':
     dependencies:
+      typescript: 5.9.2
+
+  '@solana/functional@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/functional@6.1.0(typescript@5.9.2)':
@@ -13494,6 +14053,19 @@ snapshots:
       '@solana/promises': 5.1.0(typescript@5.9.2)
       '@solana/transaction-messages': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/transactions': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/instruction-plans@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/instructions': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/promises': 5.5.1(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -13527,6 +14099,13 @@ snapshots:
     dependencies:
       '@solana/codecs-core': 5.1.0(typescript@5.9.2)
       '@solana/errors': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+
+  '@solana/instructions@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/instructions@6.1.0(typescript@5.9.2)':
@@ -13565,6 +14144,18 @@ snapshots:
       '@solana/codecs-strings': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/errors': 5.1.0(typescript@5.9.2)
       '@solana/nominal-types': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/keys@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/assertions': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -13634,6 +14225,37 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - ws
 
+  '@solana/kit@5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@solana/accounts': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/instruction-plans': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/instructions': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/offchain-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/plugin-core': 5.5.1(typescript@5.9.2)
+      '@solana/programs': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-api': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-parsed-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-subscriptions': 5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/signers': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/sysvars': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-confirmation': 5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - bufferutil
+      - fastestsmallesttextencoderdecoder
+      - utf-8-validate
+
   '@solana/kit@6.1.0(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/accounts': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -13679,6 +14301,10 @@ snapshots:
     dependencies:
       typescript: 5.9.2
 
+  '@solana/nominal-types@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/nominal-types@6.1.0(typescript@5.9.2)':
     optionalDependencies:
       typescript: 5.9.2
@@ -13693,6 +14319,21 @@ snapshots:
       '@solana/errors': 5.1.0(typescript@5.9.2)
       '@solana/keys': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/nominal-types': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/offchain-messages@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-data-structures': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -13745,6 +14386,18 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/options@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-data-structures': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/options@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/codecs-core': 6.1.0(typescript@5.9.2)
@@ -13756,6 +14409,10 @@ snapshots:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
+
+  '@solana/plugin-core@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
+      typescript: 5.9.2
 
   '@solana/plugin-core@6.1.0(typescript@5.9.2)':
     optionalDependencies:
@@ -13807,6 +14464,15 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/programs@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/programs@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/addresses': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -13826,6 +14492,10 @@ snapshots:
 
   '@solana/promises@5.1.0(typescript@5.9.2)':
     dependencies:
+      typescript: 5.9.2
+
+  '@solana/promises@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/promises@6.1.0(typescript@5.9.2)':
@@ -13883,6 +14553,24 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/rpc-api@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-parsed-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-transformers': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/rpc-api@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/addresses': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -13913,6 +14601,10 @@ snapshots:
     dependencies:
       typescript: 5.9.2
 
+  '@solana/rpc-parsed-types@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/rpc-parsed-types@6.1.0(typescript@5.9.2)':
     optionalDependencies:
       typescript: 5.9.2
@@ -13927,6 +14619,10 @@ snapshots:
 
   '@solana/rpc-spec-types@5.1.0(typescript@5.9.2)':
     dependencies:
+      typescript: 5.9.2
+
+  '@solana/rpc-spec-types@5.5.1(typescript@5.9.2)':
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/rpc-spec-types@6.1.0(typescript@5.9.2)':
@@ -13949,6 +14645,13 @@ snapshots:
     dependencies:
       '@solana/errors': 5.1.0(typescript@5.9.2)
       '@solana/rpc-spec-types': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+
+  '@solana/rpc-spec@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/rpc-spec@6.1.0(typescript@5.9.2)':
@@ -13997,6 +14700,20 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/rpc-subscriptions-api@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-subscriptions-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-transformers': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/rpc-subscriptions-api@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/addresses': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -14039,6 +14756,19 @@ snapshots:
     optionalDependencies:
       ws: 7.5.10(bufferutil@4.0.9)(utf-8-validate@5.0.10)
 
+  '@solana/rpc-subscriptions-channel-websocket@5.5.1(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-subscriptions-spec': 5.5.1(typescript@5.9.2)
+      '@solana/subscribable': 5.5.1(typescript@5.9.2)
+      ws: 8.21.0(bufferutil@4.0.9)(utf-8-validate@5.0.10)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   '@solana/rpc-subscriptions-channel-websocket@6.1.0(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -14074,6 +14804,15 @@ snapshots:
       '@solana/promises': 5.1.0(typescript@5.9.2)
       '@solana/rpc-spec-types': 5.1.0(typescript@5.9.2)
       '@solana/subscribable': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+
+  '@solana/rpc-subscriptions-spec@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/promises': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      '@solana/subscribable': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
 
   '@solana/rpc-subscriptions-spec@6.1.0(typescript@5.9.2)':
@@ -14139,6 +14878,26 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - ws
 
+  '@solana/rpc-subscriptions@5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/fast-stable-stringify': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/promises': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-subscriptions-api': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-subscriptions-channel-websocket': 5.5.1(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)
+      '@solana/rpc-subscriptions-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-transformers': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/subscribable': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - bufferutil
+      - fastestsmallesttextencoderdecoder
+      - utf-8-validate
+
   '@solana/rpc-subscriptions@6.1.0(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -14192,6 +14951,18 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/rpc-transformers@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/rpc-transformers@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -14227,6 +14998,15 @@ snapshots:
       '@solana/rpc-spec-types': 5.1.0(typescript@5.9.2)
       typescript: 5.9.2
       undici-types: 7.22.0
+
+  '@solana/rpc-transport-http@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      undici-types: 7.22.0
+    optionalDependencies:
+      typescript: 5.9.2
 
   '@solana/rpc-transport-http@6.1.0(typescript@5.9.2)':
     dependencies:
@@ -14269,6 +15049,19 @@ snapshots:
       '@solana/codecs-strings': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/errors': 5.1.0(typescript@5.9.2)
       '@solana/nominal-types': 5.1.0(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/rpc-types@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -14331,6 +15124,22 @@ snapshots:
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
 
+  '@solana/rpc@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/fast-stable-stringify': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-api': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-spec': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-spec-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-transformers': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-transport-http': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
   '@solana/rpc@6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -14372,6 +15181,22 @@ snapshots:
       '@solana/offchain-messages': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/transaction-messages': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/transactions': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/signers@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/instructions': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+      '@solana/offchain-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -14438,6 +15263,12 @@ snapshots:
       '@solana/errors': 5.1.0(typescript@5.9.2)
       typescript: 5.9.2
 
+  '@solana/subscribable@5.5.1(typescript@5.9.2)':
+    dependencies:
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+
   '@solana/subscribable@6.1.0(typescript@5.9.2)':
     dependencies:
       '@solana/errors': 6.1.0(typescript@5.9.2)
@@ -14460,6 +15291,17 @@ snapshots:
       '@solana/codecs': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/errors': 5.1.0(typescript@5.9.2)
       '@solana/rpc-types': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/accounts': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -14526,6 +15368,25 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - ws
 
+  '@solana/transaction-confirmation@5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/promises': 5.5.1(typescript@5.9.2)
+      '@solana/rpc': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/rpc-subscriptions': 5.5.1(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transactions': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - bufferutil
+      - fastestsmallesttextencoderdecoder
+      - utf-8-validate
+
   '@solana/transaction-confirmation@6.1.0(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/addresses': 6.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
@@ -14586,6 +15447,22 @@ snapshots:
       '@solana/instructions': 5.1.0(typescript@5.9.2)
       '@solana/nominal-types': 5.1.0(typescript@5.9.2)
       '@solana/rpc-types': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/transaction-messages@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-data-structures': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/instructions': 5.5.1(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -14656,6 +15533,25 @@ snapshots:
       '@solana/nominal-types': 5.1.0(typescript@5.9.2)
       '@solana/rpc-types': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
       '@solana/transaction-messages': 5.1.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - fastestsmallesttextencoderdecoder
+
+  '@solana/transactions@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)':
+    dependencies:
+      '@solana/addresses': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/codecs-core': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-data-structures': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-numbers': 5.5.1(typescript@5.9.2)
+      '@solana/codecs-strings': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/errors': 5.5.1(typescript@5.9.2)
+      '@solana/functional': 5.5.1(typescript@5.9.2)
+      '@solana/instructions': 5.5.1(typescript@5.9.2)
+      '@solana/keys': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/nominal-types': 5.5.1(typescript@5.9.2)
+      '@solana/rpc-types': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+      '@solana/transaction-messages': 5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.2)
+    optionalDependencies:
       typescript: 5.9.2
     transitivePeerDependencies:
       - fastestsmallesttextencoderdecoder
@@ -14763,6 +15659,8 @@ snapshots:
       '@ton/crypto-primitives': 2.1.0
       jssha: 3.2.0
       tweetnacl: 1.0.3
+
+  '@toon-format/toon@2.3.1': {}
 
   '@tootallnate/once@2.0.1':
     optional: true
@@ -15112,7 +16010,7 @@ snapshots:
       '@typescript-eslint/types': 8.49.0
       eslint-visitor-keys: 4.2.1
 
-  '@vitest/coverage-v8@3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))':
+  '@vitest/coverage-v8@3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
@@ -15127,11 +16025,11 @@ snapshots:
       std-env: 3.9.0
       test-exclude: 7.0.2
       tinyrainbow: 2.0.0
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - supports-color
 
-  '@vitest/coverage-v8@3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))':
+  '@vitest/coverage-v8@3.2.7(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))':
     dependencies:
       '@ampproject/remapping': 2.3.0
       '@bcoe/v8-coverage': 1.0.2
@@ -15146,7 +16044,7 @@ snapshots:
       std-env: 3.9.0
       test-exclude: 7.0.2
       tinyrainbow: 2.0.0
-      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vitest: 3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - supports-color
 
@@ -15158,21 +16056,21 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@3.2.7(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))':
+  '@vitest/mocker@3.2.7(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))':
     dependencies:
       '@vitest/spy': 3.2.7
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
-  '@vitest/mocker@3.2.7(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))':
+  '@vitest/mocker@3.2.7(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))':
     dependencies:
       '@vitest/spy': 3.2.7
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
 
   '@vitest/pretty-format@3.2.7':
     dependencies:
@@ -16659,6 +17557,11 @@ snapshots:
       typescript: 5.9.2
       zod: 4.1.13
 
+  abitype@1.2.3(typescript@5.9.2)(zod@4.6.7):
+    optionalDependencies:
+      typescript: 5.9.2
+      zod: 4.6.7
+
   abort-controller@3.0.0:
     dependencies:
       event-target-shim: 5.0.1
@@ -16986,7 +17889,7 @@ snapshots:
 
   borsh@0.7.0:
     dependencies:
-      bn.js: 5.2.3
+      bn.js: 5.2.5
       bs58: 4.0.1
       text-encoding-utf-8: 1.0.2
 
@@ -18655,6 +19558,16 @@ snapshots:
 
   imurmurhash@0.1.4: {}
 
+  incur@0.7.1:
+    dependencies:
+      '@cfworker/json-schema': 4.1.1
+      '@modelcontextprotocol/server': 2.0.0-alpha.4
+      '@scalar/openapi-types': 0.8.0
+      '@toon-format/toon': 2.3.1
+      tokenx: 1.6.0
+      yaml: 2.9.1
+      zod: 4.6.7
+
   inherits@2.0.4: {}
 
   inquirer@8.2.7(@types/node@22.19.17):
@@ -19749,6 +20662,21 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
+  ox@0.14.20(typescript@5.9.2)(zod@4.6.7):
+    dependencies:
+      '@adraffy/ens-normalize': 1.11.1
+      '@noble/ciphers': 1.3.0
+      '@noble/curves': 1.9.1
+      '@noble/hashes': 1.8.0
+      '@scure/bip32': 1.7.0
+      '@scure/bip39': 1.6.0
+      abitype: 1.2.3(typescript@5.9.2)(zod@4.6.7)
+      eventemitter3: 5.0.1
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - zod
+
   ox@0.4.4(typescript@5.9.2)(zod@3.25.76):
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
@@ -20081,13 +21009,13 @@ snapshots:
 
   possible-typed-array-names@1.1.0: {}
 
-  postcss-load-config@6.0.1(postcss@8.5.6)(tsx@4.21.0)(yaml@2.8.1):
+  postcss-load-config@6.0.1(postcss@8.5.6)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       lilconfig: 3.1.3
     optionalDependencies:
       postcss: 8.5.6
       tsx: 4.21.0
-      yaml: 2.8.1
+      yaml: 2.9.1
 
   postcss@8.4.31:
     dependencies:
@@ -21140,6 +22068,8 @@ snapshots:
 
   toidentifier@1.0.1: {}
 
+  tokenx@1.6.0: {}
+
   tough-cookie@5.1.2:
     dependencies:
       tldts: 6.1.86
@@ -21179,7 +22109,7 @@ snapshots:
 
   tslib@2.8.1: {}
 
-  tsup@8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.8.1):
+  tsup@8.5.0(postcss@8.5.6)(tsx@4.21.0)(typescript@5.9.2)(yaml@2.9.1):
     dependencies:
       bundle-require: 5.1.0(esbuild@0.25.12)
       cac: 6.7.14
@@ -21190,7 +22120,7 @@ snapshots:
       fix-dts-default-cjs-exports: 1.0.1
       joycon: 3.1.1
       picocolors: 1.1.1
-      postcss-load-config: 6.0.1(postcss@8.5.6)(tsx@4.21.0)(yaml@2.8.1)
+      postcss-load-config: 6.0.1(postcss@8.5.6)(tsx@4.21.0)(yaml@2.9.1)
       resolve-from: 5.0.0
       rollup: 4.50.0
       source-map: 0.8.0-beta.0
@@ -21506,13 +22436,30 @@ snapshots:
       - utf-8-validate
       - zod
 
-  vite-node@3.2.4(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  viem@2.48.11(bufferutil@4.0.9)(typescript@5.9.2)(utf-8-validate@5.0.10)(zod@4.6.7):
+    dependencies:
+      '@noble/curves': 1.9.1
+      '@noble/hashes': 1.8.0
+      '@scure/bip32': 1.7.0
+      '@scure/bip39': 1.6.0
+      abitype: 1.2.3(typescript@5.9.2)(zod@4.6.7)
+      isows: 1.0.7(ws@8.18.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
+      ox: 0.14.20(typescript@5.9.2)(zod@4.6.7)
+      ws: 8.18.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)
+    optionalDependencies:
+      typescript: 5.9.2
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+      - zod
+
+  vite-node@3.2.4(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 2.0.3
-      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - '@types/node'
       - jiti
@@ -21527,13 +22474,13 @@ snapshots:
       - tsx
       - yaml
 
-  vite-node@3.2.4(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  vite-node@3.2.4(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 2.0.3
-      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - '@types/node'
       - jiti
@@ -21548,29 +22495,29 @@ snapshots:
       - tsx
       - yaml
 
-  vite-tsconfig-paths@5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)):
+  vite-tsconfig-paths@5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)):
     dependencies:
       debug: 4.4.1
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@5.9.2)
     optionalDependencies:
-      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - supports-color
       - typescript
 
-  vite-tsconfig-paths@5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)):
+  vite-tsconfig-paths@5.1.4(typescript@5.9.2)(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)):
     dependencies:
       debug: 4.4.1
       globrex: 0.1.2
       tsconfck: 3.1.6(typescript@5.9.2)
     optionalDependencies:
-      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
     transitivePeerDependencies:
       - supports-color
       - typescript
 
-  vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.3)
@@ -21583,9 +22530,9 @@ snapshots:
       fsevents: 2.3.3
       terser: 5.46.1
       tsx: 4.21.0
-      yaml: 2.8.1
+      yaml: 2.9.1
 
-  vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       esbuild: 0.25.12
       fdir: 6.5.0(picomatch@4.0.3)
@@ -21598,13 +22545,13 @@ snapshots:
       fsevents: 2.3.3
       terser: 5.46.1
       tsx: 4.21.0
-      yaml: 2.8.1
+      yaml: 2.9.1
 
-  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.18.0)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       '@types/chai': 5.2.2
       '@vitest/expect': 3.2.7
-      '@vitest/mocker': 3.2.7(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+      '@vitest/mocker': 3.2.7(vite@6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       '@vitest/pretty-format': 3.2.7
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7
@@ -21622,8 +22569,8 @@ snapshots:
       tinyglobby: 0.2.15
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
-      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
-      vite-node: 3.2.4(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
+      vite-node: 3.2.4(@types/node@22.18.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/debug': 4.1.13
@@ -21643,11 +22590,11 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1):
+  vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.19.17)(jsdom@26.1.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       '@types/chai': 5.2.2
       '@vitest/expect': 3.2.7
-      '@vitest/mocker': 3.2.7(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1))
+      '@vitest/mocker': 3.2.7(vite@6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1))
       '@vitest/pretty-format': 3.2.7
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7
@@ -21665,8 +22612,8 @@ snapshots:
       tinyglobby: 0.2.15
       tinypool: 1.1.1
       tinyrainbow: 2.0.0
-      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
-      vite-node: 3.2.4(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.1)
+      vite: 6.3.5(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
+      vite-node: 3.2.4(@types/node@22.19.17)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/debug': 4.1.13
@@ -21965,6 +22912,8 @@ snapshots:
 
   yaml@2.8.1: {}
 
+  yaml@2.9.1: {}
+
   yargs-parser@18.1.3:
     dependencies:
       camelcase: 5.3.1
@@ -22007,6 +22956,8 @@ snapshots:
   zod@3.25.76: {}
 
   zod@4.1.13: {}
+
+  zod@4.6.7: {}
 
   zustand@5.0.0(@types/react@19.1.12)(react@19.2.1)(use-sync-external-store@1.4.0(react@19.2.1)):
     optionalDependencies:
