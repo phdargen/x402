@@ -672,12 +672,19 @@ func TestProcessSettlement(t *testing.T) {
 
 func TestProcessSettlement_Failure(t *testing.T) {
 	ctx := context.Background()
+	landedTxHash := "0x" + strings.Repeat("cd", 32)
+	failedExtra := map[string]interface{}{"channelId": "0xchannel"}
 
+	// A failed settle that still carries the post-broadcast receipt (e.g. a landed
+	// deposit whose voucher commit failed) must keep it on the wire.
 	mockClient := &mockFacilitatorClient{
 		settle: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*x402.SettleResponse, error) {
 			return &x402.SettleResponse{
 				Success:     false,
 				ErrorReason: "insufficient_funds",
+				Transaction: landedTxHash,
+				Amount:      "1000000",
+				Extra:       failedExtra,
 				Network:     "eip155:1",
 				Payer:       "0xpayer",
 			}, nil
@@ -710,7 +717,26 @@ func TestProcessSettlement_Failure(t *testing.T) {
 		t.Fatal("Expected settlement failure")
 	}
 	if result.Headers == nil || result.Headers["PAYMENT-RESPONSE"] == "" {
-		t.Error("Expected PAYMENT-RESPONSE header on settlement failure")
+		t.Fatal("Expected PAYMENT-RESPONSE header on settlement failure")
+	}
+	decoded, err := decodePaymentResponseHeader(result.Headers["PAYMENT-RESPONSE"])
+	if err != nil {
+		t.Fatalf("failed to decode PAYMENT-RESPONSE header: %v", err)
+	}
+	if decoded.Success {
+		t.Error("expected header success=false")
+	}
+	if decoded.Transaction != landedTxHash {
+		t.Errorf("expected header transaction %q, got %q", landedTxHash, decoded.Transaction)
+	}
+	if decoded.Amount != "1000000" {
+		t.Errorf("expected header amount %q, got %q", "1000000", decoded.Amount)
+	}
+	if decoded.Extra["channelId"] != "0xchannel" {
+		t.Errorf("expected header extra channelId %q, got %v", "0xchannel", decoded.Extra["channelId"])
+	}
+	if result.Transaction != landedTxHash {
+		t.Errorf("expected result transaction %q, got %q", landedTxHash, result.Transaction)
 	}
 	if result.Response == nil {
 		t.Fatal("Expected response instructions")
