@@ -131,6 +131,10 @@ func VerifyManaged(
 	if raw == nil || !batchsettlement.IsBatchedPayload(raw) {
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrInvalidPayload}, nil
 	}
+	if _, ok := raw["pendingId"]; ok {
+		payer := payloadPayer(raw)
+		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrUnexpectedPendingId, Payer: payer}, nil
+	}
 	if _, ok := raw["cancel"]; ok {
 		payer := payloadPayer(raw)
 		return &x402.VerifyResponse{IsValid: false, InvalidReason: ErrUnexpectedCancel, Payer: payer}, nil
@@ -391,20 +395,15 @@ func settleManagedVoucher(
 		return failSettle(requirements, reason), nil
 	}
 
-	var mapper func(*FacilitatorChannel) *FacilitatorChannel
-	if increment.Sign() != 0 {
-		network := requirements.Network
-		mapper = func(channel *FacilitatorChannel) *FacilitatorChannel {
-			return incrementChargeCount(channel, network)
-		}
-	}
 	outcome, err := storage.CommitVoucherCharge(ctx, deps.Storage, channelId, storage.CommitVoucherChargeInput[*FacilitatorChannel]{
 		Increment:       increment,
 		SignedCap:       signedCap,
 		ExpectedCharged: expectedCharged,
 		Voucher:         raw.Voucher,
 		ResolveSnapshot: mirror.snapshot,
-		Map:             mapper,
+		Map: func(channel *FacilitatorChannel) *FacilitatorChannel {
+			return incrementChargeCount(channel, requirements.Network)
+		},
 	})
 	if err != nil {
 		return failSettle(requirements, ErrChannelBusy), nil

@@ -888,6 +888,63 @@ func TestProcessSettlement_AfterSettleAbortKeepsOnchainReceipt(t *testing.T) {
 	}
 }
 
+// TestProcessSettlement_ReturnedFailureKeepsReceipt pins that a failed SettleResponse returned
+// by the facilitator (e.g. a landed deposit whose persist failed) keeps the transaction, amount
+// and extra in PAYMENT-RESPONSE.
+func TestProcessSettlement_ReturnedFailureKeepsReceipt(t *testing.T) {
+	ctx := context.Background()
+	const reason = "invalid_batch_settlement_evm_voucher_store_unavailable"
+	mockClient := &mockFacilitatorClient{
+		settle: func(ctx context.Context, payloadBytes []byte, requirementsBytes []byte) (*x402.SettleResponse, error) {
+			return &x402.SettleResponse{
+				Success:     false,
+				ErrorReason: reason,
+				Transaction: "0xdeposit",
+				Network:     "eip155:1",
+				Payer:       "0xpayer",
+				Amount:      "1000000",
+				Extra:       map[string]interface{}{"channelState": "kept"},
+			}, nil
+		},
+	}
+	server := Newx402HTTPResourceServer(
+		RoutesConfig{},
+		x402.WithFacilitatorClient(mockClient),
+		x402.WithSchemeServer("eip155:1", &mockSchemeServer{scheme: "exact"}),
+	)
+	_ = server.Initialize(ctx)
+	requirements := types.PaymentRequirements{
+		Scheme:  "exact",
+		Network: "eip155:1",
+		Asset:   "USDC",
+		Amount:  "1000000",
+		PayTo:   "0xtest",
+	}
+	payload := types.PaymentPayload{
+		X402Version: 2,
+		Accepted:    requirements,
+		Payload:     map[string]interface{}{},
+	}
+
+	result := server.ProcessSettlement(ctx, payload, requirements, nil, nil, nil, nil, "")
+	if result.Success || result.Response == nil || result.Response.Status != 402 {
+		t.Fatalf("expected 402 settlement failure, got %+v", result)
+	}
+	if result.Transaction != "0xdeposit" {
+		t.Errorf("expected result transaction %q, got %q", "0xdeposit", result.Transaction)
+	}
+	decoded, err := decodePaymentResponseHeader(result.Headers["PAYMENT-RESPONSE"])
+	if err != nil {
+		t.Fatalf("failed to decode PAYMENT-RESPONSE header: %v", err)
+	}
+	if decoded.Success || decoded.ErrorReason != reason {
+		t.Errorf("expected failed receipt with facilitator reason, got %+v", decoded)
+	}
+	if decoded.Transaction != "0xdeposit" || decoded.Amount != "1000000" || decoded.Extra["channelState"] != "kept" {
+		t.Errorf("expected transaction, amount and extra kept, got %+v", decoded)
+	}
+}
+
 func TestCreateFailurePathSettlementHeaders_FailedCancelReceipt(t *testing.T) {
 	server := Newx402HTTPResourceServer(RoutesConfig{})
 	cancelSettlement := &x402.SettleResponse{

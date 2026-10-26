@@ -118,7 +118,7 @@ func TestSettleManaged_ReleasesLockWhenPendingIdEchoed(t *testing.T) {
 	}
 }
 
-func TestSettleManaged_ZeroAmountDoesNotIncrementChargeCount(t *testing.T) {
+func TestSettleManaged_ZeroActualChargeIncrementsChargeCount(t *testing.T) {
 	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
 	auth := managedAuthorizer()
 	cfg := managedConfig(auth.addr, "00")
@@ -141,11 +141,43 @@ func TestSettleManaged_ZeroAmountDoesNotIncrementChargeCount(t *testing.T) {
 	if err != nil || !settled.Success {
 		t.Fatalf("settle: %+v %v", settled, err)
 	}
-	if extraInt(settled, "chargeCount") != 2 {
+	if extraInt(settled, "chargeCount") != 3 {
 		t.Fatalf("chargeCount extra = %d", extraInt(settled, "chargeCount"))
 	}
 	got, _ := store.Get(context.Background(), channelId)
-	if got.ChargedCumulativeAmount != "1000" || got.ChargeCount != 2 {
+	if got.ChargedCumulativeAmount != "1000" || got.ChargeCount != 3 {
+		t.Fatalf("stored %+v", got)
+	}
+}
+
+func TestSettleManaged_ZeroPriceVoucherIncrementsChargeCount(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	voucher := voucherFields(channelId, "1000", dummySig)
+	seedManagedChannel(t, store, storedManagedChannel(cfg, channelId, &channelFields{ChargeCount: 2}))
+	deps := managedDeps(t, store, store, auth, nil)
+	reqs := managedRequirements(auth.addr)
+	reqs.Amount = "0"
+	verifyPayload := voucherEnvelope(cfg, voucher, "")
+	verifyPayload.Accepted.Amount = "0"
+
+	verified, err := VerifyManaged(context.Background(), deps, verifyPayload, reqs, nil)
+	if err != nil || !verified.IsValid {
+		t.Fatalf("verify: %+v %v", verified, err)
+	}
+	settlePayload := voucherEnvelope(cfg, voucher, pendingIdFrom(verified))
+	settlePayload.Accepted.Amount = "0"
+	settled, err := SettleManaged(context.Background(), deps, settlePayload, reqs, nil, nil)
+	if err != nil || !settled.Success {
+		t.Fatalf("settle: %+v %v", settled, err)
+	}
+	if extraInt(settled, "chargeCount") != 3 {
+		t.Fatalf("chargeCount extra = %d", extraInt(settled, "chargeCount"))
+	}
+	got, _ := store.Get(context.Background(), channelId)
+	if got.ChargedCumulativeAmount != "1000" || got.ChargeCount != 3 {
 		t.Fatalf("stored %+v", got)
 	}
 }
@@ -162,6 +194,26 @@ func TestVerifyManaged_RejectsClientCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.IsValid || resp.InvalidReason != ErrUnexpectedCancel {
+		t.Fatalf("got %+v", resp)
+	}
+	held, _ := store.IsHeld(context.Background(), channelId, "")
+	if held {
+		t.Fatal("lock should not be taken")
+	}
+}
+
+func TestVerifyManaged_RejectsClientPendingId(t *testing.T) {
+	store := storage.NewInMemoryChannelStorage[*FacilitatorChannel]()
+	auth := managedAuthorizer()
+	cfg := managedConfig(auth.addr, "00")
+	channelId := mustChannelId(t, cfg)
+	payload := voucherEnvelope(cfg, voucherFields(channelId, "1000", dummySig), "client-pending")
+
+	resp, err := VerifyManaged(context.Background(), managedDeps(t, store, store, auth, nil), payload, managedRequirements(auth.addr), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsValid || resp.InvalidReason != ErrUnexpectedPendingId {
 		t.Fatalf("got %+v", resp)
 	}
 	held, _ := store.IsHeld(context.Background(), channelId, "")

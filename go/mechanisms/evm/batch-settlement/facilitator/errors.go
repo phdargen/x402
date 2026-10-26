@@ -123,6 +123,7 @@ const (
 
 	// Managed voucher-store / refund-authorizer reasons. Aliased from the root
 	// package so facilitator callers share a single wire value.
+	ErrUnexpectedPendingId           = batchsettlement.ErrUnexpectedPendingId
 	ErrUnexpectedCancel              = batchsettlement.ErrUnexpectedCancel
 	ErrChannelBusy                   = batchsettlement.ErrChannelBusy
 	ErrCumulativeAmountMismatch      = batchsettlement.ErrCumulativeAmountMismatch
