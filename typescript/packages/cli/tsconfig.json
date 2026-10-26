@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "checkJs": false,
+    "target": "ES2022",
+    "module": "ESNext",
+    "paths": {
+      "@x402/cli": ["./src/index.ts"],
+      "@x402/cli/evm": ["./src/families/evm.ts"],
+      "@x402/cli/svm": ["./src/families/svm.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}
