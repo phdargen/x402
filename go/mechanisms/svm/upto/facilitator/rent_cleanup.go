@@ -193,6 +193,12 @@ type RentCleanupConfig struct {
 	// for a mainnet Token-2022 settlement). Reclaim batches derive their own
 	// account-data limit per channel.
 	SettleLoadedAccountsDataSizeLimit *uint32
+
+	// FacilitatorTransactionVersion is the message version (0 or 1) of the
+	// cleanup transactions the facilitator builds itself; see
+	// Config.FacilitatorTransactionVersion. v0 caps reclaim batches at
+	// paymentchannels.MaxSafeReclaimsPerTx.
+	FacilitatorTransactionVersion *int
 }
 
 // RentCleanupManager recovers the rent a facilitator fronts for payment
@@ -217,7 +223,7 @@ func NewRentCleanupManager(config RentCleanupConfig) *RentCleanupManager {
 			ComputeUnitPriceMicroLamports:     config.ComputeUnitPriceMicroLamports,
 			SettleComputeUnitLimit:            config.SettleComputeUnitLimit,
 			SettleLoadedAccountsDataSizeLimit: config.SettleLoadedAccountsDataSizeLimit,
-			UseTransactionV1:                  true,
+			UseTransactionV1:                  useFacilitatorTransactionV1(config.FacilitatorTransactionVersion),
 			AbandonPolicy:                     paymentchannels.OpenAbandonPolicyExpiry,
 			SealClosingChannels:               &sealClosingChannels,
 			Label:                             "RentCleanupManager",

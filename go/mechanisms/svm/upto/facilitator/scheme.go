@@ -31,6 +31,14 @@ const DefaultMaxChannelLifetimeSecs = 3600
 // when checking the voucher deadline against the requirement's timeout.
 const expiresAtClockSkewSecs = 60
 
+// Message versions for transactions the facilitator builds itself, in the
+// extra.transactionVersions wire vocabulary (not solana.MessageVersion values).
+const (
+	FacilitatorTransactionVersion0       = 0
+	FacilitatorTransactionVersion1       = 1
+	DefaultFacilitatorTransactionVersion = FacilitatorTransactionVersion1
+)
+
 // Config is the optional configuration of the SVM `upto` facilitator.
 type Config struct {
 	// ChannelStorage is the one channel store for every use case: the lifecycle
@@ -83,6 +91,13 @@ type Config struct {
 	// for a mainnet Token-2022 claim; raise it only for unusually large
 	// account sets. Reclaim batches derive their own budget per channel.
 	SettleLoadedAccountsDataSizeLimit *uint32
+
+	// FacilitatorTransactionVersion is the message version (0 or 1) of the
+	// claim, cancel, and rent-cleanup transactions the facilitator builds and
+	// signs itself. It does not affect which client-built versions are
+	// accepted. Unset defaults to DefaultFacilitatorTransactionVersion; any
+	// other value panics.
+	FacilitatorTransactionVersion *int
 
 	// AuthorizerSigner enables facilitator-delegated receiver authorization.
 	// Advertised as /supported extra.receiverAuthorizer and used to sign claim
@@ -187,6 +202,7 @@ func NewUptoSvmScheme(signer svm.FacilitatorSvmSigner, config *Config) *UptoSvmS
 	if cfg.SettleLoadedAccountsDataSizeLimit != nil {
 		assertPositive("settleLoadedAccountsDataSizeLimit", int64(*cfg.SettleLoadedAccountsDataSizeLimit))
 	}
+	useFacilitatorTransactionV1(cfg.FacilitatorTransactionVersion) // panics on an invalid version
 	if cfg.AuthorizerSigner != nil && cfg.ResolveCallerIdentity == nil {
 		panic("upto svm facilitator: authorizerSigner requires resolveCallerIdentity")
 	}
@@ -223,6 +239,24 @@ func assertPositive(name string, value int64) {
 	}
 }
 
+// useFacilitatorTransactionV1 maps a configured facilitator transaction version
+// to the paymentchannels v1 switch. Unset takes the default; anything but 0 or 1
+// panics.
+func useFacilitatorTransactionV1(version *int) bool {
+	selected := DefaultFacilitatorTransactionVersion
+	if version != nil {
+		selected = *version
+	}
+	switch selected {
+	case FacilitatorTransactionVersion0:
+		return false
+	case FacilitatorTransactionVersion1:
+		return true
+	default:
+		panic(fmt.Sprintf("upto svm facilitator: facilitatorTransactionVersion must be 0 or 1, received %d", selected))
+	}
+}
+
 // Scheme returns the scheme identifier.
 func (f *UptoSvmScheme) Scheme() string {
 	return svm.SchemeUpto
@@ -250,6 +284,7 @@ func (f *UptoSvmScheme) NewRentCleanupManager(network string) *RentCleanupManage
 		ComputeUnitPriceMicroLamports:     f.config.ComputeUnitPriceMicroLamports,
 		SettleComputeUnitLimit:            f.config.SettleComputeUnitLimit,
 		SettleLoadedAccountsDataSizeLimit: f.config.SettleLoadedAccountsDataSizeLimit,
+		FacilitatorTransactionVersion:     f.config.FacilitatorTransactionVersion,
 	})
 }
 
@@ -930,7 +965,7 @@ func (f *UptoSvmScheme) submitClaim(
 		ComputeUnitLimit:              f.config.SettleComputeUnitLimit,
 		LoadedAccountsDataSizeLimit:   f.config.SettleLoadedAccountsDataSizeLimit,
 		ComputeUnitPriceMicroLamports: f.config.ComputeUnitPriceMicroLamports,
-		UseTransactionV1:              true,
+		UseTransactionV1:              useFacilitatorTransactionV1(f.config.FacilitatorTransactionVersion),
 	}
 	if prefetchedBlockhash != nil {
 		opts.LatestBlockhash = prefetchedBlockhash

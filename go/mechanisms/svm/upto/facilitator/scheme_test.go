@@ -723,6 +723,67 @@ func TestClaimSettleDistributesTheMeteredAmount(t *testing.T) {
 	assert.Equal(t, solana.MessageVersionV1, sent[0].Message.GetVersion())
 }
 
+func intPtr(v int) *int { return &v }
+
+func TestUseFacilitatorTransactionV1ResolvesTheWireVersion(t *testing.T) {
+	assert.True(t, useFacilitatorTransactionV1(nil), "unset takes the v1 default")
+	assert.False(t, useFacilitatorTransactionV1(intPtr(FacilitatorTransactionVersion0)))
+	assert.True(t, useFacilitatorTransactionV1(intPtr(FacilitatorTransactionVersion1)))
+}
+
+func TestInvalidFacilitatorTransactionVersionPanicsAtConstruction(t *testing.T) {
+	for _, version := range []int{-1, 2, 3} {
+		assert.Panics(t, func() {
+			NewUptoSvmScheme(newMockSigner(t, 1), &Config{FacilitatorTransactionVersion: intPtr(version)})
+		}, "version %d", version)
+		assert.Panics(t, func() {
+			NewRentCleanupManager(RentCleanupConfig{FacilitatorTransactionVersion: intPtr(version)})
+		}, "version %d", version)
+	}
+}
+
+func TestClaimSettleHonoursTheConfiguredFacilitatorTransactionVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     *int
+		wantVersion solana.MessageVersion
+		wantBudget  bool
+	}{
+		{"unset defaults to v1", nil, solana.MessageVersionV1, false},
+		{"explicit v1", intPtr(FacilitatorTransactionVersion1), solana.MessageVersionV1, false},
+		{"explicit v0", intPtr(FacilitatorTransactionVersion0), solana.MessageVersionV0, true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			signer := newMockSigner(t, 1)
+			stub := newStubRPC(t)
+			fixture := newPaymentFixture(t, signer)
+			scheme := newScheme(signer, stub, &Config{FacilitatorTransactionVersion: test.version})
+			stub.setAccount(fixture.channelID.String(), fixture.openChannel().encode(t))
+
+			response, err := scheme.Settle(
+				context.Background(), fixture.claimPayload(t, 1858), fixture.claimRequirements(1858), nil,
+			)
+			require.NoError(t, err)
+			require.True(t, response.Success)
+
+			sent := signer.sentTransactions()
+			require.Len(t, sent, 1)
+			assert.Equal(t, test.wantVersion, sent[0].Message.GetVersion())
+
+			hasBudget := false
+			for _, program := range instructionPrograms(t, sent[0]) {
+				if program.Equals(solana.ComputeBudget) {
+					hasBudget = true
+				}
+			}
+			assert.Equal(t, test.wantBudget, hasBudget,
+				"v0 carries ComputeBudget instructions; v1 carries the budget inline")
+		})
+	}
+}
+
 func TestClaimSettleSealsAZeroChargeWithoutAPrecompile(t *testing.T) {
 	signer := newMockSigner(t, 1)
 	stub := newStubRPC(t)
