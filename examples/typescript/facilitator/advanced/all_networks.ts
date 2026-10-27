@@ -104,11 +104,17 @@ const aptosRpcUrl = process.env.APTOS_RPC_URL as string | undefined;
 const casperPrivateKey = process.env.CASPER_PRIVATE_KEY as string | undefined;
 const casperRpcUrl = process.env.CASPER_RPC_URL as string | undefined;
 // Canton: a hosted participant + the facilitator's own relaying party.
-const cantonParticipantUrl = process.env.CANTON_PARTICIPANT_URL as string | undefined;
+const cantonParticipantUrl = process.env.CANTON_PARTICIPANT_URL as
+  | string
+  | undefined;
 const cantonToken = process.env.CANTON_TOKEN as string | undefined;
 const cantonUserId = process.env.CANTON_USER_ID as string | undefined;
-const cantonSynchronizerId = process.env.CANTON_SYNCHRONIZER_ID as string | undefined;
-const cantonFacilitatorParty = process.env.CANTON_FACILITATOR_PARTY as string | undefined;
+const cantonSynchronizerId = process.env.CANTON_SYNCHRONIZER_ID as
+  | string
+  | undefined;
+const cantonFacilitatorParty = process.env.CANTON_FACILITATOR_PARTY as
+  | string
+  | undefined;
 const cantonConfigured = Boolean(
   cantonParticipantUrl &&
     cantonToken &&
@@ -172,7 +178,8 @@ const CASPER_NETWORK = (process.env.CASPER_NETWORK ||
   "casper:casper-test") as Network; // Casper Testnet
 // Canton CAIP-2 tier (canton:mainnet | canton:devnet); the synchronizer/domain
 // travels separately (signer config + extra.synchronizerId), not in the network id.
-const CANTON_NETWORK = (process.env.CANTON_NETWORK || "canton:mainnet") as Network;
+const CANTON_NETWORK = (process.env.CANTON_NETWORK ||
+  "canton:mainnet") as Network;
 const CCD_NETWORK = CONCORDIUM_TESTNET_CAIP2; // Concordium Testnet
 const EVM_NETWORK = "eip155:84532"; // Base Sepolia
 const HEDERA_NETWORK = "hedera:testnet"; // Hedera Testnet
