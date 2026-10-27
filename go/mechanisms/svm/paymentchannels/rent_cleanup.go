@@ -194,7 +194,7 @@ type PaymentChannelRentCleanupConfig struct {
 	ComputeUnitPriceMicroLamports     *uint64
 	SettleComputeUnitLimit            *uint32
 	SettleLoadedAccountsDataSizeLimit *uint32
-	UseTransactionV1                  bool
+	FacilitatorTransactionVersion     int
 	MaxIdleSecs                       *int64
 	AbandonPolicy                     OpenAbandonPolicy
 	// SealClosingChannels nil defaults to true. upto sets it false.
@@ -211,7 +211,7 @@ type PaymentChannelRentCleanupManager struct {
 	computeUnitPriceMicroLamports     *uint64
 	settleComputeUnitLimit            *uint32
 	settleLoadedAccountsDataSizeLimit *uint32
-	useTransactionV1                  bool
+	facilitatorTransactionVersion     int
 	maxIdleSecs                       *int64
 	abandonPolicy                     OpenAbandonPolicy
 	sealClosingChannels               bool
@@ -255,7 +255,7 @@ func NewPaymentChannelRentCleanupManager(config PaymentChannelRentCleanupConfig)
 		computeUnitPriceMicroLamports:     config.ComputeUnitPriceMicroLamports,
 		settleComputeUnitLimit:            config.SettleComputeUnitLimit,
 		settleLoadedAccountsDataSizeLimit: config.SettleLoadedAccountsDataSizeLimit,
-		useTransactionV1:                  config.UseTransactionV1,
+		facilitatorTransactionVersion:     config.FacilitatorTransactionVersion,
 		maxIdleSecs:                       config.MaxIdleSecs,
 		abandonPolicy:                     policy,
 		sealClosingChannels:               seal,
@@ -342,7 +342,7 @@ func (m *PaymentChannelRentCleanupManager) Cleanup(ctx context.Context, opts Ren
 	m.passMu.Lock()
 	defer m.passMu.Unlock()
 
-	opts, maxIdleSecs := opts.withDefaults(m.maxIdleSecs, m.useTransactionV1)
+	opts, maxIdleSecs := opts.withDefaults(m.maxIdleSecs, m.facilitatorTransactionVersion == FacilitatorTransactionVersion1)
 	records, err := m.storage.List(ctx, m.network)
 	if err != nil {
 		return fmt.Errorf("failed to list stored channels: %w", err)
@@ -627,7 +627,7 @@ func (m *PaymentChannelRentCleanupManager) submitCloseOrDistribute(
 		ComputeUnitLimit:              m.settleComputeUnitLimit,
 		LoadedAccountsDataSizeLimit:   m.settleLoadedAccountsDataSizeLimit,
 		ComputeUnitPriceMicroLamports: m.computeUnitPriceMicroLamports,
-		UseTransactionV1:              m.useTransactionV1,
+		FacilitatorTransactionVersion: m.facilitatorTransactionVersion,
 	})
 }
 
@@ -676,7 +676,7 @@ func (m *PaymentChannelRentCleanupManager) submitReclaimGroup(
 		}
 		return
 	}
-	if !m.useTransactionV1 {
+	if m.facilitatorTransactionVersion != FacilitatorTransactionVersion1 {
 		for start := 0; start < len(group); start += opts.MaxReclaimsPerTx {
 			if atomic.AddInt64(budget, -1) < 0 {
 				atomic.AddInt64(budget, 1)
@@ -748,7 +748,7 @@ func (m *PaymentChannelRentCleanupManager) submitReclaimGroup(
 				ComputeUnitLimit:              &reclaimLimit,
 				LoadedAccountsDataSizeLimit:   &loadedLimit,
 				ComputeUnitPriceMicroLamports: m.computeUnitPriceMicroLamports,
-				UseTransactionV1:              true,
+				FacilitatorTransactionVersion: FacilitatorTransactionVersion1,
 			}) {
 				break
 			}
@@ -775,7 +775,7 @@ func (m *PaymentChannelRentCleanupManager) submitReclaimGroup(
 			ComputeUnitLimit:              &reclaimLimit,
 			LoadedAccountsDataSizeLimit:   &loadedLimit,
 			ComputeUnitPriceMicroLamports: m.computeUnitPriceMicroLamports,
-			UseTransactionV1:              m.useTransactionV1,
+			FacilitatorTransactionVersion: m.facilitatorTransactionVersion,
 		})
 		if err != nil {
 			for _, channelID := range channelIDs {

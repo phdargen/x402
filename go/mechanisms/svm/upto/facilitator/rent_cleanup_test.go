@@ -291,7 +291,7 @@ func TestRentCleanupHonoursTheConfiguredFacilitatorTransactionVersion(t *testing
 		wantVersion solana.MessageVersion
 	}{
 		{"unset defaults to v1", nil, solana.MessageVersionV1},
-		{"explicit v0", intPtr(FacilitatorTransactionVersion0), solana.MessageVersionV0},
+		{"explicit v0", intPtr(paymentchannels.FacilitatorTransactionVersion0), solana.MessageVersionV0},
 	}
 
 	for _, test := range tests {
@@ -328,7 +328,7 @@ func TestV0RentCleanupCapsReclaimBatchesAtTheSafeLimit(t *testing.T) {
 		Signer:                        harness.signer,
 		Storage:                       harness.storage,
 		Network:                       testNetwork,
-		FacilitatorTransactionVersion: intPtr(FacilitatorTransactionVersion0),
+		FacilitatorTransactionVersion: intPtr(paymentchannels.FacilitatorTransactionVersion0),
 	})
 	openSlot := testSlot - paymentchannels.OpenSlotWindow - 1
 	for i := 0; i < paymentchannels.MaxSafeReclaimsPerTx+4; i++ {

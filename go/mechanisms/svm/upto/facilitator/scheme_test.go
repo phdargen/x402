@@ -725,10 +725,10 @@ func TestClaimSettleDistributesTheMeteredAmount(t *testing.T) {
 
 func intPtr(v int) *int { return &v }
 
-func TestUseFacilitatorTransactionV1ResolvesTheWireVersion(t *testing.T) {
-	assert.True(t, useFacilitatorTransactionV1(nil), "unset takes the v1 default")
-	assert.False(t, useFacilitatorTransactionV1(intPtr(FacilitatorTransactionVersion0)))
-	assert.True(t, useFacilitatorTransactionV1(intPtr(FacilitatorTransactionVersion1)))
+func TestResolveFacilitatorTransactionVersion(t *testing.T) {
+	assert.Equal(t, DefaultFacilitatorTransactionVersion, resolveFacilitatorTransactionVersion(nil))
+	assert.Equal(t, 0, resolveFacilitatorTransactionVersion(intPtr(paymentchannels.FacilitatorTransactionVersion0)))
+	assert.Equal(t, 1, resolveFacilitatorTransactionVersion(intPtr(paymentchannels.FacilitatorTransactionVersion1)))
 }
 
 func TestInvalidFacilitatorTransactionVersionPanicsAtConstruction(t *testing.T) {
@@ -750,8 +750,8 @@ func TestClaimSettleHonoursTheConfiguredFacilitatorTransactionVersion(t *testing
 		wantBudget  bool
 	}{
 		{"unset defaults to v1", nil, solana.MessageVersionV1, false},
-		{"explicit v1", intPtr(FacilitatorTransactionVersion1), solana.MessageVersionV1, false},
-		{"explicit v0", intPtr(FacilitatorTransactionVersion0), solana.MessageVersionV0, true},
+		{"explicit v1", intPtr(paymentchannels.FacilitatorTransactionVersion1), solana.MessageVersionV1, false},
+		{"explicit v0", intPtr(paymentchannels.FacilitatorTransactionVersion0), solana.MessageVersionV0, true},
 	}
 
 	for _, test := range tests {

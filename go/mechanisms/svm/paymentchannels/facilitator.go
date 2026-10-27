@@ -383,13 +383,20 @@ func SimulateOpenSettleDistribute(
 	return nil
 }
 
+// Message versions of transactions the facilitator builds itself, in the
+// extra.transactionVersions wire vocabulary (not solana.MessageVersion values).
+const (
+	FacilitatorTransactionVersion0 = 0
+	FacilitatorTransactionVersion1 = 1
+)
+
 // SubmitSettleOptions configures the inline v1 resource budget and broadcast hooks.
 type SubmitSettleOptions struct {
 	ComputeUnitLimit            *uint32
 	LoadedAccountsDataSizeLimit *uint32
-	// UseTransactionV1 opts facilitator-owned submissions into the v1 message
-	// format. The zero value preserves the existing v0 wire format.
-	UseTransactionV1 bool
+	// FacilitatorTransactionVersion is the message version (0 or 1) of the
+	// transaction the facilitator builds. The zero value is v0.
+	FacilitatorTransactionVersion int
 	// ComputeUnitPriceMicroLamports is converted to v1's total priority fee.
 	ComputeUnitPriceMicroLamports *uint64
 	// LatestBlockhash, when set, skips a blockhash fetch.
@@ -596,7 +603,9 @@ func compileChannelTransaction(
 	instructions []solana.Instruction,
 	opts SubmitSettleOptions,
 ) (*solana.Transaction, error) {
-	if opts.UseTransactionV1 {
+	switch opts.FacilitatorTransactionVersion {
+	case FacilitatorTransactionVersion0:
+	case FacilitatorTransactionVersion1:
 		tx, err := buildSettleTransaction(feePayerKey, blockhash, instructions, opts)
 		if err != nil {
 			return nil, err
@@ -605,6 +614,8 @@ func compileChannelTransaction(
 			return nil, err
 		}
 		return tx, nil
+	default:
+		return nil, fmt.Errorf("unsupported facilitator transaction version %d", opts.FacilitatorTransactionVersion)
 	}
 	budget, err := buildSettleComputeBudget(opts)
 	if err != nil {

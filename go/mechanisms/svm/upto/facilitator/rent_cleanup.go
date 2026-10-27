@@ -223,7 +223,7 @@ func NewRentCleanupManager(config RentCleanupConfig) *RentCleanupManager {
 			ComputeUnitPriceMicroLamports:     config.ComputeUnitPriceMicroLamports,
 			SettleComputeUnitLimit:            config.SettleComputeUnitLimit,
 			SettleLoadedAccountsDataSizeLimit: config.SettleLoadedAccountsDataSizeLimit,
-			UseTransactionV1:                  useFacilitatorTransactionV1(config.FacilitatorTransactionVersion),
+			FacilitatorTransactionVersion:     resolveFacilitatorTransactionVersion(config.FacilitatorTransactionVersion),
 			AbandonPolicy:                     paymentchannels.OpenAbandonPolicyExpiry,
 			SealClosingChannels:               &sealClosingChannels,
 			Label:                             "RentCleanupManager",
