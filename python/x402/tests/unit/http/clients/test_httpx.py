@@ -1050,6 +1050,60 @@ class TestBasicFunctionalityParameterized:
         assert response.content == decoded
         assert "content-encoding" not in response.headers
 
+    @pytest.mark.asyncio
+    async def test_paid_402_without_bound_request_is_returned(self):
+        """A paid retry 402 from the inner transport has no request bound."""
+        required = PaymentRequired(
+            x402_version=2,
+            accepts=[make_payment_requirements()],
+        )
+        encoded = encode_payment_required_header(required)
+        rejected = b'{"error":"payment rejected"}'
+        initial_402 = httpx.Response(
+            402,
+            headers={"PAYMENT-REQUIRED": encoded},
+            content=b"{}",
+        )
+        paid_402 = httpx.Response(
+            402,
+            headers={"content-type": "application/json"},
+            content=rejected,
+        )
+        mock_client = MockX402Client()
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = AsyncMock(side_effect=[initial_402, paid_402])
+        transport = x402AsyncTransport(mock_client, mock_transport)
+        request = httpx.Request("GET", "https://example.com/paid")
+
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 402
+        assert response.content == rejected
+        assert str(response.url) == "https://example.com/paid"
+        assert len(mock_client.create_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_retry_402_without_bound_request_is_returned(self):
+        """An already-retried 402 from the inner transport has no request bound."""
+        rejected = b'{"error":"payment rejected"}'
+        response_402 = httpx.Response(402, content=rejected)
+        mock_client = MockX402Client()
+        mock_transport = AsyncMock()
+        mock_transport.handle_async_request = AsyncMock(return_value=response_402)
+        transport = x402AsyncTransport(mock_client, mock_transport)
+        request = httpx.Request(
+            "GET",
+            "https://example.com/paid",
+            extensions={x402AsyncTransport.RETRY_KEY: True},
+        )
+
+        response = await transport.handle_async_request(request)
+
+        assert response.status_code == 402
+        assert response.content == rejected
+        assert str(response.url) == "https://example.com/paid"
+        assert len(mock_client.create_calls) == 0
+
 
 # =============================================================================
 # Error Handling Tests

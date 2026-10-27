@@ -20,6 +20,22 @@ except ImportError as e:
 from ..utils import ResponseBodyTooLargeError, aread_limited_body
 
 
+def _bound_request(response: Response, fallback: Request) -> Request:
+    """Request attached to a transport response, or the caller's request.
+
+    httpx leaves ``Response.request`` unset until ``AsyncClient`` returns from
+    the transport, and the property raises ``RuntimeError`` in that case.
+    ``getattr`` does not catch that.
+    """
+    try:
+        req = response.request
+    except RuntimeError:
+        return fallback
+    if not isinstance(req, Request):
+        return fallback
+    return req
+
+
 async def _cap_returned_payment_required(response: Response, request: Request) -> Response:
     """Bound a 402 that will be returned to the caller. Paid payloads are unchanged."""
     if response.status_code != 402:
@@ -28,9 +44,7 @@ async def _cap_returned_payment_required(response: Response, request: Request) -
         body = await aread_limited_body(response.aiter_bytes())
     finally:
         await response.aclose()
-    req = getattr(response, "request", None)
-    if not isinstance(req, Request):
-        req = request
+    req = _bound_request(response, request)
     extensions = getattr(response, "extensions", None)
     if not isinstance(extensions, dict):
         extensions = dict(request.extensions)
