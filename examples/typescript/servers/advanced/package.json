@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "express": "^4.18.2",
+    "express": "^4.22.3",
     "@keetanetwork/keetanet-client": "^0.18.1",
     "@x402/aptos": "workspace:*",
     "@x402/avm": "workspace:*",

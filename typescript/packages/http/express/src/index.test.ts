@@ -98,26 +98,30 @@ vi.mock("@x402/core/server", async importOriginal => {
       }
       return null;
     },
-    x402ResourceServer: vi.fn().mockImplementation(() => ({
-      initialize: vi.fn().mockResolvedValue(undefined),
-      registerExtension: vi.fn(),
-      register: vi.fn(),
-      hasExtension: vi.fn().mockReturnValue(false),
-    })),
-    x402HTTPResourceServer: vi.fn().mockImplementation((server, routes) => ({
-      initialize: vi.fn().mockResolvedValue(undefined),
-      processHTTPRequest: mockProcessHTTPRequest,
-      processSettlement: mockProcessSettlement,
-      createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
-      createFailurePathSettlementHeaders: mockCreateFailurePathSettlementHeaders,
-      registerPaywallProvider: mockRegisterPaywallProvider,
-      requiresPayment: mockRequiresPayment,
-      routes: routes,
-      server: server || {
-        hasExtension: vi.fn().mockReturnValue(false),
+    x402ResourceServer: vi.fn().mockImplementation(function () {
+      return {
+        initialize: vi.fn().mockResolvedValue(undefined),
         registerExtension: vi.fn(),
-      },
-    })),
+        register: vi.fn(),
+        hasExtension: vi.fn().mockReturnValue(false),
+      };
+    }),
+    x402HTTPResourceServer: vi.fn().mockImplementation(function (server, routes) {
+      return {
+        initialize: vi.fn().mockResolvedValue(undefined),
+        processHTTPRequest: mockProcessHTTPRequest,
+        processSettlement: mockProcessSettlement,
+        createCompletedSettlementHeaders: mockCreateCompletedSettlementHeaders,
+        createFailurePathSettlementHeaders: mockCreateFailurePathSettlementHeaders,
+        registerPaywallProvider: mockRegisterPaywallProvider,
+        requiresPayment: mockRequiresPayment,
+        routes: routes,
+        server: server || {
+          hasExtension: vi.fn().mockReturnValue(false),
+          registerExtension: vi.fn(),
+        },
+      };
+    }),
     checkIfBazaarNeeded: vi.fn().mockReturnValue(false),
   };
 });
