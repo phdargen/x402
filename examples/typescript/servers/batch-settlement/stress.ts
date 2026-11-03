@@ -10,6 +10,8 @@ import {
 } from "@x402/express";
 import { config } from "dotenv";
 import express from "express";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { keccak256, toHex } from "viem";
 import { privateKeyToAddress } from "viem/accounts";
 
@@ -30,9 +32,12 @@ const EVM_NETWORK = "eip155:84532" as Network;
 const PORT = Number(process.env.STRESS_PORT ?? "4022");
 const SEED = process.env.STRESS_SEED?.trim() || "x402-stress-default-seed";
 const RECEIVER_COUNT = Number(process.env.STRESS_RECEIVERS ?? "80");
-// Max price per request in token atomic units. 100 = 0.0001 USDC or 0.000001 cbBTC.
+// Max price per request in token atomic units. 100 = 0.0001 USDC.
 const MAX_AMOUNT_ATOMIC = process.env.STRESS_MAX_AMOUNT_ATOMIC?.trim() || "100";
+// 5 cbBTC atomic units is approximately $0.005 at a $100k cbBTC price.
+const CBBTC_MAX_AMOUNT_ATOMIC = process.env.STRESS_CBBTC_MAX_AMOUNT_ATOMIC?.trim() || "5";
 const facilitatorUrl = process.env.FACILITATOR_URL?.trim() || "http://localhost:8003/v2/x402";
+const reportDir = process.env.STRESS_REPORT_DIR?.trim() || ".";
 const MAX_REASON_LENGTH = 160;
 
 if (!Number.isInteger(RECEIVER_COUNT) || RECEIVER_COUNT <= 0) {
@@ -41,6 +46,10 @@ if (!Number.isInteger(RECEIVER_COUNT) || RECEIVER_COUNT <= 0) {
 }
 if (!/^[1-9]\d*$/.test(MAX_AMOUNT_ATOMIC)) {
   console.error("STRESS_MAX_AMOUNT_ATOMIC must be a positive integer atomic amount");
+  process.exit(1);
+}
+if (!/^[1-9]\d*$/.test(CBBTC_MAX_AMOUNT_ATOMIC)) {
+  console.error("STRESS_CBBTC_MAX_AMOUNT_ATOMIC must be a positive integer atomic amount");
   process.exit(1);
 }
 
@@ -71,6 +80,13 @@ const TOKENS: Record<StressToken["key"], StressToken> = {
     decimals: 8,
   },
 };
+
+const MAX_AMOUNT_ATOMIC_BY_TOKEN: Record<StressToken["key"], string> = {
+  usdc: MAX_AMOUNT_ATOMIC,
+  cbbtc: CBBTC_MAX_AMOUNT_ATOMIC,
+};
+mkdirSync(reportDir, { recursive: true });
+const failureLogPath = join(reportDir, `stress-server-${Date.now()}.ndjson`);
 
 /**
  * Derives the receiver address for an index from the seed. Receivers need no keys: they only
@@ -103,8 +119,100 @@ const stats = {
  * @param reason - Failure reason text.
  */
 function countReason(bucket: Record<string, number>, reason: string): void {
-  const key = reason.slice(0, MAX_REASON_LENGTH);
+  const key = normalizeReason(reason);
   bucket[key] = (bucket[key] ?? 0) + 1;
+}
+
+/**
+ * Normalizes a failure reason before using it as a stats key.
+ *
+ * @param reason - Raw reason text.
+ * @returns Bounded normalized text.
+ */
+function normalizeReason(reason: string): string {
+  return reason
+    .replace(/0x[0-9a-fA-F]{8,}/g, "0x…")
+    .replace(/\d{6,}/g, "N")
+    .replace(/\s+/g, " ")
+    .slice(0, MAX_REASON_LENGTH);
+}
+
+/** Minimal hook context fields needed for persistent failure diagnostics. */
+type StressFailureContext = {
+  paymentPayload: { payload: unknown };
+  requirements: { amount: string; extra?: unknown };
+  result?: unknown;
+};
+
+/**
+ * Keeps only numeric channel-state fields suitable for failure logs.
+ *
+ * @param value - Candidate channel state.
+ * @returns Sanitized channel state or undefined.
+ */
+function sanitizeChannelState(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const state: Record<string, unknown> = {};
+  for (const field of [
+    "balance",
+    "chargedCumulativeAmount",
+    "totalClaimed",
+    "withdrawRequestedAt",
+    "refundNonce",
+  ]) {
+    const fieldValue = input[field];
+    if (
+      (typeof fieldValue === "string" && /^\d+$/.test(fieldValue)) ||
+      (typeof fieldValue === "number" && Number.isFinite(fieldValue))
+    ) {
+      state[field] = fieldValue;
+    }
+  }
+  return Object.keys(state).length > 0 ? state : undefined;
+}
+
+/**
+ * Persists a facilitator failure without including signatures or private keys.
+ *
+ * @param kind - Verify or settle phase.
+ * @param context - Resource-server hook context.
+ * @param reason - Bounded failure reason.
+ * @param message - Bounded failure message.
+ */
+function recordFailure(
+  kind: "verify" | "settle",
+  context: StressFailureContext,
+  reason: string,
+  message: string,
+): void {
+  const payload = context.paymentPayload.payload;
+  const payloadObject = payload as Record<string, unknown>;
+  const voucher = payloadObject.voucher as Record<string, unknown> | undefined;
+  const channelConfig =
+    (payloadObject.channelConfig as Record<string, unknown> | undefined) ??
+    (voucher?.channelConfig as Record<string, unknown> | undefined);
+  const result = context.result as Record<string, unknown> | undefined;
+  const resultExtra = result?.extra as Record<string, unknown> | undefined;
+  const requirementsExtra = context.requirements.extra as Record<string, unknown> | undefined;
+  const channelState = resultExtra?.channelState ?? requirementsExtra?.channelState ?? undefined;
+  const safeChannelState = sanitizeChannelState(channelState);
+  const entry = {
+    ts: new Date().toISOString(),
+    kind,
+    reason: normalizeReason(reason),
+    message: normalizeReason(message),
+    payer: String(
+      payloadObject.payer ??
+        channelConfig?.payer ??
+        (payloadObject.authorization as Record<string, unknown> | undefined)?.from ??
+        "",
+    ),
+    channelId: String(voucher?.channelId ?? channelConfig?.channelId ?? ""),
+    amount: context.requirements.amount,
+    ...(safeChannelState ? { channelState: safeChannelState } : {}),
+  };
+  appendFileSync(failureLogPath, `${JSON.stringify(entry)}\n`);
 }
 
 /**
@@ -150,7 +258,7 @@ const price: DynamicPrice = (context): AssetAmount => {
   const { token } = parseStressPath(context.path);
   return {
     asset: token.asset,
-    amount: MAX_AMOUNT_ATOMIC,
+    amount: MAX_AMOUNT_ATOMIC_BY_TOKEN[token.key],
     extra:
       token.key === "cbbtc"
         ? { assetTransferMethod: "permit2" }
@@ -171,21 +279,50 @@ async function main(): Promise<void> {
     }),
   );
 
+  resourceServer.onAfterVerify(async context => {
+    if (context.result.isValid) return;
+    const reason = String(context.result.invalidReason ?? "invalid");
+    const message = String(context.result.invalidMessage ?? reason);
+    countReason(stats.verifyFailures, reason);
+    if (isRefundPayload(context.paymentPayload.payload)) {
+      countReason(stats.refundFailures, reason);
+    }
+    recordFailure("verify", context, reason, message);
+  });
+
   resourceServer.onVerifyFailure(async context => {
     countReason(stats.verifyFailures, context.error.message);
     if (isRefundPayload(context.paymentPayload.payload)) {
       countReason(stats.refundFailures, context.error.message);
     }
+    recordFailure("verify", context, context.error.message, context.error.message);
   });
+
   resourceServer.onSettleFailure(async context => {
     countReason(stats.settleFailures, context.error.message);
     if (isRefundPayload(context.paymentPayload.payload)) {
       countReason(stats.refundFailures, context.error.message);
     }
+    recordFailure("settle", context, context.error.message, context.error.message);
   });
+
   resourceServer.onAfterSettle(async context => {
     if (isRefundPayload(context.paymentPayload.payload)) {
       stats.refundRequests += 1;
+      if (!context.result.success) {
+        const reason = String(context.result.errorReason ?? "settlement_failed");
+        const message = String(context.result.errorMessage ?? reason);
+        countReason(stats.settleFailures, reason);
+        countReason(stats.refundFailures, reason);
+        recordFailure("settle", context, reason, message);
+      }
+      return;
+    }
+    if (!context.result.success) {
+      const reason = String(context.result.errorReason ?? "settlement_failed");
+      const message = String(context.result.errorMessage ?? reason);
+      countReason(stats.settleFailures, reason);
+      recordFailure("settle", context, reason, message);
       return;
     }
     const token = Object.values(TOKENS).find(
@@ -217,6 +354,7 @@ async function main(): Promise<void> {
     res.json({
       network: EVM_NETWORK,
       maxAmountAtomic: MAX_AMOUNT_ATOMIC,
+      maxAmountAtomicByToken: MAX_AMOUNT_ATOMIC_BY_TOKEN,
       receivers,
       tokens: Object.values(TOKENS),
     });
@@ -234,6 +372,7 @@ async function main(): Promise<void> {
       verifyFailures: stats.verifyFailures,
       settleFailures: stats.settleFailures,
       refundFailures: stats.refundFailures,
+      failureLog: failureLogPath,
     });
   });
 
@@ -253,7 +392,10 @@ async function main(): Promise<void> {
     console.log(`Batch-settlement stress server listening at http://localhost:${PORT}`);
     console.log(`  facilitator: ${facilitatorUrl}`);
     console.log(`  receivers: ${RECEIVER_COUNT} (seed-derived), tokens: usdc, cbbtc`);
-    console.log(`  max price per request: ${MAX_AMOUNT_ATOMIC} atomic units`);
+    console.log(
+      `  max price per request: usdc=${MAX_AMOUNT_ATOMIC} cbbtc=${CBBTC_MAX_AMOUNT_ATOMIC} atomic units`,
+    );
+    console.log(`  failure log: ${failureLogPath}`);
     console.log("  GET /stress/:receiver/:token  GET /stress/config  GET /stress/stats");
   });
 }

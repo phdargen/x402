@@ -5,23 +5,13 @@ import { join } from "node:path";
 import { createWalletClient, erc20Abi, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import {
-  createBaseSepoliaClient,
-  pollDrain,
-  type BaseSepoliaClient,
-  type DrainChannel,
-} from "./stress/chain";
+import { createBaseSepoliaClient, snapshotBacklog, type BacklogChannel } from "./stress/chain";
 import { AtomicBudget } from "./stress/budget";
 import { StressChannel, type StressServerConfig } from "./stress/channel";
 import { loadConfig, tokenKeyForChannel, type StressConfig } from "./stress/config";
+import { StressFailureRecorder } from "./stress/failures";
 import { ChannelSampler, exponentialIntervalMs, sleep } from "./stress/random";
-import {
-  distributionReport,
-  formatAtomic,
-  formatTokenAtomic,
-  StressStats,
-  type PhaseName,
-} from "./stress/stats";
+import { distributionReport, formatAtomic, formatTokenAtomic, StressStats } from "./stress/stats";
 
 loadDotenv();
 
@@ -30,8 +20,8 @@ loadDotenv();
  *
  * One funded payer, many channels. Channel `i` has its own unfunded voucher signer
  * (derived from the seed) and salt `i`, so a single `EVM_PRIVATE_KEY` can hold thousands of
- * distinct channels. Phases: an open-loop steady phase with Poisson arrivals that gradually
- * opens channels, and a drain that watches the facilitator claim and settle everything onchain.
+ * distinct channels. It runs an open-loop steady phase with Poisson arrivals that gradually
+ * opens channels, then takes one onchain backlog snapshot for the report.
  */
 
 const PENDING_GRACE_MS = 120_000;
@@ -39,12 +29,10 @@ const SLEEP_SLICE_MS = 100;
 const SAMPLE_PREVIEW = 5;
 
 let stopRequested = false;
-let abortDrain = false;
 let sigintCount = 0;
-let currentPhase: PhaseName = "steady";
 
 /**
- * First Ctrl-C stops sending and drains (or, during the drain, stops waiting and reports).
+ * First Ctrl-C stops sending and snapshots the remaining backlog.
  * A second Ctrl-C exits immediately.
  */
 function installSignalHandler(): void {
@@ -54,15 +42,10 @@ function installSignalHandler(): void {
       console.log("\nSecond interrupt: exiting immediately.");
       process.exit(130);
     }
-    if (currentPhase === "drain") {
-      console.log(
-        "\nInterrupt during drain: stopping the drain and reporting. Press again to exit.",
-      );
-      abortDrain = true;
-    } else {
-      console.log("\nInterrupt: stopping the load and draining. Press again to exit immediately.");
-      stopRequested = true;
-    }
+    console.log(
+      "\nInterrupt: stopping the load and reporting backlog. Press again to exit immediately.",
+    );
+    stopRequested = true;
   });
 }
 
@@ -108,13 +91,13 @@ function pickFreeChannel(
 ): StressChannel | undefined {
   for (let attempt = 0; attempt < (openedOnly ? 20 : 5); attempt++) {
     const channel = channels[sampler.next()];
-    if (!channel.busy && (!openedOnly || channel.opened)) return channel;
+    if (!channel.exhausted && !channel.busy && (!openedOnly || channel.opened)) return channel;
   }
   if (openedOnly) {
     const startIndex = Math.floor(Math.random() * channels.length);
     for (let offset = 0; offset < channels.length; offset++) {
       const channel = channels[(startIndex + offset) % channels.length];
-      if (!channel.busy && channel.opened) return channel;
+      if (!channel.exhausted && !channel.busy && channel.opened) return channel;
     }
   }
   return undefined;
@@ -134,7 +117,7 @@ function pickFreeUnopenedChannel(
   for (let offset = 0; offset < channels.length; offset++) {
     const index = (startIndex + offset) % channels.length;
     const channel = channels[index];
-    if (!channel.busy && !channel.opened) {
+    if (!channel.exhausted && !channel.busy && !channel.opened) {
       return { channel, nextIndex: (index + 1) % channels.length };
     }
   }
@@ -158,7 +141,7 @@ function startedChannelCount(channels: StressChannel[]): number {
  * @returns Number of opening requests in flight.
  */
 function openingChannelCount(channels: StressChannel[]): number {
-  return channels.filter(channel => !channel.opened && channel.busy).length;
+  return channels.filter(channel => !channel.exhausted && !channel.opened && channel.busy).length;
 }
 
 /**
@@ -175,7 +158,7 @@ function openingTargetCount(elapsedMs: number, durationMs: number, totalChannels
 }
 
 /**
- * Phase 1/2: open-loop Poisson arrivals. New channels are opened progressively over the steady
+ * Open-loop Poisson arrivals. New channels are opened progressively over the steady
  * phase, while arrivals otherwise use already-open channels. The schedule never waits for
  * responses, so a slow facilitator shows up as dropped or late arrivals instead of a silently
  * reduced rate.
@@ -191,7 +174,7 @@ async function steadyPhase(
   stats: StressStats,
 ): Promise<Set<Promise<void>>> {
   console.log(
-    `Phase 1/2: interleaved load at ${cfg.rps}/s for ${Math.round(cfg.durationMs / 1000)}s ` +
+    `Steady phase: interleaved load at ${cfg.rps}/s for ${Math.round(cfg.durationMs / 1000)}s ` +
       `(ramping ${channels.length} channels, max initial-deposit concurrency ${cfg.openConcurrency}; ` +
       `hot ${Math.round(cfg.hotShare * 100)}%, zipf s=${cfg.zipfS}, max inflight ${cfg.maxInflight}, ` +
       `refund probability ${cfg.refundProbability}, fraction ${cfg.refundFraction})`,
@@ -242,7 +225,11 @@ async function steadyPhase(
       }
     }
     if (!channel) {
-      stats.recordSkippedBusy();
+      if (channels.every(candidate => candidate.exhausted)) {
+        stats.recordSkippedBudget();
+      } else {
+        stats.recordSkippedBusy();
+      }
       continue;
     }
     channel.busy = true;
@@ -279,18 +266,17 @@ async function settlePending(pending: Set<Promise<void>>): Promise<void> {
 }
 
 /**
- * Collects every channel that took a charge so the drain can watch it onchain.
+ * Collects channels with locally charged payments for one final onchain backlog read.
  *
- * @param channels - All channels.
- * @returns Channels with a positive cumulative charge.
+ * @param channels - All stress channels.
+ * @returns Charged channels suitable for an onchain snapshot.
  */
-async function collectDrainChannels(channels: StressChannel[]): Promise<DrainChannel[]> {
-  const drainChannels: DrainChannel[] = [];
+async function collectBacklogChannels(channels: StressChannel[]): Promise<BacklogChannel[]> {
+  const backlogChannels: BacklogChannel[] = [];
   for (const channel of channels) {
     const state = await channel.chargedState();
     if (state && state.charged > 0n) {
-      drainChannels.push({
-        index: channel.index,
+      backlogChannels.push({
         channelId: state.channelId,
         receiver: channel.receiver,
         tokenKey: channel.token.key,
@@ -299,130 +285,7 @@ async function collectDrainChannels(channels: StressChannel[]): Promise<DrainCha
       });
     }
   }
-  return drainChannels;
-}
-
-/**
- * Phase 2/2: stops sending and polls onchain state until every charged channel is claimed and
- * every receiver pair is settled, or until the drain timeout.
- *
- * @param channels - All channels.
- * @param cfg - Stress configuration.
- * @param stats - Shared stats.
- * @param publicClient - Base Sepolia client.
- * @returns Whether everything was claimed and settled.
- */
-async function drainPhase(
-  channels: StressChannel[],
-  cfg: StressConfig,
-  stats: StressStats,
-  publicClient: BaseSepoliaClient,
-): Promise<boolean> {
-  const drainChannels = await collectDrainChannels(channels);
-  console.log(
-    `Phase 2/2: draining ${drainChannels.length} charged channels ` +
-      `(timeout ${Math.round(cfg.drainTimeoutMs / 1000)}s, poll ${Math.round(cfg.drainPollIntervalMs / 1000)}s)`,
-  );
-  const startedAt = performance.now();
-  let previous: { elapsedMs: number; claimed: number; settled: number } | undefined;
-
-  while (!abortDrain) {
-    const elapsedMs = performance.now() - startedAt;
-    const sample = await pollDrain(publicClient, drainChannels, elapsedMs);
-    stats.recordDrainSample(sample);
-
-    const interval = previous ? (sample.elapsedMs - previous.elapsedMs) / 1000 : 0;
-    const claimRate = previous ? (sample.channelsClaimed - previous.claimed) / interval : 0;
-    const settleRate = previous ? (sample.pairsSettled - previous.settled) / interval : 0;
-    console.log(
-      `[drain +${Math.round(elapsedMs / 1000)}s] claimed ${sample.channelsClaimed}/${sample.channelsTotal} ` +
-        `(${claimRate.toFixed(2)}/s) settled ${sample.pairsSettled}/${sample.pairsTotal} pairs ` +
-        `(${settleRate.toFixed(2)}/s) unclaimed usdc=${formatTokenAtomic("usdc", sample.unclaimedAtomic.usdc)} ` +
-        `cbbtc=${formatTokenAtomic("cbbtc", sample.unclaimedAtomic.cbbtc)}`,
-    );
-    previous = {
-      elapsedMs: sample.elapsedMs,
-      claimed: sample.channelsClaimed,
-      settled: sample.pairsSettled,
-    };
-
-    if (
-      sample.channelsClaimed === sample.channelsTotal &&
-      sample.pairsSettled === sample.pairsTotal
-    ) {
-      return true;
-    }
-    if (performance.now() - startedAt >= cfg.drainTimeoutMs) {
-      console.log("Drain timeout reached.");
-      return false;
-    }
-    await sleep(cfg.drainPollIntervalMs);
-  }
-  return false;
-}
-
-/**
- * Summarizes the drain samples into onchain claim and settle rates and claim lag.
- *
- * @param stats - Shared stats holding the drain samples.
- * @param completed - Whether the drain finished before the timeout.
- * @returns A JSON-serializable drain report.
- */
-function drainReport(stats: StressStats, completed: boolean): Record<string, unknown> {
-  const samples = stats.drain;
-  if (samples.length === 0) return { completed, samples: 0 };
-  const first = samples[0];
-  const last = samples[samples.length - 1];
-  const seconds = Math.max((last.elapsedMs - first.elapsedMs) / 1000, 0.001);
-  let peakClaimRate = 0;
-  let peakSettleRate = 0;
-  let fullyClaimedAtSecs: number | undefined;
-  let fullySettledAtSecs: number | undefined;
-  samples.forEach((sample, position) => {
-    if (position > 0) {
-      const dt = Math.max((sample.elapsedMs - samples[position - 1].elapsedMs) / 1000, 0.001);
-      peakClaimRate = Math.max(
-        peakClaimRate,
-        (sample.channelsClaimed - samples[position - 1].channelsClaimed) / dt,
-      );
-      peakSettleRate = Math.max(
-        peakSettleRate,
-        (sample.pairsSettled - samples[position - 1].pairsSettled) / dt,
-      );
-    }
-    if (fullyClaimedAtSecs === undefined && sample.channelsClaimed === sample.channelsTotal) {
-      fullyClaimedAtSecs = Math.round(sample.elapsedMs / 1000);
-    }
-    if (fullySettledAtSecs === undefined && sample.pairsSettled === sample.pairsTotal) {
-      fullySettledAtSecs = Math.round(sample.elapsedMs / 1000);
-    }
-  });
-  return {
-    completed,
-    samples: samples.length,
-    durationSecs: Number(seconds.toFixed(1)),
-    channelsTotal: last.channelsTotal,
-    pairsTotal: last.pairsTotal,
-    onchainClaimsPerSec: Number(
-      ((last.channelsClaimed - first.channelsClaimed) / seconds).toFixed(3),
-    ),
-    onchainSettlesPerSec: Number(((last.pairsSettled - first.pairsSettled) / seconds).toFixed(3)),
-    peakClaimsPerSec: Number(peakClaimRate.toFixed(3)),
-    peakSettlesPerSec: Number(peakSettleRate.toFixed(3)),
-    fullyClaimedAtSecs,
-    fullySettledAtSecs,
-    claimLagAtDrainStart: {
-      unclaimedChannels: first.channelsTotal - first.channelsClaimed,
-      unclaimedUsdc: formatTokenAtomic("usdc", first.unclaimedAtomic.usdc),
-      unclaimedCbbtc: formatTokenAtomic("cbbtc", first.unclaimedAtomic.cbbtc),
-    },
-    claimLagAtEnd: {
-      unclaimedChannels: last.channelsTotal - last.channelsClaimed,
-      unclaimedUsdc: formatTokenAtomic("usdc", last.unclaimedAtomic.usdc),
-      unclaimedCbbtc: formatTokenAtomic("cbbtc", last.unclaimedAtomic.cbbtc),
-      unsettledPairs: last.pairsTotal - last.pairsSettled,
-    },
-  };
+  return backlogChannels;
 }
 
 /**
@@ -459,7 +322,8 @@ function printReport(report: Record<string, Record<string, unknown>>): void {
         `topups=${String(phase.topupsPerSec)}/s vouchers=${String(phase.vouchersPerSec)}/s ` +
         `refunds=${String(phase.refundsPerSec)}/s refundFailures=${String(phase.refundFailuresPerSec)}/s ` +
         `failures=${String(phase.failuresPerSec)}/s skippedBusy=${String(phase.skippedBusy)} ` +
-        `skippedInflight=${String(phase.skippedInflight)} corrective402=${String(phase.corrective402)}`,
+        `skippedInflight=${String(phase.skippedInflight)} skippedBudget=${String(phase.skippedBudget)} ` +
+        `corrective402=${String(phase.corrective402)}`,
     );
     console.log(
       `         charged ${JSON.stringify(phase.charged)} (${JSON.stringify(phase.chargedPerSec)} per s)`,
@@ -470,13 +334,14 @@ function printReport(report: Record<string, Record<string, unknown>>): void {
       console.log(`         error x${count}: ${reason}`);
     }
   }
-  console.log(`drain    ${JSON.stringify(report.drain)}`);
+  console.log(`endBacklog ${JSON.stringify(report.endBacklog)}`);
+  console.log(`errors    ${JSON.stringify(report.errors)}`);
   console.log(`channels ${JSON.stringify(report.distribution)}`);
   console.log(line);
 }
 
 /**
- * Runs the steady and drain phases and writes the report.
+ * Runs the steady phase, takes one end-of-run backlog snapshot, and writes the report.
  */
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -489,12 +354,17 @@ async function main(): Promise<void> {
   const publicClient = createBaseSepoliaClient(cfg.rpcUrl);
   const payer = toClientEvmSigner(account, publicClient);
   const stats = new StressStats();
-  const maxAmountAtomic = BigInt(serverConfig.maxAmountAtomic);
-  const depositAtomic = maxAmountAtomic * BigInt(cfg.depositMultiplier);
+  const failureRecorder = new StressFailureRecorder(cfg.reportDir);
+  const maxAmountsAtomic = serverConfig.maxAmountAtomicByToken ?? {
+    usdc: serverConfig.maxAmountAtomic,
+    cbbtc: serverConfig.maxAmountAtomic,
+  };
+  const usdcDepositAtomic = BigInt(maxAmountsAtomic.usdc) * BigInt(cfg.depositMultiplier);
+  const cbbtcDepositAtomic = BigInt(maxAmountsAtomic.cbbtc) * BigInt(cfg.depositMultiplier);
   const cbbtcChannelCount = Array.from({ length: cfg.channels }, (_, index) =>
     tokenKeyForChannel(index, cfg.cbbtcShare),
   ).filter(token => token === "cbbtc").length;
-  const maximumCbbtcDeposits = depositAtomic * BigInt(cbbtcChannelCount);
+  const maximumCbbtcDeposits = cbbtcDepositAtomic * BigInt(cbbtcChannelCount);
   if (maximumCbbtcDeposits > cfg.cbbtcBudgetAtomic) {
     throw new Error(
       `cbBTC deposit budget exceeded: worst-case initial deposits are ` +
@@ -541,9 +411,10 @@ async function main(): Promise<void> {
       receiver: serverConfig.receivers[receiverIndex],
       token,
       payer,
-      maxAmountAtomic: serverConfig.maxAmountAtomic,
+      maxAmountAtomic: maxAmountsAtomic[token.key],
       depositMultiplier: cfg.depositMultiplier,
       depositBudget: token.key === "cbbtc" ? cbbtcBudget : undefined,
+      failureRecorder,
       stats,
     });
   });
@@ -553,8 +424,8 @@ async function main(): Promise<void> {
   console.log(`Payer: ${account.address}`);
   console.log(
     `Channels: ${cfg.channels} (${cbbtcChannels} cbBTC), worst-case deposit per channel ` +
-      `${formatAtomic(depositAtomic, tokens.get("usdc")?.decimals ?? 6)} USDC or ` +
-      `${formatTokenAtomic("cbbtc", depositAtomic)} cbBTC; max cbBTC budget ` +
+      `${formatAtomic(usdcDepositAtomic, tokens.get("usdc")?.decimals ?? 6)} USDC or ` +
+      `${formatTokenAtomic("cbbtc", cbbtcDepositAtomic)} cbBTC; max cbBTC budget ` +
       `${formatTokenAtomic("cbbtc", cfg.cbbtcBudgetAtomic)} cbBTC`,
   );
   for (const token of serverConfig.tokens) {
@@ -570,20 +441,19 @@ async function main(): Promise<void> {
   const startedAt = new Date();
   const progress = setInterval(() => console.log(stats.progressLine()), cfg.progressIntervalMs);
 
-  let drained = false;
+  let endBacklog: Record<string, unknown> = { error: "not sampled" };
   try {
-    currentPhase = "steady";
-    stats.startPhase("steady");
     const pending = stopRequested
       ? new Set<Promise<void>>()
       : await steadyPhase(channels, cfg, stats);
     await settlePending(pending);
     stats.endPhase();
-
-    currentPhase = "drain";
-    stats.startPhase("drain");
-    drained = await drainPhase(channels, cfg, stats, publicClient);
-    stats.endPhase();
+    try {
+      const backlogChannels = await collectBacklogChannels(channels);
+      endBacklog = await snapshotBacklog(publicClient, backlogChannels);
+    } catch (error) {
+      endBacklog = { error: error instanceof Error ? error.message : String(error) };
+    }
   } finally {
     clearInterval(progress);
   }
@@ -607,13 +477,16 @@ async function main(): Promise<void> {
       refundProbability: cfg.refundProbability,
       refundFraction: cfg.refundFraction,
       refundMinAtomic: cfg.refundMinAtomic.toString(),
+      maxAmountAtomicByToken: maxAmountsAtomic,
       receivers: serverConfig.receivers.length,
       payer: account.address,
     },
     phases: stats.phaseReports(),
     overall: stats.overallReport(),
     distribution: distributionReport(channels.map(channel => channel.successes)),
-    drain: drainReport(stats, drained),
+    endBacklog,
+    errors: stats.failureReport(),
+    failureLog: failureRecorder.path,
     server: await fetchServerStats(cfg.baseUrl),
   };
   printReport(report as unknown as Record<string, Record<string, unknown>>);
