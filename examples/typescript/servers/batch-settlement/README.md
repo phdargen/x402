@@ -122,20 +122,20 @@ Run order (see the [client stress section](../../clients/batch-settlement/README
 1. Start local dependencies: `make docker-up` in `cdp-facilitator`.
 2. Start the facilitator API: `make run-facilitator-stress` in `cdp-facilitator`. The stress target only raises the local API rate limit; it does not alter worker behavior.
 3. Start the regular facilitator worker: `make run-facilitator-worker` in `cdp-facilitator`. Do not run another worker on the same Temporal task queue.
-4. Start this server with `STRESS_RECEIVERS=1 STRESS_MAX_AMOUNT_ATOMIC=500`.
-5. Start the client with `STRESS_CHANNELS=1000 STRESS_RPS=2.7778 STRESS_DURATION=2h STRESS_CBBTC_SHARE=0.01 DEPOSIT_MULTIPLIER=20 STRESS_REFUND_PROBABILITY=0.005 STRESS_DRAIN_TIMEOUT=1h`.
+4. Start this server with `STRESS_RECEIVERS=1 STRESS_MAX_AMOUNT_ATOMIC=500 STRESS_CBBTC_MAX_AMOUNT_ATOMIC=5`.
+5. Start the client with `STRESS_CHANNELS=1000 STRESS_RPS=2.7778 STRESS_DURATION=2h STRESS_CBBTC_SHARE=0.01 DEPOSIT_MULTIPLIER=20 STRESS_REFUND_PROBABILITY=0.005`.
 
 For a deterministic fresh local run, use `make docker-down-clean` before `make docker-up`; this deletes local Mongo, Redis, and Temporal volumes, so it is destructive to other local test data.
 
-The client offers about 20,000 requests during the 2-hour steady phase. One receiver creates one USDC and one cbBTC settle target; the concentrated USDC traffic crosses the `$1` settle gate while the 1% cbBTC channel slice exercises Permit2 without exceeding the client's `0.001 cbBTC` deposit-authorization budget. The client then observes the worker for up to 1 hour. Treat the run as successful only when the final client report has `drain.completed=true`, `unclaimedChannels=0`, and `unsettledPairs=0`.
+The client offers about 20,000 requests during the 2-hour steady phase. One receiver creates one USDC and one cbBTC settle target; the concentrated USDC traffic crosses the `$0.10` settle gate while the 1% cbBTC channel slice exercises Permit2 without exceeding the client's `0.001 cbBTC` deposit-authorization budget. The client writes one end-of-run onchain backlog snapshot while the worker continues its hourly/two-hour cadence.
 
-Because the worker schedules are interval schedules with Temporal jitter, the report is a timing observation rather than a strict wall-clock guarantee that a scheduled callback fires at an exact second. The 2-hour load plus 1-hour drain window is the minimum documented window for observing the 1-hour claim and 2-hour settle cadence; if the worker was started against an already-existing schedule, use its effective schedule timestamps and extend `STRESS_DRAIN_TIMEOUT` if the settle pass has not fired.
+Because the worker schedules are interval schedules with Temporal jitter, the report is a timing observation rather than a strict wall-clock guarantee that a scheduled callback fires at an exact second. Run for at least 4 hours when measuring three claim passes and two settle passes; if the worker was started against an already-existing schedule, use its effective schedule timestamps.
 
 Pass checks:
 
 - Worker logs show two `Processing ClaimBatchSettlement activity` entries followed by two successful `batch settlement claim pass` entries.
 - Worker logs show one successful `batch settlement settle pass` entry.
-- The client report has `drain.completed=true`, `drain.claimLagAtEnd.unclaimedChannels=0`, and `drain.claimLagAtEnd.unsettledPairs=0`.
+- The client report contains `endBacklog`, and the worker report contains signer balances and incremental channel counts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -143,6 +143,8 @@ Pass checks:
 | `STRESS_SEED` | `x402-stress-default-seed` | Seed that derives the receivers. Must match the client's seed. |
 | `STRESS_RECEIVERS` | `80` | Number of derived receiver addresses |
 | `STRESS_MAX_AMOUNT_ATOMIC` | `100` | Per-request maximum in token atomic units |
+| `STRESS_CBBTC_MAX_AMOUNT_ATOMIC` | `5` | cbBTC per-request maximum in atomic units |
+| `STRESS_REPORT_DIR` | `.` | Directory for the server failure NDJSON log |
 | `FACILITATOR_URL` | `http://localhost:8003/v2/x402` | Facilitator endpoint |
 
 ## Environment

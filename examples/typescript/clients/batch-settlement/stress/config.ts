@@ -20,7 +20,6 @@ export type StressConfig = {
   /** Maximum number of initial channel deposits in flight during the opening ramp. */
   openConcurrency: number;
   maxInflight: number;
-  drainTimeoutMs: number;
   /** Share of channels that use cbBTC instead of USDC, 0-1. */
   cbbtcShare: number;
   /** Maximum cbBTC amount reserved by deposit authorizations, in atomic units. */
@@ -37,7 +36,6 @@ export type StressConfig = {
   refundMinAtomic: bigint;
   reportDir: string;
   progressIntervalMs: number;
-  drainPollIntervalMs: number;
 };
 
 /**
@@ -112,10 +110,6 @@ export function loadConfig(): StressConfig {
     durationMs: parseDuration(process.env.STRESS_DURATION ?? "10m", "STRESS_DURATION"),
     openConcurrency: numberEnv("STRESS_OPEN_CONCURRENCY", 8, 1),
     maxInflight: numberEnv("STRESS_MAX_INFLIGHT", 64, 1),
-    drainTimeoutMs: parseDuration(
-      process.env.STRESS_DRAIN_TIMEOUT ?? "15m",
-      "STRESS_DRAIN_TIMEOUT",
-    ),
     cbbtcShare: numberEnv("STRESS_CBBTC_SHARE", 0.01, 0, 1),
     cbbtcBudgetAtomic,
     hotShare: numberEnv("STRESS_HOT_SHARE", 0.7, 0, 1),
@@ -124,17 +118,13 @@ export function loadConfig(): StressConfig {
     refundProbability: numberEnv("STRESS_REFUND_PROBABILITY", 0.005, 0, 1),
     refundFraction: numberEnv("STRESS_REFUND_FRACTION", 0.05, 0, 1),
     refundMinAtomic: parseAtomicBudget(
-      process.env.STRESS_REFUND_MIN_ATOMIC ?? "1",
+      process.env.STRESS_REFUND_MIN_ATOMIC ?? "10",
       "STRESS_REFUND_MIN_ATOMIC",
     ),
     reportDir: process.env.STRESS_REPORT_DIR?.trim() || ".",
     progressIntervalMs: parseDuration(
       process.env.STRESS_PROGRESS_INTERVAL ?? "30s",
       "STRESS_PROGRESS_INTERVAL",
-    ),
-    drainPollIntervalMs: parseDuration(
-      process.env.STRESS_DRAIN_POLL_INTERVAL ?? "15s",
-      "STRESS_DRAIN_POLL_INTERVAL",
     ),
   };
 }
@@ -166,12 +156,14 @@ function parseAtomicBudget(raw: string, name: string): bigint {
 }
 
 /**
- * Chooses the token for a channel. Spreading cbBTC evenly keeps every receiver on both tokens.
+ * Chooses the token for a channel. The cbBTC slice is placed at the cold end of each
+ * 100-channel block so it does not overlap the Zipf-hot channel indices.
  *
  * @param index - Channel index.
  * @param cbbtcShare - Share of cbBTC channels, 0-1.
  * @returns `cbbtc` or `usdc`.
  */
 export function tokenKeyForChannel(index: number, cbbtcShare: number): "usdc" | "cbbtc" {
-  return index % 100 < Math.round(cbbtcShare * 100) ? "cbbtc" : "usdc";
+  const cbbtcSlots = Math.round(cbbtcShare * 100);
+  return index % 100 >= 100 - cbbtcSlots ? "cbbtc" : "usdc";
 }
