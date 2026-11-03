@@ -49,7 +49,7 @@ Do **not** set `EVM_RECEIVER_AUTHORIZER_PRIVATE_KEY` in this mode. Optional `STO
 
 Clients can call `initiateWithdraw` directly onchain at any time, **outside the request flow**. After the channel's `withdrawDelay` elapses, `finalizeWithdraw` drains the escrow and any unclaimed vouchers become unclaimable forever.
 
-This demo uses local-friendly timing: claim every 1 minute, settle every 2 minutes, and refund channels idle for 3 minutes. The default channel `withdrawDelay` is 1 day.
+This demo uses local-friendly timing for the regular example server. The facilitator-managed soak uses the worker settings in `cdp-facilitator/cmd/config/local.yaml`: production worker gates and capacities, claim every 1 hour, settle every 2 hours, and a 1-day claim-idle policy. The default channel `withdrawDelay` is 1 day.
 
 For production, choose a `withdrawDelay` greater than your claim cadence plus an operational safety margin. A daily claim job pairs well with a `withdrawDelay` longer than one day; settle less frequently when gas savings matter more than receiver cash-flow latency. Idle refunds are usually best on a week-scale cadence unless your product needs faster channel cleanup.
 
@@ -112,6 +112,38 @@ For local interop, set `FACILITATOR_URL=http://localhost:4022` (same as
 `examples/go/servers/batch-settlement/.env.example`). Env keys match the Go
 server example; `GET /api/generate` returns the same `usage` fields as the Go
 demo for stable assertions across stacks.
+
+## Stress test
+
+`stress.ts` is a facilitator-managed server for load-testing the facilitator's claim/settle workers on Base Sepolia (`eip155:84532`). It serves the stress route on port `4022`, offers USDC and cbBTC, and spreads `payTo` across `STRESS_RECEIVERS` derived receivers so settles span many receiver/token pairs. USDC deposits use EIP-3009; cbBTC deposits use Permit2 because cbBTC does not expose EIP-3009. Each request is billed a random 1-100% of the authorized maximum.
+
+Run order (see the [client stress section](../../clients/batch-settlement/README.md#stress-test) for the load generator):
+
+1. Start local dependencies: `make docker-up` in `cdp-facilitator`.
+2. Start the facilitator API: `make run-facilitator-stress` in `cdp-facilitator`. The stress target only raises the local API rate limit; it does not alter worker behavior.
+3. Start the regular facilitator worker: `make run-facilitator-worker` in `cdp-facilitator`. Do not run another worker on the same Temporal task queue.
+4. Start this server with `STRESS_RECEIVERS=1 STRESS_MAX_AMOUNT_ATOMIC=500`.
+5. Start the client with `STRESS_CHANNELS=1000 STRESS_RPS=2.7778 STRESS_DURATION=2h STRESS_CBBTC_SHARE=0.01 DEPOSIT_MULTIPLIER=20 STRESS_REFUND_PROBABILITY=0.005 STRESS_DRAIN_TIMEOUT=1h`.
+
+For a deterministic fresh local run, use `make docker-down-clean` before `make docker-up`; this deletes local Mongo, Redis, and Temporal volumes, so it is destructive to other local test data.
+
+The client offers about 20,000 requests during the 2-hour steady phase. One receiver creates one USDC and one cbBTC settle target; the concentrated USDC traffic crosses the `$1` settle gate while the 1% cbBTC channel slice exercises Permit2 without exceeding the client's `0.001 cbBTC` deposit-authorization budget. The client then observes the worker for up to 1 hour. Treat the run as successful only when the final client report has `drain.completed=true`, `unclaimedChannels=0`, and `unsettledPairs=0`.
+
+Because the worker schedules are interval schedules with Temporal jitter, the report is a timing observation rather than a strict wall-clock guarantee that a scheduled callback fires at an exact second. The 2-hour load plus 1-hour drain window is the minimum documented window for observing the 1-hour claim and 2-hour settle cadence; if the worker was started against an already-existing schedule, use its effective schedule timestamps and extend `STRESS_DRAIN_TIMEOUT` if the settle pass has not fired.
+
+Pass checks:
+
+- Worker logs show two `Processing ClaimBatchSettlement activity` entries followed by two successful `batch settlement claim pass` entries.
+- Worker logs show one successful `batch settlement settle pass` entry.
+- The client report has `drain.completed=true`, `drain.claimLagAtEnd.unclaimedChannels=0`, and `drain.claimLagAtEnd.unsettledPairs=0`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STRESS_PORT` | `4022` | Listen port |
+| `STRESS_SEED` | `x402-stress-default-seed` | Seed that derives the receivers. Must match the client's seed. |
+| `STRESS_RECEIVERS` | `80` | Number of derived receiver addresses |
+| `STRESS_MAX_AMOUNT_ATOMIC` | `100` | Per-request maximum in token atomic units |
+| `FACILITATOR_URL` | `http://localhost:8003/v2/x402` | Facilitator endpoint |
 
 ## Environment
 

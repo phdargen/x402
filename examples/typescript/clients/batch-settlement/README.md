@@ -73,6 +73,85 @@ Use the concurrent example to send requests over multiple channels in parallel. 
 NUMBER_OF_CHANNELS=3 NUMBER_OF_REQUESTS=3 pnpm dev:concurrent
 ```
 
+## Stress test
+
+`stress.ts` drives many channels against the [stress server](../../servers/batch-settlement/README.md#stress-test) to exercise the facilitator's real claim and settle workers on Base Sepolia. It runs two phases: **steady** (open-loop Poisson arrivals at `STRESS_RPS`, with a Zipf-hot/cold channel mix, while channels are opened progressively) and **drain** (polls the onchain contract until claims and settlements catch up or the timeout hits). It prints progress lines, then writes a JSON report to `STRESS_REPORT_DIR`.
+
+For the local production-like soak, start the local facilitator API and the regular facilitator worker with `cdp-facilitator/cmd/config/local.yaml`. That config uses production worker gates and capacities, with a 1-hour claim schedule and a 2-hour settle schedule. Start the worker before the load so its Temporal schedules are active:
+
+```bash
+cd cdp-facilitator
+make docker-up
+make run-facilitator-stress
+make run-facilitator-worker
+```
+
+In another terminal, start the stress server with one concentrated receiver, a 500-atomic-unit maximum request, and a 1% cbBTC slice. The 1% slice is intentional: with 1,000 channels, the client's bounded `0.001 cbBTC` Permit2 budget can fund exactly 10 cbBTC channels at a 20x deposit multiplier.
+
+```bash
+cd x402/examples/typescript/servers/batch-settlement
+FACILITATOR_URL=http://localhost:8003/v2/x402 \
+STRESS_RECEIVERS=1 \
+STRESS_MAX_AMOUNT_ATOMIC=500 \
+STRESS_SEED=x402-local-prod-soak \
+pnpm dev:stress
+```
+
+Then run the client for 2 hours and allow up to 1 hour of drain observation. This offers about 20,000 attempts, uses all 1,000 configured channels progressively, and concentrates enough charged USDC at one receiver to cross the local `$1` settle gate. With a 1-hour claim schedule and a 2-hour settle schedule, the drain timeout must include the post-load observation window; the client report is only a pass when its drain section shows all charged channels claimed and all receiver/token pairs settled.
+
+```bash
+cd x402/examples/typescript/clients/batch-settlement
+EVM_PRIVATE_KEY=0x... \
+STRESS_SEED=x402-local-prod-soak \
+RESOURCE_SERVER_URL=http://localhost:4022 \
+STRESS_CHANNELS=1000 \
+STRESS_RPS=2.7778 \
+STRESS_DURATION=2h \
+STRESS_CBBTC_SHARE=0.01 \
+DEPOSIT_MULTIPLIER=20 \
+STRESS_REFUND_PROBABILITY=0.005 \
+STRESS_REFUND_FRACTION=0.05 \
+STRESS_DRAIN_TIMEOUT=1h \
+STRESS_DRAIN_POLL_INTERVAL=30s \
+pnpm dev:stress
+```
+
+The load generator's `STRESS_RPS` is the offered request-arrival rate, not a concurrency setting: it samples exponential inter-arrival times and attempts that many requests per second. `STRESS_MAX_INFLIGHT` is the separate concurrency cap. Requests are serialized per channel, so busy channels are counted as skipped rather than issuing concurrent vouchers.
+
+Run the refund unit checks before the soak:
+
+```bash
+pnpm test:refund
+```
+
+`EVM_PRIVATE_KEY` must hold Base Sepolia ETH plus enough USDC and cbBTC to cover every channel's deposit. cbBTC uses Permit2 because this token does not expose EIP-3009; the client automatically approves up to the run budget when needed. The default cbBTC share and budget cap the run's cbBTC deposit authorizations at `0.001 cbBTC` (100,000 atomic units). Deposits are sized from the server's `minDeposit` hint or `DEPOSIT_MULTIPLIER` (default `20` here).
+
+The default steady phase runs for 10 minutes while channel openings are interleaved with voucher traffic. The soak command above runs for roughly 3 hours: 2 hours of load followed by up to 1 hour of drain observation, plus request and RPC jitter.
+
+Ctrl-C stops new arrivals, waits for in-flight requests, and still runs the drain phase and report. Because voucher signers and channel salts are derived from `STRESS_SEED` and the channel index, re-running with the same seed resumes the same channels instead of opening new ones. Use a new seed for a fresh run. Do not run the regular facilitator worker alongside another worker on the same Temporal task queue.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `STRESS_SEED` | `x402-stress-default-seed` | Derivation seed. Must match the server. |
+| `STRESS_CHANNELS` | `1000` | Number of channels |
+| `STRESS_RPS` | `5` | Offered payments per second in the steady phase |
+| `STRESS_DURATION` | `10m` | Steady phase length (`500ms`, `90s`, `10m`, `2h`) |
+| `STRESS_OPEN_CONCURRENCY` | `8` | Maximum simultaneous initial channel deposits during the opening ramp |
+| `STRESS_MAX_INFLIGHT` | `64` | In-flight request cap; arrivals over it are dropped and counted |
+| `STRESS_DRAIN_TIMEOUT` | `15m` | Maximum drain wait |
+| `STRESS_DRAIN_POLL_INTERVAL` | `15s` | Onchain poll interval during drain |
+| `STRESS_REFUND_PROBABILITY` | `0.005` | Probability of a partial refund after a successful voucher |
+| `STRESS_REFUND_FRACTION` | `0.05` | Fraction of the locally refundable balance requested by a refund |
+| `STRESS_REFUND_MIN_ATOMIC` | `1` | Minimum partial refund amount in token atomic units |
+| `STRESS_CBBTC_SHARE` | `0.01` | Share of channels using cbBTC instead of USDC (0-1) |
+| `STRESS_CBBTC_BUDGET_ATOMIC` | `100000` | Maximum cbBTC deposit authorizations for the whole run (0.001 cbBTC at 8 decimals) |
+| `STRESS_HOT_SHARE` | `0.7` | Share of steady traffic aimed at hot channels (0-1) |
+| `STRESS_ZIPF_S` | `1.1` | Zipf exponent for the hot-channel skew |
+| `STRESS_PROGRESS_INTERVAL` | `30s` | Progress line interval |
+| `STRESS_REPORT_DIR` | `.` | Directory for the JSON report |
+| `BASE_SEPOLIA_RPC_URL` | public RPC | RPC used for funding and drain checks |
+| `RESOURCE_SERVER_URL` | `http://localhost:4022` | Stress server URL |
+
 ## Environment
 
 | Variable | Required | Description |
