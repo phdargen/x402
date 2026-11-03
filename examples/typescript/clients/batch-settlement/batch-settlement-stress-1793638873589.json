@@ -1,0 +1,213 @@
+{
+  "startedAt": "2026-11-02T16:44:00.264Z",
+  "finishedAt": "2026-11-02T17:01:13.582Z",
+  "config": {
+    "baseUrl": "http://localhost:4022",
+    "channels": 20,
+    "rps": 5,
+    "durationMs": 120000,
+    "openConcurrency": 8,
+    "maxInflight": 64,
+    "cbbtcShare": 0.05,
+    "cbbtcBudgetAtomic": "100000",
+    "cbbtcReservedAtomic": "20000",
+    "hotShare": 0.7,
+    "zipfS": 1.1,
+    "depositMultiplier": 4,
+    "receivers": 80,
+    "payer": "0xE33A295AF5C90A0649DFBECfDf9D604789B892e2"
+  },
+  "phases": {
+    "steady": {
+      "durationSecs": 122.6,
+      "offered": 599,
+      "offeredPerSec": 4.887,
+      "achieved": 590,
+      "achievedPerSec": 4.813,
+      "depositsPerSec": 0.163,
+      "topupsPerSec": 0.555,
+      "vouchersPerSec": 4.095,
+      "failuresPerSec": 0,
+      "requests": {
+        "deposit": 20,
+        "topup": 68,
+        "voucher": 502
+      },
+      "failed": 0,
+      "skippedBusy": 9,
+      "skippedInflight": 0,
+      "corrective402": 0,
+      "latency": {
+        "deposit": {
+          "count": 20,
+          "p50Ms": 3578,
+          "p95Ms": 4700,
+          "p99Ms": 4813
+        },
+        "topup": {
+          "count": 68,
+          "p50Ms": 3576,
+          "p95Ms": 5149,
+          "p99Ms": 5566
+        },
+        "voucher": {
+          "count": 502,
+          "p50Ms": 24,
+          "p95Ms": 39,
+          "p99Ms": 69
+        }
+      },
+      "charged": {
+        "usdc": "0.011335",
+        "cbbtc": "0.00018288"
+      },
+      "chargedPerSec": {
+        "usdc": "0.000092",
+        "cbbtc": "0.00000149"
+      },
+      "errors": {}
+    },
+    "drain": {
+      "durationSecs": 910.7,
+      "offered": 0,
+      "offeredPerSec": 0,
+      "achieved": 0,
+      "achievedPerSec": 0,
+      "depositsPerSec": 0,
+      "topupsPerSec": 0,
+      "vouchersPerSec": 0,
+      "failuresPerSec": 0,
+      "requests": {
+        "deposit": 0,
+        "topup": 0,
+        "voucher": 0
+      },
+      "failed": 0,
+      "skippedBusy": 0,
+      "skippedInflight": 0,
+      "corrective402": 0,
+      "latency": {
+        "deposit": {
+          "count": 0,
+          "p50Ms": 0,
+          "p95Ms": 0,
+          "p99Ms": 0
+        },
+        "topup": {
+          "count": 0,
+          "p50Ms": 0,
+          "p95Ms": 0,
+          "p99Ms": 0
+        },
+        "voucher": {
+          "count": 0,
+          "p50Ms": 0,
+          "p95Ms": 0,
+          "p99Ms": 0
+        }
+      },
+      "charged": {
+        "usdc": "0.000000",
+        "cbbtc": "0.00000000"
+      },
+      "chargedPerSec": {
+        "usdc": "0.000000",
+        "cbbtc": "0.00000000"
+      },
+      "errors": {}
+    }
+  },
+  "overall": {
+    "durationSecs": 1033.3,
+    "offered": 599,
+    "offeredPerSec": 0.58,
+    "achieved": 590,
+    "achievedPerSec": 0.571,
+    "depositsPerSec": 0.019,
+    "topupsPerSec": 0.066,
+    "vouchersPerSec": 0.486,
+    "failuresPerSec": 0,
+    "requests": {
+      "deposit": 20,
+      "topup": 68,
+      "voucher": 502
+    },
+    "failed": 0,
+    "skippedBusy": 9,
+    "skippedInflight": 0,
+    "corrective402": 0,
+    "latency": {
+      "deposit": {
+        "count": 20,
+        "p50Ms": 3578,
+        "p95Ms": 4700,
+        "p99Ms": 4813
+      },
+      "topup": {
+        "count": 68,
+        "p50Ms": 3576,
+        "p95Ms": 5149,
+        "p99Ms": 5566
+      },
+      "voucher": {
+        "count": 502,
+        "p50Ms": 24,
+        "p95Ms": 39,
+        "p99Ms": 69
+      }
+    },
+    "charged": {
+      "usdc": "0.011335",
+      "cbbtc": "0.00018288"
+    },
+    "chargedPerSec": {
+      "usdc": "0.000011",
+      "cbbtc": "0.00000018"
+    },
+    "errors": {}
+  },
+  "distribution": {
+    "channels": 20,
+    "totalRequests": 590,
+    "min": 1,
+    "p50": 15,
+    "p90": 64,
+    "max": 112,
+    "zeroRequestChannels": 0,
+    "top1PercentShare": 0.19,
+    "top10PercentShare": 0.331
+  },
+  "drain": {
+    "completed": false,
+    "samples": 46,
+    "durationSecs": 910.2,
+    "channelsTotal": 20,
+    "pairsTotal": 20,
+    "onchainClaimsPerSec": 0.022,
+    "onchainSettlesPerSec": 0.018,
+    "peakClaimsPerSec": 1.29,
+    "peakSettlesPerSec": 1.039,
+    "fullyClaimedAtSecs": 62,
+    "claimLagAtDrainStart": {
+      "unclaimedChannels": 20,
+      "unclaimedUsdc": "0.005138",
+      "unclaimedCbbtc": "0.00007388"
+    },
+    "claimLagAtEnd": {
+      "unclaimedChannels": 0,
+      "unclaimedUsdc": "0.000000",
+      "unclaimedCbbtc": "0.00000000",
+      "unsettledPairs": 4
+    }
+  },
+  "server": {
+    "startedAt": "2026-11-02T16:38:06.364Z",
+    "paidRequests": 590,
+    "chargedAtomic": {
+      "usdc": "11335",
+      "cbbtc": "18288"
+    },
+    "verifyFailures": {},
+    "settleFailures": {}
+  }
+}
