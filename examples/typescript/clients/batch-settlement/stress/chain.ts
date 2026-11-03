@@ -2,12 +2,12 @@ import { batchSettlementABI } from "@x402/evm/batch-settlement";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
 import { BATCH_SETTLEMENT_ADDRESS } from "./config";
-import type { DrainSample, TokenKey } from "./stats";
+import type { TokenKey } from "./stats";
 
 const MULTICALL_CHUNK = 200;
 
 /**
- * Creates the Base Sepolia client used for recovery reads, balances and drain polling.
+ * Creates the Base Sepolia client used for recovery reads, balances and backlog snapshots.
  *
  * @param rpcUrl - Optional RPC URL; viem's default public RPC is used when omitted.
  * @returns A viem public client.
@@ -19,14 +19,23 @@ export function createBaseSepoliaClient(rpcUrl: string | undefined) {
 export type BaseSepoliaClient = ReturnType<typeof createBaseSepoliaClient>;
 
 /** A channel that took at least one charge and must be claimed, then settled. */
-export type DrainChannel = {
-  index: number;
+export type BacklogChannel = {
   channelId: `0x${string}`;
   receiver: `0x${string}`;
   tokenKey: TokenKey;
   tokenAsset: `0x${string}`;
   /** Cumulative amount the server charged on this channel. */
   charged: bigint;
+};
+
+export type BacklogSnapshot = {
+  channelsTotal: number;
+  channelsClaimed: number;
+  unclaimedChannels: number;
+  pairsTotal: number;
+  pairsSettled: number;
+  unsettledPairs: number;
+  unclaimedAtomic: Record<TokenKey, string>;
 };
 
 /**
@@ -45,7 +54,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 /**
- * Reads `channels(id)` and `receivers(receiver, token)` onchain for every drain channel and
+ * Reads `channels(id)` and `receivers(receiver, token)` onchain for every charged channel and
  * reports how many channels were claimed and how many receiver pairs were settled.
  *
  * A channel is claimed once onchain `totalClaimed` reaches the amount the server charged. A
@@ -54,14 +63,12 @@ function chunk<T>(items: T[], size: number): T[][] {
  *
  * @param publicClient - Viem client for Base Sepolia.
  * @param channels - Channels to check.
- * @param elapsedMs - Time since the drain started, stored on the sample.
- * @returns The drain sample.
+ * @returns The end-of-run backlog snapshot.
  */
-export async function pollDrain(
+export async function snapshotBacklog(
   publicClient: BaseSepoliaClient,
-  channels: DrainChannel[],
-  elapsedMs: number,
-): Promise<DrainSample> {
+  channels: BacklogChannel[],
+): Promise<BacklogSnapshot> {
   const totalClaimedByChannel: bigint[] = [];
   for (const group of chunk(channels, MULTICALL_CHUNK)) {
     const results = await publicClient.multicall({
@@ -122,11 +129,15 @@ export async function pollDrain(
   }
 
   return {
-    elapsedMs,
     channelsClaimed,
     channelsTotal: channels.length,
+    unclaimedChannels: channels.length - channelsClaimed,
     pairsSettled,
     pairsTotal: pairList.length,
-    unclaimedAtomic,
+    unsettledPairs: pairList.length - pairsSettled,
+    unclaimedAtomic: {
+      usdc: unclaimedAtomic.usdc.toString(),
+      cbbtc: unclaimedAtomic.cbbtc.toString(),
+    },
   };
 }

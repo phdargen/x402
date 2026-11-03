@@ -1,3 +1,25 @@
+/** Error raised when a deposit reservation would exceed the configured budget. */
+export class BudgetExhaustedError extends Error {
+  /**
+   * Builds a budget exhaustion error with the attempted reservation details.
+   *
+   * @param amount - Requested amount.
+   * @param reserved - Amount already reserved.
+   * @param limit - Budget limit.
+   */
+  constructor(
+    readonly amount: bigint,
+    readonly reserved: bigint,
+    readonly limit: bigint,
+  ) {
+    super(
+      `budget exhausted: requested ${amount} atomic units with ${limit - reserved} remaining ` +
+        `(limit ${limit}, reserved ${reserved})`,
+    );
+    this.name = "BudgetExhaustedError";
+  }
+}
+
 /**
  * Tracks a monotonic atomic-unit budget.
  *

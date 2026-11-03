@@ -1,5 +1,6 @@
-export type PhaseName = "steady" | "drain";
+export type PhaseName = "steady";
 export type RequestKind = "deposit" | "topup" | "voucher";
+export type FailureKind = RequestKind | "refund";
 export type TokenKey = "usdc" | "cbbtc";
 
 const KINDS: RequestKind[] = ["deposit", "topup", "voucher"];
@@ -13,6 +14,7 @@ type PhaseStats = {
   offered: number;
   skippedBusy: number;
   skippedInflight: number;
+  skippedBudget: number;
   ok: Record<RequestKind, number>;
   failed: number;
   corrective402: number;
@@ -26,14 +28,12 @@ type PhaseStats = {
   refundLatencyMs: number[];
 };
 
-export type DrainSample = {
-  elapsedMs: number;
-  channelsClaimed: number;
-  channelsTotal: number;
-  pairsSettled: number;
-  pairsTotal: number;
-  /** Charged but not yet claimed onchain, per token. */
-  unclaimedAtomic: Record<TokenKey, bigint>;
+export type FailureEvent = {
+  ts: number;
+  token: TokenKey;
+  kind: FailureKind;
+  channelIndex: number;
+  reason: string;
 };
 
 export type ProgressSnapshot = {
@@ -45,6 +45,13 @@ export type ProgressSnapshot = {
   refunds: number;
   refundFailures: number;
   failed: number;
+};
+
+type ChannelFailureSummary = {
+  channelIndex: number;
+  token: TokenKey;
+  count: number;
+  reasons: Record<string, number>;
 };
 
 /**
@@ -73,6 +80,7 @@ function emptyPhase(now: number): PhaseStats {
     offered: 0,
     skippedBusy: 0,
     skippedInflight: 0,
+    skippedBudget: 0,
     ok: { deposit: 0, topup: 0, voucher: 0 },
     failed: 0,
     corrective402: 0,
@@ -113,12 +121,23 @@ export function formatTokenAtomic(token: TokenKey, atomic: bigint): string {
 }
 
 /**
- * Collects request outcomes, rates and latencies across the steady and drain phases.
+ * Collects request outcomes, rates and latencies across the steady phase.
  */
 export class StressStats {
   private current: PhaseName = "steady";
   private readonly phases: Record<PhaseName, PhaseStats>;
-  private readonly drainSamples: DrainSample[] = [];
+  private readonly errorsByToken: Record<TokenKey, number> = { usdc: 0, cbbtc: 0 };
+  private readonly errorsByKind: Record<FailureKind, number> = {
+    deposit: 0,
+    topup: 0,
+    voucher: 0,
+    refund: 0,
+  };
+  private readonly errorsByChannel = new Map<number, ChannelFailureSummary>();
+  private readonly errorTimeline = new Map<
+    number,
+    { errors: number; byToken: Record<TokenKey, number>; byKind: Record<FailureKind, number> }
+  >();
   private inflight = 0;
   private lastProgress: ProgressSnapshot = {
     offered: 0,
@@ -137,7 +156,7 @@ export class StressStats {
    */
   constructor() {
     const now = Date.now();
-    this.phases = { steady: emptyPhase(now), drain: emptyPhase(now) };
+    this.phases = { steady: emptyPhase(now) };
   }
 
   /**
@@ -147,15 +166,6 @@ export class StressStats {
    */
   get inflightCount(): number {
     return this.inflight;
-  }
-
-  /**
-   * Returns the drain polls recorded so far.
-   *
-   * @returns Drain samples in order.
-   */
-  get drain(): readonly DrainSample[] {
-    return this.drainSamples;
   }
 
   /**
@@ -208,6 +218,13 @@ export class StressStats {
   }
 
   /**
+   * Records an arrival skipped because its token budget was exhausted.
+   */
+  recordSkippedBudget(): void {
+    this.phases[this.current].skippedBudget += 1;
+  }
+
+  /**
    * Records a corrective 402, where the server answered a paid request with fresh channel state.
    */
   recordCorrective402(): void {
@@ -232,12 +249,39 @@ export class StressStats {
   /**
    * Records a failed paid request.
    *
-   * @param reason - Failure reason, bounded to a small set of strings.
+   * @param event - Failure details, including token, kind and channel.
    */
-  recordFailure(reason: string): void {
+  recordFailure(event: FailureEvent): void {
     const phase = this.phases[this.current];
-    phase.failed += 1;
-    phase.errors.set(reason, (phase.errors.get(reason) ?? 0) + 1);
+    if (event.kind === "refund") {
+      phase.refundFailures += 1;
+      phase.refundErrors.set(event.reason, (phase.refundErrors.get(event.reason) ?? 0) + 1);
+    } else {
+      phase.failed += 1;
+      phase.errors.set(event.reason, (phase.errors.get(event.reason) ?? 0) + 1);
+    }
+    this.errorsByToken[event.token] += 1;
+    this.errorsByKind[event.kind] += 1;
+    const channel = this.errorsByChannel.get(event.channelIndex) ?? {
+      channelIndex: event.channelIndex,
+      token: event.token,
+      count: 0,
+      reasons: {},
+    };
+    channel.count += 1;
+    channel.reasons[event.reason] = (channel.reasons[event.reason] ?? 0) + 1;
+    this.errorsByChannel.set(event.channelIndex, channel);
+
+    const minute = Math.floor(event.ts / 60_000) * 60_000;
+    const timeline = this.errorTimeline.get(minute) ?? {
+      errors: 0,
+      byToken: { usdc: 0, cbbtc: 0 },
+      byKind: { deposit: 0, topup: 0, voucher: 0, refund: 0 },
+    };
+    timeline.errors += 1;
+    timeline.byToken[event.token] += 1;
+    timeline.byKind[event.kind] += 1;
+    this.errorTimeline.set(minute, timeline);
   }
 
   /**
@@ -270,15 +314,6 @@ export class StressStats {
   }
 
   /**
-   * Records one poll of onchain drain progress.
-   *
-   * @param sample - The poll result.
-   */
-  recordDrainSample(sample: DrainSample): void {
-    this.drainSamples.push(sample);
-  }
-
-  /**
    * Builds the periodic progress line with rolling rates since the previous line.
    *
    * @returns A one-line progress summary.
@@ -301,7 +336,7 @@ export class StressStats {
       `refundFailures=${rate(totals.refundFailures, last.refundFailures)}/s ` +
       `failures=${rate(totals.failed, last.failed)}/s inflight=${this.inflight} ` +
       `(total ok=${totals.ok} failed=${totals.failed} skippedBusy=${phase.skippedBusy} ` +
-      `skippedInflight=${phase.skippedInflight})`
+      `skippedInflight=${phase.skippedInflight} skippedBudget=${phase.skippedBudget})`
     );
   }
 
@@ -312,14 +347,14 @@ export class StressStats {
    */
   phaseReports(): Record<PhaseName, Record<string, unknown>> {
     const report = {} as Record<PhaseName, Record<string, unknown>>;
-    for (const name of ["steady", "drain"] as PhaseName[]) {
+    for (const name of ["steady"] as PhaseName[]) {
       report[name] = this.phaseReport(this.phases[name]);
     }
     return report;
   }
 
   /**
-   * Builds a report that merges the steady and drain phases.
+   * Builds a report that merges all recorded phases.
    *
    * @returns A JSON-serializable overall report.
    */
@@ -330,6 +365,7 @@ export class StressStats {
       merged.offered += phase.offered;
       merged.skippedBusy += phase.skippedBusy;
       merged.skippedInflight += phase.skippedInflight;
+      merged.skippedBudget += phase.skippedBudget;
       merged.failed += phase.failed;
       merged.corrective402 += phase.corrective402;
       merged.refunds += phase.refunds;
@@ -351,6 +387,29 @@ export class StressStats {
       }
     }
     return this.phaseReport(merged);
+  }
+
+  /**
+   * Returns bounded failure aggregates suitable for the JSON report.
+   *
+   * @returns Failure totals grouped by token, kind, channel and minute.
+   */
+  failureReport(): Record<string, unknown> {
+    const topChannels = [...this.errorsByChannel.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+    const timeline = [...this.errorTimeline.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([minute, value]) => ({
+        minute: new Date(minute).toISOString(),
+        ...value,
+      }));
+    return {
+      byToken: { ...this.errorsByToken },
+      byKind: { ...this.errorsByKind },
+      topChannels,
+      timeline,
+    };
   }
 
   /**
@@ -423,6 +482,7 @@ export class StressStats {
       refunds: phase.refunds,
       refundFailures: phase.refundFailures,
       refundSkipped: phase.refundSkipped,
+      skippedBudget: phase.skippedBudget,
       latency,
       refundLatency,
       charged,

@@ -27,7 +27,7 @@ export function partialRefundAmount(
   minimum: bigint,
 ): bigint | undefined {
   const refundable = refundableBalance(balance, charged);
-  if (refundable <= 1n || minimum <= 0n) return undefined;
+  if (refundable <= 1n || minimum <= 0n || refundable - 1n < minimum) return undefined;
 
   const fractionMicros = BigInt(Math.floor(fraction * 1_000_000));
   const proportional = (refundable * fractionMicros) / 1_000_000n;
