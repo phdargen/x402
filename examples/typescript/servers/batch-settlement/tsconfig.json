@@ -11,5 +11,5 @@
     "baseUrl": ".",
     "types": ["node"]
   },
-  "include": ["index.ts", "stress.ts"]
+  "include": ["index.ts", "stress.ts", "stress-target.ts"]
 }

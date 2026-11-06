@@ -116,6 +116,31 @@ pnpm dev:stress
 
 The load generator's `STRESS_RPS` is the offered request-arrival rate, not a concurrency setting: it samples exponential inter-arrival times and attempts that many requests per second. `STRESS_MAX_INFLIGHT` is the separate concurrency cap. Requests are serialized per channel, so busy channels are counted as skipped rather than issuing concurrent vouchers.
 
+### Against dev, staging or prod
+
+The client needs no facilitator credentials: it only talks to the stress server and reads Base Sepolia. To test a deployed facilitator, start the stress server with `STRESS_TARGET=dev|staging|prod` (see the [server README](../../servers/batch-settlement/README.md#running-against-dev-staging-or-prod)), then run the client against that server with the same `STRESS_SEED`. The report records the server's `target` and `facilitatorHost` under `config`.
+
+```bash
+RESOURCE_SERVER_URL=http://localhost:4022 \
+STRESS_SEED=x402-stress-dev \
+STRESS_CHANNELS=100 STRESS_RPS=1 STRESS_DURATION=10m \
+STRESS_BACKLOG_WAIT=2h STRESS_BACKLOG_POLL_INTERVAL=2m \
+pnpm dev:stress
+```
+
+### Where the claim and settle numbers come from
+
+`endBacklog` (`channelsClaimed`, `unclaimedChannels`, `pairsSettled`, `unsettledPairs`, `unclaimedAtomic`) is not read from the facilitator or its worker, so it works against any environment that settles on Base Sepolia:
+
+- The charged amount per channel is tracked locally from the `PAYMENT-RESPONSE` header.
+- Claimed and settled amounts are read onchain from the batch-settlement contract (`channels(channelId).totalClaimed`, `receivers(receiver, token)`), through `BASE_SEPOLIA_RPC_URL` or the public RPC.
+
+The snapshot is a single read taken when the load ends, so it only shows what the facilitator has claimed and settled by then. A worker that claims hourly will report most channels as unclaimed after a short run. Set `STRESS_BACKLOG_WAIT` to keep polling; each snapshot is printed as `backlog +<secs>s ...` and stored in the report as `backlogTimeline`. The wait ends early once everything is claimed and settled. The first Ctrl-C during the wait ends it and writes the report.
+
+### Facilitator signer balances
+
+The stress server reads the facilitator's EVM signer addresses from `/supported` (the `eip155:*` entry plus any entry for Base Sepolia) and publishes them in `/stress/config`. The client reads each signer's native ETH balance on Base Sepolia before the load and again right before the report is written, so with `STRESS_BACKLOG_WAIT` the end balance includes the gas the worker spends on claims and settles during the wait. The report's `facilitatorSignerBalances` holds, per signer, `startEth`, `endEth` and `deltaEth` in human-readable ETH (negative means gas spent), plus `totalDeltaEth`. A failed balance read is recorded per signer as an error instead of failing the run. Against a server that predates this field the section is empty.
+
 Run the refund unit checks before the soak:
 
 ```bash
@@ -144,6 +169,8 @@ Ctrl-C stops new arrivals, waits for in-flight requests, and writes the final re
 | `STRESS_HOT_SHARE` | `0.7` | Share of steady traffic aimed at hot channels (0-1) |
 | `STRESS_ZIPF_S` | `1.1` | Zipf exponent for the hot-channel skew |
 | `STRESS_PROGRESS_INTERVAL` | `30s` | Progress line interval |
+| `STRESS_BACKLOG_WAIT` | `0` | After the load, keep re-reading the onchain backlog for up to this long (`90s`, `10m`, `2h`) or until everything is claimed and settled. `0` takes a single snapshot. |
+| `STRESS_BACKLOG_POLL_INTERVAL` | `60s` | Time between backlog snapshots while waiting (minimum `1s`) |
 | `STRESS_REPORT_DIR` | `.` | Directory for the JSON report |
 | `BASE_SEPOLIA_RPC_URL` | public RPC | RPC used for funding and the end backlog snapshot |
 | `RESOURCE_SERVER_URL` | `http://localhost:4022` | Stress server URL |

@@ -14,6 +14,13 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { keccak256, toHex } from "viem";
 import { privateKeyToAddress } from "viem/accounts";
+import {
+  createFacilitatorClientConfig,
+  describeFacilitatorError,
+  preflightSupported,
+  resolveStressTarget,
+  type ResolvedStressTarget,
+} from "./stress-target";
 
 config();
 
@@ -36,9 +43,24 @@ const RECEIVER_COUNT = Number(process.env.STRESS_RECEIVERS ?? "80");
 const MAX_AMOUNT_ATOMIC = process.env.STRESS_MAX_AMOUNT_ATOMIC?.trim() || "100";
 // 5 cbBTC atomic units is approximately $0.005 at a $100k cbBTC price.
 const CBBTC_MAX_AMOUNT_ATOMIC = process.env.STRESS_CBBTC_MAX_AMOUNT_ATOMIC?.trim() || "5";
-const facilitatorUrl = process.env.FACILITATOR_URL?.trim() || "http://localhost:8003/v2/x402";
 const reportDir = process.env.STRESS_REPORT_DIR?.trim() || ".";
 const MAX_REASON_LENGTH = 160;
+
+/**
+ * Resolves the facilitator target, exiting with a readable message when it is misconfigured.
+ *
+ * @returns The resolved target.
+ */
+function resolveTargetOrExit(): ResolvedStressTarget {
+  try {
+    return resolveStressTarget();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+const stressTarget = resolveTargetOrExit();
 
 if (!Number.isInteger(RECEIVER_COUNT) || RECEIVER_COUNT <= 0) {
   console.error("STRESS_RECEIVERS must be a positive integer");
@@ -270,7 +292,28 @@ const price: DynamicPrice = (context): AssetAmount => {
  * Starts the stress server.
  */
 async function main(): Promise<void> {
-  const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
+  const facilitatorClient = new HTTPFacilitatorClient(createFacilitatorClientConfig(stressTarget));
+  console.log(
+    `Facilitator target: ${stressTarget.target} (${stressTarget.facilitatorHost}, ` +
+      `auth: ${stressTarget.authMode})`,
+  );
+  let facilitatorSigners: string[] = [];
+  try {
+    const preflight = await preflightSupported(facilitatorClient, EVM_NETWORK);
+    facilitatorSigners = preflight.signers;
+    console.log(
+      `  /supported: batch-settlement on ${EVM_NETWORK}, voucherManager ` +
+        `[${preflight.voucherManagers}], ${facilitatorSigners.length} signers`,
+    );
+  } catch (error) {
+    throw new Error(describeFacilitatorError(error, stressTarget));
+  }
+  if (stressTarget.target !== "local") {
+    console.log(
+      "  note: cbBTC channels use Permit2; if this environment rejects them, run the client " +
+        "with STRESS_CBBTC_SHARE=0",
+    );
+  }
   const resourceServer = new x402ResourceServer(facilitatorClient).register(
     EVM_NETWORK,
     new BatchSettlementEvmScheme(receivers[0], {
@@ -346,13 +389,20 @@ async function main(): Promise<void> {
       mimeType: "application/json",
     },
   });
-  await httpServer.initialize();
+  try {
+    await httpServer.initialize();
+  } catch (error) {
+    throw new Error(describeFacilitatorError(error, stressTarget));
+  }
 
   const app = express();
 
   app.get("/stress/config", (_req, res) => {
     res.json({
       network: EVM_NETWORK,
+      target: stressTarget.target,
+      facilitatorHost: stressTarget.facilitatorHost,
+      facilitatorSigners,
       maxAmountAtomic: MAX_AMOUNT_ATOMIC,
       maxAmountAtomicByToken: MAX_AMOUNT_ATOMIC_BY_TOKEN,
       receivers,
@@ -363,6 +413,8 @@ async function main(): Promise<void> {
   app.get("/stress/stats", (_req, res) => {
     res.json({
       startedAt: stats.startedAt,
+      target: stressTarget.target,
+      facilitatorHost: stressTarget.facilitatorHost,
       paidRequests: stats.paidRequests,
       refundRequests: stats.refundRequests,
       chargedAtomic: {
@@ -390,7 +442,7 @@ async function main(): Promise<void> {
 
   app.listen(PORT, () => {
     console.log(`Batch-settlement stress server listening at http://localhost:${PORT}`);
-    console.log(`  facilitator: ${facilitatorUrl}`);
+    console.log(`  facilitator: ${stressTarget.facilitatorUrl} (target: ${stressTarget.target})`);
     console.log(`  receivers: ${RECEIVER_COUNT} (seed-derived), tokens: usdc, cbbtc`);
     console.log(
       `  max price per request: usdc=${MAX_AMOUNT_ATOMIC} cbbtc=${CBBTC_MAX_AMOUNT_ATOMIC} atomic units`,

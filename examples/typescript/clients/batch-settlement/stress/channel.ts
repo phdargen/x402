@@ -28,6 +28,11 @@ export type StressToken = {
 /** Shape of `GET /stress/config` on the stress server. */
 export type StressServerConfig = {
   network: string;
+  /** Facilitator target the server runs against; absent on servers that predate targets. */
+  target?: string;
+  facilitatorHost?: string;
+  /** Facilitator EVM signer addresses from `/supported`; absent on older servers. */
+  facilitatorSigners?: `0x${string}`[];
   maxAmountAtomic: string;
   maxAmountAtomicByToken: Record<TokenKey, string>;
   receivers: `0x${string}`[];
