@@ -2,9 +2,11 @@ import { batchSettlementABI } from "@x402/evm/batch-settlement";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "viem/chains";
 import { BATCH_SETTLEMENT_ADDRESS } from "./config";
+import { sleep } from "./random";
 import type { TokenKey } from "./stats";
 
 const MULTICALL_CHUNK = 200;
+const POLL_SLICE_MS = 100;
 
 /**
  * Creates the Base Sepolia client used for recovery reads, balances and backlog snapshots.
@@ -140,4 +142,75 @@ export async function snapshotBacklog(
       cbbtc: unclaimedAtomic.cbbtc.toString(),
     },
   };
+}
+
+export type BacklogTimelineEntry = {
+  at: string;
+  /** Seconds since polling started. */
+  elapsedSecs: number;
+  snapshot: BacklogSnapshot | { error: string };
+};
+
+/**
+ * Returns whether every charged channel is claimed and every receiver pair is settled.
+ *
+ * @param snapshot - Backlog snapshot.
+ * @returns True when nothing is left to claim or settle.
+ */
+export function isBacklogDrained(snapshot: BacklogSnapshot): boolean {
+  return snapshot.unclaimedChannels === 0 && snapshot.unsettledPairs === 0;
+}
+
+/**
+ * Repeats the onchain backlog snapshot until the facilitator has claimed and settled everything,
+ * the wait elapses, or `shouldStop` returns true. A failed read is recorded and polling continues.
+ *
+ * @param options - Polling options.
+ * @param options.publicClient - Viem client for Base Sepolia.
+ * @param options.channels - Charged channels to check.
+ * @param options.waitMs - Longest time to keep polling.
+ * @param options.intervalMs - Time between snapshots.
+ * @param options.shouldStop - Returns true to end the wait early.
+ * @param options.onSample - Called with each recorded entry.
+ * @returns The recorded timeline, oldest first.
+ */
+export async function pollBacklog(options: {
+  publicClient: BaseSepoliaClient;
+  channels: BacklogChannel[];
+  waitMs: number;
+  intervalMs: number;
+  shouldStop: () => boolean;
+  onSample?: (entry: BacklogTimelineEntry) => void;
+}): Promise<BacklogTimelineEntry[]> {
+  const timeline: BacklogTimelineEntry[] = [];
+  const startedAt = performance.now();
+  const deadline = startedAt + options.waitMs;
+  while (!options.shouldStop()) {
+    const nextSampleAt = Math.min(performance.now() + options.intervalMs, deadline);
+    while (!options.shouldStop() && performance.now() < nextSampleAt) {
+      await sleep(Math.min(POLL_SLICE_MS, nextSampleAt - performance.now()));
+    }
+    if (options.shouldStop()) break;
+    let entry: BacklogTimelineEntry;
+    let drained = false;
+    try {
+      const snapshot = await snapshotBacklog(options.publicClient, options.channels);
+      drained = isBacklogDrained(snapshot);
+      entry = {
+        at: new Date().toISOString(),
+        elapsedSecs: Math.round((performance.now() - startedAt) / 1000),
+        snapshot,
+      };
+    } catch (error) {
+      entry = {
+        at: new Date().toISOString(),
+        elapsedSecs: Math.round((performance.now() - startedAt) / 1000),
+        snapshot: { error: error instanceof Error ? error.message : String(error) },
+      };
+    }
+    timeline.push(entry);
+    options.onSample?.(entry);
+    if (drained || performance.now() >= deadline) break;
+  }
+  return timeline;
 }

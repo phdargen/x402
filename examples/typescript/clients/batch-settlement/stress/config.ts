@@ -7,6 +7,7 @@ export const NETWORK = "eip155:84532" as const;
 /** Channel salts must fit in 96 bits so managed-mode packing keeps them distinct. */
 const UINT96_MAX = (1n << 96n) - 1n;
 const MAX_CBBTC_BUDGET_ATOMIC = 100_000n;
+const MIN_BACKLOG_POLL_INTERVAL_MS = 1000;
 
 export type StressConfig = {
   evmPrivateKey: `0x${string}`;
@@ -36,6 +37,9 @@ export type StressConfig = {
   refundMinAtomic: bigint;
   reportDir: string;
   progressIntervalMs: number;
+  /** How long to keep re-reading the onchain backlog after the load; 0 takes one snapshot. */
+  backlogWaitMs: number;
+  backlogPollIntervalMs: number;
 };
 
 /**
@@ -97,6 +101,13 @@ export function loadConfig(): StressConfig {
       `STRESS_CBBTC_BUDGET_ATOMIC cannot exceed ${MAX_CBBTC_BUDGET_ATOMIC} atomic units (0.001 cbBTC)`,
     );
   }
+  const backlogPollIntervalMs = parseDuration(
+    process.env.STRESS_BACKLOG_POLL_INTERVAL ?? "60s",
+    "STRESS_BACKLOG_POLL_INTERVAL",
+  );
+  if (backlogPollIntervalMs < MIN_BACKLOG_POLL_INTERVAL_MS) {
+    throw new Error("STRESS_BACKLOG_POLL_INTERVAL must be at least 1s");
+  }
   return {
     evmPrivateKey: evmPrivateKey as `0x${string}`,
     seed: process.env.STRESS_SEED?.trim() || "x402-stress-default-seed",
@@ -126,6 +137,8 @@ export function loadConfig(): StressConfig {
       process.env.STRESS_PROGRESS_INTERVAL ?? "30s",
       "STRESS_PROGRESS_INTERVAL",
     ),
+    backlogWaitMs: parseDuration(process.env.STRESS_BACKLOG_WAIT ?? "0", "STRESS_BACKLOG_WAIT"),
+    backlogPollIntervalMs,
   };
 }
 

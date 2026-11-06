@@ -145,7 +145,46 @@ Pass checks:
 | `STRESS_MAX_AMOUNT_ATOMIC` | `100` | Per-request maximum in token atomic units |
 | `STRESS_CBBTC_MAX_AMOUNT_ATOMIC` | `5` | cbBTC per-request maximum in atomic units |
 | `STRESS_REPORT_DIR` | `.` | Directory for the server failure NDJSON log |
-| `FACILITATOR_URL` | `http://localhost:8003/v2/x402` | Facilitator endpoint |
+| `STRESS_TARGET` | `local` | Facilitator target: `local`, `dev`, `staging` or `prod` (see below) |
+| `FACILITATOR_URL` | target default | Overrides the target's facilitator URL; it must still match the target's host |
+| `DEV_CDP_API_KEY_ID` / `DEV_CDP_API_KEY_SECRET` | none | CDP API keys for `STRESS_TARGET=dev` (and the `staging` fallback) |
+| `STAGING_CDP_API_KEY_ID` / `STAGING_CDP_API_KEY_SECRET` | none | CDP API keys for `STRESS_TARGET=staging`; falls back to the `DEV_` pair, never to prod keys |
+| `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | none | CDP API keys for `STRESS_TARGET=prod` |
+
+### Running against dev, staging or prod
+
+`STRESS_TARGET` selects which facilitator the stress server talks to. It does not require any change to `cdp-facilitator`. The default, `local`, is the local auth-proxy flow described above: the auth-proxy injects the JWT, so no API keys are needed.
+
+| `STRESS_TARGET` | Facilitator URL | Auth |
+|-----------------|-----------------|------|
+| `local` (default) | `http://localhost:8003/v2/x402` | None (auth-proxy injects the JWT) |
+| `dev` | `https://cloud-api-dev.cbhq.net/platform/v2/x402` | CDP API key JWT, `DEV_CDP_API_KEY_*` |
+| `staging` | `https://cloud-api-staging.cbhq.net/platform/v2/x402` | CDP API key JWT, `STAGING_CDP_API_KEY_*` then `DEV_CDP_API_KEY_*` |
+| `prod` | `https://api.cdp.coinbase.com/platform/v2/x402` | CDP API key JWT, `CDP_API_KEY_*` |
+
+For the remote targets the server signs a CDP JWT per request path (`/platform/v2/x402/verify`, `/settle`, `/supported`) and reuses it for about a minute. On startup it logs the target and host, then reads `/supported` and fails fast if the environment does not advertise `batch-settlement` on `eip155:84532` with `voucherManager` including `facilitator`. The server never logs key material. `/stress/config` and `/stress/stats` report the `target` and `facilitatorHost`.
+
+```bash
+# dev (FACILITATOR_URL= overrides the local value in .env)
+STRESS_TARGET=dev FACILITATOR_URL= \
+DEV_CDP_API_KEY_ID=... DEV_CDP_API_KEY_SECRET=... \
+STRESS_SEED=x402-stress-dev STRESS_RECEIVERS=1 STRESS_MAX_AMOUNT_ATOMIC=500 \
+pnpm dev:stress
+
+# prod
+STRESS_TARGET=prod FACILITATOR_URL= \
+CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... \
+STRESS_SEED=x402-stress-prod STRESS_RECEIVERS=1 STRESS_MAX_AMOUNT_ATOMIC=500 \
+pnpm dev:stress
+```
+
+Things to know before pointing the load at a deployed environment:
+
+- **Do not leave a local `FACILITATOR_URL` in `.env`.** The server rejects a host that does not match the target. An empty `FACILITATOR_URL=` on the command line takes precedence over `.env`.
+- **Use one `STRESS_SEED` per environment** (client and server must match). Channel ids include the facilitator's receiver authorizer, so a seed reused against another environment opens new channels instead of resuming.
+- **CDP API rate limits apply.** The `make run-facilitator-stress` limit bump is local only. Start with a low client `STRESS_RPS` and expect 429s at the local soak rate; they show up under the verify and settle failure reasons in `/stress/stats`.
+- **cbBTC uses Permit2.** If an environment rejects it, run the client with `STRESS_CBBTC_SHARE=0`.
+- **The facilitator worker report is not available remotely.** Claim and settle progress comes from the client's onchain backlog snapshot (see the client README) and this server's `/stress/stats`.
 
 ## Environment
 
