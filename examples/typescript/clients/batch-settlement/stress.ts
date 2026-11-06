@@ -2,15 +2,28 @@ import { PERMIT2_ADDRESS, toClientEvmSigner } from "@x402/evm";
 import { config as loadDotenv } from "dotenv";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createWalletClient, erc20Abi, http } from "viem";
+import { createWalletClient, erc20Abi, formatEther, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { createBaseSepoliaClient, snapshotBacklog, type BacklogChannel } from "./stress/chain";
+import {
+  createBaseSepoliaClient,
+  isBacklogDrained,
+  pollBacklog,
+  snapshotBacklog,
+  type BacklogChannel,
+  type BacklogSnapshot,
+  type BacklogTimelineEntry,
+} from "./stress/chain";
 import { AtomicBudget } from "./stress/budget";
 import { StressChannel, type StressServerConfig } from "./stress/channel";
-import { loadConfig, tokenKeyForChannel, type StressConfig } from "./stress/config";
+import { loadConfig, NETWORK, tokenKeyForChannel, type StressConfig } from "./stress/config";
 import { StressFailureRecorder } from "./stress/failures";
 import { ChannelSampler, exponentialIntervalMs, sleep } from "./stress/random";
+import {
+  readSignerBalances,
+  signerBalanceReport,
+  type SignerBalanceReport,
+} from "./stress/signers";
 import { distributionReport, formatAtomic, formatTokenAtomic, StressStats } from "./stress/stats";
 
 loadDotenv();
@@ -29,14 +42,22 @@ const SLEEP_SLICE_MS = 100;
 const SAMPLE_PREVIEW = 5;
 
 let stopRequested = false;
+let backlogWaitActive = false;
+let backlogWaitStopped = false;
 let sigintCount = 0;
 
 /**
- * First Ctrl-C stops sending and snapshots the remaining backlog.
- * A second Ctrl-C exits immediately.
+ * First Ctrl-C stops sending and snapshots the remaining backlog. While the post-run backlog
+ * wait is running, the next Ctrl-C ends the wait and writes the report.
+ * A further Ctrl-C exits immediately.
  */
 function installSignalHandler(): void {
   process.on("SIGINT", () => {
+    if (backlogWaitActive && !backlogWaitStopped) {
+      backlogWaitStopped = true;
+      console.log("\nInterrupt: ending the backlog wait and writing the report.");
+      return;
+    }
     sigintCount += 1;
     if (sigintCount >= 2) {
       console.log("\nSecond interrupt: exiting immediately.");
@@ -289,6 +310,41 @@ async function collectBacklogChannels(channels: StressChannel[]): Promise<Backlo
 }
 
 /**
+ * Keeps re-reading the onchain backlog after the load so slow claim and settle schedules show up
+ * as a timeline instead of a single early snapshot.
+ *
+ * @param publicClient - Viem client for Base Sepolia.
+ * @param backlogChannels - Charged channels to check.
+ * @param cfg - Stress configuration.
+ * @returns The recorded timeline.
+ */
+async function waitForBacklog(
+  publicClient: ReturnType<typeof createBaseSepoliaClient>,
+  backlogChannels: BacklogChannel[],
+  cfg: StressConfig,
+): Promise<BacklogTimelineEntry[]> {
+  console.log(
+    `Waiting up to ${Math.round(cfg.backlogWaitMs / 1000)}s for the facilitator to claim and settle ` +
+      `(polling every ${Math.round(cfg.backlogPollIntervalMs / 1000)}s). Ctrl-C ends the wait.`,
+  );
+  sigintCount = 0;
+  backlogWaitActive = true;
+  try {
+    return await pollBacklog({
+      publicClient,
+      channels: backlogChannels,
+      waitMs: cfg.backlogWaitMs,
+      intervalMs: cfg.backlogPollIntervalMs,
+      shouldStop: () => backlogWaitStopped,
+      onSample: entry =>
+        console.log(`backlog +${entry.elapsedSecs}s ${JSON.stringify(entry.snapshot)}`),
+    });
+  } finally {
+    backlogWaitActive = false;
+  }
+}
+
+/**
  * Reads the server-side verify/settle failure reasons.
  *
  * @param baseUrl - Stress server base URL.
@@ -335,6 +391,25 @@ function printReport(report: Record<string, Record<string, unknown>>): void {
     }
   }
   console.log(`endBacklog ${JSON.stringify(report.endBacklog)}`);
+  const signerReport = report.facilitatorSignerBalances as unknown as SignerBalanceReport;
+  if (signerReport.signers.length > 0) {
+    console.log(`facilitator signers (ETH, ${signerReport.network}):`);
+    for (const signer of signerReport.signers) {
+      console.log(
+        "error" in signer
+          ? `  ${signer.address} ${signer.error}`
+          : `  ${signer.address} start=${signer.startEth} end=${signer.endEth} delta=${signer.deltaEth}`,
+      );
+    }
+    console.log(`  total delta ${signerReport.totalDeltaEth} ETH`);
+  }
+  const timeline = report.backlogTimeline as unknown as BacklogTimelineEntry[];
+  if (timeline.length > 0) {
+    const last = timeline[timeline.length - 1];
+    console.log(
+      `backlogTimeline ${timeline.length} samples over ${last.elapsedSecs}s, last ${JSON.stringify(last.snapshot)}`,
+    );
+  }
   console.log(`errors    ${JSON.stringify(report.errors)}`);
   console.log(`channels ${JSON.stringify(report.distribution)}`);
   console.log(line);
@@ -420,7 +495,10 @@ async function main(): Promise<void> {
   });
 
   const cbbtcChannels = channels.filter(channel => channel.token.key === "cbbtc").length;
-  console.log(`Stress server: ${cfg.baseUrl} (${serverConfig.receivers.length} receivers)`);
+  console.log(
+    `Stress server: ${cfg.baseUrl} (${serverConfig.receivers.length} receivers, ` +
+      `facilitator target ${serverConfig.target ?? "unknown"})`,
+  );
   console.log(`Payer: ${account.address}`);
   console.log(
     `Channels: ${cfg.channels} (${cbbtcChannels} cbBTC), worst-case deposit per channel ` +
@@ -438,10 +516,20 @@ async function main(): Promise<void> {
     console.log(`  ${token.symbol} balance: ${formatAtomic(balance, token.decimals)}`);
   }
 
+  const facilitatorSigners = serverConfig.facilitatorSigners ?? [];
+  const signerStart = await readSignerBalances(publicClient, facilitatorSigners);
+  if (facilitatorSigners.length > 0) {
+    console.log(`Facilitator signers (${facilitatorSigners.length}) ETH at start:`);
+    for (const [address, balance] of signerStart) {
+      console.log(`  ${address} ${balance === undefined ? "read failed" : formatEther(balance)}`);
+    }
+  }
+
   const startedAt = new Date();
   const progress = setInterval(() => console.log(stats.progressLine()), cfg.progressIntervalMs);
 
-  let endBacklog: Record<string, unknown> = { error: "not sampled" };
+  let endBacklog: BacklogSnapshot | { error: string } = { error: "not sampled" };
+  let backlogTimeline: BacklogTimelineEntry[] = [];
   try {
     const pending = stopRequested
       ? new Set<Promise<void>>()
@@ -450,7 +538,12 @@ async function main(): Promise<void> {
     stats.endPhase();
     try {
       const backlogChannels = await collectBacklogChannels(channels);
-      endBacklog = await snapshotBacklog(publicClient, backlogChannels);
+      const snapshot = await snapshotBacklog(publicClient, backlogChannels);
+      endBacklog = snapshot;
+      if (cfg.backlogWaitMs > 0 && !isBacklogDrained(snapshot)) {
+        clearInterval(progress);
+        backlogTimeline = await waitForBacklog(publicClient, backlogChannels, cfg);
+      }
     } catch (error) {
       endBacklog = { error: error instanceof Error ? error.message : String(error) };
     }
@@ -458,10 +551,16 @@ async function main(): Promise<void> {
     clearInterval(progress);
   }
 
+  const signerEnd = await readSignerBalances(publicClient, facilitatorSigners);
+  const facilitatorSignerBalances = signerBalanceReport(NETWORK, signerStart, signerEnd);
+
   const report = {
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
     config: {
+      target: serverConfig.target ?? "unknown",
+      facilitatorHost: serverConfig.facilitatorHost ?? "unknown",
+      backlogWaitMs: cfg.backlogWaitMs,
       baseUrl: cfg.baseUrl,
       channels: cfg.channels,
       rps: cfg.rps,
@@ -485,6 +584,8 @@ async function main(): Promise<void> {
     overall: stats.overallReport(),
     distribution: distributionReport(channels.map(channel => channel.successes)),
     endBacklog,
+    backlogTimeline,
+    facilitatorSignerBalances,
     errors: stats.failureReport(),
     failureLog: failureRecorder.path,
     server: await fetchServerStats(cfg.baseUrl),
