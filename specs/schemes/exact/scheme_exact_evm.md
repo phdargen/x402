@@ -2,19 +2,20 @@
 
 ## Summary
 
-The `exact` scheme on EVM executes a transfer where the Facilitator (server) pays the gas, but the Client (user) controls the exact flow of funds via cryptographic signatures.
+The `exact` scheme on EVM executes a transfer where the Client (user) controls the exact flow of funds via cryptographic signatures. With the facilitator-submitted methods (1 to 3), the Facilitator (server) broadcasts the transfer and pays the gas. With `transaction-proof` (4), the Client broadcasts the transfer and pays the gas itself.
 
-This is implemented via one of three asset transfer methods, depending on the token's capabilities:
+This is implemented via one of four asset transfer methods, depending on the token's capabilities:
 
 | AssetTransferMethod | Use Case                                                     | Recommendation                                 | Usage Semantics                     |
 | :------------------ | :----------------------------------------------------------- | :--------------------------------------------- | :---------------------------------- |
 | **1. EIP-3009**     | Tokens with native `transferWithAuthorization` (e.g., USDC). | **Recommended** (Simplest, truly gasless).     | One-time use                        |
 | **2. Permit2**      | Tokens without EIP-3009. Uses a Proxy + Permit2.             | **Universal Fallback** (Works for any ERC-20). | One-time use                        |
 | **3. ERC-7710**      | Smart accounts with delegation support.                              | **Smart Account Option** (Paid from ERC-7710 compatible account). | One-time use and multi-use |
+| **4. transaction-proof** | Any ERC-20 or native ETH. The client broadcasts the transfer. | **Client-submitted** (`upfront` only, client pays gas). | One-time use |
 
 If no `assetTransferMethod` is specified in `PaymentRequired.extra`, clients should default to `"eip3009"`. Payment payloads that use a non-default transfer method should echo the selected `assetTransferMethod` in `accepted.extra`.
 
-In all cases, the Facilitator cannot modify the amount or destination. They serve only as the transaction broadcaster.
+In all cases, the Facilitator cannot modify the amount or destination. Under methods 1 to 3 it serves only as the transaction broadcaster; under `transaction-proof` it submits no transaction.
 
 ---
 
@@ -328,6 +329,111 @@ delegationManager.redeemDelegations(
 ```
 
 The Delegation Manager validates the delegation authority and calls the delegator account to execute the token transfer. The delegator account then performs `token.transfer(payTo, amount)`.
+
+---
+
+## 4. AssetTransferMethod: `transaction-proof`
+
+The `transaction-proof` asset transfer method lets the client pay with any ERC-20 token or native ETH by broadcasting the transfer itself. It is defined network-agnostically in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md), which specifies the payload, the binding object, the settle ordering, replay and retention, and the error codes. This section defines only the EVM binding.
+
+The method is client-submitted and MUST use the `upfront` payment flow. The facilitator submits no transaction and needs no funds.
+
+### Canonical Encodings
+
+| Value | Encoding |
+|---|---|
+| `txHash` | 32-byte transaction hash as `0x`-prefixed lowercase hex. |
+| `payer`, `payTo`, `asset` | 20-byte address as `0x`-prefixed lowercase hex. |
+| Native ETH | `asset` is the [ERC-7528](https://eips.ethereum.org/EIPS/eip-7528) address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`. |
+
+Wire values MAY use EIP-55 checksum casing. Implementations MUST lowercase them for the binding object and the consumption key, which is `eip155:<chainId>:<txHash>`.
+
+### Signature
+
+The payer signs the binding bytes with [EIP-191](https://eips.ethereum.org/EIPS/eip-191) `personal_sign`, and `signature` is the `0x`-prefixed hex signature. The facilitator accepts it when either:
+
+- `ecrecover` over the EIP-191 message hash returns `payer`, or
+- `payer` has code and [ERC-1271](https://eips.ethereum.org/EIPS/eip-1271) `isValidSignature(hash, signature)` returns `0x1626ba7e`.
+
+This covers EOAs, EIP-7702 accounts and smart contract accounts such as ERC-4337 accounts and Safes. ERC-6492 is not needed: the account has already sent the transfer, so it is deployed.
+
+### Transfer Identification
+
+The transaction receipt `status` MUST be `1`. Then:
+
+- **ERC-20**: the receipt MUST contain a `Transfer(address indexed from, address indexed to, uint256 value)` log emitted by `asset` with `from == payer`, `to == payTo` and `value >= amount`. The log's `from` identifies the payer, not `tx.from`, so transfers executed by smart accounts through bundlers or relayers qualify.
+- **Native ETH**: the transaction MUST be a top-level value transfer with `tx.from == payer`, `tx.to == payTo` and `tx.value >= amount`. Value moved by an internal call is not accepted, because detecting it requires execution traces. Native ETH from smart contract accounts is therefore unsupported, except from EIP-7702 accounts that send the top-level transaction themselves.
+
+### Finality
+
+A transaction is final when its block is at least the facilitator's configured confirmation depth below the chain head, or when the facilitator uses the `safe` or `finalized` block tag and the block is at or below it. The facilitator chooses the policy per network. `blockTime` is the including block's `timestamp`.
+
+Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilitator's policy takes to reach finality on the network. For example, `finalized` on Ethereum mainnet takes about 15 minutes.
+
+### Account Requirements
+
+- **Payer**: holds at least `amount` of `asset`, and native ETH for gas unless a paymaster or relayer sponsors it.
+- **`payTo`**: no preconditions. A native transfer to a contract that rejects ETH reverts and moves no funds.
+- **Facilitator**: an RPC endpoint for the network. It holds and spends no funds.
+
+### Example
+
+`PaymentPayload`:
+
+```json
+{
+  "x402Version": 2,
+  "resource": {
+    "url": "https://api.example.com/premium-data",
+    "description": "Access to premium market data",
+    "mimeType": "application/json"
+  },
+  "accepted": {
+    "scheme": "exact",
+    "network": "eip155:8453",
+    "amount": "10000",
+    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+    "maxTimeoutSeconds": 300,
+    "extra": {
+      "assetTransferMethod": "transaction-proof",
+      "paymentFlow": "upfront"
+    }
+  },
+  "payload": {
+    "txHash": "0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2",
+    "payer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+    "signature": "0xbed7b9368f7280af98eba34459ba7e0608989cee37a52fb8df088205f527d3973447a022dda78587690d8bedbba74e2b1e7c3fb2bfc8c7c1f0eb4cb8cbbf17f31b"
+  }
+}
+```
+
+`SettlementResponse`:
+
+```json
+{
+  "success": true,
+  "transaction": "0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2",
+  "network": "eip155:8453",
+  "payer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+}
+```
+
+### Test Vector
+
+The example above is signed with the test-only private key `0x0000000000000000000000000000000000000000000000000000000000000001`. Its binding bytes are this single line, encoded as UTF-8 without a trailing newline:
+
+```json
+{"amount":"10000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","domain":"x402:exact:transaction-proof:1","network":"eip155:8453","payTo":"0x209693bc6afc0c5328ba36faf03c514ef312287c","payer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","resource":"https://api.example.com/premium-data","txHash":"0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2"}
+```
+
+| Value | Result |
+|---|---|
+| EIP-191 message hash | `0x53246d755f09316e858674c80e4c2383acb54cdca1074e6a75f7be1d9b8cd0fb` |
+| `signature` | `0xbed7b9368f7280af98eba34459ba7e0608989cee37a52fb8df088205f527d3973447a022dda78587690d8bedbba74e2b1e7c3fb2bfc8c7c1f0eb4cb8cbbf17f31b` |
+| `ecrecover` | `0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf` |
+
+Changing any member, for example `resource` to another URL, recovers a different address and fails with `invalid_exact_transaction_proof_signature`.
 
 ---
 
