@@ -67,7 +67,7 @@ The `payload` field must contain:
 }
 ```
 
-**`extra` field definitions specific to `eip3009`:**
+`extra` **field definitions specific to** `eip3009`**:**
 
 - `extra.assetTransferMethod` (optional in `PaymentRequired`, default `"eip3009"`): if present, MUST be `"eip3009"`.
 - `extra.name` (required): The EIP-712 domain name of the token contract. Used for `transferWithAuthorization` signature construction.
@@ -75,11 +75,11 @@ The `payload` field must contain:
 
 ### Phase 2: Verification Logic
 
-1.  **Verify** the signature is valid and recovers to the `authorization.from` address.
-2.  **Verify** the `client` has sufficient balance of the `asset`.
-3.  **Verify** the authorization parameters (Amount, Validity Window) meet the `PaymentRequirements`.
-4.  **Verify** the Token and Network match the requirement.
-5.  **Simulate** `token.transferWithAuthorization(...)` to ensure success.
+1. **Verify** the signature is valid and recovers to the `authorization.from` address.
+2. **Verify** the `client` has sufficient balance of the `asset`.
+3. **Verify** the authorization parameters (Amount, Validity Window) meet the `PaymentRequirements`.
+4. **Verify** the Token and Network match the requirement.
+5. **Simulate** `token.transferWithAuthorization(...)` to ensure success.
 
 ### Phase 3: Settlement Logic
 
@@ -95,7 +95,7 @@ This asset transfer method uses the `permitWitnessTransferFrom` from the [canoni
 
 ### Phase 1: One-Time Gas Approval
 
-Permit2 requires the user to approve the [**Permit2 Contract** (Canonical Address)](#canonical-permit2) to spend their tokens. This is a one-time setup. The specification supports three ways to handle this:
+Permit2 requires the user to approve the **[Permit2 Contract** (Canonical Address)](#canonical-permit2) to spend their tokens. This is a one-time setup. The specification supports three ways to handle this:
 
 #### Option A: Direct User Approval (Standard)
 
@@ -124,7 +124,7 @@ The `payload` field must contain:
 - `signature`: The signature for `permitWitnessTransferFrom`.
 - `permit2Authorization`: Parameters to reconstruct the message.
 
-**Important Logic:** The `spender` in the signature is the [**x402ExactPermit2Proxy**](#reference-implementation-x402ExactPermit2Proxy), not the Facilitator. This Proxy enforces that funds are only sent to the `witness.to` address.
+**Important Logic:** The `spender` in the signature is the **[x402ExactPermit2Proxy](#reference-implementation-x402ExactPermit2Proxy)**, not the Facilitator. This Proxy enforces that funds are only sent to the `witness.to` address.
 
 > **Requirement**: This contract will be deployed to the same address across all supported EVM chains using `CREATE2` to ensure consistent behavior and simpler integration.
 
@@ -166,7 +166,7 @@ The `payload` field must contain:
 }
 ```
 
-**`extra` field definitions specific to `permit2`:**
+`extra` **field definitions specific to** `permit2`**:**
 
 - `extra.assetTransferMethod` (required): MUST be `"permit2"`.
 - `extra.name` (conditional): The EIP-712 domain name of the token contract. Required when the token supports EIP-2612 for gasless Permit2 approval.
@@ -176,43 +176,36 @@ The `payload` field must contain:
 
 The verifier must execute these checks in order:
 
-1.  **Verify** `payload.signature` is valid and recovers to the `permit2Authorization.from`.
+1. **Verify** `payload.signature` is valid and recovers to the `permit2Authorization.from`.
+2. **Verify** that the `client` has enabled the Permit2 approval.
+   - if ERC20.allowance(from, Permit2_Address) < amount:
+     - Check for **Sponsored ERC20 Approval** (Extension): Refers to [`erc20ApprovalGasSponsoring`](../../extensions/erc20_gas_sponsoring.md).
+     - Check for **EIP2612 Permit** (Extension): Refers to [`eip2612GasSponsoring`](../../extensions/eip2612_gas_sponsoring.md).
+     - **If neither exists:** Return `412 Precondition Failed` (Error Code: `PERMIT2_ALLOWANCE_REQUIRED`). This signals the client that a one-time Direct Approval transaction is required before retrying.
+3. **Verify** the `client` has sufficient balance of the `asset`.
+4. **Verify** the `permit2Authorization.amount` covers the payment.
+5. **Verify** the `deadline` (not expired) and `witness.validAfter` (active).
+6. **Verify** the Token and Network match the requirement.
+7. **Simulation (Recommended):**
 
-2.  **Verify** that the `client` has enabled the Permit2 approval.
-
-    - if ERC20.allowance(from, Permit2_Address) < amount:
-      - Check for **Sponsored ERC20 Approval** (Extension): Refers to [`erc20ApprovalGasSponsoring`](../../extensions/erc20_gas_sponsoring.md).
-      - Check for **EIP2612 Permit** (Extension): Refers to [`eip2612GasSponsoring`](../../extensions/eip2612_gas_sponsoring.md).
-      - **If neither exists:** Return `412 Precondition Failed` (Error Code: `PERMIT2_ALLOWANCE_REQUIRED`). This signals the client that a one-time Direct Approval transaction is required before retrying.
-
-3.  **Verify** the `client` has sufficient balance of the `asset`.
-
-4.  **Verify** the `permit2Authorization.amount` covers the payment.
-
-5.  **Verify** the `deadline` (not expired) and `witness.validAfter` (active).
-
-6.  **Verify** the Token and Network match the requirement.
-
-7.  **Simulation (Recommended):**
-
-    Simulation is recommended but implementations may defer to re-verify-before-settle.
-
-    - _Standard:_ Simulate `x402ExactPermit2Proxy.settle`.
-    - _With "Sponsored ERC20 Approval" (Extension):_ Simulate batch `transfer` -> `approve` -> `settle`.
-    - _With "EIP2612 Permit" (Extension):_ Simulate `x402ExactPermit2Proxy.settleWithPermit`.
+   Simulation is recommended but implementations may defer to re-verify-before-settle.
+   - _Standard:_ Simulate `x402ExactPermit2Proxy.settle`.
+   - _With "Sponsored ERC20 Approval" (Extension):_ Simulate batch `transfer` -> `approve` -> `settle`.
+   - _With "EIP2612 Permit" (Extension):_ Simulate `x402ExactPermit2Proxy.settleWithPermit`.
 
 ### Phase 4: Settlement Logic
 
 Settlement is performed by calling the `x402ExactPermit2Proxy`.
 
-1.  **Standard Settlement:**
-    If the user has a sufficient direct allowance, call `x402ExactPermit2Proxy.settle`.
+1. **Standard Settlement:**
 
-2.  **With Sponsored ERC20 Approval (Extension):**
-    If `erc20ApprovalGasSponsoring` is used, the facilitator must construct a batched transaction that executes the sponsored `ERC20.approve` call strictly before the `x402ExactPermit2Proxy.settle` call.
+   If the user has a sufficient direct allowance, call `x402ExactPermit2Proxy.settle`.
+2. **With Sponsored ERC20 Approval (Extension):**
 
-3.  **With EIP-2612 Permit (Extension):**
-    If `eip2612GasSponsoring` is used, call `x402ExactPermit2Proxy.settleWithPermit`.
+   If `erc20ApprovalGasSponsoring` is used, the facilitator must construct a batched transaction that executes the sponsored `ERC20.approve` call strictly before the `x402ExactPermit2Proxy.settle` call.
+3. **With EIP-2612 Permit (Extension):**
+
+   If `eip2612GasSponsoring` is used, call `x402ExactPermit2Proxy.settleWithPermit`.
 
 If the settlement transaction broadcasts successfully but its confirmation cannot be established (e.g. a node/RPC error or timeout while waiting for the receipt), the facilitator MAY return `settlement_pending` (see [§9 Error Handling](../../x402-specification-v2.md#9-error-handling)) with the broadcast transaction hash in `transaction`, so the caller can reconcile on chain before retrying.
 
@@ -280,7 +273,7 @@ The `payload` field must contain:
 }
 ```
 
-**`extra` field definitions specific to `erc7710`:**
+`extra` **field definitions specific to** `erc7710`**:**
 
 - `extra.assetTransferMethod` (required): MUST be `"erc7710"`.
 - `extra.name` (optional): The EIP-712 domain name of the token contract. Not required for ERC-7710 delegation-based transfers.
@@ -295,9 +288,7 @@ Unlike EIP-3009 and Permit2, ERC-7710 verification is performed entirely through
 The facilitator:
 
 1. **Constructs** the `executionCallData` encoding an ERC-20 `transfer(payTo, amount)` call for the required payment.
-
 2. **Constructs** the `mode` appropriate for the execution (typically `0x00...` for single call mode per ERC-7579).
-
 3. **Simulates** `delegationManager.redeemDelegations([permissionContext], [mode], [executionCallData])` to verify:
    - The delegation is valid and authorizes the intended transfer.
    - The delegator has sufficient balance of the asset.
@@ -310,7 +301,6 @@ If the simulation succeeds, the payment is considered valid. The simulation serv
 1. **Race Condition Risk**: A facilitator may be vulnerable to a race condition where the client invalidates their delegation between simulation and transaction execution, causing the facilitator to pay gas for a failed transaction. This risk can be mitigated by:
    - Submitting transactions via a private mempool to reduce the window for front-running.
    - Building trust signals for client accounts (e.g., reputation systems) that can be used to flag or ban abusive behavior.
-
 2. **Malicious Delegation Manager Gas Consumption**: A malicious or poorly implemented Delegation Manager could attempt to consume excessive gas during execution. To mitigate this risk:
    - Facilitators should always set an explicit gas limit on their `redeemDelegations` call, as is standard practice for all Ethereum transactions.
    - Pre-execution simulation helps identify whether a transaction is likely to use a reasonable amount of gas.
@@ -342,11 +332,11 @@ The method is client-submitted and MUST use the `upfront` payment flow. The faci
 
 | Value | Encoding |
 |---|---|
-| `txHash` | 32-byte transaction hash as `0x`-prefixed lowercase hex. |
+| `transactionId` | 32-byte transaction hash as `0x`-prefixed lowercase hex. |
 | `payer`, `payTo`, `asset` | 20-byte address as `0x`-prefixed lowercase hex. |
 | Native ETH | `asset` is the [ERC-7528](https://eips.ethereum.org/EIPS/eip-7528) address `0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE`. |
 
-Wire values MAY use EIP-55 checksum casing. Implementations MUST lowercase them for the binding object and the consumption key, which is `eip155:<chainId>:<txHash>`.
+Wire values MAY use EIP-55 checksum casing. Implementations MUST lowercase them for the binding object and the consumption key, which is `eip155:<chainId>:<transactionId>`.
 
 ### Signature
 
@@ -362,19 +352,31 @@ This covers EOAs, EIP-7702 accounts and smart contract accounts such as ERC-4337
 The transaction receipt `status` MUST be `1`. Then:
 
 - **ERC-20**: the receipt MUST contain a `Transfer(address indexed from, address indexed to, uint256 value)` log emitted by `asset` with `from == payer`, `to == payTo` and `value >= amount`. The log's `from` identifies the payer, not `tx.from`, so transfers executed by smart accounts through bundlers or relayers qualify.
-- **Native ETH**: the transaction MUST be a top-level value transfer with `tx.from == payer`, `tx.to == payTo` and `tx.value >= amount`. Value moved by an internal call is not accepted, because detecting it requires execution traces. Native ETH from smart contract accounts is therefore unsupported, except from EIP-7702 accounts that send the top-level transaction themselves.
+- **Native ETH**:
+  - **Top-level transfer** (always accepted): `tx.from == payer`, `tx.to == payTo` and `tx.value >= amount`. Covers EOAs and EIP-7702 accounts that send the top-level transaction themselves, using only `eth_getTransactionByHash` and `eth_getTransactionReceipt`.
+  - **Internal transfer** (accepted only when `paymentRequirements.extra.internalNativeTransfers` is `true`): when the top-level check does not match, the facilitator inspects the transaction's execution call trace (e.g. `debug_traceTransaction` with `callTracer`, or `trace_transaction`). The trace MUST contain a `CALL` frame (`DELEGATECALL` and `CALLCODE` MUST NOT match) with `from == payer`, `to == payTo` and `value >= amount`, such that neither that frame nor any ancestor call frame reverted. Requiring the full ancestor path to succeed handles contracts such as ERC-4337 `EntryPoint`, where `receipt.status` can be `1` even though an inner `UserOperation` reverted.
+
+### `extra.internalNativeTransfers`
+
+Internal ETH transfers leave no log in `eth_getTransactionReceipt`, so verifying them requires call tracing on the facilitator's RPC. Because `transaction-proof` uses `upfront`, a smart contract account that broadcasts an internal ETH transfer to a facilitator without trace support would lose its payment on `/settle`. Support is therefore advertised explicitly:
+
+- **Facilitator (`/supported`)**: advertises `"internalNativeTransfers": true` in the `extra` object of the `exact` `kinds[]` entry for `network` when it supports call tracing on that network. Absence or `false` means top-level native transfers only. A facilitator that does not support internal native transfers on `network` MUST reject `paymentRequirements` carrying `extra.internalNativeTransfers: true` with `invalid_payment_requirements`.
+- **Resource server (`PaymentRequirements.extra`)**: MAY set `"internalNativeTransfers": true` on a native ETH `accepts[]` entry only when its facilitator advertises `"internalNativeTransfers": true` in `/supported` for `network`.
+- **Client**: an account that moves native ETH via an internal call (such as an ERC-4337 account or Safe, as opposed to an EOA or top-level EIP-7702 sender) MUST NOT select a native ETH `transaction-proof` entry unless `extra.internalNativeTransfers` is `true`.
+
+`extra.internalNativeTransfers` is optional (boolean, default `false`). As defined in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md#binding), `extra` is not part of the signed binding object. Top-level transfers remain trace-free even when `extra.internalNativeTransfers` is `true`.
 
 ### Finality
 
 A transaction is final when its block is at least the facilitator's configured confirmation depth below the chain head, or when the facilitator uses the `safe` or `finalized` block tag and the block is at or below it. The facilitator chooses the policy per network. `blockTime` is the including block's `timestamp`.
 
-Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilitator's policy takes to reach finality on the network. For example, `finalized` on Ethereum mainnet takes about 15 minutes.
+Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilitator's policy takes to reach finality on the network. 
 
 ### Account Requirements
 
 - **Payer**: holds at least `amount` of `asset`, and native ETH for gas unless a paymaster or relayer sponsors it.
-- **`payTo`**: no preconditions. A native transfer to a contract that rejects ETH reverts and moves no funds.
-- **Facilitator**: an RPC endpoint for the network. It holds and spends no funds.
+- `payTo`: receives `asset` only through `transaction-proof`, unless the facilitator records other methods' settlements to it (see [Resource Server](./scheme_exact_transaction_proof.md#resource-server)). A native transfer to a contract that rejects ETH reverts and moves no funds.
+- **Facilitator**: an RPC endpoint for the network, plus call-tracing support (`debug_traceTransaction` with `callTracer`, or `trace_transaction`) over blocks within its maximum proof age when advertising `extra.internalNativeTransfers: true`. It holds and spends no funds.
 
 ### Example
 
@@ -401,9 +403,9 @@ Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilita
     }
   },
   "payload": {
-    "txHash": "0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2",
+    "transactionId": "0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2",
     "payer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
-    "signature": "0xbed7b9368f7280af98eba34459ba7e0608989cee37a52fb8df088205f527d3973447a022dda78587690d8bedbba74e2b1e7c3fb2bfc8c7c1f0eb4cb8cbbf17f31b"
+    "signature": "0x192a95d2992c0af2503f70e75654eacb31db7922732759fe41a4050be9caddfd2a96407a48ec0ee312161123a90a169d8bbf5b9493aee9022c82598de387f3ed1c"
   }
 }
 ```
@@ -424,13 +426,13 @@ Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilita
 The example above is signed with the test-only private key `0x0000000000000000000000000000000000000000000000000000000000000001`. Its binding bytes are this single line, encoded as UTF-8 without a trailing newline:
 
 ```json
-{"amount":"10000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","domain":"x402:exact:transaction-proof:1","network":"eip155:8453","payTo":"0x209693bc6afc0c5328ba36faf03c514ef312287c","payer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","resource":"https://api.example.com/premium-data","txHash":"0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2"}
+{"amount":"10000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","domain":"x402:exact:transaction-proof:1","network":"eip155:8453","payTo":"0x209693bc6afc0c5328ba36faf03c514ef312287c","payer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","resource":"https://api.example.com/premium-data","transactionId":"0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2"}
 ```
 
 | Value | Result |
 |---|---|
-| EIP-191 message hash | `0x53246d755f09316e858674c80e4c2383acb54cdca1074e6a75f7be1d9b8cd0fb` |
-| `signature` | `0xbed7b9368f7280af98eba34459ba7e0608989cee37a52fb8df088205f527d3973447a022dda78587690d8bedbba74e2b1e7c3fb2bfc8c7c1f0eb4cb8cbbf17f31b` |
+| EIP-191 message hash | `0xe010689e198a2ab351dce17730e21c9135dd9dfe5a0e94c8edee485aa4f0764b` |
+| `signature` | `0x192a95d2992c0af2503f70e75654eacb31db7922732759fe41a4050be9caddfd2a96407a48ec0ee312161123a90a169d8bbf5b9493aee9022c82598de387f3ed1c` |
 | `ecrecover` | `0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf` |
 
 Changing any member, for example `resource` to another URL, recovers a different address and fails with `invalid_exact_transaction_proof_signature`.
