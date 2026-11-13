@@ -324,7 +324,7 @@ The Delegation Manager validates the delegation authority and calls the delegato
 
 ## 4. AssetTransferMethod: `transaction-proof`
 
-The `transaction-proof` asset transfer method lets the client pay with any ERC-20 token or native ETH by broadcasting the transfer itself. It is defined network-agnostically in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md), which specifies the payload, the binding object, the settle ordering, replay and retention, and the error codes. This section defines only the EVM binding.
+The `transaction-proof` asset transfer method lets the client pay with any ERC-20 token or native ETH by broadcasting the transfer itself. It is defined network-agnostically in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md), which specifies the payload, the binding object, the request binding, the settle ordering, replay and retention, and the error codes. This section defines only the EVM binding.
 
 The method is client-submitted and MUST use the `upfront` payment flow. The facilitator submits no transaction and needs no funds.
 
@@ -364,7 +364,7 @@ Internal ETH transfers leave no log in `eth_getTransactionReceipt`, so verifying
 - **Resource server (`PaymentRequirements.extra`)**: MAY set `"internalNativeTransfers": true` on a native ETH `accepts[]` entry only when its facilitator advertises `"internalNativeTransfers": true` in `/supported` for `network`.
 - **Client**: an account that moves native ETH via an internal call (such as an ERC-4337 account or Safe, as opposed to an EOA or top-level EIP-7702 sender) MUST NOT select a native ETH `transaction-proof` entry unless `extra.internalNativeTransfers` is `true`.
 
-`extra.internalNativeTransfers` is optional (boolean, default `false`). As defined in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md#binding), `extra` is not part of the signed binding object. Top-level transfers remain trace-free even when `extra.internalNativeTransfers` is `true`.
+`extra.internalNativeTransfers` is optional (boolean, default `false`). As defined in [`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md#binding), the signed binding object covers `extra.requestHash` but no other `extra` field. Top-level transfers remain trace-free even when `extra.internalNativeTransfers` is `true`.
 
 ### Finality
 
@@ -399,13 +399,16 @@ Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilita
     "maxTimeoutSeconds": 300,
     "extra": {
       "assetTransferMethod": "transaction-proof",
-      "paymentFlow": "upfront"
+      "paymentFlow": "upfront",
+      "requestBindingProfile": "http:1",
+      "requestBindingParams": { "headers": [] },
+      "requestHash": "0728d95cc572f28747725dbbb951cb49139051c4599e6e7dd3ddcd5d98488fa1"
     }
   },
   "payload": {
     "transactionId": "0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2",
     "payer": "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
-    "signature": "0x192a95d2992c0af2503f70e75654eacb31db7922732759fe41a4050be9caddfd2a96407a48ec0ee312161123a90a169d8bbf5b9493aee9022c82598de387f3ed1c"
+    "signature": "0xc889fd082e05463d6e184e38790196230877389153b2d37eb8f52fde07c6fa3a40161fa4a3e4f884a35a16737e91c9c3fc52c2057d143bbdedfe1b325b49fde31b"
   }
 }
 ```
@@ -423,19 +426,37 @@ Resource servers SHOULD set `maxTimeoutSeconds` well above the time the facilita
 
 ### Test Vector
 
-The example above is signed with the test-only private key `0x0000000000000000000000000000000000000000000000000000000000000001`. Its binding bytes are this single line, encoded as UTF-8 without a trailing newline:
+The example above is for `GET https://api.example.com/premium-data` with an empty body and no bound headers. The request binding object, with the `x402:exact:transaction-proof:http:1` domain tag, is this single line, encoded as UTF-8 without a trailing newline:
 
 ```json
-{"amount":"10000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","domain":"x402:exact:transaction-proof:1","network":"eip155:8453","payTo":"0x209693bc6afc0c5328ba36faf03c514ef312287c","payer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","resource":"https://api.example.com/premium-data","transactionId":"0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2"}
+{"bodyHash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","domain":"x402:exact:transaction-proof:http:1","headers":[],"method":"GET","url":"https://api.example.com/premium-data"}
+```
+
+Its SHA-256 digest is the `extra.requestHash` above:
+
+```text
+0728d95cc572f28747725dbbb951cb49139051c4599e6e7dd3ddcd5d98488fa1
+```
+
+Changing only the URL to `https://api.example.com/other-data` produces this digest:
+
+```text
+f2ddfb087d8bbc95f0a3e29af93e4f44628ac956a5d5819591619611a5b0ed9e
+```
+
+The example is signed with the test-only private key `0x0000000000000000000000000000000000000000000000000000000000000001`. Its binding bytes are this single line, encoded as UTF-8 without a trailing newline:
+
+```json
+{"amount":"10000","asset":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","domain":"x402:exact:transaction-proof:1","network":"eip155:8453","payTo":"0x209693bc6afc0c5328ba36faf03c514ef312287c","payer":"0x7e5f4552091a69125d5dfcb7b8c2659029395bdf","requestHash":"0728d95cc572f28747725dbbb951cb49139051c4599e6e7dd3ddcd5d98488fa1","transactionId":"0x260fedcc6061979671aac8f3542d87e11cc9f666acc9de4e529d63a49fc3c1a2"}
 ```
 
 | Value | Result |
 |---|---|
-| EIP-191 message hash | `0xe010689e198a2ab351dce17730e21c9135dd9dfe5a0e94c8edee485aa4f0764b` |
-| `signature` | `0x192a95d2992c0af2503f70e75654eacb31db7922732759fe41a4050be9caddfd2a96407a48ec0ee312161123a90a169d8bbf5b9493aee9022c82598de387f3ed1c` |
+| EIP-191 message hash | `0x105958a42bd6ede82d1114fc410cafcc734fb9089431b039871935c22ca6293d` |
+| `signature` | `0xc889fd082e05463d6e184e38790196230877389153b2d37eb8f52fde07c6fa3a40161fa4a3e4f884a35a16737e91c9c3fc52c2057d143bbdedfe1b325b49fde31b` |
 | `ecrecover` | `0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf` |
 
-Changing any member, for example `resource` to another URL, recovers a different address and fails with `invalid_exact_transaction_proof_signature`.
+Changing any member, for example the request hash to that of another URL, recovers a different address and fails with `invalid_exact_transaction_proof_signature`. A payment signed for `/premium-data` therefore cannot be presented for `/other-data`: the server computes the other request's hash and the facilitator rebuilds the binding with it.
 
 ---
 
