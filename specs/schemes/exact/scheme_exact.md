@@ -55,7 +55,7 @@ Each method MUST satisfy:
 - **Finality**: declare the observable event that makes a payment final and which party owns confirmation-depth policy. Where settlement completes in more than one stage, declare which stage is the finality boundary. While that condition is unmet but still reachable, settle MUST NOT consume the proof or deliver the resource, and MUST return an error naming the unmet condition; any in-flight claim held for that attempt MUST be released before returning, and an attempt terminating abnormally MUST NOT leave a proof claimed indefinitely.
 - **Failure disposition**: where the finality condition can no longer be met, methods MUST state whether the payment is returned to the payer and by what path. Clients MUST NOT assume a return path exists.
 
-`transaction-proof` ([`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md)) is a network-agnostic method in this family: the client broadcasts an ordinary transfer and presents its transaction identifier with a payer signature. A network adopts it by defining a short binding in its own document.
+`transaction-proof` ([`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md)) is a network-agnostic method in this family: the client broadcasts an ordinary transfer and, used alone, presents its transaction identifier with a payer signature. A network adopts it by defining a short binding in its own document. Combined with an `assetDeliveryMethod`, the delivery method defines how the proof is bound and verified.
 
 ## Critical Validation Requirements
 

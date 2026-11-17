@@ -2,7 +2,7 @@
 
 ## Summary
 
-`transaction-proof` is a network-agnostic asset transfer method of the [`exact`](./scheme_exact.md) scheme. The client broadcasts an ordinary transfer itself, then presents its transaction identifier with a payer signature that binds the transaction to the payment terms and the request. The facilitator submits nothing and pays no network fee: it observes the transaction onchain and records it as consumed.
+`transaction-proof` is a network-agnostic asset transfer method of the [`exact`](./scheme_exact.md) scheme. The client broadcasts an ordinary transfer itself, then presents its transaction identifier with a payer signature that binds the transaction to the payment terms and, optionally, to the request. The facilitator submits nothing and pays no network fee: it observes the transaction onchain and records it as consumed.
 
 The method belongs to the **client-submitted (payment proof)** family of `scheme_exact.md` and MUST use the `upfront` payment flow. It suits assets and networks without a transfer-with-authorization primitive, including native assets, and does not couple the payment to the payer account's sequential nonce.
 
@@ -24,10 +24,20 @@ A network binding MUST define:
 
 A network binding MUST NOT redefine the payload, the binding object, the settle ordering, the consumption key format or the error codes. It MAY define an additional binding mode, provided that only the party that made the payment can produce it, such as the payer or the holder of a secret the payment commits to, and that it covers the same terms as the binding object. A value that is public once the transaction is broadcast, such as a server-issued nonce alone, does not qualify. The payment requirements select the mode, as the network binding defines; the client MUST NOT select it alone.
 
+These limits apply to network bindings. A delivery method is a separate layer and replaces parts of this document as [Delivery Methods](#delivery-methods) defines.
+
+## Delivery Methods
+
+When `extra.assetDeliveryMethod` is present ([core §6.1](../../x402-specification-v2.md#61-asset-transfer-methods-and-payment-flow-models)), this method contributes only the client's broadcast of an ordinary transfer of `asset` to `payTo` on `network`, and `payload.transactionId`. The delivery method's specification governs the rest and MUST define the binding, transfer verification, consumption key, finality, amount and failure handling, and the receipt. `payer`, `signature` and the request binding are omitted unless the delivery method requires them. The method stays client-submitted and MUST use `upfront`.
+
+A delivery method MUST authenticate the presenter at least as strongly as [Binding](#binding): a value that is public once the transaction is broadcast does not suffice. It MAY support networks that have no network binding for this method, in which case it defines the encoding of `transactionId`.
+
+A client that implements this method but not the delivery method MUST skip the entry. Broadcasting to its `payTo` commits funds to a route the client cannot complete.
+
 ## Payment Flow
 
 1. The resource server returns `402` with an `accepts[]` entry carrying `extra.assetTransferMethod: "transaction-proof"` and `extra.paymentFlow: "upfront"`.
-2. The client validates the entry, including its request binding, broadcasts a transfer of at least `amount` of `asset` from `payer` to `payTo` on `network`, and signs the binding object.
+2. The client validates the entry, including its request binding if present, broadcasts a transfer of at least `amount` of `asset` from `payer` to `payTo` on `network`, and signs the binding object.
 3. The client retries the request with a `PaymentPayload` carrying `transactionId`, `payer` and `signature`.
 4. The resource server calls `/settle` with its own `paymentRequirements`. It MUST NOT call `/verify` for this method.
 5. The facilitator validates the proof, atomically records the consumption key and returns the receipt.
@@ -41,7 +51,7 @@ The method uses the standard fields and defines no common `extra` fields beyond 
 |---|---|
 | `extra.assetTransferMethod` | MUST be `"transaction-proof"`. |
 | `extra.paymentFlow` | MUST be `"upfront"`. |
-| `extra.requestBindingProfile`, `extra.requestBindingParams`, `extra.requestHash` | REQUIRED. The request binding, as [Binding](#binding) defines. |
+| `extra.requestBindingProfile`, `extra.requestBindingParams`, `extra.requestHash` | OPTIONAL, all three or none. The request binding, as [Request Hash](#request-hash) defines. |
 | `maxTimeoutSeconds` | The proof age bound. See [Replay and Retention](#replay-and-retention). |
 
 ## `PaymentPayload`
@@ -64,7 +74,7 @@ The payload carries no type tag: `accepted.extra.assetTransferMethod` selects th
 
 ## Binding
 
-A transaction identifier is public once broadcast. On its own it proves neither that the presenter paid nor that the payment was made for this request. The payer signature proves both: only the debited account can produce it, and it covers the payment terms, the request and the transaction.
+A transaction identifier is public once broadcast. On its own it proves neither that the presenter paid nor what the payment was for. The payer signature proves both: only the debited account can produce it, and it covers the payment terms, the transaction and, when the server binds it, the request.
 
 The binding object is a JSON object with exactly these members, all strings:
 
@@ -75,7 +85,7 @@ The binding object is a JSON object with exactly these members, all strings:
 | `asset` | `asset`, in canonical encoding. |
 | `amount` | `amount`, as a decimal string of atomic units. |
 | `payTo` | `payTo`, in canonical encoding. |
-| `requestHash` | `extra.requestHash`, as 64 lowercase hexadecimal characters. |
+| `requestHash` | `extra.requestHash`, as 64 lowercase hexadecimal characters, or `""` when the requirements carry no request binding. |
 | `transactionId` | `payload.transactionId`, in canonical encoding. |
 | `payer` | `payload.payer`, in canonical encoding. |
 
@@ -87,7 +97,9 @@ The client builds the object from the entry it accepted. The facilitator MUST bu
 
 ### Request Hash
 
-The resource server sets `extra.requestBindingProfile` (`"http:1"` or `"mcp:1"`), `extra.requestBindingParams` and `extra.requestHash`. The hash is `SHA-256(UTF8(JCS(request)))` as 64 lowercase hexadecimal characters, where `request` is the object of the selected profile. Its `domain` member is `"x402:exact:transaction-proof:"` followed by the profile name, such as `x402:exact:transaction-proof:http:1`. MCP `tools/call` MUST use `mcp:1`, including over an HTTP transport; other HTTP requests use `http:1`. Other transports need their own profile.
+Request binding is optional. Without it, a proof is valid for any request the resource server sells at the same `network`, `asset`, `amount` and `payTo`, so a payload that leaks before it is consumed can buy a different operation than the payer intended. With it, the proof buys only the bound request. Resource servers SHOULD bind the request when requests sold at the same terms differ in value to the payer, such as operations on a payer's account.
+
+To bind the request, the resource server sets `extra.requestBindingProfile` (`"http:1"` or `"mcp:1"`), `extra.requestBindingParams` and `extra.requestHash`. The hash is `SHA-256(UTF8(JCS(request)))` as 64 lowercase hexadecimal characters, where `request` is the object of the selected profile. Its `domain` member is `"x402:exact:transaction-proof:"` followed by the profile name, such as `x402:exact:transaction-proof:http:1`. MCP `tools/call` MUST use `mcp:1`, including over an HTTP transport; other HTTP requests use `http:1`. Other transports need their own profile.
 
 **`http:1`.** `extra.requestBindingParams` is `{ "headers": [...] }`. `request` has exactly these members:
 
@@ -114,11 +126,11 @@ The server chooses the bound headers. The list MUST contain every header that ca
 
 The JSON-RPC `id`, payment metadata, progress token and transport framing are not bound.
 
-For both profiles, the resource server derives the fields from the actual request and its own configuration, never from `accepted`, `PaymentPayload.resource` or the payload, and recomputes them on every paid retry. It MUST reject requests whose purchased operation, content interpretation or account selection depends on context the profile does not represent. The client MUST check `extra.requestHash` against the request it intends to make, using the server identity it trusts rather than the one in the challenge, before it broadcasts.
+For both profiles, the resource server derives the fields from the actual request and its own configuration, never from `accepted`, `PaymentPayload.resource` or the payload, and recomputes them on every paid retry. It MUST reject requests whose purchased operation, content interpretation or account selection depends on context the profile does not represent. When the requirements carry a request binding, the client MUST check `extra.requestHash` against the request it intends to make, using the server identity it trusts rather than the one in the challenge, before it broadcasts.
 
 ## Client
 
-Before broadcasting, the client MUST validate `scheme`, `network`, `asset`, `amount`, `payTo`, `extra.assetTransferMethod`, `extra.paymentFlow` and the request binding, because the transfer cannot be undone. It MUST pay from the account that signs the binding object.
+Before broadcasting, the client MUST validate `scheme`, `network`, `asset`, `amount`, `payTo`, `extra.assetTransferMethod`, `extra.paymentFlow` and the request binding if present, because the transfer cannot be undone. It MUST pay from the account that signs the binding object.
 
 After broadcasting, the client SHOULD present the payload once the transaction is included. On `settlement_pending` it SHOULD retry with the same payload until the transaction is final or the proof age bound passes, and SHOULD NOT broadcast another payment for the same request while one is pending. `duplicate_settlement` is terminal for that transaction.
 
@@ -126,7 +138,7 @@ After broadcasting, the client SHOULD present the payload once the transaction i
 
 The resource server:
 
-- MUST set the request binding `extra` fields from the actual request, as [Binding](#binding) defines.
+- When it binds the request, MUST set the request binding `extra` fields from the actual request, as [Request Hash](#request-hash) defines.
 - MUST use a `payTo` that receives `asset` only through this method, unless its facilitator records the settlements of other methods to that `payTo` in the consumption store (see [Replay and Retention](#replay-and-retention)). A `payTo` resolved per request, such as a single-use deposit address, satisfies this.
 - MUST call `/settle` with its own `paymentRequirements`, never with `accepted`.
 - MUST execute the request only after `/settle` returns `success: true`. On `settlement_pending` it MUST NOT execute the request, and returns the pending response so the client can retry.
@@ -136,7 +148,7 @@ The resource server:
 
 The facilitator treats the payload and `accepted` as untrusted. It MUST run these checks in order, and MUST NOT record anything before step 5:
 
-1. **Structure.** `paymentRequirements` and `accepted` both carry `scheme: "exact"`, `extra.assetTransferMethod: "transaction-proof"` and `extra.paymentFlow: "upfront"`. `accepted.network`, `asset`, `amount` and `payTo` equal those of `paymentRequirements` in canonical encoding. The request binding `extra` fields are present in `paymentRequirements` and equal those of `accepted`. The payload fields are well-formed for the network. `maxTimeoutSeconds` does not exceed the facilitator's maximum proof age.
+1. **Structure.** `paymentRequirements` and `accepted` both carry `scheme: "exact"`, `extra.assetTransferMethod: "transaction-proof"` and `extra.paymentFlow: "upfront"`. `accepted.network`, `asset`, `amount` and `payTo` equal those of `paymentRequirements` in canonical encoding. The request binding `extra` fields are all absent or all present and well-formed in `paymentRequirements`, and equal those of `accepted`, including absence. The payload fields are well-formed for the network. `maxTimeoutSeconds` does not exceed the facilitator's maximum proof age.
 2. **Signature.** Build the binding object as in [Binding](#binding), with the request hash from `paymentRequirements`, and verify `signature` against `payer`. This runs before the transaction is fetched.
 3. **Transaction.** The transaction exists on `network` and succeeded. It contains a transfer of `asset` from `payer` to `payTo` of at least `amount`, as the network binding identifies it. Its block time is within the proof age bound.
 4. **Finality.** If the transaction is included but not yet final, return `success: false` with `errorReason: "settlement_pending"`, `transaction` set to `payload.transactionId` and `network` set to `network`. Nothing is recorded, so a retry runs again from step 1.
@@ -185,8 +197,8 @@ Facilitators MUST use these `errorReason` values. Network bindings reuse them an
 | `invalid_exact_transaction_proof_payload` | A payload field is missing, or malformed for the network. |
 | `invalid_exact_transaction_proof_payment_flow` | `extra.paymentFlow` is missing or not `upfront`. |
 | `invalid_exact_transaction_proof_requirements_mismatch` | `accepted.network`, `asset`, `amount` or `payTo` differs from `paymentRequirements`. |
-| `invalid_exact_transaction_proof_request_binding` | A request hash, profile or parameter object is missing or malformed in `paymentRequirements`, or the profile is unsupported. |
-| `invalid_exact_transaction_proof_request_mismatch` | `accepted.extra.requestHash`, `requestBindingProfile` or `requestBindingParams` differs from `paymentRequirements`. |
+| `invalid_exact_transaction_proof_request_binding` | Only some of the request binding fields are present in `paymentRequirements`, one is malformed, or the profile is unsupported. |
+| `invalid_exact_transaction_proof_request_mismatch` | `accepted.extra.requestHash`, `requestBindingProfile` or `requestBindingParams` differs from `paymentRequirements`, or is present in only one of them. |
 | `invalid_exact_transaction_proof_max_timeout` | `maxTimeoutSeconds` exceeds the facilitator's maximum proof age. |
 | `invalid_exact_transaction_proof_signature` | `signature` does not verify for `payer` over the binding bytes. This includes a signature made over a different request hash. |
 | `invalid_exact_transaction_proof_transaction_not_found` | The transaction is unknown on `network`. The client MAY retry. |
@@ -201,7 +213,7 @@ Facilitators MUST use these `errorReason` values. Network bindings reuse them an
 
 - **Payer pays first.** The client commits funds before the resource server is bound. A failure after a successful transfer, such as a store outage or a server that never calls `/settle`, leaves the client charged without the resource.
 - **Presenter authentication.** Without the signature, any observer of the network could claim a payment. Facilitators MUST NOT accept a proof without a valid signature by the debited account, or a binding mode the network binding defines that the requirements select.
-- **Bearer payload.** Until consumed or expired, a complete payload is valid for its bound request in anyone's hands. Clients MUST send it only to the resource server, over an authenticated transport.
+- **Bearer payload.** Until consumed or expired, a complete payload is valid in anyone's hands, for its bound request or, without request binding, for any request at the same terms. Clients MUST send it only to the resource server, over an authenticated transport.
 - **Custodial senders.** Exchange and custodial withdrawals cannot produce the signature, so they cannot pay with this method unless a network binding defines a mode they can produce, such as a memo commitment.
 - **Shared** `payTo`**.** A payer could present any other transfer it made to `payTo` within the proof age bound, including one already settled by another x402 method. The dedicated `payTo` rule in [Resource Server](#resource-server) and the other-methods rule in [Replay and Retention](#replay-and-retention) close this.
 - **Reorganizations.** A transaction below a sufficient depth can be reverted after the resource executed. The depth policy is the facilitator's risk choice.
