@@ -55,53 +55,9 @@ Each method MUST satisfy:
 - **Finality**: declare the observable event that makes a payment final and which party owns confirmation-depth policy. Where settlement completes in more than one stage, declare which stage is the finality boundary. While that condition is unmet but still reachable, settle MUST NOT consume the proof or deliver the resource, and MUST return an error naming the unmet condition; any in-flight claim held for that attempt MUST be released before returning, and an attempt terminating abnormally MUST NOT leave a proof claimed indefinitely.
 - **Failure disposition**: where the finality condition can no longer be met, methods MUST state whether the payment is returned to the payer and by what path. Clients MUST NOT assume a return path exists.
 
-`transaction-proof` ([`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md)) is a network-agnostic method in this family: the client broadcasts an ordinary transfer and, used alone, presents its transaction identifier with a payer signature. A network adopts it by defining a short binding in its own document. Combined with an `assetDeliveryMethod`, the delivery method defines how the proof is bound and verified.
+`transaction-proof` ([`scheme_exact_transaction_proof.md`](./scheme_exact_transaction_proof.md)) is a network-agnostic method in this family.
 
-## Critical Validation Requirements
-
-While implementation details vary by network, facilitators MUST enforce security constraints that prevent sponsorship abuse. Examples include:
-
-### SVM
-
-- Fee payer safety: the fee payer MUST NOT appear as an account in sensitive instructions or be the transfer authority/source. The sole bounded exception is fee-payer-funded ATA creation for recipients the Resource Server marks `ataCreationRequired`, and only when the facilitator advertises that it sponsors ATA creation, in the account positions listed in `scheme_exact_svm.md` §2.1.1 (see Multi-Payee Splits below).
-- Destination correctness: the receiver MUST match the `payTo` derived destination for the specified `asset`. With splits, each leg's receiver MUST match the destination derived from that leg's `payTo`.
-- Amount: the transfer to `payTo` MUST be at least `amount` (overpayment is tolerated for smart-wallet rounding, `scheme_exact_svm.md` §1.4). With splits, `payTo` MUST receive at least the remainder and each split recipient exactly its declared amount (see Multi-Payee Splits below).
-
-### Stellar
-
-- Facilitator safety: the facilitator's address MUST NOT appear as transaction source, operation source, transfer `from` address, or in authorization entries.
-- Authorization integrity: auth entries MUST use address-based credentials only, either `sorobanCredentialsAddress` or `sorobanCredentialsAddressV2` (CAP-71). It MUST NOT contain sub-invocations, and expiration MUST NOT exceed `currentLedger + ceil(maxTimeoutSeconds / estimatedLedgerSeconds)` (fallback to `5` seconds).
-- Transfer correctness: `to` MUST equal `payTo` and `amount` MUST equal `requirements.amount` exactly.
-- Simulation verification: MUST emit events showing only the expected balance changes (recipient increase, payer decrease) for `requirements.amount`—no other balance changes allowed.
-
-### TON
-
-- Transfer correctness: exactly 1 `jetton_transfer` with destination equal to `payTo` and amount equal to `requirements.amount` exactly.
-- Signature validity: Ed25519 signature MUST verify against a public key derived from the BoC's `stateInit` (seqno == 0) or from the on-chain `get_public_key` getter (seqno > 0). Only `internal_signed` (0x73696e74) opcode is supported in the current gasless flow.
-- Wallet code validity: contract code MUST match a known W5 wallet contract, using `stateInit` for `nonexist`/`uninit` wallets and on-chain code for `active` wallets.
-- Replay protection: seqno MUST be strictly equal to on-chain value; duplicate `settlementBoc` submissions rejected via BoC hash dedup.
-- Simulation verification: SHOULD simulate via emulation during `/verify` to confirm expected balance changes.
-
-### Starknet
-
-- Facilitator safety: the submitting executor MUST come from facilitator configuration, never client input, and MUST NOT be the payer (it MAY equal `payTo` for merchant-sponsored settlement).
-- Transfer correctness: the signed SNIP-9 OutsideExecution MUST contain exactly one call — `transfer` on `requirements.asset` with calldata `[payTo, amount_low, amount_high]` — and the u256 amount MUST equal `requirements.amount` exactly.
-- Signature validity: the SNIP-12 hash MUST be computed from the facilitator's own canonical reconstruction of the typed data and validate via SNIP-6 `is_valid_signature`.
-- Caller binding and expiry: `Caller` MUST equal `extra.feePayer` — the required sponsor address the facilitator announces via `/supported` and the resource server puts in the requirements; `Execute Before` MUST cover the advertised `maxTimeoutSeconds` window (within a skew margin) at verification, with a minimum remaining window at settlement.
-- Replay protection: the SNIP-9 nonce MUST be unused at verification; it is consumed onchain at execution.
-- Simulation verification: MUST simulate the settlement and fail closed unless it shows exactly one asset `Transfer` sent by the payer, to `payTo`, for the exact amount.
-
-### Hedera
-
-- Fee payer safety: the fee payer MUST NOT be debited beyond the network fee. Under `cryptoTransfer` it MUST NOT appear as a negative entry in any transfer list; under `transferExecutor` its net HBAR debit MUST equal the transaction fee, or the fee plus `requirements.amount` when it is also the payer.
-- Transfer correctness: the net credit to `payTo` in `asset` MUST equal `requirements.amount` exactly, and no other account may be credited in `asset` beyond the network's fee collection accounts.
-- Payer signature validity (`cryptoTransfer`): the facilitator MUST confirm the payload carries a signature satisfying the payer's on-chain account key before sponsoring.
-- Executor admission (`transferExecutor`): the executor is client-chosen contract code, so admission MUST be default deny, the call MUST be built by the facilitator rather than from client calldata, and the gas limit MUST be the facilitator's own.
-- Outcome from the record (`transferExecutor`): settlement success MUST be established from the merged parent and child consensus records, never from the receipt status.
-
-Network-specific rules are in per-network documents: `scheme_exact_svm.md` (Solana), `scheme_exact_stellar.md` (Stellar), `scheme_exact_evm.md` (EVM), `scheme_exact_sui.md` (SUI), `scheme_exact_ton.md` (TON), `scheme_exact_starknet.md` (Starknet), `scheme_exact_lnbtc.md` (Bitcoin Lightning), `scheme_exact_hedera.md` (Hedera).
-
-## Multi-Payee Splits (Optional Extension)
+## Multi-Payee Splits (Optional)
 
 The `exact` scheme MAY carry an optional `extra.splits` array that distributes a single client payment across the primary recipient (`payTo`) and one or more additional recipients in the same atomic settlement. This enables platform fees, revenue sharing, referral commissions, and fee-payer cost recovery without multiple round-trips or separate transactions.
 
@@ -116,3 +72,13 @@ The extension is network-agnostic in shape but network-specific in encoding and 
 When `extra.splits` is absent or empty, the scheme behaves as a single-payee `exact` payment. Networks that do not implement the extension MUST reject requirements that carry a non-empty `splits` array rather than silently ignoring it (which would misdirect the merchant's expected distribution).
 
 Solana defines the full schema, transaction structure, ATA-creation authorization, and verification rules for this extension in `scheme_exact_svm.md` (§5). Other networks MAY specify their own encoding of the same model.
+
+## Version History
+
+| Version | Date       | Changes                                                                                              | Authors                |
+| ------- | ---------- | ---------------------------------------------------------------------------------------------------- | ---------------------- |
+| v1.4    | 2026-11-11 | `transaction-proof` asset transfer method                                                            | @phdargen              |
+| v1.3    | 2026-10-26 | Multi-payee splits ([#3221](https://github.com/x402-foundation/x402/pull/3221))                       | @lgalabru @phdargen    |
+| v1.2    | 2026-09-02 | Asset transfer method families ([#3145](https://github.com/x402-foundation/x402/pull/3145))           | @IkerAlus              |
+| v1.1    | 2026-08-25 | `authorization` and `upfront` payment flows ([#3240](https://github.com/x402-foundation/x402/pull/3240)) | @phdargen              |
+| v1.0    | 2025-02-22 | Initial scheme ([#1](https://github.com/x402-foundation/x402/pull/1))                                 | @erikreppel-cb         |

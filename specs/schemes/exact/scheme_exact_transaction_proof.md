@@ -226,3 +226,10 @@ Facilitators MUST use these `errorReason` values. Network bindings reuse them an
 - [x402 specification v2](../../x402-specification-v2.md)
 - [JSON Canonicalization Scheme (RFC 8785)](https://www.rfc-editor.org/rfc/rfc8785.html)
 - [CAIP-2](https://chainagnostic.org/CAIPs/caip-2)
+
+## Version History
+
+| Version | Date       | Changes                                  | Authors   |
+| ------- | ---------- | ---------------------------------------- | --------- |
+| v1.0    | 2026-11-11 | `transaction-proof` asset transfer method | @phdargen |
+| v0.1    | 2026-01-21 | Draft TXID payment payload ([#1004](https://github.com/x402-foundation/x402/pull/1004)) | @alftom   |

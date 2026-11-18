@@ -596,3 +596,12 @@ contract x402ExactPermit2Proxy {
     }
 }
 ```
+
+## Version History
+
+| Version | Date       | Changes                                                                                   | Authors                  |
+| ------- | ---------- | ----------------------------------------------------------------------------------------- | ------------------------ |
+| v1.3    | 2026-11-11 | `transaction-proof` asset transfer method                                                 | @phdargen                |
+| v1.2    | 2026-03-13 | `erc7710` asset transfer method ([#732](https://github.com/x402-foundation/x402/pull/732)) | @danfinlay               |
+| v1.1    | 2026-01-08 | `permit2` asset transfer method ([#769](https://github.com/x402-foundation/x402/pull/769)) | @fabrice-cheng  |
+| v1.0    | 2025-12-11 | Initial v2 spec ([#705](https://github.com/x402-foundation/x402/pull/705))                 | @CarsonRoscoe            |
